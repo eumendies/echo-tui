@@ -1,0 +1,336 @@
+{
+  "id": "default",
+  "label": "Echo Default",
+  "description": "深色主题：默认青色和灰色渲染主题。",
+  "blocks": {
+    "colors": {
+      "assistantPrefix": [
+        0,
+        170,
+        170
+      ],
+      "bannerAccent": [
+        0,
+        170,
+        170
+      ],
+      "bannerMuted": [
+        85,
+        85,
+        85
+      ],
+      "error": [
+        170,
+        0,
+        0
+      ],
+      "muted": [
+        85,
+        85,
+        85
+      ],
+      "notice": [
+        85,
+        85,
+        85
+      ],
+      "pendingPrefix": [
+        0,
+        170,
+        170
+      ],
+      "reasoning": [
+        85,
+        85,
+        85
+      ],
+      "shell": [
+        0,
+        170,
+        0
+      ],
+      "text": [
+        255,
+        255,
+        255
+      ],
+      "tool": [
+        0,
+        170,
+        170
+      ],
+      "toolError": [
+        170,
+        0,
+        0
+      ],
+      "toolOutput": [
+        85,
+        85,
+        85
+      ],
+      "toolSuccess": [
+        0,
+        170,
+        0
+      ],
+      "userBackground": {
+        "ansi256": 235
+      },
+      "userPrefix": [
+        0,
+        170,
+        170
+      ],
+      "userText": [
+        255,
+        255,
+        255
+      ]
+    }
+  },
+  "footer": {
+    "focusBar": "▌",
+    "colors": {
+      "accent": [
+        0,
+        200,
+        220
+      ],
+      "accentDeep": [
+        0,
+        120,
+        150
+      ],
+      "accentStrong": [
+        90,
+        230,
+        245
+      ],
+      "danger": [
+        245,
+        95,
+        110
+      ],
+      "diffAddedBackground": {
+        "ansi256": 22
+      },
+      "diffRemovedBackground": {
+        "ansi256": 52
+      },
+      "diffText": {
+        "ansi256": 231
+      },
+      "frame": [
+        40,
+        110,
+        125
+      ],
+      "muted": [
+        130,
+        150,
+        168
+      ],
+      "off": [
+        120,
+        130,
+        148
+      ],
+      "plan": [
+        170,
+        150,
+        245
+      ],
+      "rail": [
+        60,
+        78,
+        92
+      ],
+      "railOff": [
+        78,
+        96,
+        104
+      ],
+      "selectionBackground": {
+        "ansi256": 23
+      },
+      "success": [
+        96,
+        210,
+        165
+      ],
+      "text": [
+        205,
+        213,
+        222
+      ],
+      "warning": [
+        240,
+        190,
+        120
+      ],
+      "white": [
+        235,
+        245,
+        248
+      ],
+      "codeBackground": {
+        "ansi256": 236
+      },
+      "codeForeground": {
+        "ansi256": 117
+      },
+      "usageInput": [
+        90,
+        230,
+        245
+      ],
+      "usageCached": [
+        0,
+        120,
+        150
+      ],
+      "usageOutput": [
+        96,
+        210,
+        165
+      ]
+    }
+  },
+  "markdown": {
+    "styles": {
+      "bold": {
+        "bold": true
+      },
+      "heading": {
+        "foreground": [
+          0,
+          170,
+          170
+        ],
+        "bold": true
+      },
+      "inlineCode": {
+        "foreground": [
+          170,
+          85,
+          0
+        ]
+      },
+      "italic": {
+        "dim": true
+      },
+      "link": {
+        "foreground": [
+          0,
+          170,
+          170
+        ]
+      },
+      "listMarker": {
+        "foreground": [
+          0,
+          170,
+          170
+        ]
+      },
+      "quote": {
+        "foreground": [
+          85,
+          85,
+          85
+        ],
+        "dim": true
+      },
+      "rolePrefix": {
+        "foreground": [
+          0,
+          170,
+          170
+        ]
+      },
+      "rule": {
+        "foreground": [
+          85,
+          85,
+          85
+        ]
+      },
+      "tableHeader": {
+        "bold": true
+      },
+      "tableSeparator": {
+        "foreground": [
+          85,
+          85,
+          85
+        ]
+      }
+    }
+  },
+  "syntax": {
+    "plain": {
+      "foreground": [
+        255,
+        255,
+        255
+      ]
+    },
+    "keyword": {
+      "foreground": [
+        170,
+        0,
+        170
+      ],
+      "bold": true
+    },
+    "string": {
+      "foreground": [
+        0,
+        170,
+        0
+      ]
+    },
+    "number": {
+      "foreground": [
+        170,
+        85,
+        0
+      ]
+    },
+    "comment": {
+      "foreground": [
+        85,
+        85,
+        85
+      ]
+    },
+    "function": {
+      "foreground": {
+        "ansi256": 208
+      },
+      "bold": true
+    },
+    "variable": {
+      "foreground": [
+        0,
+        170,
+        170
+      ]
+    },
+    "operator": {
+      "foreground": [
+        85,
+        85,
+        85
+      ]
+    },
+    "punctuation": {
+      "foreground": [
+        85,
+        85,
+        85
+      ]
+    }
+  }
+}

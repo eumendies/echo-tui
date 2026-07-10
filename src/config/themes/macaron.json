@@ -1,0 +1,128 @@
+{
+  "id": "macaron",
+  "label": "Macaron",
+  "description": "浅色主题：奶油浅底、雾粉、薄荷灰绿和薰衣草灰紫组成的马卡龙主题。",
+  "blocks": {
+    "colors": {
+      "assistantPrefix": "#a85478",
+      "bannerAccent": "#b85f84",
+      "bannerMuted": "#8a7b83",
+      "error": "#b14e5b",
+      "muted": "#7f7378",
+      "notice": "#7f7378",
+      "pendingPrefix": "#8a741f",
+      "reasoning": "#7f7378",
+      "shell": "#4f8464",
+      "text": "#3a2f35",
+      "tool": "#b85f84",
+      "toolError": "#b14e5b",
+      "toolOutput": "#6f656a",
+      "toolSuccess": "#4f8464",
+      "userBackground": "#f7e8ef",
+      "userPrefix": "#a85478",
+      "userText": "#352830"
+    }
+  },
+  "footer": {
+    "focusBar": "▌",
+    "colors": {
+      "accent": "#b85f84",
+      "accentDeep": "#86415f",
+      "accentStrong": "#a85478",
+      "danger": "#b14e5b",
+      "diffAddedBackground": "#dff3e7",
+      "diffRemovedBackground": "#f8dde0",
+      "diffText": "#352830",
+      "frame": "#d8b7c6",
+      "muted": "#7f7378",
+      "off": "#a99da3",
+      "plan": "#6f5f9a",
+      "rail": "#ead8e2",
+      "railOff": "#f6eaf0",
+      "selectionBackground": "#ead8e6",
+      "success": "#4f8464",
+      "text": "#3a2f35",
+      "warning": "#8a741f",
+      "white": "#352830",
+      "codeBackground": "#f3eadf",
+      "codeForeground": "#86415f",
+      "usageInput": "#a85478",
+      "usageCached": "#86415f",
+      "usageOutput": "#4f8464"
+    }
+  },
+  "markdown": {
+    "styles": {
+      "bold": {
+        "foreground": "#352830",
+        "bold": true
+      },
+      "heading": {
+        "foreground": "#a85478",
+        "bold": true
+      },
+      "inlineCode": {
+        "foreground": "#8a741f"
+      },
+      "italic": {
+        "foreground": "#6f5f9a",
+        "dim": true
+      },
+      "link": {
+        "foreground": "#b85f84"
+      },
+      "listMarker": {
+        "foreground": "#4f8464"
+      },
+      "quote": {
+        "foreground": "#7f7378",
+        "dim": true
+      },
+      "rolePrefix": {
+        "foreground": "#a85478"
+      },
+      "rule": {
+        "foreground": "#d8b7c6"
+      },
+      "tableHeader": {
+        "foreground": "#352830",
+        "bold": true
+      },
+      "tableSeparator": {
+        "foreground": "#d8b7c6"
+      }
+    }
+  },
+  "syntax": {
+    "plain": {
+      "foreground": "#352830"
+    },
+    "keyword": {
+      "foreground": "#6f5f9a",
+      "bold": true
+    },
+    "string": {
+      "foreground": "#4f8464"
+    },
+    "number": {
+      "foreground": "#8a741f"
+    },
+    "comment": {
+      "foreground": "#7f7378",
+      "dim": true
+    },
+    "function": {
+      "foreground": "#a85478",
+      "bold": true
+    },
+    "variable": {
+      "foreground": "#b85f84"
+    },
+    "operator": {
+      "foreground": "#6f656a"
+    },
+    "punctuation": {
+      "foreground": "#6f656a"
+    }
+  }
+}

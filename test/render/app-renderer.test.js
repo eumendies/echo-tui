@@ -1,0 +1,1132 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+
+const { createTuiTheme } = require('../../src/config/theme-config');
+const { createComposer } = require('../../src/input/composer');
+const { displayWidth, stripAnsi } = require('../../src/render/layout');
+
+const DEFAULT_STATUS_LINE = {
+  projectName: 'echo_tui',
+  modelLabel: 'GPT-4o',
+  mode: 'idle'
+};
+const ASK_USER_QUESTIONS_TOOL_NAME = 'ask_user_questions';
+const {
+  createAppRenderer,
+  renderTranscriptLines
+} = require('../../src/render/app-renderer');
+
+function createAskUserQuestionsCall(callId, questions) {
+  return {
+    role: 'tool_call',
+    text: '',
+    toolCallId: callId,
+    toolName: ASK_USER_QUESTIONS_TOOL_NAME,
+    argumentsText: JSON.stringify({questions})
+  };
+}
+
+function createAskUserQuestionsResult(callId, payload, ok = true) {
+  return {
+    role: 'tool_result',
+    text: typeof payload === 'string' ? payload : JSON.stringify(payload),
+    toolCallId: callId,
+    toolName: ASK_USER_QUESTIONS_TOOL_NAME,
+    ok
+  };
+}
+
+test('renderTranscriptLines projects user, assistant, error, local notice, and reasoning summary records', () => {
+  const lines = renderTranscriptLines(
+    [
+      { role: 'user', text: 'hello' },
+      { role: 'assistant', text: 'world' },
+      { role: 'error', text: '模型响应失败：timeout' },
+      { role: 'local_notice', text: '已中断模型回答' },
+      { role: 'reasoning_summary', text: '我会先检查上下文。' }
+    ],
+    80
+  ).map((line) => stripAnsi(line));
+
+  assert.ok(lines.some((line) => line.startsWith('▌ hello')));
+  assert.ok(lines.some((line) => line.startsWith('◆ world')));
+  assert.ok(lines.some((line) => line.startsWith('✕ 模型响应失败：timeout')));
+  assert.ok(lines.some((line) => line.startsWith('◇ 已中断模型回答')));
+  assert.ok(lines.some((line) => line.startsWith('◇ 我会先检查上下文。')));
+});
+
+test('renderTranscriptLines uses displayText for user records when present', () => {
+  const lines = renderTranscriptLines(
+    [
+      {
+        role: 'user',
+        text: '[Skill Invocation]\n[Skill Instructions]\n# Review\n[User Request]\ninspect src/app/main.ts',
+        displayText: '/review inspect src/app/main.ts'
+      }
+    ],
+    80
+  ).map((line) => stripAnsi(line));
+
+  assert.ok(lines.some((line) => line.startsWith('▌ /review inspect src/app/main.ts')));
+  assert.equal(lines.some((line) => line.includes('Skill Instructions')), false);
+});
+
+test('renderTranscriptLines colors plan mode user prefix with footer plan color', () => {
+  const theme = createTuiTheme({
+    blocks: {
+      colors: {
+        userBackground: {ansi256: 99},
+        userPrefix: [4, 5, 6],
+        userText: [7, 8, 9]
+      }
+    },
+    footer: {
+      colors: {
+        plan: [170, 150, 245]
+      }
+    }
+  });
+  const lines = renderTranscriptLines(
+    [
+      { role: 'user', text: 'normal' },
+      { role: 'user', text: 'plan', interactionMode: 'plan' }
+    ],
+    80,
+    theme
+  );
+  const normalLine = lines.find((line) => stripAnsi(line).startsWith('▌ normal'));
+  const planLine = lines.find((line) => stripAnsi(line).startsWith('▌ plan'));
+
+  assert.ok(normalLine.includes('\x1b[38;2;4;5;6m▌ '));
+  assert.ok(planLine.includes('\x1b[38;2;170;150;245m▌ '));
+  assert.equal(planLine.includes('\x1b[38;2;4;5;6m▌ '), false);
+});
+
+test('renderTranscriptLines keeps a blank line between adjacent transcript records', () => {
+  const lines = renderTranscriptLines(
+    [
+      { role: 'assistant', text: 'first' },
+      { role: 'assistant', text: 'second' }
+    ],
+    80
+  ).map((line) => stripAnsi(line));
+
+  assert.deepEqual(lines, [
+    '◆ first',
+    '',
+    '◆ second',
+    ''
+  ]);
+});
+
+test('renderTranscriptLines projects bash tool call and result with dedicated styling', () => {
+  const renderedLines = renderTranscriptLines(
+    [
+      {
+        role: 'tool_call',
+        text: '$ pwd',
+        toolCallId: 'call_1',
+        toolName: 'run_bash_command',
+        argumentsText: '{"command":"pwd"}'
+      },
+      {
+        role: 'tool_result',
+        text: '$ pwd\nexit_code: 0\nduration_ms: 10\ntimed_out: false\ntruncated: false\n\nstdout:\n/tmp/echo_tui\n\nstderr:\n',
+        toolCallId: 'call_1',
+        toolName: 'run_bash_command',
+        ok: true
+      }
+    ],
+    80
+  );
+  const lines = renderedLines.map((line) => stripAnsi(line));
+
+  assert.deepEqual(lines, [
+    "◆ Bash('pwd')",
+    '  ⎿ /tmp/echo_tui',
+    ''
+  ]);
+  assert.match(renderedLines[0], /\x1b\[38;2;0;170;0m◆\x1b\[39m Bash/);
+  assert.match(renderedLines[1], /\x1b\[38;2;85;85;85m/);
+});
+
+test('renderTranscriptLines colors tool call prefix by adjacent result state with neutral fallback', () => {
+  const renderedLines = renderTranscriptLines(
+    [
+      { role: 'tool_call', text: 'ok call', toolCallId: 'ok', toolName: 'ok_tool', argumentsText: '{}' },
+      { role: 'tool_result', text: 'ok', toolCallId: 'ok', ok: true },
+      { role: 'tool_call', text: 'failed call', toolCallId: 'failed', toolName: 'failed_tool', argumentsText: '{}' },
+      { role: 'tool_result', text: 'failed', toolCallId: 'failed', ok: false },
+      { role: 'tool_call', text: 'legacy call', toolCallId: 'legacy', toolName: 'legacy_tool', argumentsText: '{}' },
+      { role: 'tool_result', text: 'legacy', toolCallId: 'legacy' }
+    ],
+    80
+  );
+
+  assert.match(renderedLines.find((line) => stripAnsi(line).includes('ok_tool')), /\x1b\[38;2;0;170;0m◆\x1b\[39m/);
+    assert.match(renderedLines.find((line) => stripAnsi(line).includes('failed_tool')), /\x1b\[38;2;170;0;0m◆\x1b\[39m/);
+  assert.doesNotMatch(renderedLines.find((line) => stripAnsi(line).includes('legacy_tool')), /\x1b\[(31|32)m◆/);
+  assert.match(renderedLines.find((line) => stripAnsi(line).includes('⎿ ok')), /\x1b\[38;2;85;85;85m/);
+});
+
+test('renderTranscriptLines only groups adjacent matching tool records', () => {
+  const renderedLines = renderTranscriptLines(
+    [
+      { role: 'tool_call', text: 'first call', toolCallId: 'first', toolName: 'first_tool', argumentsText: '{}' },
+      { role: 'assistant', text: 'between' },
+      { role: 'tool_result', text: 'late result', toolCallId: 'first', ok: true },
+      { role: 'tool_call', text: 'mismatch call', toolCallId: 'second', toolName: 'second_tool', argumentsText: '{}' },
+      { role: 'tool_result', text: 'mismatch result', toolCallId: 'third', ok: false },
+      { role: 'tool_call', text: 'paired call', toolCallId: 'paired', toolName: 'paired_tool', argumentsText: '{}' },
+      { role: 'tool_result', text: 'paired result', toolCallId: 'paired', ok: false }
+    ],
+    80
+  );
+
+  assert.doesNotMatch(renderedLines.find((line) => stripAnsi(line).includes('first_tool')), /\x1b\[(31|32)m◆/);
+  assert.doesNotMatch(renderedLines.find((line) => stripAnsi(line).includes('second_tool')), /\x1b\[(31|32)m◆/);
+    assert.match(renderedLines.find((line) => stripAnsi(line).includes('paired_tool')), /\x1b\[38;2;170;0;0m◆\x1b\[39m/);
+});
+
+test('renderTranscriptLines wraps bash tool result and hides execution summary', () => {
+  const lines = renderTranscriptLines(
+    [
+      {
+        role: 'tool_result',
+        text: '$ echo abcdefghijkl\nexit_code: 0\nduration_ms: 10\ntimed_out: false\ntruncated: false\n\nstdout:\nabcdefghijkl\n\nstderr:\n',
+        toolName: 'run_bash_command',
+        ok: true
+      }
+    ],
+    10
+  ).map((line) => stripAnsi(line));
+
+  assert.deepEqual(lines, [
+    '  ⎿ abcd',
+    '    efgh',
+    '    ijkl',
+    ''
+  ]);
+  assert.ok(lines.every((line) => !line.includes('exit_code')));
+  assert.ok(lines.every((line) => !line.includes('duration_ms')));
+});
+
+test('renderTranscriptLines displays stderr, no output, timeout, truncation, and fallback tool records', () => {
+  const longOutput = Array.from({ length: 14 }, (_, index) => `line ${index + 1}`).join('\n');
+  const lines = renderTranscriptLines(
+    [
+      {
+        role: 'tool_result',
+        text: '$ missing\nexit_code: 1\nduration_ms: 10\ntimed_out: false\ntruncated: false\n\nstdout:\n\nstderr:\nmissing file\n',
+        toolName: 'run_bash_command',
+        ok: false
+      },
+      {
+        role: 'tool_result',
+        text: '$ noisy\nexit_code: 1\nduration_ms: 10\ntimed_out: false\ntruncated: true\n\nstdout:\n\nstderr:\nimportant stderr\n\nOutput was truncated.',
+        toolName: 'run_bash_command',
+        ok: false,
+        truncated: true
+      },
+      {
+        role: 'tool_result',
+        text: '$ touch ok\nexit_code: 0\nduration_ms: 10\ntimed_out: false\ntruncated: false\n\nstdout:\n\nstderr:\n',
+        toolName: 'run_bash_command',
+        ok: true
+      },
+      {
+        role: 'tool_result',
+        text: '$ sleep 60\nexit_code: null\nduration_ms: 30000\ntimed_out: true\ntruncated: false\n\nstdout:\n\nstderr:\n',
+        toolName: 'run_bash_command',
+        ok: false,
+        timedOut: true
+      },
+      {
+        role: 'tool_result',
+        text: `$ seq\nexit_code: 0\nduration_ms: 10\ntimed_out: false\ntruncated: true\n\nstdout:\n${longOutput}\n\nstderr:\n`,
+        toolName: 'run_bash_command',
+        ok: true,
+        truncated: true
+      },
+      { role: 'tool_call', text: 'legacy call' },
+      { role: 'tool_result', text: 'legacy result' }
+    ],
+    80
+  ).map((line) => stripAnsi(line));
+
+  assert.ok(lines.includes('  ⎿ missing file'));
+  assert.ok(lines.includes('  ⎿ important stderr'));
+  assert.ok(!lines.some((line) => line.includes('Output was truncated.')));
+  assert.ok(lines.includes('  ⎿ (no output)'));
+  assert.ok(lines.includes('  ⎿ Command timed out.'));
+  assert.ok(lines.includes('    [tool output truncated for display]'));
+  assert.ok(lines.includes('◆ Tool(legacy call)'));
+  assert.ok(lines.includes('  ⎿ legacy result'));
+});
+
+test('renderTranscriptLines projects todo tool results with dedicated state display', () => {
+  const renderedLines = renderTranscriptLines(
+    [
+      {
+        role: 'tool_call',
+        text: '',
+        toolCallId: 'todo-call',
+        toolName: 'create_todos',
+        argumentsText: '{"items":["first","second"]}'
+      },
+      {
+        role: 'tool_result',
+        text: JSON.stringify({
+          action: 'create_todos',
+          items: [
+            {id: 'todo_1', text: 'first open', status: 'open'},
+            {id: 'todo_2', text: 'second open', status: 'open'}
+          ],
+          openTodos: [
+            {id: 'todo_1', text: 'first open', status: 'open'},
+            {id: 'todo_2', text: 'second open', status: 'open'}
+          ]
+        }),
+        toolCallId: 'todo-call',
+        toolName: 'create_todos',
+        ok: true
+      }
+    ],
+    80
+  );
+  const plainLines = renderedLines.map((line) => stripAnsi(line));
+
+  assert.deepEqual(plainLines, [
+    '◆ create_todos()',
+    '  ⎿ ○ first open',
+    '    ○ second open',
+    ''
+  ]);
+  assert.match(renderedLines.find((line) => stripAnsi(line).includes('○ first open')), /\x1b\[38;2;0;170;170m/);
+  assert.match(renderedLines.find((line) => stripAnsi(line).includes('○ second open')), /\x1b\[38;2;85;85;85m/);
+});
+
+test('renderTranscriptLines renders completed todos with check and strikethrough', () => {
+  const renderedLines = renderTranscriptLines(
+    [
+      {
+        role: 'tool_result',
+        text: JSON.stringify({
+          action: 'complete_todo',
+          completedIds: ['todo_1'],
+          notFoundIds: [],
+          items: [
+            {id: 'todo_1', text: 'done item', status: 'completed'},
+            {id: 'todo_2', text: 'remaining item', status: 'open'}
+          ],
+          openTodos: [
+            {id: 'todo_2', text: 'remaining item', status: 'open'}
+          ]
+        }),
+        toolCallId: 'todo-call',
+        toolName: 'complete_todo',
+        ok: true
+      }
+    ],
+    80
+  );
+  const plainLines = renderedLines.map((line) => stripAnsi(line));
+
+  assert.ok(plainLines.includes('  ⎿ ✓ done item'));
+  assert.ok(plainLines.includes('    ○ remaining item'));
+  assert.match(renderedLines.find((line) => stripAnsi(line).includes('✓ done item')), /\x1b\[9m done item\x1b\[29m/);
+});
+
+test('renderTranscriptLines falls back for malformed todo tool output', () => {
+  const lines = renderTranscriptLines(
+    [
+      {
+        role: 'tool_result',
+        text: 'not-json',
+        toolName: 'complete_todo',
+        ok: false
+      }
+    ],
+    80
+  ).map((line) => stripAnsi(line));
+
+  assert.ok(lines.includes('  ⎿ not-json'));
+});
+
+test('renderTranscriptLines projects ask_user_questions single and multi answers without raw JSON field names', () => {
+  const renderedLines = renderTranscriptLines([
+    createAskUserQuestionsCall('questions-call', [
+      {
+        question: 'Pick one?',
+        options: [{label: 'Yes'}, {label: 'No'}]
+      },
+      {
+        question: 'Pick many?',
+        multiSelect: true,
+        options: [{label: 'A'}, {label: 'B'}, {label: 'C'}]
+      }
+    ]),
+    createAskUserQuestionsResult('questions-call', {
+      answers: [
+        {index: 0, selected: 'No'},
+        {index: 1, multiSelect: true, selectedOptions: ['A', 'C']}
+      ]
+    })
+  ], 80);
+  const lines = renderedLines.map((line) => stripAnsi(line));
+
+  assert.deepEqual(lines, [
+    '◆ AskUserQuestions(2)',
+    '  ⎿ 1. Pick one?（单选）',
+    '       ● No',
+    '    2. Pick many?（多选）',
+    '       ● A',
+    '       ● C',
+    ''
+  ]);
+  assert.equal(lines.some((line) => /answers|index|selected|selectedOptions|multiSelect/.test(line)), false);
+  assert.match(renderedLines[0], /\x1b\[38;2;0;170;0m◆\x1b\[39m AskUserQuestions/);
+  assert.match(renderedLines[1], /\x1b\[38;2;85;85;85m/);
+});
+
+test('renderTranscriptLines projects ask_user_questions Other and cancelled receipts', () => {
+  const otherLines = renderTranscriptLines([
+    createAskUserQuestionsCall('other-call', [
+      {
+        question: 'Pick extras?',
+        multiSelect: true,
+        options: [{label: 'A'}, {label: 'B'}]
+      }
+    ]),
+    createAskUserQuestionsResult('other-call', {
+      answers: [
+        {index: 0, multiSelect: true, selectedOptions: ['B', 'Other'], customText: 'custom answer'}
+      ]
+    })
+  ], 80).map((line) => stripAnsi(line));
+
+  assert.ok(otherLines.includes('       ● B'));
+  assert.ok(otherLines.includes('       ● Other：custom answer'));
+  assert.equal(otherLines.some((line) => line.includes('customText')), false);
+
+  const cancelledRenderedLines = renderTranscriptLines([
+    createAskUserQuestionsCall('cancel-call', [
+      {
+        question: 'Proceed?',
+        options: [{label: 'Yes'}, {label: 'No'}]
+      }
+    ]),
+    createAskUserQuestionsResult('cancel-call', {cancelled: true, reason: 'User dismissed dialog'}, false)
+  ], 80);
+  const cancelledLines = cancelledRenderedLines.map((line) => stripAnsi(line));
+
+  assert.deepEqual(cancelledLines, [
+    '◆ AskUserQuestions(1)',
+    '  ⎿ 已取消：User dismissed dialog',
+    ''
+  ]);
+  assert.equal(cancelledLines.some((line) => /cancelled|reason/.test(line)), false);
+  assert.match(cancelledRenderedLines[0], /\x1b\[38;2;170;0;0m◆\x1b\[39m AskUserQuestions/);
+});
+
+test('renderTranscriptLines falls back for invalid ask_user_questions pair shapes', () => {
+  const validQuestions = [
+    {
+      question: 'Pick one?',
+      options: [{label: 'A'}, {label: 'B'}]
+    }
+  ];
+  const cases = [
+    {
+      call: {
+        ...createAskUserQuestionsCall('invalid-args', validQuestions),
+        argumentsText: '{not-json'
+      },
+      result: createAskUserQuestionsResult('invalid-args', {answers: [{index: 0, selected: 'A'}]}),
+      expected: '{not-json'
+    },
+    {
+      call: createAskUserQuestionsCall('invalid-result', validQuestions),
+      result: createAskUserQuestionsResult('invalid-result', 'not-json'),
+      expected: 'not-json'
+    },
+    {
+      call: createAskUserQuestionsCall('invalid-index', validQuestions),
+      result: createAskUserQuestionsResult('invalid-index', {answers: [{index: 9, selected: 'A'}]}),
+      expected: '"index":9'
+    },
+    {
+      call: createAskUserQuestionsCall('invalid-shape', validQuestions),
+      result: createAskUserQuestionsResult('invalid-shape', {answers: [{index: 0, selectedOptions: ['A']}]}),
+      expected: 'selectedOptions'
+    }
+  ];
+
+  for (const {call, result, expected} of cases) {
+    const renderedLines = renderTranscriptLines([call, result], 80);
+    const lines = renderedLines.map((line) => stripAnsi(line));
+
+    assert.ok(lines.some((line) => line.startsWith('◆ ask_user_questions(')));
+    assert.ok(lines.some((line) => line.includes(expected)));
+    assert.equal(lines.some((line) => line.includes('AskUserQuestions')), false);
+    assert.match(renderedLines[0], /\x1b\[38;2;0;170;0m◆\x1b\[39m ask_user_questions/);
+  }
+});
+
+test('renderTranscriptLines wraps and truncates ask_user_questions receipts within tool layout', () => {
+  const narrowLines = renderTranscriptLines([
+    createAskUserQuestionsCall('wrapped-question', [
+      {
+        question: 'Choose the very long answer label?',
+        options: [{label: 'abcdefghijklmnopqrstuvwxyz'}]
+      }
+    ]),
+    createAskUserQuestionsResult('wrapped-question', {
+      answers: [{index: 0, selected: 'abcdefghijklmnopqrstuvwxyz'}]
+    })
+  ], 20).map((line) => stripAnsi(line));
+
+  assert.ok(narrowLines.some((line) => line.includes('klmnopqrst')));
+  assert.equal(narrowLines.every((line) => displayWidth(line) <= 19), true);
+
+  const questions = Array.from({length: 5}, (_unused, index) => ({
+    question: `Question ${index + 1}?`,
+    multiSelect: true,
+    options: [{label: `A${index + 1}`}, {label: `B${index + 1}`}]
+  }));
+  const answers = questions.map((_question, index) => ({
+    index,
+    multiSelect: true,
+    selectedOptions: [`A${index + 1}`, `B${index + 1}`]
+  }));
+  const truncatedLines = renderTranscriptLines([
+    createAskUserQuestionsCall('truncated-question', questions),
+    createAskUserQuestionsResult('truncated-question', {answers})
+  ], 80).map((line) => stripAnsi(line));
+
+  assert.ok(truncatedLines.includes('    [tool output truncated for display]'));
+  assert.equal(truncatedLines.some((line) => line.includes('Question 5?')), false);
+});
+
+test('renderTranscriptLines keeps read_files directory entries visible before generic truncation', () => {
+  const argumentsText = '{"files":[{"path":"src/tools/read-files","limit":2}]}';
+  const resultText = [
+    '--- directory: src/tools/read-files',
+    'entries:',
+    '- src/tools/read-files/index.ts; file; size_bytes: 331',
+    '- src/tools/read-files/readers.ts; file; size_bytes: 18000',
+    '- src/tools/read-files/a.ts; file; size_bytes: 1',
+    '- src/tools/read-files/b.ts; file; size_bytes: 1',
+    '- src/tools/read-files/c.ts; file; size_bytes: 1',
+    '- src/tools/read-files/d.ts; file; size_bytes: 1',
+    '- src/tools/read-files/e.ts; file; size_bytes: 1',
+    '- src/tools/read-files/f.ts; file; size_bytes: 1',
+    '- src/tools/read-files/g.ts; file; size_bytes: 1',
+    '- src/tools/read-files/h.ts; file; size_bytes: 1',
+    '- src/tools/read-files/i.ts; file; size_bytes: 1',
+    '- src/tools/read-files/j.ts; file; size_bytes: 1',
+    '- src/tools/read-files/k.ts; file; size_bytes: 1',
+    '',
+    'has_more: true'
+  ].join('\n');
+  const lines = renderTranscriptLines([
+    {
+      role: 'tool_call',
+      text: '',
+      toolCallId: 'call_read',
+      toolName: 'read_files',
+      argumentsText
+    },
+    {
+      role: 'tool_result',
+      text: resultText,
+      toolCallId: 'call_read',
+      toolName: 'read_files',
+      ok: true,
+      truncated: true
+    }
+  ], 80).map((line) => stripAnsi(line));
+
+  assert.ok(lines.includes('◆ read_files(src/tools/read-files@0+2)'));
+  assert.ok(lines.includes('  ⎿ directory: src/tools/read-files'));
+  assert.ok(lines.some((line) => line.includes('• src/tools/read-files/index.ts  file, size_bytes: 331')));
+  assert.ok(lines.some((line) => line.includes('• src/tools/read-files/readers.ts  file, size_bytes: 18000')));
+  assert.equal(lines.some((line) => line.includes('has_more')), false);
+  assert.ok(lines.includes('    [tool output truncated for display]'));
+});
+
+test('renderTranscriptLines projects read_files calls without raw arguments JSON', () => {
+  const longPath = 'src/very/long/path/that/should/be/ellipsized/because/it/is/noisy.ts';
+  const lines = renderTranscriptLines([
+    {
+      role: 'tool_call',
+      text: '',
+      toolCallId: 'read-single',
+      toolName: 'read_files',
+      argumentsText: JSON.stringify({files: [{path: 'src/foo.ts', offset: 5, limit: 20}]})
+    },
+    {
+      role: 'tool_result',
+      text: ['--- text: src/foo.ts', '', 'content:', '```', '6 │ hello', '```'].join('\n'),
+      toolCallId: 'read-single',
+      toolName: 'read_files',
+      ok: true,
+      truncated: false
+    },
+    {
+      role: 'tool_call',
+      text: '',
+      toolCallId: 'read-many',
+      toolName: 'read_files',
+      argumentsText: JSON.stringify({files: [
+        {path: longPath},
+        {path: 'b.ts'},
+        {path: 'c.ts'},
+        {path: 'd.ts'}
+      ]})
+    }
+  ], 120).map((line) => stripAnsi(line));
+
+  assert.ok(lines.includes('◆ read_files(src/foo.ts@5+20)'));
+  assert.ok(lines.some((line) => line.startsWith('◆ read_files(src/very/long/path/that/should/be/ellipsized/')));
+  assert.ok(lines.some((line) => line.includes('…')));
+  assert.ok(lines.some((line) => line.includes('… +1 more')));
+  assert.equal(lines.some((line) => line.includes('"files"')), false);
+});
+
+test('renderTranscriptLines projects read_files text output as compact summaries', () => {
+  const lines = renderTranscriptLines([
+    {
+      role: 'tool_result',
+      text: [
+        '--- text: src/foo.ts',
+        'has_more: true',
+        'content_truncated: true',
+        '',
+        'content:',
+        '```',
+        '9 │ before width changes',
+        '10 │ const value = 1;',
+        '11 │ // --- text: not an envelope inside content',
+        '```'
+      ].join('\n'),
+      toolName: 'read_files',
+      ok: true,
+      truncated: true
+    },
+    {
+      role: 'tool_result',
+      text: [
+        '--- text: src/bar.ts',
+        '',
+        'content:',
+        '```',
+        '1 │ export const bar = true;',
+        '```'
+      ].join('\n'),
+      toolName: 'read_files',
+      ok: true,
+      truncated: false
+    }
+  ], 100).map((line) => stripAnsi(line));
+
+  assert.ok(lines.includes('  ⎿ text: src/foo.ts  lines: 9-11 (3), content_truncated: true'));
+  assert.ok(lines.includes('  ⎿ text: src/bar.ts  lines: 1 (1)'));
+  assert.equal(lines.some((line) => line.includes('before width changes')), false);
+  assert.equal(lines.some((line) => line.includes('const value = 1')), false);
+  assert.equal(lines.some((line) => line.includes('export const bar')), false);
+  assert.equal(lines.some((line) => line.includes('has_more')), false);
+  assert.equal(lines.some((line) => line.startsWith('  ⎿ --- text:') || line.startsWith('    --- text:')), false);
+  assert.equal(lines.some((line) => line === '    content:' || line === '    ```'), false);
+});
+
+test('renderTranscriptLines preserves semicolons in read_files directory entry paths', () => {
+  const lines = renderTranscriptLines([
+    {
+      role: 'tool_result',
+      text: [
+        '--- directory: src/tools/read-files',
+        'entries:',
+        '- src/tools/read-files/name;with;semi.ts; file; size_bytes: 42',
+        '- src/tools/read-files/sub;dir; directory'
+      ].join('\n'),
+      toolName: 'read_files',
+      ok: true,
+      truncated: false
+    }
+  ], 120).map((line) => stripAnsi(line));
+
+  assert.ok(lines.includes('  ⎿ directory: src/tools/read-files'));
+  assert.ok(lines.some((line) => line.includes('• src/tools/read-files/name;with;semi.ts  file, size_bytes: 42')));
+  assert.ok(lines.some((line) => line.includes('• src/tools/read-files/sub;dir  directory')));
+});
+
+test('renderTranscriptLines projects read_files image, pdf summaries, and error envelopes', () => {
+  const lines = renderTranscriptLines([
+    {
+      role: 'tool_result',
+      text: [
+        '--- image: assets/logo.png',
+        'size_bytes: 2048',
+        'image_attached: true',
+        '',
+        '--- pdf: docs/spec.pdf',
+        'pages: 3',
+        'pages_with_text: 2',
+        'content_truncated: true',
+        '',
+        'extracted_text:',
+        '```',
+        'first page text',
+        '```',
+        '',
+        '--- binary: build/app.bin',
+        'size_bytes: 4096',
+        'error: unsupported media type',
+        'reason: binary reading is not supported by this version'
+      ].join('\n'),
+      toolName: 'read_files',
+      ok: false,
+      truncated: true,
+      attachments: [{kind: 'image', mediaType: 'image/png', data: 'base64-data'}]
+    }
+  ], 120).map((line) => stripAnsi(line));
+
+  assert.ok(lines.includes('  ⎿ image: assets/logo.png  size_bytes: 2048, image_attached: true'));
+  assert.ok(lines.includes('    pdf: docs/spec.pdf  pages: 3, pages_with_text: 2, content_truncated: true'));
+  assert.equal(lines.some((line) => line.includes('first page text')), false);
+  assert.equal(lines.some((line) => line.includes('extracted_text')), false);
+  assert.ok(lines.some((line) => line.includes('binary: build/app.bin  size_bytes: 4096, error: unsupported media type, reason: binary reading is not supported')));
+  assert.ok(lines.some((line) => line.includes('this version')));
+  assert.equal(lines.some((line) => line.includes('base64-data')), false);
+});
+
+test('renderTranscriptLines falls back for malformed read_files calls and results', () => {
+  const lines = renderTranscriptLines([
+    {
+      role: 'tool_call',
+      text: '',
+      toolCallId: 'bad-read-call',
+      toolName: 'read_files',
+      argumentsText: '{not-json'
+    },
+    {
+      role: 'tool_result',
+      text: '--- text: src/foo.ts\ncontent:\n```\nmissing closing fence',
+      toolCallId: 'bad-read-call',
+      toolName: 'read_files',
+      ok: false,
+      truncated: false
+    },
+    {
+      role: 'tool_result',
+      text: 'read_files failed.\nReason: files must be an array',
+      toolName: 'read_files',
+      ok: false,
+      truncated: false
+    }
+  ], 100).map((line) => stripAnsi(line));
+
+  assert.ok(lines.includes('◆ read_files({not-json)'));
+  assert.ok(lines.some((line) => line.includes('--- text: src/foo.ts')));
+  assert.ok(lines.some((line) => line.includes('missing closing fence')));
+  assert.ok(lines.includes('  ⎿ read_files failed.'));
+  assert.ok(lines.includes('    Reason: files must be an array'));
+});
+
+test('renderTranscriptLines keeps read_files transcript records unchanged', () => {
+  const resultRecord = {
+    role: 'tool_result',
+    text: ['--- image: assets/logo.png', 'size_bytes: 2048', 'image_attached: true'].join('\n'),
+    toolName: 'read_files',
+    ok: true,
+    truncated: false,
+    attachments: [{kind: 'image', mediaType: 'image/png', data: 'base64-data'}]
+  };
+  const before = JSON.parse(JSON.stringify(resultRecord));
+
+  renderTranscriptLines([resultRecord], 80);
+
+  assert.deepEqual(resultRecord, before);
+});
+
+test('renderTranscriptLines renders current apply_patch metadata with file grouping, gutter, and full-row backgrounds', () => {
+  const renderedLines = renderTranscriptLines(
+    [
+      {
+        role: 'tool_call',
+        text: 'apply_patch({"patch":"raw"})',
+        toolCallId: 'call_patch',
+        toolName: 'apply_patch',
+        argumentsText: '{"patch":"--- a/src.txt\\n+++ b/src.txt\\n@@ -1 +1 @@\\n-alpha\\n+BETA\\n"}'
+      },
+      {
+        role: 'tool_result',
+        text: 'Applied patch.\nChanged files:\n- src.txt (updated)',
+        toolCallId: 'call_patch',
+        toolName: 'apply_patch',
+        ok: true,
+        display: {
+          kind: 'apply_patch',
+          files: [{
+            path: 'src.txt',
+            kind: 'updated',
+            lines: [
+              {kind: 'context', text: 'alpha', postLine: 1},
+              {kind: 'removed', text: 'beta', postLine: null},
+              {kind: 'added', text: 'BETA', postLine: 2},
+              {kind: 'context', text: 'gamma', postLine: 3}
+            ]
+          }]
+        }
+      }
+    ],
+    80
+  );
+  const lines = renderedLines.map((line) => stripAnsi(line));
+
+  assert.deepEqual(lines.map((line) => line.trimEnd()), [
+    '◆ apply_patch(src.txt)',
+    '  ⎿ src.txt  +1 -1',
+    '    1 │ alpha',
+    '    - │ beta',
+    '    + │ BETA',
+    '    3 │ gamma',
+    ''
+  ]);
+  assert.ok(!lines.some((line) => line.includes('diff --git')));
+  assert.ok(!lines.some((line) => line.includes('Applied patch')));
+  assert.match(renderedLines[0], /\x1b\[38;2;0;170;0m◆\x1b\[39m apply_patch/);
+  assert.match(renderedLines.find((line) => stripAnsi(line).includes('- │ beta')), /\x1b\[97m\x1b\[48;5;52m- │ beta/);
+  assert.match(renderedLines.find((line) => stripAnsi(line).includes('+ │ BETA')), /\x1b\[97m\x1b\[48;5;22m\+ │ BETA/);
+  assert.doesNotMatch(renderedLines.find((line) => stripAnsi(line).includes('alpha')), /\x1b\[48;5;(52|22)m/);
+  assert.equal(stripAnsi(renderedLines.find((line) => stripAnsi(line).includes('- │ beta'))).length, 79);
+  assert.equal(stripAnsi(renderedLines.find((line) => stripAnsi(line).includes('+ │ BETA'))).length, 79);
+});
+
+test('renderTranscriptLines renders apply_patch failures without previews and rejects invalid metadata', () => {
+  const manyLines = Array.from({ length: 70 }, (_, index) => ({kind: 'added', text: `line ${index + 1}`, postLine: index + 1}));
+  const renderedLines = renderTranscriptLines(
+    [
+      {
+        role: 'tool_call',
+        text: 'apply_patch({})',
+        toolCallId: 'failed_patch',
+        toolName: 'apply_patch',
+        argumentsText: '{"patch":"--- a/src.txt\\n+++ b/src.txt\\n@@ -1 +1 @@\\n-old\\n+new\\n"}'
+      },
+      {
+        role: 'tool_result',
+        text: 'Patch failed.\nReason: hunk matched 0 locations',
+        toolCallId: 'failed_patch',
+        toolName: 'apply_patch',
+        ok: false,
+        display: {
+          kind: 'apply_patch',
+          files: [
+            {
+              path: 'src.txt',
+              kind: 'updated',
+              lines: manyLines
+            },
+            {
+              path: 'later.txt',
+              kind: 'added',
+              lines: manyLines.map((line) => ({...line, text: `later ${line.postLine}`}))
+            }
+          ]
+        }
+      },
+      {
+        role: 'tool_call',
+        text: 'apply_patch({})',
+        toolCallId: 'fallback_patch',
+        toolName: 'apply_patch',
+        argumentsText: '{"patch":"*** Begin Patch\\n*** Update File: fallback.txt\\n@@\\n-old\\n+new\\n*** End Patch"}'
+      },
+      {
+        role: 'tool_result',
+        text: 'Applied patch.\nChanged files:',
+        toolCallId: 'fallback_patch',
+        toolName: 'apply_patch',
+        ok: true,
+        display: {
+          kind: 'apply_patch',
+          files: [{path: 'old.txt', kind: 'updated', hunks: [{lines: [{kind: 'added', text: 'legacy'}]}]}]
+        }
+      }
+    ],
+    80
+  );
+  const lines = renderedLines.map((line) => stripAnsi(line));
+
+  assert.ok(lines.includes('◆ apply_patch(src.txt)'));
+  assert.ok(lines.includes('  ⎿ Patch failed.'));
+  assert.ok(lines.some((line) => line.includes('Reason: hunk matched 0 locations')));
+  assert.ok(!lines.some((line) => line.includes('src.txt  +70 -0')));
+  assert.ok(!lines.some((line) => line.includes('later.txt  +70 -0')));
+  assert.ok(!lines.some((line) => line.includes('+ │ line 1')));
+  assert.ok(!lines.some((line) => line.includes('+ │ later 70')));
+  assert.ok(!lines.some((line) => line.includes('[patch display truncated]')));
+  assert.ok(lines.some((line) => line.includes('◆ apply_patch(fallback.txt)')));
+  assert.ok(lines.some((line) => line.includes('Applied patch.')));
+  assert.ok(!lines.some((line) => line.includes('legacy')));
+    assert.match(renderedLines.find((line) => stripAnsi(line).includes('apply_patch(src.txt)')), /\x1b\[38;2;170;0;0m◆\x1b\[39m/);
+});
+
+test('renderTranscriptLines keeps apply_patch added and removed backgrounds fixed under custom theme', () => {
+  const theme = createTuiTheme({
+    blocks: {
+      colors: {
+        toolOutput: [1, 2, 3],
+        toolSuccess: [4, 5, 6]
+      }
+    }
+  });
+  const renderedLines = renderTranscriptLines([
+    {
+      role: 'tool_call',
+      text: 'apply_patch({})',
+      toolCallId: 'fixed_patch',
+      toolName: 'apply_patch',
+      argumentsText: '{"patch":"*** Begin Patch\\n*** Update File: src.txt\\n@@\\n-old\\n+new\\n*** End Patch"}'
+    },
+    {
+      role: 'tool_result',
+      text: 'Applied patch.',
+      toolCallId: 'fixed_patch',
+      toolName: 'apply_patch',
+      ok: true,
+      display: {
+        kind: 'apply_patch',
+        files: [{
+          path: 'src.txt',
+          kind: 'updated',
+          lines: [
+            {kind: 'removed', text: 'old', postLine: 1},
+            {kind: 'added', text: 'new', postLine: 1}
+          ]
+        }]
+      }
+    }
+  ], 80, theme);
+
+  assert.match(renderedLines[0], /\x1b\[38;2;4;5;6m◆\x1b\[39m apply_patch/);
+  assert.match(renderedLines.find((line) => stripAnsi(line).includes('- │ old')), /\x1b\[97m\x1b\[48;5;52m- │ old/);
+  assert.match(renderedLines.find((line) => stripAnsi(line).includes('+ │ new')), /\x1b\[97m\x1b\[48;5;22m\+ │ new/);
+});
+
+test('renderTranscriptLines lets minimum apply_patch structure exceed soft budget without dropping later changes', () => {
+  const files = Array.from({length: 20}, (_, fileIndex) => ({
+    path: `file-${fileIndex + 1}.txt`,
+    kind: 'updated',
+    lines: Array.from({length: 5}, (_, changeIndex) => [
+      {
+        kind: 'added',
+        text: `change-${fileIndex + 1}-${changeIndex + 1}`,
+        postLine: changeIndex * 2 + 1
+      },
+      {
+        kind: 'context',
+        text: `separator-${fileIndex + 1}-${changeIndex + 1}`,
+        postLine: changeIndex * 2 + 2
+      }
+    ]).flat()
+  }));
+  const lines = renderTranscriptLines([
+    {
+      role: 'tool_call',
+      text: '',
+      toolCallId: 'oversized_patch',
+      toolName: 'apply_patch',
+      argumentsText: '{"patch":"raw"}'
+    },
+    {
+      role: 'tool_result',
+      text: 'Applied patch.',
+      toolCallId: 'oversized_patch',
+      toolName: 'apply_patch',
+      ok: true,
+      display: {
+        kind: 'apply_patch',
+        files
+      }
+    }
+  ], 80).map((line) => stripAnsi(line));
+
+  assert.ok(lines.length > 120);
+  assert.ok(lines.some((line) => line.includes('file-20.txt  +5 -0')));
+  assert.ok(lines.some((line) => line.includes('+ │ change-20-5')));
+});
+
+test('renderTranscriptLines keeps wrapped apply_patch additions highlighted across physical rows', () => {
+  const renderedLines = renderTranscriptLines([
+    {
+      role: 'tool_call',
+      text: '',
+      toolCallId: 'wrapped_patch',
+      toolName: 'apply_patch',
+      argumentsText: '{"patch":"*** Begin Patch\\n*** Add File: long.txt\\n+abcdefghijklmnopqrstuvwxyz\\n*** End Patch"}'
+    },
+    {
+      role: 'tool_result',
+      text: 'Applied patch.',
+      toolCallId: 'wrapped_patch',
+      toolName: 'apply_patch',
+      ok: true,
+      display: {
+        kind: 'apply_patch',
+        files: [{
+          path: 'long.txt',
+          kind: 'added',
+          lines: [{kind: 'added', text: 'abcdefghijklmnopqrstuvwxyz', postLine: 1}]
+        }]
+      }
+    }
+  ], 24);
+  const highlighted = renderedLines.filter((line) => /\x1b\[48;5;22m/.test(line));
+
+  assert.equal(highlighted.length, 2);
+  assert.equal(highlighted.every((line) => stripAnsi(line).length === 23), true);
+  assert.ok(stripAnsi(highlighted[0]).includes('+ │ '));
+  assert.ok(stripAnsi(highlighted[1]).includes('  │ '));
+});
+
+test('renderTranscriptLines folds long unchanged apply_patch context around edits', () => {
+  const contextBefore = Array.from({length: 8}, (_, index) => ({
+    kind: 'context',
+    text: `before ${index + 1}`,
+    postLine: index + 1
+  }));
+  const contextAfter = Array.from({length: 8}, (_, index) => ({
+    kind: 'context',
+    text: `after ${index + 1}`,
+    postLine: index + 10
+  }));
+  const lines = renderTranscriptLines([
+    {
+      role: 'tool_call',
+      text: '',
+      toolCallId: 'context_patch',
+      toolName: 'apply_patch',
+      argumentsText: '{"patch":"*** Begin Patch\\n*** Update File: context.txt\\n@@\\n-old\\n+new\\n*** End Patch"}'
+    },
+    {
+      role: 'tool_result',
+      text: 'Applied patch.',
+      toolCallId: 'context_patch',
+      toolName: 'apply_patch',
+      ok: true,
+      display: {
+        kind: 'apply_patch',
+        files: [{
+          path: 'context.txt',
+          kind: 'updated',
+          lines: [
+            ...contextBefore,
+            {kind: 'removed', text: 'old', postLine: null},
+            {kind: 'added', text: 'new', postLine: 9},
+            ...contextAfter
+          ]
+        }]
+      }
+    }
+  ], 80).map((line) => stripAnsi(line));
+
+  assert.ok(lines.some((line) => line.includes('… 5 unchanged lines …')));
+  assert.equal(lines.filter((line) => line.includes('… 5 unchanged lines …')).length, 2);
+  assert.ok(lines.some((line) => line.includes('6 │ before 6')));
+  assert.ok(lines.some((line) => line.includes('10 │ after 1')));
+  assert.ok(!lines.some((line) => line.includes('before 1')));
+  assert.ok(!lines.some((line) => line.includes('after 8')));
+  assert.equal(lines.some((line, index) => line.includes('unchanged lines') && lines[index + 1]?.includes('unchanged lines')), false);
+});
+
+test('renderTranscriptLines never emits consecutive unchanged markers between distant edits', () => {
+  const lines = renderTranscriptLines([
+    {
+      role: 'tool_call',
+      text: '',
+      toolCallId: 'distant_patch',
+      toolName: 'apply_patch',
+      argumentsText: '{"patch":"raw"}'
+    },
+    {
+      role: 'tool_result',
+      text: 'Applied patch.',
+      toolCallId: 'distant_patch',
+      toolName: 'apply_patch',
+      ok: true,
+      display: {
+        kind: 'apply_patch',
+        files: [{
+          path: 'distant.txt',
+          kind: 'updated',
+          lines: [
+            {kind: 'context', text: 'before 1', postLine: 1},
+            {kind: 'context', text: 'before 2', postLine: 2},
+            {kind: 'removed', text: 'old first', postLine: null},
+            {kind: 'added', text: 'new first', postLine: 3},
+            ...Array.from({length: 110}, (_, index) => ({
+              kind: 'context',
+              text: `middle ${index + 1}`,
+              postLine: index + 4
+            })),
+            {kind: 'removed', text: 'old second', postLine: null},
+            {kind: 'added', text: 'new second', postLine: 114},
+            {kind: 'context', text: 'after 1', postLine: 115},
+            {kind: 'context', text: 'after 2', postLine: 116},
+            {kind: 'context', text: 'after 3', postLine: 117}
+          ]
+        }]
+      }
+    }
+  ], 80).map((line) => stripAnsi(line));
+
+  assert.ok(lines.some((line) => line.includes('… 104 unchanged lines …')));
+  assert.equal(lines.some((line, index) => line.includes('unchanged lines') && lines[index + 1]?.includes('unchanged lines')), false);
+});
+
+test('renderTranscriptLines ignores unknown record roles', () => {
+  assert.deepEqual(renderTranscriptLines([{ role: 'system', text: 'noop' }], 80), []);
+});
+
+test('createAppRenderer appendRecords preserves block spacing for realtime transcript output', () => {
+  const output = {
+    writes: [],
+    write(chunk) {
+      this.writes.push(String(chunk));
+    }
+  };
+  const renderer = createAppRenderer(output);
+
+  renderer.appendRecords({
+    records: [
+      { role: 'user', text: 'move the file' },
+      {
+        role: 'tool_call',
+        text: '$ mv file',
+        toolCallId: 'call_1',
+        toolName: 'run_bash_command',
+        argumentsText: '{"command":"mv file"}'
+      },
+      {
+        role: 'tool_result',
+        text: 'done',
+        toolCallId: 'call_1',
+        toolName: 'run_bash_command',
+        ok: true
+      }
+    ],
+    composer: createComposer(''),
+    pending: null,
+    working: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    width: 80
+  });
+
+  const written = stripAnsi(output.writes[0]);
+
+  assert.match(written, /▌ move the file[\s\S]*\n\n◆ Bash/);
+  assert.match(output.writes[0], /\x1b\[38;2;0;170;0m◆\x1b\[39m Bash/);
+});

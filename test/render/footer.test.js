@@ -1,0 +1,2607 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+
+const { createComposer } = require('../../src/input/composer');
+const { createTuiTheme } = require('../../src/config/theme-config');
+const { ECHO_SPINNER_ACTIVE_FRAME_COUNT, ECHO_SPINNER_FRAME_INTERVAL_MS, getEchoSpinnerFrameIndex } = require('../../src/render/echo-spinner');
+const { renderDiffSurface } = require('../../src/render/footer/diff-surface');
+const { renderFooterLayout } = require('../../src/render/footer');
+const { humanizeTokens } = require('../../src/render/footer/usage-surface');
+const { displayWidth, safeRenderWidth, stripAnsi } = require('../../src/render/layout');
+
+const DEFAULT_STATUS_LINE = {
+  projectName: 'echo_tui',
+  modelLabel: 'GPT-4o',
+  mode: 'idle'
+};
+
+const CUSTOM_THEME = createTuiTheme({
+  footer: {
+    colors: {
+      accent: [4, 5, 6],
+      accentDeep: [10, 11, 12],
+      accentStrong: [1, 2, 3],
+      usageInput: [1, 2, 3],
+      usageCached: [10, 11, 12],
+      usageOutput: [7, 8, 9],
+      danger: [20, 21, 22],
+      diffAddedBackground: {ansi256: 40},
+      diffRemovedBackground: {ansi256: 41},
+      diffText: {ansi256: 250},
+      frame: [30, 31, 32],
+      selectionBackground: {ansi256: 99},
+      success: [7, 8, 9],
+      warning: [13, 14, 15]
+    }
+  }
+});
+
+function elapsedInSecondForSpinnerFrame(totalSeconds, frameIndex) {
+  const startMs = totalSeconds * 1000;
+
+  for (let elapsedMs = startMs; elapsedMs < startMs + 1000; elapsedMs += 1) {
+    if (getEchoSpinnerFrameIndex(elapsedMs) === frameIndex) {
+      return elapsedMs;
+    }
+  }
+
+  throw new Error(`No elapsedMs in second ${totalSeconds} for spinner frame ${frameIndex}`);
+}
+
+function assertActiveBackgroundReachesRightPadding(line) {
+  const resetIndex = line.lastIndexOf('\x1b[49m');
+
+  assert.notEqual(resetIndex, -1);
+  assert.equal(stripAnsi(line.slice(resetIndex + '\x1b[49m'.length)), ' │');
+}
+
+test('renderFooterLayout renders boxed composer and idle segmented status line', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('hello'),
+    commandSurface: null,
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    width: 80
+  });
+
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+  const statusLine = plainLines.at(-1);
+  const renderedStatusLine = layout.lines.at(-1);
+
+  assert.equal(plainLines[0], '');
+  assert.equal(displayWidth(layout.lines[1]), safeRenderWidth(80));
+  assert.equal(displayWidth(layout.lines[2]), safeRenderWidth(80));
+  assert.equal(displayWidth(layout.lines[3]), safeRenderWidth(80));
+  assert.ok(plainLines[1].startsWith('╭'));
+  assert.ok(plainLines[2].includes('> hello'));
+  assert.ok(plainLines[3].startsWith('╰'));
+  assert.ok(!plainLines.some((line) => line.includes('Message')));
+  assert.ok(statusLine.startsWith('GPT-4o'));
+  assert.ok(statusLine.includes('echo_tui'));
+  assert.ok(statusLine.includes('ready'));
+  assert.ok(!statusLine.includes('/ 命令'));
+  assert.ok(!statusLine.includes('Ctrl+J 换行'));
+  assert.ok(!statusLine.includes('main'));
+  assert.ok(renderedStatusLine.includes('\x1b[38;2;90;230;245m'));
+  assert.ok(renderedStatusLine.includes('\x1b[1m'));
+  assert.ok(renderedStatusLine.includes('\x1b[2m'));
+});
+
+test('renderFooterLayout renders empty composer placeholder without changing cursor position', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: null,
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    width: 80
+  });
+
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+
+  assert.ok(plainLines.some((line) => line.includes('> / 命令 · @ 路径 · TAB 切换 mode · Shift+Tab 工具授权 · Ctrl+J 换行')));
+  assert.equal(plainLines.some((line) => line.includes('Enter 发送')), false);
+  assert.equal(layout.cursorRow, 2);
+  assert.equal(layout.cursorColumn, 4);
+});
+
+test('renderFooterLayout hides empty composer placeholder when terminal is too narrow', () => {
+  const width = 34;
+  const layout = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: null,
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    width
+  });
+
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+
+  assert.ok(layout.lines.every((line) => displayWidth(line) <= safeRenderWidth(width)));
+  assert.ok(plainLines.some((line) => line.includes('>')));
+  assert.ok(!plainLines.some((line) => line.includes('/ 命令') || line.includes('Ctrl+J 换行')));
+  assert.equal(layout.cursorRow, 2);
+  assert.equal(layout.cursorColumn, 4);
+});
+
+test('renderFooterLayout renders effort as separate colored segment', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('hello'),
+    commandSurface: null,
+    pending: null,
+    statusLine: {
+      ...DEFAULT_STATUS_LINE,
+      modelLabel: 'GPT-5.5',
+      reasoningEffort: 'high'
+    },
+    width: 80
+  });
+
+  const plainStatusLine = stripAnsi(layout.lines.at(-1));
+
+  assert.ok(plainStatusLine.startsWith('GPT-5.5'));
+  assert.ok(plainStatusLine.includes('● effort high'));
+  assert.ok(!plainStatusLine.includes('GPT-5.5 · effort high'));
+  assert.ok(layout.lines.at(-1).includes('\x1b[38;2;0;200;220m●'));
+});
+
+test('renderFooterLayout renders allow-all tools status as warning segment', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('hello'),
+    commandSurface: null,
+    pending: null,
+    statusLine: {
+      ...DEFAULT_STATUS_LINE,
+      allowAllTools: true
+    },
+    theme: CUSTOM_THEME,
+    width: 100
+  });
+
+  const plainStatusLine = stripAnsi(layout.lines.at(-1));
+
+  assert.ok(plainStatusLine.includes('TOOLS all'));
+  assert.ok(plainStatusLine.indexOf('GPT-4o') < plainStatusLine.indexOf('TOOLS all'));
+  assert.ok(plainStatusLine.indexOf('TOOLS all') < plainStatusLine.indexOf('dir echo_tui'));
+  assert.ok(layout.lines.at(-1).includes('\x1b[38;2;13;14;15m'));
+});
+
+test('renderFooterLayout applies custom theme to composer status and active suggestions', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('/'),
+    commandSurface: null,
+    pending: null,
+    slashSuggestions: {
+      selectedIndex: 0,
+      options: [
+        {label: '/help', description: '帮助'}
+      ]
+    },
+    statusLine: DEFAULT_STATUS_LINE,
+    theme: CUSTOM_THEME,
+    width: 80
+  });
+  const joined = layout.lines.join('\n');
+
+  assert.ok(joined.includes('\x1b[38;2;1;2;3m'));
+  assert.ok(joined.includes('\x1b[48;5;99m'));
+  assert.ok(joined.includes('\x1b[38;2;30;31;32m'));
+});
+
+test('renderFooterLayout renders provider context usage in status line', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('hello'),
+    commandSurface: null,
+    pending: null,
+    statusLine: {
+      ...DEFAULT_STATUS_LINE,
+      contextUsage: {
+        usedTokens: 18200,
+        contextWindow: 128000,
+        source: 'provider'
+      }
+    },
+    width: 100
+  });
+
+  const plainStatusLine = stripAnsi(layout.lines.at(-1));
+
+  assert.ok(plainStatusLine.includes('ctx 18.2k/128k'));
+  assert.ok(plainStatusLine.indexOf('echo_tui') < plainStatusLine.indexOf('ctx'));
+});
+
+test('renderFooterLayout renders small context usage tokens without k suffix', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('hello'),
+    commandSurface: null,
+    pending: null,
+    statusLine: {
+      ...DEFAULT_STATUS_LINE,
+      contextUsage: {
+        usedTokens: 999,
+        contextWindow: 8192,
+        source: 'provider'
+      }
+    },
+    width: 100
+  });
+
+  assert.ok(stripAnsi(layout.lines.at(-1)).includes('ctx 999/8.2k'));
+});
+
+test('renderFooterLayout keeps detailed context breakdown out of status line', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('hello'),
+    commandSurface: null,
+    pending: null,
+    statusLine: {
+      ...DEFAULT_STATUS_LINE,
+      contextUsage: {
+        usedTokens: 18200,
+        contextWindow: 128000,
+        source: 'provider',
+        segments: [
+          {category: 'system', tokens: 1200}
+        ]
+      }
+    },
+    width: 100
+  });
+
+  const plainStatusLine = stripAnsi(layout.lines.at(-1));
+
+  assert.ok(plainStatusLine.includes('ctx 18.2k/128k'));
+  assert.equal(plainStatusLine.includes('System prompt'), false);
+});
+
+test('renderFooterLayout renders context usage command surface', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: {
+      kind: 'context',
+      title: 'Context',
+      usage: {
+        usedTokens: 1000,
+        contextWindow: 4000,
+        source: 'provider',
+        segments: [
+          {category: 'system', tokens: 200},
+          {category: 'skills', tokens: 100},
+          {category: 'tools', tokens: 300},
+          {category: 'messages', tokens: 400}
+        ]
+      }
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    rows: 24,
+    width: 90
+  });
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+
+  assert.ok(plainLines.some((line) => line.includes('Context')));
+  assert.ok(plainLines.some((line) => line.includes('1K')));
+  assert.ok(plainLines.some((line) => line.includes('4K tokens')));
+  assert.ok(plainLines.some((line) => line.includes('系统提示词')));
+  assert.ok(plainLines.some((line) => line.includes('Skills')));
+  assert.ok(plainLines.some((line) => line.includes('工具')));
+  assert.ok(plainLines.some((line) => line.includes('消息')));
+  assert.ok(plainLines.some((line) => line.includes('上下文占用详情 · 按任意键关闭')));
+  assert.equal(layout.showCursor, false);
+  assert.ok(layout.lines.every((line) => displayWidth(line) <= safeRenderWidth(90)));
+});
+
+test('renderFooterLayout applies custom theme to scale and context surfaces', () => {
+  const scale = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: {
+      kind: 'scale',
+      title: '推理强度',
+      options: [
+        {label: 'low', description: 'LOW'},
+        {label: 'high', description: 'HIGH'}
+      ],
+      selectedIndex: 1
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    theme: CUSTOM_THEME,
+    width: 90
+  }).lines.join('\n');
+  const context = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: {
+      kind: 'context',
+      usage: {
+        usedTokens: 900,
+        contextWindow: 1000,
+        source: 'provider',
+        segments: [
+          {category: 'tools', tokens: 900}
+        ]
+      }
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    theme: CUSTOM_THEME,
+    rows: 24,
+    width: 90
+  }).lines.join('\n');
+
+  assert.ok(scale.includes('\x1b[38;2;1;2;3m'));
+  assert.ok(scale.includes('\x1b[38;2;10;11;12m'));
+  assert.ok(context.includes('\x1b[38;2;20;21;22m'));
+  assert.ok(context.includes('\x1b[38;2;7;8;9m'));
+});
+
+test('renderFooterLayout renders usage surface with totals, hidden days, and daily rows', () => {
+  const dailyUsage = Array.from({length: 16}, (_value, index) => ({
+    localDay: `2026-06-${String(index + 1).padStart(2, '0')}`,
+    inputTokens: 1000 + index * 100,
+    cacheReadInputTokens: 250,
+    cacheCreationInputTokens: 50,
+    uncachedInputTokens: 750 + index * 100,
+    outputTokens: 500 + index * 50,
+    totalTokens: 1500 + index * 150,
+    hitRate: 250 / (1000 + index * 100),
+    eventCount: 1
+  }));
+  const layout = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: {
+      kind: 'usage',
+      title: 'Token Usage',
+      dailyUsage,
+      offset: 1
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    rows: 24,
+    width: 100
+  });
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+
+  assert.equal(layout.showCursor, false);
+  assert.ok(plainLines.some((line) => line.includes('Token Usage')));
+  assert.ok(plainLines.some((line) => line.includes('28K')));
+  assert.ok(plainLines.some((line) => line.includes('14K')));
+  assert.ok(plainLines.some((line) => line.includes('显示 ') && line.includes('/16 · 06/02 - ')));
+  assert.ok(plainLines.some((line) => line.includes('◂1') && line.includes('▸')));
+  assert.ok(plainLines.some((line) => line.includes('日期') && line.includes('输入') && line.includes('输出') && line.includes('缓存') && line.includes('命中') && line.includes('趋势')));
+  assert.ok(plainLines.some((line) => line.includes('06/02') && line.includes('1.1K') && line.includes('550') && line.includes('250') && line.includes('23%')));
+  assert.ok(plainLines.some((line) => line.includes('↑/↓ 滚动') && line.includes('PgUp/PgDn 翻页') && line.includes('Home/End 跳转')));
+  assert.ok(!plainLines.some((line) => line.includes('双轴') || line.includes('newest at bottom')));
+  assert.ok(layout.lines.every((line) => displayWidth(line) <= safeRenderWidth(100)));
+  assert.ok(layout.lines.some((line) => displayWidth(line) < 70));
+});
+
+test('renderFooterLayout applies custom theme colors to usage token categories', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: {
+      kind: 'usage',
+      dailyUsage: [{
+        localDay: '2026-06-30',
+        inputTokens: 1000,
+        cacheReadInputTokens: 300,
+        cacheCreationInputTokens: 100,
+        uncachedInputTokens: 700,
+        outputTokens: 500,
+        totalTokens: 1500,
+        hitRate: 0.3,
+        eventCount: 2
+      }],
+      offset: 0
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    theme: CUSTOM_THEME,
+    rows: 24,
+    width: 80
+  });
+  const rendered = layout.lines.join('\n');
+
+  assert.ok(rendered.includes('\x1b[38;2;1;2;3m'));
+  assert.ok(rendered.includes('\x1b[38;2;10;11;12m'));
+  assert.ok(rendered.includes('\x1b[38;2;7;8;9m'));
+});
+
+test('renderFooterLayout renders usage rows with optional trend scale', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: {
+      kind: 'usage',
+      dailyUsage: [{
+        localDay: '2026-06-30',
+        inputTokens: 200000,
+        cacheReadInputTokens: 50000,
+        cacheCreationInputTokens: 0,
+        uncachedInputTokens: 150000,
+        outputTokens: 100,
+        totalTokens: 200100,
+        hitRate: 0.25,
+        eventCount: 1
+      }],
+      offset: 0
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    theme: CUSTOM_THEME,
+    rows: 24,
+    width: 80
+  });
+  const rendered = layout.lines.join('\n');
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+
+  assert.ok(rendered.includes('\x1b[38;2;1;2;3m█'));
+  assert.ok(plainLines.some((line) => line.includes('200K') && line.includes('100')));
+  assert.ok(plainLines.some((line) => line.includes('06/30') && line.includes('50K') && line.includes('25%')));
+  assert.ok(plainLines.some((line) => line.includes('趋势')));
+  assert.ok(!plainLines.some((line) => line.includes('双轴')));
+});
+
+test('renderFooterLayout constrains usage surface in small terminals', () => {
+  const dailyUsage = Array.from({length: 9}, (_value, index) => ({
+    localDay: `2026-06-${String(index + 1).padStart(2, '0')}`,
+    inputTokens: 1000,
+    cacheReadInputTokens: 300,
+    cacheCreationInputTokens: 100,
+    uncachedInputTokens: 700,
+    outputTokens: 250,
+    totalTokens: 1250,
+    hitRate: 0.3,
+    eventCount: 1
+  }));
+  const layout = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: {
+      kind: 'usage',
+      dailyUsage,
+      offset: 0
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    rows: 8,
+    width: 34
+  });
+
+  assert.ok(layout.lines.length <= 6);
+  assert.ok(layout.lines.every((line) => displayWidth(line) <= safeRenderWidth(34)));
+  assert.ok(!layout.lines.map((line) => stripAnsi(line)).some((line) => line.includes('趋势') || line.includes('newest at bottom')));
+});
+
+test('humanizeTokens formats usage tokens compactly', () => {
+  assert.equal(humanizeTokens(999), '999');
+  assert.equal(humanizeTokens(1200), '1.2K');
+  assert.equal(humanizeTokens(100000), '100K');
+  assert.equal(humanizeTokens(2500000), '2.5M');
+});
+
+test('renderFooterLayout constrains context surface in small terminals', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: {
+      kind: 'context',
+      usage: {
+        usedTokens: 1000,
+        contextWindow: 4000,
+        source: 'provider',
+        segments: [
+          {category: 'system', tokens: 200},
+          {category: 'tools', tokens: 300},
+          {category: 'messages', tokens: 500}
+        ]
+      }
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    rows: 8,
+    width: 40
+  });
+
+  assert.ok(layout.lines.length <= 6);
+  assert.ok(layout.lines.every((line) => displayWidth(line) <= safeRenderWidth(40)));
+
+  const narrow = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: {
+      kind: 'context',
+      usage: {
+        usedTokens: 1000,
+        contextWindow: 4000,
+        source: 'provider',
+        segments: [
+          {category: 'system', tokens: 200},
+          {category: 'messages', tokens: 800}
+        ]
+      }
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    rows: 8,
+    width: 20
+  });
+
+  assert.ok(narrow.lines.every((line) => displayWidth(line) <= safeRenderWidth(20)));
+});
+
+test('renderFooterLayout restores boxed composer cursor for multiline and wrapped input', () => {
+  const multiline = renderFooterLayout({
+    composer: createComposer('first\nsecond'),
+    commandSurface: null,
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    width: 80
+  });
+  const wrappedComposer = createComposer('abcdefghi');
+  const wrapped = renderFooterLayout({
+    composer: wrappedComposer,
+    commandSurface: null,
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    width: 10
+  });
+  const wrappedPlainLines = wrapped.lines.map((line) => stripAnsi(line));
+
+  assert.equal(multiline.cursorRow, 3);
+  assert.equal(multiline.cursorColumn, 10);
+  assert.ok(wrappedPlainLines.some((line) => line.includes('> abc')));
+  assert.ok(wrappedPlainLines.some((line) => line.includes('  def')));
+  assert.equal(wrapped.cursorRow, 4);
+  assert.equal(wrapped.cursorColumn, 7);
+});
+
+test('renderFooterLayout clamps long status line to safe width', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: null,
+    pending: null,
+    statusLine: {
+      projectName: 'very-long-project-name',
+      modelLabel: 'very-long-model-name',
+      mode: 'idle'
+    },
+    width: 30
+  });
+
+  const plainStatusLine = stripAnsi(layout.lines.at(-1));
+
+  assert.ok(plainStatusLine.startsWith('very-long-model-name'));
+  assert.ok(displayWidth(layout.lines.at(-1)) <= safeRenderWidth(30));
+});
+
+test('renderFooterLayout renders plan mode without exit hint', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: null,
+    pending: null,
+    statusLine: {
+      ...DEFAULT_STATUS_LINE,
+      mode: 'plan'
+    },
+    width: 80
+  });
+
+  const plainStatusLine = stripAnsi(layout.lines.at(-1));
+
+  assert.ok(plainStatusLine.includes('PLAN'));
+  assert.equal(plainStatusLine.includes('/plan off'), false);
+});
+
+test('renderFooterLayout uses mode-specific composer prefix and border color', () => {
+  const normal = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: null,
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    width: 80
+  });
+  const plan = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: null,
+    pending: null,
+    statusLine: {...DEFAULT_STATUS_LINE, mode: 'plan'},
+    width: 80
+  });
+  const shell = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: null,
+    pending: null,
+    statusLine: {...DEFAULT_STATUS_LINE, mode: 'shell'},
+    width: 80
+  });
+  const localShell = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: null,
+    pending: null,
+    statusLine: {...DEFAULT_STATUS_LINE, mode: 'shell-local'},
+    width: 80
+  });
+
+  assert.ok(stripAnsi(normal.lines[2]).includes('> / 命令 · @ 路径 · TAB 切换 mode'));
+  assert.ok(stripAnsi(normal.lines[2]).includes('Shift+Tab 工具授权'));
+  assert.ok(stripAnsi(plan.lines[2]).includes('? 计划问题 · @ 路径 · TAB 切换 mode'));
+  assert.equal(stripAnsi(plan.lines[2]).includes('Shift+Tab 工具授权'), false);
+  assert.equal(stripAnsi(plan.lines[2]).includes('Enter 发送'), false);
+  assert.ok(stripAnsi(shell.lines[2]).includes('$ bash 命令 · TAB 切换 mode · 结果进上下文'));
+  assert.ok(stripAnsi(localShell.lines[2]).includes('$ bash 命令 · TAB 切换 mode · 仅本地显示'));
+  assert.match(normal.lines[1], /\x1b\[38;2;0;200;220m/);
+  assert.match(plan.lines[1], /\x1b\[38;2;170;150;245m/);
+  assert.match(shell.lines[1], /\x1b\[38;2;96;210;165m/);
+});
+
+test('renderFooterLayout keeps plan and shell prefixes for typed composer text', () => {
+  const plan = renderFooterLayout({
+    composer: createComposer('draft'),
+    commandSurface: null,
+    pending: null,
+    statusLine: {...DEFAULT_STATUS_LINE, mode: 'plan'},
+    width: 80
+  });
+  const shell = renderFooterLayout({
+    composer: createComposer('pwd'),
+    commandSurface: null,
+    pending: null,
+    statusLine: {...DEFAULT_STATUS_LINE, mode: 'shell'},
+    width: 80
+  });
+
+  assert.ok(stripAnsi(plan.lines[2]).includes('? draft'));
+  assert.ok(stripAnsi(shell.lines[2]).includes('$ pwd'));
+});
+
+test('renderFooterLayout shows shell mode status label and working activity', () => {
+  const shell = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: null,
+    pending: null,
+    statusLine: {...DEFAULT_STATUS_LINE, mode: 'shell'},
+    width: 80
+  });
+  const localShell = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: null,
+    pending: null,
+    statusLine: {...DEFAULT_STATUS_LINE, mode: 'shell-local'},
+    width: 80
+  });
+  const working = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: null,
+    pending: null,
+    statusLine: {...DEFAULT_STATUS_LINE, mode: 'shell', activity: {kind: 'working', elapsedMs: 1000}},
+    width: 80
+  });
+
+  assert.ok(stripAnsi(shell.lines.at(-1)).includes('SHELL ctx'));
+  assert.ok(stripAnsi(localShell.lines.at(-1)).includes('SHELL local'));
+  assert.ok(stripAnsi(working.lines.at(-1)).includes('working 00:01'));
+});
+
+test('renderFooterLayout renders MCP initialization spinner', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: null,
+    pending: null,
+    statusLine: {...DEFAULT_STATUS_LINE, mode: 'mcp', activity: {kind: 'working', elapsedMs: 1000}},
+    width: 100
+  });
+
+  assert.ok(stripAnsi(layout.lines.at(-1)).includes('initializing MCP 00:01'));
+});
+
+test('renderFooterLayout renders thinking spinner in status line mode segment', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('draft input'),
+    commandSurface: null,
+    pending: { kind: 'thinking', elapsedMs: 0 },
+    statusLine: {
+      ...DEFAULT_STATUS_LINE,
+      mode: 'thinking',
+      keyHint: 'Esc 中断'
+    },
+    width: 100
+  });
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+  const plainStatusLine = plainLines.at(-1);
+
+  assert.equal(plainLines[0], '');
+  assert.ok(plainStatusLine.includes('   ▒█▒    thinking'));
+  assert.ok(!plainStatusLine.includes('ready'));
+  assert.ok(!plainStatusLine.includes('PLAN'));
+  assert.ok(plainStatusLine.includes('Esc 中断'));
+  assert.match(layout.lines.at(-1), /\x1b\[38;2;/);
+  assert.match(layout.lines.at(-1), /\x1b\[38;2;130;150;168mt\x1b\[39m/);
+  assert.match(layout.lines.at(-1), /\x1b\[38;2;235;245;248mi\x1b\[39m/);
+  assert.match(layout.lines.at(-1), /\x1b\[1m\x1b\[38;2;235;245;248mn\x1b\[39m\x1b\[22m\x1b\[1m\x1b\[38;2;235;245;248mk\x1b\[39m\x1b\[22m/);
+});
+
+test('renderFooterLayout expands thinking shimmer from center outward', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('draft input'),
+    commandSurface: null,
+    pending: { kind: 'thinking', elapsedMs: ECHO_SPINNER_FRAME_INTERVAL_MS },
+    statusLine: {
+      ...DEFAULT_STATUS_LINE,
+      mode: 'thinking',
+      keyHint: 'Esc 中断'
+    },
+    width: 100
+  });
+
+  assert.match(layout.lines.at(-1), /\x1b\[1m\x1b\[38;2;235;245;248mi\x1b\[39m\x1b\[22m\x1b\[38;2;235;245;248mn\x1b\[39m\x1b\[38;2;235;245;248mk\x1b\[39m\x1b\[1m\x1b\[38;2;235;245;248mi\x1b\[39m\x1b\[22m/);
+});
+
+test('renderFooterLayout pauses activity shimmer during spinner blank frames', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('draft input'),
+    commandSurface: null,
+    pending: { kind: 'thinking', elapsedMs: ECHO_SPINNER_FRAME_INTERVAL_MS * ECHO_SPINNER_ACTIVE_FRAME_COUNT },
+    statusLine: {
+      ...DEFAULT_STATUS_LINE,
+      mode: 'thinking',
+      keyHint: 'Esc 中断'
+    },
+    width: 100
+  });
+  const statusLine = layout.lines.at(-1);
+
+  assert.ok(stripAnsi(statusLine).includes('         thinking'));
+  assert.match(statusLine, /\x1b\[38;2;130;150;168mt\x1b\[39m\x1b\[38;2;130;150;168mh\x1b\[39m\x1b\[38;2;130;150;168mi\x1b\[39m/);
+  assert.doesNotMatch(statusLine, /\x1b\[1m\x1b\[37m[thinking]/);
+});
+
+test('renderFooterLayout renders select command surfaces by kind instead of command-specific overlay data', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('ignored'),
+    commandSurface: {
+      kind: 'select',
+      title: '/local options',
+      options: [
+        { label: 'alpha', description: '第一个选项' },
+        { label: 'beta', description: '第二个选项' }
+      ],
+      selectedIndex: 1,
+      dismissHint: 'Esc 关闭本地命令'
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    width: 80
+  });
+
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+
+  assert.equal(layout.showCursor, false);
+  assert.ok(plainLines.some((line) => line.includes('/local options')));
+  assert.ok(plainLines.some((line) => line === '  alpha — 第一个选项'));
+  assert.ok(plainLines.some((line) => line.trimEnd() === '▌ beta — 第二个选项'));
+  assert.ok(!plainLines.some((line) => line.includes('● beta') || line.includes('○ alpha')));
+  assert.ok(!plainLines.some((line) => line === '    第一个选项'));
+  assert.ok(!plainLines.some((line) => line === '    第二个选项'));
+  assert.ok(!plainLines.some((line) => line.includes('›')));
+  assert.ok(plainLines.some((line) => line.includes('Esc 关闭本地命令')));
+  assert.ok(!plainLines.some((line) => line === '> ignored'));
+});
+
+test('renderFooterLayout renders resume command surfaces with two columns and preview', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('ignored'),
+    commandSurface: {
+      kind: 'resume',
+      title: '/resume 恢复会话 (2)',
+      sessions: [
+        { label: '2026-05-19 10:00 · 4 条消息' },
+        { label: '2026-05-18 09:00 · 1 条消息' }
+      ],
+      focus: 'list',
+      selectedIndex: 0,
+      previewScroll: 0,
+      previewRecords: [
+        { role: 'user', text: 'resume me' },
+        { role: 'tool_result', text: 'found resume result' },
+        { role: 'assistant', text: 'restored reply' },
+        { role: 'local_notice', text: 'response interrupted' },
+        { role: 'error', text: 'failed locally' }
+      ],
+      dismissHint: '↑↓ 选择/滚动 · →/Tab 预览 · ← 列表 · Enter 恢复 · Esc 取消'
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    width: 100
+  });
+
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+
+  assert.equal(layout.showCursor, false);
+  assert.ok(plainLines.some((line) => line.startsWith('╭')));
+  assert.ok(plainLines.some((line) => line.startsWith('╰')));
+  assert.ok(plainLines.some((line) => line.includes('/resume 恢复会话 (2)')));
+  assert.ok(plainLines.some((line) => line.includes('▌ 会话') && line.includes('预览')));
+  const headerIndex = plainLines.findIndex((line) => line.includes('▌ 会话') && line.includes('预览'));
+  assert.ok(plainLines[headerIndex + 1].includes('────'));
+  assert.ok(plainLines.some((line) => line.includes('▌ 2026-05-19')));
+  assert.ok(!plainLines.some((line) => line.includes('● 2026-05-19') || line.includes('○ 2026-05-18')));
+  assert.ok(!plainLines.some((line) => line.includes('2026-05-19') && line.includes('restored reply')));
+  assert.ok(plainLines.some((line) => line.includes('USER resume me')));
+  assert.ok(plainLines.some((line) => line.includes('RESULT found resume result')));
+  assert.ok(plainLines.some((line) => line.includes('ASSISTANT restored reply')));
+  assert.ok(plainLines.some((line) => line.includes('NOTICE response interrupted')));
+  assert.ok(plainLines.some((line) => line.includes('ERROR failed locally')));
+  assert.ok(plainLines.some((line) => line.includes('Enter 恢复')));
+  assert.ok(layout.lines.some((line) => line.includes('\x1b[48;5;23m') && stripAnsi(line).includes('▌')));
+
+  const resumeFrameColor = '\x1b[38;2;40;110;125m';
+  const topLine = layout.lines[plainLines.findIndex((line) => line.startsWith('╭'))];
+  const titleLine = layout.lines[plainLines.findIndex((line) => line.includes('/resume 恢复会话 (2)'))];
+  const bottomLine = layout.lines[plainLines.findIndex((line) => line.startsWith('╰'))];
+  assert.ok(topLine.startsWith(`${resumeFrameColor}╭─`));
+  assert.ok(titleLine.startsWith(`${resumeFrameColor}│`));
+  assert.ok(bottomLine.startsWith(`${resumeFrameColor}╰─`));
+});
+
+test('renderFooterLayout renders diff surface with side-by-side details on very wide width', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: {
+      kind: 'diff',
+      title: '/diff',
+      source: {kind: 'git', label: 'Git workspace'},
+      focus: 'detail',
+      selectedIndex: 0,
+      detailScroll: 0,
+      notices: [],
+      files: [{
+        path: 'src/file.ts',
+        kind: 'modified',
+        added: 1,
+        removed: 1,
+        hunks: [{
+          oldStart: 1,
+          newStart: 1,
+          lines: [
+            {kind: 'context', text: 'const value = 1;', oldLine: 1, newLine: 1},
+            {kind: 'removed', text: 'const name = "old";', oldLine: 2, newLine: null},
+            {kind: 'added', text: 'const name = "new";', oldLine: null, newLine: 2}
+          ]
+        }]
+      }]
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    rows: 24,
+    width: 190
+  });
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+
+  assert.ok(plainLines.some((line) => line.includes('/diff')));
+  assert.ok(plainLines.some((line) => line.includes('Git workspace')));
+  assert.ok(plainLines.some((line) => line.includes('src/file.ts')));
+  assert.ok(plainLines.some((line) => line.includes('const name = "old";') && line.includes('const name = "new";')));
+  assert.ok(!plainLines.some((line) => line.includes('●') || line.includes('○')));
+  assert.ok(layout.lines.every((line) => displayWidth(line) <= safeRenderWidth(190)));
+  assert.equal(layout.showCursor, false);
+});
+
+test('renderDiffSurface default height is finite without maxLines', () => {
+  const layout = renderDiffSurface({
+    kind: 'diff',
+    source: {kind: 'git', label: 'Git workspace'},
+    focus: 'list',
+    files: [],
+    notices: []
+  }, 80);
+
+  assert.equal(layout.lines.length, 22);
+  assert.ok(layout.lines.every((line) => displayWidth(line) <= safeRenderWidth(80)));
+});
+
+test('renderDiffSurface applies custom theme to diff row backgrounds', () => {
+  const layout = renderDiffSurface({
+    kind: 'diff',
+    source: {kind: 'git', label: 'Git workspace'},
+    focus: 'detail',
+    selectedIndex: 0,
+    files: [{
+      path: 'src/file.ts',
+      kind: 'modified',
+      added: 1,
+      removed: 1,
+      hunks: [{
+        oldStart: 1,
+        newStart: 1,
+        lines: [
+          {kind: 'removed', text: 'old', oldLine: 1, newLine: null},
+          {kind: 'added', text: 'new', oldLine: null, newLine: 1}
+        ]
+      }]
+    }],
+    notices: []
+  }, 90, Number.POSITIVE_INFINITY, CUSTOM_THEME.footer);
+  const rendered = layout.lines.join('\n');
+
+  assert.ok(rendered.includes('\x1b[38;5;250m\x1b[48;5;41m'));
+  assert.ok(rendered.includes('\x1b[38;5;250m\x1b[48;5;40m'));
+});
+
+test('renderFooterLayout keeps diff details unified on medium width', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: {
+      kind: 'diff',
+      title: '/diff',
+      source: {kind: 'git', label: 'Git workspace'},
+      focus: 'detail',
+      selectedIndex: 0,
+      detailScroll: 0,
+      notices: [],
+      files: [{
+        path: 'src/file.ts',
+        kind: 'modified',
+        added: 1,
+        removed: 1,
+        hunks: [{
+          oldStart: 1,
+          newStart: 1,
+          lines: [
+            {kind: 'removed', text: 'const name = "old";', oldLine: 1, newLine: null},
+            {kind: 'added', text: 'const name = "new";', oldLine: null, newLine: 1}
+          ]
+        }]
+      }]
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    rows: 24,
+    width: 120
+  });
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+
+  assert.ok(plainLines.some((line) => line.includes('- const name = "old";')));
+  assert.ok(plainLines.some((line) => line.includes('+ const name = "new";')));
+  assert.ok(layout.lines.every((line) => displayWidth(line) <= safeRenderWidth(120)));
+});
+
+test('renderFooterLayout wraps unified diff lines without repeating line numbers', () => {
+  const longLine = `const message = "${'0123456789'.repeat(8)}";`;
+  const layout = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: {
+      kind: 'diff',
+      title: '/diff',
+      source: {kind: 'git', label: 'Git workspace'},
+      focus: 'detail',
+      selectedIndex: 0,
+      detailScroll: 0,
+      notices: [],
+      files: [{
+        path: 'src/long.ts',
+        kind: 'modified',
+        added: 1,
+        removed: 1,
+        hunks: [{
+          oldStart: 123,
+          newStart: 124,
+          lines: [
+            {kind: 'removed', text: longLine, oldLine: 123, newLine: null},
+            {kind: 'added', text: longLine.replace('message', 'result'), oldLine: null, newLine: 124}
+          ]
+        }]
+      }]
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    rows: 24,
+    width: 80
+  });
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+
+  assert.ok(plainLines.some((line) => line.includes('123 │ - const message')));
+  assert.ok(plainLines.some((line) => line.includes('    │ 890123')));
+  assert.ok(plainLines.some((line) => line.includes('124 │ + const result')));
+  assert.ok(!plainLines.some((line) => line.includes('123     │') || line.includes('    124 │')));
+  assert.ok(layout.lines.every((line) => displayWidth(line) <= safeRenderWidth(80)));
+});
+
+test('renderFooterLayout lets diff surface use tall terminal height budget', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: {
+      kind: 'diff',
+      title: '/diff',
+      source: {kind: 'git', label: 'Git workspace'},
+      focus: 'detail',
+      selectedIndex: 0,
+      detailScroll: 0,
+      notices: [],
+      files: [{
+        path: 'src/long.ts',
+        kind: 'modified',
+        added: 20,
+        removed: 20,
+        hunks: [{
+          oldStart: 1,
+          newStart: 1,
+          lines: Array.from({length: 40}, (_value, index) => index % 2 === 0
+            ? {kind: 'removed', text: `old ${index}`, oldLine: index + 1, newLine: null}
+            : {kind: 'added', text: `new ${index}`, oldLine: null, newLine: index + 1})
+        }]
+      }]
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    rows: 40,
+    width: 100
+  });
+
+  assert.equal(layout.lines.length, 38);
+  assert.ok(layout.lines.every((line) => displayWidth(line) <= safeRenderWidth(100)));
+});
+
+test('renderFooterLayout renders diff surface unified fallback on narrow width', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: {
+      kind: 'diff',
+      title: '/diff',
+      source: {kind: 'history', label: 'apply_patch history'},
+      focus: 'list',
+      selectedIndex: 0,
+      detailScroll: 0,
+      notices: [
+        '非 Git 工作区：当前 diff 基于 apply_patch 历史拼接，可能不包含手动编辑或 shell 写入。',
+        '已遇到不可追踪写入边界：写入型 bash 不可追踪；仅展示边界之后的 apply_patch 记录。'
+      ],
+      files: [{
+        path: 'file.txt',
+        kind: 'modified',
+        added: 1,
+        removed: 1,
+        hunks: [{
+          oldStart: 1,
+          newStart: 1,
+          lines: [
+            {kind: 'removed', text: 'before', oldLine: 1, newLine: null},
+            {kind: 'added', text: 'after', oldLine: null, newLine: 1}
+          ]
+        }]
+      }]
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    rows: 18,
+    width: 52
+  });
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+
+  assert.ok(plainLines.some((line) => line.includes('- before')));
+  assert.ok(plainLines.some((line) => line.includes('+ after')));
+  assert.ok(plainLines.some((line) => line.includes('非 Git 工作区') && line.includes('apply_patch')));
+  assert.ok(layout.lines.length <= 16);
+  assert.ok(layout.lines.every((line) => displayWidth(line) <= safeRenderWidth(52)));
+});
+
+test('renderFooterLayout clamps resume surface on narrow width and renders empty preview', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('ignored'),
+    commandSurface: {
+      kind: 'resume',
+      title: '/resume 恢复会话 (1)',
+      sessions: [
+        { label: '2026-05-19 10:00 · 0 条消息' }
+      ],
+      focus: 'list',
+      selectedIndex: 0,
+      previewScroll: 0,
+      previewRecords: [],
+      emptyPreviewHint: '没有可预览消息',
+      dismissHint: 'Enter 恢复 · Up/Down 选择 · Esc 取消'
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    width: 42
+  });
+
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+
+  assert.ok(plainLines.some((line) => line.includes('没有可预览')));
+  for (const line of layout.lines) {
+    assert.ok(displayWidth(line) <= safeRenderWidth(42));
+  }
+});
+
+test('renderFooterLayout renders scrolled single-line resume preview with preview focus', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('ignored'),
+    commandSurface: {
+      kind: 'resume',
+      title: '/resume 恢复会话 (1)',
+      sessions: [
+        { label: '2026-05-19 10:00 · 12 条消息' }
+      ],
+      focus: 'preview',
+      selectedIndex: 0,
+      previewScroll: 3,
+      previewRecords: Array.from({length: 12}, (_value, index) => ({
+        role: index % 2 === 0 ? 'user' : 'assistant',
+        text: `preview-line-${index} ` + 'single-line-content '.repeat(4)
+      })),
+      emptyPreviewHint: '没有可预览消息',
+      dismissHint: '↑↓ 选择/滚动 · →/Tab 预览 · ← 列表 · Enter 恢复 · Esc 取消'
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    width: 78
+  });
+
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+
+  assert.ok(plainLines.some((line) => line.includes('会话') && line.includes('▌ 预览')));
+  assert.ok(plainLines.some((line) => line.includes('↑ 3 更多')));
+  assert.ok(plainLines.some((line) => line.includes('↓')));
+  assert.ok(plainLines.some((line) => line.includes('preview-line-4')));
+  assert.ok(!plainLines.some((line) => line.includes('single-line-content single-line-content single-line-content single-line-content')));
+  assert.ok(!plainLines.some((line) => line.includes('preview-line-0')));
+
+  for (const line of layout.lines) {
+    assert.ok(displayWidth(line) <= safeRenderWidth(78));
+  }
+});
+
+test('renderFooterLayout renders compact file picker without overflowing terminal width', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('@src'),
+    commandSurface: {
+      kind: 'file_picker',
+      title: 'Files',
+      currentDir: '/Users/example/projects/echo_tui/src',
+      query: 'app',
+      focus: 'list',
+      selectedIndex: 1,
+      selectedPaths: ['src/app/main.ts', 'docs/my note.md'],
+      entries: [
+        {kind: 'directory', name: 'app', path: 'src/app', selectable: false, selected: false},
+        {kind: 'text', name: 'main.ts', path: 'src/app/main.ts', selectable: true, selected: true},
+        {kind: 'unsupported', name: 'archive.zip', path: 'archive.zip', selectable: false, selected: false}
+      ],
+      previewLines: ['main.ts', 'text · scroll with preview focus', '1 import app from ./app'],
+      dismissHint: '↑↓ move · tab preview · space mark · enter insert · esc'
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    rows: 18,
+    width: 42
+  });
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+
+  assert.equal(layout.showCursor, false);
+  assert.ok(plainLines.some((line) => line.includes('Files')));
+  assert.ok(plainLines.some((line) => line.includes('cwd')));
+  assert.ok(!plainLines.some((line) => line.includes('cwd .')));
+  assert.ok(plainLines.some((line) => line.includes('● 2')));
+  assert.ok(plainLines.some((line) => line.includes('@ app┃')));
+  assert.ok(plainLines.some((line) => line.includes('main.ts')));
+  assert.ok(layout.lines.some((line) => line.includes('\x1b[38;2;90;230;245m') && line.includes('\x1b[1m') && stripAnsi(line).includes('main.ts')));
+  assert.ok(layout.lines.some((line) => line.includes('\x1b[38;2;130;150;168m') && stripAnsi(line).includes('text ·')));
+  assert.ok(plainLines.some((line) => line.includes('─') && line.includes('│')));
+  assert.ok(layout.lines.some((line) => line.includes('\x1b[48;5;23m') && stripAnsi(line).includes('▌')));
+  assert.ok(plainLines.some((line) => /│ 1 import/.test(line)));
+  assert.ok(!plainLines.some((line) => /\d+(B|KB|MB|GB)/.test(line)));
+  assert.ok(layout.lines.every((line) => displayWidth(line) <= safeRenderWidth(42)));
+});
+
+test('renderFooterLayout uses one color for file picker frame lines', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('@'),
+    commandSurface: {
+      kind: 'file_picker',
+      currentDir: '/tmp/project',
+      query: '',
+      focus: 'preview',
+      selectedIndex: 0,
+      selectedPaths: [],
+      entries: [
+        {kind: 'image', name: 'shot.png', path: 'shot.png', selectable: true, selected: false}
+      ],
+      previewLines: ['shot.png', '图片无法在终端内预览', '将作为图片输入发送给模型'],
+      dismissHint: '↑↓ move · ←/→ focus · esc'
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    rows: 16,
+    width: 80
+  });
+  const frameLines = layout.lines.filter((line) => /^[╭╰]/.test(stripAnsi(line)) || /^│─+│$/.test(stripAnsi(line)));
+
+  assert.ok(frameLines.length >= 3);
+  assert.ok(frameLines.every((line) => line.includes('\x1b[38;2;0;120;150m')));
+  assert.ok(frameLines.every((line) => !line.includes('\x1b[90m')));
+  assert.ok(frameLines.every((line) => !stripAnsi(line).includes('┼')));
+  assert.ok(frameLines.every((line) => !stripAnsi(line).includes('┬')));
+  assert.ok(frameLines.some((line) => /^│─+│$/.test(stripAnsi(line))));
+  assert.ok(layout.lines.every((line) => displayWidth(line) <= safeRenderWidth(80)));
+});
+
+test('renderFooterLayout renders file picker empty notice without overflowing', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('@'),
+    commandSurface: {
+      kind: 'file_picker',
+      currentDir: '/tmp/empty-project',
+      query: '',
+      focus: 'list',
+      selectedIndex: 0,
+      selectedPaths: [],
+      entries: [],
+      notice: '当前目录没有可显示文件',
+      previewLines: ['无可预览内容'],
+      dismissHint: '↑↓ 移动 · Esc 取消'
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    rows: 14,
+    width: 50
+  });
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+
+  assert.ok(plainLines.some((line) => line.includes('当前目录没有可显示文件')));
+  assert.ok(plainLines.some((line) => line.includes('无可预览内容')));
+  assert.ok(layout.lines.every((line) => displayWidth(line) <= safeRenderWidth(50)));
+});
+
+test('renderFooterLayout wraps long file picker preview lines', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('@'),
+    commandSurface: {
+      kind: 'file_picker',
+      currentDir: '/tmp/project',
+      query: '',
+      focus: 'preview',
+      selectedIndex: 0,
+      selectedPaths: [],
+      entries: [
+        {kind: 'text', name: 'long.ts', path: 'long.ts', selectable: true, selected: false}
+      ],
+      previewLines: [
+        'long.ts',
+        'text · 1 lines',
+        '1 const message = alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu;'
+      ],
+      dismissHint: '↑↓ move · ←/→ focus · esc'
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    rows: 18,
+    width: 60
+  });
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+  const firstPreviewLine = plainLines.find((line) => line.includes('1 const message = alpha'));
+  const continuationLine = plainLines.find((line) => line.includes('epsilon zeta'));
+
+  assert.ok(firstPreviewLine);
+  assert.ok(continuationLine);
+  assert.ok(!continuationLine.includes('1 epsilon'));
+  assert.ok(layout.lines.every((line) => displayWidth(line) <= safeRenderWidth(60)));
+});
+
+test('renderFooterLayout highlights file picker code preview', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('@'),
+    commandSurface: {
+      kind: 'file_picker',
+      currentDir: '/tmp/project',
+      query: '',
+      focus: 'preview',
+      selectedIndex: 0,
+      selectedPaths: [],
+      entries: [
+        {kind: 'text', name: 'main.ts', path: 'main.ts', selectable: true, selected: false}
+      ],
+      previewLines: [
+        'main.ts',
+        'text · 2 lines',
+        '1 const value = call("x", 42);',
+        '2 // comment'
+      ],
+      previewMode: 'code',
+      dismissHint: '↑↓ move · ←/→ focus · esc'
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    rows: 18,
+    width: 80
+  });
+
+    assert.ok(layout.lines.some((line) => line.includes('\x1b[38;2;170;0;170mconst')));
+  assert.ok(layout.lines.some((line) => line.includes('\x1b[38;5;208mcall')));
+    assert.ok(layout.lines.some((line) => line.includes('\x1b[38;2;0;170;0m"x"')));
+    assert.ok(layout.lines.some((line) => line.includes('\x1b[38;2;85;85;85m// comment')));
+  assert.ok(layout.lines.every((line) => displayWidth(line) <= safeRenderWidth(80)));
+});
+
+test('renderFooterLayout sizes file picker from terminal width and height budgets', () => {
+  const createSurface = () => ({
+    kind: 'file_picker',
+    currentDir: '/tmp/project',
+    query: '',
+    focus: 'list',
+    selectedIndex: 0,
+    selectedPaths: [],
+    entries: Array.from({length: 32}, (_value, index) => ({
+      kind: 'text',
+      name: `very-long-source-file-name-${String(index + 1).padStart(2, '0')}.ts`,
+      path: `src/very-long-source-file-name-${String(index + 1).padStart(2, '0')}.ts`,
+      selectable: true,
+      selected: false
+    })),
+    previewLines: ['long.ts', 'text · 1 lines', '1 const value = 1;'],
+    dismissHint: '↑↓ move · ←/→ focus · esc'
+  });
+  const compact = renderFooterLayout({
+    composer: createComposer('@'),
+    commandSurface: createSurface(),
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    rows: 24,
+    width: 100
+  });
+  const spacious = renderFooterLayout({
+    composer: createComposer('@'),
+    commandSurface: createSurface(),
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    rows: 40,
+    width: 180
+  });
+
+  assert.ok(Math.max(...spacious.lines.map(displayWidth)) > Math.max(...compact.lines.map(displayWidth)));
+  assert.ok(spacious.lines.length > compact.lines.length);
+  const selectedBodyLine = spacious.lines.map((line) => stripAnsi(line)).find((line) => line.includes('very-long-source-file-name-01.ts'));
+  assert.ok(selectedBodyLine);
+  const bodyCells = selectedBodyLine.split('│');
+  assert.ok(displayWidth(bodyCells[2]) > displayWidth(bodyCells[1]));
+  assert.ok(spacious.lines.every((line) => displayWidth(line) <= safeRenderWidth(180)));
+});
+
+test('renderFooterLayout shrinks file picker list column to item content', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('@'),
+    commandSurface: {
+      kind: 'file_picker',
+      currentDir: '/tmp/project',
+      query: '',
+      focus: 'list',
+      selectedIndex: 0,
+      selectedPaths: [],
+      entries: [
+        {kind: 'text', name: 'a.ts', path: 'a.ts', selectable: true, selected: false},
+        {kind: 'text', name: 'b.ts', path: 'b.ts', selectable: true, selected: false}
+      ],
+      previewLines: ['a.ts', 'text · 1 lines', '1 const value = 1;'],
+      dismissHint: '↑↓ move · ←/→ focus · esc'
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    rows: 28,
+    width: 180
+  });
+  const selectedBodyLine = layout.lines.map((line) => stripAnsi(line)).find((line) => line.includes('a.ts'));
+  assert.ok(selectedBodyLine);
+  const bodyCells = selectedBodyLine.split('│');
+
+  assert.ok(displayWidth(bodyCells[1]) < 24);
+  assert.ok(displayWidth(bodyCells[2]) > 120);
+  assert.ok(layout.lines.every((line) => displayWidth(line) <= safeRenderWidth(180)));
+});
+
+test('renderFooterLayout highlights preview focus row without prefix bar', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('@'),
+    commandSurface: {
+      kind: 'file_picker',
+      currentDir: '/tmp/project',
+      query: '',
+      focus: 'preview',
+      selectedIndex: 3,
+      selectedPaths: [],
+      entries: [
+        {kind: 'text', name: 'main.ts', path: 'main.ts', selectable: true, selected: false},
+        {kind: 'text', name: 'other.ts', path: 'other.ts', selectable: true, selected: false},
+        {kind: 'text', name: 'more.ts', path: 'more.ts', selectable: true, selected: false},
+        {kind: 'text', name: 'target.ts', path: 'target.ts', selectable: true, selected: false}
+      ],
+      previewLines: ['target.ts', 'text · 1 lines', '1 const value = 1;'],
+      dismissHint: '↑↓ move · ←/→ focus · esc'
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    rows: 16,
+    width: 80
+  });
+  const previewLine = layout.lines.find((line) => stripAnsi(line).includes('1 const value = 1;'));
+  const selectedListLine = layout.lines.find((line) => stripAnsi(line).includes('○ target.ts'));
+
+  assert.ok(previewLine);
+  assert.ok(selectedListLine);
+  assert.ok(previewLine.includes('\x1b[48;5;23m'));
+  assert.ok(!stripAnsi(previewLine).includes('▌'));
+  assert.ok(stripAnsi(selectedListLine).includes('│   ○ target.ts'));
+  assert.equal(layout.lines.filter((line) => line.includes('\x1b[48;5;23m')).length, 1);
+});
+
+test('renderFooterLayout keeps preview highlight on content for first file', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('@'),
+    commandSurface: {
+      kind: 'file_picker',
+      currentDir: '/tmp/project',
+      query: '',
+      focus: 'preview',
+      selectedIndex: 0,
+      selectedPaths: [],
+      entries: [
+        {kind: 'text', name: 'first.ts', path: 'first.ts', selectable: true, selected: false},
+        {kind: 'text', name: 'second.ts', path: 'second.ts', selectable: true, selected: false}
+      ],
+      previewLines: ['first.ts', 'text · 1 lines', '1 const value = 1;'],
+      dismissHint: '↑↓ move · ←/→ focus · esc'
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    rows: 16,
+    width: 80
+  });
+  const titleLine = layout.lines.find((line) => stripAnsi(line).includes('first.ts'));
+  const contentLine = layout.lines.find((line) => stripAnsi(line).includes('1 const value = 1;'));
+
+  assert.ok(titleLine);
+  assert.ok(contentLine);
+  assert.ok(!titleLine.includes('\x1b[48;5;23m'));
+  assert.ok(contentLine.includes('\x1b[48;5;23m'));
+});
+
+test('renderFooterLayout keeps focused file list marker aligned', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('@'),
+    commandSurface: {
+      kind: 'file_picker',
+      currentDir: '/tmp/project',
+      query: '',
+      focus: 'list',
+      selectedIndex: 0,
+      selectedPaths: [],
+      entries: [
+        {kind: 'text', name: 'first.ts', path: 'first.ts', selectable: true, selected: false},
+        {kind: 'text', name: 'second.ts', path: 'second.ts', selectable: true, selected: false}
+      ],
+      previewLines: ['first.ts', 'text · 1 lines', '1 const value = 1;'],
+      dismissHint: '↑↓ move · ←/→ focus · esc'
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    rows: 16,
+    width: 80
+  });
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+  const activeLine = plainLines.find((line) => line.includes('first.ts'));
+  const inactiveLine = plainLines.find((line) => line.includes('second.ts'));
+
+  assert.ok(activeLine.includes('▌ ○'));
+  assert.equal(activeLine.indexOf('○'), inactiveLine.indexOf('○'));
+});
+
+test('renderFooterLayout renders scale command surfaces', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('ignored'),
+    commandSurface: {
+      kind: 'scale',
+      title: '/effort · LLMBox GPT5.5',
+      leftLabel: 'fast',
+      rightLabel: 'deep',
+      options: [
+        { label: 'none', description: 'NONE' },
+        { label: 'minimal', description: 'MIN' },
+        { label: 'low', description: 'LOW' },
+        { label: 'medium', description: 'MED' },
+        { label: 'high', description: 'HIGH' },
+        { label: 'xhigh', description: 'XHIGH' }
+      ],
+      selectedIndex: 3,
+      dismissHint: 'Enter 选择 · ←/→ 移动 · Esc 取消'
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    width: 100
+  });
+
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+
+  assert.equal(layout.showCursor, false);
+  assert.ok(plainLines.some((line) => line.startsWith('╭')));
+  assert.ok(plainLines.some((line) => line.startsWith('╰')));
+  assert.ok(plainLines.some((line) => line.includes('/effort · LLMBox GPT5.5')));
+  assert.ok(plainLines.some((line) => line.includes('[实时]')));
+  assert.ok(plainLines.some((line) => line.includes('◂')));
+  assert.ok(plainLines.some((line) => line.includes('▸')));
+  assert.ok(plainLines.some((line) => line.includes('●')));
+  assert.ok(plainLines.some((line) => line.includes('◉')));
+  assert.ok(plainLines.some((line) => line.includes('NONE')));
+  assert.ok(plainLines.some((line) => line.includes('MED')));
+  assert.ok(plainLines.some((line) => line.includes('XHIGH')));
+  assert.ok(plainLines.some((line) => line.includes('medium')));
+  assert.ok(plainLines.some((line) => line.includes('█')));
+  assert.ok(plainLines.some((line) => line.includes('░')));
+  assert.ok(plainLines.some((line) => line.includes('已选择')));
+  assert.ok(plainLines.some((line) => line.includes('Enter 选择')));
+  assert.ok(plainLines.some((line) => line.includes('←/→ 移动')));
+  assert.ok(!plainLines.some((line) => line.includes('Balanced reasoning')));
+  assert.ok(layout.lines.some((line) => line.includes('\x1b[38;2;') && stripAnsi(line).includes('◉')));
+  assert.ok(layout.lines.some((line) => line.includes('\x1b[38;2;') && stripAnsi(line).includes('MED')));
+});
+
+test('renderFooterLayout renders checkbox command surfaces', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('ignored'),
+    commandSurface: {
+      kind: 'checkbox',
+      title: '/flags (2)',
+      options: [
+        { label: 'code-review', description: 'project · Review code', checked: true },
+        { label: 'unit-test', description: 'user · Generate tests', checked: false }
+      ],
+      selectedIndex: 1,
+      dismissHint: 'Space 切换 · Enter 保存 · Esc 取消'
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    width: 80
+  });
+
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+
+  assert.equal(layout.showCursor, false);
+  assert.ok(plainLines.some((line) => line.includes('/flags (2)')));
+  assert.ok(plainLines.some((line) => line === '  ● code-review — project · Review code'));
+  assert.ok(plainLines.some((line) => line.trimEnd() === '▌ ○ unit-test — user · Generate tests'));
+  assert.ok(!plainLines.some((line) => line.includes('[x]') || line.includes('[ ]') || line.includes('›')));
+  assert.ok(plainLines.some((line) => line.includes('Space 切换')));
+  assert.ok(layout.lines.some((line) => line.includes('\x1b[48;5;23m') && stripAnsi(line).includes('unit-test')));
+});
+
+test('renderFooterLayout renders skills command surface as cyan card', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('ignored'),
+    commandSurface: {
+      kind: 'skills',
+      title: 'SKILLS',
+      skills: [
+        { name: 'code-review', description: 'Review code changes', sourceKind: 'project', sourcePath: '/skills/code-review/SKILL.md', enabled: true },
+        { name: 'unit-test', description: 'Generate tests', sourceKind: 'user', sourcePath: '/skills/unit-test/SKILL.md', enabled: false }
+      ],
+      selectedIndex: 1,
+      dismissHint: 'Space 切换 · Enter 保存 · Esc 取消'
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    width: 80
+  });
+
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+
+  assert.equal(layout.showCursor, false);
+  assert.ok(plainLines.some((line) => line.startsWith('╭') && line.includes('SKILLS') && line.includes('1/2 启用')));
+  assert.ok(plainLines.some((line) => line.includes('● 启用') && line.includes('code-review') && line.includes('project · Review code')));
+  assert.ok(plainLines.some((line) => line.includes('▌') && line.includes('○ 停用') && line.includes('unit-test')));
+  assert.ok(plainLines.some((line) => line.includes('Space 切换') && line.includes('Enter 保存') && line.includes('Esc 取消')));
+  assert.ok(!plainLines.some((line) => line.includes('/ search') || line.includes('search skills')));
+  assert.ok(!plainLines.some((line) => line.includes('a all') || line.includes('n none') || line.includes('j/k')));
+  assert.ok(layout.lines.some((line) => line.includes('\x1b[38;2;') && stripAnsi(line).includes('SKILLS')));
+  assert.ok(layout.lines.some((line) => line.includes('\x1b[48;5;23m') && stripAnsi(line).includes('unit-test')));
+});
+
+test('renderFooterLayout renders skills surface overflow and empty state', () => {
+  const skills = Array.from({ length: 10 }, (_value, index) => ({
+    name: `skill-${index + 1}`,
+    description: `Description ${index + 1}`,
+    sourceKind: index % 2 === 0 ? 'project' : 'user',
+    sourcePath: `/skills/skill-${index + 1}/SKILL.md`,
+    enabled: index % 3 === 0
+  }));
+  const overflow = renderFooterLayout({
+    composer: createComposer('ignored'),
+    commandSurface: {
+      kind: 'skills',
+      title: 'SKILLS',
+      skills,
+      selectedIndex: 8,
+      dismissHint: 'Space 切换 · Enter 保存 · Esc 取消'
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    width: 64
+  });
+  const overflowLines = overflow.lines.map((line) => stripAnsi(line));
+
+  assert.ok(overflowLines.some((line) => line.includes('↑ 2 更多')));
+  assert.ok(overflowLines.some((line) => line.includes('skill-9')));
+  assert.ok(!overflowLines.some((line) => /skill-1(?!0)/u.test(line)));
+
+  const empty = renderFooterLayout({
+    composer: createComposer('ignored'),
+    commandSurface: {
+      kind: 'skills',
+      title: 'SKILLS',
+      skills: [],
+      emptyLines: ['当前没有发现可用 skill。'],
+      dismissHint: 'Esc 关闭'
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    width: 64
+  });
+  const emptyLines = empty.lines.map((line) => stripAnsi(line));
+
+  assert.ok(emptyLines.some((line) => line.includes('当前没有发现可用 skill')));
+  assert.ok(emptyLines.some((line) => line.includes('Esc 关闭')));
+});
+
+test('renderFooterLayout renders /model info through the generic info surface', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('/model'),
+    commandSurface: {
+      kind: 'info',
+      title: '/model',
+      lines: [
+        '当前未读取到模型配置。',
+        'LLM 配置缺少 models'
+      ],
+      dismissHint: 'Esc 关闭'
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    width: 80
+  });
+
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+
+  assert.equal(layout.showCursor, false);
+  assert.ok(plainLines.some((line) => line.includes('/model')));
+  assert.ok(plainLines.some((line) => line.includes('当前未读取到模型配置。')));
+  assert.ok(plainLines.some((line) => line.includes('LLM 配置缺少 models')));
+  assert.ok(plainLines.some((line) => line.includes('Esc 关闭')));
+  assert.ok(!plainLines.some((line) => line === '> /model'));
+});
+
+test('renderFooterLayout renders choice surfaces as bordered focused choices', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('ignored'),
+    commandSurface: {
+      kind: 'choice',
+      title: '⚠ apply_patch',
+      optionsTitle: 'action',
+      options: [
+        { label: 'Allow once' },
+        { label: 'Deny' }
+      ],
+      focusedIndex: 0,
+      dismissHint: 'Enter 确认 · Up/Down 选择 · Esc 拒绝'
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    width: 100
+  });
+
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+
+  assert.equal(layout.showCursor, false);
+  assert.equal(layout.cursorColumn, 0);
+  assert.ok(plainLines.some((line) => line.startsWith('╭ ⚠ apply_patch')));
+  assert.ok(plainLines.some((line) => line.startsWith('╰')));
+  assert.ok(plainLines.some((line) => line.includes('── action')));
+  assert.ok(plainLines.some((line) => line.includes('▌ ● Allow once')));
+  assert.ok(plainLines.some((line) => line.includes('○ Deny')));
+  assert.ok(plainLines.some((line) => line.includes('Esc 拒绝')));
+  assert.ok(!plainLines.some((line) => line.includes(' — ')));
+  assert.ok(!plainLines.some((line) => line.trim() === '> ignored'));
+  const topBorder = layout.lines.find((line) => stripAnsi(line).startsWith('╭ ⚠ apply_patch'));
+  const activeLine = layout.lines.find((line) => stripAnsi(line).includes('▌ ● Allow once'));
+  assert.ok(topBorder);
+  assert.ok(activeLine);
+  assert.ok(displayWidth(topBorder) < safeRenderWidth(100));
+  assertActiveBackgroundReachesRightPadding(activeLine);
+  assert.ok(layout.lines.some((line) => line.includes('\x1b[48;5;23m') && stripAnsi(line).includes('Allow once')));
+});
+
+test('renderFooterLayout applies custom theme to choice active row', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('ignored'),
+    commandSurface: {
+      kind: 'choice',
+      title: '选择操作',
+      options: [
+        {label: '继续'},
+        {label: '取消'}
+      ],
+      focusedIndex: 0
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    theme: CUSTOM_THEME,
+    width: 80
+  });
+  const rendered = layout.lines.join('\n');
+
+  assert.ok(rendered.includes('\x1b[38;2;30;31;32m'));
+  assert.ok(rendered.includes('\x1b[48;5;99m'));
+  assert.ok(rendered.includes('\x1b[38;2;1;2;3m'));
+});
+
+test('renderFooterLayout uses Chinese defaults for choice sections', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('ignored'),
+    commandSurface: {
+      kind: 'choice',
+      message: '请选择下一步',
+      options: [{label: '继续'}],
+      focusedIndex: 0
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    width: 80
+  });
+  const text = layout.lines.map((line) => stripAnsi(line)).join('\n');
+
+  assert.match(text, /消息/);
+  assert.match(text, /操作/);
+  assert.doesNotMatch(text, /── message|── action/);
+});
+
+test('renderFooterLayout renders permission choice as command and action card', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('ignored'),
+    commandSurface: {
+      kind: 'choice',
+      title: 'PERMISSION',
+      message: 'rm -rf dist',
+      messageTitle: 'command',
+      messageStyle: 'code',
+      optionsTitle: 'action',
+      options: [
+        { label: 'Allow once' },
+        { label: 'Deny' }
+      ],
+      focusedIndex: 0,
+      dismissHint: '↑/↓ move · enter confirm · esc cancel'
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    width: 100
+  });
+
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+
+  assert.equal(layout.showCursor, false);
+  assert.ok(plainLines.some((line) => line.startsWith('╭ PERMISSION')));
+  assert.ok(plainLines.some((line) => line.includes('── command')));
+  assert.ok(plainLines.some((line) => line.includes('rm -rf dist')));
+  assert.ok(plainLines.some((line) => line.includes('── action')));
+  assert.ok(plainLines.some((line) => line.includes('▌ ● Allow once')));
+  assert.ok(plainLines.some((line) => line.includes('○ Deny')));
+  assert.ok(!plainLines.some((line) => line.includes('1. Allow once') || line.includes('2. Deny')));
+  assert.ok(plainLines.some((line) => line.includes('enter confirm')));
+  assert.ok(layout.lines.some((line) => line.includes('\x1b[48;5;236m') && stripAnsi(line).includes('rm -rf dist')));
+  assert.ok(layout.lines.some((line) => line.includes('\x1b[48;5;23m') && stripAnsi(line).includes('Allow once')));
+  assertActiveBackgroundReachesRightPadding(layout.lines[plainLines.findIndex((line) => line.includes('▌ ● Allow once'))]);
+  assert.ok(layout.lines.some((line) => line.includes('\x1b[38;2;90;230;245m') && stripAnsi(line).includes('Allow once')));
+  assert.ok(layout.lines.some((line) => line.includes('\x1b[38;2;235;245;248m') && stripAnsi(line).includes('Deny')));
+  assert.ok(!layout.lines.find((line) => stripAnsi(line).includes('── command')).includes('\x1b[2m'));
+  assert.ok(!plainLines.some((line) => line.includes('Reasons')));
+});
+
+test('renderFooterLayout keeps permission inline feedback cursor visible', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('ignored'),
+    commandSurface: {
+      kind: 'choice',
+      title: 'PERMISSION',
+      message: 'rm -rf dist',
+      messageTitle: 'command',
+      messageStyle: 'code',
+      optionsTitle: 'action',
+      options: [
+        { label: 'Allow once' },
+        { label: 'Deny' },
+        { label: 'Tell model what to do', inlineInput: { placeholder: 'Type instruction...', text: '', cursor: 0 } }
+      ],
+      focusedIndex: 2,
+      dismissHint: '↑/↓ move · enter confirm · esc cancel'
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    width: 100
+  });
+
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+  const inputLineIndex = plainLines.findIndex((line) => line.includes('Tell model what to do'));
+  const inputLine = layout.lines[inputLineIndex];
+
+  assert.equal(layout.showCursor, true);
+  assert.equal(layout.cursorRow, inputLineIndex);
+  assert.ok(plainLines[inputLineIndex].includes('Type instruction...'));
+  assert.equal(layout.cursorColumn, plainLines[inputLineIndex].indexOf('Type instruction...'));
+  assert.ok(inputLine.includes('\x1b[48;5;23m'));
+  assert.ok(inputLine.lastIndexOf('\x1b[49m') < inputLine.indexOf('Type instruction...'));
+});
+
+test('renderFooterLayout separates choice focus from multi-select checked state', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('ignored'),
+    commandSurface: {
+      kind: 'choice',
+      title: 'Question',
+      message: 'Pick any?',
+      messageTitle: 'question',
+      optionsTitle: 'answer',
+      selectionMode: 'multiple',
+      options: [
+        {label: 'A', checked: true},
+        {label: 'B', checked: false},
+        {label: 'C', checked: true},
+        {label: 'Other', checked: true, inlineInput: {placeholder: 'Type answer...', text: 'custom answer', cursor: 6}}
+      ],
+      focusedIndex: 1,
+      dismissHint: 'Space 选择/取消 · Enter 确认'
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    width: 80
+  });
+
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+  const checkedLine = layout.lines[plainLines.findIndex((line) => line.includes('● A'))];
+  const focusedLine = layout.lines[plainLines.findIndex((line) => line.includes('▌ ○ B'))];
+  const otherLine = layout.lines[plainLines.findIndex((line) => line.includes('● Other custom answer'))];
+
+  assert.equal(layout.showCursor, false);
+  assert.ok(plainLines.some((line) => line.includes('  ● A')));
+  assert.ok(plainLines.some((line) => line.includes('▌ ○ B')));
+  assert.ok(plainLines.some((line) => line.includes('  ● C')));
+  assert.ok(plainLines.some((line) => line.includes('  ● Other custom answer')));
+  assert.ok(!stripAnsi(checkedLine).includes('▌'));
+  assert.ok(!checkedLine.includes('\x1b[48;5;23m'));
+  assert.ok(focusedLine.includes('\x1b[48;5;23m'));
+  assertActiveBackgroundReachesRightPadding(focusedLine);
+  assert.ok(!otherLine.includes('\x1b[48;5;23m'));
+});
+
+test('renderFooterLayout keeps focused multi-select inline input text outside active background', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('ignored'),
+    commandSurface: {
+      kind: 'choice',
+      title: 'Question',
+      optionsTitle: 'answer',
+      selectionMode: 'multiple',
+      options: [
+        {label: 'A', checked: true},
+        {label: 'Other', checked: true, inlineInput: {placeholder: 'Type answer...', text: 'custom answer', cursor: 6}}
+      ],
+      focusedIndex: 1,
+      dismissHint: 'Space 选择/取消 · Enter 确认'
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    width: 80
+  });
+
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+  const inputLineIndex = plainLines.findIndex((line) => line.includes('▌ ● Other custom answer'));
+  const inputLine = layout.lines[inputLineIndex];
+
+  assert.equal(layout.showCursor, true);
+  assert.equal(layout.cursorRow, inputLineIndex);
+  assert.equal(layout.cursorColumn, plainLines[inputLineIndex].indexOf('custom answer') + 'custom'.length);
+  assert.ok(inputLine.includes('\x1b[48;5;23m'));
+  assert.ok(inputLine.lastIndexOf('\x1b[49m') < inputLine.indexOf('custom answer'));
+});
+
+test('renderFooterLayout renders choice descriptions on dim following lines', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('ignored'),
+    commandSurface: {
+      kind: 'choice',
+      title: '选择处理方式',
+      optionsTitle: 'answer',
+      options: [
+        { label: '自动修复', description: '让模型直接修改代码并运行验证' },
+        { label: '只生成方案', description: '不改代码，只输出设计和步骤' }
+      ],
+      focusedIndex: 1,
+      dismissHint: 'Enter 确认 · Esc 取消'
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    width: 60
+  });
+
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+  const firstLabelIndex = plainLines.findIndex((line) => line.includes('自动修复'));
+  const secondLabelIndex = plainLines.findIndex((line) => line.includes('只生成方案'));
+
+  assert.ok(firstLabelIndex >= 0);
+  assert.ok(secondLabelIndex >= 0);
+  assert.ok(plainLines[firstLabelIndex].includes('○ 自动修复'));
+  assert.ok(plainLines[secondLabelIndex].includes('▌ ● 只生成方案'));
+  assert.ok(plainLines.slice(firstLabelIndex + 1, secondLabelIndex).some((line) => line.includes('让模型直接修改代码')));
+  assert.ok(plainLines.slice(secondLabelIndex + 1).some((line) => line.includes('不改代码')));
+  assert.ok(!plainLines.some((line) => line.includes('自动修复 —')));
+  assert.ok(!plainLines.some((line) => line.includes('只生成方案 —')));
+  assert.ok(layout.lines.some((line) => line.includes('\x1b[38;2;130;150;168m') && stripAnsi(line).includes('让模型直接修改代码')));
+});
+
+test('renderFooterLayout renders inline choice input placeholder and cursor', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('ignored'),
+    commandSurface: {
+      kind: 'choice',
+      title: 'Approval',
+      optionsTitle: 'action',
+      options: [
+        { label: 'Allow once' },
+        { label: 'Deny' },
+        {
+          label: 'Tell model what to do',
+          inlineInput: {
+            placeholder: 'Type instruction...',
+            text: '',
+            cursor: 0
+          }
+        }
+      ],
+      focusedIndex: 2,
+      dismissHint: 'Enter 确认'
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    width: 100
+  });
+
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+  const inputLineIndex = plainLines.findIndex((line) => line.includes('Tell model what to do'));
+
+  assert.equal(layout.showCursor, true);
+  assert.equal(layout.cursorRow, inputLineIndex);
+  assert.ok(plainLines[inputLineIndex].includes('▌ ● Tell model what to do Type instruction...'));
+  assert.ok(layout.lines[inputLineIndex].includes('\x1b[38;2;130;150;168m'));
+  assert.equal(layout.cursorColumn, plainLines[inputLineIndex].indexOf('Type instruction...'));
+});
+
+test('renderFooterLayout preserves approval choice option order', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('ignored'),
+    commandSurface: {
+      kind: 'choice',
+      title: 'Approval',
+      optionsTitle: 'action',
+      options: [
+        { label: 'Allow once' },
+        { label: 'Allow apply_patch for this session' },
+        { label: 'Allow all tools for this session' },
+        { label: 'Deny' },
+        {
+          label: 'Tell model what to do',
+          inlineInput: {
+            placeholder: 'Type instruction...',
+            text: '',
+            cursor: 0
+          }
+        }
+      ],
+      focusedIndex: 4,
+      dismissHint: 'Enter 确认'
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    width: 100
+  });
+
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+  const optionLines = plainLines.filter((line) => line.includes('Allow') || line.includes('Deny') || line.includes('Tell model what to do'));
+
+  assert.ok(optionLines[0].includes('Allow once'));
+  assert.ok(optionLines[1].includes('Allow apply_patch for this session'));
+  assert.ok(optionLines[2].includes('Allow all tools for this session'));
+  assert.ok(optionLines[3].includes('Deny'));
+  assert.ok(optionLines[4].includes('Tell model what to do'));
+  assert.equal(layout.showCursor, true);
+});
+
+test('renderFooterLayout renders inline choice input text and cursor offset', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('ignored'),
+    commandSurface: {
+      kind: 'choice',
+      title: 'Question',
+      message: 'Pick one?',
+      messageTitle: 'question',
+      optionsTitle: 'answer',
+      options: [
+        { label: 'A' },
+        {
+          label: 'Other',
+          inlineInput: {
+            placeholder: 'Type answer...',
+            text: 'custom answer',
+            cursor: 6
+          }
+        }
+      ],
+      focusedIndex: 1,
+      dismissHint: 'Enter 确认'
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    width: 80
+  });
+
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+  const inputLineIndex = plainLines.findIndex((line) => line.includes('Other custom answer'));
+
+  assert.equal(layout.showCursor, true);
+  assert.equal(layout.cursorRow, inputLineIndex);
+  assert.equal(layout.cursorColumn, plainLines[inputLineIndex].indexOf('custom answer') + 'custom'.length);
+  assert.ok(!layout.lines[inputLineIndex].includes('\x1b[90m'));
+  assert.ok(layout.lines[inputLineIndex].lastIndexOf('\x1b[49m') < layout.lines[inputLineIndex].indexOf('custom answer'));
+});
+
+test('renderFooterLayout keeps inline choice input cursor-visible for long text', () => {
+  const longText = 'please do not run this command before showing me the exact diff first';
+  const layout = renderFooterLayout({
+    composer: createComposer('ignored'),
+    commandSurface: {
+      kind: 'choice',
+      title: 'Approval',
+      optionsTitle: 'action',
+      options: [
+        {
+          label: 'Tell model what to do',
+          inlineInput: {
+            placeholder: 'Type instruction...',
+            text: longText,
+            cursor: longText.length
+          }
+        }
+      ],
+      focusedIndex: 0,
+      dismissHint: 'Enter 确认'
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    width: 56
+  });
+
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+  const inputLineIndex = plainLines.findIndex((line) => line.includes('Tell model what to do'));
+  const inputLine = plainLines[inputLineIndex];
+
+  assert.equal(layout.showCursor, true);
+  assert.equal(layout.cursorRow, inputLineIndex);
+  assert.ok(inputLine.includes('…'));
+  assert.ok(inputLine.includes('exact diff first'));
+  assert.ok(!inputLine.includes('please do not run'));
+  assert.ok(inputLine.slice(0, layout.cursorColumn).endsWith('exact diff first'));
+});
+
+test('renderFooterLayout keeps both sides visible when inline input cursor is in the middle', () => {
+  const longText = 'please do not run this command before showing me the exact diff first';
+  const cursor = longText.indexOf('before');
+  const layout = renderFooterLayout({
+    composer: createComposer('ignored'),
+    commandSurface: {
+      kind: 'choice',
+      title: 'Approval',
+      optionsTitle: 'action',
+      options: [
+        {
+          label: 'Tell model what to do',
+          inlineInput: {
+            placeholder: 'Type instruction...',
+            text: longText,
+            cursor
+          }
+        }
+      ],
+      focusedIndex: 0,
+      dismissHint: 'Enter 确认'
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    width: 64
+  });
+
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+  const inputLineIndex = plainLines.findIndex((line) => line.includes('Tell model what to do'));
+  const inputLine = plainLines[inputLineIndex];
+
+  assert.equal(layout.showCursor, true);
+  assert.ok(inputLine.includes('…'));
+  assert.ok(inputLine.includes('command before showing'));
+  assert.ok(inputLine.includes('before showing …'));
+  assert.equal(inputLine[layout.cursorColumn], 'b');
+});
+
+test('renderFooterLayout renders slash suggestions below composer while keeping cursor visible', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('/'),
+    commandSurface: null,
+    slashSuggestions: {
+      options: [
+        { label: '/help', description: '查看帮助' },
+        { label: '/model', description: '切换模型' }
+      ],
+      selectedIndex: 1
+    },
+    pending: null,
+    statusLine: {
+      ...DEFAULT_STATUS_LINE,
+      mode: 'command',
+      keyHint: 'Tab 补全 · Enter 执行 · ↑/↓ 选择'
+    },
+    width: 80
+  });
+
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+
+  assert.equal(layout.showCursor, true);
+  assert.equal(layout.cursorColumn, 5);
+  assert.ok(plainLines.some((line) => line.includes('> /')));
+  assert.ok(plainLines.some((line) => line.trimEnd() === '  /help — 查看帮助'));
+  assert.ok(plainLines.some((line) => line.trimEnd() === '▌ /model — 切换模型'));
+  assert.ok(plainLines.some((line) => line.includes('command')));
+  assert.ok(plainLines.at(-1).includes('Tab 补全'));
+  assert.ok(plainLines.some((line) => line.includes('GPT-4o')));
+  assert.ok(layout.lines.some((line) => line.includes('\x1b[48;5;23m') && stripAnsi(line).includes('▌ /model')));
+});
+
+test('renderFooterLayout clamps long slash suggestions and budgets pending preview height', () => {
+  const streamingText = Array.from({ length: 20 }, (_value, index) => `line ${index + 1}`).join('\n');
+  const layout = renderFooterLayout({
+    composer: createComposer('/very'),
+    commandSurface: null,
+    slashSuggestions: {
+      options: [
+        { label: '/very-long-command', description: '这是一个很长很长的命令说明，用来验证单行截断' }
+      ],
+      selectedIndex: 0
+    },
+    pending: { kind: 'streaming', text: streamingText },
+    statusLine: {
+      ...DEFAULT_STATUS_LINE,
+      mode: 'streaming',
+      keyHint: 'Esc 中断'
+    },
+    rows: 10,
+    width: 34
+  });
+
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+  const suggestionLine = plainLines.find((line) => line.startsWith('▌ /very-long-command'));
+
+  assert.equal(plainLines[0], '◇ …已生成 20 行，显示最新 1 行');
+  assert.equal(layout.lines.length, 8);
+  assert.ok(suggestionLine.trimEnd().endsWith('…'));
+  assert.ok(!plainLines.some((line) => line.includes('验证单行截断')));
+});
+
+test('renderFooterLayout renders confirm command surfaces by kind', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('/clear'),
+    commandSurface: {
+      kind: 'confirm',
+      title: '/clear 清空 transcript',
+      bodyLines: [
+        '这会清空当前 transcript 记录。',
+        '输入历史会保留，之后仍可用 Up/Down 回溯。'
+      ],
+      confirmLabel: '清空',
+      cancelLabel: '取消'
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    width: 80
+  });
+
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+
+  assert.equal(layout.showCursor, false);
+  assert.equal(layout.cursorColumn, 0);
+  assert.ok(plainLines.some((line) => line.includes('/clear 清空 transcript')));
+  assert.ok(plainLines.some((line) => line.includes('这会清空当前 transcript 记录。')));
+  assert.ok(plainLines.some((line) => line.includes('输入历史会保留')));
+  assert.ok(plainLines.some((line) => line.includes('Enter 清空')));
+  assert.ok(plainLines.some((line) => line.includes('Esc 取消')));
+  assert.ok(layout.lines.some((line) => line.includes('\x1b[48;5;23m') && stripAnsi(line).includes('Enter 清空')));
+  assert.ok(!plainLines.some((line) => line === '> /clear'));
+});
+
+test('renderFooterLayout keeps long streaming pending preview bounded above composer', () => {
+  const streamingText = Array.from({ length: 20 }, (_value, index) => `line ${index + 1}`).join('\n');
+  const layout = renderFooterLayout({
+    composer: createComposer('draft input'),
+    pending: { kind: 'streaming', text: streamingText },
+    statusLine: {
+      ...DEFAULT_STATUS_LINE,
+      mode: 'streaming',
+      keyHint: 'Esc 中断'
+    },
+    rows: 14,
+    width: 80
+  });
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+
+  assert.equal(plainLines[0], '◇ …已生成 20 行，显示最新 6 行');
+  assert.equal(layout.lines.length, 12);
+  assert.ok(plainLines.some((line) => line.includes('line 20')));
+  assert.ok(!plainLines.includes('◇ line 1'));
+  assert.ok(!plainLines.includes('  line 1'));
+  assert.ok(plainLines.some((line) => line.includes('> draft input')));
+  assert.ok(plainLines.some((line) => line.includes('streaming')));
+});
+
+test('renderFooterLayout keeps shell live output bounded and status in shell working mode', () => {
+  const output = Array.from({ length: 20 }, (_value, index) => `line ${index + 1}`).join('\n');
+  const layout = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: null,
+    pending: { kind: 'shell_output', command: 'npm test', output },
+    working: { elapsedMs: 1000 },
+    statusLine: {...DEFAULT_STATUS_LINE, mode: 'shell-local'},
+    rows: 14,
+    width: 80
+  });
+  const plainLines = layout.lines.map((line) => stripAnsi(line).trimEnd());
+
+  assert.equal(plainLines[0], '…已生成 22 行，显示最新 6 行');
+  assert.equal(layout.lines.length, 12);
+  assert.ok(!plainLines.includes('$ npm test'));
+  assert.ok(!plainLines.includes('line 1'));
+  assert.ok(plainLines.some((line) => line.includes('line 20')));
+  assert.ok(plainLines.at(-1).includes('SHELL local'));
+  assert.ok(plainLines.at(-1).includes('working 00:01'));
+});
+
+test('renderFooterLayout expands streaming pending preview from terminal rows without a fixed cap', () => {
+  const streamingText = Array.from({ length: 20 }, (_value, index) => `line ${index + 1}`).join('\n');
+  const layout = renderFooterLayout({
+    composer: createComposer('draft input'),
+    pending: { kind: 'streaming', text: streamingText },
+    statusLine: {
+      ...DEFAULT_STATUS_LINE,
+      mode: 'streaming',
+      keyHint: 'Esc 中断'
+    },
+    rows: 24,
+    width: 80
+  });
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+
+  assert.equal(plainLines[0], '◇ …已生成 20 行，显示最新 16 行');
+  assert.equal(layout.lines.length, 22);
+  assert.ok(!plainLines.includes('◇ line 1'));
+  assert.ok(plainLines.some((line) => line.includes('line 5')));
+  assert.ok(plainLines.some((line) => line.includes('line 20')));
+});
+
+test('renderFooterLayout keeps markdown streaming preview bounded by terminal rows', () => {
+  const streamingText = ['# Plan', '- alpha', '- beta', '- gamma', '```ts', 'const value = 1;', '```'].join('\n');
+  const layout = renderFooterLayout({
+    composer: createComposer('draft input'),
+    pending: { kind: 'streaming', text: streamingText },
+    statusLine: {
+      ...DEFAULT_STATUS_LINE,
+      mode: 'streaming',
+      keyHint: 'Esc 中断'
+    },
+    rows: 9,
+    width: 80
+  });
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+
+  assert.equal(plainLines[0], '◇ …已生成 5 行，显示最新 1 行');
+  assert.ok(!plainLines.some((line) => line === '◇ Plan'));
+  assert.ok(!plainLines.some((line) => line === '  • alpha'));
+  assert.ok(!plainLines.some((line) => line === '  • beta'));
+  assert.ok(!plainLines.some((line) => line === '  • gamma'));
+  assert.ok(plainLines.some((line) => line === '  const value = 1;'));
+  assert.ok(plainLines.some((line) => line.includes('> draft input')));
+    assert.ok(layout.lines.some((line) => line.includes('\x1b[38;2;255;255;255m')));
+});
+
+test('renderFooterLayout keeps markdown table streaming preview bounded by terminal rows', () => {
+  const streamingText = [
+    '| Index | Description |',
+    '| ---: | --- |',
+    '| 1 | alpha row with a long description |',
+    '| 2 | beta row with a long description |',
+    '| 3 | gamma row with a long description |',
+    '| 4 | delta row with a long description |'
+  ].join('\n');
+  const layout = renderFooterLayout({
+    composer: createComposer('draft input'),
+    pending: { kind: 'streaming', text: streamingText },
+    statusLine: {
+      ...DEFAULT_STATUS_LINE,
+      mode: 'streaming',
+      keyHint: 'Esc 中断'
+    },
+    rows: 9,
+    width: 42
+  });
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+
+  assert.equal(plainLines[0].startsWith('◇ …已生成 '), true);
+  assert.ok(plainLines.some((line) => line.includes('│')));
+  assert.ok(!plainLines.some((line) => line.includes('| Index |')));
+  assert.ok(plainLines.some((line) => line.includes('> draft input')));
+  assert.ok(displayWidth(layout.lines.at(-1)) <= safeRenderWidth(42));
+});
+
+test('renderFooterLayout renders working spinner in status line mode segment', () => {
+  const elapsedMs = elapsedInSecondForSpinnerFrame(65, 4);
+  const layout = renderFooterLayout({
+    composer: createComposer('draft input'),
+    pending: { kind: 'streaming', text: 'streaming draft' },
+    working: { elapsedMs },
+    statusLine: {
+      ...DEFAULT_STATUS_LINE,
+      mode: 'streaming',
+      keyHint: 'Esc 中断'
+    },
+    rows: 12,
+    width: 100
+  });
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+  const spacerIndex = plainLines.findIndex((line) => line === '');
+  const plainStatusLine = plainLines.at(-1);
+
+  assert.ok(spacerIndex > 0);
+  assert.ok(plainStatusLine.includes('▒█░   ░█▒ working 01:05'));
+  assert.ok(plainStatusLine.includes('Esc 中断'));
+  assert.match(layout.lines.at(-1), /\x1b\[38;2;/);
+  assert.match(layout.lines.at(-1), /\x1b\[38;2;130;150;168mw\x1b\[39m/);
+  assert.match(layout.lines.at(-1), /\x1b\[38;2;235;245;248mr\x1b\[39m/);
+  assert.match(layout.lines.at(-1), /\x1b\[1m\x1b\[38;2;235;245;248mk\x1b\[39m\x1b\[22m/);
+  assert.ok(!plainLines[spacerIndex - 1].includes('working'));
+  assert.ok(plainLines.slice(0, spacerIndex).some((line) => line.includes('streaming draft')));
+  assert.equal(layout.cursorRow, spacerIndex + 2);
+});
+
+test('renderFooterLayout renders tool call pending preview in footer', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer(''),
+    pending: {
+      kind: 'tool_call',
+      toolName: 'run_bash_command',
+      argumentsText: '{"command":"pwd"}'
+    },
+    working: { elapsedMs: 0 },
+    statusLine: {
+      ...DEFAULT_STATUS_LINE,
+      mode: 'tool',
+      detail: 'run_bash_command',
+      keyHint: 'Esc 中断'
+    },
+    rows: 12,
+    width: 80
+  });
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+
+  assert.equal(plainLines[0], "◆ Bash('pwd')");
+  assert.equal(plainLines[1], '');
+  assert.ok(plainLines.at(-1).includes('   ▒█▒    working 00:00'));
+  assert.match(layout.lines.at(-1), /\x1b\[38;2;/);
+});
+
+test('renderFooterLayout bounds long bash approval footer to rows minus top padding', () => {
+  const longCommand = `rm -rf ${Array.from({ length: 40 }, (_value, index) => `very-long-path-${index}`).join('/')}`;
+  const layout = renderFooterLayout({
+    composer: createComposer('ignored'),
+    commandSurface: {
+      kind: 'choice',
+      title: 'PERMISSION',
+      message: longCommand,
+      messageTitle: 'command',
+      messageStyle: 'code',
+      optionsTitle: 'action',
+      options: [
+        { label: 'Allow once' },
+        { label: 'Allow this command for this session' },
+        { label: 'Allow all tools for this session' },
+        { label: 'Deny' },
+        { label: 'Tell model what to do', inlineInput: { placeholder: 'Type instruction...', text: '', cursor: 0 } }
+      ],
+      focusedIndex: 0,
+      dismissHint: '↑/↓ move · enter confirm · esc cancel'
+    },
+    pending: {
+      kind: 'tool_call',
+      toolName: 'run_bash_command',
+      argumentsText: JSON.stringify({ command: longCommand })
+    },
+    working: { elapsedMs: 1000 },
+    statusLine: DEFAULT_STATUS_LINE,
+    rows: 14,
+    width: 80
+  });
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+
+  assert.ok(layout.lines.length <= 12);
+  assert.ok(plainLines.some((line) => line.includes('PERMISSION')));
+  assert.ok(plainLines.some((line) => line.includes('（已截断）')));
+  assert.ok(plainLines.some((line) => line.includes('rm -rf')));
+  assert.ok(plainLines.some((line) => line.includes('action')));
+  assert.ok(plainLines.some((line) => line.includes('Allow once')));
+  assert.ok(plainLines.some((line) => line.includes('Allow this command')));
+  assert.ok(plainLines.some((line) => line.includes('Allow all tools')));
+  assert.ok(plainLines.some((line) => line.includes('Deny')));
+  assert.ok(plainLines.some((line) => line.includes('Tell model what to do')));
+  assert.ok(!plainLines.some((line) => line.includes('Reasons')));
+  assert.ok(!plainLines.some((line) => line.includes('（已截断）') && line.includes('enter confirm')));
+  assert.equal(layout.cursorRow >= 0 && layout.cursorRow < layout.lines.length, true);
+});
+
+test('renderFooterLayout keeps long tool call pending within footer budget', () => {
+  const longCommand = `printf '${'x'.repeat(360)}'`;
+  const layout = renderFooterLayout({
+    composer: createComposer(''),
+    pending: {
+      kind: 'tool_call',
+      toolName: 'run_bash_command',
+      argumentsText: JSON.stringify({ command: longCommand })
+    },
+    working: { elapsedMs: 0 },
+    statusLine: {
+      ...DEFAULT_STATUS_LINE,
+      mode: 'tool',
+      detail: 'run_bash_command',
+      keyHint: 'Esc 中断'
+    },
+    rows: 9,
+    width: 42
+  });
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+
+  assert.ok(layout.lines.length <= 7);
+  assert.ok(plainLines.some((line) => line.includes('Bash')));
+  assert.ok(plainLines.some((line) => line === ''));
+});
+
+test('renderFooterLayout windows tall composer around cursor without ellipsis', () => {
+  const text = Array.from({ length: 10 }, (_value, index) => `line ${index + 1}`).join('\n');
+  const layout = renderFooterLayout({
+    composer: createComposer(text),
+    commandSurface: null,
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    rows: 8,
+    width: 80
+  });
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+
+  assert.ok(layout.lines.length <= 6);
+  assert.ok(plainLines.some((line) => line.includes('line 10')));
+  assert.ok(!plainLines.some((line) => /line 1(?:\D|$)/u.test(line)));
+  assert.ok(!plainLines.some((line) => line.includes('...') || line.includes('…')));
+  assert.equal(layout.showCursor, true);
+  assert.equal(layout.cursorRow >= 0 && layout.cursorRow < layout.lines.length, true);
+});
+
+test('renderFooterLayout caps composer height below available footer rows', () => {
+  const text = Array.from({ length: 30 }, (_value, index) => `line ${index + 1}`).join('\n');
+  const layout = renderFooterLayout({
+    composer: createComposer(text),
+    commandSurface: null,
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    rows: 30,
+    width: 80
+  });
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+
+  assert.equal(layout.lines.length, 10);
+  assert.ok(plainLines.some((line) => line.includes('line 30')));
+  assert.ok(!plainLines.some((line) => /line 1(?:\D|$)/u.test(line)));
+  assert.ok(!plainLines.some((line) => line.includes('...') || line.includes('…')));
+  assert.equal(layout.cursorRow >= 0 && layout.cursorRow < layout.lines.length, true);
+});
+
+test('renderFooterLayout windows slash suggestions around selected item', () => {
+  const options = Array.from({ length: 8 }, (_value, index) => ({ label: `/cmd-${index + 1}`, description: `command ${index + 1}` }));
+  const layout = renderFooterLayout({
+    composer: createComposer('/'),
+    commandSurface: null,
+    slashSuggestions: {
+      options,
+      selectedIndex: 6
+    },
+    pending: null,
+    statusLine: {
+      ...DEFAULT_STATUS_LINE,
+      mode: 'command',
+      keyHint: 'Tab 补全 · Enter 执行 · ↑/↓ 选择'
+    },
+    rows: 10,
+    width: 80
+  });
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+  const suggestionLines = plainLines.filter((line) => line.startsWith('▌ /cmd-'));
+
+  assert.ok(layout.lines.length <= 8);
+  assert.equal(suggestionLines.length, 1);
+  assert.ok(plainLines.some((line) => line.includes('↑ 6 更多')));
+  assert.ok(plainLines.some((line) => line.includes('↓ 1 更多')));
+  assert.ok(suggestionLines.some((line) => line.startsWith('▌ /cmd-7')));
+  assert.ok(!suggestionLines.some((line) => line.startsWith('/cmd-1')));
+});
+
+test('renderFooterLayout windows select options around selected item', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('ignored'),
+    commandSurface: {
+      kind: 'select',
+      title: '/model 选择模型 (10)',
+      options: Array.from({ length: 10 }, (_value, index) => ({ label: `model-${index + 1}`, description: `provider-${index + 1}` })),
+      selectedIndex: 7,
+      dismissHint: 'Enter 选择 · Up/Down 移动 · Esc 取消'
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    rows: 8,
+    width: 80
+  });
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+
+  assert.ok(layout.lines.length <= 6);
+  assert.ok(plainLines.some((line) => line.includes('↑ 7 更多')));
+  assert.ok(plainLines.some((line) => line.includes('↓ 2 更多')));
+  assert.ok(plainLines.some((line) => line.includes('▌ model-8')));
+  assert.ok(!plainLines.some((line) => line.includes('model-1')));
+});
+
+test('renderFooterLayout constrains choice message and keeps inline input cursor visible', () => {
+  const longMessage = Array.from({ length: 12 }, (_value, index) => `message line ${index + 1}`).join('\n');
+  const layout = renderFooterLayout({
+    composer: createComposer('ignored'),
+    commandSurface: {
+      kind: 'choice',
+      title: 'Question',
+      message: longMessage,
+      messageTitle: 'question',
+      optionsTitle: 'answer',
+      options: [
+        { label: 'Option 1' },
+        { label: 'Option 2' },
+        { label: 'Option 3' },
+        { label: 'Other', inlineInput: { placeholder: 'Type answer...', text: 'custom answer', cursor: 6 } }
+      ],
+      focusedIndex: 3,
+      dismissHint: 'Enter 确认 · Esc 取消'
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    rows: 12,
+    width: 70
+  });
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+
+  assert.ok(layout.lines.length <= 10);
+  assert.equal(layout.showCursor, true);
+  assert.equal(layout.cursorRow >= 0 && layout.cursorRow < layout.lines.length, true);
+  assert.ok(plainLines.some((line) => line.includes('（已截断）')));
+  assert.ok(plainLines.some((line) => line.includes('answer')));
+  assert.ok(plainLines.some((line) => line.includes('Option 1')));
+  assert.ok(plainLines.some((line) => line.includes('Option 2')));
+  assert.ok(plainLines.some((line) => line.includes('Option 3')));
+  assert.ok(plainLines.some((line) => line.includes('Other custom answer')));
+  for (const line of layout.lines) {
+    assert.ok(displayWidth(line) <= safeRenderWidth(70));
+  }
+});

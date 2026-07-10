@@ -1,0 +1,140 @@
+{
+  "id": "lagoon",
+  "label": "Midnight Lagoon",
+  "description": "深色主题：深蓝底色，搭配清爽青绿色和天蓝高亮。",
+  "blocks": {
+    "colors": {
+      "assistantPrefix": "#7dd3fc",
+      "bannerAccent": "#38bdf8",
+      "bannerMuted": "#64748b",
+      "error": "#fb7185",
+      "muted": "#93a4b7",
+      "notice": "#93a4b7",
+      "pendingPrefix": "#2dd4bf",
+      "reasoning": "#93a4b7",
+      "shell": "#2dd4bf",
+      "text": "#e0f2fe",
+      "tool": "#38bdf8",
+      "toolError": "#fb7185",
+      "toolOutput": "#93a4b7",
+      "toolSuccess": "#2dd4bf",
+      "userBackground": {
+        "ansi256": 235
+      },
+      "userPrefix": "#7dd3fc",
+      "userText": "#f0f9ff"
+    }
+  },
+  "footer": {
+    "focusBar": "▌",
+    "colors": {
+      "accent": "#38bdf8",
+      "accentDeep": "#0c4a6e",
+      "accentStrong": "#2dd4bf",
+      "danger": "#fb7185",
+      "diffAddedBackground": {
+        "ansi256": 29
+      },
+      "diffRemovedBackground": {
+        "ansi256": 52
+      },
+      "diffText": {
+        "ansi256": 231
+      },
+      "frame": "#0369a1",
+      "muted": "#93a4b7",
+      "off": "#64748b",
+      "plan": "#818cf8",
+      "rail": "#1e3a8a",
+      "railOff": "#1d4ed8",
+      "selectionBackground": {
+        "ansi256": 24
+      },
+      "success": "#2dd4bf",
+      "text": "#dbeafe",
+      "warning": "#fbbf24",
+      "white": "#f0f9ff",
+      "codeBackground": {
+        "ansi256": 235
+      },
+      "codeForeground": "#7dd3fc",
+      "usageInput": "#2dd4bf",
+      "usageCached": "#0c4a6e",
+      "usageOutput": "#f59e0b"
+    }
+  },
+  "markdown": {
+    "styles": {
+      "bold": {
+        "foreground": "#f0f9ff",
+        "bold": true
+      },
+      "heading": {
+        "foreground": "#7dd3fc",
+        "bold": true
+      },
+      "inlineCode": {
+        "foreground": "#2dd4bf"
+      },
+      "italic": {
+        "foreground": "#818cf8",
+        "dim": true
+      },
+      "link": {
+        "foreground": "#38bdf8"
+      },
+      "listMarker": {
+        "foreground": "#2dd4bf"
+      },
+      "quote": {
+        "foreground": "#93a4b7",
+        "dim": true
+      },
+      "rolePrefix": {
+        "foreground": "#7dd3fc"
+      },
+      "rule": {
+        "foreground": "#0369a1"
+      },
+      "tableHeader": {
+        "foreground": "#bae6fd",
+        "bold": true
+      },
+      "tableSeparator": {
+        "foreground": "#0369a1"
+      }
+    }
+  },
+  "syntax": {
+    "plain": {
+      "foreground": "#e0f2fe"
+    },
+    "keyword": {
+      "foreground": "#818cf8",
+      "bold": true
+    },
+    "string": {
+      "foreground": "#2dd4bf"
+    },
+    "number": {
+      "foreground": "#fbbf24"
+    },
+    "comment": {
+      "foreground": "#93a4b7",
+      "dim": true
+    },
+    "function": {
+      "foreground": "#38bdf8",
+      "bold": true
+    },
+    "variable": {
+      "foreground": "#7dd3fc"
+    },
+    "operator": {
+      "foreground": "#93a4b7"
+    },
+    "punctuation": {
+      "foreground": "#93a4b7"
+    }
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "name": "echo_tui",
+  "version": "1.1.5",
+  "description": "Node.js terminal TUI prototype with real streaming LLM support.",
+  "type": "commonjs",
+  "bin": {
+    "echo-tui": "dist/bin/echo-tui.js"
+  },
+  "files": [
+    "dist/bin",
+    "dist/src",
+    "docs"
+  ],
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.json && node scripts/copy-theme-assets.js && chmod +x dist/bin/echo-tui.js",
+    "prepack": "npm run build",
+    "postinstall": "node -e \"try{require('./dist/src/config/postinstall-user-setup.js')}catch{}\"",
+    "start": "npm run build && node dist/bin/echo-tui.js",
+    "start:debug": "npm run build && ECHO_TUI_DEBUG=1 node dist/bin/echo-tui.js",
+    "test": "npm run build && node --test dist/test",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.104.2",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "openai": "^6.38.0",
+    "pdfjs-dist": "5.1.91"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.41",
+    "typescript": "^6.0.3"
+  }
+}

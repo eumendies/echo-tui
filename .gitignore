@@ -1,0 +1,8 @@
+node_modules
+dist/
+tmp/
+.vscode/
+.claude/
+Roadmap.md
+.echo/
+.DS_Store

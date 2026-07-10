@@ -1,0 +1,290 @@
+import * as ansi from '../terminal/ansi';
+import {parseFileMentions} from '../input/file-mentions';
+
+import type { ComposerState } from '../types/composer';
+import type { ComposerLayout } from '../types/render';
+
+const TEXT_PRESENTATION_WIDTH_1_CODEPOINTS = new Set([
+  0x26a0, // ⚠
+  0x2713, // ✓
+  0x2715  // ✕
+]);
+
+/**
+ * 计算单个字符的终端显示宽度，兼容换行、组合字符、emoji 和常见东亚宽字符。
+ *
+ * @param {string} char
+ * @returns {number}
+ */
+export function charWidth(char: string): number {
+  // 这里实现一个原型级 display width：emoji/中文等宽字符按 2，普通字符按 1。
+  if (char === '\n' || char === '\r') {
+    return 0;
+  }
+
+  const codePoint = char.codePointAt(0) ?? 0;
+
+  if (codePoint >= 0x300 && codePoint <= 0x36f) {
+    // 组合音标本身不占列宽。
+    return 0;
+  }
+
+  if (isZeroWidthEmojiComponent(codePoint)) {
+    return 0;
+  }
+
+  if (TEXT_PRESENTATION_WIDTH_1_CODEPOINTS.has(codePoint)) {
+    // 这些未带 emoji variation selector 的符号在常见终端里按文本符号显示为 1 列；按 2 列会让边框补齐错位。
+    return 1;
+  }
+
+  if (isEmojiCluster(char)) {
+    return 2;
+  }
+
+  if (isWideCodePoint(codePoint) || isEmojiCodePoint(codePoint)) {
+    return 2;
+  }
+
+  return 1;
+}
+
+/**
+ * 计算字符串在终端中的实际显示宽度，会先移除 ANSI 控制序列。
+ *
+ * @param {string} text
+ * @returns {number}
+ */
+export function displayWidth(text: string): number {
+  return splitGraphemes(stripAnsi(text)).reduce((width, char) => width + charWidth(char), 0);
+}
+
+/**
+ * 返回安全渲染宽度，保守少用最后一列，避免触发终端自动换行。
+ *
+ * @param {number} width
+ * @returns {number}
+ */
+export function safeRenderWidth(width: number): number {
+  // 终端最后一列容易触发自动换行，所有整行渲染都保守少用一列。
+  const value = Number.isFinite(width) && width > 0 ? width : 80;
+  return Math.max(1, value - 1);
+}
+
+/**
+ * 规范化终端列宽输入，给物理行数估算提供稳定值。
+ *
+ * @param {number} width
+ * @returns {number}
+ */
+export function terminalColumnWidth(width: number): number {
+  const value = Number.isFinite(width) && width > 0 ? width : 80;
+  return Math.max(1, value);
+}
+
+/**
+ * 估算单行文本在当前终端列宽下会占用多少物理行。
+ *
+ * @param {string} text
+ * @param {number} width
+ * @returns {number}
+ */
+export function visualLineCount(text: string, width: number): number {
+  // 已输出的旧行在 resize 后会被终端按当前列宽重新折行，清理前要估算物理行数。
+  const columns = terminalColumnWidth(width);
+  const lineWidth = displayWidth(text);
+
+  return Math.max(1, Math.ceil(lineWidth / columns));
+}
+
+/**
+ * 去掉字符串中的 ANSI 控制序列，避免颜色或光标控制干扰宽度计算。
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+export function stripAnsi(text: string): string {
+  return text.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
+}
+
+/**
+ * 判断一个 code point 是否应当按宽字符处理。
+ *
+ * @param {number} codePoint
+ * @returns {boolean}
+ */
+function isWideCodePoint(codePoint: number): boolean {
+  return (
+    (codePoint >= 0x1100 && codePoint <= 0x115f) ||
+    (codePoint >= 0x2e80 && codePoint <= 0xa4cf) ||
+    (codePoint >= 0xac00 && codePoint <= 0xd7a3) ||
+    (codePoint >= 0xf900 && codePoint <= 0xfaff) ||
+    (codePoint >= 0xfe10 && codePoint <= 0xfe19) ||
+    (codePoint >= 0xfe30 && codePoint <= 0xfe6f) ||
+    (codePoint >= 0xff00 && codePoint <= 0xff60) ||
+    (codePoint >= 0xffe0 && codePoint <= 0xffe6)
+  );
+}
+
+/**
+ * 判断 emoji 序列中的组合成分是否不应单独占终端列宽。
+ *
+ * @param {number} codePoint
+ * @returns {boolean}
+ */
+function isZeroWidthEmojiComponent(codePoint: number): boolean {
+  return (
+    codePoint === 0x200d ||
+    (codePoint >= 0xfe00 && codePoint <= 0xfe0f) ||
+    (codePoint >= 0x1f3fb && codePoint <= 0x1f3ff)
+  );
+}
+
+/**
+ * 判断常见 emoji code point 是否通常按 2 列显示。
+ *
+ * @param {number} codePoint
+ * @returns {boolean}
+ */
+function isEmojiCodePoint(codePoint: number): boolean {
+  return (
+    (codePoint >= 0x1f000 && codePoint <= 0x1faff) ||
+    (codePoint >= 0x2600 && codePoint <= 0x27bf) ||
+    (codePoint >= 0x2b00 && codePoint <= 0x2bff) ||
+    (codePoint >= 0x2300 && codePoint <= 0x23ff)
+  );
+}
+
+/**
+ * 按 grapheme cluster 切分文本，避免把复合 emoji 拆成多个显示单元。
+ *
+ * @param {string} text
+ * @returns {string[]}
+ */
+export function splitGraphemes(text: string): string[] {
+  const Segmenter = Intl.Segmenter;
+  if (typeof Segmenter === 'function') {
+    const segmenter = new Segmenter(undefined, { granularity: 'grapheme' });
+    return Array.from(segmenter.segment(text), (segment) => segment.segment);
+  }
+
+  return Array.from(text);
+}
+
+/** @param {string} value @returns {boolean} */
+function isEmojiCluster(value: string): boolean {
+  return splitCodePoints(value).some(isEmojiCodePoint);
+}
+
+/** @param {string} value @returns {number[]} */
+function splitCodePoints(value: string): number[] {
+  return Array.from(value).map((char) => char.codePointAt(0) ?? 0);
+}
+
+/**
+ * 使用给定前缀对文本做自动换行，主要服务于 pending preview 一类前缀消息。
+ *
+ * @param {string} text
+ * @param {number} width
+ * @param {string} [prefix='']
+ * @returns {string[]}
+ */
+export function wrapText(text: string, width: number, prefix = ''): string[] {
+  // pending preview 使用同一个 prefix 包装；换行后继续保留 role 前缀。
+  const safeWidth = safeRenderWidth(width);
+  const lines: string[] = [];
+
+  for (const sourceLine of text.split('\n')) {
+    let line = prefix;
+    let column = displayWidth(prefix);
+
+    for (const char of splitGraphemes(sourceLine)) {
+      const widthOfChar = charWidth(char);
+      if (column + widthOfChar > safeWidth && column > displayWidth(prefix)) {
+        lines.push(line);
+        line = prefix;
+        column = displayWidth(prefix);
+      }
+
+      line += char;
+      column += widthOfChar;
+    }
+
+    lines.push(line);
+  }
+
+  return lines.length > 0 ? lines : [prefix];
+}
+
+/**
+ * 把 composer 的字符数组投影成可见行，并同时计算光标应回到的行列。
+ *
+ * @param {{chars: string[], cursor: number}} composer
+ * @param {number} width
+ * @returns {{lines: string[], cursorRow: number, cursorColumn: number}}
+ */
+export function renderComposer(composer: ComposerState, width: number, prompt = '> ', options: {highlightFileMentions?: boolean} = {}): ComposerLayout {
+  // 同时生成 composer 可见行和光标坐标，footer 重绘后需要用它恢复光标。
+  const continuation = ' '.repeat(Math.max(1, displayWidth(prompt)));
+  const safeWidth = safeRenderWidth(width);
+  const lines: string[] = [prompt];
+  const mentionRanges = options.highlightFileMentions ? parseFileMentions(composer.chars.join('')) : [];
+  let row = 0;
+  let column = displayWidth(prompt);
+  let cursorRow = 0;
+  let cursorColumn = column;
+
+  /**
+   * 在遍历到目标 cursor index 的瞬间记录当前的可见行列位置。
+   *
+   * @param {number} index
+   */
+  function rememberCursor(index: number): void {
+    // 在渲染到 cursor index 的瞬间记录当前位置。
+    if (index === composer.cursor) {
+      cursorRow = row;
+      cursorColumn = column;
+    }
+  }
+
+  for (let index = 0; index <= composer.chars.length; index += 1) {
+    rememberCursor(index);
+
+    if (index === composer.chars.length) {
+      break;
+    }
+
+    const char = composer.chars[index];
+
+    if (char === '\n') {
+      // 逻辑换行会开启新的 composer 行，并使用缩进保持视觉对齐。
+      row += 1;
+      lines[row] = continuation;
+      column = displayWidth(continuation);
+      continue;
+    }
+
+    const widthOfChar = charWidth(char);
+    const currentPrefixWidth = row === 0 ? displayWidth(prompt) : displayWidth(continuation);
+
+    if (column + widthOfChar > safeWidth && column > currentPrefixWidth) {
+      // 自动换行只影响显示，不改变 composer 的字符数组。
+      row += 1;
+      lines[row] = continuation;
+      column = displayWidth(continuation);
+    }
+
+    lines[row] += isMentionChar(index, mentionRanges) ? ansi.cyan(char) : char;
+    column += widthOfChar;
+  }
+
+  return {
+    lines,
+    cursorRow,
+    cursorColumn
+  };
+}
+
+function isMentionChar(index: number, ranges: Array<{start: number; end: number}>): boolean {
+  return ranges.some((range) => index >= range.start && index < range.end);
+}

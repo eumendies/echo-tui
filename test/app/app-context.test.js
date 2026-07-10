@@ -1,0 +1,1327 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+
+const composerOps = require('../../src/input/composer');
+const { AppContext } = require('../../src/app/state/app-context');
+const { ComposerContext } = require('../../src/app/state/composer-context');
+const { ToolApprovalContext } = require('../../src/app/state/tool-approval-context');
+const { UserQuestionContext } = require('../../src/app/state/user-question-context');
+const { ModelContext } = require('../../src/app/state/model-context');
+const { RenderContext } = require('../../src/app/state/render-context');
+const { SlashSuggestionContext } = require('../../src/app/state/slash-suggestion-context');
+const { TranscriptContext } = require('../../src/app/state/transcript-context');
+const { TurnContext } = require('../../src/app/state/turn-context');
+const { INPUT_EVENTS } = require('../../src/input/event-types');
+const { DEFAULT_TUI_THEME, createTuiTheme } = require('../../src/config/theme-config');
+
+function createContext(overrides = {}) {
+  const terminal = overrides.terminal || {
+      getSize() {
+        return { columns: 80, rows: 24 };
+      }
+    };
+
+  return new AppContext(
+    terminal,
+    overrides.transcriptStore || createFakeTranscriptStore(),
+    overrides.cwd || '/tmp/echo_tui',
+    overrides.nodeVersion || 'v20.0.0',
+    overrides.theme
+  );
+}
+
+function createFakeTranscriptStore(initialSessions = []) {
+  const sessionsByCwd = new Map();
+  const saveCalls = [];
+  let nextSessionIndex = 1;
+
+  for (const session of initialSessions) {
+    const cwd = session.cwd || '/tmp/echo_tui';
+    const sessions = sessionsByCwd.get(cwd) || [];
+    sessions.push(cloneSession({ ...session, cwd }));
+    sessionsByCwd.set(cwd, sessions);
+    nextSessionIndex = Math.max(nextSessionIndex, extractSessionIndex(session.sessionId) + 1);
+  }
+
+  function getSessions(cwd) {
+    if (!sessionsByCwd.has(cwd)) {
+      sessionsByCwd.set(cwd, []);
+    }
+
+    return sessionsByCwd.get(cwd);
+  }
+
+  function createSession(cwd, records = []) {
+    const timestamp = `2026-05-19T00:00:0${nextSessionIndex}.000Z`;
+    const session = {
+      schemaVersion: 1,
+      sessionId: `session-${nextSessionIndex}`,
+      cwd,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      records: records.map((record) => ({ ...record }))
+    };
+
+    nextSessionIndex += 1;
+    return session;
+  }
+
+  function saveSession(cwd, session) {
+    const sessions = getSessions(cwd);
+    const savedSession = cloneSession({ ...session, cwd });
+    const existingIndex = sessions.findIndex((candidate) => candidate.sessionId === savedSession.sessionId);
+
+    if (existingIndex >= 0) {
+      sessions[existingIndex] = savedSession;
+    } else {
+      sessions.push(savedSession);
+    }
+
+    saveCalls.push(cloneSession(savedSession));
+    return cloneSession(savedSession);
+  }
+
+  function listSessions(cwd) {
+    return getSessions(cwd)
+      .map((session) => ({
+        sessionId: session.sessionId,
+        createdAt: session.createdAt,
+        updatedAt: session.updatedAt,
+        cwd: session.cwd,
+        messageCount: session.records.length,
+        lastMessagePreview: session.records.length > 0 ? session.records.at(-1).text : '空会话',
+        previewRecords: createPreviewRecords(session.records)
+      }))
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  }
+
+  function loadSession(cwd, sessionId) {
+    const session = getSessions(cwd).find((candidate) => candidate.sessionId === sessionId);
+    return session ? cloneSession(session) : null;
+  }
+
+  return {
+    createSession,
+    listSessions,
+    loadSession,
+    saveCalls,
+    saveSession
+  };
+}
+
+function cloneSession(session) {
+  return {
+    ...session,
+    ...(session.changeHistory ? {changeHistory: structuredClone(session.changeHistory)} : {}),
+    ...(session.todoState ? {todoState: structuredClone(session.todoState)} : {}),
+    records: (session.records || []).map((record) => ({ ...record }))
+  };
+}
+
+function createPreviewRecords(records) {
+  return (records || [])
+    .map((record) => ({ role: record.role, text: String(record.text || '').replace(/\s+/g, ' ').trim() }))
+    .filter((record) => record.text.length > 0)
+    .slice(-5);
+}
+
+function withTemporaryModelConfig(config, callback) {
+  const originalHomedir = os.homedir;
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-model-context-'));
+  const configPath = path.join(homeDir, '.echo', 'config.json');
+
+  fs.mkdirSync(path.dirname(configPath), {recursive: true});
+  fs.writeFileSync(configPath, JSON.stringify(config), 'utf8');
+  os.homedir = () => homeDir;
+
+  try {
+    return callback({
+      configPath,
+      readConfig() {
+        return JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      }
+    });
+  } finally {
+    os.homedir = originalHomedir;
+    fs.rmSync(homeDir, {recursive: true, force: true});
+  }
+}
+
+function extractSessionIndex(sessionId) {
+  const matched = String(sessionId || '').match(/session-(\d+)$/);
+  return matched ? Number(matched[1]) : 0;
+}
+
+test('AppContext creates isolated runtime state per app instance', () => {
+  const firstContext = createContext();
+  const secondContext = createContext();
+
+  assert.equal(firstContext.composerContext instanceof ComposerContext, true);
+  assert.equal(firstContext.transcriptContext instanceof TranscriptContext, true);
+  assert.equal(firstContext.modelContext instanceof ModelContext, true);
+  assert.equal(firstContext.turnContext instanceof TurnContext, true);
+  assert.equal(firstContext.renderContext instanceof RenderContext, true);
+  assert.equal(firstContext.slashSuggestionContext instanceof SlashSuggestionContext, true);
+  assert.equal(Object.hasOwn(firstContext, 'composer'), false);
+  assert.equal(Object.hasOwn(firstContext, 'transcriptRecords'), false);
+  assert.equal(Object.hasOwn(firstContext, 'currentSessionId'), false);
+  assert.equal(Object.hasOwn(firstContext, 'previousColumns'), false);
+  assert.equal(Object.hasOwn(firstContext, 'responding'), false);
+  assert.equal(Object.hasOwn(firstContext, 'pending'), false);
+  assert.equal(Object.hasOwn(firstContext, 'inputHistory'), false);
+  assert.equal(Object.hasOwn(firstContext, 'historyIndex'), false);
+
+  firstContext.beginUserTurn('hello');
+  firstContext.enterSpinnerState('thinking');
+
+  assert.deepEqual(firstContext.transcriptRecords, [{ role: 'user', text: 'hello' }]);
+  assert.deepEqual(firstContext.composerContext.inputHistory, ['hello']);
+  assert.equal(firstContext.responding, true);
+  const firstPending = firstContext.turnContext.getPending();
+  assert.equal(firstPending.kind, 'thinking');
+  assert.equal(typeof firstPending.elapsedMs, 'number');
+
+  assert.deepEqual(secondContext.transcriptRecords, []);
+  assert.deepEqual(secondContext.composerContext.inputHistory, []);
+  assert.equal(secondContext.responding, false);
+  assert.equal(secondContext.turnContext.getPending(), null);
+  assert.equal(composerOps.getText(secondContext.composer), '');
+});
+
+test('AppContext undo restores transcript records and compaction state', () => {
+  const transcriptStore = createFakeTranscriptStore();
+  const context = createContext({transcriptStore});
+  const compaction = {summaryText: 'old summary', activeStartIndex: 1, createdAt: '2026-05-19T00:00:00.000Z'};
+
+  context.appendTranscriptRecord({role: 'user', text: 'before'});
+  context.transcriptContext.setCompaction(compaction);
+  context.beginChangeCheckpoint();
+  context.appendTranscriptRecord({role: 'user', text: 'change'});
+  context.appendTranscriptRecord({role: 'reasoning_summary', text: 'thinking'});
+  context.appendTranscriptRecord({role: 'tool_call', text: '', toolCallId: 'call-1', toolName: 'apply_patch', argumentsText: '{}'});
+  context.appendTranscriptRecord({role: 'tool_result', text: 'ok', toolCallId: 'call-1', toolName: 'apply_patch', ok: true});
+  context.appendTranscriptRecord({role: 'assistant', text: 'done'});
+  context.finalizeChangeCheckpoint();
+
+  const result = context.executeUndo();
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(context.transcriptRecords, [{role: 'user', text: 'before'}]);
+  assert.deepEqual(context.transcriptContext.compaction, compaction);
+  assert.equal(transcriptStore.saveCalls.at(-1).records.length, 1);
+  assert.deepEqual(transcriptStore.saveCalls.at(-1).compaction, compaction);
+});
+
+test('AppContext undo can remove interrupted turn records without appending a success notice', () => {
+  const context = createContext();
+
+  context.beginChangeCheckpoint();
+  context.appendTranscriptRecord({role: 'user', text: 'change'});
+  context.appendTranscriptRecord({role: 'assistant', text: 'partial'});
+  context.appendTranscriptRecord({role: 'local_notice', text: '已中断模型回答'});
+  context.finalizeChangeCheckpoint();
+
+  const result = context.executeUndo();
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(context.transcriptRecords, []);
+});
+
+test('AppContext undo can step through multiple ready checkpoints', () => {
+  const context = createContext();
+
+  context.beginChangeCheckpoint();
+  context.appendTranscriptRecord({role: 'user', text: 'first'});
+  context.appendTranscriptRecord({role: 'assistant', text: 'first done'});
+  context.finalizeChangeCheckpoint();
+
+  context.beginChangeCheckpoint();
+  context.appendTranscriptRecord({role: 'user', text: 'second'});
+  context.appendTranscriptRecord({role: 'assistant', text: 'second done'});
+  context.finalizeChangeCheckpoint();
+
+  let result = context.executeUndo();
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(context.transcriptRecords, [
+    {role: 'user', text: 'first'},
+    {role: 'assistant', text: 'first done'}
+  ]);
+
+  result = context.executeUndo();
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(context.transcriptRecords, []);
+  assert.deepEqual(context.getUndoSummary(), {status: 'none'});
+});
+
+test('AppContext invalid change checkpoint blocks older history', () => {
+  const context = createContext();
+
+  context.beginChangeCheckpoint();
+  context.appendTranscriptRecord({role: 'user', text: 'first'});
+  context.appendTranscriptRecord({role: 'assistant', text: 'first done'});
+  context.finalizeChangeCheckpoint();
+
+  context.beginChangeCheckpoint();
+  context.appendTranscriptRecord({role: 'user', text: 'second'});
+  context.invalidateChangeCheckpoint('写入型 bash 不可追踪');
+  context.finalizeChangeCheckpoint();
+
+  const result = context.executeUndo();
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'invalid');
+  assert.deepEqual(context.getUndoSummary(), {status: 'invalid', reason: '写入型 bash 不可追踪'});
+  assert.deepEqual(context.transcriptRecords, [
+    {role: 'user', text: 'first'},
+    {role: 'assistant', text: 'first done'},
+    {role: 'user', text: 'second'}
+  ]);
+});
+
+test('AppContext owns slash suggestion state and exposes it through render state', () => {
+  let activeCommandSession = false;
+  const context = createContext();
+
+  context.configureSlashSuggestions([
+    { name: 'help', description: '查看帮助' },
+    { name: 'model', description: '切换模型' }
+  ], () => activeCommandSession);
+
+  composerOps.setText(context.composer, '/');
+  assert.deepEqual(context.createRenderState().slashSuggestions, {
+    selectedIndex: 0,
+    options: [
+      { label: '/help', description: '查看帮助' },
+      { label: '/model', description: '切换模型' }
+    ]
+  });
+
+  assert.equal(context.handleSlashSuggestionEvent({ type: INPUT_EVENTS.MOVE_UP }), true);
+  assert.equal(context.createRenderState().slashSuggestions.selectedIndex, 1);
+
+  assert.equal(context.handleSlashSuggestionEvent({ type: INPUT_EVENTS.ESCAPE }), false);
+  assert.equal(context.createRenderState().slashSuggestions.selectedIndex, 1);
+  composerOps.setText(context.composer, '');
+  assert.equal(context.createRenderState().slashSuggestions, null);
+  composerOps.setText(context.composer, '/');
+  assert.deepEqual(context.createRenderState().slashSuggestions, {
+    selectedIndex: 0,
+    options: [
+      { label: '/help', description: '查看帮助' },
+      { label: '/model', description: '切换模型' }
+    ]
+  });
+
+  assert.equal(context.handleSlashSuggestionEvent({ type: INPUT_EVENTS.MOVE_UP }), true);
+
+  assert.equal(context.handleSlashSuggestionEvent({ type: INPUT_EVENTS.TAB }), true);
+  assert.equal(composerOps.getText(context.composer), '/model');
+
+  activeCommandSession = true;
+  assert.equal(context.createRenderState().slashSuggestions, null);
+});
+
+test('AppContext completes selected slash suggestion before submit', () => {
+  const context = createContext();
+
+  context.configureSlashSuggestions([
+    { name: 'help', description: '查看帮助' },
+    { name: 'model', description: '切换模型' }
+  ], () => false);
+
+  composerOps.setText(context.composer, '/');
+  assert.equal(context.handleSlashSuggestionEvent({ type: INPUT_EVENTS.MOVE_UP }), true);
+
+  assert.equal(context.handleSlashSuggestionEvent({ type: INPUT_EVENTS.SUBMIT }), false);
+  assert.equal(composerOps.getText(context.composer), '/model');
+});
+
+test('AppContext status line includes explicit reasoning effort', () => {
+  const context = createContext();
+  context.modelContext = {
+    createModelCommandInfo() {
+      return {
+        selectedIndex: 0,
+        models: [
+          { id: 'deep', model: 'gpt-deep', provider: 'openai', reasoningEffort: 'high' }
+        ]
+      };
+    }
+  };
+
+  assert.equal(context.createRenderState().statusLine.modelLabel, 'gpt-deep');
+  assert.equal(context.createRenderState().statusLine.reasoningEffort, 'high');
+});
+
+test('AppContext status line omits effort when profile has no explicit effort', () => {
+  const context = createContext();
+  context.modelContext = {
+    createModelCommandInfo() {
+      return {
+        selectedIndex: 0,
+        models: [
+          { id: 'fast', model: 'gpt-fast', provider: 'openai' }
+        ]
+      };
+    }
+  };
+
+  assert.equal(context.createRenderState().statusLine.modelLabel, 'gpt-fast');
+  assert.equal(context.createRenderState().statusLine.reasoningEffort, undefined);
+});
+
+test('AppContext projects tool approval allow-all state into status line', () => {
+  const context = createContext();
+  const toolApproval = new ToolApprovalContext(() => {});
+
+  assert.equal(context.createRenderState({ toolApproval }).statusLine.allowAllTools, undefined);
+  assert.equal(toolApproval.toggleAllowAllForSession(), true);
+  assert.equal(context.createRenderState({ toolApproval }).statusLine.allowAllTools, true);
+  assert.equal(toolApproval.toggleAllowAllForSession(), false);
+  assert.equal(context.createRenderState({ toolApproval }).statusLine.allowAllTools, undefined);
+});
+
+test('AppContext status line shows plan mode without exit hint', () => {
+  const context = createContext();
+
+  assert.equal(context.getInteractionMode(), 'normal');
+  context.setInteractionMode('plan');
+
+  const renderState = context.createRenderState();
+
+  assert.equal(renderState.statusLine.mode, 'plan');
+  assert.equal(renderState.statusLine.keyHint, undefined);
+  assert.equal(context.getAgentSession().interactionMode, 'plan');
+});
+
+test('AppContext keeps plan status line mode while assistant output streams', () => {
+  const context = createContext();
+
+  context.setInteractionMode('plan');
+  context.setStreamingPending('draft');
+
+  const renderState = context.createRenderState();
+
+  assert.equal(renderState.statusLine.mode, 'plan');
+  assert.deepEqual(renderState.pending, { kind: 'streaming', text: 'draft' });
+});
+
+test('AppContext keeps plan status line mode while waiting for first assistant token', () => {
+  const context = createContext();
+
+  context.setInteractionMode('plan');
+  context.beginUserTurn('plan');
+  context.beginAssistantTurn();
+  context.enterSpinnerState('thinking');
+
+  const renderState = context.createRenderState();
+
+  assert.equal(renderState.statusLine.mode, 'plan');
+  assert.equal(renderState.statusLine.keyHint, 'Esc 中断');
+  assert.equal(renderState.statusLine.activity.kind, 'thinking');
+  assert.equal(renderState.pending.kind, 'thinking');
+});
+
+test('AppContext status line shows Esc interrupt throughout an active assistant turn', () => {
+  const context = createContext();
+
+  context.beginUserTurn('work');
+  context.beginAssistantTurn();
+
+  assert.equal(context.createRenderState().statusLine.keyHint, 'Esc 中断');
+
+  context.enterSpinnerState('thinking');
+  assert.equal(context.createRenderState().statusLine.keyHint, 'Esc 中断');
+
+  context.setStreamingPending('draft');
+  assert.equal(context.createRenderState().statusLine.keyHint, 'Esc 中断');
+
+  context.setToolCallPending({id: 'call-1', toolName: 'run_bash_command', argumentsText: '{"command":"pwd"}'});
+  assert.equal(context.createRenderState().statusLine.keyHint, 'Esc 中断');
+
+  context.finishAssistantTurn('done');
+  assert.equal(context.createRenderState().statusLine.keyHint, undefined);
+});
+
+test('AppContext does not advertise Esc interrupt for manual compaction without an active assistant turn', () => {
+  const context = createContext();
+
+  context.beginManualCompaction();
+  context.enterSpinnerState('working');
+
+  assert.equal(context.createRenderState().statusLine.keyHint, undefined);
+});
+
+test('AppContext status line shows Esc interrupt while a shell command is running', () => {
+  const context = createContext();
+
+  context.setInteractionMode('shell');
+  context.beginShellCommand('npm test');
+
+  assert.equal(context.createRenderState().statusLine.keyHint, 'Esc 中断');
+});
+
+test('AppContext cycles through four interaction modes', () => {
+  const context = createContext();
+
+  assert.equal(context.cycleInteractionMode(), 'plan');
+  assert.equal(context.createRenderState().statusLine.mode, 'plan');
+  assert.equal(context.cycleInteractionMode(), 'shell');
+  assert.equal(context.createRenderState().statusLine.mode, 'shell');
+  assert.equal(context.getAgentSession().interactionMode, 'shell');
+  assert.equal(context.cycleInteractionMode(), 'shell-local');
+  assert.equal(context.createRenderState().statusLine.mode, 'shell-local');
+  assert.equal(context.getAgentSession().interactionMode, 'shell-local');
+  assert.equal(context.cycleInteractionMode(), 'normal');
+  assert.equal(context.createRenderState().statusLine.mode, 'idle');
+});
+
+test('AppContext stores transient context usage in render state without persistence', () => {
+  const transcriptStore = createFakeTranscriptStore();
+  const context = createContext({ transcriptStore });
+
+  assert.equal(context.createRenderState().statusLine.contextUsage, undefined);
+
+  context.setContextUsage({ usedTokens: 1200, contextWindow: 128000, source: 'provider' });
+
+  assert.deepEqual(context.createRenderState().statusLine.contextUsage, {
+    usedTokens: 1200,
+    contextWindow: 128000,
+    source: 'provider'
+  });
+
+  context.appendTranscriptRecord({ role: 'user', text: 'hello' });
+  assert.equal(transcriptStore.saveCalls[0].contextUsage, undefined);
+  assert.equal(transcriptStore.saveCalls[0].records[0].contextUsage, undefined);
+
+  context.clearContextUsage();
+  assert.equal(context.createRenderState().statusLine.contextUsage, undefined);
+});
+
+test('AppContext clears context usage when transcript is cleared or resumed', () => {
+  const transcriptStore = createFakeTranscriptStore([
+    {
+      sessionId: 'session-1',
+      cwd: '/tmp/echo_tui',
+      createdAt: '2026-05-19T00:00:00.000Z',
+      updatedAt: '2026-05-19T00:00:00.000Z',
+      records: [{ role: 'user', text: 'resume me' }]
+    }
+  ]);
+  const context = createContext({ transcriptStore });
+
+  context.setContextUsage({ usedTokens: 1200, contextWindow: 128000, source: 'provider' });
+  context.clearTranscriptRecords();
+  context.clearContextUsage();
+  assert.equal(context.createRenderState().statusLine.contextUsage, undefined);
+
+  context.setContextUsage({ usedTokens: 2400, contextWindow: 128000, source: 'provider' });
+  assert.ok(context.loadTranscriptSession('session-1'));
+  context.clearContextUsage();
+  assert.equal(context.createRenderState().statusLine.contextUsage, undefined);
+});
+
+test('AppContext persists, resumes, clears, and snapshots todo state', () => {
+  const transcriptStore = createFakeTranscriptStore([
+    {
+      sessionId: 'session-1',
+      cwd: '/tmp/echo_tui',
+      createdAt: '2026-05-19T00:00:00.000Z',
+      updatedAt: '2026-05-19T00:00:00.000Z',
+      records: [{ role: 'user', text: 'resume me' }],
+      todoState: {
+        updatedAt: '2026-05-19T00:00:01.000Z',
+        items: [{id: 'todo_1', text: 'resume todo', status: 'open'}]
+      }
+    }
+  ]);
+  const context = createContext({ transcriptStore });
+
+  assert.ok(context.loadTranscriptSession('session-1'));
+  assert.deepEqual(context.getAgentSession().todoState, {
+    updatedAt: '2026-05-19T00:00:01.000Z',
+    items: [{id: 'todo_1', text: 'resume todo', status: 'open'}]
+  });
+
+  context.updateTodoState({
+    updatedAt: '2026-05-19T00:00:02.000Z',
+    items: [{id: 'todo_2', text: 'new todo', status: 'open'}]
+  });
+
+  assert.deepEqual(transcriptStore.saveCalls.at(-1).todoState, {
+    updatedAt: '2026-05-19T00:00:02.000Z',
+    items: [{id: 'todo_2', text: 'new todo', status: 'open'}]
+  });
+
+  const snapshot = context.getAgentSession().todoState;
+  snapshot.items[0].text = 'mutated outside';
+  assert.equal(context.getAgentSession().todoState.items[0].text, 'new todo');
+
+  context.clearTranscriptRecords();
+
+  assert.deepEqual(context.getAgentSession().todoState, {items: [], updatedAt: ''});
+});
+
+test('AppContext includes TUI theme in render state', () => {
+  const customTheme = createTuiTheme({
+    footer: {
+      colors: {
+        accentStrong: [1, 2, 3]
+      }
+    }
+  });
+  const defaultContext = createContext();
+  const customContext = createContext({theme: customTheme});
+
+  assert.deepEqual(defaultContext.createRenderState().theme, DEFAULT_TUI_THEME);
+  assert.deepEqual(customContext.createRenderState().theme, customTheme);
+});
+
+test('AppContext updates runtime TUI theme for future render state', () => {
+  const context = createContext();
+  const nextTheme = createTuiTheme({
+    footer: {
+      colors: {
+        accentStrong: [9, 8, 7]
+      }
+    }
+  });
+
+  context.setTheme(nextTheme);
+
+  assert.deepEqual(context.theme, nextTheme);
+  assert.deepEqual(context.renderContext.theme, nextTheme);
+  assert.deepEqual(context.createRenderState().theme, nextTheme);
+});
+
+test('ModelContext reads model info from the default config path', () => {
+  withTemporaryModelConfig({
+    llm: {
+      selectedModel: 'default',
+      providers: {
+        default: { preset: 'openai-responses-api', apiKey: 'sk-test-key' }
+      },
+      models: [
+        { id: 'default', provider: 'default', model: 'gpt-from-model-context' }
+      ]
+    }
+  }, () => {
+    const context = new ModelContext();
+
+    assert.deepEqual(context.createModelCommandInfo(), {
+      models: [
+        { id: 'default', model: 'gpt-from-model-context', provider: 'default' }
+      ],
+      selectedIndex: 0
+    });
+  });
+});
+
+test('ModelContext reads selectable model profiles and current selection', () => {
+  withTemporaryModelConfig({
+    llm: {
+      selectedModel: 'deep',
+      providers: {
+        default: { preset: 'openai-responses-api', apiKey: 'sk-test-key' }
+      },
+      models: [
+        { id: 'fast', provider: 'default', model: 'gpt-fast' },
+        { id: 'deep', provider: 'default', model: 'gpt-deep' }
+      ]
+    }
+  }, () => {
+    const context = new ModelContext();
+
+    assert.deepEqual(context.createModelCommandInfo(), {
+      models: [
+        { id: 'fast', model: 'gpt-fast', provider: 'default' },
+        { id: 'deep', model: 'gpt-deep', provider: 'default' }
+      ],
+      selectedIndex: 1
+    });
+  });
+});
+
+test('ModelContext reads provider-backed model profiles and current selection', () => {
+  withTemporaryModelConfig({
+    llm: {
+      selectedModel: 'deep',
+      providers: {
+        example: { preset: 'openai-responses-api', apiKey: 'example-api-key', baseURL: 'https://provider.example/v1' },
+        openai: { preset: 'openai-responses-api', apiKey: 'openai-api-key' }
+      },
+      models: [
+        { id: 'fast', provider: 'example', model: 'example-fast' },
+        { id: 'deep', provider: 'openai', model: 'gpt-4.1', reasoning: { effort: 'high' } }
+      ]
+    }
+  }, () => {
+    const context = new ModelContext();
+
+    assert.deepEqual(context.createModelCommandInfo(), {
+      models: [
+        { id: 'fast', model: 'example-fast', provider: 'example' },
+        { id: 'deep', model: 'gpt-4.1', provider: 'openai', reasoningEffort: 'high' }
+      ],
+      selectedIndex: 1
+    });
+
+    assert.deepEqual(context.createEffortCommandInfo(), {
+      currentModelLabel: 'gpt-4.1',
+      efforts: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'],
+      selectedIndex: 4
+    });
+  });
+});
+
+test('ModelContext defaults /effort selection to medium when profile has no effort', () => {
+  withTemporaryModelConfig({
+    llm: {
+      selectedModel: 'fast',
+      providers: {
+        default: { preset: 'openai-responses-api', apiKey: 'sk-test-key' }
+      },
+      models: [
+        { id: 'fast', provider: 'default', model: 'gpt-fast' }
+      ]
+    }
+  }, () => {
+    const context = new ModelContext();
+
+    assert.deepEqual(context.createEffortCommandInfo(), {
+      currentModelLabel: 'gpt-fast',
+      efforts: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'],
+      selectedIndex: 3
+    });
+  });
+});
+
+test('ModelContext persists selectedModel atomically and preserves unknown config fields', () => {
+  const config = {
+    unrelated: true,
+    llm: {
+      selectedModel: 'fast',
+      custom: { keep: true },
+      providers: {
+        default: { preset: 'openai-responses-api', apiKey: 'sk-test-key' }
+      },
+      models: [
+        { id: 'fast', provider: 'default', model: 'gpt-fast' },
+        { id: 'deep', provider: 'default', model: 'gpt-deep' }
+      ]
+    }
+  };
+
+  withTemporaryModelConfig(config, ({configPath, readConfig}) => {
+    const context = new ModelContext();
+
+    assert.deepEqual(context.selectModel('deep'), {ok: true});
+    assert.deepEqual(readConfig(), {
+      unrelated: true,
+      llm: {
+        selectedModel: 'deep',
+        custom: { keep: true },
+        providers: {
+          default: { preset: 'openai-responses-api', apiKey: 'sk-test-key' }
+        },
+        models: [
+          { id: 'fast', provider: 'default', model: 'gpt-fast' },
+          { id: 'deep', provider: 'default', model: 'gpt-deep' }
+        ]
+      }
+    });
+    assert.deepEqual(fs.readdirSync(path.dirname(configPath)).filter((name) => name.includes('.tmp-')), []);
+  });
+});
+
+test('ModelContext persists selectedModel without rewriting provider-backed config', () => {
+  const config = {
+    llm: {
+      selectedModel: 'fast',
+      providers: {
+        example: { preset: 'openai-responses-api', apiKey: 'example-api-key', baseURL: 'https://provider.example/v1' },
+        openai: { preset: 'openai-responses-api', apiKey: 'openai-api-key' }
+      },
+      models: [
+        { id: 'fast', provider: 'example', model: 'example-fast' },
+        { id: 'deep', provider: 'openai', model: 'gpt-4.1' }
+      ]
+    }
+  };
+
+  withTemporaryModelConfig(config, ({readConfig}) => {
+    const context = new ModelContext();
+
+    assert.deepEqual(context.selectModel('deep'), {ok: true});
+    assert.deepEqual(readConfig(), {
+      llm: {
+        selectedModel: 'deep',
+        providers: {
+          example: { preset: 'openai-responses-api', apiKey: 'example-api-key', baseURL: 'https://provider.example/v1' },
+          openai: { preset: 'openai-responses-api', apiKey: 'openai-api-key' }
+        },
+        models: [
+          { id: 'fast', provider: 'example', model: 'example-fast' },
+          { id: 'deep', provider: 'openai', model: 'gpt-4.1' }
+        ]
+      }
+    });
+  });
+});
+
+test('ModelContext persists selected profile effort and preserves reasoning fields', () => {
+  const config = {
+    llm: {
+      selectedModel: 'deep',
+      providers: {
+        openai: { preset: 'openai-responses-api', apiKey: 'openai-api-key' }
+      },
+      models: [
+        { id: 'fast', provider: 'openai', model: 'gpt-fast' },
+        { id: 'deep', provider: 'openai', model: 'gpt-deep', reasoning: { summary: 'auto', effort: 'low' } }
+      ]
+    }
+  };
+
+  withTemporaryModelConfig(config, ({readConfig}) => {
+    const context = new ModelContext();
+
+    assert.deepEqual(context.selectEffort('high'), {ok: true});
+    assert.deepEqual(readConfig().llm.models, [
+      { id: 'fast', provider: 'openai', model: 'gpt-fast' },
+      { id: 'deep', provider: 'openai', model: 'gpt-deep', reasoning: { summary: 'auto', effort: 'high' } }
+    ]);
+  });
+});
+
+test('ModelContext creates reasoning object when persisting effort on profile without reasoning', () => {
+  withTemporaryModelConfig({
+    llm: {
+      selectedModel: 'fast',
+      providers: {
+        openai: { preset: 'openai-responses-api', apiKey: 'openai-api-key' }
+      },
+      models: [
+        { id: 'fast', provider: 'openai', model: 'gpt-fast' }
+      ]
+    }
+  }, ({readConfig}) => {
+    const context = new ModelContext();
+
+    assert.deepEqual(context.selectEffort('minimal'), {ok: true});
+    assert.deepEqual(readConfig().llm.models[0].reasoning, {effort: 'minimal'});
+  });
+});
+
+test('ModelContext keeps openai-chat usable after persisting effort', () => {
+  withTemporaryModelConfig({
+    llm: {
+      selectedModel: 'chat',
+      providers: {
+        chat: { preset: 'openai-chat-compatible-api', apiKey: 'chat-api-key' }
+      },
+      models: [
+        { id: 'chat', provider: 'chat', model: 'gpt-chat' }
+      ]
+    }
+  }, ({readConfig}) => {
+    const context = new ModelContext();
+
+    assert.deepEqual(context.selectEffort('high'), {ok: true});
+    assert.deepEqual(readConfig().llm.models[0].reasoning, {effort: 'high'});
+    assert.deepEqual(context.createModelCommandInfo(), {
+      models: [
+        { id: 'chat', model: 'gpt-chat', provider: 'chat', reasoningEffort: 'high' }
+      ],
+      selectedIndex: 0
+    });
+    assert.deepEqual(context.createEffortCommandInfo(), {
+      currentModelLabel: 'gpt-chat',
+      efforts: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'],
+      selectedIndex: 4
+    });
+  });
+});
+
+test('ModelContext rejects config without model profiles when selecting a model', () => {
+  withTemporaryModelConfig({
+    llm: {
+      providers: {
+        default: { preset: 'openai-responses-api', apiKey: 'sk-test-key' }
+      }
+    }
+  }, ({readConfig}) => {
+    const context = new ModelContext();
+
+    const result = context.selectModel('deep');
+
+    assert.equal(result.ok, false);
+    assert.match(result.error, /缺少 models/);
+    assert.deepEqual(readConfig(), {
+      llm: {
+        providers: {
+          default: { preset: 'openai-responses-api', apiKey: 'sk-test-key' }
+        }
+      }
+    });
+  });
+});
+
+test('ModelContext redacts write errors when model selection cannot be saved', () => {
+  const fakeApiKey = 'sk-test-secret';
+  withTemporaryModelConfig({
+    llm: {
+      selectedModel: 'fast',
+      providers: {
+        default: { preset: 'openai-responses-api', apiKey: fakeApiKey }
+      },
+      models: [
+        { id: 'fast', provider: 'default', model: 'gpt-fast' },
+        { id: 'deep', provider: 'default', model: 'gpt-deep' }
+      ]
+    }
+  }, () => {
+    const originalWriteFileSync = fs.writeFileSync;
+    const context = new ModelContext();
+
+    fs.writeFileSync = () => {
+      throw new Error(`cannot write ${fakeApiKey}`);
+    };
+
+    try {
+      const result = context.selectModel('deep');
+
+      assert.equal(result.ok, false);
+      assert.ok(result.error.includes('<redacted>'));
+      assert.ok(!result.error.includes(fakeApiKey));
+    } finally {
+      fs.writeFileSync = originalWriteFileSync;
+    }
+  });
+});
+
+test('ModelContext redacts config errors through its own model info path', () => {
+  const fakeApiKey = 'sk-test-secret';
+  class FailingModelContext extends ModelContext {
+    getModelInfo() {
+      throw new Error(`LLM 配置文件不存在：/tmp/echo-config.json ${fakeApiKey}`);
+    }
+  }
+  const context = new FailingModelContext();
+
+  assert.ok(context.createModelCommandInfo().error.includes('<redacted>'));
+  assert.ok(!context.createModelCommandInfo().error.includes(fakeApiKey));
+});
+
+test('AppContext persists, clears, and reloads transcript sessions through one instance boundary', () => {
+  const transcriptStore = createFakeTranscriptStore();
+  const context = createContext({ transcriptStore });
+
+  context.beginUserTurn('persist me');
+  context.finishAssistantTurn('persisted reply');
+
+  assert.equal(transcriptStore.saveCalls.length, 2);
+  const sessionId = transcriptStore.saveCalls.at(-1).sessionId;
+  assert.equal(context.transcriptContext.currentSessionId, sessionId);
+  assert.deepEqual(context.transcriptRecords, [
+    { role: 'user', text: 'persist me' },
+    { role: 'assistant', text: 'persisted reply' }
+  ]);
+
+  context.clearTranscriptRecords();
+  assert.equal(context.transcriptContext.currentSessionId, null);
+  assert.deepEqual(context.transcriptRecords, []);
+
+  const loadedSession = context.loadTranscriptSession(sessionId);
+  assert.equal(loadedSession.sessionId, sessionId);
+  assert.equal(context.transcriptContext.currentSessionId, sessionId);
+  assert.deepEqual(context.transcriptRecords, [
+    { role: 'user', text: 'persist me' },
+    { role: 'assistant', text: 'persisted reply' }
+  ]);
+});
+
+test('AppContext restores persisted change history for diff and undo', () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-diff-context-'));
+  const target = path.join(cwd, 'file.txt');
+  fs.writeFileSync(target, 'after\n', 'utf8');
+  const transcriptStore = createFakeTranscriptStore([{
+    sessionId: 'session-with-history',
+    cwd,
+    createdAt: '2026-05-19T00:00:00.000Z',
+    updatedAt: '2026-05-19T00:00:00.000Z',
+    records: [{role: 'user', text: 'resume'}],
+    changeHistory: [{
+        id: 'checkpoint-1',
+        createdAt: '2026-05-19T00:00:01.000Z',
+        cwd,
+        transcriptStartIndex: 0,
+        status: 'ready',
+        files: [{
+          path: target,
+          snapshot: {exists: true, content: 'before\n'},
+          state: 'updated'
+        }]
+      }]
+  }]);
+  const context = createContext({cwd, transcriptStore});
+
+  assert.ok(context.loadTranscriptSession('session-with-history'));
+  assert.equal(context.getUndoSummary().status, 'ready');
+
+  const diff = context.createDiffSourceResult();
+  assert.equal(diff.status, 'ready');
+  assert.equal(diff.source.kind, 'history');
+  assert.equal(diff.files[0].path, 'file.txt');
+
+  const undo = context.executeUndo();
+  assert.equal(undo.ok, true);
+  assert.equal(fs.readFileSync(target, 'utf8'), 'before\n');
+
+  fs.rmSync(cwd, {recursive: true, force: true});
+});
+
+test('AppContext exposes semantic subcontexts for resume sessions and composer state', () => {
+  const transcriptStore = createFakeTranscriptStore([
+    {
+      sessionId: 'saved-session',
+      createdAt: '2026-05-19T00:00:00.000Z',
+      updatedAt: '2026-05-19T00:00:00.000Z',
+      records: [{ role: 'assistant', text: 'latest reply' }]
+    }
+  ]);
+  const context = createContext({ transcriptStore });
+
+  composerOps.setText(context.composer, 'draft question');
+  context.composerContext.inputHistory.push('previous input');
+  context.turnContext.responding = true;
+
+  assert.equal(context.composerContext.getText(), 'draft question');
+  assert.deepEqual(context.composerContext.getInputHistory(), ['previous input']);
+  assert.equal(context.turnContext.isResponding(), true);
+  assert.equal(context.transcriptContext.listResumeSessions()[0].sessionId, 'saved-session');
+});
+
+test('AppContext browseHistory only enters history mode from an empty idle composer', () => {
+  const context = createContext();
+
+  context.composerContext.inputHistory.push('first', 'second');
+  assert.equal(context.browseHistory(1), false);
+
+  composerOps.setText(context.composer, 'draft');
+  assert.equal(context.browseHistory(-1), false);
+
+  context.resetComposer();
+  assert.equal(context.browseHistory(-1), true);
+  assert.equal(composerOps.getText(context.composer), 'second');
+  assert.equal(context.composerContext.historyIndex, 1);
+
+  assert.equal(context.browseHistory(-1), true);
+  assert.equal(composerOps.getText(context.composer), 'first');
+  assert.equal(context.composerContext.historyIndex, 0);
+
+  context.turnContext.responding = true;
+  assert.equal(context.browseHistory(-1), false);
+  context.turnContext.responding = false;
+
+  assert.equal(context.browseHistory(1), true);
+  assert.equal(composerOps.getText(context.composer), 'second');
+  assert.equal(context.composerContext.historyIndex, 1);
+
+  assert.equal(context.browseHistory(1), true);
+  assert.equal(composerOps.getText(context.composer), '');
+  assert.equal(context.composerContext.historyIndex, null);
+});
+
+test('AppContext failAssistantTurn clears pending state and redacts local error records', () => {
+  const context = createContext();
+
+  context.beginUserTurn('fail please');
+  context.setStreamingPending('partial');
+
+  const errorRecord = context.failAssistantTurn(new Error('upstream failed Bearer secret-value sk-test-secret'));
+
+  assert.equal(context.responding, false);
+  assert.equal(context.turnContext.getPending(), null);
+  assert.deepEqual(errorRecord, {
+    role: 'error',
+    text: '模型响应失败：upstream failed Bearer <redacted> <redacted>'
+  });
+  assert.deepEqual(context.transcriptRecords, [
+    { role: 'user', text: 'fail please' },
+    errorRecord
+  ]);
+});
+
+test('AppContext owns assistant turn identity, abort signal, and pending draft interruption', () => {
+  const context = createContext();
+
+  context.beginUserTurn('stop please');
+  const firstTurn = context.beginAssistantTurn();
+  context.setStreamingPending('partial');
+
+  assert.equal(context.isCurrentAssistantTurn(firstTurn), true);
+
+  const result = context.interruptActiveAssistantTurn();
+
+  assert.equal(result.interrupted, true);
+  assert.equal(firstTurn.abortSignal.aborted, true);
+  assert.equal(context.responding, false);
+  assert.deepEqual(result.partialRecord, { role: 'assistant', text: 'partial' });
+  assert.deepEqual(result.noticeRecord, { role: 'local_notice', text: '已中断模型回答' });
+  assert.equal(context.isCurrentAssistantTurn(firstTurn), false);
+});
+
+test('AppContext interrupts active assistant turn while thinking', () => {
+  const context = createContext();
+
+  context.beginUserTurn('think');
+  const turn = context.beginAssistantTurn();
+  context.enterSpinnerState('thinking');
+
+  const result = context.interruptActiveAssistantTurn();
+
+  assert.equal(result.interrupted, true);
+  assert.equal(turn.abortSignal.aborted, true);
+  assert.equal(context.responding, false);
+  assert.equal(context.turnContext.getPending(), null);
+  assert.equal(context.turnContext.getWorking(), null);
+  assert.equal(result.partialRecord, undefined);
+  assert.deepEqual(result.noticeRecord, { role: 'local_notice', text: '已中断模型回答' });
+});
+
+test('AppContext interrupts active assistant turn while tool call is pending without orphan tool record', () => {
+  const context = createContext();
+  const toolCall = {
+    callId: 'call-tool',
+    toolName: 'grep',
+    argumentsText: '{"pattern":"hello"}'
+  };
+
+  context.beginUserTurn('use tool');
+  const turn = context.beginAssistantTurn();
+  context.setToolCallPending(toolCall);
+
+  const result = context.interruptActiveAssistantTurn();
+
+  assert.equal(result.interrupted, true);
+  assert.equal(turn.abortSignal.aborted, true);
+  assert.equal(context.responding, false);
+  assert.equal(context.turnContext.getPending(), null);
+  assert.equal(result.partialRecord, undefined);
+  assert.deepEqual(result.noticeRecord, { role: 'local_notice', text: '已中断模型回答' });
+  assert.deepEqual(context.transcriptRecords, [
+    { role: 'user', text: 'use tool' },
+    { role: 'local_notice', text: '已中断模型回答' }
+  ]);
+});
+
+test('AppContext interrupts active assistant turn while waiting for provider with no pending preview', () => {
+  const context = createContext();
+
+  context.beginUserTurn('wait');
+  const turn = context.beginAssistantTurn();
+
+  const result = context.interruptActiveAssistantTurn();
+
+  assert.equal(result.interrupted, true);
+  assert.equal(turn.abortSignal.aborted, true);
+  assert.equal(context.responding, false);
+  assert.equal(context.turnContext.getPending(), null);
+  assert.equal(result.partialRecord, undefined);
+  assert.deepEqual(result.noticeRecord, { role: 'local_notice', text: '已中断模型回答' });
+});
+
+test('UserQuestionContext Esc closes surface without interrupting assistant turn, then second Esc can interrupt', async () => {
+  const context = createContext();
+  const userQuestion = new UserQuestionContext(() => {});
+  const call = {
+    callId: 'call_questions',
+    toolName: 'ask_user_questions',
+    argumentsText: '{}'
+  };
+
+  context.beginUserTurn('need clarification');
+  const turn = context.beginAssistantTurn();
+  const pending = userQuestion.request(call, {
+    questions: [
+      { question: 'Pick?', options: [{ label: 'A' }] }
+    ]
+  });
+
+  assert.equal(userQuestion.handleEvent({ type: INPUT_EVENTS.ESCAPE }), true);
+  const cancelled = await pending;
+
+  assert.equal(cancelled.ok, false);
+  assert.deepEqual(JSON.parse(cancelled.text), { cancelled: true, reason: 'User cancelled ask_user_questions' });
+  assert.equal(userQuestion.hasActiveRequest(), false);
+  assert.equal(turn.abortSignal.aborted, false);
+  assert.equal(context.responding, true);
+  assert.equal(context.isCurrentAssistantTurn(turn), true);
+
+  const interrupted = context.interruptActiveAssistantTurn();
+
+  assert.equal(interrupted.interrupted, true);
+  assert.equal(turn.abortSignal.aborted, true);
+  assert.equal(context.responding, false);
+  assert.deepEqual(interrupted.noticeRecord, { role: 'local_notice', text: '已中断模型回答' });
+});
+
+test('UserQuestionContext supports multi-select answers and resets state between questions', async () => {
+  let userQuestion;
+  const surfaces = [];
+  userQuestion = new UserQuestionContext(() => surfaces.push(userQuestion.getSurface()));
+  const call = {
+    callId: 'call_questions',
+    toolName: 'ask_user_questions',
+    argumentsText: '{}'
+  };
+  const pending = userQuestion.request(call, {
+    questions: [
+      {
+        question: 'Pick many?',
+        multiSelect: true,
+        options: [
+          {label: 'A'},
+          {label: 'B'},
+          {label: 'C'}
+        ]
+      },
+      {
+        question: 'Pick one?',
+        options: [
+          {label: 'Yes'},
+          {label: 'No'}
+        ]
+      }
+    ]
+  });
+  let resolved = false;
+  pending.then(() => {
+    resolved = true;
+  });
+
+  assert.equal(userQuestion.getSurface().selectionMode, 'multiple');
+  assert.equal(userQuestion.getSurface().optionsTitle, '答案（多选）');
+  assert.equal(userQuestion.getSurface().focusedIndex, 0);
+  assert.deepEqual(userQuestion.getSurface().options.map((option) => option.checked), [false, false, false, false]);
+
+  assert.equal(userQuestion.handleEvent({type: INPUT_EVENTS.SUBMIT}), true);
+  await Promise.resolve();
+
+  assert.equal(resolved, false);
+  assert.equal(userQuestion.hasActiveRequest(), true);
+
+  assert.equal(userQuestion.handleEvent({type: INPUT_EVENTS.TEXT, value: ' '}), true);
+  assert.deepEqual(userQuestion.getSurface().options.map((option) => option.checked), [true, false, false, false]);
+
+  assert.equal(userQuestion.handleEvent({type: INPUT_EVENTS.MOVE_DOWN}), true);
+  assert.equal(userQuestion.handleEvent({type: INPUT_EVENTS.TEXT, value: ' '}), true);
+  assert.deepEqual(userQuestion.getSurface().options.map((option) => option.checked), [true, true, false, false]);
+  assert.equal(userQuestion.handleEvent({type: INPUT_EVENTS.TEXT, value: ' '}), true);
+  assert.deepEqual(userQuestion.getSurface().options.map((option) => option.checked), [true, false, false, false]);
+
+  assert.equal(userQuestion.handleEvent({type: INPUT_EVENTS.MOVE_DOWN}), true);
+  assert.equal(userQuestion.handleEvent({type: INPUT_EVENTS.TEXT, value: ' '}), true);
+  assert.deepEqual(userQuestion.getSurface().options.map((option) => option.checked), [true, false, true, false]);
+
+  assert.equal(userQuestion.handleEvent({type: INPUT_EVENTS.MOVE_DOWN}), true);
+  assert.equal(userQuestion.getSurface().focusedIndex, 3);
+  assert.equal(userQuestion.handleEvent({type: INPUT_EVENTS.TEXT, value: 'custom'}), true);
+  assert.equal(userQuestion.handleEvent({type: INPUT_EVENTS.TEXT, value: ' '}), true);
+  assert.equal(userQuestion.handleEvent({type: INPUT_EVENTS.TEXT, value: 'answer'}), true);
+  assert.equal(userQuestion.getSurface().options.at(-1).checked, true);
+  assert.equal(userQuestion.getSurface().options.at(-1).inlineInput.text, 'custom answer');
+
+  assert.equal(userQuestion.handleEvent({type: INPUT_EVENTS.SUBMIT}), true);
+  assert.equal(userQuestion.getSurface().title, 'Question 2/2');
+  assert.equal(userQuestion.getSurface().selectionMode, undefined);
+  assert.equal(userQuestion.getSurface().optionsTitle, '答案（单选）');
+  assert.equal(userQuestion.getSurface().focusedIndex, 0);
+  assert.equal(userQuestion.getSurface().options.at(-1).inlineInput.text, '');
+
+  assert.equal(userQuestion.handleEvent({type: INPUT_EVENTS.MOVE_DOWN}), true);
+  assert.equal(userQuestion.handleEvent({type: INPUT_EVENTS.SUBMIT}), true);
+  const result = await pending;
+
+  assert.equal(resolved, true);
+  assert.equal(result.ok, true);
+  assert.deepEqual(JSON.parse(result.text), {
+    answers: [
+      {index: 0, multiSelect: true, selectedOptions: ['A', 'C', 'Other'], customText: 'custom answer'},
+      {index: 1, selected: 'No'}
+    ]
+  });
+  assert.equal(userQuestion.hasActiveRequest(), false);
+  assert.ok(surfaces.some((surface) => surface && surface.selectionMode === 'multiple'));
+});
+
+test('ToolApprovalContext Esc denies request without interrupting assistant turn, then next Esc can interrupt', async () => {
+  const context = createContext();
+  const toolApproval = new ToolApprovalContext(() => {});
+  const call = {
+    callId: 'call_tool',
+    toolName: 'grep',
+    argumentsText: '{"pattern":"hello"}'
+  };
+
+  context.beginUserTurn('use tool');
+  const turn = context.beginAssistantTurn();
+  const pending = toolApproval.request(call, { preview: 'grep hello' });
+
+  assert.equal(toolApproval.handleEvent({ type: INPUT_EVENTS.ESCAPE }), true);
+  const decision = await pending;
+
+  assert.deepEqual(decision, { kind: 'deny' });
+  assert.equal(toolApproval.hasActiveRequest(), false);
+  assert.equal(turn.abortSignal.aborted, false);
+  assert.equal(context.responding, true);
+
+  const interrupted = context.interruptActiveAssistantTurn();
+
+  assert.equal(interrupted.interrupted, true);
+  assert.equal(turn.abortSignal.aborted, true);
+});
+
+test('ToolApprovalContext toggles allow-all session state and returns cached decisions', async () => {
+  let updateCount = 0;
+  const toolApproval = new ToolApprovalContext(() => {
+    updateCount += 1;
+  });
+  const call = {
+    callId: 'call_tool',
+    toolName: 'grep',
+    argumentsText: '{"pattern":"hello"}'
+  };
+
+  assert.equal(toolApproval.isAllowAllForSession(), false);
+  assert.equal(toolApproval.toggleAllowAllForSession(), true);
+  assert.equal(toolApproval.isAllowAllForSession(), true);
+  assert.equal(updateCount, 1);
+
+  const decision = await toolApproval.request(call);
+
+  assert.deepEqual(decision, {kind: 'allow_all_for_session'});
+  assert.equal(toolApproval.hasActiveRequest(), false);
+  assert.equal(toolApproval.toggleAllowAllForSession(), false);
+  assert.equal(toolApproval.isAllowAllForSession(), false);
+  assert.equal(updateCount, 2);
+});
+
+test('AppContext keeps stale assistant turn cleanup from clearing a newer turn', () => {
+  const context = createContext();
+
+  context.beginUserTurn('first');
+  const firstTurn = context.beginAssistantTurn();
+  const secondTurn = context.beginAssistantTurn();
+
+  context.clearAssistantTurnIfCurrent(firstTurn);
+
+  assert.equal(context.isCurrentAssistantTurn(firstTurn), false);
+  assert.equal(context.isCurrentAssistantTurn(secondTurn), true);
+});

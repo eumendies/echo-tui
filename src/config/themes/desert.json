@@ -1,0 +1,140 @@
+{
+  "id": "desert",
+  "label": "Desert Mirage",
+  "description": "深色主题：低饱和沙色、陶土色和蓝绿色组成的干燥暖色主题。",
+  "blocks": {
+    "colors": {
+      "assistantPrefix": "#f0c27b",
+      "bannerAccent": "#c47f3f",
+      "bannerMuted": "#9a8f7a",
+      "error": "#e8796f",
+      "muted": "#a89f8d",
+      "notice": "#a89f8d",
+      "pendingPrefix": "#f0c27b",
+      "reasoning": "#a89f8d",
+      "shell": "#7dd3c7",
+      "text": "#fff7ed",
+      "tool": "#c47f3f",
+      "toolError": "#e8796f",
+      "toolOutput": "#a89f8d",
+      "toolSuccess": "#7dd3c7",
+      "userBackground": {
+        "ansi256": 235
+      },
+      "userPrefix": "#f0c27b",
+      "userText": "#fff7ed"
+    }
+  },
+  "footer": {
+    "focusBar": "┃",
+    "colors": {
+      "accent": "#c47f3f",
+      "accentDeep": "#7c3f18",
+      "accentStrong": "#f0c27b",
+      "danger": "#e8796f",
+      "diffAddedBackground": {
+        "ansi256": 29
+      },
+      "diffRemovedBackground": {
+        "ansi256": 52
+      },
+      "diffText": {
+        "ansi256": 231
+      },
+      "frame": "#9a5a28",
+      "muted": "#a89f8d",
+      "off": "#786f62",
+      "plan": "#c084fc",
+      "rail": "#51321f",
+      "railOff": "#6b3f24",
+      "selectionBackground": {
+        "ansi256": 94
+      },
+      "success": "#7dd3c7",
+      "text": "#f5dcc0",
+      "warning": "#f5d56e",
+      "white": "#fff7ed",
+      "codeBackground": {
+        "ansi256": 235
+      },
+      "codeForeground": "#f0c27b",
+      "usageInput": "#f0c27b",
+      "usageCached": "#7c3f18",
+      "usageOutput": "#7dd3c7"
+    }
+  },
+  "markdown": {
+    "styles": {
+      "bold": {
+        "foreground": "#fff7ed",
+        "bold": true
+      },
+      "heading": {
+        "foreground": "#f0c27b",
+        "bold": true
+      },
+      "inlineCode": {
+        "foreground": "#d99f5f"
+      },
+      "italic": {
+        "foreground": "#c084fc",
+        "dim": true
+      },
+      "link": {
+        "foreground": "#c47f3f"
+      },
+      "listMarker": {
+        "foreground": "#c47f3f"
+      },
+      "quote": {
+        "foreground": "#a89f8d",
+        "dim": true
+      },
+      "rolePrefix": {
+        "foreground": "#f0c27b"
+      },
+      "rule": {
+        "foreground": "#9a5a28"
+      },
+      "tableHeader": {
+        "foreground": "#f5dcc0",
+        "bold": true
+      },
+      "tableSeparator": {
+        "foreground": "#9a5a28"
+      }
+    }
+  },
+  "syntax": {
+    "plain": {
+      "foreground": "#fff7ed"
+    },
+    "keyword": {
+      "foreground": "#c084fc",
+      "bold": true
+    },
+    "string": {
+      "foreground": "#7dd3c7"
+    },
+    "number": {
+      "foreground": "#f5d56e"
+    },
+    "comment": {
+      "foreground": "#a89f8d",
+      "dim": true
+    },
+    "function": {
+      "foreground": "#f0c27b",
+      "bold": true
+    },
+    "variable": {
+      "foreground": "#c47f3f"
+    },
+    "operator": {
+      "foreground": "#a89f8d"
+    },
+    "punctuation": {
+      "foreground": "#a89f8d"
+    }
+  }
+}

@@ -1,0 +1,15 @@
+schema: spec-driven
+
+context: |
+  OpenSpec 产物需要给人审阅，proposal、design、specs、tasks 等正文内容应使用中文撰写。
+  为保证 OpenSpec 工具可以解析，保留 schema 要求的结构性英文标记，例如 `## ADDED Requirements`、`### Requirement:`、`#### Scenario:`、`WHEN`、`THEN` 和任务 checkbox。
+
+rules:
+  proposal:
+    - 使用中文描述变更动机、范围、能力和影响。
+  design:
+    - 使用中文描述设计背景、目标、决策、风险和取舍。
+  specs:
+    - 使用中文描述需求和场景，但保留 OpenSpec 要求的英文结构标记。
+  tasks:
+    - 使用中文描述任务，但保留 `- [ ]` checkbox 格式和编号。

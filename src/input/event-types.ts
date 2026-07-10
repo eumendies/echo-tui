@@ -1,0 +1,24 @@
+// 输入层只向 app 暴露这些语义事件，app 不需要关心具体 escape sequence。
+export const INPUT_EVENTS = {
+  TEXT: 'text',
+  BACKSPACE: 'backspace',
+  DELETE_FORWARD: 'delete_forward',
+  DELETE_TO_LINE_START: 'delete_to_line_start',
+  DELETE_TO_LINE_END: 'delete_to_line_end',
+  DELETE_PREVIOUS_WORD: 'delete_previous_word',
+  MOVE_LEFT: 'move_left',
+  MOVE_RIGHT: 'move_right',
+  MOVE_UP: 'move_up',
+  MOVE_DOWN: 'move_down',
+  PAGE_UP: 'page_up',
+  PAGE_DOWN: 'page_down',
+  MOVE_HOME: 'move_home',
+  MOVE_END: 'move_end',
+  TAB: 'tab',
+  SHIFT_TAB: 'shift_tab',
+  SUBMIT: 'submit',
+  INSERT_NEWLINE: 'insert_newline',
+  ESCAPE: 'escape',
+  EXIT: 'exit',
+  UNKNOWN: 'unknown'
+} as const;

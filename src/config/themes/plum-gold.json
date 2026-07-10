@@ -1,0 +1,140 @@
+{
+  "id": "plum-gold",
+  "label": "Plum Gold",
+  "description": "深色主题：深李子紫和旧金色组成的沉稳低亮度主题。",
+  "blocks": {
+    "colors": {
+      "assistantPrefix": "#f4d35e",
+      "bannerAccent": "#c084fc",
+      "bannerMuted": "#9b8aa0",
+      "error": "#fb7185",
+      "muted": "#a99bad",
+      "notice": "#a99bad",
+      "pendingPrefix": "#f4d35e",
+      "reasoning": "#a99bad",
+      "shell": "#eab308",
+      "text": "#faf5ff",
+      "tool": "#c084fc",
+      "toolError": "#fb7185",
+      "toolOutput": "#a99bad",
+      "toolSuccess": "#eab308",
+      "userBackground": {
+        "ansi256": 235
+      },
+      "userPrefix": "#f4d35e",
+      "userText": "#faf5ff"
+    }
+  },
+  "footer": {
+    "focusBar": "┃",
+    "colors": {
+      "accent": "#c084fc",
+      "accentDeep": "#581c87",
+      "accentStrong": "#f4d35e",
+      "danger": "#fb7185",
+      "diffAddedBackground": {
+        "ansi256": 28
+      },
+      "diffRemovedBackground": {
+        "ansi256": 88
+      },
+      "diffText": {
+        "ansi256": 231
+      },
+      "frame": "#7e22ce",
+      "muted": "#a99bad",
+      "off": "#7d6a83",
+      "plan": "#c084fc",
+      "rail": "#3b0764",
+      "railOff": "#581c87",
+      "selectionBackground": {
+        "ansi256": 54
+      },
+      "success": "#eab308",
+      "text": "#e9d5ff",
+      "warning": "#f4d35e",
+      "white": "#faf5ff",
+      "codeBackground": {
+        "ansi256": 235
+      },
+      "codeForeground": "#f4d35e",
+      "usageInput": "#f4d35e",
+      "usageCached": "#581c87",
+      "usageOutput": "#22c55e"
+    }
+  },
+  "markdown": {
+    "styles": {
+      "bold": {
+        "foreground": "#faf5ff",
+        "bold": true
+      },
+      "heading": {
+        "foreground": "#f4d35e",
+        "bold": true
+      },
+      "inlineCode": {
+        "foreground": "#eab308"
+      },
+      "italic": {
+        "foreground": "#c084fc",
+        "dim": true
+      },
+      "link": {
+        "foreground": "#c084fc"
+      },
+      "listMarker": {
+        "foreground": "#f4d35e"
+      },
+      "quote": {
+        "foreground": "#a99bad",
+        "dim": true
+      },
+      "rolePrefix": {
+        "foreground": "#f4d35e"
+      },
+      "rule": {
+        "foreground": "#7e22ce"
+      },
+      "tableHeader": {
+        "foreground": "#e9d5ff",
+        "bold": true
+      },
+      "tableSeparator": {
+        "foreground": "#7e22ce"
+      }
+    }
+  },
+  "syntax": {
+    "plain": {
+      "foreground": "#faf5ff"
+    },
+    "keyword": {
+      "foreground": "#c084fc",
+      "bold": true
+    },
+    "string": {
+      "foreground": "#eab308"
+    },
+    "number": {
+      "foreground": "#f4d35e"
+    },
+    "comment": {
+      "foreground": "#a99bad",
+      "dim": true
+    },
+    "function": {
+      "foreground": "#f4d35e",
+      "bold": true
+    },
+    "variable": {
+      "foreground": "#c084fc"
+    },
+    "operator": {
+      "foreground": "#a99bad"
+    },
+    "punctuation": {
+      "foreground": "#a99bad"
+    }
+  }
+}

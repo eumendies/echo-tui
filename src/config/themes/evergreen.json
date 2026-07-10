@@ -1,0 +1,140 @@
+{
+  "id": "evergreen",
+  "label": "Evergreen Grove",
+  "description": "深色主题：松林绿、苔藓色和鼠尾草绿组成的安静暗色主题。",
+  "blocks": {
+    "colors": {
+      "assistantPrefix": "#93c9a3",
+      "bannerAccent": "#4a9c6d",
+      "bannerMuted": "#7a8a7c",
+      "error": "#e8796f",
+      "muted": "#94a596",
+      "notice": "#94a596",
+      "pendingPrefix": "#93c9a3",
+      "reasoning": "#94a596",
+      "shell": "#82bf9a",
+      "text": "#eefbf3",
+      "tool": "#4a9c6d",
+      "toolError": "#e8796f",
+      "toolOutput": "#94a596",
+      "toolSuccess": "#82bf9a",
+      "userBackground": {
+        "ansi256": 235
+      },
+      "userPrefix": "#9fd9b3",
+      "userText": "#f0fdf4"
+    }
+  },
+  "footer": {
+    "focusBar": "┃",
+    "colors": {
+      "accent": "#4a9c6d",
+      "accentDeep": "#1f4d36",
+      "accentStrong": "#93c9a3",
+      "danger": "#e8796f",
+      "diffAddedBackground": {
+        "ansi256": 28
+      },
+      "diffRemovedBackground": {
+        "ansi256": 52
+      },
+      "diffText": {
+        "ansi256": 231
+      },
+      "frame": "#357a54",
+      "muted": "#94a596",
+      "off": "#6d7d70",
+      "plan": "#a78bfa",
+      "rail": "#143626",
+      "railOff": "#1f4d36",
+      "selectionBackground": {
+        "ansi256": 22
+      },
+      "success": "#82bf9a",
+      "text": "#d6efdf",
+      "warning": "#e3b341",
+      "white": "#f0fdf4",
+      "codeBackground": {
+        "ansi256": 235
+      },
+      "codeForeground": "#93c9a3",
+      "usageInput": "#93c9a3",
+      "usageCached": "#1f4d36",
+      "usageOutput": "#e2ab5c"
+    }
+  },
+  "markdown": {
+    "styles": {
+      "bold": {
+        "foreground": "#f0fdf4",
+        "bold": true
+      },
+      "heading": {
+        "foreground": "#93c9a3",
+        "bold": true
+      },
+      "inlineCode": {
+        "foreground": "#82bf9a"
+      },
+      "italic": {
+        "foreground": "#a78bfa",
+        "dim": true
+      },
+      "link": {
+        "foreground": "#4a9c6d"
+      },
+      "listMarker": {
+        "foreground": "#4a9c6d"
+      },
+      "quote": {
+        "foreground": "#94a596",
+        "dim": true
+      },
+      "rolePrefix": {
+        "foreground": "#93c9a3"
+      },
+      "rule": {
+        "foreground": "#357a54"
+      },
+      "tableHeader": {
+        "foreground": "#d6efdf",
+        "bold": true
+      },
+      "tableSeparator": {
+        "foreground": "#357a54"
+      }
+    }
+  },
+  "syntax": {
+    "plain": {
+      "foreground": "#eefbf3"
+    },
+    "keyword": {
+      "foreground": "#a78bfa",
+      "bold": true
+    },
+    "string": {
+      "foreground": "#82bf9a"
+    },
+    "number": {
+      "foreground": "#e3b341"
+    },
+    "comment": {
+      "foreground": "#94a596",
+      "dim": true
+    },
+    "function": {
+      "foreground": "#93c9a3",
+      "bold": true
+    },
+    "variable": {
+      "foreground": "#4a9c6d"
+    },
+    "operator": {
+      "foreground": "#94a596"
+    },
+    "punctuation": {
+      "foreground": "#94a596"
+    }
+  }
+}
