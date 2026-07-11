@@ -212,7 +212,7 @@ function renderMarkdownBlock(block: MarkdownBlock, width: number, prefix: string
     case 'blockquote':
       return renderStyledLine({
         prefix,
-        contentPrefix: `${markdownStyle(theme, 'quote', '│')} `,
+        contentPrefix: '│ ',
         continuationPrefix: '│ ',
         spans: parseInlineSpans(block.text, theme),
         theme,

@@ -26,6 +26,15 @@ test('renderMarkdownLines projects headings, paragraphs, lists, quotes, and rule
   }
 });
 
+test('renderMarkdownLines keeps quote style active across a wrapped first quote line', () => {
+  const lines = renderMarkdownLines('> quoted text that is long enough to wrap onto another terminal line', 28, '◆ ');
+  const quoteColor = '\x1b[38;2;85;85;85m';
+
+  assert.ok(lines.length > 1);
+  assert.ok(lines.every((line) => line.includes(`${quoteColor}│ `)));
+  assert.equal(lines[0].includes('│\x1b[39m\x1b[22m'), false);
+});
+
 test('renderMarkdownLines highlights fenced code directly without drawing a box', () => {
   const lines = renderMarkdownLines(['```ts', '  const value = `raw`;', '  // **not bold**', '```'].join('\n'), 80, '◆ ');
   const plainLines = lines.map((line) => stripAnsi(line));
