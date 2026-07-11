@@ -7,7 +7,7 @@ import {getProviderPreset, providerRequiresApiKey} from './provider-presets';
 import type {AgentType, BashToolConfig, LlmConfig, ReasoningEffort, ReasoningSummary, ToolRuntimeConfig} from '../types/agent';
 import type {ProviderPreset} from './provider-presets';
 
-const DEFAULT_BASH_TOOL_TIMEOUT_MS = 30_000;
+const DEFAULT_BASH_TOOL_TIMEOUT_MS = null;
 const DEFAULT_BASH_TOOL_MAX_OUTPUT_BYTES = 65_536;
 
 // 上下文压缩相关默认值：未知模型回退窗口、触发阈值比例、保留最近 K 条。
@@ -180,6 +180,16 @@ function readOptionalIntegerInRange(source: ConfigSource, fieldName: string, min
 
   if (typeof value !== 'number' || !Number.isInteger(value) || value < min || value > max) {
     return fallback;
+  }
+
+  return value;
+}
+
+function readOptionalPositiveInteger(source: ConfigSource, fieldName: string): number | undefined {
+  const value = source[fieldName];
+
+  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
+    return undefined;
   }
 
   return value;
@@ -541,7 +551,7 @@ function readToolRuntimeConfig(rootConfig: ConfigSource): ToolRuntimeConfig {
 
 function readBashToolConfig(bashConfig: ConfigSource): BashToolConfig {
   return {
-    timeoutMs: readOptionalIntegerInRange(bashConfig, 'timeoutMs', 1_000, 30_000, DEFAULT_BASH_TOOL_TIMEOUT_MS),
+    timeoutMs: readOptionalPositiveInteger(bashConfig, 'timeoutMs') ?? DEFAULT_BASH_TOOL_TIMEOUT_MS,
     maxOutputBytes: readOptionalIntegerInRange(bashConfig, 'maxOutputBytes', 1_024, 65_536, DEFAULT_BASH_TOOL_MAX_OUTPUT_BYTES)
   };
 }

@@ -39,7 +39,7 @@ export type ApplyPatchDisplayLine = {
 
 export type ApplyPatchDisplayFile = {
   path: string;
-  kind: 'added' | 'updated';
+  kind: 'added' | 'updated' | 'deleted';
   lines: ApplyPatchDisplayLine[];
 };
 

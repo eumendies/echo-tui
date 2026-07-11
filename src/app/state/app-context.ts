@@ -205,11 +205,12 @@ class AppContext {
   createRenderState(options: {commandSurface?: CommandSurface | null; toolApproval?: Pick<ToolApprovalContext, 'isAllowAllForSession'> | null} = {}): RenderState {
     const commandSurface = options.commandSurface ?? null;
     const slashSuggestions = commandSurface || this.mcpBootstrapStatus === 'initializing' ? null : this.getSlashSuggestionState();
+    const model = commandSurface ? undefined : this.createStatusLineModelState();
 
     return this.renderContext.createRenderState({
       commandSurface,
       contextUsage: this.contextUsage,
-      model: this.createStatusLineModelState(),
+      model,
       allowAllTools: options.toolApproval?.isAllowAllForSession() || false,
       slashSuggestions
     });
@@ -233,19 +234,7 @@ class AppContext {
    * 读取当前选择模型的展示名；配置不可用时返回稳定占位，避免 footer 重绘打断主流程。
    */
   private createStatusLineModelState(): StatusLineModelState {
-    const info = this.modelContext.createModelCommandInfo();
-
-    if ('error' in info) {
-      return {modelLabel: 'model unavailable'};
-    }
-
-    const selectedModel = info.models[info.selectedIndex] || info.models[0];
-    const modelLabel = selectedModel?.model || selectedModel?.id || 'model unavailable';
-
-    return {
-      modelLabel,
-      ...(selectedModel?.reasoningEffort ? {reasoningEffort: selectedModel.reasoningEffort} : {})
-    };
+    return this.modelContext.getStatusLineModelState();
   }
 
   /**

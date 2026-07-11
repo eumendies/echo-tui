@@ -9,6 +9,7 @@ import {redactSensitiveText} from '../../agent/agent-errors';
 import {REASONING_EFFORTS} from '../../types/agent';
 import type {LlmModelConfigInfo} from '../../config/llm-config';
 import type {ReasoningEffort} from '../../types/agent';
+import type {StatusLineModelState} from '../../types/render';
 
 type ModelCommandProfile = {
   id: string;
@@ -66,10 +67,29 @@ function normalizeModelInfo(info: LlmModelConfigInfo): ModelCommandInfo {
   };
 }
 
+function sanitizeModelConfigError(error: unknown, fallback: string): string {
+  return error instanceof Error && typeof error.message === 'string'
+    ? redactSensitiveText(error.message)
+    : fallback;
+}
+
 /**
- * 管理 /model 命令需要的模型信息读取与脱敏。
+ * 管理模型选择、推理等级和 status line 所需的非敏感模型状态。
  */
 class ModelContext {
+  private modelConfigError?: string;
+  private modelLabel: string;
+  private models: ModelCommandProfile[];
+  private reasoningEffort?: ReasoningEffort;
+  private selectedIndex: number;
+
+  constructor() {
+    this.modelLabel = 'model unavailable';
+    this.models = [];
+    this.selectedIndex = -1;
+    this.refreshModelState();
+  }
+
   /**
    * 读取当前模型配置并转换成 /model 命令需要的最小信息。
    */
@@ -80,53 +100,83 @@ class ModelContext {
   }
 
   /**
+   * 从用户配置刷新模型状态缓存；只保存模型命令和 status line 需要的非敏感字段。
+   */
+  refreshModelState(): void {
+    try {
+      const modelInfo = normalizeModelInfo(readLlmModelConfigInfo());
+      const selectedModel = modelInfo.models[modelInfo.selectedIndex] || modelInfo.models[0];
+
+      if (!selectedModel) {
+        this.applyUnavailableModelState('LLM 配置缺少 models');
+        return;
+      }
+
+      this.modelConfigError = undefined;
+      this.modelLabel = selectedModel.model || selectedModel.id || 'model unavailable';
+      this.models = modelInfo.models;
+      this.reasoningEffort = selectedModel.reasoningEffort;
+      this.selectedIndex = modelInfo.selectedIndex;
+    } catch (error: unknown) {
+      this.applyUnavailableModelState(sanitizeModelConfigError(error, '无法读取当前模型配置'));
+    }
+  }
+
+  /**
+   * 返回 status line 可直接使用的模型状态；该路径只读取内存缓存，不访问用户配置文件。
+   */
+  getStatusLineModelState(): StatusLineModelState {
+    return {
+      modelLabel: this.modelLabel,
+      ...(this.reasoningEffort ? {reasoningEffort: this.reasoningEffort} : {})
+    };
+  }
+
+  /**
    * 读取 /model 命令需要展示的当前模型信息；失败时返回可直接展示的错误摘要。
    */
   createModelCommandInfo(): ModelCommandInfoResult {
-    try {
-      const info = this.getModelInfo();
+    this.refreshModelState();
 
+    if (this.modelConfigError) {
       return {
-        models: info.models.map((model) => ({ ...model })),
-        selectedIndex: info.selectedIndex
-      };
-    } catch (error: unknown) {
-      return {
-        error: error instanceof Error && typeof error.message === 'string'
-          ? redactSensitiveText(error.message)
-          : '无法读取当前模型配置'
+        error: this.modelConfigError
       };
     }
+
+    return {
+      models: this.models.map((model) => ({...model})),
+      selectedIndex: this.selectedIndex
+    };
   }
 
   /**
    * 读取 /effort 命令需要展示的当前模型推理等级信息；失败时返回可直接展示的错误摘要。
    */
   createEffortCommandInfo(): EffortCommandInfoResult {
-    try {
-      const info = this.getModelInfo();
-      const selectedModel = info.models[info.selectedIndex] || info.models[0];
+    this.refreshModelState();
 
-      if (!selectedModel) {
-        throw new Error('LLM 配置缺少 models');
-      }
-
-      const selectedEffortIndex = selectedModel.reasoningEffort
-        ? REASONING_EFFORTS.indexOf(selectedModel.reasoningEffort)
-        : REASONING_EFFORTS.indexOf('medium');
-
+    if (this.modelConfigError) {
       return {
-        currentModelLabel: selectedModel.model || selectedModel.id,
-        efforts: [...REASONING_EFFORTS],
-        selectedIndex: selectedEffortIndex >= 0 ? selectedEffortIndex : REASONING_EFFORTS.indexOf('medium')
-      };
-    } catch (error: unknown) {
-      return {
-        error: error instanceof Error && typeof error.message === 'string'
-          ? redactSensitiveText(error.message)
-          : '无法读取当前推理等级配置'
+        error: this.modelConfigError
       };
     }
+
+    const selectedModel = this.models[this.selectedIndex] || this.models[0];
+
+    if (!selectedModel) {
+      return {error: 'LLM 配置缺少 models'};
+    }
+
+    const selectedEffortIndex = selectedModel.reasoningEffort
+      ? REASONING_EFFORTS.indexOf(selectedModel.reasoningEffort)
+      : REASONING_EFFORTS.indexOf('medium');
+
+    return {
+      currentModelLabel: selectedModel.model || selectedModel.id,
+      efforts: [...REASONING_EFFORTS],
+      selectedIndex: selectedEffortIndex >= 0 ? selectedEffortIndex : REASONING_EFFORTS.indexOf('medium')
+    };
   }
 
   /**
@@ -138,6 +188,7 @@ class ModelContext {
   selectModel(modelId: string): SelectModelResult {
     try {
       this.writeSelectedModel(modelId);
+      this.refreshModelState();
 
       return {ok: true};
     } catch (error: unknown) {
@@ -191,6 +242,7 @@ class ModelContext {
       fs.mkdirSync(path.dirname(targetPath), {recursive: true});
       fs.writeFileSync(tempPath, `${JSON.stringify(parsedConfig, null, 2)}\n`);
       fs.renameSync(tempPath, targetPath);
+      this.refreshModelState();
 
       return {ok: true};
     } catch (error: unknown) {
@@ -230,6 +282,17 @@ class ModelContext {
     fs.mkdirSync(path.dirname(targetPath), {recursive: true});
     fs.writeFileSync(tempPath, `${JSON.stringify(parsedConfig, null, 2)}\n`);
     fs.renameSync(tempPath, targetPath);
+  }
+
+  /**
+   * 写入无法使用模型配置时的安全占位状态，避免错误路径残留旧模型字段。
+   */
+  private applyUnavailableModelState(error?: string): void {
+    this.modelConfigError = error;
+    this.modelLabel = 'model unavailable';
+    this.models = [];
+    this.reasoningEffort = undefined;
+    this.selectedIndex = -1;
   }
 }
 

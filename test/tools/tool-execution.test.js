@@ -5,6 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { createApplyPatchToolHandler, APPLY_PATCH_TOOL_NAME } = require('../../src/tools/apply-patch-tool-handler');
+const { ChangeHistoryContext } = require('../../src/app/state/change-history-context');
 const {
   ASK_USER_QUESTIONS_TOOL_NAME,
   createAskUserQuestionsCancelledResult,
@@ -267,7 +268,7 @@ test('default tool registry exposes developed tools', () => {
     model: 'model',
     tools: {
       bash: {
-        timeoutMs: 30000,
+        timeoutMs: null,
         maxOutputBytes: 65536
       }
     }
@@ -869,7 +870,6 @@ test('shared bash runner supports abort without timeout', async () => {
     abortSignal: controller.signal,
     command: `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`,
     cwd: process.cwd(),
-    timeoutMs: null,
     onOutput(event) {
       if (event.chunk.includes('start')) {
         controller.abort();
@@ -969,12 +969,11 @@ test('bash tool times out long-running commands', async () => {
   assert.match(result.text, /Command timed out/);
 });
 
-test('bash tool responds to executor abort signal', async () => {
+test('bash tool defaults to no timeout and responds to executor abort signal', async () => {
   const controller = new AbortController();
   const script = "process.stdout.write('start'); setInterval(() => {}, 1000);";
   const executor = createToolExecutor(createToolRegistry([createBashToolHandler({
-    cwd: process.cwd(),
-    timeoutMs: 30000
+    cwd: process.cwd()
   })]));
   const pending = executor.execute(createCall({
     argumentsText: JSON.stringify({ command: `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}` })
@@ -2513,6 +2512,34 @@ test('apply_patch updates existing files when diff --git omits file headers', as
   assert.equal(readWorkspaceFile(cwd, 'src.txt'), 'alpha\nBETA\ngamma\n');
 });
 
+test('apply_patch updates symlink targets while delete still rejects symlinks', async () => {
+  const cwd = createTempWorkspace();
+  fs.writeFileSync(path.join(cwd, 'real.txt'), 'alpha\nbeta\n', 'utf8');
+  fs.symlinkSync(path.join(cwd, 'real.txt'), path.join(cwd, 'link.txt'));
+  const executor = createToolExecutor(createToolRegistry([createApplyPatchToolHandler({ cwd })]));
+  const updatePatch = [
+    '--- a/link.txt',
+    '+++ b/link.txt',
+    '@@ -1,2 +1,2 @@',
+    ' alpha',
+    '-beta',
+    '+BETA',
+    ''
+  ].join('\n');
+
+  const update = await executor.execute(createPatchCall(updatePatch));
+
+  assert.equal(update.ok, true);
+  assert.equal(readWorkspaceFile(cwd, 'real.txt'), 'alpha\nBETA\n');
+  assert.equal(fs.lstatSync(path.join(cwd, 'link.txt')).isSymbolicLink(), true);
+
+  const deletion = await executor.execute(createPatchCall('*** Begin Patch\n*** Delete File: link.txt\n*** End Patch'));
+
+  assert.equal(deletion.ok, false);
+  assert.match(deletion.text, /symlink/);
+  assert.equal(fs.lstatSync(path.join(cwd, 'link.txt')).isSymbolicLink(), true);
+});
+
 test('apply_patch supports mixed standard and headerless file patches', async () => {
   const cwd = createTempWorkspace();
   fs.writeFileSync(path.join(cwd, 'one.txt'), 'one\ntwo\n', 'utf8');
@@ -2892,22 +2919,175 @@ test('apply_patch advances Begin Patch cursor after repeated context-only chunks
   ].join('\n'));
 });
 
-test('apply_patch rejects unsupported Begin Patch delete and preserves all-or-nothing', async () => {
+test('apply_patch deletes files from Begin Patch and restores through change history', async () => {
   const cwd = createTempWorkspace();
+  const target = path.join(cwd, 'old.txt');
+  fs.writeFileSync(target, 'alpha\nbeta\n', 'utf8');
   const executor = createToolExecutor(createToolRegistry([createApplyPatchToolHandler({ cwd })]));
+  const history = new ChangeHistoryContext();
   const patch = [
     '*** Begin Patch',
-    '*** Add File: created.txt',
-    '+created',
     '*** Delete File: old.txt',
     '*** End Patch'
   ].join('\n');
 
+  history.beginCheckpoint({cwd, transcriptStartIndex: 0});
+  const result = await executor.execute(createPatchCall(patch), {changeRecorder: history.createRecorder()});
+  history.finalizeCheckpoint();
+
+  assert.equal(result.ok, true);
+  assert.equal(result.text, 'Applied patch.\nChanged files:\n- old.txt (deleted)');
+  assert.equal(fs.existsSync(target), false);
+  assert.deepEqual(result.display, {
+    kind: 'apply_patch',
+    files: [{
+      path: 'old.txt',
+      kind: 'deleted',
+      lines: [
+        {kind: 'removed', text: 'alpha', postLine: null},
+        {kind: 'removed', text: 'beta', postLine: null}
+      ]
+    }]
+  });
+  assert.deepEqual(history.last.files.map((entry) => ({path: path.basename(entry.path), state: entry.state})), [
+    {path: 'old.txt', state: 'updated'}
+  ]);
+  assert.deepEqual(history.getSummary(), {
+    status: 'ready',
+    checkpointId: history.last.id,
+    fileCount: 1,
+    restoreFileCount: 1,
+    deleteFileCount: 0
+  });
+
+  const undo = history.executeUndo();
+
+  assert.equal(undo.ok, true);
+  assert.equal(fs.readFileSync(target, 'utf8'), 'alpha\nbeta\n');
+});
+
+test('apply_patch deletes files from unified diff with content verification', async () => {
+  const cwd = createTempWorkspace();
+  fs.writeFileSync(path.join(cwd, 'remove.txt'), 'alpha\nbeta\n', 'utf8');
+  const executor = createToolExecutor(createToolRegistry([createApplyPatchToolHandler({ cwd })]));
+  const patch = [
+    'diff --git a/remove.txt b/remove.txt',
+    'deleted file mode 100644',
+    'index 1111111..0000000',
+    '--- a/remove.txt',
+    '+++ /dev/null',
+    '@@ -1,2 +0,0 @@',
+    '-alpha',
+    '-beta',
+    ''
+  ].join('\n');
+
   const result = await executor.execute(createPatchCall(patch));
 
-  assert.equal(result.ok, false);
-  assert.match(result.text, /delete file patches are not supported/);
-  assert.equal(fs.existsSync(path.join(cwd, 'created.txt')), false);
+  assert.equal(result.ok, true);
+  assert.match(result.text, /remove\.txt \(deleted\)/);
+  assert.equal(fs.existsSync(path.join(cwd, 'remove.txt')), false);
+  assert.deepEqual(result.display.files[0], {
+    path: 'remove.txt',
+    kind: 'deleted',
+    lines: [
+      {kind: 'removed', text: 'alpha', postLine: null},
+      {kind: 'removed', text: 'beta', postLine: null}
+    ]
+  });
+});
+
+test('apply_patch rejects unsafe delete targets without writing other changes', async () => {
+  const cwd = createTempWorkspace();
+  fs.writeFileSync(path.join(cwd, 'victim.txt'), 'keep\n', 'utf8');
+  fs.writeFileSync(path.join(cwd, 'changed.txt'), 'actual\n', 'utf8');
+  fs.writeFileSync(path.join(cwd, 'partial.txt'), 'actual\nleftover\n', 'utf8');
+  fs.mkdirSync(path.join(cwd, 'dir-target'));
+  fs.writeFileSync(path.join(cwd, 'link-target.txt'), 'target\n', 'utf8');
+  fs.symlinkSync(path.join(cwd, 'link-target.txt'), path.join(cwd, 'link.txt'));
+  fs.writeFileSync(path.join(cwd, 'binary.txt'), Buffer.from([65, 0, 66]));
+  fs.writeFileSync(path.join(cwd, 'large.txt'), '12345', 'utf8');
+  const executor = createToolExecutor(createToolRegistry([createApplyPatchToolHandler({cwd})]));
+  const smallExecutor = createToolExecutor(createToolRegistry([createApplyPatchToolHandler({cwd, maxFileBytes: 4})]));
+
+  const staleDelete = await executor.execute(createPatchCall([
+    '--- a/changed.txt',
+    '+++ /dev/null',
+    '@@ -1 +0,0 @@',
+    '-expected',
+    ''
+  ].join('\n')));
+  assert.equal(staleDelete.ok, false);
+  assert.match(staleDelete.text, /matched 0 locations/);
+  assert.equal(readWorkspaceFile(cwd, 'changed.txt'), 'actual\n');
+
+  const partialDelete = await executor.execute(createPatchCall([
+    '--- a/partial.txt',
+    '+++ /dev/null',
+    '@@ -1,2 +0,0 @@',
+    '-actual',
+    ''
+  ].join('\n')));
+  assert.equal(partialDelete.ok, false);
+  assert.match(partialDelete.text, /does not remove the entire file/);
+  assert.equal(readWorkspaceFile(cwd, 'partial.txt'), 'actual\nleftover\n');
+
+  const additiveDelete = await executor.execute(createPatchCall([
+    '--- a/changed.txt',
+    '+++ /dev/null',
+    '@@ -1 +0,0 @@',
+    '-actual',
+    '+leftover',
+    ''
+  ].join('\n')));
+  assert.equal(additiveDelete.ok, false);
+  assert.match(additiveDelete.text, /must only contain removed lines/);
+  assert.equal(readWorkspaceFile(cwd, 'changed.txt'), 'actual\n');
+
+  const missingDelete = await executor.execute(createPatchCall('*** Begin Patch\n*** Delete File: missing.txt\n*** End Patch'));
+  assert.equal(missingDelete.ok, false);
+  assert.match(missingDelete.text, /does not exist/);
+
+  const gitDelete = await executor.execute(createPatchCall('*** Begin Patch\n*** Delete File: .git/config\n*** End Patch'));
+  assert.equal(gitDelete.ok, false);
+  assert.match(gitDelete.text, /\.git paths are not allowed/);
+
+  const nulDelete = await executor.execute(createPatchCall('*** Begin Patch\n*** Delete File: bad\0path.txt\n*** End Patch'));
+  assert.equal(nulDelete.ok, false);
+  assert.match(nulDelete.text, /must not contain NUL/);
+
+  const directoryDelete = await executor.execute(createPatchCall('*** Begin Patch\n*** Delete File: dir-target\n*** End Patch'));
+  assert.equal(directoryDelete.ok, false);
+  assert.match(directoryDelete.text, /not a file/);
+  assert.equal(fs.existsSync(path.join(cwd, 'dir-target')), true);
+
+  const symlinkDelete = await executor.execute(createPatchCall('*** Begin Patch\n*** Delete File: link.txt\n*** End Patch'));
+  assert.equal(symlinkDelete.ok, false);
+  assert.match(symlinkDelete.text, /symlink/);
+  assert.equal(fs.lstatSync(path.join(cwd, 'link.txt')).isSymbolicLink(), true);
+
+  const binaryDelete = await executor.execute(createPatchCall('*** Begin Patch\n*** Delete File: binary.txt\n*** End Patch'));
+  assert.equal(binaryDelete.ok, false);
+  assert.match(binaryDelete.text, /binary/);
+  assert.equal(fs.existsSync(path.join(cwd, 'binary.txt')), true);
+
+  const largeDelete = await smallExecutor.execute(createPatchCall('*** Begin Patch\n*** Delete File: large.txt\n*** End Patch'));
+  assert.equal(largeDelete.ok, false);
+  assert.match(largeDelete.text, /exceeds 4 bytes/);
+  assert.equal(fs.existsSync(path.join(cwd, 'large.txt')), true);
+
+  const allOrNothing = await executor.execute(createPatchCall([
+    '*** Begin Patch',
+    '*** Delete File: victim.txt',
+    '*** Add File: changed.txt',
+    '+new',
+    '*** End Patch'
+  ].join('\n')));
+
+  assert.equal(allOrNothing.ok, false);
+  assert.match(allOrNothing.text, /already exists/);
+  assert.equal(readWorkspaceFile(cwd, 'victim.txt'), 'keep\n');
+  assert.equal(readWorkspaceFile(cwd, 'changed.txt'), 'actual\n');
 });
 
 test('apply_patch applies multi-file patches all at once', async () => {
@@ -3082,11 +3262,11 @@ test('apply_patch rejects unsupported patch types', async () => {
   fs.writeFileSync(path.join(cwd, 'file.txt'), 'old\n', 'utf8');
   const executor = createToolExecutor(createToolRegistry([createApplyPatchToolHandler({ cwd })]));
   const cases = [
-    ['delete', ['--- a/file.txt', '+++ /dev/null', '@@ -1 +0,0 @@', '-old', '']],
     ['rename', ['diff --git a/file.txt b/renamed.txt', 'rename from file.txt', 'rename to renamed.txt', '']],
     ['mode', ['old mode 100644', 'new mode 100755', '--- a/file.txt', '+++ b/file.txt', '@@ -1 +1 @@', '-old', '+new', '']],
     ['binary', ['GIT binary patch', 'literal 0', '']],
-    ['symlink', ['diff --git a/link b/link', 'new file mode 120000', '--- /dev/null', '+++ b/link', '@@ -0,0 +1 @@', '+target', '']]
+    ['symlink', ['diff --git a/link b/link', 'new file mode 120000', '--- /dev/null', '+++ b/link', '@@ -0,0 +1 @@', '+target', '']],
+    ['deleted symlink', ['diff --git a/link b/link', 'deleted file mode 120000', '--- a/link', '+++ /dev/null', '@@ -1 +0,0 @@', '-target', '']]
   ];
 
   for (const [name, lines] of cases) {

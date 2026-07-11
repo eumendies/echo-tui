@@ -15,6 +15,7 @@ const {
   createAppRenderer,
   renderTranscriptLines
 } = require('../../src/render/app-renderer');
+const { renderToolCallPreviewLines } = require('../../src/render/tool-message-renderer');
 
 function createAskUserQuestionsCall(callId, questions) {
   return {
@@ -977,6 +978,152 @@ test('renderTranscriptLines keeps read_files transcript records unchanged', () =
   assert.deepEqual(resultRecord, before);
 });
 
+test('renderTranscriptLines projects successful use_skill pairs as a concise summary', () => {
+  const records = [
+    {
+      role: 'tool_call',
+      text: '',
+      toolCallId: 'skill-success',
+      toolName: 'use_skill',
+      argumentsText: JSON.stringify({name: 'openspec-explore'})
+    },
+    {
+      role: 'tool_result',
+      text: [
+        'skill: openspec-explore',
+        'source: /repo/.echo/skills/openspec-explore/SKILL.md',
+        '',
+        '# Explore Skill Body',
+        'Full skill instructions that should stay provider-visible only.',
+        '',
+        '[Skill Resources]',
+        '- docs/private-notes.md'
+      ].join('\n'),
+      toolCallId: 'skill-success',
+      toolName: 'use_skill',
+      ok: true
+    }
+  ];
+  const lines = renderTranscriptLines(records, 100).map((line) => stripAnsi(line));
+
+  assert.ok(lines.includes('◆ Using skill · openspec-explore'));
+  assert.equal(lines.some((line) => line.includes('source:')), false);
+  assert.equal(lines.some((line) => line.includes('Explore Skill Body')), false);
+  assert.equal(lines.some((line) => line.includes('provider-visible only')), false);
+  assert.equal(lines.some((line) => line.includes('[Skill Resources]')), false);
+  assert.equal(lines.some((line) => line.includes('private-notes.md')), false);
+});
+
+test('renderTranscriptLines hides use_skill arguments in successful pairs', () => {
+  const lines = renderTranscriptLines([
+    {
+      role: 'tool_call',
+      text: '',
+      toolCallId: 'skill-args',
+      toolName: 'use_skill',
+      argumentsText: JSON.stringify({name: 'review', arguments: 'inspect src/secrets.ts'})
+    },
+    {
+      role: 'tool_result',
+      text: [
+        'skill: review',
+        'source: /repo/.echo/skills/review/SKILL.md',
+        'arguments: inspect src/secrets.ts',
+        '',
+        '# Review Skill'
+      ].join('\n'),
+      toolCallId: 'skill-args',
+      toolName: 'use_skill',
+      ok: true
+    }
+  ], 100).map((line) => stripAnsi(line));
+
+  assert.ok(lines.includes('◆ Using skill · review'));
+  assert.equal(lines.some((line) => line.includes('"arguments"')), false);
+  assert.equal(lines.some((line) => line.includes('arguments:')), false);
+  assert.equal(lines.some((line) => line.includes('inspect src/secrets.ts')), false);
+});
+
+test('renderTranscriptLines and tool call preview summarize pending use_skill calls', () => {
+  const argumentsText = JSON.stringify({name: 'echo-tui-setup', arguments: 'configure providers'});
+  const transcriptLines = renderTranscriptLines([
+    {
+      role: 'tool_call',
+      text: '',
+      toolCallId: 'skill-pending',
+      toolName: 'use_skill',
+      argumentsText
+    }
+  ], 100).map((line) => stripAnsi(line));
+  const previewLines = renderToolCallPreviewLines('use_skill', argumentsText, 100).map((line) => stripAnsi(line));
+
+  assert.ok(transcriptLines.includes('◆ Using skill · echo-tui-setup'));
+  assert.ok(previewLines.includes('◆ Using skill · echo-tui-setup'));
+  assert.equal([...transcriptLines, ...previewLines].some((line) => line.includes('"name"')), false);
+  assert.equal([...transcriptLines, ...previewLines].some((line) => line.includes('configure providers')), false);
+});
+
+test('renderTranscriptLines shows bounded diagnostics for failed use_skill pairs', () => {
+  const failureText = [
+    'Unknown skill: missing',
+    'available_skills:',
+    ...Array.from({length: 14}, (_unused, index) => `- skill-${index + 1}`)
+  ].join('\n');
+  const lines = renderTranscriptLines([
+    {
+      role: 'tool_call',
+      text: '',
+      toolCallId: 'skill-failed',
+      toolName: 'use_skill',
+      argumentsText: JSON.stringify({name: 'missing'})
+    },
+    {
+      role: 'tool_result',
+      text: failureText,
+      toolCallId: 'skill-failed',
+      toolName: 'use_skill',
+      ok: false
+    }
+  ], 32).map((line) => stripAnsi(line));
+
+  assert.ok(lines.some((line) => line.includes('Using skill · missing')));
+  assert.ok(lines.includes('  ⎿ Unknown skill: missing'));
+  assert.ok(lines.includes('    available_skills:'));
+  assert.ok(lines.some((line) => line.includes('[tool output truncated')));
+  assert.equal(lines.some((line) => line.includes('skill-12')), false);
+  assert.equal(lines.every((line) => displayWidth(line) <= safeRenderWidth(32)), true);
+});
+
+test('renderTranscriptLines keeps use_skill records unchanged and degrades malformed calls safely', () => {
+  const records = [
+    {
+      role: 'tool_call',
+      text: 'use_skill({not-json)',
+      toolCallId: 'skill-malformed',
+      toolName: 'use_skill',
+      argumentsText: '{not-json'
+    },
+    {
+      role: 'tool_result',
+      text: [
+        'skill: malformed',
+        'source: /repo/.echo/skills/malformed/SKILL.md',
+        '',
+        '# Hidden Skill Body'
+      ].join('\n'),
+      toolCallId: 'skill-malformed',
+      toolName: 'use_skill',
+      ok: true
+    }
+  ];
+  const before = JSON.parse(JSON.stringify(records));
+  const lines = renderTranscriptLines(records, 100).map((line) => stripAnsi(line));
+
+  assert.ok(lines.includes('◆ Using skill'));
+  assert.equal(lines.some((line) => line.includes('Hidden Skill Body')), false);
+  assert.deepEqual(records, before);
+});
+
 test('renderTranscriptLines renders current apply_patch metadata with file grouping, gutter, and full-row backgrounds', () => {
   const renderedLines = renderTranscriptLines(
     [
@@ -1029,6 +1176,51 @@ test('renderTranscriptLines renders current apply_patch metadata with file group
   assert.doesNotMatch(renderedLines.find((line) => stripAnsi(line).includes('alpha')), /\x1b\[48;5;(52|22)m/);
   assert.equal(stripAnsi(renderedLines.find((line) => stripAnsi(line).includes('- │ beta'))).length, 79);
   assert.equal(stripAnsi(renderedLines.find((line) => stripAnsi(line).includes('+ │ BETA'))).length, 79);
+});
+
+test('renderTranscriptLines renders deleted apply_patch metadata as removed file content', () => {
+  const renderedLines = renderTranscriptLines(
+    [
+      {
+        role: 'tool_call',
+        text: 'apply_patch({"patch":"raw"})',
+        toolCallId: 'delete_patch',
+        toolName: 'apply_patch',
+        argumentsText: '{"patch":"*** Begin Patch\\n*** Delete File: old.txt\\n*** End Patch"}'
+      },
+      {
+        role: 'tool_result',
+        text: 'Applied patch.\nChanged files:\n- old.txt (deleted)',
+        toolCallId: 'delete_patch',
+        toolName: 'apply_patch',
+        ok: true,
+        display: {
+          kind: 'apply_patch',
+          files: [{
+            path: 'old.txt',
+            kind: 'deleted',
+            lines: [
+              {kind: 'removed', text: 'alpha', postLine: null},
+              {kind: 'removed', text: 'beta', postLine: null}
+            ]
+          }]
+        }
+      }
+    ],
+    80
+  );
+  const lines = renderedLines.map((line) => stripAnsi(line));
+
+  assert.deepEqual(lines.map((line) => line.trimEnd()), [
+    '◆ apply_patch(delete old.txt)',
+    '  ⎿ deleted old.txt  +0 -2',
+    '    - │ alpha',
+    '    - │ beta',
+    ''
+  ]);
+  assert.ok(!lines.some((line) => line.includes('*** Delete File')));
+  assert.ok(!lines.some((line) => line.includes('Applied patch')));
+  assert.match(renderedLines.find((line) => stripAnsi(line).includes('- │ alpha')), /\x1b\[97m\x1b\[48;5;52m- │ alpha/);
 });
 
 test('renderTranscriptLines renders apply_patch failures without previews and rejects invalid metadata', () => {

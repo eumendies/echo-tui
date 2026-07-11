@@ -51,7 +51,7 @@
 - **THEN** handler SHALL NOT 抛出未捕获异常中断 app
 
 ### Requirement: bash command tool
-系统 SHALL 提供第一版本地 bash 工具 `run_bash_command`。该工具 SHALL 只执行非交互命令，SHALL 在当前工作区中运行，SHALL 捕获 stdout、stderr、exit code、耗时、timeout 和截断状态，并 SHALL 把模型继续工作所需的信息格式化为紧凑 tool result 文本；完整执行状态 SHALL 继续保留在结构化 result 字段中。
+系统 SHALL 提供第一版本地 bash 工具 `run_bash_command`。该工具 SHALL 只执行非交互命令，SHALL 在当前工作区中运行，SHALL 捕获 stdout、stderr、exit code、耗时、可选 timeout 和截断状态，并 SHALL 把模型继续工作所需的信息格式化为紧凑 tool result 文本；完整执行状态 SHALL 继续保留在结构化 result 字段中。
 
 #### Scenario: 执行成功的 bash 命令
 - **WHEN** `run_bash_command` 收到 `{ "command": "pwd" }` 形式的有效参数
@@ -67,8 +67,9 @@
 - **THEN** result SHALL 包含该 command、exit code、stdout 和 stderr
 - **THEN** 系统 SHALL NOT 仅因非零 exit code 追加本地 `error` transcript record
 
-#### Scenario: 命令超时
-- **WHEN** bash 命令运行超过配置的 timeout
+#### Scenario: 显式 timeout 命令超时
+- **WHEN** bash tool 配置了正整数 timeout
+- **AND** bash 命令运行超过该 timeout
 - **THEN** bash handler SHALL 终止该命令
 - **THEN** result SHALL 标记 `timedOut: true` 且 `ok: false`
 - **THEN** result 文本 SHALL 包含该 command 并明确说明 timeout
@@ -82,20 +83,27 @@
 #### Scenario: 不支持交互输入
 - **WHEN** bash 命令尝试读取 stdin 或需要 TTY 交互
 - **THEN** bash handler SHALL 不提供交互式 stdin 或 TTY
-- **THEN** 命令 SHALL 只能通过退出、失败或 timeout 结束
+- **THEN** 命令 SHALL 只能通过退出、失败、用户中断或显式 timeout 结束
 
 ### Requirement: bash tool availability and execution limits
-系统 SHALL 把当前已开发的 `run_bash_command` 暴露给模型。系统 SHALL 支持 timeout 和 max output bytes 限制，并 SHALL 对无效配置使用安全默认值。
+系统 SHALL 把当前已开发的 `run_bash_command` 暴露给模型。系统 SHALL 默认不为 bash tool 设置自动 timeout，SHALL 依赖 turn-level 中断信号响应用户 Esc；系统 SHALL 继续支持 max output bytes 限制，并 MAY 在用户显式配置正整数 timeoutMs 时启用命令 timeout。
 
 #### Scenario: 默认暴露 bash tool
 - **WHEN** 创建默认 tool registry
 - **THEN** tool registry SHALL 包含 `run_bash_command`
 - **THEN** OpenAI 请求 SHALL 可以发送该工具 schema
 
-#### Scenario: 应用 timeout 和输出上限
+#### Scenario: 默认 bash tool 不自动超时
+- **WHEN** bash tool 执行命令且未配置正整数 timeoutMs
+- **THEN** executor 或 handler SHALL NOT 启动固定时长的 timeout timer
+- **THEN** turn-level 取消信号触发时 handler SHALL 尽力终止正在运行的命令
+
+#### Scenario: 应用显式 timeout 和输出上限
 - **WHEN** bash tool 执行命令
-- **THEN** executor 或 handler SHALL 使用配置的 timeout 和 max output bytes
-- **THEN** 无效、缺失或越界配置 SHALL 被归一化为安全默认值
+- **THEN** executor 或 handler SHALL 使用配置的 max output bytes
+- **THEN** 正整数 timeoutMs 配置 SHALL 作为显式 timeout 使用
+- **THEN** 无效、缺失或 null timeoutMs SHALL 被归一化为无自动 timeout
+- **THEN** 无效、缺失或越界 max output bytes 配置 SHALL 被归一化为安全默认值
 
 ### Requirement: plan mode readonly bash execution policy
 系统 SHALL 在 plan mode 中对 provider tool call 应用只读执行策略。Provider-visible tool registry SHALL 与 normal mode 保持一致以稳定 tools schema；但 provider tool call 在进入 executor 前 SHALL 经过 mode-aware classifier。不符合 plan mode 只读策略的命令或写入型工具 SHALL 被拒绝且不得执行。
@@ -111,7 +119,7 @@
 - **WHEN** plan mode 下 `run_bash_command` 收到只读 git inspection 命令，例如 `git status --short` 或 `git diff --stat`
 - **THEN** classifier SHALL 将该 tool call 判定为 safe
 - **AND** executor SHALL 使用普通 bash handler 和共享 bash runner 执行该命令
-- **AND** result SHALL 保留 stdout、stderr、exit code、timeout、duration 和 truncated 等既有 bash result 语义
+- **AND** result SHALL 保留 stdout、stderr、exit code、可选 timeout、duration 和 truncated 等既有 bash result 语义
 
 #### Scenario: Reject command outside readonly allowlist
 - **WHEN** plan mode 下 `run_bash_command` 收到不在只读 allowlist 内的命令，例如 `npm test`、`git reset --hard HEAD` 或 `python script.py`
@@ -144,7 +152,7 @@
 - **AND** `apply_patch` SHALL 继续按既有 approval 策略处理
 
 ### Requirement: apply_patch text editing tool
-系统 SHALL 提供本地工具 `apply_patch`，用于应用受支持的 patch 文本来新增或更新 UTF-8 文本文件。该工具 SHALL 接收 JSON object 参数 `{ "patch": string }`，并 SHALL 返回可回传模型的结构化 tool execution result。
+系统 SHALL 提供本地工具 `apply_patch`，用于应用受支持的 patch 文本来新增、更新或删除 UTF-8 文本文件。该工具 SHALL 接收 JSON object 参数 `{ "patch": string }`，并 SHALL 返回可回传模型的结构化 tool execution result。
 
 #### Scenario: 默认注册 apply_patch 工具定义
 - **WHEN** 系统创建默认 tool registry
@@ -170,11 +178,26 @@
 - **THEN** handler SHALL 在必要时创建父目录
 - **THEN** 如果目标文件已存在，handler SHALL 返回 `ok: false` 且不得覆盖该文件
 
+#### Scenario: 应用删除文件的 unified diff
+- **WHEN** `apply_patch` 收到 `--- a/<path>` 到 `+++ /dev/null` 的有效删除文件 patch
+- **THEN** handler SHALL 将该 patch 解析为删除目标文件的操作
+- **THEN** handler SHALL 接受常见 `deleted file mode` metadata 作为删除文件语义的一部分
+- **THEN** handler SHALL 使用删除 hunk 校验当前目标文件内容与 patch 表达的删除内容匹配
+- **THEN** handler SHALL 删除该文本文件
+- **THEN** result SHALL 标记 `ok: true` 并包含 changed files summary
+
 #### Scenario: 应用 Begin Patch 新增文件
 - **WHEN** `apply_patch` 收到 `*** Begin Patch` / `*** Add File: <path>` / `*** End Patch` 格式的有效新增文件 patch
 - **THEN** handler SHALL 创建该文本文件
 - **THEN** handler SHALL 将 `+` 前缀行作为新增文件内容
 - **THEN** handler SHALL 复用相同路径校验和目标已存在检查
+
+#### Scenario: 应用 Begin Patch 删除文件
+- **WHEN** `apply_patch` 收到 `*** Begin Patch` / `*** Delete File: <path>` / `*** End Patch` 格式的有效删除文件 patch
+- **THEN** handler SHALL 将该 patch 解析为删除目标文件的操作
+- **THEN** handler SHALL 删除该普通 UTF-8 文本文件
+- **THEN** 如果目标文件不存在，handler SHALL 返回 `ok: false` 且不得写入任何其他文件
+- **THEN** handler SHALL 复用相同路径校验和安全上限检查
 
 #### Scenario: 应用 Begin Patch 更新文件
 - **WHEN** `apply_patch` 收到 `*** Begin Patch` / `*** Update File: <path>` / `*** End Patch` 格式的有效更新文件 patch
@@ -226,7 +249,7 @@
 - **THEN** handler SHALL 允许该路径并解析到对应绝对路径
 - **WHEN** patch 文件路径包含 NUL 或指向 `.git` 内部路径
 - **THEN** handler SHALL 返回 `ok: false`
-- **THEN** handler SHALL 不写入任何文件
+- **THEN** handler SHALL 不写入、创建或删除任何文件
 
 #### Scenario: hunk 匹配失败或歧义时拒绝应用
 - **WHEN** unified diff update hunk 在目标文件中匹配 0 次或匹配多次
@@ -237,12 +260,22 @@
 - **THEN** handler SHALL 返回 `ok: false`
 - **THEN** result 文本 SHALL 提示重新读取文件或增加上下文
 - **THEN** handler SHALL 不写入任何文件
+- **WHEN** unified diff delete hunk 不能确认当前文件内容正被删除为空内容
+- **THEN** handler SHALL 返回 `ok: false`
+- **THEN** result 文本 SHALL 提示重新读取文件或增加上下文
+- **THEN** handler SHALL 不写入、创建或删除任何文件
+
+#### Scenario: 删除目标必须是可追踪文本文件
+- **WHEN** `apply_patch` 删除操作的目标文件不存在、是目录、是 symlink、不是普通文件、包含 NUL 字节或超过单文件安全上限
+- **THEN** handler SHALL 返回 `ok: false`
+- **THEN** result 文本 SHALL 包含简洁失败原因
+- **THEN** handler SHALL 不写入、创建或删除任何文件
 
 #### Scenario: 拒绝第一版不支持的 patch 类型
-- **WHEN** patch 表达删除文件、重命名/移动文件、mode/chmod change、binary patch 或 symlink patch
+- **WHEN** patch 表达重命名/移动文件、mode/chmod change、binary patch 或 symlink patch
 - **THEN** handler SHALL 返回 `ok: false`
 - **THEN** result 文本 SHALL 明确说明该 patch 类型不受支持
-- **THEN** handler SHALL 不写入任何文件
+- **THEN** handler SHALL 不写入、创建或删除任何文件
 
 #### Scenario: patch 输入无效时返回工具失败结果
 - **WHEN** `apply_patch` 收到空 patch、非 unified diff 文本、缺少目标路径或格式无法解析的 hunk
@@ -252,8 +285,7 @@
 #### Scenario: 限制 patch 和文件规模
 - **WHEN** patch 文本、单个目标文件、文件数量或 hunk 数量超过内置安全上限
 - **THEN** handler SHALL 返回 `ok: false`
-- **THEN** handler SHALL 不写入任何文件
-
+- **THEN** handler SHALL 不写入、创建或删除任何文件
 ### Requirement: ask_user_questions 工具注册
 系统 SHALL 在默认本地 tool registry 中注册 `ask_user_questions` 工具定义，使 provider request 可以携带该 function tool schema。该工具的用户交互执行 SHALL 由 agent loop/app callback 处理，而不是由普通 tool executor handler 直接访问 TUI 状态。
 
@@ -294,12 +326,13 @@
 - **THEN** 后续 provider continuation SHALL 能接收该 skill 内容作为 function call output
 
 ### Requirement: apply_patch display metadata
-`apply_patch` handler SHALL 为成功解析的 patch input 生成 display-only metadata，使 TUI 可以基于完整事实行序列展示实际编辑结构和可信位置，而无需重新解析 patch 文本或在渲染时读取目标文件。该 metadata SHALL 保持 provider-facing result text 和 patch 执行语义不变。
+`apply_patch` handler SHALL 为成功解析的 patch input 生成 display-only metadata，使 TUI 可以基于完整事实行序列展示实际编辑结构和可信位置，而无需重新解析 patch 文本或在渲染时读取目标文件。该 metadata SHALL 支持 added、updated 和 deleted 文件种类，并 SHALL 保持 provider-facing result text 和 patch 执行语义不变。
 
 #### Scenario: 生成完整文件事实行
 - **WHEN** `apply_patch` 成功解析 patch input
 - **THEN** handler SHALL 为每个成功应用的 update file 记录覆盖完整 post-image 文件的有序 context/added 行
 - **THEN** handler SHALL 在对应修改位置插入 removed 行
+- **THEN** handler SHALL 为每个 delete file 记录原文件的有序 removed 行
 - **THEN** handler SHALL NOT 在 metadata 中预先折叠 context 或生成 omitted rows
 - **THEN** display metadata SHALL NOT 包含只用于版本兼容的 schema version 字段
 
@@ -329,6 +362,13 @@
 - **THEN** added 行的修改后文件位置 SHALL 从第 1 行开始依次推进
 - **THEN** handler SHALL NOT 将 `*** Add File`、`---`、`+++` 或 hunk header 等 patch 语法记录为展示行
 
+#### Scenario: 记录删除文件内容
+- **WHEN** `apply_patch` 成功解析并模拟 deleted file patch
+- **THEN** handler SHALL 将原文件每个内容行记录为 removed 展示行
+- **THEN** deleted 文件 metadata 的 `kind` SHALL 为 `deleted`
+- **THEN** deleted 文件的 removed 行 `postLine` SHALL 为 `null`
+- **THEN** handler SHALL NOT 将 `*** Delete File`、`---`、`+++`、`deleted file mode` 或 hunk header 等 patch 语法记录为展示行
+
 #### Scenario: display metadata 不改变执行语义
 - **WHEN** `apply_patch` 成功应用 patch
 - **THEN** result SHALL 保留现有包含 changed files summary 的 provider-facing success text
@@ -345,6 +385,13 @@
 - **THEN** display metadata SHALL NOT 包含无法确认的目标文件周边上下文
 - **THEN** handler SHALL NOT 写入部分文件变更
 
+#### Scenario: 删除校验失败时不伪造位置
+- **WHEN** patch 已成功解析但 delete hunk 无法确认当前文件内容正被删除为空内容
+- **THEN** result SHALL 保持 `ok: false` 和简洁失败原因
+- **THEN** result MAY 包含解析得到的尝试删除结构
+- **THEN** display metadata 中无法确认的 removed 行 SHALL 使用 `postLine: null`
+- **THEN** handler SHALL NOT 删除目标文件
+
 #### Scenario: 写入失败时保留已模拟的展示结构
 - **WHEN** 所有 hunk 已在内存中成功定位和模拟但文件写入失败
 - **THEN** result SHALL 保持 `ok: false` 和写入失败原因
@@ -355,7 +402,6 @@
 - **WHEN** `apply_patch` 无法将 patch input 解析为支持的操作
 - **THEN** result SHALL 保持 `ok: false` 和现有简洁解析失败原因
 - **THEN** result SHALL NOT require display metadata
-
 ### Requirement: grep local text search tool
 系统 SHALL 提供本地工具 `grep`，用于在本地文件中搜索文本并返回结构化、受限的匹配结果。该工具 SHALL 接收 JSON object 参数 `{ "pattern": string, "paths"?: string[] | null, "glob"?: string | null, "literal"?: boolean | null, "case_sensitive"?: boolean | null }`。该工具 SHALL 使用本地 ripgrep 执行搜索，但 SHALL NOT 通过 shell 拼接命令。
 
@@ -755,7 +801,7 @@
 #### Scenario: 安全 bash 继续普通执行
 - **WHEN** agent loop runtime 收到被分类为可直接执行的 `run_bash_command` tool call
 - **THEN** 系统 SHALL 通过普通 tool executor 调用 bash handler
-- **THEN** bash handler SHALL 保持现有 stdout、stderr、exit code、timeout 和截断结果语义
+- **THEN** bash handler SHALL 保持现有 stdout、stderr、exit code、可选 timeout 和截断结果语义
 
 #### Scenario: 风险分类不改变 bash handler 契约
 - **WHEN** bash handler 被普通 tool executor 调用

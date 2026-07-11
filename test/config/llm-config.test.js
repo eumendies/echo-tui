@@ -358,7 +358,7 @@ test('readLlmConfig uses the first profile when selectedModel points to a remove
   });
 });
 
-test('readLlmConfig reads explicit bash tool limits', () => {
+test('readLlmConfig reads explicit bash tool limits without the previous 30s timeout ceiling', () => {
   const config = readLlmConfig({
     configPath: '/tmp/echo-config.json',
     readFile: readConfigFrom(JSON.stringify({
@@ -372,7 +372,7 @@ test('readLlmConfig reads explicit bash tool limits', () => {
       },
       tools: {
         bash: {
-          timeoutMs: 2000,
+          timeoutMs: 120000,
           maxOutputBytes: 4096
         }
       }
@@ -381,7 +381,7 @@ test('readLlmConfig reads explicit bash tool limits', () => {
 
   assert.deepEqual(config.tools, {
     bash: {
-      timeoutMs: 2000,
+      timeoutMs: 120000,
       maxOutputBytes: 4096
     }
   });
@@ -401,7 +401,7 @@ test('readLlmConfig normalizes invalid bash tool settings to safe defaults', () 
       },
       tools: {
         bash: {
-          timeoutMs: 100,
+          timeoutMs: 0,
           maxOutputBytes: 1
         }
       }
@@ -712,6 +712,31 @@ test('readLlmConfig uses provider-backed first profile when selectedModel is omi
   assert.equal(configWithoutSelection.baseURL, 'https://provider.example/v1');
   assert.equal(configWithStaleSelection.model, 'example-fast');
   assert.equal(configWithStaleSelection.apiKey, 'example-api-key');
+});
+
+test('readLlmConfig rereads runtime config on each call and does not use status-line cache', () => {
+  let selectedModel = 'fast';
+  const readFile = () => JSON.stringify({
+    llm: {
+      selectedModel,
+      providers: {
+        openai: { preset: OPENAI_PRESET, apiKey: 'openai-api-key' }
+      },
+      models: [
+        { id: 'fast', provider: 'openai', model: 'gpt-fast' },
+        { id: 'deep', provider: 'openai', model: 'gpt-deep', reasoning: { effort: 'high' } }
+      ]
+    }
+  });
+
+  const firstConfig = readLlmConfig({configPath: '/tmp/echo-config.json', readFile});
+  selectedModel = 'deep';
+  const secondConfig = readLlmConfig({configPath: '/tmp/echo-config.json', readFile});
+
+  assert.equal(firstConfig.model, 'gpt-fast');
+  assert.equal(firstConfig.reasoningEffort, undefined);
+  assert.equal(secondConfig.model, 'gpt-deep');
+  assert.equal(secondConfig.reasoningEffort, 'high');
 });
 
 test('readLlmModelConfigInfo returns model list and selected profile for /model', () => {

@@ -89,7 +89,7 @@ function isApplyPatchDisplayFile(value: unknown): value is ApplyPatchDisplayFile
 
   return (
     typeof file.path === 'string' &&
-    (file.kind === 'added' || file.kind === 'updated') &&
+    (file.kind === 'added' || file.kind === 'updated' || file.kind === 'deleted') &&
     Array.isArray(file.lines) &&
     file.lines.every(isApplyPatchDisplayLine)
   );
@@ -130,7 +130,7 @@ function createApplyPatchRenderFile(file: ApplyPatchDisplayFile): ApplyPatchRend
   }));
 
   return {
-    header: {kind: 'header', text: `${file.path}  +${added} -${removed}`},
+    header: {kind: 'header', text: `${file.kind === 'deleted' ? `deleted ${file.path}` : file.path}  +${added} -${removed}`},
     rows: mergeAdjacentApplyPatchOmittedRows(foldApplyPatchContextRows(sourceRows))
   };
 }

@@ -243,6 +243,33 @@
 - **THEN** status line SHALL NOT 因写满终端最后一列而触发额外自动换行
 - **THEN** status line SHALL 优先保留左侧模型、effort 和目录信息，右侧动态状态 MAY 被整体省略或裁剪
 
+### Requirement: Status line 使用缓存模型展示状态
+普通 composer status line SHALL 使用应用内缓存的模型展示状态显示当前 selected model 和当前模型 profile 显式配置的 reasoning effort。该缓存 SHALL 在应用内模型配置写入成功后更新；系统 SHALL NOT 承诺在外部进程或用户手动编辑 `~/.echo/config.json` 后实时更新当前 status line。
+
+#### Scenario: 响应期间 status line 保持缓存展示
+- **WHEN** assistant 响应期间 spinner 或 streaming preview 高频重绘普通 composer footer
+- **THEN** status line SHALL 继续显示缓存中的当前模型 label 和 reasoning effort
+- **THEN** 高频重绘 SHALL NOT 为了刷新该展示而重新读取用户级配置文件
+
+#### Scenario: 应用内模型选择后 status line 更新
+- **WHEN** 用户通过 `/model` 成功切换当前模型 profile
+- **THEN** 后续普通 composer status line SHALL 显示新模型 profile 的模型 label
+- **THEN** status line SHALL NOT 继续显示旧 selected model 的 label
+
+#### Scenario: 应用内推理等级修改后 status line 更新
+- **WHEN** 用户通过 `/effort` 成功修改当前模型 profile 的 reasoning effort
+- **THEN** 后续普通 composer status line SHALL 显示新的 reasoning effort
+- **THEN** status line SHALL NOT 继续显示旧 reasoning effort
+
+#### Scenario: /config 保存后 status line 更新
+- **WHEN** 用户通过 `/config` 成功保存包含 selected model 或 reasoning 配置变化的草稿
+- **THEN** 后续普通 composer status line SHALL 基于保存后的模型配置展示模型 label 和 reasoning effort
+
+#### Scenario: 外部编辑不实时刷新 status line
+- **WHEN** Echo TUI 进程运行期间，外部编辑器或其他进程修改 `~/.echo/config.json`
+- **THEN** 当前普通 composer status line MAY 继续显示应用内缓存的模型 label 和 reasoning effort
+- **THEN** 系统 SHALL NOT 为了侦测该外部编辑而在普通 footer redraw 路径读取用户级配置文件
+
 ### Requirement: status line 显示真实 context usage
 普通输入态 status line SHALL 在存在真实 provider context usage 时显示最近一次 provider request 的 input token usage 和当前模型 context window。该显示 SHALL 作为 segmented status line 的 context segment 呈现，并 SHALL 使用短文本片段；该 usage 的语义仍为最近一次真实 provider usage，而不是本地实时估算。系统 SHALL 保留该 usage 的详细 breakdown 供 `/context` 命令展示，但 status line SHALL 继续只显示短文本总览。
 
