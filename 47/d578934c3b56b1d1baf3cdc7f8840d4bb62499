@@ -1,0 +1,14 @@
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "47d578934c3b56b1d1baf3cdc7f8840d4bb62499",
+  "prompts": {},
+  "humans": {
+    "h_648a605945768c": {
+      "author": "eumendies <1431538355@qq.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
