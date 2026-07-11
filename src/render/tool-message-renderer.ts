@@ -18,6 +18,12 @@ import {
 } from './tool-message-renderers/read-files';
 import {isTodoRenderToolName, renderTodoToolCallLines, renderTodoToolResultLines} from './tool-message-renderers/todo';
 import {
+  USE_SKILL_TOOL_NAME,
+  renderUseSkillToolCallLines,
+  renderUseSkillToolPairLines,
+  renderUseSkillToolResultLines
+} from './tool-message-renderers/use-skill';
+import {
   TOOL_RESULT_MAX_DISPLAY_LINES,
   renderPrefixedLines,
   resolveToolCallPrefixStyle,
@@ -62,6 +68,10 @@ function renderPairAwareToolPairLines(call: TranscriptRecord, result: Transcript
 
   if (call.toolName === ASK_USER_QUESTIONS_TOOL_NAME && result.toolName === ASK_USER_QUESTIONS_TOOL_NAME) {
     return renderAskUserQuestionsToolPairLines(call, result, width, theme);
+  }
+
+  if (call.toolName === USE_SKILL_TOOL_NAME && result.toolName === USE_SKILL_TOOL_NAME) {
+    return renderUseSkillToolPairLines(call, result, width, theme);
   }
 
   return null;
@@ -145,6 +155,16 @@ function renderToolRecordLines(record: TranscriptRecord, width: number, options:
     if (record.role === 'tool_result') {
       return renderTodoToolResultLines(record, width, theme)
         ?? renderGenericToolRecordLines(record, width, options, theme);
+    }
+  }
+
+  if (record.toolName === USE_SKILL_TOOL_NAME) {
+    if (record.role === 'tool_call') {
+      return renderUseSkillToolCallLines(record, width, options.callStatus, theme);
+    }
+
+    if (record.role === 'tool_result') {
+      return renderUseSkillToolResultLines(record, width, theme);
     }
   }
 
