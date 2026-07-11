@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 
 const { createTuiTheme } = require('../../src/config/theme-config');
 const { createComposer } = require('../../src/input/composer');
-const { displayWidth, stripAnsi } = require('../../src/render/layout');
+const { displayWidth, safeRenderWidth, stripAnsi } = require('../../src/render/layout');
 
 const DEFAULT_STATUS_LINE = {
   projectName: 'echo_tui',
@@ -134,7 +134,9 @@ test('renderTranscriptLines projects bash tool call and result with dedicated st
         text: '$ pwd\nexit_code: 0\nduration_ms: 10\ntimed_out: false\ntruncated: false\n\nstdout:\n/tmp/echo_tui\n\nstderr:\n',
         toolCallId: 'call_1',
         toolName: 'run_bash_command',
-        ok: true
+        ok: true,
+        exitCode: 0,
+        durationMs: 10
       }
     ],
     80
@@ -142,12 +144,237 @@ test('renderTranscriptLines projects bash tool call and result with dedicated st
   const lines = renderedLines.map((line) => stripAnsi(line));
 
   assert.deepEqual(lines, [
-    "◆ Bash('pwd')",
-    '  ⎿ /tmp/echo_tui',
+    '◆ ▌ Bash · complete · exit 0 · 10ms',
+    '  ▌ pwd',
+    '  ▌ ',
+    '  ▌ /tmp/echo_tui',
     ''
   ]);
-  assert.match(renderedLines[0], /\x1b\[38;2;0;170;0m◆\x1b\[39m Bash/);
-  assert.match(renderedLines[1], /\x1b\[38;2;85;85;85m/);
+  assert.match(renderedLines[0], /\x1b\[38;2;0;170;0m◆\x1b\[39m/);
+  assert.match(renderedLines[2], /\x1b\[38;2;85;85;85m▌\x1b\[39m/);
+});
+
+test('renderTranscriptLines keeps bash status literals in stdout from changing structured status', () => {
+  const lines = renderTranscriptLines(
+    [
+      {
+        role: 'tool_call',
+        text: '',
+        toolCallId: 'status_literal',
+        toolName: 'run_bash_command',
+        argumentsText: JSON.stringify({command: 'printf status'})
+      },
+      {
+        role: 'tool_result',
+        text: 'stdout:\ntimed_out: true\ntruncated: true\n\nstderr:\n',
+        toolCallId: 'status_literal',
+        toolName: 'run_bash_command',
+        ok: true,
+        exitCode: 0,
+        durationMs: 5
+      }
+    ],
+    80
+  ).map((line) => stripAnsi(line));
+
+  assert.ok(lines.includes('◆ ▌ Bash · complete · exit 0 · 5ms'));
+  assert.equal(lines.some((line) => line.includes('Bash · timed out')), false);
+  assert.equal(lines.some((line) => line.includes('Bash · complete · exit 0 · 5ms · truncated')), false);
+  assert.ok(lines.includes('  ▌ timed_out: true'));
+  assert.ok(lines.includes('  ▌ truncated: true'));
+  assert.equal(lines.some((line) => line.includes('Output was truncated.')), false);
+});
+
+test('renderTranscriptLines renders bash heredocs as a bounded rail while preserving shell context', () => {
+  const script = Array.from({length: 14}, (_value, index) => `print(${index})`).join('\n');
+  const command = `cd workspace &&\nexport MODE=check\npython3 - <<'PY'\n${script}\nPY\necho done`;
+  const records = [
+    {
+      role: 'tool_call',
+      text: '',
+      toolCallId: 'heredoc',
+      toolName: 'run_bash_command',
+      argumentsText: JSON.stringify({command})
+    },
+    {
+      role: 'tool_result',
+      text: 'done',
+      toolCallId: 'heredoc',
+      toolName: 'run_bash_command',
+      ok: true,
+      exitCode: 0,
+      durationMs: 1200
+    }
+  ];
+  const snapshot = JSON.parse(JSON.stringify(records));
+  const lines = renderTranscriptLines(records, 80).map((line) => stripAnsi(line));
+
+  assert.ok(lines.includes('  ▌ cd workspace &&'));
+  assert.ok(lines.includes('  ▌ export MODE=check'));
+  assert.ok(lines.includes("  ▌ python3 - <<'PY'"));
+  assert.ok(lines.includes('  ▌ … 3 more lines'));
+  assert.ok(lines.includes('  ▌ PY'));
+  assert.ok(lines.includes('  ▌ echo done'));
+  assert.ok(lines.includes('  ▌ done'));
+  assert.equal(lines.some((line) => line.includes("Bash('")), false);
+  assert.deepEqual(records, snapshot);
+});
+
+test('renderTranscriptLines closes bash heredocs using shell delimiter rules', () => {
+  const exactCommand = [
+    'cat <<EOF',
+    'body',
+    ' EOF',
+    ...Array.from({length: 13}, (_value, index) => `space body ${index + 1}`),
+    'EOF',
+    'echo exact done'
+  ].join('\n');
+  const tabCommand = [
+    'cat <<-TAB',
+    'tab body',
+    ' TAB',
+    ...Array.from({length: 13}, (_value, index) => `tab body ${index + 1}`),
+    '\tTAB',
+    'echo tab done'
+  ].join('\n');
+  const lines = renderTranscriptLines(
+    [
+      {
+        role: 'tool_call',
+        text: '',
+        toolCallId: 'heredoc_exact',
+        toolName: 'run_bash_command',
+        argumentsText: JSON.stringify({command: exactCommand})
+      },
+      {
+        role: 'tool_result',
+        text: 'exact done',
+        toolCallId: 'heredoc_exact',
+        toolName: 'run_bash_command',
+        ok: true,
+        exitCode: 0
+      },
+      {
+        role: 'tool_call',
+        text: '',
+        toolCallId: 'heredoc_tab',
+        toolName: 'run_bash_command',
+        argumentsText: JSON.stringify({command: tabCommand})
+      },
+      {
+        role: 'tool_result',
+        text: 'tab done',
+        toolCallId: 'heredoc_tab',
+        toolName: 'run_bash_command',
+        ok: true,
+        exitCode: 0
+      }
+    ],
+    80
+  ).map((line) => stripAnsi(line));
+
+  assert.ok(lines.includes('  ▌  EOF'));
+  assert.ok(lines.includes('  ▌ … 4 more lines'));
+  assert.ok(lines.includes('  ▌ EOF'));
+  assert.ok(lines.includes('  ▌ echo exact done'));
+  assert.ok(lines.includes('  ▌ cat <<-TAB'));
+  assert.ok(lines.includes('  ▌  TAB'));
+  assert.equal(lines.filter((line) => line === '  ▌ … 4 more lines').length, 2);
+  assert.ok(lines.includes('  ▌ \tTAB'));
+  assert.ok(lines.includes('  ▌ echo tab done'));
+});
+
+test('renderTranscriptLines handles inline scripts, stderr channels, fallback, narrow widths, and custom rail colors', () => {
+  const inlineCommand = `python3 -c "${Array.from({length: 13}, (_value, index) => `print(${index})`).join('\n')}"`;
+  const theme = createTuiTheme({
+    blocks: {
+      colors: {
+        tool: [1, 2, 3],
+        toolOutput: [4, 5, 6],
+        toolError: [7, 8, 9]
+      }
+    }
+  });
+  const rendered = renderTranscriptLines([
+    {
+      role: 'tool_call',
+      text: '',
+      toolCallId: 'inline',
+      toolName: 'run_bash_command',
+      argumentsText: JSON.stringify({command: inlineCommand})
+    },
+    {
+      role: 'tool_result',
+      text: 'stdout:\nfirst\n\nstderr:\nfailed\n',
+      toolCallId: 'inline',
+      toolName: 'run_bash_command',
+      ok: false,
+      exitCode: 1,
+      truncated: true
+    },
+    {
+      role: 'tool_call',
+      text: 'fallback',
+      toolName: 'run_bash_command',
+      argumentsText: '{}'
+    },
+    {
+      role: 'tool_call',
+      text: '',
+      toolName: 'run_bash_command',
+      argumentsText: JSON.stringify({command: 'python3 -c "print($(date))"'})
+    }
+  ], 24, theme);
+  const lines = rendered.map((line) => stripAnsi(line));
+
+  assert.ok(lines.some((line) => line.includes('python3 -c "…"')));
+  assert.ok(lines.some((line) => line.includes('… 2 more lines')));
+  assert.equal(lines.some((line) => line.includes('stdout') || line.includes('stderr')), false);
+  assert.ok(lines.includes('  ▌ first'));
+  assert.ok(lines.includes('  ▌ failed'));
+  assert.ok(lines.includes('  ▌ Output was truncate'));
+  assert.ok(lines.some((line) => line.includes('run_bash_command({})')));
+  assert.ok(lines.some((line) => line.includes('python3 -c "print($')));
+  assert.ok(rendered.some((line) => line.includes('\x1b[38;2;1;2;3m▌\x1b[39m')));
+  assert.ok(rendered.some((line) => line.includes('\x1b[38;2;4;5;6m▌\x1b[39m')));
+  assert.ok(rendered.some((line) => line.includes('\x1b[38;2;7;8;9m◆\x1b[39m')));
+  assert.match(rendered[0], /\x1b\[38;2;7;8;9m◆\x1b\[39m \x1b\[38;2;7;8;9m▌\x1b\[39m \x1b\[38;2;7;8;9mBash · failed/);
+  assert.match(rendered.find((line) => stripAnsi(line).includes('python3 -c "…"')), /\x1b\[38;2;7;8;9m▌\x1b\[39m/);
+  assert.match(rendered.find((line) => stripAnsi(line).includes('first')), /\x1b\[38;2;4;5;6m▌\x1b\[39m/);
+  assert.ok(rendered.every((line) => displayWidth(line) <= safeRenderWidth(24)));
+});
+
+test('renderTranscriptLines applies one combined display budget to bash stdout and stderr rows', () => {
+  const stdout = Array.from({length: 8}, (_value, index) => `out ${index + 1}`).join('\n');
+  const stderr = Array.from({length: 8}, (_value, index) => `err ${index + 1}`).join('\n');
+  const rendered = renderTranscriptLines(
+    [
+      {
+        role: 'tool_call',
+        text: '',
+        toolCallId: 'combined_budget',
+        toolName: 'run_bash_command',
+        argumentsText: JSON.stringify({command: 'run noisy'})
+      },
+      {
+        role: 'tool_result',
+        text: `stdout:\n${stdout}\n\nstderr:\n${stderr}\n`,
+        toolCallId: 'combined_budget',
+        toolName: 'run_bash_command',
+        ok: false,
+        exitCode: 1
+      }
+    ],
+    80
+  );
+  const lines = rendered.map((line) => stripAnsi(line));
+
+  assert.ok(lines.includes('  ▌ out 8'));
+  assert.ok(lines.includes('  ▌ err 1'));
+  assert.ok(lines.includes('  ▌ err 3'));
+  assert.equal(lines.some((line) => line.includes('err 4')), false);
+  assert.ok(lines.includes('  ▌ … 5 more lines'));
+  assert.match(rendered.find((line) => stripAnsi(line).includes('err 1')), /\x1b\[38;2;170;0;0merr 1\x1b\[39m/);
 });
 
 test('renderTranscriptLines colors tool call prefix by adjacent result state with neutral fallback', () => {
@@ -1127,6 +1354,6 @@ test('createAppRenderer appendRecords preserves block spacing for realtime trans
 
   const written = stripAnsi(output.writes[0]);
 
-  assert.match(written, /▌ move the file[\s\S]*\n\n◆ Bash/);
-  assert.match(output.writes[0], /\x1b\[38;2;0;170;0m◆\x1b\[39m Bash/);
+  assert.match(written, /▌ move the file[\s\S]*\n\n◆ ▌ Bash/);
+  assert.match(output.writes[0], /\x1b\[38;2;0;170;0m◆\x1b\[39m/);
 });
