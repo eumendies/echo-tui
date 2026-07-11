@@ -1,4 +1,4 @@
-import {DEFAULT_BASH_MAX_OUTPUT_BYTES, DEFAULT_BASH_TIMEOUT_MS, runBashCommand} from './bash-command-runner';
+import {DEFAULT_BASH_MAX_OUTPUT_BYTES, runBashCommand} from './bash-command-runner';
 import {normalizePositiveInteger, resolveCwd} from './tool-handler-utils';
 
 import type {BashToolExecutionResult, ToolCall, ToolExecutionOptions, ToolHandler} from '../types/tool';
@@ -14,7 +14,7 @@ const CHANGE_HISTORY_BLOCKED_FIND_OPTIONS = new Set(['-delete', '-exec', '-execd
 
 type BashToolHandlerOptions = {
   cwd?: string | (() => string);
-  timeoutMs?: number;
+  timeoutMs?: number | null;
   maxOutputBytes?: number;
   shell?: string;
 };
@@ -23,7 +23,7 @@ type BashToolHandlerOptions = {
  * 创建本地 bash function tool；只暴露非交互命令执行能力和最小 JSON schema。
  */
 function createBashToolHandler(options: BashToolHandlerOptions = {}): ToolHandler {
-  const timeoutMs = normalizePositiveInteger(options.timeoutMs, DEFAULT_BASH_TIMEOUT_MS);
+  const timeoutMs = options.timeoutMs ?? null;
   const maxOutputBytes = normalizePositiveInteger(options.maxOutputBytes, DEFAULT_BASH_MAX_OUTPUT_BYTES);
   const shell = options.shell || '/bin/bash';
 
@@ -61,7 +61,7 @@ function createBashToolHandler(options: BashToolHandlerOptions = {}): ToolHandle
 function executeBashCommand(
   args: Record<string, unknown>,
   call: ToolCall,
-  options: Required<Pick<BashToolHandlerOptions, 'shell'>> & Pick<ToolExecutionOptions, 'changeRecorder'> & {abortSignal?: AbortSignal; cwd: string; maxOutputBytes: number; timeoutMs: number}
+  options: Required<Pick<BashToolHandlerOptions, 'shell'>> & Pick<ToolExecutionOptions, 'changeRecorder'> & {abortSignal?: AbortSignal; cwd: string; maxOutputBytes: number; timeoutMs: number | null}
 ): Promise<BashToolExecutionResult> {
   const command = args.command;
 
@@ -291,7 +291,6 @@ function isBlockedPlanGitOption(arg: string): boolean {
 
 export {
   DEFAULT_BASH_MAX_OUTPUT_BYTES,
-  DEFAULT_BASH_TIMEOUT_MS,
   PLAN_READONLY_BASH_REJECTION,
   RUN_BASH_COMMAND_TOOL_NAME,
   createBashToolHandler,

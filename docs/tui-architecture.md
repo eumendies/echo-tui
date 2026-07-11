@@ -121,7 +121,7 @@ slash runtime 通过三类稳定边界协调本地命令：
 | apply_patch tool | 默认本地编辑工具。接收 unified diff 子集和 `*** Begin Patch` Add/Update File 格式，新增或更新 UTF-8 文本文件，all-or-nothing 写入，拒绝删除、重命名、mode/binary/symlink 和歧义 hunk；内存模拟阶段生成 display-only diff metadata，随 transcript 持久化但不进入 provider-facing result text；上下文窗口和 omitted marker 由 renderer 计算 | `src/tools/apply-patch-tool-handler/` |
 | ask_user_questions tool | 默认用户澄清工具。模型传入问题和选项后打开逐题 `choice` surface，确认后以 tool result 返回结构化答案，取消时返回 cancelled result | `src/tools/ask-user-questions-tool-handler.ts`、`src/app/state/user-question-context.ts` |
 | use_skill tool | 默认 skill 指令读取工具。加载 enabled skill 的 `SKILL.md` frontmatter 与正文，并在存在附加资源时追加 `[Skill Resources]` 清单；disabled/missing skill 返回失败和可用 skill 列表 | `src/tools/use-skill-tool-handler.ts`、`src/skills/skill-manager.ts` |
-| run_bash_command tool | 默认本地命令执行工具。用非交互 `/bin/bash -lc` 执行命令，无 stdin/TTY，处理 timeout、SIGTERM/SIGKILL 兜底、输出截断与 result metadata；与 shell 模式共用底层 runner | `src/tools/bash-tool-handler.ts`、`src/tools/bash-command-runner.ts` |
+| run_bash_command tool | 默认本地命令执行工具。用非交互 `/bin/bash -lc` 执行命令，无 stdin/TTY，默认无固定 timeout，响应 turn-level Esc 中断并使用 SIGTERM/SIGKILL 兜底，处理输出截断与 result metadata；与 shell 模式共用底层 runner | `src/tools/bash-tool-handler.ts`、`src/tools/bash-command-runner.ts` |
 | MCP tool adapter | 把 MCP manager 暴露的命名空间工具适配成 provider-neutral tool registry，并与默认 registry 合并供 agent loop 使用 | `src/mcp/tool-adapter.ts` |
 | skill manager | 组合项目级 `.echo/skills` 与用户级 `~/.echo/skills` 的发现结果、附加资源路径、启用状态和加载结果；同名项目级覆盖用户级；同一 enabled catalog 同时服务 `use_skill` tool、slash suggestion 和 `/skills` 命令 | `src/skills/skill-manager.ts`、`src/skills/skill-registry.ts`、`src/skills/skill-state.ts` |
 | OpenAI Responses agent | 单次 provider turn adapter。基于 OpenAI SDK 构造 Responses request，读取 stream，返回 assistant draft、可见 reasoning summary、provider-private reasoning records（仅带 `encrypted_content` 时回传）与 provider-neutral tool calls；不执行本地工具循环 | `src/agent/openai-responses/agent.ts`、`src/agent/openai-responses/transcript-converter.ts` |
@@ -454,7 +454,7 @@ renderer 只理解这些 surface kind，不理解具体命令、tool approval、
 | `src/tools/tool-executor.ts` | `createToolExecutor`、`execute`、`parseArguments` | 统一执行工具 handler，处理查找、参数解析、异常归一化 |
 | `src/tools/tool-risk-classifier.ts` | `classifyToolCallRisk`、`parseBashCommand` | 执行前策略分类：安全执行、请求审批或按 mode 直接拒绝，覆盖 apply_patch、高风险 bash 与 MCP approval |
 | `src/tools/apply-patch-tool-handler/` | `index.ts`、`tool-handler.ts`、`parser.ts`、`simulator.ts` | 单一公共入口；工具编排与写盘、patch 解析、内存模拟与 display-only diff metadata |
-| `src/tools/bash-command-runner.ts` | `runBashCommand` | 非交互 bash 执行核心，timeout/abort/输出截断；供 bash 工具与 shell 模式共用 |
+| `src/tools/bash-command-runner.ts` | `runBashCommand` | 非交互 bash 执行核心，默认无固定 timeout，支持显式 timeout、abort 和输出截断；供 bash 工具与 shell 模式共用 |
 | `src/skills/skill-manager.ts` | `createSkillManager`、`listSkills`、`listCatalog`、`loadSkill`、`saveSkillStates` | 合并 skill discovery 与启用状态，暴露一致 enabled catalog |
 | `src/render/app-renderer.ts` | `createAppRenderer`、`renderTranscriptLines` | 应用级渲染门面，统一 footer-only redraw、transcript append/group 和 destructive replay |
 | `src/render/footer.ts` | `renderFooterLayout`、`createFooterRenderer`、`calculateCommandSurfaceMaxLines` | 生成 pending/working/divider/composer/status line 或 command surface 的 footer layout |

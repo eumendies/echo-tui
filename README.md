@@ -48,7 +48,7 @@ echo-tui --help
 
 - `preset` 选择运行时协议，常用 `openai-responses-api`、`openai-chat-compatible-api`、`anthropic-compatible-api`，以及一组固定 Base URL、只需填 API key 的厂商 preset（DeepSeek、Kimi、Z.ai、Minimax、StepFun、OpenRouter、Xiaomi 等）。
 - `model` 是 provider 的 API 模型名；`contextWindow` 可选，留空时按内置模型映射或默认窗口推断。
-- `reasoning.effort` 可选，用 `/effort` 调整；`tools.bash` 可限制 bash 工具的超时和输出上限。
+- `reasoning.effort` 可选，用 `/effort` 调整；`tools.bash.maxOutputBytes` 可限制 bash 工具输出上限。bash 工具默认无固定超时，可用 Esc 中断；如确实需要自动终止，可显式配置 `tools.bash.timeoutMs` 为正整数。
 
 也可以选择 `openai-codex-oauth` preset，通过本机已有 Codex/ChatGPT OAuth 登录态使用 Codex 订阅模型。本项目不会发起 OpenAI 登录流程，只读取现有 auth cache：优先使用 provider 的 `codexAuthFile`，其次是 `CODEX_HOME/auth.json`，最后是 `~/.codex/auth.json`。示例：
 

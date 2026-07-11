@@ -267,7 +267,7 @@ test('default tool registry exposes developed tools', () => {
     model: 'model',
     tools: {
       bash: {
-        timeoutMs: 30000,
+        timeoutMs: null,
         maxOutputBytes: 65536
       }
     }
@@ -869,7 +869,6 @@ test('shared bash runner supports abort without timeout', async () => {
     abortSignal: controller.signal,
     command: `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`,
     cwd: process.cwd(),
-    timeoutMs: null,
     onOutput(event) {
       if (event.chunk.includes('start')) {
         controller.abort();
@@ -969,12 +968,11 @@ test('bash tool times out long-running commands', async () => {
   assert.match(result.text, /Command timed out/);
 });
 
-test('bash tool responds to executor abort signal', async () => {
+test('bash tool defaults to no timeout and responds to executor abort signal', async () => {
   const controller = new AbortController();
   const script = "process.stdout.write('start'); setInterval(() => {}, 1000);";
   const executor = createToolExecutor(createToolRegistry([createBashToolHandler({
-    cwd: process.cwd(),
-    timeoutMs: 30000
+    cwd: process.cwd()
   })]));
   const pending = executor.execute(createCall({
     argumentsText: JSON.stringify({ command: `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}` })

@@ -24,7 +24,7 @@ const TEST_CONFIG = {
   model: 'claude-test-model',
   tools: {
     bash: {
-      timeoutMs: 30000,
+      timeoutMs: null,
       maxOutputBytes: 65536
     }
   }
