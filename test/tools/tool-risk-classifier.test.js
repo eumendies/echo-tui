@@ -53,6 +53,32 @@ test('tool risk classifier previews apply_patch calls with a lightweight label',
     callId: 'call_patch',
     toolName: 'apply_patch',
     argumentsText: JSON.stringify({
+      patch: '*** Begin Patch\n*** Delete File: old.txt\n*** End Patch\n'
+    })
+  }), {
+    risk: 'approval_required',
+    approval: {
+      preview: 'apply_patch(delete old.txt)'
+    }
+  });
+
+  assert.deepEqual(classifyToolCallRisk({
+    callId: 'call_patch',
+    toolName: 'apply_patch',
+    argumentsText: JSON.stringify({
+      patch: 'diff --git a/old.txt b/old.txt\ndeleted file mode 100644\n--- a/old.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-old\n'
+    })
+  }), {
+    risk: 'approval_required',
+    approval: {
+      preview: 'apply_patch(delete old.txt)'
+    }
+  });
+
+  assert.deepEqual(classifyToolCallRisk({
+    callId: 'call_patch',
+    toolName: 'apply_patch',
+    argumentsText: JSON.stringify({
       patch: [
         '*** Begin Patch',
         '*** Add File: a.txt',
@@ -75,6 +101,34 @@ test('tool risk classifier previews apply_patch calls with a lightweight label',
     risk: 'approval_required',
     approval: {
       preview: 'apply_patch(a.txt, b.txt, c.txt, d.txt, e.txt, … +1 more)'
+    }
+  });
+
+  assert.deepEqual(classifyToolCallRisk({
+    callId: 'call_patch',
+    toolName: 'apply_patch',
+    argumentsText: JSON.stringify({
+      patch: [
+        '*** Begin Patch',
+        '*** Add File: a.txt',
+        '+a',
+        '*** Add File: b.txt',
+        '+b',
+        '*** Add File: c.txt',
+        '+c',
+        '*** Add File: d.txt',
+        '+d',
+        '*** Add File: e.txt',
+        '+e',
+        '*** Delete File: removed.txt',
+        '*** End Patch',
+        ''
+      ].join('\n')
+    })
+  }), {
+    risk: 'approval_required',
+    approval: {
+      preview: 'apply_patch(a.txt, b.txt, c.txt, d.txt, delete removed.txt, … +1 more)'
     }
   });
 

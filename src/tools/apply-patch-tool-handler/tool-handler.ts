@@ -39,6 +39,11 @@ function createApplyPatchCallLabel(argumentsText: unknown): string {
 
 function formatApplyPatchPathSummary(paths: string[]): string {
   const visiblePaths = paths.slice(0, APPLY_PATCH_LABEL_MAX_PATHS);
+  const hiddenDeletePath = paths.slice(APPLY_PATCH_LABEL_MAX_PATHS).find((item) => item.startsWith('delete '));
+
+  if (hiddenDeletePath && visiblePaths.length > 0 && !visiblePaths.some((item) => item.startsWith('delete '))) {
+    visiblePaths[visiblePaths.length - 1] = hiddenDeletePath;
+  }
 
   if (paths.length > visiblePaths.length) {
     visiblePaths.push(`… +${paths.length - visiblePaths.length} more`);
@@ -70,13 +75,20 @@ function extractPatchPaths(patch: string): string[] {
   const paths: string[] = [];
   const seen = new Set<string>();
   const lines = patch.replace(/\r\n?/g, '\n').split('\n');
+  let pendingDiffOldPath: string | null = null;
+  let pendingDiffDeleted = false;
 
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index].trimStart();
-    const beginPatchFile = /^\*\*\* (?:Add|Update) File:\s*(.+)$/.exec(line);
+    const beginPatchFile = /^\*\*\* (Add|Update|Delete) File:\s*(.+)$/.exec(line);
 
     if (beginPatchFile) {
-      addPatchPath(paths, seen, beginPatchFile[1].trim());
+      addPatchPath(paths, seen, formatPatchPreviewPath(beginPatchFile[1], beginPatchFile[2].trim()));
+      continue;
+    }
+
+    if (line.startsWith('deleted file mode')) {
+      pendingDiffDeleted = true;
       continue;
     }
 
@@ -86,7 +98,17 @@ function extractPatchPaths(patch: string): string[] {
 
       if (nextLine.startsWith('+++ ')) {
         const newPath = parsePatchHeaderPath(nextLine.slice(4));
-        addPatchPath(paths, seen, normalizePatchDisplayPath(newPath === '/dev/null' ? oldPath : newPath));
+        const isDelete = newPath === '/dev/null';
+        const displayPath = normalizePatchDisplayPath(isDelete ? oldPath : newPath);
+
+        if (isDelete && pendingDiffOldPath) {
+          replacePatchPath(paths, seen, pendingDiffOldPath, formatPatchPreviewPath('Delete', displayPath));
+        } else {
+          addPatchPath(paths, seen, formatPatchPreviewPath(isDelete ? 'Delete' : 'Update', displayPath));
+        }
+
+        pendingDiffOldPath = null;
+        pendingDiffDeleted = false;
         index += 1;
         continue;
       }
@@ -96,8 +118,18 @@ function extractPatchPaths(patch: string): string[] {
       const match = /^diff --git\s+(\S+)\s+(\S+)$/.exec(line);
 
       if (match) {
+        pendingDiffOldPath = normalizePatchDisplayPath(match[1]);
+        pendingDiffDeleted = false;
         addPatchPath(paths, seen, normalizePatchDisplayPath(match[2]));
       }
+
+      continue;
+    }
+
+    if (line.startsWith('@@') && pendingDiffOldPath && pendingDiffDeleted) {
+      replacePatchPath(paths, seen, pendingDiffOldPath, formatPatchPreviewPath('Delete', pendingDiffOldPath));
+      pendingDiffOldPath = null;
+      pendingDiffDeleted = false;
     }
   }
 
@@ -111,6 +143,27 @@ function addPatchPath(paths: string[], seen: Set<string>, patchPath: string): vo
 
   seen.add(patchPath);
   paths.push(patchPath);
+}
+
+function replacePatchPath(paths: string[], seen: Set<string>, existingPath: string, patchPath: string): void {
+  if (seen.has(patchPath)) {
+    return;
+  }
+
+  const index = paths.indexOf(existingPath);
+
+  if (index < 0) {
+    addPatchPath(paths, seen, patchPath);
+    return;
+  }
+
+  paths[index] = patchPath;
+  seen.delete(existingPath);
+  seen.add(patchPath);
+}
+
+function formatPatchPreviewPath(kind: string, patchPath: string): string {
+  return kind === 'Delete' ? `delete ${patchPath}` : patchPath;
 }
 
 function parsePatchHeaderPath(rawPath: string): string {
@@ -130,7 +183,7 @@ function createApplyPatchToolHandler(options: ApplyPatchToolHandlerOptions = {})
   return {
     definition: {
       name: APPLY_PATCH_TOOL_NAME,
-      description: 'Apply a patch to add or update UTF-8 text files, including files outside the current working directory. Relative paths resolve from the current working directory; absolute paths and .. paths are supported. Supports unified diff and *** Begin Patch formats.',
+      description: 'Apply a patch to add, update, or delete UTF-8 text files, including files outside the current working directory. Relative paths resolve from the current working directory; absolute paths and .. paths are supported. Supports unified diff and *** Begin Patch formats.',
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -138,7 +191,7 @@ function createApplyPatchToolHandler(options: ApplyPatchToolHandlerOptions = {})
         properties: {
           patch: {
             type: 'string',
-            description: 'Patch text. Use unified diff, or *** Begin Patch with *** Add File / *** Update File. Include enough context lines so each update hunk matches uniquely.'
+            description: 'Patch text. Use unified diff, or *** Begin Patch with *** Add File / *** Update File / *** Delete File. Include enough context lines so each update or unified delete hunk matches uniquely.'
           }
         }
       }
@@ -198,8 +251,13 @@ function applyPatch(patch: unknown, options: {cwd: string; limits: ApplyPatchLim
     }
 
     for (const changedFile of simulated.value.changedFiles) {
-      fs.mkdirSync(path.dirname(changedFile.absolutePath), {recursive: true});
-      fs.writeFileSync(changedFile.absolutePath, changedFile.content, 'utf8');
+      if (changedFile.kind === 'deleted') {
+        fs.unlinkSync(changedFile.absolutePath);
+      } else {
+        fs.mkdirSync(path.dirname(changedFile.absolutePath), {recursive: true});
+        fs.writeFileSync(changedFile.absolutePath, changedFile.content, 'utf8');
+      }
+
       options.changeRecorder?.captureFileAfter(changedFile.absolutePath);
     }
   } catch (error: unknown) {

@@ -7,7 +7,7 @@ type ApplyPatchLimits = {
 
 // 不同输入语法最终都会归一成文件级操作，后续应用逻辑只处理这个内部模型。
 type PatchOperation = {
-  kind: 'add' | 'update';
+  kind: 'add' | 'update' | 'delete';
   filePath: string;
   hunks: PatchHunk[];
   matchMode: 'independent' | 'sequential';
@@ -132,8 +132,22 @@ function parseBeginPatch(patch: string, limits: ApplyPatchLimits): Result<PatchO
       continue;
     }
 
-    if (line.startsWith('*** Delete File:')) {
-      return {ok: false, reason: 'delete file patches are not supported'};
+    const deleteFile = /^\*\*\* Delete File:\s*(.+)$/.exec(line);
+
+    if (deleteFile) {
+      operations.push({
+        filePath: deleteFile[1].trim(),
+        hunks: [],
+        kind: 'delete',
+        matchMode: 'independent'
+      });
+      index += 1;
+
+      if (operations.length > limits.maxChangedFiles) {
+        return {ok: false, reason: `patch changes more than ${limits.maxChangedFiles} files`};
+      }
+
+      continue;
     }
 
     if (line.startsWith('*** Move to:') || line.startsWith('*** Rename to:')) {
@@ -413,6 +427,15 @@ function parseUnifiedDiff(patch: string, limits: ApplyPatchLimits): Result<Patch
       continue;
     }
 
+    if (isIgnoredDeletedFileMode(line)) {
+      if (inferredOperation) {
+        inferredOperation = {...inferredOperation, kind: 'delete'};
+      }
+
+      index += 1;
+      continue;
+    }
+
     if (line.startsWith('index ') || isIgnoredNewFileMode(line)) {
       index += 1;
       continue;
@@ -504,6 +527,11 @@ function parseOperationHunks(
       break;
     }
 
+    if (current.startsWith('index ') || isIgnoredNewFileMode(current) || isIgnoredDeletedFileMode(current)) {
+      index += 1;
+      continue;
+    }
+
     if (!current.startsWith('@@')) {
       return {ok: false, reason: `expected hunk header, got: ${current}`};
     }
@@ -553,7 +581,9 @@ function parseFileOperation(oldHeader: string, newHeader: string): Result<PatchO
   }
 
   if (newPath === '/dev/null') {
-    return {ok: false, reason: 'delete file patches are not supported'};
+    return oldPath === '/dev/null'
+      ? {ok: false, reason: 'file header is missing a path'}
+      : {ok: true, value: {kind: 'delete', filePath: normalizeDiffPath(oldPath), hunks: [], matchMode: 'independent'}};
   }
 
   if (oldPath === '/dev/null') {
@@ -628,7 +658,9 @@ function parseHunk(lines: string[], startIndex: number): Result<{hunk: PatchHunk
 
 function detectUnsupportedMetadata(line: string): Result<void> {
   if (line.startsWith('deleted file mode')) {
-    return {ok: false, reason: 'delete file patches are not supported'};
+    return line === 'deleted file mode 120000'
+      ? {ok: false, reason: 'symlink patches are not supported'}
+      : {ok: true, value: undefined};
   }
 
   if (line.startsWith('rename from') || line.startsWith('rename to') || line.startsWith('copy from') || line.startsWith('copy to')) {
@@ -656,6 +688,10 @@ function detectUnsupportedMetadata(line: string): Result<void> {
 
 function isIgnoredNewFileMode(line: string): boolean {
   return line === 'new file mode 100644';
+}
+
+function isIgnoredDeletedFileMode(line: string): boolean {
+  return line.startsWith('deleted file mode') && line !== 'deleted file mode 120000';
 }
 
 function parseHeaderPath(rawPath: string): string {
