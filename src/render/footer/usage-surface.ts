@@ -74,7 +74,7 @@ function resolveUsageLayout(surface: UsageCommandSurface, days: UsageDailyAggreg
   let visibleDays: UsageDailyAggregate[] = [];
 
   for (let index = 0; index < 2; index += 1) {
-    const windowSize = resolveWindowSize(days.length, inner, maxLines);
+    const windowSize = resolveWindowSize(days.length, safeWidth, maxLines);
     maxOffset = Math.max(0, days.length - windowSize);
     offset = clamp(Number.isInteger(surface.offset) ? Number(surface.offset) : maxOffset, 0, maxOffset);
     visibleDays = days.slice(offset, offset + windowSize);
@@ -90,6 +90,14 @@ function resolveUsageLayout(surface: UsageCommandSurface, days: UsageDailyAggreg
   }
 
   return {cardWidth, inner, maxOffset, offset, visibleDays};
+}
+
+/**
+ * 按当前终端视口计算 usage 日期窗口的滚动边界和页大小，供 command handler 与渲染层共享。
+ */
+function calculateUsageNavigation(surface: UsageCommandSurface, width: number, maxLines: number | undefined): {maxOffset: number; windowSize: number} {
+  const layout = resolveUsageLayout(surface, surface.dailyUsage || [], safeRenderWidth(width), maxLines);
+  return {maxOffset: layout.maxOffset, windowSize: layout.visibleDays.length};
 }
 
 function preferredUsageInner(days: UsageDailyAggregate[], visibleDays: UsageDailyAggregate[], offset: number, pannable: boolean, title: string): number {
@@ -315,12 +323,13 @@ function gradientLine(width: number, theme: FooterTheme): string {
   return colorText(theme.colors.frame, '─'.repeat(Math.max(0, width)));
 }
 
-function resolveWindowSize(dayCount: number, inner: number, maxLines: number | undefined): number {
+function resolveWindowSize(dayCount: number, viewportWidth: number, maxLines: number | undefined): number {
   if (dayCount <= 0) {
     return 0;
   }
 
-  const widthLimit = Math.floor(Math.max(9, inner - 4) / 5);
+  // 日期窗口按终端可用宽度计算，避免内容较短时卡片收缩又反过来缩小可浏览的天数。
+  const widthLimit = Math.floor(Math.max(9, viewportWidth - 4) / 5);
   const heightLimit = Number.isFinite(maxLines) ? Math.max(1, Math.floor(Number(maxLines)) - 8) : 14;
   const upper = Math.max(1, Math.min(14, dayCount, heightLimit));
   return clamp(widthLimit, Math.min(3, upper), upper);
@@ -351,6 +360,7 @@ function clamp(value: number, lower: number, upper: number): number {
 }
 
 export {
+  calculateUsageNavigation,
   humanizeTokens,
   renderUsageSurface
 };

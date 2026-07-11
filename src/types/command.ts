@@ -492,6 +492,7 @@ export type CommandHostApp = {
   };
   usage: {
     listDailyUsage(options?: UsageQueryOptions): UsageDailyAggregate[];
+    getViewport(): {maxLines: number; width: number};
   };
   diff: {
     getSource(): DiffSourceResult;
