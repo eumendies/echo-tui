@@ -888,7 +888,7 @@ agent loop runtime SHALL 支持 interactive tool continuation。对于 `ask_user
 - **THEN** app SHALL NOT 因缺少暂存 call 中断本轮响应或丢失 tool result
 
 ### Requirement: apply_patch tool result diff-style rendering
-系统 SHALL 为相邻的 `apply_patch` tool call/result transcript records 提供按文件和 hunk 组织的专属 TUI 渲染。该渲染 SHALL 使用 tool result 中持久化的 display-only metadata 展示实际编辑内容、位置和上下文，SHALL NOT 改变 transcript 事实内容或 provider continuation input。
+系统 SHALL 为相邻的 `apply_patch` tool call/result transcript records 提供按文件和 hunk 组织的专属 TUI 渲染。该渲染 SHALL 使用 tool result 中持久化的 display-only metadata 展示实际编辑内容、位置和上下文，SHALL 支持 added、updated 和 deleted 文件种类，SHALL NOT 改变 transcript 事实内容或 provider continuation input。
 
 #### Scenario: 简化 apply_patch 调用行
 - **WHEN** TUI renders an `apply_patch` tool call paired with its matching tool result
@@ -902,8 +902,15 @@ agent loop runtime SHALL 支持 interactive tool continuation。对于 `ask_user
 - **THEN** result area SHALL preserve file and hunk boundaries instead of flattening all edit lines
 - **THEN** each file SHALL display its path and added/removed logical line counts
 - **THEN** result area SHALL display context, removed, added and omitted-context rows from display metadata
-- **THEN** result area SHALL NOT display patch syntax headers such as `diff --git`, `---`, `+++`, `@@`, `*** Begin Patch`, `*** Update File`, `*** Add File` or `*** End Patch`
+- **THEN** result area SHALL NOT display patch syntax headers such as `diff --git`, `---`, `+++`, `@@`, `deleted file mode`, `*** Begin Patch`, `*** Update File`, `*** Add File`, `*** Delete File` or `*** End Patch`
 - **THEN** result area SHALL NOT display the raw `Applied patch` changed files summary when valid display metadata is available and result succeeded
+
+#### Scenario: 渲染 deleted 文件 metadata
+- **WHEN** TUI renders an `apply_patch` result whose display metadata contains a file with `kind: deleted`
+- **THEN** result area SHALL display that file heading as a deleted file or with equivalent removed-file semantics
+- **THEN** result area SHALL display the deleted file content as removed rows
+- **THEN** the file heading SHALL include zero added lines and the removed logical line count
+- **THEN** renderer SHALL accept deleted files as valid apply_patch display metadata
 
 #### Scenario: 使用单列定位 gutter
 - **WHEN** TUI renders display lines with actual post-image location metadata
@@ -928,6 +935,12 @@ agent loop runtime SHALL 支持 interactive tool continuation。对于 `ask_user
 - **THEN** the outer tool prefix indentation SHALL remain outside the red or green background
 - **THEN** every wrapped physical continuation row SHALL preserve the source logical row background through the terminal safe render width
 - **THEN** context and omitted rows SHALL remain neutral without red or green background
+
+#### Scenario: deleted 文件 removed 行使用删除样式
+- **WHEN** TUI renders removed rows from a deleted apply_patch file
+- **THEN** those rows SHALL use the same red background and `-` gutter semantics as other removed rows
+- **THEN** those rows SHALL NOT display fabricated post-image line numbers
+- **THEN** wrapped continuation rows SHALL preserve the removed-row background through the terminal safe render width
 
 #### Scenario: 折叠较长的未修改上下文
 - **WHEN** display metadata contains complete file lines with an unchanged interval beyond the configured context window
@@ -964,7 +977,6 @@ agent loop runtime SHALL 支持 interactive tool continuation。对于 `ask_user
 - **WHEN** a transcript session containing `apply_patch` display metadata is loaded through resume
 - **THEN** TUI SHALL render the stored file grouping, locations, context and omission information
 - **THEN** TUI SHALL NOT read current target files or recompute hunk matches
-
 ### Requirement: 默认真实 agent 暴露 apply_patch 工具
 真实 LLM adapter SHALL 在默认 tool registry 中暴露 `apply_patch` 工具，使模型可以通过 agent loop runtime 对文本文件执行 patch 编辑。OpenAI provider agent SHALL 继续只把 registry 中的 tool definitions 转换为 OpenAI function tools，不直接执行 patch 逻辑。
 

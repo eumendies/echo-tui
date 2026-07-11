@@ -11,6 +11,10 @@ type ChangedFile = {
   filePath: string;
   absolutePath: string;
   content: string;
+} | {
+  kind: 'deleted';
+  filePath: string;
+  absolutePath: string;
 };
 
 type ApplyPatchSuccess = {ok: true; value: {
@@ -63,6 +67,18 @@ function simulatePatch(
       continue;
     }
 
+    if (operation.kind === 'delete') {
+      const deleted = simulateDeleteFile(operation, resolved.value, options.limits);
+
+      if (!deleted.ok) {
+        return {...deleted, displayFiles: createUnresolvedApplyPatchDisplayFiles(operations)};
+      }
+
+      changedFiles.set(operation.filePath, deleted.value.changedFile);
+      displayFiles.push(deleted.value.displayFile);
+      continue;
+    }
+
     const updated = simulateUpdateFile(operation, resolved.value, options.limits);
 
     if (!updated.ok) {
@@ -85,7 +101,7 @@ function simulatePatch(
 function createUnresolvedApplyPatchDisplayFiles(operations: PatchOperation[]): ApplyPatchDisplayFile[] {
   return operations.map((operation) => ({
     path: operation.filePath,
-    kind: operation.kind === 'add' ? 'added' : 'updated',
+    kind: operation.kind === 'add' ? 'added' : operation.kind === 'delete' ? 'deleted' : 'updated',
     lines: operation.hunks.flatMap((hunk) => hunk.displayLines.map((line) => ({...line, postLine: null})))
   }));
 }
@@ -131,27 +147,13 @@ function simulateUpdateFile(
   absolutePath: string,
   limits: ApplyPatchLimits
 ): Result<{changedFile: ChangedFile; displayFile: ApplyPatchDisplayFile}> {
-  if (!fs.existsSync(absolutePath)) {
-    return {ok: false, reason: `target file does not exist: ${operation.filePath}`};
+  const readable = readPatchTargetFile(operation.filePath, absolutePath, limits, 'follow_symlink');
+
+  if (!readable.ok) {
+    return readable;
   }
 
-  const stat = fs.statSync(absolutePath);
-
-  if (!stat.isFile()) {
-    return {ok: false, reason: `target path is not a file: ${operation.filePath}`};
-  }
-
-  if (stat.size > limits.maxFileBytes) {
-    return {ok: false, reason: `target file exceeds ${limits.maxFileBytes} bytes: ${operation.filePath}`};
-  }
-
-  const content = fs.readFileSync(absolutePath, 'utf8');
-
-  if (content.includes('\0')) {
-    return {ok: false, reason: `target file appears to be binary: ${operation.filePath}`};
-  }
-
-  const split = splitFileContent(content);
+  const split = splitFileContent(readable.value.content);
   const applied = operation.matchMode === 'sequential'
     ? applySequentialUpdateHunks(operation, split.lines)
     : applyIndependentUpdateHunks(operation, split.lines);
@@ -176,6 +178,97 @@ function simulateUpdateFile(
       }
     }
   };
+}
+
+function simulateDeleteFile(
+  operation: PatchOperation,
+  absolutePath: string,
+  limits: ApplyPatchLimits
+): Result<{changedFile: ChangedFile; displayFile: ApplyPatchDisplayFile}> {
+  const readable = readPatchTargetFile(operation.filePath, absolutePath, limits, 'reject_symlink');
+
+  if (!readable.ok) {
+    return readable;
+  }
+
+  const split = splitFileContent(readable.value.content);
+
+  if (operation.hunks.length > 0) {
+    if (operation.hunks.some((hunk) => hunk.newLines.length > 0)) {
+      return {
+        ok: false,
+        reason: `delete hunk for ${operation.filePath} must only contain removed lines`,
+        hint: 'Read the file again and include every current file line as a removed line.'
+      };
+    }
+
+    const applied = operation.matchMode === 'sequential'
+      ? applySequentialUpdateHunks(operation, split.lines)
+      : applyIndependentUpdateHunks(operation, split.lines);
+
+    if (!applied.ok) {
+      return applied;
+    }
+
+    if (applied.value.lines.length > 0) {
+      return {
+        ok: false,
+        reason: `delete patch for ${operation.filePath} does not remove the entire file`,
+        hint: 'Include every current file line as a removed line in the delete hunk.'
+      };
+    }
+  }
+
+  const originalLines = split.lines;
+
+  return {
+    ok: true,
+    value: {
+      changedFile: {
+        absolutePath,
+        filePath: operation.filePath,
+        kind: 'deleted'
+      },
+      displayFile: {
+        path: operation.filePath,
+        kind: 'deleted',
+        lines: originalLines.map((text) => ({kind: 'removed', text, postLine: null}))
+      }
+    }
+  };
+}
+
+function readPatchTargetFile(
+  filePath: string,
+  absolutePath: string,
+  limits: ApplyPatchLimits,
+  symlinkPolicy: 'follow_symlink' | 'reject_symlink'
+): Result<{content: string}> {
+  if (!fs.existsSync(absolutePath)) {
+    return {ok: false, reason: `target file does not exist: ${filePath}`};
+  }
+
+  const stat = symlinkPolicy === 'reject_symlink' ? fs.lstatSync(absolutePath) : fs.statSync(absolutePath);
+
+  if (symlinkPolicy === 'reject_symlink' && stat.isSymbolicLink()) {
+    return {ok: false, reason: `target path is a symlink: ${filePath}`};
+  }
+
+  if (!stat.isFile()) {
+    return {ok: false, reason: `target path is not a file: ${filePath}`};
+  }
+
+  if (stat.size > limits.maxFileBytes) {
+    return {ok: false, reason: `target file exceeds ${limits.maxFileBytes} bytes: ${filePath}`};
+  }
+
+  const content = fs.readFileSync(absolutePath, 'utf8');
+
+  if (content.includes('\0')) {
+    return {ok: false, reason: `target file appears to be binary: ${filePath}`};
+  }
+
+  return {ok: true, value: {content}};
 }
 
 function applyIndependentUpdateHunks(

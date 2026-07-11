@@ -1031,6 +1031,51 @@ test('renderTranscriptLines renders current apply_patch metadata with file group
   assert.equal(stripAnsi(renderedLines.find((line) => stripAnsi(line).includes('+ │ BETA'))).length, 79);
 });
 
+test('renderTranscriptLines renders deleted apply_patch metadata as removed file content', () => {
+  const renderedLines = renderTranscriptLines(
+    [
+      {
+        role: 'tool_call',
+        text: 'apply_patch({"patch":"raw"})',
+        toolCallId: 'delete_patch',
+        toolName: 'apply_patch',
+        argumentsText: '{"patch":"*** Begin Patch\\n*** Delete File: old.txt\\n*** End Patch"}'
+      },
+      {
+        role: 'tool_result',
+        text: 'Applied patch.\nChanged files:\n- old.txt (deleted)',
+        toolCallId: 'delete_patch',
+        toolName: 'apply_patch',
+        ok: true,
+        display: {
+          kind: 'apply_patch',
+          files: [{
+            path: 'old.txt',
+            kind: 'deleted',
+            lines: [
+              {kind: 'removed', text: 'alpha', postLine: null},
+              {kind: 'removed', text: 'beta', postLine: null}
+            ]
+          }]
+        }
+      }
+    ],
+    80
+  );
+  const lines = renderedLines.map((line) => stripAnsi(line));
+
+  assert.deepEqual(lines.map((line) => line.trimEnd()), [
+    '◆ apply_patch(delete old.txt)',
+    '  ⎿ deleted old.txt  +0 -2',
+    '    - │ alpha',
+    '    - │ beta',
+    ''
+  ]);
+  assert.ok(!lines.some((line) => line.includes('*** Delete File')));
+  assert.ok(!lines.some((line) => line.includes('Applied patch')));
+  assert.match(renderedLines.find((line) => stripAnsi(line).includes('- │ alpha')), /\x1b\[97m\x1b\[48;5;52m- │ alpha/);
+});
+
 test('renderTranscriptLines renders apply_patch failures without previews and rejects invalid metadata', () => {
   const manyLines = Array.from({ length: 70 }, (_, index) => ({kind: 'added', text: `line ${index + 1}`, postLine: index + 1}));
   const renderedLines = renderTranscriptLines(
