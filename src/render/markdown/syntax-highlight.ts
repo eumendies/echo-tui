@@ -1,5 +1,5 @@
-import {DEFAULT_TUI_THEME, type SyntaxTheme, type SyntaxTokenKind, type ThemeTextStyle} from '../config/theme-config';
-import {styleText} from './colors';
+import {DEFAULT_TUI_THEME, type SyntaxTheme, type SyntaxTokenKind, type ThemeTextStyle} from '../../config/theme-config';
+import {styleText} from '../colors';
 import type { StyledSpan, TextStyle } from './markdown-inline';
 
 // scanner 只保留会跨行影响 token 归类的状态；普通 token 不需要进入状态机。

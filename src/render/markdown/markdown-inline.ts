@@ -1,6 +1,6 @@
-import {DEFAULT_TUI_THEME, type TuiTheme} from '../config/theme-config';
-import * as ansi from '../terminal/ansi';
-import {markdownStyle} from './colors';
+import {DEFAULT_TUI_THEME, type TuiTheme} from '../../config/theme-config';
+import * as ansi from '../../terminal/ansi';
+import {markdownStyle} from '../colors';
 
 export type TextStyle = (text: string) => string;
 

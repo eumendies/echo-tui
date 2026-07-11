@@ -1,6 +1,6 @@
-import {DEFAULT_TUI_THEME, type TuiTheme} from '../config/theme-config';
-import {markdownStyle} from './colors';
-import { displayWidth, safeRenderWidth } from './layout';
+import {DEFAULT_TUI_THEME, type TuiTheme} from '../../config/theme-config';
+import {markdownStyle} from '../colors';
+import { displayWidth, safeRenderWidth } from '../layout';
 import { parseInlineSpans } from './markdown-inline';
 import { containsMarkdownTable, renderMarkdownTable, tryParseMarkdownTable, type MarkdownTable } from './markdown-table';
 import { highlightCodeBlock } from './syntax-highlight';
