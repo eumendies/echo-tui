@@ -2421,6 +2421,45 @@ test('renderFooterLayout renders tool call pending preview in footer', () => {
   assert.match(layout.lines.at(-1), /\x1b\[38;2;/);
 });
 
+test('renderFooterLayout keeps multiline bash inline-script pending preview line safe', () => {
+  const width = 140;
+  const command = [
+    'echo before',
+    'node -e "console.log(\'abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz\');"',
+    'echo after'
+  ].join('\n');
+  const layout = renderFooterLayout({
+    composer: createComposer(''),
+    pending: {
+      kind: 'tool_call',
+      toolName: 'run_bash_command',
+      argumentsText: JSON.stringify({ command })
+    },
+    working: { elapsedMs: 0 },
+    statusLine: {
+      ...DEFAULT_STATUS_LINE,
+      mode: 'tool',
+      detail: 'run_bash_command',
+      keyHint: 'Esc 中断'
+    },
+    rows: 12,
+    width
+  });
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+
+  for (const line of layout.lines) {
+    const plainLine = stripAnsi(line);
+
+    assert.equal(plainLine.includes('\n'), false);
+    assert.equal(plainLine.includes('\r'), false);
+    assert.ok(displayWidth(line) <= safeRenderWidth(width), `line exceeds safe width: ${JSON.stringify(plainLine)}`);
+  }
+  assert.ok(plainLines.includes('  ▌ echo before'));
+  assert.ok(plainLines.includes('  ▌ node -e "console.log(\'abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz\');"'));
+  assert.ok(plainLines.includes('  ▌ echo after'));
+  assert.equal(plainLines.includes('node -e "…"'), false);
+});
+
 test('renderFooterLayout bounds long bash approval footer to rows minus top padding', () => {
   const longCommand = `rm -rf ${Array.from({ length: 40 }, (_value, index) => `very-long-path-${index}`).join('/')}`;
   const layout = renderFooterLayout({

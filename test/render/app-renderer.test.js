@@ -17,6 +17,16 @@ const {
 } = require('../../src/render/app-renderer');
 const { renderToolCallPreviewLines } = require('../../src/render/tool-message-renderer');
 
+function assertSafeRenderLines(lines, width) {
+  for (const line of lines) {
+    const plainLine = stripAnsi(line);
+
+    assert.equal(plainLine.includes('\n'), false, `line contains raw newline: ${JSON.stringify(plainLine)}`);
+    assert.equal(plainLine.includes('\r'), false, `line contains raw carriage return: ${JSON.stringify(plainLine)}`);
+    assert.ok(displayWidth(line) <= safeRenderWidth(width), `line exceeds safe width: ${JSON.stringify(plainLine)}`);
+  }
+}
+
 function createAskUserQuestionsCall(callId, questions) {
   return {
     role: 'tool_call',
@@ -281,8 +291,90 @@ test('renderTranscriptLines closes bash heredocs using shell delimiter rules', (
   assert.ok(lines.includes('  ▌ cat <<-TAB'));
   assert.ok(lines.includes('  ▌  TAB'));
   assert.equal(lines.filter((line) => line === '  ▌ … 4 more lines').length, 2);
-  assert.ok(lines.includes('  ▌ \tTAB'));
+  assert.ok(lines.includes('  ▌     TAB'));
   assert.ok(lines.includes('  ▌ echo tab done'));
+});
+
+test('renderTranscriptLines keeps multiline bash commands with inline scripts as independent rail rows', () => {
+  const width = 140;
+  const command = [
+    'echo before',
+    'node -e "console.log(\'abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz\');"',
+    'echo after'
+  ].join('\n');
+  const records = [
+    {
+      role: 'tool_call',
+      text: '',
+      toolCallId: 'multiline_inline',
+      toolName: 'run_bash_command',
+      argumentsText: JSON.stringify({command})
+    },
+    {
+      role: 'tool_result',
+      text: 'stdout:\ndone\n\nstderr:\n',
+      toolCallId: 'multiline_inline',
+      toolName: 'run_bash_command',
+      ok: true,
+      exitCode: 0
+    }
+  ];
+  const rendered = renderTranscriptLines(records, width);
+  const lines = rendered.map((line) => stripAnsi(line));
+
+  assertSafeRenderLines(rendered, width);
+  assert.ok(lines.includes('  ▌ echo before'));
+  assert.ok(lines.includes('  ▌ node -e "console.log(\'abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz\');"'));
+  assert.ok(lines.includes('  ▌ echo after'));
+  assert.equal(lines.includes('node -e "…"'), false);
+  assert.equal(lines.includes('echo after'), false);
+});
+
+test('renderTranscriptLines expands tabs in bash rails and generic tool fallback without mutating records', () => {
+  const records = [
+    {
+      role: 'tool_call',
+      text: '',
+      toolCallId: 'bash_tabs',
+      toolName: 'run_bash_command',
+      argumentsText: JSON.stringify({command: 'printf\tone\n\techo tabbed'})
+    },
+    {
+      role: 'tool_result',
+      text: 'stdout:\nout\tone\n\nstderr:\nerr\tone\n',
+      toolCallId: 'bash_tabs',
+      toolName: 'run_bash_command',
+      ok: false,
+      exitCode: 1
+    },
+    {
+      role: 'tool_call',
+      text: 'legacy',
+      toolCallId: 'generic_tabs',
+      toolName: 'tab_tool',
+      argumentsText: 'raw\targument'
+    },
+    {
+      role: 'tool_result',
+      text: 'generic\tresult',
+      toolCallId: 'generic_tabs',
+      toolName: 'tab_tool',
+      ok: true
+    }
+  ];
+  const snapshot = JSON.parse(JSON.stringify(records));
+  const rendered = renderTranscriptLines(records, 80);
+  const lines = rendered.map((line) => stripAnsi(line));
+
+  assertSafeRenderLines(rendered, 80);
+  assert.equal(lines.some((line) => line.includes('\t')), false);
+  assert.ok(lines.includes('  ▌ printf      one'));
+  assert.ok(lines.includes('  ▌     echo tabbed'));
+  assert.ok(lines.includes('  ▌ out one'));
+  assert.ok(lines.includes('  ▌ err one'));
+  assert.ok(lines.some((line) => line.startsWith('◆ tab_tool(raw') && line.endsWith('argument)')));
+  assert.ok(lines.includes('  ⎿ generic    result'));
+  assert.deepEqual(records, snapshot);
 });
 
 test('renderTranscriptLines handles inline scripts, stderr channels, fallback, narrow widths, and custom rail colors', () => {
