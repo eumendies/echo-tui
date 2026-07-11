@@ -128,6 +128,17 @@ test('renderUserMessageLines uses explicit bright foreground on gray background'
   assert.doesNotMatch(line, /\x1b\[30m/);
 });
 
+test('renderUserMessageLines expands tabs before padding user message rows', () => {
+  const width = 24;
+  const lines = renderUserMessageLines('\tat stack', width);
+  const plainLines = lines.map((line) => stripAnsi(line));
+
+  assert.equal(plainLines.length, 1);
+  assert.equal(plainLines[0].includes('\t'), false);
+  assert.equal(plainLines[0].startsWith('▌       at stack'), true);
+  assert.equal(displayWidth(plainLines[0]), safeRenderWidth(width));
+});
+
 test('renderUserMessageLines uses plan color only for plan user prefix', () => {
   const theme = createTuiTheme({
     blocks: {

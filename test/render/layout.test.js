@@ -8,6 +8,7 @@ const {
   displayWidth,
   renderComposer,
   safeRenderWidth,
+  tabWidthAt,
   wrapText
 } = require('../../src/render/layout');
 
@@ -41,6 +42,13 @@ test('wrapText keeps the prefix on wrapped lines', () => {
   assert.deepEqual(wrapText('abcd', 5, '◇ '), ['◇ ab', '◇ cd']);
 });
 
+test('tab display width follows the current terminal column and is rendered as spaces', () => {
+  assert.equal(tabWidthAt(0), 8);
+  assert.equal(tabWidthAt(2), 6);
+  assert.equal(displayWidth('▌ \tstack'), 13);
+  assert.deepEqual(wrapText('\tstack', 16, '▌ '), ['▌       stack']);
+});
+
 test('renderComposer returns wrapped lines and cursor coordinates', () => {
   const composer = createComposer('abcd');
 
@@ -48,6 +56,19 @@ test('renderComposer returns wrapped lines and cursor coordinates', () => {
     lines: ['> abc', '  d'],
     cursorRow: 1,
     cursorColumn: 3
+  });
+});
+
+test('renderComposer expands tabs without changing the composer state', () => {
+  const composer = createComposer('\tstack');
+  const layout = renderComposer(composer, 16);
+
+  assert.equal(composer.chars.includes('\t'), true);
+  assert.equal(layout.lines.includes('\t'), false);
+  assert.deepEqual(layout, {
+    lines: ['>       stack'],
+    cursorRow: 0,
+    cursorColumn: 13
   });
 });
 

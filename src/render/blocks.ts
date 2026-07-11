@@ -1,7 +1,7 @@
 import * as ansi from '../terminal/ansi';
 import {DEFAULT_TUI_THEME, type ThemeColor, type TuiTheme} from '../config/theme-config';
 import {blockBackground, blockText, colorText} from './colors';
-import { charWidth, displayWidth, safeRenderWidth } from './layout';
+import { charWidth, displayWidth, safeRenderWidth, tabWidthAt } from './layout';
 import { renderMarkdownLinesWithOptions } from './markdown';
 import { renderToolCallPreviewLines } from './tool-message-renderer';
 import type { BannerContext, PendingState, TerminalSize } from '../types/render';
@@ -601,19 +601,19 @@ function padToDisplayWidth(text: string, width: number): string {
  * @returns {string[]}
  */
 function wrapContentLine(text: string, width: number, prefixWidth: number): string[] {
-  const contentWidth = Math.max(1, width - prefixWidth);
   const lines = [''];
-  let column = 0;
+  let column = prefixWidth;
 
   for (const char of Array.from(text)) {
-    const widthOfChar = charWidth(char);
+    let widthOfChar = char === '\t' ? tabWidthAt(column) : charWidth(char);
 
-    if (column + widthOfChar > contentWidth && column > 0) {
+    if (column + widthOfChar > width && column > prefixWidth) {
       lines.push('');
-      column = 0;
+      column = prefixWidth;
+      widthOfChar = char === '\t' ? tabWidthAt(column) : charWidth(char);
     }
 
-    lines[lines.length - 1] += char;
+    lines[lines.length - 1] += char === '\t' ? ' '.repeat(widthOfChar) : char;
     column += widthOfChar;
   }
 

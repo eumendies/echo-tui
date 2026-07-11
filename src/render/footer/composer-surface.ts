@@ -13,6 +13,9 @@ const SHELL_CONTEXT_COMPOSER_PLACEHOLDER = 'bash 命令 · TAB 切换 mode · �
 const SHELL_LOCAL_COMPOSER_PLACEHOLDER = 'bash 命令 · TAB 切换 mode · 仅本地显示 · Enter 执行';
 const COMPOSER_MAX_VISIBLE_LINES = 8;
 const STATUS_SEPARATOR = '│';
+const COMPOSER_BOX_SIDE_BORDER = '│';
+const COMPOSER_BOX_SIDE_PADDING = ' ';
+const COMPOSER_BOX_CONTENT_OFFSET = displayWidth(`${COMPOSER_BOX_SIDE_BORDER}${COMPOSER_BOX_SIDE_PADDING}`);
 
 type ComposerTheme = {
   border: (text: string) => string;
@@ -59,7 +62,7 @@ export function renderComposerSurface(
 function renderBoxedComposer(composer: ComposerState, width: number, maxLines = Number.POSITIVE_INFINITY, theme = resolveComposerTheme(undefined, resolveFooterTheme(undefined))): FooterLayout {
   const boxWidth = Math.max(4, safeRenderWidth(width));
   const contentWidth = Math.max(1, boxWidth - 4);
-  const composerLayout = renderComposer(composer, contentWidth + 1, `${theme.prefix} `, {highlightFileMentions: true});
+  const composerLayout = renderComposer(composer, contentWidth + 1, `${theme.prefix} `, {highlightFileMentions: true, startColumn: COMPOSER_BOX_CONTENT_OFFSET});
   const visibleLines = composer.chars.length === 0
     ? [renderEmptyComposerLine(theme, contentWidth)]
     : composerLayout.lines;
@@ -388,7 +391,7 @@ function renderComposerBoxBottom(width: number, styleBorder = defaultBorder): st
 }
 
 function renderComposerBoxLine(content: string, width: number, styleBorder = defaultBorder): string {
-  return `${styleBorder('│')} ${padVisibleText(content, width)} ${styleBorder('│')}`;
+  return `${styleBorder(COMPOSER_BOX_SIDE_BORDER)}${COMPOSER_BOX_SIDE_PADDING}${padVisibleText(content, width)}${COMPOSER_BOX_SIDE_PADDING}${styleBorder(COMPOSER_BOX_SIDE_BORDER)}`;
 }
 
 function defaultBorder(text: string): string {
