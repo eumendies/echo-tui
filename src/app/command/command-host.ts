@@ -110,6 +110,7 @@ function createCommandHost(options: CommandHostOptions): CommandHostApp {
       saveDraft(draft) {
         try {
           saveLlmConfigDraft(draft);
+          appContext.modelContext.refreshModelState();
           appContext.clearContextUsage();
           return {ok: true};
         } catch (error: unknown) {

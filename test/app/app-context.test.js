@@ -344,13 +344,8 @@ test('AppContext completes selected slash suggestion before submit', () => {
 test('AppContext status line includes explicit reasoning effort', () => {
   const context = createContext();
   context.modelContext = {
-    createModelCommandInfo() {
-      return {
-        selectedIndex: 0,
-        models: [
-          { id: 'deep', model: 'gpt-deep', provider: 'openai', reasoningEffort: 'high' }
-        ]
-      };
+    getStatusLineModelState() {
+      return {modelLabel: 'gpt-deep', reasoningEffort: 'high'};
     }
   };
 
@@ -361,18 +356,64 @@ test('AppContext status line includes explicit reasoning effort', () => {
 test('AppContext status line omits effort when profile has no explicit effort', () => {
   const context = createContext();
   context.modelContext = {
-    createModelCommandInfo() {
-      return {
-        selectedIndex: 0,
-        models: [
-          { id: 'fast', model: 'gpt-fast', provider: 'openai' }
-        ]
-      };
+    getStatusLineModelState() {
+      return {modelLabel: 'gpt-fast'};
     }
   };
 
   assert.equal(context.createRenderState().statusLine.modelLabel, 'gpt-fast');
   assert.equal(context.createRenderState().statusLine.reasoningEffort, undefined);
+});
+
+test('AppContext status line reads cached model state without rereading user config', () => {
+  const config = {
+    llm: {
+      selectedModel: 'fast',
+      providers: {
+        openai: {preset: 'openai-responses-api', apiKey: 'sk-test-key'}
+      },
+      models: [
+        {id: 'fast', provider: 'openai', model: 'gpt-fast'},
+        {id: 'deep', provider: 'openai', model: 'gpt-deep'}
+      ]
+    }
+  };
+
+  withTemporaryModelConfig(config, ({configPath}) => {
+    const context = createContext();
+
+    assert.equal(context.createRenderState().statusLine.modelLabel, 'gpt-fast');
+
+    fs.writeFileSync(configPath, JSON.stringify({
+      llm: {
+        ...config.llm,
+        selectedModel: 'deep'
+      }
+    }), 'utf8');
+
+    assert.equal(context.createRenderState().statusLine.modelLabel, 'gpt-fast');
+    assert.equal(context.createRenderState().statusLine.modelLabel, 'gpt-fast');
+
+    context.modelContext.createModelCommandInfo();
+
+    assert.equal(context.createRenderState().statusLine.modelLabel, 'gpt-deep');
+  });
+});
+
+test('AppContext skips status-line model cache reads while command surface is open', () => {
+  const context = createContext();
+  let readCount = 0;
+  context.modelContext = {
+    getStatusLineModelState() {
+      readCount += 1;
+      return {modelLabel: 'cached-model'};
+    }
+  };
+
+  assert.equal(context.createRenderState({commandSurface: {kind: 'info'}}).statusLine, undefined);
+  assert.equal(readCount, 0);
+  assert.equal(context.createRenderState().statusLine.modelLabel, 'cached-model');
+  assert.equal(readCount, 1);
 });
 
 test('AppContext projects tool approval allow-all state into status line', () => {
@@ -739,6 +780,31 @@ test('ModelContext persists selectedModel atomically and preserves unknown confi
   });
 });
 
+test('ModelContext refreshes cached status-line label after model selection succeeds', () => {
+  withTemporaryModelConfig({
+    llm: {
+      selectedModel: 'fast',
+      providers: {
+        default: { preset: 'openai-responses-api', apiKey: 'sk-test-key' }
+      },
+      models: [
+        { id: 'fast', provider: 'default', model: 'gpt-fast' },
+        { id: 'deep', provider: 'default', model: 'gpt-deep', reasoning: {effort: 'high'} }
+      ]
+    }
+  }, () => {
+    const appContext = createContext();
+
+    assert.equal(appContext.createRenderState().statusLine.modelLabel, 'gpt-fast');
+    assert.equal(appContext.createRenderState().statusLine.reasoningEffort, undefined);
+
+    assert.deepEqual(appContext.modelContext.selectModel('deep'), {ok: true});
+
+    assert.equal(appContext.createRenderState().statusLine.modelLabel, 'gpt-deep');
+    assert.equal(appContext.createRenderState().statusLine.reasoningEffort, 'high');
+  });
+});
+
 test('ModelContext persists selectedModel without rewriting provider-backed config', () => {
   const config = {
     llm: {
@@ -796,6 +862,29 @@ test('ModelContext persists selected profile effort and preserves reasoning fiel
       { id: 'fast', provider: 'openai', model: 'gpt-fast' },
       { id: 'deep', provider: 'openai', model: 'gpt-deep', reasoning: { summary: 'auto', effort: 'high' } }
     ]);
+  });
+});
+
+test('ModelContext refreshes cached status-line effort after effort selection succeeds', () => {
+  withTemporaryModelConfig({
+    llm: {
+      selectedModel: 'deep',
+      providers: {
+        openai: { preset: 'openai-responses-api', apiKey: 'openai-api-key' }
+      },
+      models: [
+        { id: 'deep', provider: 'openai', model: 'gpt-deep', reasoning: {effort: 'low'} }
+      ]
+    }
+  }, () => {
+    const appContext = createContext();
+
+    assert.equal(appContext.createRenderState().statusLine.reasoningEffort, 'low');
+
+    assert.deepEqual(appContext.modelContext.selectEffort('xhigh'), {ok: true});
+
+    assert.equal(appContext.createRenderState().statusLine.modelLabel, 'gpt-deep');
+    assert.equal(appContext.createRenderState().statusLine.reasoningEffort, 'xhigh');
   });
 });
 
@@ -872,6 +961,40 @@ test('ModelContext rejects config without model profiles when selecting a model'
   });
 });
 
+test('ModelContext keeps cached status-line state when model selection write fails', () => {
+  const fakeApiKey = 'sk-test-secret';
+  withTemporaryModelConfig({
+    llm: {
+      selectedModel: 'fast',
+      providers: {
+        default: { preset: 'openai-responses-api', apiKey: fakeApiKey }
+      },
+      models: [
+        { id: 'fast', provider: 'default', model: 'gpt-fast' },
+        { id: 'deep', provider: 'default', model: 'gpt-deep' }
+      ]
+    }
+  }, () => {
+    const originalWriteFileSync = fs.writeFileSync;
+    const appContext = createContext();
+
+    assert.equal(appContext.createRenderState().statusLine.modelLabel, 'gpt-fast');
+    fs.writeFileSync = () => {
+      throw new Error(`cannot write ${fakeApiKey}`);
+    };
+
+    try {
+      const result = appContext.modelContext.selectModel('deep');
+
+      assert.equal(result.ok, false);
+      assert.ok(result.error.includes('<redacted>'));
+      assert.equal(appContext.createRenderState().statusLine.modelLabel, 'gpt-fast');
+    } finally {
+      fs.writeFileSync = originalWriteFileSync;
+    }
+  });
+});
+
 test('ModelContext redacts write errors when model selection cannot be saved', () => {
   const fakeApiKey = 'sk-test-secret';
   withTemporaryModelConfig({
@@ -905,17 +1028,25 @@ test('ModelContext redacts write errors when model selection cannot be saved', (
   });
 });
 
-test('ModelContext redacts config errors through its own model info path', () => {
+test('ModelContext exposes safe config errors through its cached model info path', () => {
   const fakeApiKey = 'sk-test-secret';
-  class FailingModelContext extends ModelContext {
-    getModelInfo() {
-      throw new Error(`LLM 配置文件不存在：/tmp/echo-config.json ${fakeApiKey}`);
+  withTemporaryModelConfig({
+    llm: {
+      selectedModel: 'fast',
+      providers: {
+        default: { preset: 'openai-responses-api', apiKey: fakeApiKey }
+      },
+      models: [
+        { id: 'fast', provider: 'missing-provider', model: 'gpt-fast' }
+      ]
     }
-  }
-  const context = new FailingModelContext();
+  }, () => {
+    const context = new ModelContext();
+    const result = context.createModelCommandInfo();
 
-  assert.ok(context.createModelCommandInfo().error.includes('<redacted>'));
-  assert.ok(!context.createModelCommandInfo().error.includes(fakeApiKey));
+    assert.match(result.error, /不存在的 provider/);
+    assert.ok(!result.error.includes(fakeApiKey));
+  });
 });
 
 test('AppContext persists, clears, and reloads transcript sessions through one instance boundary', () => {

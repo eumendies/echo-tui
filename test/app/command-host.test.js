@@ -5,6 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const {createCommandHost, createCopyableRecords} = require('../../src/app/command/command-host');
+const {ModelContext} = require('../../src/app/state/model-context');
 const {readBuiltinTheme} = require('../../src/config/theme-config');
 
 function withTemporaryThemeConfig(content, callback) {
@@ -70,16 +71,26 @@ function withTemporaryUserConfig(content, callback) {
 function createHostHarness(options = {}) {
   const setThemes = [];
   const calls = {
+    contextUsageClears: 0,
     hookConfigs: [],
+    modelRefreshes: 0,
     resizeRecoveries: 0
   };
   const host = createCommandHost({
     appContext: {
+      clearContextUsage() {
+        calls.contextUsageClears += 1;
+      },
       getCurrentCwd() {
         return options.cwd || '/tmp/echo_tui';
       },
       getInteractionMode() {
         return 'plan';
+      },
+      modelContext: options.modelContext || {
+        refreshModelState() {
+          calls.modelRefreshes += 1;
+        }
       },
       setTheme(theme) {
         setThemes.push(theme);
@@ -226,6 +237,57 @@ test('CommandHost hooks facade creates synthetic payload and maps test result', 
     assert.equal(result.ok, true);
     assert.match(result.stdout, new RegExp(`tool_call_start:hook_test:${cwd.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
     assert.equal(result.stderr, '');
+  });
+});
+
+test('CommandHost config facade refreshes model status cache after successful save', () => {
+  withTemporaryUserConfig(JSON.stringify({
+    llm: {
+      selectedModel: 'fast',
+      providers: {
+        openai: {preset: 'openai-responses-api', apiKey: 'openai-api-key'}
+      },
+      models: [
+        {id: 'fast', provider: 'openai', model: 'gpt-fast'}
+      ]
+    }
+  }), ({readConfig}) => {
+    const modelContext = new ModelContext();
+    const {calls, host} = createHostHarness({modelContext});
+
+    assert.equal(modelContext.getStatusLineModelState().modelLabel, 'gpt-fast');
+
+    const result = host.config.saveDraft({
+      providers: [{
+        id: 'openai',
+        label: 'OpenAI',
+        preset: 'openai-responses-api',
+        apiKey: 'openai-api-key',
+        models: [
+          {id: 'fast', model: 'gpt-fast'},
+          {id: 'deep', model: 'gpt-deep', reasoning: {effort: 'high'}}
+        ]
+      }],
+      selectedModelId: 'deep',
+      rootConfig: readConfig()
+    });
+
+    assert.deepEqual(result, {ok: true});
+    assert.equal(calls.contextUsageClears, 1);
+    assert.equal(modelContext.getStatusLineModelState().modelLabel, 'gpt-deep');
+    assert.equal(modelContext.getStatusLineModelState().reasoningEffort, 'high');
+  });
+});
+
+test('CommandHost config facade does not refresh model cache when save fails', () => {
+  withTemporaryUserConfig(JSON.stringify({}), () => {
+    const {calls, host} = createHostHarness();
+    const result = host.config.saveDraft({providers: [], rootConfig: {}});
+
+    assert.equal(result.ok, false);
+    assert.match(result.error, /至少需要配置一个 provider/);
+    assert.equal(calls.modelRefreshes, 0);
+    assert.equal(calls.contextUsageClears, 0);
   });
 });
 
