@@ -147,7 +147,7 @@ export type ToolRuntimeConfig = {
 };
 
 export type BashToolConfig = {
-  timeoutMs: number;
+  timeoutMs: number | null;
   maxOutputBytes: number;
 };
 

@@ -3,7 +3,6 @@ import {spawn} from 'node:child_process';
 
 import {normalizePositiveInteger} from './tool-handler-utils';
 
-const DEFAULT_BASH_TIMEOUT_MS = 30_000;
 const DEFAULT_BASH_MAX_OUTPUT_BYTES = 65_536;
 const TERMINATE_KILL_GRACE_MS = 500;
 
@@ -38,7 +37,7 @@ type BashCommandRunResult = {
  * 执行一条非交互 bash 命令，并同时保留结构化 stdout/stderr 与按到达顺序合并的终端输出。
  */
 function runBashCommand(options: BashCommandRunnerOptions): Promise<BashCommandRunResult> {
-  const timeoutMs = options.timeoutMs === null ? null : normalizePositiveInteger(options.timeoutMs, DEFAULT_BASH_TIMEOUT_MS);
+  const timeoutMs = normalizeTimeoutMs(options.timeoutMs);
   const maxOutputBytes = normalizePositiveInteger(options.maxOutputBytes, DEFAULT_BASH_MAX_OUTPUT_BYTES);
   const shell = options.shell || '/bin/bash';
   const startedAt = Date.now();
@@ -211,9 +210,12 @@ function createOutputCapture(maxBytes: number): OutputCapture {
   };
 }
 
+function normalizeTimeoutMs(value: number | null | undefined): number | null {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : null;
+}
+
 export {
   DEFAULT_BASH_MAX_OUTPUT_BYTES,
-  DEFAULT_BASH_TIMEOUT_MS,
   runBashCommand
 };
 

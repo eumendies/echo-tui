@@ -140,10 +140,11 @@
 - **AND** 若命令未响应正常终止信号，系统 SHALL 在短暂宽限后强制终止进程
 - **AND** 系统 SHALL 在命令进程结束后追加一条最终 shell transcript record，记录已捕获输出和中断错误信息
 
-#### Scenario: Agent bash tool keeps timeout behavior
+#### Scenario: Agent bash tool keeps independent interruption behavior
 - **WHEN** 模型调用 `run_bash_command` tool 执行命令
-- **THEN** bash tool handler SHALL 继续使用配置的 timeout
-- **AND** bash tool SHALL NOT 因 shell mode 的 Escape 中断机制而关闭超时保护
+- **THEN** bash tool handler SHALL 继续接收 assistant turn 的取消信号
+- **AND** bash tool SHALL 默认不依赖固定 timeout 自动中断
+- **AND** bash tool MAY 在用户显式配置正整数 timeoutMs 时应用命令 timeout
 
 ### Requirement: Shell command Esc 优先于 assistant loop interrupt
 系统 SHALL 保持 shell mode 本地命令的 Esc 中断语义独立于 assistant agent loop interrupt。当 shell mode 本地命令正在运行时，Esc SHALL 优先请求中断该 shell command；当没有正在运行的 shell command 且存在 active assistant turn 时，Esc 才 MAY 作为 assistant loop interrupt 处理。

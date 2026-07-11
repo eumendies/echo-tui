@@ -51,7 +51,7 @@
 - **THEN** handler SHALL NOT 抛出未捕获异常中断 app
 
 ### Requirement: bash command tool
-系统 SHALL 提供第一版本地 bash 工具 `run_bash_command`。该工具 SHALL 只执行非交互命令，SHALL 在当前工作区中运行，SHALL 捕获 stdout、stderr、exit code、耗时、timeout 和截断状态，并 SHALL 把模型继续工作所需的信息格式化为紧凑 tool result 文本；完整执行状态 SHALL 继续保留在结构化 result 字段中。
+系统 SHALL 提供第一版本地 bash 工具 `run_bash_command`。该工具 SHALL 只执行非交互命令，SHALL 在当前工作区中运行，SHALL 捕获 stdout、stderr、exit code、耗时、可选 timeout 和截断状态，并 SHALL 把模型继续工作所需的信息格式化为紧凑 tool result 文本；完整执行状态 SHALL 继续保留在结构化 result 字段中。
 
 #### Scenario: 执行成功的 bash 命令
 - **WHEN** `run_bash_command` 收到 `{ "command": "pwd" }` 形式的有效参数
@@ -67,8 +67,9 @@
 - **THEN** result SHALL 包含该 command、exit code、stdout 和 stderr
 - **THEN** 系统 SHALL NOT 仅因非零 exit code 追加本地 `error` transcript record
 
-#### Scenario: 命令超时
-- **WHEN** bash 命令运行超过配置的 timeout
+#### Scenario: 显式 timeout 命令超时
+- **WHEN** bash tool 配置了正整数 timeout
+- **AND** bash 命令运行超过该 timeout
 - **THEN** bash handler SHALL 终止该命令
 - **THEN** result SHALL 标记 `timedOut: true` 且 `ok: false`
 - **THEN** result 文本 SHALL 包含该 command 并明确说明 timeout
@@ -82,20 +83,27 @@
 #### Scenario: 不支持交互输入
 - **WHEN** bash 命令尝试读取 stdin 或需要 TTY 交互
 - **THEN** bash handler SHALL 不提供交互式 stdin 或 TTY
-- **THEN** 命令 SHALL 只能通过退出、失败或 timeout 结束
+- **THEN** 命令 SHALL 只能通过退出、失败、用户中断或显式 timeout 结束
 
 ### Requirement: bash tool availability and execution limits
-系统 SHALL 把当前已开发的 `run_bash_command` 暴露给模型。系统 SHALL 支持 timeout 和 max output bytes 限制，并 SHALL 对无效配置使用安全默认值。
+系统 SHALL 把当前已开发的 `run_bash_command` 暴露给模型。系统 SHALL 默认不为 bash tool 设置自动 timeout，SHALL 依赖 turn-level 中断信号响应用户 Esc；系统 SHALL 继续支持 max output bytes 限制，并 MAY 在用户显式配置正整数 timeoutMs 时启用命令 timeout。
 
 #### Scenario: 默认暴露 bash tool
 - **WHEN** 创建默认 tool registry
 - **THEN** tool registry SHALL 包含 `run_bash_command`
 - **THEN** OpenAI 请求 SHALL 可以发送该工具 schema
 
-#### Scenario: 应用 timeout 和输出上限
+#### Scenario: 默认 bash tool 不自动超时
+- **WHEN** bash tool 执行命令且未配置正整数 timeoutMs
+- **THEN** executor 或 handler SHALL NOT 启动固定时长的 timeout timer
+- **THEN** turn-level 取消信号触发时 handler SHALL 尽力终止正在运行的命令
+
+#### Scenario: 应用显式 timeout 和输出上限
 - **WHEN** bash tool 执行命令
-- **THEN** executor 或 handler SHALL 使用配置的 timeout 和 max output bytes
-- **THEN** 无效、缺失或越界配置 SHALL 被归一化为安全默认值
+- **THEN** executor 或 handler SHALL 使用配置的 max output bytes
+- **THEN** 正整数 timeoutMs 配置 SHALL 作为显式 timeout 使用
+- **THEN** 无效、缺失或 null timeoutMs SHALL 被归一化为无自动 timeout
+- **THEN** 无效、缺失或越界 max output bytes 配置 SHALL 被归一化为安全默认值
 
 ### Requirement: plan mode readonly bash execution policy
 系统 SHALL 在 plan mode 中对 provider tool call 应用只读执行策略。Provider-visible tool registry SHALL 与 normal mode 保持一致以稳定 tools schema；但 provider tool call 在进入 executor 前 SHALL 经过 mode-aware classifier。不符合 plan mode 只读策略的命令或写入型工具 SHALL 被拒绝且不得执行。
@@ -111,7 +119,7 @@
 - **WHEN** plan mode 下 `run_bash_command` 收到只读 git inspection 命令，例如 `git status --short` 或 `git diff --stat`
 - **THEN** classifier SHALL 将该 tool call 判定为 safe
 - **AND** executor SHALL 使用普通 bash handler 和共享 bash runner 执行该命令
-- **AND** result SHALL 保留 stdout、stderr、exit code、timeout、duration 和 truncated 等既有 bash result 语义
+- **AND** result SHALL 保留 stdout、stderr、exit code、可选 timeout、duration 和 truncated 等既有 bash result 语义
 
 #### Scenario: Reject command outside readonly allowlist
 - **WHEN** plan mode 下 `run_bash_command` 收到不在只读 allowlist 内的命令，例如 `npm test`、`git reset --hard HEAD` 或 `python script.py`
@@ -755,7 +763,7 @@
 #### Scenario: 安全 bash 继续普通执行
 - **WHEN** agent loop runtime 收到被分类为可直接执行的 `run_bash_command` tool call
 - **THEN** 系统 SHALL 通过普通 tool executor 调用 bash handler
-- **THEN** bash handler SHALL 保持现有 stdout、stderr、exit code、timeout 和截断结果语义
+- **THEN** bash handler SHALL 保持现有 stdout、stderr、exit code、可选 timeout 和截断结果语义
 
 #### Scenario: 风险分类不改变 bash handler 契约
 - **WHEN** bash handler 被普通 tool executor 调用

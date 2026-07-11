@@ -358,7 +358,7 @@ test('readLlmConfig uses the first profile when selectedModel points to a remove
   });
 });
 
-test('readLlmConfig reads explicit bash tool limits', () => {
+test('readLlmConfig reads explicit bash tool limits without the previous 30s timeout ceiling', () => {
   const config = readLlmConfig({
     configPath: '/tmp/echo-config.json',
     readFile: readConfigFrom(JSON.stringify({
@@ -372,7 +372,7 @@ test('readLlmConfig reads explicit bash tool limits', () => {
       },
       tools: {
         bash: {
-          timeoutMs: 2000,
+          timeoutMs: 120000,
           maxOutputBytes: 4096
         }
       }
@@ -381,7 +381,7 @@ test('readLlmConfig reads explicit bash tool limits', () => {
 
   assert.deepEqual(config.tools, {
     bash: {
-      timeoutMs: 2000,
+      timeoutMs: 120000,
       maxOutputBytes: 4096
     }
   });
@@ -401,7 +401,7 @@ test('readLlmConfig normalizes invalid bash tool settings to safe defaults', () 
       },
       tools: {
         bash: {
-          timeoutMs: 100,
+          timeoutMs: 0,
           maxOutputBytes: 1
         }
       }
