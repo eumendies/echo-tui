@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const { DEFAULT_TUI_THEME, createTuiTheme } = require('../../src/config/theme-config');
-const { highlightCodeBlock } = require('../../src/render/syntax-highlight');
+const { highlightCodeBlock } = require('../../src/render/markdown/syntax-highlight');
 
 function renderSpans(spansByLine) {
   return spansByLine.map((spans) => spans.map((span) => (span.style ? span.style(span.text) : span.text)).join(''));

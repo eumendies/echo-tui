@@ -104,6 +104,27 @@ test('renderFooterLayout renders empty composer placeholder without changing cur
   assert.equal(layout.cursorColumn, 4);
 });
 
+test('renderFooterLayout keeps boxed composer borders aligned for tab-indented text', () => {
+  const width = 24;
+  const composer = createComposer('\tat stack');
+  const layout = renderFooterLayout({
+    composer,
+    commandSurface: null,
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    width
+  });
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+  const composerLine = plainLines.find((line) => line.includes('at stack'));
+
+  assert.equal(composer.chars.includes('\t'), true);
+  assert.ok(composerLine);
+  assert.equal(composerLine.includes('\t'), false);
+  assert.equal(composerLine.startsWith('│ '), true);
+  assert.equal(composerLine.endsWith(' │'), true);
+  assert.equal(displayWidth(composerLine), safeRenderWidth(width));
+});
+
 test('renderFooterLayout hides empty composer placeholder when terminal is too narrow', () => {
   const width = 34;
   const layout = renderFooterLayout({
@@ -2394,8 +2415,8 @@ test('renderFooterLayout renders tool call pending preview in footer', () => {
   });
   const plainLines = layout.lines.map((line) => stripAnsi(line));
 
-  assert.equal(plainLines[0], "◆ Bash('pwd')");
-  assert.equal(plainLines[1], '');
+  assert.equal(plainLines[0], '◆ ▌ Bash · running');
+  assert.equal(plainLines[1], '  ▌ pwd');
   assert.ok(plainLines.at(-1).includes('   ▒█▒    working 00:00'));
   assert.match(layout.lines.at(-1), /\x1b\[38;2;/);
 });

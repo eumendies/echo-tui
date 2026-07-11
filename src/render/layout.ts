@@ -9,6 +9,7 @@ const TEXT_PRESENTATION_WIDTH_1_CODEPOINTS = new Set([
   0x2713, // ✓
   0x2715  // ✕
 ]);
+const TAB_STOP_WIDTH = 8;
 
 /**
  * 计算单个字符的终端显示宽度，兼容换行、组合字符、emoji 和常见东亚宽字符。
@@ -50,13 +51,38 @@ export function charWidth(char: string): number {
 }
 
 /**
+ * 计算制表符从当前列移动到下一个固定制表位所需的宽度。
+ *
+ * @param {number} column 当前可见列
+ * @returns {number}
+ */
+export function tabWidthAt(column: number): number {
+  const normalizedColumn = Number.isFinite(column) ? Math.max(0, Math.floor(column)) : 0;
+  return TAB_STOP_WIDTH - (normalizedColumn % TAB_STOP_WIDTH);
+}
+
+/**
  * 计算字符串在终端中的实际显示宽度，会先移除 ANSI 控制序列。
  *
  * @param {string} text
  * @returns {number}
  */
 export function displayWidth(text: string): number {
-  return splitGraphemes(stripAnsi(text)).reduce((width, char) => width + charWidth(char), 0);
+  let width = 0;
+  let column = 0;
+
+  for (const char of splitGraphemes(stripAnsi(text))) {
+    if (char === '\n' || char === '\r') {
+      column = 0;
+      continue;
+    }
+
+    const widthOfChar = char === '\t' ? tabWidthAt(column) : charWidth(char);
+    width += widthOfChar;
+    column += widthOfChar;
+  }
+
+  return width;
 }
 
 /**
@@ -199,14 +225,15 @@ export function wrapText(text: string, width: number, prefix = ''): string[] {
     let column = displayWidth(prefix);
 
     for (const char of splitGraphemes(sourceLine)) {
-      const widthOfChar = charWidth(char);
+      let widthOfChar = char === '\t' ? tabWidthAt(column) : charWidth(char);
       if (column + widthOfChar > safeWidth && column > displayWidth(prefix)) {
         lines.push(line);
         line = prefix;
         column = displayWidth(prefix);
+        widthOfChar = char === '\t' ? tabWidthAt(column) : charWidth(char);
       }
 
-      line += char;
+      line += char === '\t' ? ' '.repeat(widthOfChar) : char;
       column += widthOfChar;
     }
 
@@ -223,16 +250,17 @@ export function wrapText(text: string, width: number, prefix = ''): string[] {
  * @param {number} width
  * @returns {{lines: string[], cursorRow: number, cursorColumn: number}}
  */
-export function renderComposer(composer: ComposerState, width: number, prompt = '> ', options: {highlightFileMentions?: boolean} = {}): ComposerLayout {
+export function renderComposer(composer: ComposerState, width: number, prompt = '> ', options: {highlightFileMentions?: boolean; startColumn?: number} = {}): ComposerLayout {
   // 同时生成 composer 可见行和光标坐标，footer 重绘后需要用它恢复光标。
+  const startColumn = Number.isFinite(options.startColumn) ? Math.max(0, Math.floor(options.startColumn as number)) : 0;
   const continuation = ' '.repeat(Math.max(1, displayWidth(prompt)));
   const safeWidth = safeRenderWidth(width);
   const lines: string[] = [prompt];
   const mentionRanges = options.highlightFileMentions ? parseFileMentions(composer.chars.join('')) : [];
   let row = 0;
-  let column = displayWidth(prompt);
+  let column = startColumn + displayWidth(prompt);
   let cursorRow = 0;
-  let cursorColumn = column;
+  let cursorColumn = column - startColumn;
 
   /**
    * 在遍历到目标 cursor index 的瞬间记录当前的可见行列位置。
@@ -243,7 +271,7 @@ export function renderComposer(composer: ComposerState, width: number, prompt = 
     // 在渲染到 cursor index 的瞬间记录当前位置。
     if (index === composer.cursor) {
       cursorRow = row;
-      cursorColumn = column;
+      cursorColumn = column - startColumn;
     }
   }
 
@@ -260,21 +288,23 @@ export function renderComposer(composer: ComposerState, width: number, prompt = 
       // 逻辑换行会开启新的 composer 行，并使用缩进保持视觉对齐。
       row += 1;
       lines[row] = continuation;
-      column = displayWidth(continuation);
+      column = startColumn + displayWidth(continuation);
       continue;
     }
 
-    const widthOfChar = charWidth(char);
-    const currentPrefixWidth = row === 0 ? displayWidth(prompt) : displayWidth(continuation);
+    let widthOfChar = char === '\t' ? tabWidthAt(column) : charWidth(char);
+    const currentPrefixWidth = startColumn + (row === 0 ? displayWidth(prompt) : displayWidth(continuation));
 
-    if (column + widthOfChar > safeWidth && column > currentPrefixWidth) {
+    if (column + widthOfChar > startColumn + safeWidth && column > currentPrefixWidth) {
       // 自动换行只影响显示，不改变 composer 的字符数组。
       row += 1;
       lines[row] = continuation;
-      column = displayWidth(continuation);
+      column = startColumn + displayWidth(continuation);
+      widthOfChar = char === '\t' ? tabWidthAt(column) : charWidth(char);
     }
 
-    lines[row] += isMentionChar(index, mentionRanges) ? ansi.cyan(char) : char;
+    const renderedChar = char === '\t' ? ' '.repeat(widthOfChar) : char;
+    lines[row] += isMentionChar(index, mentionRanges) ? ansi.cyan(renderedChar) : renderedChar;
     column += widthOfChar;
   }
 

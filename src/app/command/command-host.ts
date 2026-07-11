@@ -317,6 +317,13 @@ function createCommandHost(options: CommandHostOptions): CommandHostApp {
     usage: {
       listDailyUsage(query) {
         return usageStore ? usageStore.listDailyUsage(query) : [];
+      },
+      getViewport() {
+        const state = appContext.createRenderState();
+        return {
+          maxLines: calculateCommandSurfaceMaxLines(state.rows),
+          width: state.width
+        };
       }
     },
     diff: {

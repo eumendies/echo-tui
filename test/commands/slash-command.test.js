@@ -223,6 +223,9 @@ function createFakeHost(options = {}) {
         calls.usageQueries = calls.usageQueries || [];
         calls.usageQueries.push(query || {});
         return (options.dailyUsage || []).map((day) => ({ ...day }));
+      },
+      getViewport() {
+        return options.usageViewport || {width: 100, maxLines: 22};
       }
     },
     diff: {
@@ -544,7 +547,7 @@ test('usageCommandHandler opens usage surface, navigates dates, and closes witho
     hitRate: 20 / (100 + index),
     eventCount: 1
   }));
-  const selectable = createFakeHost({dailyUsage});
+  const selectable = createFakeHost({dailyUsage, usageViewport: {width: 100, maxLines: 26}});
 
   let session = startCommand(usageCommandHandler, '/usage', selectable.host);
 
@@ -589,6 +592,33 @@ test('usageCommandHandler opens usage surface, navigates dates, and closes witho
   assert.equal(selectable.calls.sessionCloses, 1);
   assert.equal(selectable.calls.resets, 2);
   assert.deepEqual(selectable.calls.transcriptAppends, []);
+});
+
+test('usageCommandHandler starts at the latest day when the viewport shows fewer than fourteen days', () => {
+  const usageCommandHandler = new UsageCommandHandler();
+  const dailyUsage = Array.from({length: 12}, (_value, index) => ({
+    localDay: index === 0 ? '2026-06-30' : `2026-07-${String(index).padStart(2, '0')}`,
+    inputTokens: 100,
+    cacheReadInputTokens: 20,
+    cacheCreationInputTokens: 5,
+    uncachedInputTokens: 80,
+    outputTokens: 40,
+    totalTokens: 140,
+    hitRate: 0.2,
+    eventCount: 1
+  }));
+  const selectable = createFakeHost({dailyUsage, usageViewport: {width: 90, maxLines: 18}});
+  let session = startCommand(usageCommandHandler, '/usage', selectable.host);
+
+  assert.equal(session.surface.offset, 2);
+
+  usageCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_UP}, selectable.host);
+  session = selectable.host.session.getActive();
+  assert.equal(session.surface.offset, 1);
+
+  usageCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_DOWN}, selectable.host);
+  session = selectable.host.session.getActive();
+  assert.equal(session.surface.offset, 2);
 });
 
 test('themesCommandHandler opens select surface and only matches pure /themes', () => {

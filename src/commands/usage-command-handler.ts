@@ -1,10 +1,10 @@
 import {INPUT_EVENTS} from '../input/event-types';
 
+import {calculateUsageNavigation} from '../render/footer/usage-surface';
+
 import type {CommandHandler, CommandHost, CommandSession, InfoCommandSurface, UsageCommandSurface} from '../types/command';
 import type {InputEvent} from '../types/input';
 import type {UsageDailyAggregate} from '../types/usage';
-
-const USAGE_WINDOW_SIZE = 14;
 
 type UsageCommandData = {
   dailyUsage: UsageDailyAggregate[];
@@ -27,30 +27,28 @@ function createUsageSurface(dailyUsage: UsageDailyAggregate[], offset: number): 
     kind: 'usage',
     title: 'Token 用量',
     dailyUsage,
-    offset: clampOffset(offset, dailyUsage),
+    offset: Math.max(0, Math.floor(Number.isFinite(offset) ? offset : 0)),
     dismissHint: 'Token 用量 · Enter/Esc 关闭'
   };
 }
 
-function createUsageCommandData(dailyUsage: UsageDailyAggregate[]): UsageCommandData {
+function createUsageCommandData(dailyUsage: UsageDailyAggregate[], host: CommandHost): UsageCommandData {
+  const data = {dailyUsage, offset: 0};
   return {
     dailyUsage,
-    offset: maxOffset(dailyUsage)
+    offset: resolveNavigation(data, host).maxOffset
   };
 }
 
-function maxOffset(dailyUsage: UsageDailyAggregate[]): number {
-  return Math.max(0, dailyUsage.length - Math.min(USAGE_WINDOW_SIZE, dailyUsage.length));
+function resolveNavigation(data: UsageCommandData, host: CommandHost): {maxOffset: number; windowSize: number} {
+  const viewport = host.usage.getViewport();
+  return calculateUsageNavigation(createUsageSurface(data.dailyUsage, data.offset), viewport.width, viewport.maxLines);
 }
 
-function clampOffset(offset: number, dailyUsage: UsageDailyAggregate[]): number {
-  return Math.max(0, Math.min(maxOffset(dailyUsage), offset));
-}
-
-function moveOffset(data: UsageCommandData, delta: number): UsageCommandData {
+function moveOffset(data: UsageCommandData, delta: number, maxOffset: number): UsageCommandData {
   return {
     dailyUsage: data.dailyUsage,
-    offset: clampOffset(data.offset + delta, data.dailyUsage)
+    offset: Math.max(0, Math.min(maxOffset, Math.min(data.offset, maxOffset) + delta))
   };
 }
 
@@ -82,7 +80,7 @@ export class UsageCommandHandler implements CommandHandler {
       return;
     }
 
-    const data = createUsageCommandData(dailyUsage);
+    const data = createUsageCommandData(dailyUsage, host);
     host.session.open({
       commandName: 'usage',
       handler: this,
@@ -116,19 +114,20 @@ export class UsageCommandHandler implements CommandHandler {
     }
 
     let next = data;
+    const navigation = resolveNavigation(data, host);
 
     if (event.type === INPUT_EVENTS.MOVE_UP || event.type === INPUT_EVENTS.MOVE_LEFT) {
-      next = moveOffset(data, -1);
+      next = moveOffset(data, -1, navigation.maxOffset);
     } else if (event.type === INPUT_EVENTS.MOVE_DOWN || event.type === INPUT_EVENTS.MOVE_RIGHT) {
-      next = moveOffset(data, 1);
+      next = moveOffset(data, 1, navigation.maxOffset);
     } else if (event.type === INPUT_EVENTS.PAGE_UP) {
-      next = moveOffset(data, -Math.min(USAGE_WINDOW_SIZE, data.dailyUsage.length));
+      next = moveOffset(data, -navigation.windowSize, navigation.maxOffset);
     } else if (event.type === INPUT_EVENTS.PAGE_DOWN) {
-      next = moveOffset(data, Math.min(USAGE_WINDOW_SIZE, data.dailyUsage.length));
+      next = moveOffset(data, navigation.windowSize, navigation.maxOffset);
     } else if (event.type === INPUT_EVENTS.MOVE_HOME) {
       next = {...data, offset: 0};
     } else if (event.type === INPUT_EVENTS.MOVE_END) {
-      next = {...data, offset: maxOffset(data.dailyUsage)};
+      next = {...data, offset: navigation.maxOffset};
     }
 
     if (next !== data) {

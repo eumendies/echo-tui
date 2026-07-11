@@ -4,8 +4,8 @@ import {displayWidth, safeRenderWidth, stripAnsi} from '../layout';
 import {activeBackground, renderFocusBar, resolveFooterTheme, tokenText, type FooterTheme} from '../colors';
 import {clampPlainText, padVisibleText} from './text';
 import {createSelectedWindowRows, normalizeLineLimit} from './window';
-import {renderStyledLine} from '../styled-line';
-import {highlightCodeBlock} from '../syntax-highlight';
+import {renderStyledLine} from '../markdown/styled-line';
+import {highlightCodeBlock} from '../markdown/syntax-highlight';
 
 import type {FilePickerCommandSurface, FilePickerSurfaceEntry} from '../../types/command';
 import type {FooterLayout} from '../../types/render';

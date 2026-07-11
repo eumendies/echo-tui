@@ -10,7 +10,7 @@ import {
   renderApplyPatchToolCallLines,
   renderApplyPatchToolResultLines
 } from './tool-message-renderers/apply-patch';
-import {renderBashToolCallLines, renderBashToolResultLines} from './tool-message-renderers/bash';
+import {renderBashToolCallLines, renderBashToolPairLines, renderBashToolResultLines} from './tool-message-renderers/bash';
 import {
   READ_FILES_TOOL_NAME,
   renderReadFilesToolCallLines,
@@ -56,6 +56,10 @@ export function renderToolPairBlock(call: TranscriptRecord, result: TranscriptRe
  * 尝试使用同时依赖 call/result 的专属 renderer；解析失败时返回 null 交给分开渲染路径。
  */
 function renderPairAwareToolPairLines(call: TranscriptRecord, result: TranscriptRecord, width: number, theme: TuiTheme): string[] | null {
+  if (call.toolName === BASH_TOOL_NAME && result.toolName === BASH_TOOL_NAME) {
+    return renderBashToolPairLines(call, result, width, theme);
+  }
+
   if (call.toolName === ASK_USER_QUESTIONS_TOOL_NAME && result.toolName === ASK_USER_QUESTIONS_TOOL_NAME) {
     return renderAskUserQuestionsToolPairLines(call, result, width, theme);
   }

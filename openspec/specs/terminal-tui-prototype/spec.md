@@ -533,6 +533,14 @@
 - **THEN** footer SHALL 使用 command surface 内容替换普通 boxed composer 与 status line 的显示区域
 - **THEN** command surface 内容 SHALL 保持在 footer 临时区域内，而不是写入 transcript 历史区域
 
+### Requirement: composer 与用户消息的制表符布局一致性
+系统 SHALL 在 composer 和用户消息的终端投影中，以同一制表位规则处理制表符，保证渲染结果的可见宽度与终端实际输出宽度一致。
+
+#### Scenario: 含制表符内容在 footer 和 transcript 间流转
+- **WHEN** 用户在 composer 中输入或粘贴包含制表符的文本并提交
+- **THEN** composer 的边框、自动换行和光标定位 SHALL 不被制表符破坏
+- **THEN** 提交后的用户消息前缀、背景和行尾填充 SHALL 不被制表符破坏
+
 ### Requirement: composer @ 文件选择器临时界面
 系统 SHALL 将 `@` 文件选择器作为 composer 编辑态的 transient footer surface 接入现有 TUI 输入和渲染机制。该 surface SHALL 在 user question、tool approval 等更高优先级交互之后处理输入，并 SHALL 在 slash suggestion 和普通 composer 编辑之前处理输入。文件选择器 SHALL 支持目录级懒加载，使大目录下打开 `@` 时仍能显示直接子文件和子目录，而不是因为完整目录树扫描过大而显示空白。
 

@@ -1,6 +1,6 @@
-import {DEFAULT_TUI_THEME, type TuiTheme} from '../config/theme-config';
-import {markdownStyle} from './colors';
-import {charWidth, displayWidth, safeRenderWidth, splitGraphemes, stripAnsi} from './layout';
+import {DEFAULT_TUI_THEME, type TuiTheme} from '../../config/theme-config';
+import {markdownStyle} from '../colors';
+import {charWidth, displayWidth, safeRenderWidth, splitGraphemes, stripAnsi} from '../layout';
 import {mergeAdjacentSpans, type StyledSpan, type TextStyle} from './markdown-inline';
 
 type RenderStyledLineOptions = {
