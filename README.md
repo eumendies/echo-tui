@@ -20,6 +20,26 @@ npm install -g @eumendies/echo-tui
 echo-tui --help
 ```
 
+更新到最新版：
+
+```bash
+npm install -g @eumendies/echo-tui@latest
+echo-tui --version
+```
+
+卸载程序：
+
+```bash
+npm uninstall -g @eumendies/echo-tui
+```
+
+卸载只会移除全局安装的程序本体，不会自动删除 `~/.echo` 下的配置和会话数据。如需彻底清理，可先备份再删除：
+
+```bash
+cp -R ~/.echo ~/.echo.backup
+rm -rf ~/.echo
+```
+
 从源码开发运行：
 
 ```bash
