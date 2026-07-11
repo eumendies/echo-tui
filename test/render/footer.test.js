@@ -309,6 +309,52 @@ test('renderFooterLayout renders context usage command surface', () => {
   assert.ok(plainLines.some((line) => line.includes('上下文占用详情 · 按任意键关闭')));
   assert.equal(layout.showCursor, false);
   assert.ok(layout.lines.every((line) => displayWidth(line) <= safeRenderWidth(90)));
+
+  const cardLines = layout.lines.filter((line) => stripAnsi(line).startsWith('╭') || stripAnsi(line).startsWith('│') || stripAnsi(line).startsWith('╰'));
+  const cardWidth = displayWidth(cardLines[0]);
+
+  assert.ok(cardLines.length > 0);
+  assert.ok(cardLines.every((line) => displayWidth(line) === cardWidth));
+});
+
+test('renderFooterLayout keeps context card columns stable with styled usage details', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: {
+      kind: 'context',
+      title: 'Context',
+      usage: {
+        usedTokens: 54300,
+        contextWindow: 270000,
+        source: 'provider',
+        segments: [
+          {category: 'tools', tokens: 21000},
+          {category: 'reasoning', tokens: 6000},
+          {category: 'system', tokens: 9800},
+          {category: 'messages', tokens: 14500},
+          {category: 'skills', tokens: 3000}
+        ]
+      }
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    rows: 24,
+    width: 120
+  });
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+  const cardLines = layout.lines.filter((line) => stripAnsi(line).startsWith('╭') || stripAnsi(line).startsWith('│') || stripAnsi(line).startsWith('╰'));
+  const cardWidth = displayWidth(cardLines[0]);
+
+  assert.ok(cardLines.length > 0);
+  assert.ok(cardLines.every((line) => displayWidth(line) === cardWidth));
+  assert.ok(layout.lines.every((line) => displayWidth(line) <= safeRenderWidth(120)));
+  assert.ok(plainLines.some((line) => line.includes('54.3K / 270K tokens') && line.includes('20% 已用')));
+  assert.ok(plainLines.some((line) => line.includes('工具') && line.includes('21K') && line.includes('39%')));
+  assert.ok(plainLines.some((line) => line.includes('消息') && line.includes('14.5K') && line.includes('27%')));
+  assert.ok(plainLines.some((line) => line.includes('系统提示词') && line.includes('9.8K') && line.includes('18%')));
+  assert.ok(plainLines.some((line) => line.includes('推理') && line.includes('6K') && line.includes('11%')));
+  assert.ok(plainLines.some((line) => line.includes('Skills') && line.includes('3K') && line.includes('6%')));
+  assert.equal(plainLines.some((line) => line.includes('…')), false);
 });
 
 test('renderFooterLayout applies custom theme to scale and context surfaces', () => {
@@ -352,6 +398,8 @@ test('renderFooterLayout applies custom theme to scale and context surfaces', ()
   assert.ok(scale.includes('\x1b[38;2;10;11;12m'));
   assert.ok(context.includes('\x1b[38;2;20;21;22m'));
   assert.ok(context.includes('\x1b[38;2;7;8;9m'));
+  assert.ok(context.includes('\x1b[38;2;30;31;32m'));
+  assert.equal(context.includes('\x1b[38;2;10;11;12m─'), false);
 });
 
 test('renderFooterLayout renders usage surface with totals, hidden days, and daily rows', () => {

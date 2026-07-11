@@ -1,6 +1,6 @@
 import * as ansi from '../../terminal/ansi';
-import {displayWidth, safeRenderWidth} from '../layout';
-import {colorText, colorToRgb, mixRgb, tokenText, type FooterTheme, type RgbColor} from '../colors';
+import {displayWidth, safeRenderWidth, splitGraphemes} from '../layout';
+import {colorText, tokenText, type FooterTheme} from '../colors';
 import {clampPlainText, padVisibleText} from './text';
 import {constrainLayoutTail} from './window';
 
@@ -19,6 +19,7 @@ const SEGMENT_LABELS: Record<ContextUsageSegmentCategory, string> = {
 const FILL = '█';
 const TRACK = '░';
 const DOT = '●';
+const ANSI_SEQUENCE_PATTERN = /^\x1b\[[0-9;?]*[A-Za-z]/;
 
 /**
  * 渲染 /context 详情卡片，展示最近一次 provider usage 的窗口占用与分类构成。
@@ -26,24 +27,24 @@ const DOT = '●';
 function renderContextSurface(surface: ContextUsageCommandSurface, width: number, maxLines: number | undefined, theme: FooterTheme): FooterLayout {
   const safeWidth = safeRenderWidth(width);
   const cardWidth = Math.min(clamp(safeWidth - 2, 50, 78), Math.max(1, safeWidth - 1));
-  const inner = Math.max(1, cardWidth - 3);
+  const contentWidth = rowContentWidth(cardWidth);
   const usage = surface.usage;
   const segments = (usage.segments || []).filter((segment) => segment.tokens > 0);
   const lines = [
     topLine(cardWidth, surface.title || '上下文', theme),
-    rowLine(cardWidth, headerLine(usage, inner, theme), theme),
-    rowLine(cardWidth, windowGaugeLine(usage, inner, theme), theme),
+    rowLine(cardWidth, headerLine(usage, contentWidth, theme), theme),
+    rowLine(cardWidth, windowGaugeLine(usage, contentWidth, theme), theme),
     rowLine(cardWidth, '', theme),
-    rowLine(cardWidth, compositionBarLine(segments, usage.usedTokens, inner, theme), theme),
+    rowLine(cardWidth, compositionBarLine(segments, usage.usedTokens, contentWidth, theme), theme),
     rowLine(cardWidth, '', theme)
   ];
 
   for (const segment of [...segments].sort((left, right) => right.tokens - left.tokens)) {
-    lines.push(rowLine(cardWidth, breakdownLine(segment.category, segment.tokens, usage.usedTokens, inner, theme), theme));
+    lines.push(rowLine(cardWidth, breakdownLine(segment.category, segment.tokens, usage.usedTokens, contentWidth, theme), theme));
   }
 
   lines.push(dividerLine(cardWidth, theme));
-  lines.push(rowLine(cardWidth, ansi.dim(clampPlainText(surface.dismissHint || '上下文占用详情 · 按任意键关闭', inner)), theme));
+  lines.push(rowLine(cardWidth, ansi.dim(clampPlainText(surface.dismissHint || '上下文占用详情 · 按任意键关闭', contentWidth)), theme));
   lines.push(bottomLine(cardWidth, theme));
 
   return constrainLayoutTail({
@@ -107,38 +108,79 @@ function breakdownLine(category: ContextUsageSegmentCategory, tokens: number, us
 }
 
 function topLine(width: number, title: string, theme: FooterTheme): string {
-  const tag = title ? tokenText(theme, 'accentStrong', ansi.bold(` ${title} `)) : '';
-  const rail = gradientLine(Math.max(0, width - 1 - displayWidth(tag)), theme);
-  return `${tokenText(theme, 'accentDeep', '╭')}${tag}${rail}${tokenText(theme, 'accentDeep', '╮')}`;
+  const inner = Math.max(0, width - 2);
+  const titleText = title && inner > 2 ? clampPlainText(title, inner - 2) : '';
+  const tag = titleText ? tokenText(theme, 'accentStrong', ansi.bold(` ${titleText} `)) : '';
+  const rail = frameLine(Math.max(0, inner - displayWidth(tag)), theme);
+  return `${tokenText(theme, 'frame', '╭')}${tag}${rail}${tokenText(theme, 'frame', '╮')}`;
 }
 
 function bottomLine(width: number, theme: FooterTheme): string {
-  return `${tokenText(theme, 'accentDeep', '╰')}${gradientLine(width - 1, theme)}${tokenText(theme, 'accentDeep', '╯')}`;
+  return `${tokenText(theme, 'frame', '╰')}${frameLine(Math.max(0, width - 2), theme)}${tokenText(theme, 'frame', '╯')}`;
 }
 
 function dividerLine(width: number, theme: FooterTheme): string {
   const bar = tokenText(theme, 'frame', '│');
-  return `${bar}${tokenText(theme, 'frame', ansi.dim('─'.repeat(Math.max(0, width - 1))))}${bar}`;
+  return `${bar}${tokenText(theme, 'frame', ansi.dim('─'.repeat(Math.max(0, width - 2))))}${bar}`;
 }
 
 function rowLine(width: number, content: string, theme: FooterTheme): string {
   const bar = tokenText(theme, 'frame', '│');
-  const contentWidth = Math.max(1, width - 4);
-  return `${bar} ${padVisibleText(clampPlainText(content, contentWidth), contentWidth)} ${bar}`;
+  const contentWidth = rowContentWidth(width);
+  return `${bar} ${padVisibleText(clampStyledText(content, contentWidth), contentWidth)} ${bar}`;
 }
 
-function gradientLine(width: number, theme: FooterTheme): string {
-  const out: string[] = [];
-  const start = colorToRgb(theme.colors.accentDeep);
-  const end = colorToRgb(theme.colors.accentStrong);
+function rowContentWidth(width: number): number {
+  return Math.max(1, width - 4);
+}
 
-  for (let index = 0; index < Math.max(0, width); index += 1) {
-    const t = index / Math.max(1, width - 1);
-    const peak = 1 - Math.abs(2 * t - 1);
-    out.push(colorText({kind: 'rgb', value: mixRgb(start, end, peak)}, '─'));
+/**
+ * 对已带 ANSI 样式的单行内容做宽度兜底，避免截断控制序列导致颜色和列宽外溢。
+ */
+function clampStyledText(text: string, width: number): string {
+  const safeWidth = Math.max(1, width);
+
+  if (displayWidth(text) <= safeWidth) {
+    return text;
   }
 
-  return out.join('');
+  const ellipsis = '…';
+  const contentWidth = Math.max(0, safeWidth - displayWidth(ellipsis));
+  let result = '';
+  let column = 0;
+  let index = 0;
+
+  while (index < text.length) {
+    const sequence = matchAnsiSequence(text, index);
+
+    if (sequence) {
+      result += sequence;
+      index += sequence.length;
+      continue;
+    }
+
+    const char = splitGraphemes(text.slice(index))[0] || '';
+    const nextColumn = column + displayWidth(char);
+
+    if (nextColumn > contentWidth) {
+      return `${result}${ellipsis}${ansi.reset()}`;
+    }
+
+    result += char;
+    column = nextColumn;
+    index += char.length;
+  }
+
+  return result;
+}
+
+function matchAnsiSequence(text: string, index: number): string | null {
+  const match = text.slice(index).match(ANSI_SEQUENCE_PATTERN);
+  return match ? match[0] : null;
+}
+
+function frameLine(width: number, theme: FooterTheme): string {
+  return tokenText(theme, 'frame', '─'.repeat(Math.max(0, width)));
 }
 
 function segmentColor(category: ContextUsageSegmentCategory, theme: FooterTheme) {
