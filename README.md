@@ -1,6 +1,6 @@
-# echo_tui
+# echo-tui
 
-`echo_tui` 是一个运行在当前终端里的 Node.js LLM TUI。它不切换 alternate screen、不依赖第三方 TUI 框架，支持流式回答、Markdown/代码高亮、会话恢复、slash 命令、skills、MCP 工具和受控本地工具调用，并提供普通对话、只读规划和 shell 执行多种模式。
+`@eumendies/echo-tui` 是一个运行在当前终端里的 Node.js LLM TUI。它不切换 alternate screen、不依赖第三方 TUI 框架，支持流式回答、Markdown/代码高亮、会话恢复、slash 命令、skills、MCP 工具和受控本地工具调用，并提供普通对话、只读规划和 shell 执行多种模式。
 
 实现细节见 [docs/tui-architecture.md](./docs/tui-architecture.md)。
 
@@ -13,17 +13,19 @@
 
 ## 安装与运行
 
+全局安装后可在任意目录用 `echo-tui` 启动：
+
+```bash
+npm install -g @eumendies/echo-tui
+echo-tui --help
+```
+
+从源码开发运行：
+
 ```bash
 npm install
 npm run build
 npm start        # 等价于 build 后 node dist/bin/echo-tui.js
-```
-
-全局安装后可在任意目录用 `echo-tui` 启动：
-
-```bash
-npm run build && npm link   # 或 npm install -g .
-echo-tui --help
 ```
 
 ## 配置模型
