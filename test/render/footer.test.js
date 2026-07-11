@@ -2415,8 +2415,8 @@ test('renderFooterLayout renders tool call pending preview in footer', () => {
   });
   const plainLines = layout.lines.map((line) => stripAnsi(line));
 
-  assert.equal(plainLines[0], "◆ Bash('pwd')");
-  assert.equal(plainLines[1], '');
+  assert.equal(plainLines[0], '◆ ▌ Bash · running');
+  assert.equal(plainLines[1], '  ▌ pwd');
   assert.ok(plainLines.at(-1).includes('   ▒█▒    working 00:00'));
   assert.match(layout.lines.at(-1), /\x1b\[38;2;/);
 });
