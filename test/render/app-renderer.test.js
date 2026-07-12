@@ -384,7 +384,8 @@ test('renderTranscriptLines handles inline scripts, stderr channels, fallback, n
       colors: {
         tool: [1, 2, 3],
         toolOutput: [4, 5, 6],
-        toolError: [7, 8, 9]
+        toolError: [7, 8, 9],
+        toolSuccess: [10, 11, 12]
       }
     }
   });
@@ -407,6 +408,21 @@ test('renderTranscriptLines handles inline scripts, stderr channels, fallback, n
     },
     {
       role: 'tool_call',
+      text: '',
+      toolCallId: 'success',
+      toolName: 'run_bash_command',
+      argumentsText: JSON.stringify({command: 'echo ok'})
+    },
+    {
+      role: 'tool_result',
+      text: 'stdout:\nsuccess\n\nstderr:\n',
+      toolCallId: 'success',
+      toolName: 'run_bash_command',
+      ok: true,
+      exitCode: 0
+    },
+    {
+      role: 'tool_call',
       text: 'fallback',
       toolName: 'run_bash_command',
       argumentsText: '{}'
@@ -425,6 +441,7 @@ test('renderTranscriptLines handles inline scripts, stderr channels, fallback, n
   assert.equal(lines.some((line) => line.includes('stdout') || line.includes('stderr')), false);
   assert.ok(lines.includes('  ▌ first'));
   assert.ok(lines.includes('  ▌ failed'));
+  assert.ok(lines.includes('  ▌ success'));
   assert.ok(lines.includes('  ▌ Output was truncate'));
   assert.ok(lines.some((line) => line.includes('run_bash_command({})')));
   assert.ok(lines.some((line) => line.includes('python3 -c "print($')));
@@ -432,8 +449,10 @@ test('renderTranscriptLines handles inline scripts, stderr channels, fallback, n
   assert.ok(rendered.some((line) => line.includes('\x1b[38;2;4;5;6m▌\x1b[39m')));
   assert.ok(rendered.some((line) => line.includes('\x1b[38;2;7;8;9m◆\x1b[39m')));
   assert.match(rendered[0], /\x1b\[38;2;7;8;9m◆\x1b\[39m \x1b\[38;2;7;8;9m▌\x1b\[39m \x1b\[38;2;7;8;9mBash · failed/);
+  assert.match(rendered.find((line) => stripAnsi(line).includes('Bash · complete')), /\x1b\[38;2;10;11;12m◆\x1b\[39m \x1b\[38;2;10;11;12m▌\x1b\[39m \x1b\[38;2;10;11;12mBash · complete/);
   assert.match(rendered.find((line) => stripAnsi(line).includes('python3 -c "…"')), /\x1b\[38;2;7;8;9m▌\x1b\[39m/);
   assert.match(rendered.find((line) => stripAnsi(line).includes('first')), /\x1b\[38;2;4;5;6m▌\x1b\[39m/);
+  assert.match(rendered.find((line) => stripAnsi(line).includes('python3 -c "print($')), /\x1b\[38;2;1;2;3m▌\x1b\[39m/);
   assert.ok(rendered.every((line) => displayWidth(line) <= safeRenderWidth(24)));
 });
 
