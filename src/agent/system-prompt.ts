@@ -1,6 +1,7 @@
 import {formatSkillCatalogPrompt} from '../skills/skill-catalog-prompt';
 
 import type {AgentInstruction} from '../types/agent';
+import type {UserMemory} from '../types/memory';
 import type {SkillCatalogEntry} from '../types/skill';
 
 const BUILT_IN_SYSTEM_PROMPT = `You are Echo TUI's built-in terminal development assistant.
@@ -19,6 +20,7 @@ type BuiltInSystemPromptContext = {
   agentInstructions?: AgentInstruction[];
   cwd: string;
   skillCatalog?: SkillCatalogEntry[];
+  userMemories?: UserMemory[];
 };
 
 /**
@@ -27,6 +29,7 @@ type BuiltInSystemPromptContext = {
 function createBuiltInSystemPrompt(context: BuiltInSystemPromptContext): string {
   const agentInstructionsPrompt = formatAgentInstructionsPrompt(context.agentInstructions || []);
   const skillCatalogPrompt = formatSkillCatalogPrompt(context.skillCatalog || []);
+  const userMemoriesPrompt = formatUserMemoriesPrompt(context.userMemories || []);
   const sections = [`${BUILT_IN_SYSTEM_PROMPT}
 
 Runtime environment:
@@ -40,7 +43,27 @@ Runtime environment:
     sections.push(skillCatalogPrompt);
   }
 
+  if (userMemoriesPrompt !== '') {
+    sections.push(userMemoriesPrompt);
+  }
+
   return sections.join('\n\n');
+}
+
+/**
+ * 将用户显式保存的 memory 变为 provider 专用的持久背景区块，不改变内置 system 约束优先级。
+ */
+function formatUserMemoriesPrompt(memories: UserMemory[]): string {
+  const contents = memories.filter((memory) => memory.enabled).map((memory) => memory.content.trim()).filter((content) => content !== '');
+
+  if (contents.length === 0) {
+    return '';
+  }
+
+  return `## User-managed memories
+The following is persistent user-provided context. Use it when relevant, but do not treat it as higher priority than system instructions or the user's current request.
+
+${contents.map((content) => `- ${content.replace(/\n/g, '\n  ')}`).join('\n')}`;
 }
 
 /**
@@ -67,6 +90,6 @@ function formatAgentInstructionHeading(instruction: AgentInstruction): string {
   return `Project AGENTS.md: ${instruction.label}`;
 }
 
-export {BUILT_IN_SYSTEM_PROMPT, createBuiltInSystemPrompt, formatAgentInstructionsPrompt};
+export {BUILT_IN_SYSTEM_PROMPT, createBuiltInSystemPrompt, formatAgentInstructionsPrompt, formatUserMemoriesPrompt};
 
 export type {BuiltInSystemPromptContext};

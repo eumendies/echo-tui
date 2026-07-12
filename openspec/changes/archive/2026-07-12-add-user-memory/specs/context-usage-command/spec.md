@@ -1,8 +1,5 @@
-# context-usage-command Specification
+## MODIFIED Requirements
 
-## Purpose
-定义 `/context` 本地 slash command、provider context usage 分类估算，以及只读 context usage 详情 surface 的行为。
-## Requirements
 ### Requirement: `/context` command 展示详细 context usage
 系统 SHALL 提供 `/context` slash command，用于展示最近一次真实 provider request 的 context usage 详情。详情 SHALL 包含 used tokens、context window、窗口占用百分比，以及按 System prompt、Memory、Skills、Tools、Messages、Reasoning 分类的 token breakdown。
 
@@ -58,25 +55,3 @@
 - **WHEN** provider request 包含 provider-visible reasoning carry-over records
 - **THEN** 系统 SHALL 将这些 records 归入 Reasoning 分类
 - **AND** 本地 `reasoning_summary` records SHALL NOT 计入 Reasoning 分类
-
-### Requirement: context usage 详情 surface
-系统 SHALL 使用只读 command surface 展示 context usage 详情。该 surface SHALL 采用 demo 风格的终端卡片、窗口占用 gauge、分类 composition bar、颜色 swatch 和分类明细，并 SHALL 可通过用户按键关闭。
-
-#### Scenario: 详情 surface 展示 demo 风格元素
-- **WHEN** `/context` 打开详情 surface
-- **THEN** surface SHALL 显示带标题的 context 卡片
-- **AND** surface SHALL 显示整体窗口占用 gauge
-- **AND** surface SHALL 显示表示各分类占已用上下文比例的 composition bar
-- **AND** surface SHALL 显示每个分类的颜色 swatch、token 数和占已用上下文百分比
-
-#### Scenario: 用户关闭 context surface
-- **WHEN** context usage 详情 surface 正在显示
-- **AND** 用户按下关闭键或任意非中断键
-- **THEN** 系统 SHALL 关闭该 surface 并回到普通 composer footer
-- **AND** 系统 SHALL NOT 修改 transcript records
-
-#### Scenario: 小终端下保持 footer 布局安全
-- **WHEN** context usage 详情 surface 在较小 terminal rows 或 columns 下渲染
-- **THEN** surface SHALL 遵循 footer 的安全宽度和最大行数约束
-- **AND** surface SHALL NOT 因写满最后一列触发额外自动换行
-- **AND** surface MAY 裁剪次要明细行以保持布局稳定

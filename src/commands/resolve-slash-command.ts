@@ -10,6 +10,7 @@ import { EffortCommandHandler } from './effort-command-handler';
 import { HelpCommandHandler } from './help-command-handler';
 import { HooksCommandHandler } from './hooks-command-handler';
 import { McpCommandHandler } from './mcp-command-handler';
+import { MemoryCommandHandler } from './memory-command-handler';
 import { ModelCommandHandler } from './model-command-handler';
 import { ModeCommandHandler } from './mode-command-handler';
 import { ResumeCommandHandler } from './resume-command-handler';
@@ -40,6 +41,7 @@ export function createDefaultSlashCommandHandlers(): MatchableCommandHandler[] {
     new UndoCommandHandler(),
     new ResumeCommandHandler(),
     new McpCommandHandler(),
+    new MemoryCommandHandler(),
     new HooksCommandHandler(),
     new SkillsCommandHandler(),
     new ThemesCommandHandler(),

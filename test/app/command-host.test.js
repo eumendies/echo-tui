@@ -142,6 +142,19 @@ test('CommandHost theme facade lists selected builtin theme and applies selectio
   });
 });
 
+test('CommandHost memory facade persists user memories without exposing filesystem access to handlers', () => {
+  withTemporaryUserConfig(null, () => {
+    const {host} = createHostHarness();
+    const created = host.memory.create('使用 TypeScript');
+
+    assert.equal(created.ok, true);
+    assert.equal(host.memory.list().memories[0].content, '使用 TypeScript');
+    assert.equal(host.memory.update(created.memories[0].id, '使用 TypeScript 和中文注释').ok, true);
+    assert.equal(host.memory.delete(created.memories[0].id).ok, true);
+    assert.deepEqual(host.memory.list(), {ok: true, memories: []});
+  });
+});
+
 test('CommandHost theme facade keeps current theme when selection cannot be saved', () => {
   withTemporaryThemeConfig('{broken', () => {
     const {calls, host, setThemes} = createHostHarness();

@@ -8,6 +8,7 @@ import { renderDiffSurface } from './diff-surface';
 import { renderFilePickerSurface } from './file-picker-surface';
 import { renderHooksSurface } from './hooks-surface';
 import { renderMcpSurface } from './mcp-surface';
+import { renderMemorySurface } from './memory-surface';
 import { renderResumeSurface } from './resume-surface';
 import { renderScaleSurface } from './scale-surface';
 import { renderSkillsSurface } from './skills-surface';
@@ -57,6 +58,10 @@ export function renderCommandSurface(commandSurface: CommandSurface, width: numb
 
   if (commandSurface.kind === 'mcp') {
     return constrainLayoutTail(renderMcpSurface(commandSurface, width, theme), options.maxLines);
+  }
+
+  if (commandSurface.kind === 'memory') {
+    return constrainLayoutTail(renderMemorySurface(commandSurface, width, theme), options.maxLines);
   }
 
   if (commandSurface.kind === 'hooks') {

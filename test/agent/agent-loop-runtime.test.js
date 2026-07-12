@@ -1,10 +1,14 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
 const { PLAN_MODE_USER_PROMPT, buildProviderRecords, createAgentLoopRuntime } = require('../../src/agent/agent-loop-runtime');
 const { createBuiltInSystemPrompt } = require('../../src/agent/system-prompt');
 const llmConfigModule = require('../../src/config/llm-config');
 const agentSetupModule = require('../../src/agent/agent-setup');
+const {createUserMemory, updateUserMemory} = require('../../src/memory/memory-store');
 
 const TEST_CWD = '/tmp/echo_tui';
 const TEST_CONFIG = {
@@ -32,6 +36,19 @@ async function withPatchedAgentRuntime(agent, callback, config = TEST_CONFIG) {
   } finally {
     llmConfigModule.readLlmConfig = originalReadLlmConfig;
     agentSetupModule.createConfiguredAgent = originalCreateConfiguredAgent;
+  }
+}
+
+async function withTemporaryMemoryHome(callback) {
+  const originalHomedir = os.homedir;
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-agent-memory-'));
+  os.homedir = () => homeDir;
+
+  try {
+    return await callback();
+  } finally {
+    os.homedir = originalHomedir;
+    fs.rmSync(homeDir, {recursive: true, force: true});
   }
 }
 
@@ -109,6 +126,60 @@ test('buildProviderRecords includes AGENTS instructions with precedence text', (
   assert.match(records[0].text, /Run npm test before finishing\./);
   assert.match(records[0].text, /Built-in runtime constraints/);
   assert.deepEqual(records.slice(1), [{ role: 'user', text: 'follow repo rules' }]);
+});
+
+test('buildProviderRecords injects user memories only into the transient system prompt', () => {
+  const records = buildProviderRecords([{role: 'user', text: '继续'}], TEST_CWD, undefined, [], 'normal', [], undefined, [{
+    id: 'memory-1',
+    content: '回复使用中文。',
+    enabled: true,
+    createdAt: '2026-07-12T07:00:00.000Z',
+    updatedAt: '2026-07-12T07:00:00.000Z'
+  }]);
+
+  assert.match(records[0].text, /User-managed memories/);
+  assert.match(records[0].text, /回复使用中文/);
+  assert.match(records[0].text, /do not treat it as higher priority/);
+  assert.deepEqual(records.slice(1), [{role: 'user', text: '继续'}]);
+});
+
+test('buildProviderRecords excludes disabled user memories', () => {
+  const records = buildProviderRecords([{role: 'user', text: '继续'}], TEST_CWD, undefined, [], 'normal', [], undefined, [{
+    id: 'memory-1',
+    content: '不应注入。',
+    enabled: false,
+    createdAt: '2026-07-12T07:00:00.000Z',
+    updatedAt: '2026-07-12T07:00:00.000Z'
+  }]);
+
+  assert.doesNotMatch(records[0].text, /User-managed memories/);
+  assert.doesNotMatch(records[0].text, /不应注入/);
+});
+
+test('createAgentLoopRuntime rereads saved memory before each provider request', async () => {
+  await withTemporaryMemoryHome(async () => {
+    const created = createUserMemory('第一次偏好');
+    const requests = [];
+    const agent = {
+      initialize() {},
+      async runTurn(records) {
+        requests.push(records);
+        return {draft: 'done', toolCalls: []};
+      }
+    };
+
+    await withPatchedAgentRuntime(agent, async () => {
+      const runtime = createAgentLoopRuntime(TEST_CWD);
+      await runtime({records: [{role: 'user', text: 'first'}]});
+      updateUserMemory(created.memories[0].id, '第二次偏好');
+      await runtime({records: [{role: 'user', text: 'second'}]});
+    });
+
+    assert.match(requests[0][0].text, /第一次偏好/);
+    assert.doesNotMatch(requests[0][0].text, /第二次偏好/);
+    assert.match(requests[1][0].text, /第二次偏好/);
+    assert.doesNotMatch(requests[1][0].text, /第一次偏好/);
+  });
 });
 
 test('buildProviderRecords keeps system prompt stable and injects plan mode in runtime context suffix', () => {

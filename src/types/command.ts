@@ -5,6 +5,7 @@ import type { CompactionState, TranscriptRecord, TranscriptSessionMetadata } fro
 import type {UndoExecuteResult, UndoSummary} from './change-history';
 import type {UsageDailyAggregate, UsageQueryOptions} from './usage';
 import type {LifecycleHookConfigDraft, LifecycleHookDraftEntry, LifecycleHookEventName, LifecycleHookTestResult} from './hooks';
+import type {UserMemory, UserMemoryMutationResult, UserMemoryReadResult} from './memory';
 
 export type CommandSurfaceOption = {
   label?: string;
@@ -89,6 +90,20 @@ export type McpCommandSurface = {
   servers?: CommandMcpServerInfo[];
   selectedIndex?: number;
   emptyLines?: string[];
+  dismissHint?: string;
+};
+
+export type MemoryCommandSurfaceMode = 'list' | 'edit' | 'deleteConfirm';
+
+export type MemoryCommandSurface = {
+  kind: 'memory';
+  title?: string;
+  mode: MemoryCommandSurfaceMode;
+  memories: UserMemory[];
+  selectedIndex: number;
+  editText?: string;
+  editCursor?: number;
+  error?: string;
   dismissHint?: string;
 };
 
@@ -333,7 +348,7 @@ export type DiffCommandSurface = {
   title?: string;
 };
 
-export type CommandSurface = InfoCommandSurface | SelectCommandSurface | ResumeCommandSurface | CheckboxCommandSurface | SkillsCommandSurface | McpCommandSurface | HooksCommandSurface | ScaleCommandSurface | ChoiceCommandSurface | ConfirmCommandSurface | ConfigCommandSurface | ContextUsageCommandSurface | UsageCommandSurface | CopyCommandSurface | FilePickerCommandSurface | DiffCommandSurface;
+export type CommandSurface = InfoCommandSurface | SelectCommandSurface | ResumeCommandSurface | CheckboxCommandSurface | SkillsCommandSurface | McpCommandSurface | MemoryCommandSurface | HooksCommandSurface | ScaleCommandSurface | ChoiceCommandSurface | ConfirmCommandSurface | ConfigCommandSurface | ContextUsageCommandSurface | UsageCommandSurface | CopyCommandSurface | FilePickerCommandSurface | DiffCommandSurface;
 
 export type CommandModelProfile = {
   id: string;
@@ -473,6 +488,13 @@ export type CommandHostApp = {
   mcp: {
     listServers(): CommandMcpServerInfo[];
     saveServerStates(servers: CommandMcpServerInfo[]): Promise<CommandMcpSaveResult>;
+  };
+  memory: {
+    list(): UserMemoryReadResult;
+    create(content: string): UserMemoryMutationResult;
+    update(id: string, content: string): UserMemoryMutationResult;
+    setEnabled(id: string, enabled: boolean): UserMemoryMutationResult;
+    delete(id: string): UserMemoryMutationResult;
   };
   hooks: {
     readDraft(): LifecycleHookConfigDraft;

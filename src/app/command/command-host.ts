@@ -6,6 +6,7 @@ import {createLifecycleHookRuntimeConfigFromDraft, readLifecycleHookConfigDraft,
 import {createLifecycleHookSyntheticPayload, executeLifecycleHookSyntheticTest} from '../../hooks/synthetic-test';
 import {listProviderModels} from '../../config/provider-model-list';
 import {listBuiltinThemes, readTuiTheme, readTuiThemeBaseId, selectBuiltinTheme} from '../../config/theme-config';
+import {createUserMemory, deleteUserMemory, readUserMemories, setUserMemoryEnabled, updateUserMemory} from '../../memory/memory-store';
 import {calculateCommandSurfaceMaxLines} from '../../render/footer';
 import {sanitizeMcpError} from '../../mcp/manager';
 import {createSkillManager} from '../../skills/skill-manager';
@@ -244,6 +245,23 @@ function createCommandHost(options: CommandHostOptions): CommandHostApp {
           appContext.setMcpBootstrapStatus('ready');
           renderFooter();
         }
+      }
+    },
+    memory: {
+      list() {
+        return readUserMemories();
+      },
+      create(content) {
+        return createUserMemory(content);
+      },
+      update(id, content) {
+        return updateUserMemory(id, content);
+      },
+      setEnabled(id, enabled) {
+        return setUserMemoryEnabled(id, enabled);
+      },
+      delete(id) {
+        return deleteUserMemory(id);
       }
     },
     hooks: {
