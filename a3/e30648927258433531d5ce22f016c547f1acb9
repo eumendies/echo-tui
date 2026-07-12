@@ -1,0 +1,16 @@
+src/config/llm-config.ts
+  h_648a605945768c 51-54
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a3e30648927258433531d5ce22f016c547f1acb9",
+  "prompts": {},
+  "humans": {
+    "h_648a605945768c": {
+      "author": "eumendies <1431538355@qq.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
