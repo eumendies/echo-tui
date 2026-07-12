@@ -309,6 +309,52 @@ test('renderFooterLayout renders context usage command surface', () => {
   assert.ok(plainLines.some((line) => line.includes('上下文占用详情 · 按任意键关闭')));
   assert.equal(layout.showCursor, false);
   assert.ok(layout.lines.every((line) => displayWidth(line) <= safeRenderWidth(90)));
+
+  const cardLines = layout.lines.filter((line) => stripAnsi(line).startsWith('╭') || stripAnsi(line).startsWith('│') || stripAnsi(line).startsWith('╰'));
+  const cardWidth = displayWidth(cardLines[0]);
+
+  assert.ok(cardLines.length > 0);
+  assert.ok(cardLines.every((line) => displayWidth(line) === cardWidth));
+});
+
+test('renderFooterLayout keeps context card columns stable with styled usage details', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: {
+      kind: 'context',
+      title: 'Context',
+      usage: {
+        usedTokens: 54300,
+        contextWindow: 270000,
+        source: 'provider',
+        segments: [
+          {category: 'tools', tokens: 21000},
+          {category: 'reasoning', tokens: 6000},
+          {category: 'system', tokens: 9800},
+          {category: 'messages', tokens: 14500},
+          {category: 'skills', tokens: 3000}
+        ]
+      }
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    rows: 24,
+    width: 120
+  });
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+  const cardLines = layout.lines.filter((line) => stripAnsi(line).startsWith('╭') || stripAnsi(line).startsWith('│') || stripAnsi(line).startsWith('╰'));
+  const cardWidth = displayWidth(cardLines[0]);
+
+  assert.ok(cardLines.length > 0);
+  assert.ok(cardLines.every((line) => displayWidth(line) === cardWidth));
+  assert.ok(layout.lines.every((line) => displayWidth(line) <= safeRenderWidth(120)));
+  assert.ok(plainLines.some((line) => line.includes('54.3K / 270K tokens') && line.includes('20% 已用')));
+  assert.ok(plainLines.some((line) => line.includes('工具') && line.includes('21K') && line.includes('39%')));
+  assert.ok(plainLines.some((line) => line.includes('消息') && line.includes('14.5K') && line.includes('27%')));
+  assert.ok(plainLines.some((line) => line.includes('系统提示词') && line.includes('9.8K') && line.includes('18%')));
+  assert.ok(plainLines.some((line) => line.includes('推理') && line.includes('6K') && line.includes('11%')));
+  assert.ok(plainLines.some((line) => line.includes('Skills') && line.includes('3K') && line.includes('6%')));
+  assert.equal(plainLines.some((line) => line.includes('…')), false);
 });
 
 test('renderFooterLayout applies custom theme to scale and context surfaces', () => {
@@ -352,6 +398,8 @@ test('renderFooterLayout applies custom theme to scale and context surfaces', ()
   assert.ok(scale.includes('\x1b[38;2;10;11;12m'));
   assert.ok(context.includes('\x1b[38;2;20;21;22m'));
   assert.ok(context.includes('\x1b[38;2;7;8;9m'));
+  assert.ok(context.includes('\x1b[38;2;30;31;32m'));
+  assert.equal(context.includes('\x1b[38;2;10;11;12m─'), false);
 });
 
 test('renderFooterLayout renders usage surface with totals, hidden days, and daily rows', () => {
@@ -2419,6 +2467,45 @@ test('renderFooterLayout renders tool call pending preview in footer', () => {
   assert.equal(plainLines[1], '  ▌ pwd');
   assert.ok(plainLines.at(-1).includes('   ▒█▒    working 00:00'));
   assert.match(layout.lines.at(-1), /\x1b\[38;2;/);
+});
+
+test('renderFooterLayout keeps multiline bash inline-script pending preview line safe', () => {
+  const width = 140;
+  const command = [
+    'echo before',
+    'node -e "console.log(\'abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz\');"',
+    'echo after'
+  ].join('\n');
+  const layout = renderFooterLayout({
+    composer: createComposer(''),
+    pending: {
+      kind: 'tool_call',
+      toolName: 'run_bash_command',
+      argumentsText: JSON.stringify({ command })
+    },
+    working: { elapsedMs: 0 },
+    statusLine: {
+      ...DEFAULT_STATUS_LINE,
+      mode: 'tool',
+      detail: 'run_bash_command',
+      keyHint: 'Esc 中断'
+    },
+    rows: 12,
+    width
+  });
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+
+  for (const line of layout.lines) {
+    const plainLine = stripAnsi(line);
+
+    assert.equal(plainLine.includes('\n'), false);
+    assert.equal(plainLine.includes('\r'), false);
+    assert.ok(displayWidth(line) <= safeRenderWidth(width), `line exceeds safe width: ${JSON.stringify(plainLine)}`);
+  }
+  assert.ok(plainLines.includes('  ▌ echo before'));
+  assert.ok(plainLines.includes('  ▌ node -e "console.log(\'abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz\');"'));
+  assert.ok(plainLines.includes('  ▌ echo after'));
+  assert.equal(plainLines.includes('node -e "…"'), false);
 });
 
 test('renderFooterLayout bounds long bash approval footer to rows minus top padding', () => {

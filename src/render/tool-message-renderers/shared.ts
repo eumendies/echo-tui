@@ -1,6 +1,6 @@
 import {DEFAULT_TUI_THEME, type TuiTheme} from '../../config/theme-config';
 import {blockText} from '../colors';
-import {charWidth, displayWidth, safeRenderWidth, splitGraphemes} from '../layout';
+import {charWidth, displayWidth, safeRenderWidth, splitGraphemes, tabWidthAt} from '../layout';
 
 const TOOL_RESULT_MAX_DISPLAY_LINES = 12;
 const TOOL_RESULT_TRUNCATION_TEXT = '[tool output truncated for display]';
@@ -57,7 +57,7 @@ function renderPrefixedLines(options: {
   const lines: string[] = [];
   let first = true;
 
-  for (const sourceLine of options.text.split('\n')) {
+  for (const sourceLine of splitRenderableLines(options.text)) {
     const prefix = first ? options.firstPrefix : options.continuationPrefix;
     const wrapped = wrapContentLine(sourceLine, safeWidth, displayWidth(prefix));
 
@@ -88,22 +88,41 @@ function renderFirstPrefix(prefix: string, colorizeFirstSymbol?: (symbol: string
 }
 
 /**
- * 按 grapheme 和显示宽度换行，避免 ANSI 样式或宽字符破坏工具输出对齐。
+ * 按 grapheme 和显示宽度换行，避免 ANSI 样式、宽字符或制表符破坏工具输出对齐。
  */
 function wrapContentLine(text: string, width: number, prefixWidth: number): string[] {
-  const contentWidth = Math.max(1, width - prefixWidth);
+  const wrappedLines: string[] = [];
+
+  for (const sourceLine of splitRenderableLines(text)) {
+    wrappedLines.push(...wrapSingleContentLine(sourceLine, width, prefixWidth));
+  }
+
+  return wrappedLines.length > 0 ? wrappedLines : [''];
+}
+
+/**
+ * 将外部文本中的 CR/LF 规范化为逻辑行，保证 renderer 返回数组元素不会暗含物理换行。
+ */
+function splitRenderableLines(text: string): string[] {
+  return String(text).replace(/\r\n?/gu, '\n').split('\n');
+}
+
+function wrapSingleContentLine(text: string, width: number, prefixWidth: number): string[] {
+  const safeWidth = Math.max(1, width);
+  const normalizedPrefixWidth = Math.max(0, Math.floor(prefixWidth));
   const lines = [''];
-  let column = 0;
+  let column = normalizedPrefixWidth;
 
   for (const char of splitGraphemes(text)) {
-    const widthOfChar = charWidth(char);
+    let widthOfChar = char === '\t' ? tabWidthAt(column) : charWidth(char);
 
-    if (column + widthOfChar > contentWidth && column > 0) {
+    if (column + widthOfChar > safeWidth && column > normalizedPrefixWidth) {
       lines.push('');
-      column = 0;
+      column = normalizedPrefixWidth;
+      widthOfChar = char === '\t' ? tabWidthAt(column) : charWidth(char);
     }
 
-    lines[lines.length - 1] += char;
+    lines[lines.length - 1] += char === '\t' ? ' '.repeat(widthOfChar) : char;
     column += widthOfChar;
   }
 

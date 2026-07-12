@@ -8,6 +8,7 @@
 
 - Node.js >= 20
 - 支持 ANSI 控制序列和 stdin raw mode 的终端
+- Windows 下建议在 Windows Terminal + WSL2 中使用；终端需较完整支持 ANSI 控制序列，否则可能出现渲染错位、颜色残留或按键处理异常。
 - `rg`（ripgrep），供 `glob` / `grep` 工具使用
 - 一个兼容 OpenAI Responses / OpenAI Chat Completions / Anthropic Messages 的模型服务（首次启动可先用内置 fake agent，无需 API key）
 
@@ -18,6 +19,26 @@
 ```bash
 npm install -g @eumendies/echo-tui
 echo-tui --help
+```
+
+更新到最新版：
+
+```bash
+npm install -g @eumendies/echo-tui@latest
+echo-tui --version
+```
+
+卸载程序：
+
+```bash
+npm uninstall -g @eumendies/echo-tui
+```
+
+卸载只会移除全局安装的程序本体，不会自动删除 `~/.echo` 下的配置和会话数据。如需彻底清理，可先备份再删除：
+
+```bash
+cp -R ~/.echo ~/.echo.backup
+rm -rf ~/.echo
 ```
 
 从源码开发运行：

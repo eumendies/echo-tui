@@ -119,7 +119,7 @@ function renderRailRows(
   const rendered: string[] = [];
   let first = includeMarker;
 
-  for (const row of rows) {
+  for (const row of normalizeRailRows(rows)) {
     for (const segment of wrapContentLine(row.text, safeWidth, prefixWidth)) {
       rendered.push(`${createRailPrefix(first, safeWidth, theme, railStyle, markerStyle)}${colorizeRailContent(row.style, segment, theme)}`);
       first = false;
@@ -165,14 +165,15 @@ function colorizeRailContent(style: BashRailRow['style'], text: string, theme: T
  * 只在 heredoc 或 inline script 边界可确定时拆分；其余命令完整保留，避免审计信息丢失。
  */
 function parseBashCommand(command: string): BashCommandDisplay {
-  const lines = command.replace(/\r\n?/gu, '\n').replace(/\n$/u, '').split('\n');
+  const normalizedCommand = normalizeLineBreaks(command).replace(/\n$/u, '');
+  const lines = normalizedCommand.split('\n');
   const heredoc = parseHeredocCommand(lines);
 
   if (heredoc) {
     return heredoc;
   }
 
-  const inline = parseInlineScriptCommand(command);
+  const inline = parseInlineScriptCommand(normalizedCommand);
   if (inline) {
     return inline;
   }
@@ -227,6 +228,10 @@ function parseInlineScriptCommand(command: string): BashCommandDisplay | null {
     return null;
   }
 
+  if (hasShellContextOutsideInlineBody(command, bodyStart, bodyEnd)) {
+    return null;
+  }
+
   const body = command.slice(bodyStart, bodyEnd);
   if (!body.includes('\n') && body.length <= 60) {
     return null;
@@ -237,6 +242,13 @@ function parseInlineScriptCommand(command: string): BashCommandDisplay | null {
     scriptLines: body.split('\n'),
     trailerLines: []
   };
+}
+
+/**
+ * inline script 压缩只允许在单条 shell 逻辑行内生效，避免把前后命令塞进同一个 rail row。
+ */
+function hasShellContextOutsideInlineBody(command: string, bodyStart: number, bodyEnd: number): boolean {
+  return command.slice(0, bodyStart).includes('\n') || command.slice(bodyEnd).includes('\n');
 }
 
 function findClosingQuote(text: string, quote: string, start: number): number {
@@ -278,10 +290,10 @@ function createBashOutputRows(parsed: BashResultDisplay): BashRailRow[] {
   const rows: BashRailRow[] = [];
 
   if (parsed.stdout.trim()) {
-    rows.push(...parsed.stdout.split('\n').map((text) => ({style: 'muted' as const, text})));
+    rows.push(...splitRenderableLines(parsed.stdout).map((text) => ({style: 'muted' as const, text})));
   }
   if (parsed.stderr.trim()) {
-    rows.push(...parsed.stderr.split('\n').map((text) => ({style: 'error' as const, text})));
+    rows.push(...splitRenderableLines(parsed.stderr).map((text) => ({style: 'error' as const, text})));
   }
 
   return rows;
@@ -362,7 +374,7 @@ function parseBashResult(record: TranscriptRecord): BashResultDisplay {
     return {hasBashShape: true, stdout: record.displayText, stderr: '', timedOut: record.timedOut === true, truncated: record.truncated === true};
   }
 
-  const lines = record.text.split('\n');
+  const lines = normalizeLineBreaks(record.text).split('\n');
   const stdoutIndex = lines.indexOf('stdout:');
   const stderrIndex = lines.indexOf('stderr:');
   const hasBashShape = stdoutIndex >= 0 || stderrIndex >= 0;
@@ -381,6 +393,18 @@ function parseBashResult(record: TranscriptRecord): BashResultDisplay {
     timedOut,
     truncated
   };
+}
+
+function normalizeRailRows(rows: BashRailRow[]): BashRailRow[] {
+  return rows.flatMap((row) => splitRenderableLines(row.text).map((text) => ({...row, text})));
+}
+
+function splitRenderableLines(text: string): string[] {
+  return normalizeLineBreaks(text).split('\n');
+}
+
+function normalizeLineBreaks(text: string): string {
+  return String(text).replace(/\r\n?/gu, '\n');
 }
 
 /**
