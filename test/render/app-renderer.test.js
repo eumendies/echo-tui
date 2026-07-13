@@ -47,6 +47,26 @@ function createAskUserQuestionsResult(callId, payload, ok = true) {
   };
 }
 
+function createMemoryToolCall(callId, toolName, args) {
+  return {
+    role: 'tool_call',
+    text: '',
+    toolCallId: callId,
+    toolName,
+    argumentsText: typeof args === 'string' ? args : JSON.stringify(args)
+  };
+}
+
+function createMemoryToolResult(callId, toolName, payload, ok = true) {
+  return {
+    role: 'tool_result',
+    text: typeof payload === 'string' ? payload : JSON.stringify(payload),
+    toolCallId: callId,
+    toolName,
+    ok
+  };
+}
+
 test('renderTranscriptLines projects user, assistant, error, local notice, and reasoning summary records', () => {
   const lines = renderTranscriptLines(
     [
@@ -1233,6 +1253,122 @@ test('renderTranscriptLines keeps use_skill records unchanged and degrades malfo
   assert.ok(lines.includes('◆ Using skill'));
   assert.equal(lines.some((line) => line.includes('Hidden Skill Body')), false);
   assert.deepEqual(records, before);
+});
+
+test('renderTranscriptLines projects memory mutations as concise action summaries', () => {
+  const records = [
+    createMemoryToolCall('memory-add', 'add_memory', {type: 'user', content: 'Prefer concise Chinese'}),
+    createMemoryToolResult('memory-add', 'add_memory', {type: 'user', memory: {id: 'secret-user-id', content: 'Prefer concise Chinese'}}, true),
+    createMemoryToolCall('memory-update', 'update_memory', {type: 'agent', target: 'catalog', catalog: 'rendering', name: 'terminal', description: 'Terminal rendering rules', scope: 'global'}),
+    createMemoryToolResult('memory-update', 'update_memory', {type: 'agent', catalog: {id: 'secret-catalog-id', name: 'terminal'}}, true),
+    createMemoryToolCall('memory-remove', 'remove_memory', {type: 'agent', target: 'item', catalog: 'terminal', itemId: 'secret-item-id'}),
+    createMemoryToolResult('memory-remove', 'remove_memory', {type: 'agent', removedItemId: 'secret-item-id'}, true)
+  ];
+  const lines = renderTranscriptLines(records, 100).map((line) => stripAnsi(line));
+  const text = lines.join('\n');
+
+  assert.ok(lines.includes('◆ Remembering · Prefer concise Chinese'));
+  assert.ok(lines.includes('◆ Revising catalog · rendering → terminal · Terminal rendering rules'));
+  assert.ok(lines.includes('◆ Forgetting from terminal'));
+  assert.doesNotMatch(text, /secret-user-id|secret-catalog-id|secret-item-id/);
+  assert.doesNotMatch(text, /"type"|"target"|"scope"|removedItemId/);
+});
+
+test('renderTranscriptLines and pending preview use memory action summaries for all tools', () => {
+  const cases = [
+    ['add_memory', {type: 'agent', catalog: 'rendering', content: 'Use real cursors'}, 'Remembering in rendering · Use real cursors'],
+    ['read_memory', {type: 'agent', catalog: 'rendering'}, 'Recalling · rendering'],
+    ['update_memory', {type: 'user', target: 'item', itemId: 'hidden-id', content: 'Use concise Chinese'}, 'Revising user memory · Use concise Chinese'],
+    ['remove_memory', {type: 'agent', target: 'catalog', catalog: 'legacy'}, 'Forgetting catalog · legacy']
+  ];
+
+  for (const [toolName, args, expected] of cases) {
+    const transcript = renderTranscriptLines([createMemoryToolCall(`pending-${toolName}`, toolName, args)], 100).map((line) => stripAnsi(line));
+    const preview = renderToolCallPreviewLines(toolName, JSON.stringify(args), 100).map((line) => stripAnsi(line));
+    assert.ok(transcript.includes(`◆ ${expected}`));
+    assert.ok(preview.includes(`◆ ${expected}`));
+    assert.doesNotMatch([...transcript, ...preview].join('\n'), /"type"|hidden-id/);
+  }
+});
+
+test('renderTranscriptLines only adds bounded memory results for reads and failures', () => {
+  const failure = Array.from({length: 16}, (_unused, index) => `failure line ${index + 1}`).join('\n');
+  const lines = renderTranscriptLines([
+    createMemoryToolCall('memory-add-failed', 'add_memory', {type: 'user', content: 'Remember this'}),
+    createMemoryToolResult('memory-add-failed', 'add_memory', failure, false),
+    createMemoryToolCall('memory-read-failed', 'read_memory', {type: 'agent', catalog: 'missing'}),
+    createMemoryToolResult('memory-read-failed', 'read_memory', 'catalog is disabled', false)
+  ], 80).map((line) => stripAnsi(line));
+
+  assert.ok(lines.includes('◆ Remembering · Remember this'));
+  assert.ok(lines.includes('  ⎿ failure line 1'));
+  assert.ok(lines.some((line) => line.includes('[tool output truncated for display]')));
+  assert.ok(lines.includes('◆ Recalling · missing'));
+  assert.ok(lines.includes('  ⎿ catalog is disabled'));
+  assert.equal(lines.some((line) => line.includes('No memories found.')), false);
+});
+
+test('renderTranscriptLines lists user and agent read results without memory metadata', () => {
+  const records = [
+    createMemoryToolCall('memory-read-user', 'read_memory', {type: 'user'}),
+    createMemoryToolResult('memory-read-user', 'read_memory', {type: 'user', memories: [
+      {id: 'user-1', content: 'Prefer Chinese', enabled: true, createdAt: 'old', updatedAt: 'new'},
+      {id: 'user-2', content: 'Legacy preference', enabled: false, createdAt: 'old', updatedAt: 'new'}
+    ]}),
+    createMemoryToolCall('memory-read-agent', 'read_memory', {type: 'agent', catalog: 'rendering'}),
+    createMemoryToolResult('memory-read-agent', 'read_memory', {type: 'agent', catalog: {name: 'rendering', description: 'Hidden description'}, memories: [
+      {id: 'agent-1', content: 'Use real cursors', enabled: true, createdAt: 'old', updatedAt: 'new'},
+      {id: 'agent-2', content: 'Reserve the final column', enabled: true, createdAt: 'old', updatedAt: 'new'}
+    ]})
+  ];
+  const lines = renderTranscriptLines(records, 100).map((line) => stripAnsi(line));
+  const text = lines.join('\n');
+
+  assert.ok(lines.includes('◆ Recalling user memories'));
+  assert.ok(lines.includes('  ⎿ • Prefer Chinese'));
+  assert.ok(lines.includes('    • Legacy preference'));
+  assert.ok(lines.includes('◆ Recalling · rendering'));
+  assert.ok(lines.includes('  ⎿ • Use real cursors'));
+  assert.ok(lines.includes('    • Reserve the final column'));
+  assert.doesNotMatch(text, /on|off|enabled|user-1|agent-1|createdAt|updatedAt|Hidden description/);
+});
+
+test('memory renderer handles empty, malformed, isolated and narrow records without raw JSON', () => {
+  const malformedCall = createMemoryToolCall('memory-malformed', 'read_memory', '{not-json');
+  const malformedResult = createMemoryToolResult('memory-malformed', 'read_memory', '{still-not-json', true);
+  const isolatedRead = createMemoryToolResult('memory-isolated-read', 'read_memory', {type: 'user', memories: [{content: 'Isolated memory'}]}, true);
+  const isolatedMutation = createMemoryToolResult('memory-isolated-add', 'add_memory', '{hidden-mutation-json', true);
+  const emptyCall = createMemoryToolCall('memory-empty', 'read_memory', {type: 'user'});
+  const emptyResult = createMemoryToolResult('memory-empty', 'read_memory', {type: 'user', memories: []}, true);
+  const longCall = createMemoryToolCall('memory-long', 'read_memory', {type: 'agent', catalog: 'rendering'});
+  const longResult = createMemoryToolResult('memory-long', 'read_memory', {type: 'agent', memories: Array.from({length: 20}, (_unused, index) => ({content: `Memory item ${index + 1} with long terminal-safe content`}))}, true);
+  const records = [malformedCall, malformedResult, isolatedRead, isolatedMutation, emptyCall, emptyResult, longCall, longResult];
+  const before = JSON.parse(JSON.stringify(records));
+  const rendered = renderTranscriptLines(records, 32);
+  const lines = rendered.map((line) => stripAnsi(line));
+  const text = lines.join('\n');
+
+  assertSafeRenderLines(rendered, 32);
+  assert.ok(lines.includes('◆ Recalling memories'));
+  assert.ok(lines.includes('  ⎿ Memory result unavailable.'));
+  assert.ok(lines.includes('  ⎿ • Isolated memory'));
+  assert.ok(lines.includes('  ⎿ Memory remembered.'));
+  assert.ok(lines.includes('  ⎿ No memories found.'));
+  assert.ok(lines.some((line) => line.includes('[tool output truncated')));
+  assert.doesNotMatch(text, /not-json|still-not-json|hidden-mutation-json/);
+  assert.deepEqual(records, before);
+
+  const malformedPreviews = [
+    ['add_memory', 'Remembering memory'],
+    ['read_memory', 'Recalling memories'],
+    ['update_memory', 'Revising memory'],
+    ['remove_memory', 'Forgetting memory']
+  ];
+  for (const [toolName, expected] of malformedPreviews) {
+    const preview = renderToolCallPreviewLines(toolName, '{raw-malformed-json', 40).map((line) => stripAnsi(line));
+    assert.ok(preview.includes(`◆ ${expected}`));
+    assert.doesNotMatch(preview.join('\n'), /raw-malformed-json/);
+  }
 });
 
 test('renderTranscriptLines renders current apply_patch metadata with file grouping, gutter, and full-row backgrounds', () => {
