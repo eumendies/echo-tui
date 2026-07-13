@@ -53,7 +53,14 @@ function createHost(initialMemories = [], options = {}) {
         }
         memories = memories.filter((memory) => memory.id !== id);
         return {ok: true, memories: memories.map((memory) => ({...memory}))};
-      }
+      },
+      listAgentCatalogs() { return {ok: true, catalogs: []}; },
+      readAgentCatalog() { return {ok: false, error: 'missing'}; },
+      addAgentMemory() { return {ok: false, error: 'unsupported'}; },
+      updateAgentCatalog() { return {ok: false, error: 'unsupported'}; },
+      updateAgentItem() { return {ok: false, error: 'unsupported'}; },
+      removeAgentCatalog() { return {ok: false, error: 'unsupported'}; },
+      removeAgentItem() { return {ok: false, error: 'unsupported'}; }
     },
     session: {
       open(session) {
@@ -76,6 +83,7 @@ function createHost(initialMemories = [], options = {}) {
 
 function start(handler, host) {
   handler.start('/memory', host);
+  handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
   return host.session.getActive();
 }
 
@@ -166,6 +174,47 @@ test('/memory toggles the selected entry with Space', () => {
   assert.equal(host.session.getActive().surface.memories[0].enabled, false);
 });
 
+test('/memory browses scoped agent catalogs and adds an item', () => {
+  const handler = new MemoryCommandHandler();
+  const {host} = createHost();
+  const catalog = {id: 'catalog-1', name: 'rendering', description: 'Terminal rules', scope: {kind: 'project', projectRoot: '/repo'}};
+  let items = [{id: 'item-1', content: 'Use real cursors', createdAt: '2026-07-12T00:00:00.000Z', updatedAt: '2026-07-12T00:00:00.000Z'}];
+  let listCalls = 0;
+  let readCalls = 0;
+  host.memory.listAgentCatalogs = () => {
+    listCalls += 1;
+    return {ok: true, catalogs: [catalog]};
+  };
+  host.memory.readAgentCatalog = () => {
+    readCalls += 1;
+    return {ok: true, catalog, memories: items};
+  };
+  host.memory.addAgentMemory = (input) => {
+    items = [...items, {id: 'item-2', content: input.content, createdAt: '2026-07-12T00:00:00.000Z', updatedAt: '2026-07-12T00:00:00.000Z'}];
+    return {ok: true, catalogs: [catalog], catalog, memories: items};
+  };
+  handler.start('/memory', host);
+  assert.deepEqual(host.session.getActive().surface.itemCounts, {user: 0, global: 0, project: 1});
+  assert.equal(listCalls, 1);
+  assert.equal(readCalls, 1);
+  handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
+  handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
+  handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
+  assert.equal(host.session.getActive().surface.section, 'catalogs');
+  assert.equal(host.session.getActive().surface.scope, 'project');
+  assert.equal(host.session.getActive().surface.title, 'AGENT CATALOGS · project');
+  handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
+  assert.equal(host.session.getActive().surface.section, 'items');
+  assert.equal(host.session.getActive().surface.title, 'CATALOG · rendering');
+  assert.equal(listCalls, 1);
+  assert.equal(readCalls, 1);
+  handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.TEXT, value: 'a'}, host);
+  handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.TEXT, value: 'Reserve the final column'}, host);
+  handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
+  assert.equal(host.session.getActive().surface.agentItems.length, 2);
+  assert.equal(host.session.getActive().surface.showCursor, undefined);
+});
+
 test('memory surface renders list, edit and confirmation states without overflowing the requested width', () => {
   const base = {
     kind: 'memory',
@@ -211,4 +260,66 @@ test('memory surface renders list, edit and confirmation states without overflow
   assert.equal(endCursorLayout.cursorColumn, 2 + displayWidth('abc'));
   assert.equal(endCursorLayout.lines[endCursorLayout.cursorRow], endCursorLine);
   assert.doesNotMatch(endCursorLine, /█/);
+
+  const typeLayout = renderMemorySurface({...base, section: 'types', mode: 'list'}, 80, DEFAULT_TUI_THEME.footer);
+  assert.match(typeLayout.lines.join('\n'), /User memories/);
+  assert.match(typeLayout.lines.join('\n'), /Agent memories · project/);
+  const countedTypeLayout = renderMemorySurface({...base, section: 'types', mode: 'list', itemCounts: {user: 2, global: 3, project: 4}}, 80, DEFAULT_TUI_THEME.footer);
+  assert.match(countedTypeLayout.lines.join('\n'), /User memories · 2 items/);
+  assert.match(countedTypeLayout.lines.join('\n'), /global · 3 items/);
+  assert.match(countedTypeLayout.lines.join('\n'), /project · 4 items/);
+  const catalogLayout = renderMemorySurface({...base, section: 'catalogs', scope: 'project', mode: 'list', catalogs: [{id: 'c1', name: 'rendering', description: 'Terminal rules', scope: {kind: 'project', projectRoot: '/repo'}}]}, 80, DEFAULT_TUI_THEME.footer);
+  assert.match(catalogLayout.lines.join('\n'), /rendering — Terminal rules/);
+  assert.doesNotMatch(catalogLayout.lines.join('\n'), /\[project\]/);
+
+  const formLayout = renderMemorySurface({...base, title: 'NEW CATALOG · project', section: 'catalogs', mode: 'edit', catalogForm: {
+    selectedIndex: 0,
+    fields: [
+      {label: '名称', text: 'rendering', cursor: 3},
+      {label: '描述', text: 'Terminal rules', cursor: 0},
+      {label: '首个 item', text: 'Use real cursors', cursor: 0}
+    ]
+  }}, 80, DEFAULT_TUI_THEME.footer);
+  assert.match(formLayout.lines[formLayout.cursorRow], /名称.*│.*rendering/);
+  assert.equal(formLayout.cursorColumn, 21);
+  assert.doesNotMatch(formLayout.lines.join('\n'), /这是一个很长的 memory/);
+
+  const longFormLayout = renderMemorySurface({...base, section: 'catalogs', mode: 'edit', catalogForm: {
+    selectedIndex: 1,
+    fields: [
+      {label: '名称', text: 'rendering', cursor: 0},
+      {label: '描述', text: '很长的描述'.repeat(30), cursor: 100},
+      {label: '首个 item', text: '', cursor: 0}
+    ]
+  }}, 36, DEFAULT_TUI_THEME.footer);
+  assert.equal(longFormLayout.showCursor, true);
+  assert.ok(longFormLayout.cursorColumn < safeRenderWidth(36));
+  assert.match(longFormLayout.lines[longFormLayout.cursorRow], /….*…/);
+  for (const line of longFormLayout.lines) assert.ok(displayWidth(line) <= safeRenderWidth(36));
+});
+
+test('/memory edits a new catalog through separate form fields', () => {
+  const handler = new MemoryCommandHandler();
+  const {host} = createHost();
+  let input;
+  host.memory.listAgentCatalogs = () => ({ok: true, catalogs: []});
+  host.memory.addAgentMemory = (value) => {
+    input = value;
+    return {ok: true, catalogs: [{id: 'catalog-1', name: value.catalog, description: value.description, scope: {kind: 'project', projectRoot: '/repo'}}], catalog: {id: 'catalog-1'}, memories: []};
+  };
+
+  handler.start('/memory', host);
+  handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
+  handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
+  handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
+  handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.TEXT, value: 'a'}, host);
+  assert.equal(host.session.getActive().surface.title, 'NEW CATALOG · project');
+  assert.deepEqual(host.session.getActive().surface.catalogForm.fields.map((field) => field.label), ['名称', '描述', '首个 item']);
+  handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.TEXT, value: 'rendering'}, host);
+  handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
+  handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.TEXT, value: 'Terminal rules'}, host);
+  handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
+  handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.TEXT, value: 'Use real cursors'}, host);
+  handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
+  assert.deepEqual(input, {catalog: 'rendering', description: 'Terminal rules', content: 'Use real cursors', scope: 'project'});
 });

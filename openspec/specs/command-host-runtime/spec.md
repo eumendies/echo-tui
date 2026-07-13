@@ -143,12 +143,17 @@ TBD - created by archiving change refactor-command-host. Update Purpose after ar
 - **THEN** `CommandRuntime` SHALL NOT 为 MCP 保存新增业务 effect interpreter 分支
 
 ### Requirement: CommandHost 暴露 memory 管理能力
-系统 SHALL 通过 `CommandHost` 向 `/memory` command handler 暴露受控的 memory 列表读取、新增、更新和删除能力。handler SHALL 仅通过该 facade 访问 memory 存储，且 SHALL NOT 直接访问完整 `AppContext`、文件系统、renderer、terminal 或 agent 实例。
+系统 SHALL 通过 `CommandHost` 向 `/memory` command handler 暴露受控的 user memory 与 agent memory 管理能力。Facade SHALL 支持 user memory 列表、启停、新增、更新和删除，以及按 scope 列出 agent catalog、读取 items、保存 catalog/item 和删除 catalog/item。Handler SHALL 仅通过该 facade 访问 memory 存储，且 SHALL NOT 直接访问完整 `AppContext`、文件系统、renderer、terminal 或 agent 实例。
 
 #### Scenario: memory handler 通过 host 读取和保存
-- **WHEN** `/memory` command handler 需要展示、创建、编辑或删除用户 memory
+- **WHEN** `/memory` command handler 需要展示或修改 user/agent memory
 - **THEN** handler SHALL 调用 `CommandHost` 的 memory 领域能力
-- **THEN** host SHALL 负责调用 memory 存储并返回结构化成功或失败结果
+- **THEN** host SHALL 负责调用对应 memory 存储并返回结构化成功或失败结果
+
+#### Scenario: host 为 agent memory 解析当前项目
+- **WHEN** `/memory` 读取或修改 project scope agent catalog
+- **THEN** host SHALL 使用 app 当前 cwd 解析规范化 project root
+- **THEN** handler SHALL NOT 自行推导项目 scope 或拼接存储路径
 
 #### Scenario: 默认命令集合注册 memory command
 - **WHEN** 系统创建默认 slash command handlers

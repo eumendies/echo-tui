@@ -14,12 +14,13 @@ import {createMcpToolRegistry, mergeToolRegistries} from '../mcp/tool-adapter';
 import {getMcpToolApproval} from '../mcp/manager';
 import {formatSkillCatalogPrompt} from '../skills/skill-catalog-prompt';
 import {readUserMemories} from '../memory/memory-store';
+import {listEffectiveAgentMemoryCatalogs} from '../memory/agent-memory-store';
 import {throwIfAborted} from '../types/agent';
 import {normalizeError} from './agent-errors';
 import {loadAgentInstructions} from './agent-instructions';
 import {calibrateContextUsageSegments, estimateContextUsageSegments} from './context/context-usage-breakdown';
 import {estimateTextTokens} from './context/token-estimator';
-import {createBuiltInSystemPrompt, formatUserMemoriesPrompt} from './system-prompt';
+import {createBuiltInSystemPrompt, formatAgentMemoryCatalogPrompt, formatUserMemoriesPrompt} from './system-prompt';
 import {createConfiguredAgent} from './agent-setup';
 import {runCompaction} from './context/context-compaction';
 import {disabledDebugContext, hashValue, redactProviderConfig, summarizeText} from '../debug/debug-context';
@@ -243,11 +244,11 @@ async function executeToolCall(toolCall: ToolCall, state: AgentLoopRunState, cal
  * 构造 provider 请求上下文：稳定前缀 + 活跃区间记录 + 运行时 suffix。
  * system prompt、摘要和运行时状态只存在于 provider 上下文，不写回 app transcript。
  */
-function buildProviderRecords(activeRecords: TranscriptRecord[], cwd: string, compaction?: CompactionState, skillCatalog: SkillCatalogEntry[] = [], interactionMode: InteractionMode = 'normal', agentInstructions: AgentInstruction[] = [], todoState?: TodoState, userMemories: import('../types/memory').UserMemory[] = []): TranscriptRecord[] {
+function buildProviderRecords(activeRecords: TranscriptRecord[], cwd: string, compaction?: CompactionState, skillCatalog: SkillCatalogEntry[] = [], interactionMode: InteractionMode = 'normal', agentInstructions: AgentInstruction[] = [], todoState?: TodoState, userMemories: import('../types/memory').UserMemory[] = [], agentMemoryCatalogs: import('../types/memory').AgentMemoryCatalog[] = []): TranscriptRecord[] {
   const prefix: TranscriptRecord[] = [
     {
       role: 'system',
-      text: createBuiltInSystemPrompt({agentInstructions, cwd, skillCatalog, userMemories})
+      text: createBuiltInSystemPrompt({agentInstructions, cwd, skillCatalog, userMemories, agentMemoryCatalogs})
     }
   ];
 
@@ -508,12 +509,15 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
       const activeRecords = recordRegion.slice(activeStartIndex);
       const memoryResult = readUserMemories();
       const userMemories = memoryResult.ok ? memoryResult.memories : [];
-      const providerRecords = buildProviderRecords(activeRecords, cwd, compactionState, state.skillCatalog, interactionMode, state.agentInstructions, state.todoState, userMemories);
+      const agentMemoryResult = listEffectiveAgentMemoryCatalogs(cwd);
+      const agentMemoryCatalogs = agentMemoryResult.ok ? agentMemoryResult.catalogs : [];
+      const providerRecords = buildProviderRecords(activeRecords, cwd, compactionState, state.skillCatalog, interactionMode, state.agentInstructions, state.todoState, userMemories, agentMemoryCatalogs);
       state.debug.emit('provider_request_built', {
         activeRecordCount: activeRecords.length,
         activeStartIndex,
         agentInstructionsCount: state.agentInstructions.length,
         userMemoryCount: userMemories.length,
+        agentMemoryCatalogCount: agentMemoryCatalogs.length,
         compaction: compactionState ? {
           activeStartIndex: compactionState.activeStartIndex,
           createdAt: compactionState.createdAt,
@@ -533,7 +537,8 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
       throwIfAborted(abortSignal);
 
       if (typeof usageInputTokens === 'number') {
-        const estimatedUsageSegments = estimateContextUsageSegments(providerRecords, state.toolDefinitions, state.skillCatalogTokens, estimateTextTokens(formatUserMemoriesPrompt(userMemories)));
+        const memoryTokens = estimateTextTokens([formatUserMemoriesPrompt(userMemories), formatAgentMemoryCatalogPrompt(agentMemoryCatalogs)].filter(Boolean).join('\n\n'));
+        const estimatedUsageSegments = estimateContextUsageSegments(providerRecords, state.toolDefinitions, state.skillCatalogTokens, memoryTokens);
 
         // 以本次真实 prompt token 为锚点，记下当时活跃记录数，供下一轮叠加字符增量。
         usageAnchor = {usageInputTokens, measuredAtRecordCount: recordRegion.length - activeStartIndex};

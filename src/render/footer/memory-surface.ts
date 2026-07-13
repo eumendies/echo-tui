@@ -47,11 +47,16 @@ function renderMemorySurface(surface: MemoryCommandSurface, width: number, theme
 
 function renderBody(surface: MemoryCommandSurface, contentWidth: number, theme: FooterTheme): BodyRenderResult {
   if (surface.mode === 'deleteConfirm') {
-    const selected = surface.memories[surface.selectedIndex];
+    const selected = surface.section === 'catalogs' ? surface.catalogs?.[surface.selectedIndex] : surface.section === 'items' ? surface.agentItems?.[surface.selectedIndex] : surface.memories[surface.selectedIndex];
+    const preview = selected && 'content' in selected ? selected.content : selected && 'name' in selected ? `${selected.name}: ${selected.description}` : 'memory 不存在';
     return withoutCursor([
       line(tokenText(theme, 'warning', '确认删除当前 memory？'), contentWidth, theme),
-      line(ansi.dim(clampPlainText(selected ? previewMemory(selected.content) : 'memory 不存在', contentWidth)), contentWidth, theme)
+      line(ansi.dim(clampPlainText(previewMemory(preview), contentWidth)), contentWidth, theme)
     ]);
+  }
+
+  if (surface.mode === 'edit' && surface.catalogForm) {
+    return renderCatalogForm(surface.catalogForm, contentWidth, theme);
   }
 
   const rows = renderListBody(surface, contentWidth, theme);
@@ -70,6 +75,27 @@ function renderBody(surface: MemoryCommandSurface, contentWidth: number, theme: 
 }
 
 function renderListBody(surface: MemoryCommandSurface, contentWidth: number, theme: FooterTheme): string[] {
+  if (surface.section === 'types') {
+    const counts = surface.itemCounts || {user: 0, global: 0, project: 0};
+    return renderPlainOptions([
+      `User memories · ${counts.user} items`,
+      `Agent memories · global · ${counts.global} items`,
+      `Agent memories · project · ${counts.project} items`
+    ], surface.selectedIndex, contentWidth, theme);
+  }
+
+  if (surface.section === 'catalogs') {
+    const catalogs = surface.catalogs || [];
+    if (catalogs.length === 0) return [line(ansi.dim(`当前没有 ${surface.scope || 'agent'} catalog。按 a 新增。`), contentWidth, theme)];
+    return renderPlainOptions(catalogs.map((catalog) => `${catalog.name} — ${catalog.description}`), surface.selectedIndex, contentWidth, theme);
+  }
+
+  if (surface.section === 'items') {
+    const items = surface.agentItems || [];
+    if (items.length === 0) return [line(ansi.dim('当前没有 item。按 a 新增。'), contentWidth, theme)];
+    return renderPlainOptions(items.map((item) => previewMemory(item.content)), surface.selectedIndex, contentWidth, theme);
+  }
+
   if (surface.memories.length === 0) {
     return [line(ansi.dim('当前没有 memory。按 a 新增。'), contentWidth, theme)];
   }
@@ -83,6 +109,85 @@ function renderListBody(surface: MemoryCommandSurface, contentWidth: number, the
 
     const text = `${renderToggle(row.item.enabled, theme)}  ${previewMemory(row.item.content)}`;
     rows.push(row.index === surface.selectedIndex ? selectedLine(text, contentWidth, theme) : line(`  ${clampPlainText(text, Math.max(1, contentWidth - 2))}`, contentWidth, theme));
+  }
+  return rows;
+}
+
+function renderCatalogForm(form: NonNullable<MemoryCommandSurface['catalogForm']>, contentWidth: number, theme: FooterTheme): BodyRenderResult {
+  const rows: string[] = [];
+  let cursorRow = 0;
+  let cursorColumn = EDIT_CONTENT_COLUMN_OFFSET;
+  const maxLabelWidth = Math.max(...form.fields.map((field) => displayWidth(field.label)), 1);
+  const labelWidth = Math.min(maxLabelWidth + 2, Math.max(4, Math.floor(contentWidth / 3)));
+  const rowPrefixWidth = 2 + labelWidth + 3;
+  const valueWidth = Math.max(1, contentWidth - rowPrefixWidth);
+
+  form.fields.forEach((field, index) => {
+    const active = index === form.selectedIndex;
+    const projected = projectInlineField(field.text, field.cursor, valueWidth);
+    const marker = active ? renderFocusBar(theme) : ' ';
+    const label = padVisibleText(clampPlainText(field.label, labelWidth), labelWidth);
+    const value = padVisibleText(projected.text, valueWidth);
+    const body = `${marker} ${tokenText(theme, active ? 'accentStrong' : 'muted', label)} │ ${value}`;
+    rows.push(line(active ? activeBackground(theme, body) : body, contentWidth, theme));
+
+    if (active) {
+      cursorRow = index;
+      // 外框和内边距占两列，rowPrefixWidth 包含 focus、标签和分隔符。
+      cursorColumn = EDIT_CONTENT_COLUMN_OFFSET + rowPrefixWidth + projected.cursorColumn;
+    }
+  });
+
+  return {rows, cursorRow, cursorColumn, showCursor: true};
+}
+
+/** 把多行字段压成单行窗口，并让真实终端光标始终落在可见值区域。 */
+function projectInlineField(text: string, cursor: number, width: number): {text: string; cursorColumn: number} {
+  const chars = Array.from(text).map((char) => char === '\n' ? ' ' : char);
+  const cursorIndex = Math.min(Math.max(0, cursor), chars.length);
+  let start = 0;
+
+  // 光标前至少保留一列；发生左裁剪后还需为省略号预留一列。
+  while (start < cursorIndex) {
+    const leftMarkerWidth = start > 0 ? 1 : 0;
+    const beforeCursorWidth = displayWidth(chars.slice(start, cursorIndex).join(''));
+    if (leftMarkerWidth + beforeCursorWidth <= Math.max(0, width - 1)) {
+      break;
+    }
+    start += 1;
+  }
+
+  const hasLeftOverflow = start > 0;
+  const leftMarkerWidth = hasLeftOverflow ? 1 : 0;
+  const availableContentWidth = Math.max(0, width - leftMarkerWidth);
+  let end = cursorIndex;
+  while (end < chars.length && displayWidth(chars.slice(start, end + 1).join('')) <= availableContentWidth) {
+    end += 1;
+  }
+
+  const hasRightOverflow = end < chars.length;
+  const visibleContentWidth = Math.max(0, availableContentWidth - (hasRightOverflow ? 1 : 0));
+  while (end > cursorIndex && displayWidth(chars.slice(start, end).join('')) > visibleContentWidth) {
+    end -= 1;
+  }
+
+  const leftMarker = hasLeftOverflow ? '…' : '';
+  const rightMarker = hasRightOverflow ? '…' : '';
+
+  return {
+    text: `${leftMarker}${chars.slice(start, end).join('')}${rightMarker}`,
+    cursorColumn: leftMarkerWidth + displayWidth(chars.slice(start, cursorIndex).join(''))
+  };
+}
+
+function renderPlainOptions(options: string[], selectedIndex: number, contentWidth: number, theme: FooterTheme): string[] {
+  const rows: string[] = [];
+  for (const row of createSelectedWindowRows(options, selectedIndex, MEMORY_MAX_VISIBLE)) {
+    if (row.kind === 'more') {
+      rows.push(line(ansi.dim(`  ${row.direction === 'up' ? '↑' : '↓'} ${row.count} 更多`), contentWidth, theme));
+    } else {
+      rows.push(row.index === selectedIndex ? selectedLine(row.item, contentWidth, theme) : line(`  ${clampPlainText(row.item, Math.max(1, contentWidth - 2))}`, contentWidth, theme));
+    }
   }
   return rows;
 }

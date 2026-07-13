@@ -9,6 +9,7 @@ const { createBuiltInSystemPrompt } = require('../../src/agent/system-prompt');
 const llmConfigModule = require('../../src/config/llm-config');
 const agentSetupModule = require('../../src/agent/agent-setup');
 const {createUserMemory, updateUserMemory} = require('../../src/memory/memory-store');
+const {addAgentMemory, updateAgentMemoryCatalog} = require('../../src/memory/agent-memory-store');
 
 const TEST_CWD = '/tmp/echo_tui';
 const TEST_CONFIG = {
@@ -156,6 +157,19 @@ test('buildProviderRecords excludes disabled user memories', () => {
   assert.doesNotMatch(records[0].text, /不应注入/);
 });
 
+test('buildProviderRecords injects only agent memory catalog names and descriptions', () => {
+  const records = buildProviderRecords([{role: 'user', text: '继续'}], TEST_CWD, undefined, [], 'normal', [], undefined, [], [{
+    id: 'catalog-1',
+    name: 'rendering',
+    description: 'Terminal rendering rules',
+    scope: {kind: 'project', projectRoot: TEST_CWD}
+  }]);
+
+  assert.match(records[0].text, /Agent memory catalogs/);
+  assert.match(records[0].text, /rendering: Terminal rendering rules/);
+  assert.doesNotMatch(records[0].text, /catalog-1|projectRoot/);
+});
+
 test('createAgentLoopRuntime rereads saved memory before each provider request', async () => {
   await withTemporaryMemoryHome(async () => {
     const created = createUserMemory('第一次偏好');
@@ -179,6 +193,23 @@ test('createAgentLoopRuntime rereads saved memory before each provider request',
     assert.doesNotMatch(requests[0][0].text, /第二次偏好/);
     assert.match(requests[1][0].text, /第二次偏好/);
     assert.doesNotMatch(requests[1][0].text, /第一次偏好/);
+  });
+});
+
+test('createAgentLoopRuntime rereads the agent memory catalog index before each provider request', async () => {
+  await withTemporaryMemoryHome(async () => {
+    addAgentMemory(TEST_CWD, {catalog: 'rendering', description: 'First description', content: 'private item'});
+    const requests = [];
+    const agent = {initialize() {}, async runTurn(records) { requests.push(records); return {draft: 'done', toolCalls: []}; }};
+    await withPatchedAgentRuntime(agent, async () => {
+      const runtime = createAgentLoopRuntime(TEST_CWD);
+      await runtime({records: [{role: 'user', text: 'first'}]});
+      updateAgentMemoryCatalog(TEST_CWD, 'rendering', {description: 'Second description'});
+      await runtime({records: [{role: 'user', text: 'second'}]});
+    });
+    assert.match(requests[0][0].text, /First description/);
+    assert.doesNotMatch(requests[0][0].text, /private item|Second description/);
+    assert.match(requests[1][0].text, /Second description/);
   });
 });
 

@@ -9,6 +9,7 @@ import {createUseSkillToolHandler} from './use-skill-tool-handler';
 import {createTodoToolHandlers} from './todo-tool-handler';
 import {createWebFetchToolHandler} from './web-fetch-tool-handler';
 import {createWebSearchToolHandler} from './web-search';
+import {createMemoryToolHandlers} from './memory-tool-handler';
 
 import type {LlmConfig} from '../types/agent';
 import type {ToolHandler, ToolRegistry} from '../types/tool';
@@ -60,6 +61,7 @@ function createDefaultToolRegistry(config: LlmConfig, cwd: string | (() => strin
     createReadFilesToolHandler({
       cwd
     }),
+    ...createMemoryToolHandlers(cwd),
     ...createTodoToolHandlers(),
     createUseSkillToolHandler(skillManager),
     createWebFetchToolHandler({

@@ -280,6 +280,10 @@ test('default tool registry exposes developed tools', () => {
   assert.equal(registry.getHandler(GLOB_TOOL_NAME) !== undefined, true);
   assert.equal(registry.getHandler(GREP_TOOL_NAME) !== undefined, true);
   assert.equal(registry.getHandler(READ_FILES_TOOL_NAME) !== undefined, true);
+  assert.equal(registry.getHandler('read_memory') !== undefined, true);
+  assert.equal(registry.getHandler('add_memory') !== undefined, true);
+  assert.equal(registry.getHandler('update_memory') !== undefined, true);
+  assert.equal(registry.getHandler('remove_memory') !== undefined, true);
   assert.equal(registry.getHandler(CREATE_TODOS_TOOL_NAME) !== undefined, true);
   assert.equal(registry.getHandler(COMPLETE_TODO_TOOL_NAME) !== undefined, true);
   assert.equal(registry.getHandler(USE_SKILL_TOOL_NAME) !== undefined, true);
@@ -292,6 +296,10 @@ test('default tool registry exposes developed tools', () => {
     GLOB_TOOL_NAME,
     GREP_TOOL_NAME,
     READ_FILES_TOOL_NAME,
+    'read_memory',
+    'add_memory',
+    'update_memory',
+    'remove_memory',
     CREATE_TODOS_TOOL_NAME,
     COMPLETE_TODO_TOOL_NAME,
     USE_SKILL_TOOL_NAME,

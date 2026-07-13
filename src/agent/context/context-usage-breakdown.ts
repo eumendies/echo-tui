@@ -22,7 +22,7 @@ const CONTEXT_USAGE_SEGMENT_ORDER: ContextUsageSegmentCategory[] = [
 /**
  * 基于 provider request 快照估算各类上下文占用；分类保持固定顺序，便于渲染和测试。
  */
-function estimateContextUsageSegments(records: TranscriptRecord[], toolDefinitions: ToolDefinition[] = [], skillCatalogTokens = 0, userMemoryTokens = 0): EstimatedContextUsageSegment[] {
+function estimateContextUsageSegments(records: TranscriptRecord[], toolDefinitions: ToolDefinition[] = [], skillCatalogTokens = 0, memoryTokens = 0): EstimatedContextUsageSegment[] {
   const totals = new Map<ContextUsageSegmentCategory, number>(CONTEXT_USAGE_SEGMENT_ORDER.map((category) => [category, 0]));
   let countedSkills = false;
 
@@ -39,9 +39,9 @@ function estimateContextUsageSegments(records: TranscriptRecord[], toolDefinitio
 
     const tokens = estimateRecordContextTokens(record, category);
 
-    if (category === 'system' && !countedSkills && (skillCatalogTokens > 0 || userMemoryTokens > 0)) {
-      addTokens(totals, 'system', Math.max(0, tokens - skillCatalogTokens - userMemoryTokens));
-      addTokens(totals, 'memory', userMemoryTokens);
+    if (category === 'system' && !countedSkills && (skillCatalogTokens > 0 || memoryTokens > 0)) {
+      addTokens(totals, 'system', Math.max(0, tokens - skillCatalogTokens - memoryTokens));
+      addTokens(totals, 'memory', memoryTokens);
       addTokens(totals, 'skills', skillCatalogTokens);
       countedSkills = true;
       continue;

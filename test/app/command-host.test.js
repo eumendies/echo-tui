@@ -155,6 +155,22 @@ test('CommandHost memory facade persists user memories without exposing filesyst
   });
 });
 
+test('CommandHost memory facade manages scoped agent catalogs through current cwd', () => {
+  withTemporaryUserConfig(null, () => {
+    const {host} = createHostHarness();
+    const created = host.memory.addAgentMemory({catalog: 'rendering', description: 'Terminal rules', content: 'Use real cursors'});
+    assert.equal(created.ok, true);
+    const listed = host.memory.listAgentCatalogs();
+    assert.equal(listed.ok, true);
+    assert.equal(listed.catalogs[0].scope.kind, 'project');
+    const read = host.memory.readAgentCatalog('rendering');
+    assert.equal(read.ok, true);
+    assert.equal(read.memories[0].content, 'Use real cursors');
+    assert.equal(host.memory.updateAgentItem('rendering', read.memories[0].id, 'Use terminal cursors').ok, true);
+    assert.equal(host.memory.removeAgentItem('rendering', read.memories[0].id).removedCatalog, true);
+  });
+});
+
 test('CommandHost theme facade keeps current theme when selection cannot be saved', () => {
   withTemporaryThemeConfig('{broken', () => {
     const {calls, host, setThemes} = createHostHarness();

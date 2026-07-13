@@ -5,7 +5,7 @@ import type { CompactionState, TranscriptRecord, TranscriptSessionMetadata } fro
 import type {UndoExecuteResult, UndoSummary} from './change-history';
 import type {UsageDailyAggregate, UsageQueryOptions} from './usage';
 import type {LifecycleHookConfigDraft, LifecycleHookDraftEntry, LifecycleHookEventName, LifecycleHookTestResult} from './hooks';
-import type {UserMemory, UserMemoryMutationResult, UserMemoryReadResult} from './memory';
+import type {AgentMemoryCatalog, AgentMemoryCatalogListResult, AgentMemoryCatalogReadResult, AgentMemoryItem, AgentMemoryMutationResult, AgentMemoryScope, UserMemory, UserMemoryMutationResult, UserMemoryReadResult} from './memory';
 
 export type CommandSurfaceOption = {
   label?: string;
@@ -94,12 +94,30 @@ export type McpCommandSurface = {
 };
 
 export type MemoryCommandSurfaceMode = 'list' | 'edit' | 'deleteConfirm';
+export type MemoryCommandSection = 'types' | 'user' | 'catalogs' | 'items';
+export type MemoryItemCounts = {
+  user: number;
+  global: number;
+  project: number;
+};
+
+export type MemoryCatalogForm = {
+  fields: {label: string; text: string; cursor: number}[];
+  selectedIndex: number;
+};
 
 export type MemoryCommandSurface = {
   kind: 'memory';
   title?: string;
   mode: MemoryCommandSurfaceMode;
+  section?: MemoryCommandSection;
+  scope?: AgentMemoryScope['kind'];
   memories: UserMemory[];
+  catalogs?: AgentMemoryCatalog[];
+  agentItems?: AgentMemoryItem[];
+  selectedCatalog?: AgentMemoryCatalog;
+  itemCounts?: MemoryItemCounts;
+  catalogForm?: MemoryCatalogForm;
   selectedIndex: number;
   editText?: string;
   editCursor?: number;
@@ -495,6 +513,13 @@ export type CommandHostApp = {
     update(id: string, content: string): UserMemoryMutationResult;
     setEnabled(id: string, enabled: boolean): UserMemoryMutationResult;
     delete(id: string): UserMemoryMutationResult;
+    listAgentCatalogs(): AgentMemoryCatalogListResult;
+    readAgentCatalog(name: string, scope?: AgentMemoryScope['kind']): AgentMemoryCatalogReadResult;
+    addAgentMemory(input: {catalog: string; description?: string; content: string; scope?: AgentMemoryScope['kind']}): AgentMemoryMutationResult;
+    updateAgentCatalog(name: string, updates: {name?: string; description?: string}, scope?: AgentMemoryScope['kind']): AgentMemoryMutationResult;
+    updateAgentItem(catalog: string, itemId: string, content: string, scope?: AgentMemoryScope['kind']): AgentMemoryMutationResult;
+    removeAgentCatalog(name: string, scope?: AgentMemoryScope['kind']): AgentMemoryMutationResult;
+    removeAgentItem(catalog: string, itemId: string, scope?: AgentMemoryScope['kind']): AgentMemoryMutationResult;
   };
   hooks: {
     readDraft(): LifecycleHookConfigDraft;

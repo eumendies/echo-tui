@@ -7,6 +7,7 @@ import {createLifecycleHookSyntheticPayload, executeLifecycleHookSyntheticTest} 
 import {listProviderModels} from '../../config/provider-model-list';
 import {listBuiltinThemes, readTuiTheme, readTuiThemeBaseId, selectBuiltinTheme} from '../../config/theme-config';
 import {createUserMemory, deleteUserMemory, readUserMemories, setUserMemoryEnabled, updateUserMemory} from '../../memory/memory-store';
+import {addAgentMemory, listAgentMemoryCatalogs, readAgentMemoryCatalog, removeAgentMemoryCatalog, removeAgentMemoryItem, updateAgentMemoryCatalog, updateAgentMemoryItem} from '../../memory/agent-memory-store';
 import {calculateCommandSurfaceMaxLines} from '../../render/footer';
 import {sanitizeMcpError} from '../../mcp/manager';
 import {createSkillManager} from '../../skills/skill-manager';
@@ -262,6 +263,27 @@ function createCommandHost(options: CommandHostOptions): CommandHostApp {
       },
       delete(id) {
         return deleteUserMemory(id);
+      },
+      listAgentCatalogs() {
+        return listAgentMemoryCatalogs(appContext.getCurrentCwd());
+      },
+      readAgentCatalog(name, scope) {
+        return readAgentMemoryCatalog(appContext.getCurrentCwd(), name, scope);
+      },
+      addAgentMemory(input) {
+        return addAgentMemory(appContext.getCurrentCwd(), input);
+      },
+      updateAgentCatalog(name, updates, scope) {
+        return updateAgentMemoryCatalog(appContext.getCurrentCwd(), name, updates, scope);
+      },
+      updateAgentItem(catalog, itemId, content, scope) {
+        return updateAgentMemoryItem(appContext.getCurrentCwd(), catalog, itemId, content, scope);
+      },
+      removeAgentCatalog(name, scope) {
+        return removeAgentMemoryCatalog(appContext.getCurrentCwd(), name, scope);
+      },
+      removeAgentItem(catalog, itemId, scope) {
+        return removeAgentMemoryItem(appContext.getCurrentCwd(), catalog, itemId, scope);
       }
     },
     hooks: {
