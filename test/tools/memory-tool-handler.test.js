@@ -6,6 +6,7 @@ const test = require('node:test');
 
 const {createMemoryToolHandlers} = require('../../src/tools/memory-tool-handler');
 const {classifyToolCallRisk, createMemoryApprovalPreview} = require('../../src/tools/tool-risk-classifier');
+const {addAgentMemory, setAgentMemoryCatalogEnabled, setAgentMemoryItemEnabled} = require('../../src/memory/agent-memory-store');
 
 function call(toolName, args, callId = 'call-1') { return {callId, toolName, argumentsText: JSON.stringify(args)}; }
 function execute(handlers, toolName, args) { return handlers.find((handler) => handler.definition.name === toolName).execute(args, call(toolName, args)); }
@@ -45,6 +46,37 @@ test('memory tools validate required type-specific arguments', () => {
   assert.equal(execute(handlers, 'remove_memory', {type: 'agent', target: 'item', catalog: 'x'}).ok, false);
 });
 
+test('read_memory rejects disabled catalogs, filters disabled items and falls back to enabled global', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-memory-tool-enabled-'));
+  const original = os.homedir;
+  os.homedir = () => home;
+  try {
+    const cwd = path.join(home, 'project');
+    fs.mkdirSync(path.join(cwd, '.git'), {recursive: true});
+    const handlers = createMemoryToolHandlers(cwd);
+    addAgentMemory(cwd, {catalog: 'shared', description: 'global rules', content: 'global item', scope: 'global'});
+    addAgentMemory(cwd, {catalog: 'shared', description: 'project rules', content: 'project item'});
+    setAgentMemoryCatalogEnabled(cwd, 'shared', false, 'project');
+
+    const fallback = execute(handlers, 'read_memory', {type: 'agent', catalog: 'shared'});
+    assert.equal(fallback.ok, true);
+    assert.match(fallback.text, /global rules/);
+    assert.doesNotMatch(fallback.text, /project item/);
+    assert.equal(execute(handlers, 'read_memory', {type: 'agent', catalog: 'shared', scope: 'project'}).ok, false);
+
+    let result = addAgentMemory(cwd, {catalog: 'filtering', description: 'filter rules', content: 'disabled item'});
+    const disabledId = result.memories[0].id;
+    addAgentMemory(cwd, {catalog: 'filtering', content: 'enabled item'});
+    setAgentMemoryItemEnabled(cwd, 'filtering', disabledId, false);
+    result = execute(handlers, 'read_memory', {type: 'agent', catalog: 'filtering'});
+    assert.equal(result.ok, true);
+    assert.doesNotMatch(result.text, /disabled item/);
+    assert.match(result.text, /enabled item/);
+  } finally {
+    os.homedir = original;
+  }
+});
+
 test('memory mutation tools require approval while read_memory stays safe and plan rejects writes', () => {
   assert.equal(classifyToolCallRisk(call('read_memory', {type: 'user'})).risk, 'safe');
   for (const name of ['add_memory', 'update_memory', 'remove_memory']) {
@@ -62,4 +94,5 @@ test('memory tool schemas expose four focused tools', () => {
   const definitions = createMemoryToolHandlers('/tmp').map((handler) => handler.definition);
   assert.deepEqual(definitions.map((definition) => definition.name), ['read_memory', 'add_memory', 'update_memory', 'remove_memory']);
   assert.equal(definitions.every((definition) => definition.parameters.additionalProperties === false), true);
+  assert.equal(definitions.every((definition) => definition.parameters.properties.enabled === undefined), true);
 });

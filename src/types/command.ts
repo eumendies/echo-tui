@@ -517,7 +517,9 @@ export type CommandHostApp = {
     readAgentCatalog(name: string, scope?: AgentMemoryScope['kind']): AgentMemoryCatalogReadResult;
     addAgentMemory(input: {catalog: string; description?: string; content: string; scope?: AgentMemoryScope['kind']}): AgentMemoryMutationResult;
     updateAgentCatalog(name: string, updates: {name?: string; description?: string}, scope?: AgentMemoryScope['kind']): AgentMemoryMutationResult;
+    setAgentCatalogEnabled(name: string, enabled: boolean, scope?: AgentMemoryScope['kind']): AgentMemoryMutationResult;
     updateAgentItem(catalog: string, itemId: string, content: string, scope?: AgentMemoryScope['kind']): AgentMemoryMutationResult;
+    setAgentItemEnabled(catalog: string, itemId: string, enabled: boolean, scope?: AgentMemoryScope['kind']): AgentMemoryMutationResult;
     removeAgentCatalog(name: string, scope?: AgentMemoryScope['kind']): AgentMemoryMutationResult;
     removeAgentItem(catalog: string, itemId: string, scope?: AgentMemoryScope['kind']): AgentMemoryMutationResult;
   };

@@ -1,4 +1,4 @@
-import {addAgentMemory, readAgentMemoryCatalog, removeAgentMemoryCatalog, removeAgentMemoryItem, updateAgentMemoryCatalog, updateAgentMemoryItem} from '../memory/agent-memory-store';
+import {addAgentMemory, readEffectiveAgentMemoryCatalog, removeAgentMemoryCatalog, removeAgentMemoryItem, updateAgentMemoryCatalog, updateAgentMemoryItem} from '../memory/agent-memory-store';
 import {createUserMemory, deleteUserMemory, readUserMemories, updateUserMemory} from '../memory/memory-store';
 
 import type {AgentMemoryScope} from '../types/memory';
@@ -82,7 +82,7 @@ function executeRead(args: Record<string, unknown>, call: ToolCall, cwd: string)
     return failure(call, scope.error);
   }
 
-  const result = readAgentMemoryCatalog(cwd, catalog.value, scope.value);
+  const result = readEffectiveAgentMemoryCatalog(cwd, catalog.value, scope.value);
   return result.ok
     ? success(call, JSON.stringify({
       type: 'agent',

@@ -74,6 +74,7 @@ function renderBody(surface: MemoryCommandSurface, contentWidth: number, theme: 
   };
 }
 
+/** 渲染当前 memory 层级的管理列表，并保留 disabled 数据供用户重新启用。 */
 function renderListBody(surface: MemoryCommandSurface, contentWidth: number, theme: FooterTheme): string[] {
   if (surface.section === 'types') {
     const counts = surface.itemCounts || {user: 0, global: 0, project: 0};
@@ -87,13 +88,13 @@ function renderListBody(surface: MemoryCommandSurface, contentWidth: number, the
   if (surface.section === 'catalogs') {
     const catalogs = surface.catalogs || [];
     if (catalogs.length === 0) return [line(ansi.dim(`当前没有 ${surface.scope || 'agent'} catalog。按 a 新增。`), contentWidth, theme)];
-    return renderPlainOptions(catalogs.map((catalog) => `${catalog.name} — ${catalog.description}`), surface.selectedIndex, contentWidth, theme);
+    return renderPlainOptions(catalogs.map((catalog) => `${renderToggle(catalog.enabled, theme)}  ${catalog.name} — ${catalog.description}`), surface.selectedIndex, contentWidth, theme);
   }
 
   if (surface.section === 'items') {
     const items = surface.agentItems || [];
     if (items.length === 0) return [line(ansi.dim('当前没有 item。按 a 新增。'), contentWidth, theme)];
-    return renderPlainOptions(items.map((item) => previewMemory(item.content)), surface.selectedIndex, contentWidth, theme);
+    return renderPlainOptions(items.map((item) => `${renderToggle(item.enabled, theme)}  ${previewMemory(item.content)}`), surface.selectedIndex, contentWidth, theme);
   }
 
   if (surface.memories.length === 0) {

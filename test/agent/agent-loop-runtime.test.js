@@ -9,7 +9,7 @@ const { createBuiltInSystemPrompt } = require('../../src/agent/system-prompt');
 const llmConfigModule = require('../../src/config/llm-config');
 const agentSetupModule = require('../../src/agent/agent-setup');
 const {createUserMemory, updateUserMemory} = require('../../src/memory/memory-store');
-const {addAgentMemory, updateAgentMemoryCatalog} = require('../../src/memory/agent-memory-store');
+const {addAgentMemory, setAgentMemoryCatalogEnabled, updateAgentMemoryCatalog} = require('../../src/memory/agent-memory-store');
 
 const TEST_CWD = '/tmp/echo_tui';
 const TEST_CONFIG = {
@@ -210,6 +210,29 @@ test('createAgentLoopRuntime rereads the agent memory catalog index before each 
     assert.match(requests[0][0].text, /First description/);
     assert.doesNotMatch(requests[0][0].text, /private item|Second description/);
     assert.match(requests[1][0].text, /Second description/);
+  });
+});
+
+test('createAgentLoopRuntime excludes disabled catalogs and falls back to enabled global catalogs', async () => {
+  await withTemporaryMemoryHome(async () => {
+    addAgentMemory(TEST_CWD, {catalog: 'shared', description: 'Global description', content: 'global item', scope: 'global'});
+    addAgentMemory(TEST_CWD, {catalog: 'shared', description: 'Project description', content: 'project item'});
+    const requests = [];
+    const agent = {initialize() {}, async runTurn(records) { requests.push(records); return {draft: 'done', toolCalls: []}; }};
+    await withPatchedAgentRuntime(agent, async () => {
+      const runtime = createAgentLoopRuntime(TEST_CWD);
+      await runtime({records: [{role: 'user', text: 'first'}]});
+      setAgentMemoryCatalogEnabled(TEST_CWD, 'shared', false, 'project');
+      await runtime({records: [{role: 'user', text: 'second'}]});
+      setAgentMemoryCatalogEnabled(TEST_CWD, 'shared', false, 'global');
+      await runtime({records: [{role: 'user', text: 'third'}]});
+    });
+
+    assert.match(requests[0][0].text, /Project description/);
+    assert.doesNotMatch(requests[0][0].text, /Global description/);
+    assert.match(requests[1][0].text, /Global description/);
+    assert.doesNotMatch(requests[1][0].text, /Project description/);
+    assert.doesNotMatch(requests[2][0].text, /Global description|Project description/);
   });
 });
 

@@ -22,12 +22,14 @@ export type AgentMemoryCatalog = {
   id: string;
   name: string;
   description: string;
+  enabled: boolean;
   scope: AgentMemoryScope;
 };
 
 export type AgentMemoryItem = {
   id: string;
   content: string;
+  enabled: boolean;
   createdAt: string;
   updatedAt: string;
 };

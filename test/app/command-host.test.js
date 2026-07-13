@@ -166,6 +166,8 @@ test('CommandHost memory facade manages scoped agent catalogs through current cw
     const read = host.memory.readAgentCatalog('rendering');
     assert.equal(read.ok, true);
     assert.equal(read.memories[0].content, 'Use real cursors');
+    assert.equal(host.memory.setAgentCatalogEnabled('rendering', false).catalog.enabled, false);
+    assert.equal(host.memory.setAgentItemEnabled('rendering', read.memories[0].id, false).memories[0].enabled, false);
     assert.equal(host.memory.updateAgentItem('rendering', read.memories[0].id, 'Use terminal cursors').ok, true);
     assert.equal(host.memory.removeAgentItem('rendering', read.memories[0].id).removedCatalog, true);
   });

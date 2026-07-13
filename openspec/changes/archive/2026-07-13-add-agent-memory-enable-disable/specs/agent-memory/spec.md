@@ -1,9 +1,4 @@
-# agent-memory Specification
-
-## Purpose
-定义 agent memory 的独立存储、scope 过滤、provider catalog 注入，以及 memory 工具的按需读取与统一 mutation 行为。
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Agent memory 使用独立的 catalog 存储
 系统 SHALL 将 agent memory 与 `~/.echo/memories.json` 中的 user memory 分离存储。Agent memory SHALL 使用一个版本化 catalog 索引文件记录稳定 id、唯一名称、描述、scope 和布尔 `enabled` 状态，并使用按 catalog id 命名的独立版本化文件保存 memory item；每个 item SHALL 包含稳定 id、非空内容、布尔 `enabled` 状态和创建/更新时间。新建 catalog 和 item SHALL 默认启用。索引和 catalog 文件 SHALL 继续使用 `version: 1`，且读取时 SHALL 严格要求 `enabled` 字段存在并为 boolean，不兼容缺少该字段的旧开发文件。所有文件写入 SHALL 使用临时文件 rename 原子替换，读取无效索引或 catalog 文件时 SHALL 返回结构化错误且 SHALL NOT 覆盖原文件。
@@ -75,7 +70,7 @@
 ### Requirement: Memory 工具提供按需读取和统一 mutation
 默认工具集合 SHALL 提供 `read_memory`、`add_memory`、`update_memory` 和 `remove_memory`。`read_memory` SHALL 能读取 user memory 列表或当前可访问且 enabled 的 agent catalog，并 SHALL 只返回该 catalog 中 enabled items；其结果 SHALL 使用普通 provider-visible tool result，并按现有 transcript、session、continuation 和 compaction 规则处理。三个 mutation 工具 SHALL 使用 `type` 区分 user 与 agent memory，并 SHALL 对 catalog/item 目标执行严格参数校验；其公开参数 schema SHALL NOT 因 agent memory 启停能力而增加 enabled 字段。
 
-- #### Scenario: 按 catalog 读取 enabled agent memory
+#### Scenario: 按 catalog 读取 enabled agent memory
 - **WHEN** agent 使用 `read_memory` 请求当前 scope 下可访问且 enabled 的 catalog
 - **THEN** tool result SHALL 只返回 enabled items 以及可供精确更新或删除的 item id
 - **THEN** disabled items SHALL NOT 出现在 tool result

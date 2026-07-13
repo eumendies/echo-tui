@@ -100,10 +100,10 @@ function createDismissHint(data: MemoryData): string {
   }
 
   if (data.section === 'catalogs') {
-    return '↑/↓ 选择 · Enter 查看 · a 新增 · e 编辑 · d 删除 · Esc 返回';
+    return '↑/↓ 选择 · Space 启停 · Enter 查看 · a 新增 · e 编辑 · d 删除 · Esc 返回';
   }
 
-  return '↑/↓ 选择 · Enter/e 编辑 · a 新增 · d 删除 · Esc 返回';
+  return '↑/↓ 选择 · Space 启停 · Enter/e 编辑 · a 新增 · d 删除 · Esc 返回';
 }
 
 /** 复制 session 数据并钳制选择位置，避免删除或刷新后索引越界。 */
@@ -258,6 +258,16 @@ export class MemoryCommandHandler implements CommandHandler<MemoryData> {
 
     if (data.section === 'user' && event.type === INPUT_EVENTS.TEXT && event.value === ' ') {
       this.toggleSelectedUserMemory(data, host);
+      return;
+    }
+
+    if (data.section === 'catalogs' && event.type === INPUT_EVENTS.TEXT && event.value === ' ') {
+      this.toggleSelectedAgentCatalog(data, host);
+      return;
+    }
+
+    if (data.section === 'items' && event.type === INPUT_EVENTS.TEXT && event.value === ' ') {
+      this.toggleSelectedAgentItem(data, host);
       return;
     }
 
@@ -584,6 +594,60 @@ export class MemoryCommandHandler implements CommandHandler<MemoryData> {
     this.update(host, result.ok
       ? {...data, memories: result.memories, cache: {...data.cache, memories: result.memories}, error: undefined}
       : {...data, error: result.error});
+  }
+
+  private toggleSelectedAgentCatalog(data: MemoryData, host: CommandHost): void {
+    const selected = data.catalogs[data.selectedIndex];
+
+    if (!selected) {
+      return;
+    }
+
+    const result = host.memory.setAgentCatalogEnabled(selected.name, !selected.enabled, selected.scope.kind);
+    if (!result.ok) {
+      this.update(host, {...data, error: result.error});
+      return;
+    }
+
+    const catalog = result.catalog || result.catalogs.find((item) => item.id === selected.id);
+    if (!catalog) {
+      this.update(host, {...data, error: 'agent memory catalog 启停结果无效'});
+      return;
+    }
+
+    const replaceCatalog = (item: AgentMemoryCatalog): AgentMemoryCatalog => item.id === catalog.id ? catalog : item;
+    this.update(host, {
+      ...data,
+      catalogs: data.catalogs.map(replaceCatalog),
+      cache: {...data.cache, catalogs: data.cache.catalogs.map(replaceCatalog)},
+      error: undefined
+    });
+  }
+
+  private toggleSelectedAgentItem(data: MemoryData, host: CommandHost): void {
+    const selected = data.agentItems[data.selectedIndex];
+
+    if (!selected || !data.selectedCatalog) {
+      return;
+    }
+
+    const result = host.memory.setAgentItemEnabled(data.selectedCatalog.name, selected.id, !selected.enabled, data.selectedCatalog.scope.kind);
+    if (!result.ok) {
+      this.update(host, {...data, error: result.error});
+      return;
+    }
+
+    if (!result.memories) {
+      this.update(host, {...data, error: 'agent memory item 启停结果无效'});
+      return;
+    }
+
+    this.update(host, {
+      ...data,
+      agentItems: result.memories,
+      cache: {...data.cache, itemsByCatalogId: {...data.cache.itemsByCatalogId, [data.selectedCatalog.id]: result.memories}},
+      error: undefined
+    });
   }
 
   /** catalog 写入后重新读取索引，确保 rename、删除和 scope 筛选使用持久化后的事实。 */

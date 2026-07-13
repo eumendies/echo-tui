@@ -63,8 +63,9 @@ function listEffectiveAgentMemoryCatalogs(cwd: string, options: AgentMemoryStore
   }
 
   const effective = new Map<string, AgentMemoryCatalog>();
-  const globalCatalogs = result.catalogs.filter((catalog) => catalog.scope.kind === 'global');
-  const projectCatalogs = result.catalogs.filter((catalog) => catalog.scope.kind === 'project');
+  const enabledCatalogs = result.catalogs.filter((catalog) => catalog.enabled);
+  const globalCatalogs = enabledCatalogs.filter((catalog) => catalog.scope.kind === 'global');
+  const projectCatalogs = enabledCatalogs.filter((catalog) => catalog.scope.kind === 'project');
 
   for (const catalog of globalCatalogs) {
     effective.set(normalizeName(catalog.name), catalog);
@@ -97,6 +98,25 @@ function readAgentMemoryCatalog(cwd: string, name: string, scopeKind?: AgentMemo
   };
 }
 
+/** 读取 agent 可见的有效 catalog；隐式 scope 可从 disabled project 回退到 enabled global。 */
+function readEffectiveAgentMemoryCatalog(cwd: string, name: string, scopeKind?: AgentMemoryScope['kind'], options: AgentMemoryStoreOptions = {}): AgentMemoryCatalogReadResult {
+  const resolved = resolveEffectiveCatalog(cwd, name, scopeKind, options);
+  if (!resolved.ok) {
+    return resolved;
+  }
+
+  const file = readCatalogFile(resolved.catalog, options);
+  if (!file.ok) {
+    return file;
+  }
+
+  return {
+    ok: true,
+    catalog: cloneCatalog(resolved.catalog),
+    memories: file.memories.filter((item) => item.enabled).map(cloneItem)
+  };
+}
+
 /** 向 catalog 添加 item；不存在时创建 catalog 和首个 item。 */
 function addAgentMemory(
   cwd: string,
@@ -126,6 +146,7 @@ function addAgentMemory(
   const item: AgentMemoryItem = {
     id: createId(),
     content: content.value,
+    enabled: true,
     createdAt: now,
     updatedAt: now
   };
@@ -161,6 +182,7 @@ function addAgentMemory(
     id: createId(),
     name: name.value,
     description: description.value,
+    enabled: true,
     scope
   };
   const savedCatalog = saveCatalogFile(catalog.id, [item], options);
@@ -235,6 +257,32 @@ function updateAgentMemoryCatalog(
   return {ok: true, catalogs: catalogs.map(cloneCatalog), catalog: cloneCatalog(catalog)};
 }
 
+function setAgentMemoryCatalogEnabled(
+  cwd: string,
+  name: string,
+  enabled: boolean,
+  scopeKind?: AgentMemoryScope['kind'],
+  options: AgentMemoryStoreOptions = {}
+): AgentMemoryMutationResult {
+  const resolved = resolveCatalog(cwd, name, scopeKind, options);
+  if (!resolved.ok) {
+    return resolved;
+  }
+
+  const index = readIndex(options);
+  if (!index.ok) {
+    return index;
+  }
+
+  const catalog = {...resolved.catalog, enabled: Boolean(enabled)};
+  const catalogs = index.catalogs.map((item) => item.id === catalog.id ? catalog : item);
+  const saved = saveIndex(catalogs, options);
+
+  return saved.ok
+    ? {ok: true, catalogs: catalogs.map(cloneCatalog), catalog: cloneCatalog(catalog)}
+    : saved;
+}
+
 function updateAgentMemoryItem(
   cwd: string,
   catalogName: string,
@@ -264,6 +312,37 @@ function updateAgentMemoryItem(
 
   const updatedAt = (options.getNow || (() => new Date()))().toISOString();
   const memories = file.memories.map((item) => item.id === itemId ? {...item, content: normalized.value, updatedAt} : item);
+  const saved = saveCatalogFile(resolved.catalog.id, memories, options);
+
+  return saved.ok ? mutationSnapshot(cwd, resolved.catalog, memories, options) : saved;
+}
+
+function setAgentMemoryItemEnabled(
+  cwd: string,
+  catalogName: string,
+  itemId: string,
+  enabled: boolean,
+  scopeKind?: AgentMemoryScope['kind'],
+  options: AgentMemoryStoreOptions = {}
+): AgentMemoryMutationResult {
+  const resolved = resolveCatalog(cwd, catalogName, scopeKind, options);
+  if (!resolved.ok) {
+    return resolved;
+  }
+
+  const file = readCatalogFile(resolved.catalog, options);
+  if (!file.ok) {
+    return file;
+  }
+
+  if (!file.memories.some((item) => item.id === itemId)) {
+    return {ok: false, error: '要更新的 agent memory item 不存在'};
+  }
+
+  const updatedAt = (options.getNow || (() => new Date()))().toISOString();
+  const memories = file.memories.map((item) => item.id === itemId
+    ? {...item, enabled: Boolean(enabled), updatedAt}
+    : item);
   const saved = saveCatalogFile(resolved.catalog.id, memories, options);
 
   return saved.ok ? mutationSnapshot(cwd, resolved.catalog, memories, options) : saved;
@@ -350,6 +429,28 @@ function resolveCatalog(
   return catalog
     ? {ok: true, catalog}
     : {ok: false, error: 'agent memory catalog 不存在或不属于当前 scope'};
+}
+
+function resolveEffectiveCatalog(
+  cwd: string,
+  name: string,
+  scopeKind: AgentMemoryScope['kind'] | undefined,
+  options: AgentMemoryStoreOptions
+): {ok: true; catalog: AgentMemoryCatalog} | {ok: false; error: string} {
+  const listed = listAgentMemoryCatalogs(cwd, options);
+
+  if (!listed.ok) {
+    return listed;
+  }
+
+  const matches = listed.catalogs.filter((catalog) => normalizeName(catalog.name) === normalizeName(name));
+  const catalog = scopeKind
+    ? matches.find((item) => item.scope.kind === scopeKind && item.enabled)
+    : matches.find((item) => item.scope.kind === 'project' && item.enabled) || matches.find((item) => item.scope.kind === 'global' && item.enabled);
+
+  return catalog
+    ? {ok: true, catalog}
+    : {ok: false, error: 'agent memory catalog 不存在、已停用或不属于当前 scope'};
 }
 
 function readIndex(options: AgentMemoryStoreOptions): AgentMemoryCatalogListResult {
@@ -480,7 +581,7 @@ function sameScope(left: AgentMemoryScope, right: AgentMemoryScope): boolean {
 }
 
 function parseCatalog(value: unknown): AgentMemoryCatalog {
-  if (!isObject(value) || typeof value.id !== 'string' || typeof value.name !== 'string' || typeof value.description !== 'string' || !isObject(value.scope)) {
+  if (!isObject(value) || typeof value.id !== 'string' || typeof value.name !== 'string' || typeof value.description !== 'string' || typeof value.enabled !== 'boolean' || !isObject(value.scope)) {
     throw new Error('agent memory catalog 索引条目无效');
   }
 
@@ -496,11 +597,11 @@ function parseCatalog(value: unknown): AgentMemoryCatalog {
     throw new Error('agent memory catalog scope 无效');
   }
 
-  return {id: value.id, name: name.value, description: description.value, scope};
+  return {id: value.id, name: name.value, description: description.value, enabled: value.enabled, scope};
 }
 
 function parseItem(value: unknown): AgentMemoryItem {
-  if (!isObject(value) || typeof value.id !== 'string' || value.id.trim() === '' || typeof value.content !== 'string' || typeof value.createdAt !== 'string' || typeof value.updatedAt !== 'string') {
+  if (!isObject(value) || typeof value.id !== 'string' || value.id.trim() === '' || typeof value.content !== 'string' || typeof value.enabled !== 'boolean' || typeof value.createdAt !== 'string' || typeof value.updatedAt !== 'string') {
     throw new Error('agent memory item 无效');
   }
 
@@ -510,7 +611,7 @@ function parseItem(value: unknown): AgentMemoryItem {
     throw new Error(content.error);
   }
 
-  return {id: value.id, content: content.value, createdAt: value.createdAt, updatedAt: value.updatedAt};
+  return {id: value.id, content: content.value, enabled: value.enabled, createdAt: value.createdAt, updatedAt: value.updatedAt};
 }
 
 function parseScope(scope: Record<string, unknown>): AgentMemoryScope | null {
@@ -591,9 +692,12 @@ export {
   listAgentMemoryCatalogs,
   listEffectiveAgentMemoryCatalogs,
   readAgentMemoryCatalog,
+  readEffectiveAgentMemoryCatalog,
   removeAgentMemoryCatalog,
   removeAgentMemoryItem,
   resolveAgentMemoryProjectRoot,
+  setAgentMemoryCatalogEnabled,
+  setAgentMemoryItemEnabled,
   updateAgentMemoryCatalog,
   updateAgentMemoryItem
 };

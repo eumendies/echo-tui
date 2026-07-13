@@ -58,7 +58,9 @@ function createHost(initialMemories = [], options = {}) {
       readAgentCatalog() { return {ok: false, error: 'missing'}; },
       addAgentMemory() { return {ok: false, error: 'unsupported'}; },
       updateAgentCatalog() { return {ok: false, error: 'unsupported'}; },
+      setAgentCatalogEnabled() { return {ok: false, error: 'unsupported'}; },
       updateAgentItem() { return {ok: false, error: 'unsupported'}; },
+      setAgentItemEnabled() { return {ok: false, error: 'unsupported'}; },
       removeAgentCatalog() { return {ok: false, error: 'unsupported'}; },
       removeAgentItem() { return {ok: false, error: 'unsupported'}; }
     },
@@ -177,8 +179,8 @@ test('/memory toggles the selected entry with Space', () => {
 test('/memory browses scoped agent catalogs and adds an item', () => {
   const handler = new MemoryCommandHandler();
   const {host} = createHost();
-  const catalog = {id: 'catalog-1', name: 'rendering', description: 'Terminal rules', scope: {kind: 'project', projectRoot: '/repo'}};
-  let items = [{id: 'item-1', content: 'Use real cursors', createdAt: '2026-07-12T00:00:00.000Z', updatedAt: '2026-07-12T00:00:00.000Z'}];
+  let catalog = {id: 'catalog-1', name: 'rendering', description: 'Terminal rules', enabled: true, scope: {kind: 'project', projectRoot: '/repo'}};
+  let items = [{id: 'item-1', content: 'Use real cursors', enabled: true, createdAt: '2026-07-12T00:00:00.000Z', updatedAt: '2026-07-12T00:00:00.000Z'}];
   let listCalls = 0;
   let readCalls = 0;
   host.memory.listAgentCatalogs = () => {
@@ -190,7 +192,15 @@ test('/memory browses scoped agent catalogs and adds an item', () => {
     return {ok: true, catalog, memories: items};
   };
   host.memory.addAgentMemory = (input) => {
-    items = [...items, {id: 'item-2', content: input.content, createdAt: '2026-07-12T00:00:00.000Z', updatedAt: '2026-07-12T00:00:00.000Z'}];
+    items = [...items, {id: 'item-2', content: input.content, enabled: true, createdAt: '2026-07-12T00:00:00.000Z', updatedAt: '2026-07-12T00:00:00.000Z'}];
+    return {ok: true, catalogs: [catalog], catalog, memories: items};
+  };
+  host.memory.setAgentCatalogEnabled = (_name, enabled) => {
+    catalog = {...catalog, enabled};
+    return {ok: true, catalogs: [catalog], catalog};
+  };
+  host.memory.setAgentItemEnabled = (_name, itemId, enabled) => {
+    items = items.map((item) => item.id === itemId ? {...item, enabled} : item);
     return {ok: true, catalogs: [catalog], catalog, memories: items};
   };
   handler.start('/memory', host);
@@ -203,16 +213,42 @@ test('/memory browses scoped agent catalogs and adds an item', () => {
   assert.equal(host.session.getActive().surface.section, 'catalogs');
   assert.equal(host.session.getActive().surface.scope, 'project');
   assert.equal(host.session.getActive().surface.title, 'AGENT CATALOGS · project');
+  handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.TEXT, value: ' '}, host);
+  assert.equal(host.session.getActive().surface.catalogs[0].enabled, false);
   handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
   assert.equal(host.session.getActive().surface.section, 'items');
   assert.equal(host.session.getActive().surface.title, 'CATALOG · rendering');
   assert.equal(listCalls, 1);
   assert.equal(readCalls, 1);
+  handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.TEXT, value: ' '}, host);
+  assert.equal(host.session.getActive().surface.agentItems[0].enabled, false);
+  handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.ESCAPE}, host);
+  assert.equal(host.session.getActive().surface.catalogs[0].enabled, false);
+  handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
+  assert.equal(host.session.getActive().surface.agentItems[0].enabled, false);
+  assert.equal(readCalls, 1);
+  host.memory.setAgentItemEnabled = () => ({ok: false, error: 'disk full'});
+  handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.TEXT, value: ' '}, host);
+  assert.equal(host.session.getActive().surface.agentItems[0].enabled, false);
+  assert.match(host.session.getActive().surface.error, /disk full/);
   handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.TEXT, value: 'a'}, host);
   handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.TEXT, value: 'Reserve the final column'}, host);
   handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
   assert.equal(host.session.getActive().surface.agentItems.length, 2);
   assert.equal(host.session.getActive().surface.showCursor, undefined);
+});
+
+test('/memory counts disabled agent items in the type menu', () => {
+  const handler = new MemoryCommandHandler();
+  const {host} = createHost();
+  const catalog = {id: 'catalog-1', name: 'rendering', description: 'Terminal rules', enabled: false, scope: {kind: 'project', projectRoot: '/repo'}};
+  const item = {id: 'item-1', content: 'Disabled rule', enabled: false, createdAt: '2026-07-12T00:00:00.000Z', updatedAt: '2026-07-12T00:00:00.000Z'};
+  host.memory.listAgentCatalogs = () => ({ok: true, catalogs: [catalog]});
+  host.memory.readAgentCatalog = () => ({ok: true, catalog, memories: [item]});
+
+  handler.start('/memory', host);
+
+  assert.deepEqual(host.session.getActive().surface.itemCounts, {user: 0, global: 0, project: 1});
 });
 
 test('memory surface renders list, edit and confirmation states without overflowing the requested width', () => {
@@ -268,9 +304,12 @@ test('memory surface renders list, edit and confirmation states without overflow
   assert.match(countedTypeLayout.lines.join('\n'), /User memories · 2 items/);
   assert.match(countedTypeLayout.lines.join('\n'), /global · 3 items/);
   assert.match(countedTypeLayout.lines.join('\n'), /project · 4 items/);
-  const catalogLayout = renderMemorySurface({...base, section: 'catalogs', scope: 'project', mode: 'list', catalogs: [{id: 'c1', name: 'rendering', description: 'Terminal rules', scope: {kind: 'project', projectRoot: '/repo'}}]}, 80, DEFAULT_TUI_THEME.footer);
+  const catalogLayout = renderMemorySurface({...base, section: 'catalogs', scope: 'project', mode: 'list', catalogs: [{id: 'c1', name: 'rendering', description: 'Terminal rules', enabled: false, scope: {kind: 'project', projectRoot: '/repo'}}]}, 80, DEFAULT_TUI_THEME.footer);
   assert.match(catalogLayout.lines.join('\n'), /rendering — Terminal rules/);
+  assert.match(catalogLayout.lines.join('\n'), /off/);
   assert.doesNotMatch(catalogLayout.lines.join('\n'), /\[project\]/);
+  const itemLayout = renderMemorySurface({...base, section: 'items', mode: 'list', agentItems: [{id: 'i1', content: 'Disabled rule', enabled: false, createdAt: '2026-07-12T00:00:00.000Z', updatedAt: '2026-07-12T00:00:00.000Z'}]}, 80, DEFAULT_TUI_THEME.footer);
+  assert.match(itemLayout.lines.join('\n'), /off.*Disabled rule/);
 
   const formLayout = renderMemorySurface({...base, title: 'NEW CATALOG · project', section: 'catalogs', mode: 'edit', catalogForm: {
     selectedIndex: 0,
@@ -305,7 +344,8 @@ test('/memory edits a new catalog through separate form fields', () => {
   host.memory.listAgentCatalogs = () => ({ok: true, catalogs: []});
   host.memory.addAgentMemory = (value) => {
     input = value;
-    return {ok: true, catalogs: [{id: 'catalog-1', name: value.catalog, description: value.description, scope: {kind: 'project', projectRoot: '/repo'}}], catalog: {id: 'catalog-1'}, memories: []};
+    const catalog = {id: 'catalog-1', name: value.catalog, description: value.description, enabled: true, scope: {kind: 'project', projectRoot: '/repo'}};
+    return {ok: true, catalogs: [catalog], catalog, memories: []};
   };
 
   handler.start('/memory', host);
