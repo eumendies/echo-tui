@@ -83,45 +83,37 @@ function createMemoryCallSummary(toolName: MemoryToolName, args: Record<string, 
   return createRemoveSummary(args);
 }
 
-/** 为新增 user/agent memory 生成 Remembering 摘要。 */
+/** 为 agent memory 新增生成 Remembering 摘要；旧记录缺少 catalog 时安全降级。 */
 function createAddSummary(args: Record<string, unknown>): string {
   const content = readNonEmptyString(args.content);
   const catalog = readNonEmptyString(args.catalog);
   const preview = content ? createContentPreview(content) : null;
 
-  if (args.type === 'agent' && catalog) {
+  if (catalog) {
     return preview ? `Remembering in ${catalog} · ${preview}` : `Remembering in ${catalog}`;
   }
 
   return preview ? `Remembering · ${preview}` : 'Remembering memory';
 }
 
-/** 为 user 列表或 agent catalog 读取生成 Recalling 摘要。 */
+/** 为 agent catalog 读取生成 Recalling 摘要。 */
 function createReadSummary(args: Record<string, unknown>): string {
-  if (args.type === 'user') {
-    return 'Recalling user memories';
-  }
-
   const catalog = readNonEmptyString(args.catalog);
-  return args.type === 'agent' && catalog ? `Recalling · ${catalog}` : 'Recalling memories';
+  return catalog ? `Recalling · ${catalog}` : 'Recalling memories';
 }
 
-/** 为 item 内容或 catalog 元数据更新生成 Revising 摘要。 */
+/** 为 agent item 内容或 catalog 元数据更新生成 Revising 摘要。 */
 function createUpdateSummary(args: Record<string, unknown>): string {
   const content = readNonEmptyString(args.content);
   const preview = content ? createContentPreview(content) : null;
 
-  if (args.type === 'user' && args.target === 'item') {
-    return preview ? `Revising user memory · ${preview}` : 'Revising user memory';
-  }
-
   const catalog = readNonEmptyString(args.catalog);
-  if (args.type === 'agent' && args.target === 'item') {
+  if (args.target === 'item') {
     const base = catalog ? `Revising in ${catalog}` : 'Revising memory';
     return preview ? `${base} · ${preview}` : base;
   }
 
-  if (args.type === 'agent' && args.target === 'catalog') {
+  if (args.target === 'catalog') {
     return createCatalogUpdateSummary(catalog, args);
   }
 
@@ -145,18 +137,14 @@ function createCatalogUpdateSummary(catalog: string | null, args: Record<string,
   return summary;
 }
 
-/** 为 user item、agent item 或完整 catalog 删除生成 Forgetting 摘要。 */
+/** 为 agent item 或完整 catalog 删除生成 Forgetting 摘要。 */
 function createRemoveSummary(args: Record<string, unknown>): string {
-  if (args.type === 'user') {
-    return 'Forgetting user memory';
-  }
-
   const catalog = readNonEmptyString(args.catalog);
-  if (args.type === 'agent' && args.target === 'catalog') {
+  if (args.target === 'catalog') {
     return catalog ? `Forgetting catalog · ${catalog}` : 'Forgetting catalog';
   }
 
-  if (args.type === 'agent' && args.target === 'item') {
+  if (args.target === 'item') {
     return catalog ? `Forgetting from ${catalog}` : 'Forgetting memory';
   }
 
@@ -221,7 +209,7 @@ function limitMemoryResultLines(lines: string[], width: number, theme: TuiTheme)
   return [...lines.slice(0, contentBudget), ...markerLines.slice(0, markerBudget)];
 }
 
-/** 从 user/agent read result 中只提取有效 content，忽略所有管理元数据。 */
+/** 从 agent read result 中只提取有效 content，忽略所有管理元数据。 */
 function parseMemoryContents(text: unknown): string[] | null {
   const payload = parseJsonObject(text);
   if (!payload || !Array.isArray(payload.memories)) {

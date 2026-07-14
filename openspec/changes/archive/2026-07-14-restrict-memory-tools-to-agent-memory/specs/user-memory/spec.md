@@ -1,25 +1,4 @@
-# user-memory Specification
-
-## Purpose
-定义用户级 memory 的持久化存储、provider transient 注入和 `/memory` 管理 command surface 行为。
-## Requirements
-### Requirement: 用户级 memory JSON 存储
-系统 SHALL 将用户显式管理的 memory 存储在 `~/.echo/memories.json`。文件根节点 SHALL 是包含 `version: 1` 和 `memories` 数组的 JSON 对象；每个 memory SHALL 包含稳定的 `id`、非空字符串 `content`、布尔值 `enabled`、`createdAt` 和 `updatedAt`。读取缺失文件 SHALL 返回空 memory 列表；保存 SHALL 创建父目录并采用临时文件 rename 的原子替换。缺少 `enabled` 的既有条目 SHALL 视为启用。
-
-#### Scenario: 首次新增 memory
-- **WHEN** 用户在没有 `~/.echo/memories.json` 的环境中确认新增有效 memory
-- **THEN** 系统 SHALL 创建父目录和符合版本化格式的 JSON 文件
-- **THEN** 保存后的列表 SHALL 包含具有 id、时间戳和 `enabled: true` 的新条目
-
-#### Scenario: 读取缺失的 memory 文件
-- **WHEN** 系统读取 memory 且默认文件不存在
-- **THEN** 系统 SHALL 返回空列表
-- **THEN** 系统 SHALL NOT 将该缺失视为错误
-
-#### Scenario: 无效文件不被覆盖
-- **WHEN** memory 文件不是有效 JSON、根节点格式无效或包含无效 memory 条目
-- **THEN** 系统 SHALL 返回可展示的读取诊断
-- **THEN** `/memory` SHALL NOT 用空列表覆盖原文件
+## MODIFIED Requirements
 
 ### Requirement: memory 在每次真实 provider 请求中持久携带
 系统 SHALL 在每次真实 provider 请求构造时读取全部有效且已启用的用户 memory，并将其格式化为 transient 的 `User-managed memories` 内置 system prompt 区块。该区块 SHALL 说明 memory 是用户提供的持久背景，且不得覆盖内置系统约束或当前用户请求。memory SHALL NOT 被追加为 transcript record、持久化 session record 或 compaction summary 输入。
@@ -85,3 +64,9 @@
 - **THEN** 编辑操作的未保存草稿 SHALL 保留供用户修正或取消
 - **THEN** 启停失败 SHALL NOT 改变当前 surface 或 session cache 中的 enabled 状态
 
+## REMOVED Requirements
+
+### Requirement: Agent 可经工具修改 user memory
+**Reason**: Memory tools 改为仅操作 agent memory，以消除多类型条件参数，并保持 user memory 为真正由用户管理、每轮自动注入的固定背景。
+
+**Migration**: 用户继续通过 `/memory` 管理现有 user memory；用户通过自然语言要求 agent 记住的信息改存入具有合适 scope 和语义 catalog 的 agent memory。现有 `~/.echo/memories.json` 无需迁移。

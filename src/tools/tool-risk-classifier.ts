@@ -108,7 +108,7 @@ function createMemoryApprovalPreview(call: ToolCall): string {
     return '';
   }
 
-  const lines = [`Type: ${String(args.type || 'unknown')}`];
+  const lines: string[] = [];
   if (args.scope === 'global') lines.push('Scope: GLOBAL');
   else if (args.scope) lines.push(`Scope: ${String(args.scope)}`);
 
