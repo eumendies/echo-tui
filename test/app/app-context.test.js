@@ -1303,7 +1303,7 @@ test('UserQuestionContext Esc closes surface without interrupting assistant turn
   assert.deepEqual(interrupted.noticeRecord, { role: 'local_notice', text: '已中断模型回答' });
 });
 
-test('UserQuestionContext supports multi-select answers and resets state between questions', async () => {
+test('UserQuestionContext supports multi-select answers and submits them from the final tab', async () => {
   let userQuestion;
   const surfaces = [];
   userQuestion = new UserQuestionContext(() => surfaces.push(userQuestion.getSurface()));
@@ -1378,6 +1378,14 @@ test('UserQuestionContext supports multi-select answers and resets state between
 
   assert.equal(userQuestion.handleEvent({type: INPUT_EVENTS.MOVE_DOWN}), true);
   assert.equal(userQuestion.handleEvent({type: INPUT_EVENTS.SUBMIT}), true);
+  assert.equal(userQuestion.getSurface().title, '提交答案');
+  assert.match(userQuestion.getSurface().message, /Pick many\?/);
+  assert.match(userQuestion.getSurface().message, /A, C, Other：custom answer/);
+  assert.match(userQuestion.getSurface().message, /Pick one\?/);
+  assert.match(userQuestion.getSurface().message, /No/);
+  assert.equal(resolved, false);
+
+  assert.equal(userQuestion.handleEvent({type: INPUT_EVENTS.SUBMIT}), true);
   const result = await pending;
 
   assert.equal(resolved, true);
@@ -1390,6 +1398,69 @@ test('UserQuestionContext supports multi-select answers and resets state between
   });
   assert.equal(userQuestion.hasActiveRequest(), false);
   assert.ok(surfaces.some((surface) => surface && surface.selectionMode === 'multiple'));
+});
+
+test('UserQuestionContext preserves question drafts across tabs and keeps Other arrow editing local', () => {
+  const userQuestion = new UserQuestionContext(() => {});
+  const call = {
+    callId: 'call_questions_tabs',
+    toolName: 'ask_user_questions',
+    argumentsText: '{}'
+  };
+
+  userQuestion.request(call, {
+    questions: [
+      {question: 'First?', options: [{label: 'A'}, {label: 'B'}]},
+      {question: 'Second?', options: [{label: 'Yes'}, {label: 'No'}]}
+    ]
+  });
+
+  userQuestion.handleEvent({type: INPUT_EVENTS.SUBMIT});
+  assert.equal(userQuestion.getSurface().title, 'Question 2/2');
+
+  userQuestion.handleEvent({type: INPUT_EVENTS.MOVE_LEFT});
+  assert.equal(userQuestion.getSurface().title, 'Question 1/2');
+  assert.deepEqual(userQuestion.getSurface().options.map((option) => option.selected), [true, false, false]);
+
+  userQuestion.handleEvent({type: INPUT_EVENTS.MOVE_DOWN});
+  assert.equal(userQuestion.getSurface().focusedIndex, 1);
+  assert.deepEqual(userQuestion.getSurface().options.map((option) => option.selected), [true, false, false]);
+
+  userQuestion.handleEvent({type: INPUT_EVENTS.MOVE_DOWN});
+  assert.equal(userQuestion.getSurface().focusedIndex, 2);
+  userQuestion.handleEvent({type: INPUT_EVENTS.TEXT, value: 'abc'});
+  userQuestion.handleEvent({type: INPUT_EVENTS.MOVE_LEFT});
+  assert.equal(userQuestion.getSurface().title, 'Question 1/2');
+  assert.equal(userQuestion.getSurface().options.at(-1).inlineInput.cursor, 2);
+
+  userQuestion.handleEvent({type: INPUT_EVENTS.MOVE_UP});
+  userQuestion.handleEvent({type: INPUT_EVENTS.MOVE_RIGHT});
+  assert.equal(userQuestion.getSurface().title, 'Question 2/2');
+});
+
+test('UserQuestionContext blocks incomplete submission and reports missing question tabs', () => {
+  const userQuestion = new UserQuestionContext(() => {});
+  const call = {
+    callId: 'call_questions_validation',
+    toolName: 'ask_user_questions',
+    argumentsText: '{}'
+  };
+
+  userQuestion.request(call, {
+    questions: [
+      {question: 'First?', options: [{label: 'A'}]},
+      {question: 'Second?', options: [{label: 'B'}]}
+    ]
+  });
+
+  userQuestion.handleEvent({type: INPUT_EVENTS.MOVE_LEFT});
+  assert.equal(userQuestion.getSurface().title, '提交答案');
+  assert.match(userQuestion.getSurface().message, /未选择/);
+  assert.deepEqual(userQuestion.getSurface().tabs.map((tab) => tab.status), ['missing', 'missing', 'blocked']);
+
+  userQuestion.handleEvent({type: INPUT_EVENTS.SUBMIT});
+  assert.match(userQuestion.getSurface().message, /请先回答：Q1、Q2/);
+  assert.equal(userQuestion.hasActiveRequest(), true);
 });
 
 test('ToolApprovalContext Esc denies request without interrupting assistant turn, then next Esc can interrupt', async () => {

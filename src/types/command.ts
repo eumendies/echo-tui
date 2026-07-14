@@ -23,6 +23,12 @@ export type CheckboxCommandSurfaceOption = CommandSurfaceOption & {
 
 export type ChoiceCommandSurfaceOption = CommandSurfaceOption & {
   checked?: boolean;
+  selected?: boolean;
+};
+
+export type ChoiceCommandSurfaceTab = {
+  label: string;
+  status?: 'complete' | 'missing' | 'ready' | 'blocked';
 };
 
 export type SlashCommandDescriptor = {
@@ -178,6 +184,8 @@ export type ChoiceCommandSurface = {
   options?: ChoiceCommandSurfaceOption[];
   focusedIndex?: number;
   selectionMode?: 'single' | 'multiple';
+  tabs?: ChoiceCommandSurfaceTab[];
+  activeTabIndex?: number;
   dismissHint?: string;
 };
 

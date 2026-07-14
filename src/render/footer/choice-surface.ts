@@ -3,7 +3,7 @@ import { displayWidth, safeRenderWidth, wrapText } from '../layout';
 import { activeBackground, codeBackground, renderFocusBar, resolveFooterTheme, tokenText, type FooterTheme } from '../colors';
 import { clampPlainText, padVisibleText } from './text';
 import { clampCursorRow, clampIndex, normalizeLineLimit } from './window';
-import type { ChoiceCommandSurface } from '../../types/command';
+import type { ChoiceCommandSurface, ChoiceCommandSurfaceTab } from '../../types/command';
 import type { FooterLayout } from '../../types/render';
 
 const CHOICE_CARD_MIN_WIDTH = 48;
@@ -43,6 +43,7 @@ export function renderChoiceSurface(commandSurface: ChoiceCommandSurface, width:
   const focusedIndex = Number.isInteger(commandSurface.focusedIndex) ? Number(commandSurface.focusedIndex) : 0;
   const selectionMode = commandSurface.selectionMode || 'single';
   const topLine = renderChoiceCardBorderTop(commandSurface.title || '选择', innerWidth, theme);
+  const tabLines = renderChoiceCardTabs(commandSurface.tabs, commandSurface.activeTabIndex, innerWidth, theme);
   const messageLines = commandSurface.message
     ? renderChoiceCardMessageSection(commandSurface.message, commandSurface.messageTitle || '消息', commandSurface.messageStyle || 'text', innerWidth, theme)
     : [];
@@ -57,6 +58,7 @@ export function renderChoiceSurface(commandSurface: ChoiceCommandSurface, width:
     messageLines,
     optionUnits,
     optionsLine,
+    tabLines,
     topLine,
     theme
   });
@@ -73,6 +75,7 @@ export function renderChoiceSurface(commandSurface: ChoiceCommandSurface, width:
     optionUnits,
     optionsLine,
     focusedIndex,
+    tabLines,
     topLine,
     theme
   });
@@ -87,6 +90,7 @@ function createChoiceCardLayout(options: {
   messageLines: string[];
   optionUnits: ChoiceOptionRenderUnit[];
   optionsLine: string;
+  tabLines: string[];
   theme: FooterTheme;
   topLine: string;
 }): FooterLayout {
@@ -95,6 +99,7 @@ function createChoiceCardLayout(options: {
   let cursorColumn = 0;
   let showCursor = false;
 
+  lines.push(...options.tabLines);
   lines.push(renderChoiceCardBoxLine('', displayWidth(options.topLine) - 2, options.theme));
   lines.push(...options.messageLines);
 
@@ -138,23 +143,25 @@ function createConstrainedChoiceCardLayout(options: {
   messageLines: string[];
   optionUnits: ChoiceOptionRenderUnit[];
   optionsLine: string;
+  tabLines: string[];
   focusedIndex: number;
   theme: FooterTheme;
   topLine: string;
 }): FooterLayout {
   const normalizedMaxLines = normalizeLineLimit(options.maxLines);
   const innerWidth = Math.max(1, displayWidth(options.topLine) - 2);
+  const fixedLines = CHOICE_CARD_CONSTRAINED_FIXED_LINES + options.tabLines.length;
 
-  if (normalizedMaxLines <= CHOICE_CARD_CONSTRAINED_FIXED_LINES) {
+  if (normalizedMaxLines <= fixedLines) {
     return {
-      lines: [options.topLine, options.dismissLine, options.bottomLine].slice(0, normalizedMaxLines),
+      lines: [options.topLine, ...options.tabLines, options.dismissLine, options.bottomLine].slice(0, normalizedMaxLines),
       cursorColumn: 0,
       cursorRow: clampCursorRow(normalizedMaxLines - 2, normalizedMaxLines),
       showCursor: false
     };
   }
 
-  const bodyLines = normalizedMaxLines - CHOICE_CARD_CONSTRAINED_FIXED_LINES;
+  const bodyLines = normalizedMaxLines - fixedLines;
   const optionLineBudget = calculateChoiceCardOptionLineBudget(options.optionUnits, options.focusedIndex, bodyLines);
   const visibleOptionUnits = createVisibleOptionWindow(options.optionUnits, options.focusedIndex, optionLineBudget);
   const usedOptionLines = visibleOptionUnits.reduce((sum, unit) => sum + unit.lines.length, 0);
@@ -163,6 +170,8 @@ function createConstrainedChoiceCardLayout(options: {
   let cursorRow = 0;
   let cursorColumn = 0;
   let showCursor = false;
+
+  lines.push(...options.tabLines);
 
   if (options.messageLines.length > 0 && remainingLines > 1) {
     const visibleMessageLines = createVisibleChoiceCardMessageLines(options.messageLines, remainingLines - 1, innerWidth, options.theme);
@@ -291,7 +300,7 @@ function createVisibleChoiceCardMessageLines(lines: string[], maxLines: number, 
  */
 function renderChoiceCardOptionUnit(option: NonNullable<ChoiceCommandSurface['options']>[number], index: number, focusedIndex: number, selectionMode: NonNullable<ChoiceCommandSurface['selectionMode']>, innerWidth: number, theme: FooterTheme): ChoiceOptionRenderUnit {
   const focused = index === focusedIndex;
-  const selected = selectionMode === 'multiple' ? option.checked === true : focused;
+  const selected = selectionMode === 'multiple' ? option.checked === true : option.selected ?? focused;
   const contentWidth = Math.max(1, innerWidth - 2);
   const marker = selected ? '●' : '○';
   const optionLine = formatChoiceCardOptionLine(option, marker, Math.max(1, contentWidth - 3));
@@ -309,6 +318,45 @@ function renderChoiceCardOptionUnit(option: NonNullable<ChoiceCommandSurface['op
   }
 
   return unit;
+}
+
+/**
+ * 渲染可选 tab 导航条；tab 数量有限，受限高度时由 card 布局优先保留该行。
+ */
+function renderChoiceCardTabs(tabs: ChoiceCommandSurfaceTab[] | undefined, activeTabIndex: number | undefined, innerWidth: number, theme: FooterTheme): string[] {
+  if (!tabs || tabs.length === 0) {
+    return [];
+  }
+
+  const activeIndex = clampIndex(Number.isInteger(activeTabIndex) ? Number(activeTabIndex) : 0, tabs.length);
+  const contentWidth = Math.max(1, innerWidth - 2);
+  const tabWidth = Math.max(3, Math.floor((contentWidth - Math.max(0, tabs.length - 1)) / tabs.length));
+  const labelWidth = Math.max(1, tabWidth - 4);
+  const parts = tabs.map((tab, index) => {
+    const marker = getChoiceTabMarker(tab.status);
+    const plain = `[${marker ? `${marker} ` : ''}${clampPlainText(tab.label, labelWidth)}]`;
+    return index === activeIndex
+      ? activeBackground(theme, tokenText(theme, 'accentStrong', ansi.bold(plain)))
+      : tokenText(theme, tab.status === 'missing' || tab.status === 'blocked' ? 'warning' : 'muted', plain);
+  });
+  const rendered = parts.join(' ');
+
+  return [renderChoiceCardBoxLine(rendered, innerWidth, theme)];
+}
+
+/**
+ * 将调用方提供的 tab 状态转为紧凑且可读的状态标记。
+ */
+function getChoiceTabMarker(status: ChoiceCommandSurfaceTab['status']): string {
+  if (status === 'complete') {
+    return '✓';
+  }
+
+  if (status === 'missing' || status === 'blocked') {
+    return '!';
+  }
+
+  return '';
 }
 
 /**
@@ -546,6 +594,7 @@ function calculateChoiceCardBoxWidth(commandSurface: ChoiceCommandSurface, width
   const hint = commandSurface.dismissHint || 'Enter 确认 · Esc 关闭';
   const contentWidths = [
     displayWidth(` ${commandSurface.title || '选择'} `),
+    ...(commandSurface.tabs || []).map((tab) => displayWidth(`[${getChoiceTabMarker(tab.status)} ${tab.label}]`)),
     commandSurface.message && commandSurface.messageTitle ? displayWidth(`── ${commandSurface.messageTitle} `) : 0,
     displayWidth(`── ${commandSurface.optionsTitle || '操作'} `),
     commandSurface.message ? displayWidth(commandSurface.message) + 4 : 0,
