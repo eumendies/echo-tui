@@ -48,7 +48,7 @@ TBD - created by archiving change add-undo-command. Update Purpose after archive
 - **THEN** 当前 transcript SHALL 等价于被回退 loop 开始前的 transcript 状态
 
 ### Requirement: 受控文件修改 change history
-系统 SHALL 在 assistant loop 开始时创建 change checkpoint，并 SHALL 在受控文件编辑工具写入、创建或删除文件前记录目标文件的 snapshot 状态，在单个文件写入、创建或删除成功后立即将该文件标记为 `created` 或 `updated`。删除已有文件 SHALL 使用 `updated` 或等价可恢复状态记录原始 snapshot。第一版受控文件编辑工具 SHALL 至少包含 `apply_patch`。change history SHALL 随当前 transcript session 持久化，并 SHALL 按 assistant loop 顺序形成可连续回退的栈。
+系统 SHALL 在 assistant loop 开始时创建 change checkpoint，并 SHALL 在受控文件编辑工具写入、创建或删除文件前记录目标文件的 snapshot 状态，在单个文件写入、创建或删除成功后立即将该文件标记为 `created` 或 `updated`。删除已有文件 SHALL 使用 `updated` 或等价可恢复状态记录原始 snapshot。第一版受控文件编辑工具 SHALL 至少包含 `apply_patch`。change history SHALL 随当前 transcript session 持久化，并 SHALL 按 assistant loop 顺序形成可连续回退的栈。单个 `apply_patch` 对同一解析后路径执行多次操作时，change history SHALL 仅根据该路径的最终实际写盘状态记录一次该路径的调用前 snapshot。
 
 #### Scenario: 记录更新已有文件
 - **WHEN** assistant loop 中 `apply_patch` 成功更新已有 UTF-8 文本文件
@@ -64,6 +64,11 @@ TBD - created by archiving change add-undo-command. Update Purpose after archive
 - **WHEN** assistant loop 中 `apply_patch` 成功删除已有 UTF-8 文本文件
 - **THEN** change checkpoint SHALL 记录该文件的绝对路径、snapshot content 和 `updated` 或等价可恢复状态
 - **THEN** `/undo` 成功时 SHALL 重新创建该文件并恢复为 snapshot content
+
+#### Scenario: 单个 patch 删除后重建已有文件
+- **WHEN** 一次成功的 `apply_patch` 先删除已有文件再重建同一解析后路径
+- **THEN** change checkpoint SHALL 仅记录一次该文件删除前的 snapshot，并将其标记为 `updated`
+- **THEN** `/undo` 成功时 SHALL 恢复删除前的原始文件内容
 
 #### Scenario: 同一 loop 多次修改同一文件
 - **WHEN** 同一 assistant loop 中受控文件工具多次修改同一文件
@@ -93,6 +98,7 @@ TBD - created by archiving change add-undo-command. Update Purpose after archive
 - **AND** 用户通过 `/resume` 加载包含 change history 的 transcript session
 - **THEN** 系统 SHALL 从 transcript session 中恢复旧 change checkpoint
 - **THEN** `/undo` SHALL 可以回退上一进程中的受控文件修改
+
 ### Requirement: 不可追踪写入保护和确认恢复
 包含不可追踪写入型 shell 命令的 assistant loop SHALL 使 change checkpoint 失效。对于 ready checkpoint 中由受控文件工具记录的文件，用户确认 `/undo` 后系统 SHALL 恢复 checkpoint 的 snapshot 状态，即使这些文件在 loop 结束后又被手动修改。
 
@@ -173,3 +179,4 @@ TBD - created by archiving change add-undo-command. Update Purpose after archive
 - **WHEN** `/undo` 成功或失败并关闭 command surface
 - **THEN** 系统 SHALL 以当前 transcript records、pending 状态和 composer 状态重绘 app
 - **THEN** 已被回退 loop 的 transcript projection SHALL 不再可见
+

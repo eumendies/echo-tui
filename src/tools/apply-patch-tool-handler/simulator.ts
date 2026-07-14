@@ -17,6 +17,21 @@ type ChangedFile = {
   absolutePath: string;
 };
 
+type VirtualFileSnapshot = {
+  exists: false;
+} | {
+  exists: true;
+  content: string;
+  symlink: boolean;
+};
+
+type VirtualFileState = {
+  absolutePath: string;
+  filePath: string;
+  initial: VirtualFileSnapshot;
+  current: {exists: false} | {exists: true; content: string};
+};
+
 type ApplyPatchSuccess = {ok: true; value: {
   changedFiles: ChangedFile[];
   displayFiles: ApplyPatchDisplayFile[];
@@ -33,9 +48,8 @@ function simulatePatch(
   operations: PatchOperation[],
   options: {cwd: string; limits: ApplyPatchLimits}
 ): ApplyPatchExecutionResult {
-  const changedFiles = new Map<string, ChangedFile>();
+  const virtualFiles = new Map<string, VirtualFileState>();
   const displayFiles: ApplyPatchDisplayFile[] = [];
-  const seenPaths = new Set<string>();
 
   for (const operation of operations) {
     const resolved = resolvePatchPath(options.cwd, operation.filePath);
@@ -44,58 +58,154 @@ function simulatePatch(
       return {...resolved, displayFiles: createUnresolvedApplyPatchDisplayFiles(operations)};
     }
 
-    // 先按绝对路径判重，避免同一文件通过相对路径和绝对路径被写两次。
-    if (seenPaths.has(resolved.value)) {
-      return {
-        ok: false,
-        reason: `multiple file patches for ${operation.filePath} are not supported`,
-        displayFiles: createUnresolvedApplyPatchDisplayFiles(operations)
-      };
+    let virtualFile = virtualFiles.get(resolved.value);
+
+    if (!virtualFile) {
+      const loaded = loadVirtualFile(operation, resolved.value, options.limits);
+
+      if (!loaded.ok) {
+        return {...loaded, displayFiles: createUnresolvedApplyPatchDisplayFiles(operations)};
+      }
+
+      virtualFile = loaded.value;
+      virtualFiles.set(resolved.value, virtualFile);
     }
 
-    seenPaths.add(resolved.value);
-
     if (operation.kind === 'add') {
-      const added = simulateAddFile(operation, resolved.value);
+      const added = simulateAddFile(operation, virtualFile.current);
 
       if (!added.ok) {
         return {...added, displayFiles: createUnresolvedApplyPatchDisplayFiles(operations)};
       }
 
-      changedFiles.set(operation.filePath, added.value.changedFile);
+      virtualFile.current = {exists: true, content: added.value.content};
       displayFiles.push(added.value.displayFile);
       continue;
     }
 
+    if (!virtualFile.current.exists) {
+      return {
+        ok: false,
+        reason: `target file does not exist: ${operation.filePath}`,
+        displayFiles: createUnresolvedApplyPatchDisplayFiles(operations)
+      };
+    }
+
     if (operation.kind === 'delete') {
-      const deleted = simulateDeleteFile(operation, resolved.value, options.limits);
+      if (virtualFile.initial.exists && virtualFile.initial.symlink) {
+        return {
+          ok: false,
+          reason: `target path is a symlink: ${operation.filePath}`,
+          displayFiles: createUnresolvedApplyPatchDisplayFiles(operations)
+        };
+      }
+
+      const deleted = simulateDeleteFile(operation, virtualFile.current.content);
 
       if (!deleted.ok) {
         return {...deleted, displayFiles: createUnresolvedApplyPatchDisplayFiles(operations)};
       }
 
-      changedFiles.set(operation.filePath, deleted.value.changedFile);
+      virtualFile.current = {exists: false};
       displayFiles.push(deleted.value.displayFile);
       continue;
     }
 
-    const updated = simulateUpdateFile(operation, resolved.value, options.limits);
+    const updated = simulateUpdateFile(operation, virtualFile.current.content);
 
     if (!updated.ok) {
       return {...updated, displayFiles: createUnresolvedApplyPatchDisplayFiles(operations)};
     }
 
-    changedFiles.set(operation.filePath, updated.value.changedFile);
+    virtualFile.current = {exists: true, content: updated.value.content};
     displayFiles.push(updated.value.displayFile);
   }
 
   return {
     ok: true,
     value: {
-      changedFiles: Array.from(changedFiles.values()),
+      changedFiles: createChangedFiles(virtualFiles.values()),
       displayFiles
     }
   };
+}
+
+/**
+ * 首次遇到路径时读取真实文件；后续同路径操作只消费内存中的当前状态。
+ */
+function loadVirtualFile(
+  operation: PatchOperation,
+  absolutePath: string,
+  limits: ApplyPatchLimits
+): Result<VirtualFileState> {
+  if (!fs.existsSync(absolutePath)) {
+    if (operation.kind !== 'add') {
+      return {ok: false, reason: `target file does not exist: ${operation.filePath}`};
+    }
+
+    return {
+      ok: true,
+      value: {
+        absolutePath,
+        filePath: operation.filePath,
+        initial: {exists: false},
+        current: {exists: false}
+      }
+    };
+  }
+
+  if (operation.kind === 'add') {
+    return {ok: false, reason: `target file already exists: ${operation.filePath}`};
+  }
+
+  const readable = readPatchTargetFile(
+    operation.filePath,
+    absolutePath,
+    limits,
+    operation.kind === 'delete' ? 'reject_symlink' : 'follow_symlink'
+  );
+
+  if (!readable.ok) {
+    return readable;
+  }
+
+  const symlink = fs.lstatSync(absolutePath).isSymbolicLink();
+  return {
+    ok: true,
+    value: {
+      absolutePath,
+      filePath: operation.filePath,
+      initial: {exists: true, content: readable.value.content, symlink},
+      current: {exists: true, content: readable.value.content}
+    }
+  };
+}
+
+/**
+ * 将每个虚拟路径归并为一次最终文件系统操作；新增后删除不产生写盘项。
+ */
+function createChangedFiles(virtualFiles: Iterable<VirtualFileState>): ChangedFile[] {
+  const changedFiles: ChangedFile[] = [];
+
+  for (const file of virtualFiles) {
+    if (!file.initial.exists && !file.current.exists) {
+      continue;
+    }
+
+    if (!file.current.exists) {
+      changedFiles.push({kind: 'deleted', filePath: file.filePath, absolutePath: file.absolutePath});
+      continue;
+    }
+
+    changedFiles.push({
+      kind: file.initial.exists ? 'updated' : 'added',
+      filePath: file.filePath,
+      absolutePath: file.absolutePath,
+      content: file.current.content
+    });
+  }
+
+  return changedFiles;
 }
 
 function createUnresolvedApplyPatchDisplayFiles(operations: PatchOperation[]): ApplyPatchDisplayFile[] {
@@ -108,9 +218,9 @@ function createUnresolvedApplyPatchDisplayFiles(operations: PatchOperation[]): A
 
 function simulateAddFile(
   operation: PatchOperation,
-  absolutePath: string
-): Result<{changedFile: ChangedFile; displayFile: ApplyPatchDisplayFile}> {
-  if (fs.existsSync(absolutePath)) {
+  current: VirtualFileState['current']
+): Result<{content: string; displayFile: ApplyPatchDisplayFile}> {
+  if (current.exists) {
     return {ok: false, reason: `target file already exists: ${operation.filePath}`};
   }
 
@@ -127,12 +237,7 @@ function simulateAddFile(
   return {
     ok: true,
     value: {
-      changedFile: {
-        absolutePath,
-        content: lines.length === 0 ? '' : `${lines.join('\n')}\n`,
-        filePath: operation.filePath,
-        kind: 'added'
-      },
+      content: lines.length === 0 ? '' : `${lines.join('\n')}\n`,
       displayFile: {
         path: operation.filePath,
         kind: 'added',
@@ -144,16 +249,9 @@ function simulateAddFile(
 
 function simulateUpdateFile(
   operation: PatchOperation,
-  absolutePath: string,
-  limits: ApplyPatchLimits
-): Result<{changedFile: ChangedFile; displayFile: ApplyPatchDisplayFile}> {
-  const readable = readPatchTargetFile(operation.filePath, absolutePath, limits, 'follow_symlink');
-
-  if (!readable.ok) {
-    return readable;
-  }
-
-  const split = splitFileContent(readable.value.content);
+  content: string
+): Result<{content: string; displayFile: ApplyPatchDisplayFile}> {
+  const split = splitFileContent(content);
   const applied = operation.matchMode === 'sequential'
     ? applySequentialUpdateHunks(operation, split.lines)
     : applyIndependentUpdateHunks(operation, split.lines);
@@ -165,12 +263,7 @@ function simulateUpdateFile(
   return {
     ok: true,
     value: {
-      changedFile: {
-        absolutePath,
-        content: joinFileContent(applied.value.lines, split.trailingNewline),
-        filePath: operation.filePath,
-        kind: 'updated'
-      },
+      content: joinFileContent(applied.value.lines, split.trailingNewline),
       displayFile: {
         path: operation.filePath,
         kind: 'updated',
@@ -182,16 +275,9 @@ function simulateUpdateFile(
 
 function simulateDeleteFile(
   operation: PatchOperation,
-  absolutePath: string,
-  limits: ApplyPatchLimits
-): Result<{changedFile: ChangedFile; displayFile: ApplyPatchDisplayFile}> {
-  const readable = readPatchTargetFile(operation.filePath, absolutePath, limits, 'reject_symlink');
-
-  if (!readable.ok) {
-    return readable;
-  }
-
-  const split = splitFileContent(readable.value.content);
+  content: string
+): Result<{displayFile: ApplyPatchDisplayFile}> {
+  const split = splitFileContent(content);
 
   if (operation.hunks.length > 0) {
     if (operation.hunks.some((hunk) => hunk.newLines.length > 0)) {
@@ -224,11 +310,6 @@ function simulateDeleteFile(
   return {
     ok: true,
     value: {
-      changedFile: {
-        absolutePath,
-        filePath: operation.filePath,
-        kind: 'deleted'
-      },
       displayFile: {
         path: operation.filePath,
         kind: 'deleted',
