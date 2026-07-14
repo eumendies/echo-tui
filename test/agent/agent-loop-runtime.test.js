@@ -505,6 +505,139 @@ test('createAgentLoopRuntime rejects write tools in plan mode without approval',
   assert.match(results[0].text, /plan mode/);
 });
 
+test('createAgentLoopRuntime immediately denies approval-required tools in headless mode', async () => {
+  let turnCount = 0;
+  let approvalCount = 0;
+  const results = [];
+  const agent = {
+    initialize() {},
+    async runTurn() {
+      turnCount += 1;
+
+      if (turnCount === 1) {
+        return {
+          draft: '',
+          toolCalls: [{
+            callId: 'headless-patch',
+            toolName: 'apply_patch',
+            argumentsText: JSON.stringify({patch: '*** Begin Patch\n*** Add File: denied.txt\n+denied\n*** End Patch\n'})
+          }]
+        };
+      }
+
+      return {draft: 'done', toolCalls: []};
+    }
+  };
+
+  const result = await withPatchedAgentRuntime(agent, () => {
+    const runAgent = createAgentLoopRuntime(TEST_CWD);
+    return runAgent({
+      records: [{role: 'user', text: 'edit'}],
+      executionMode: {kind: 'headless', approvalPolicy: 'deny'}
+    }, {
+      onToolApprovalRequest() {
+        approvalCount += 1;
+        throw new Error('headless mode must not request approval');
+      },
+      onToolResult(toolResult) {
+        results.push(toolResult);
+      }
+    });
+  });
+
+  assert.equal(result, 'done');
+  assert.equal(approvalCount, 0);
+  assert.equal(results[0].ok, false);
+  assert.match(results[0].text, /--full-access/);
+});
+
+test('createAgentLoopRuntime full-access executes registered patch tools without approval callback', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-full-access-'));
+  let turnCount = 0;
+  const results = [];
+  const agent = {
+    initialize() {},
+    async runTurn() {
+      turnCount += 1;
+
+      if (turnCount === 1) {
+        return {
+          draft: '',
+          toolCalls: [{
+            callId: 'full-patch',
+            toolName: 'apply_patch',
+            argumentsText: JSON.stringify({patch: '*** Begin Patch\n*** Add File: allowed.txt\n+allowed\n*** End Patch\n'})
+          }]
+        };
+      }
+
+      return {draft: 'done', toolCalls: []};
+    }
+  };
+
+  try {
+    const result = await withPatchedAgentRuntime(agent, () => {
+      const runAgent = createAgentLoopRuntime(cwd);
+      return runAgent({
+        records: [{role: 'user', text: 'edit'}],
+        executionMode: {kind: 'headless', approvalPolicy: 'full-access'}
+      }, {
+        onToolApprovalRequest() {
+          throw new Error('full-access must not request approval');
+        },
+        onToolResult(toolResult) {
+          results.push(toolResult);
+        }
+      });
+    });
+
+    assert.equal(result, 'done');
+    assert.equal(results[0].ok, true);
+    assert.equal(fs.readFileSync(path.join(cwd, 'allowed.txt'), 'utf8'), 'allowed\n');
+  } finally {
+    fs.rmSync(cwd, {recursive: true, force: true});
+  }
+});
+
+test('createAgentLoopRuntime cancels ask_user_questions when no interactive callback exists', async () => {
+  let turnCount = 0;
+  const results = [];
+  const agent = {
+    initialize() {},
+    async runTurn() {
+      turnCount += 1;
+
+      if (turnCount === 1) {
+        return {
+          draft: '',
+          toolCalls: [{
+            callId: 'question-call',
+            toolName: 'ask_user_questions',
+            argumentsText: JSON.stringify({questions: [{question: 'Continue?', options: [{label: 'yes'}]}]})
+          }]
+        };
+      }
+
+      return {draft: 'cancelled and done', toolCalls: []};
+    }
+  };
+
+  const result = await withPatchedAgentRuntime(agent, () => {
+    const runAgent = createAgentLoopRuntime(TEST_CWD);
+    return runAgent({
+      records: [{role: 'user', text: 'ask'}],
+      executionMode: {kind: 'headless', approvalPolicy: 'deny'}
+    }, {
+      onToolResult(toolResult) {
+        results.push(toolResult);
+      }
+    });
+  });
+
+  assert.equal(result, 'cancelled and done');
+  assert.deepEqual(JSON.parse(results[0].text), {cancelled: true, reason: 'User cancelled ask_user_questions'});
+});
+
 test('createAgentLoopRuntime creates todos, persists state, and injects suffix on continuation', async () => {
   const providerRecords = [];
   const todoStates = [];

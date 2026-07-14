@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import {readLlmConfig, resolveContextWindow} from '../config/llm-config';
 import {
   ASK_USER_QUESTIONS_TOOL_NAME,
+  createAskUserQuestionsCancelledResult,
   createAskUserQuestionsFailureResult,
   parseAskUserQuestionsToolCall
 } from '../tools/ask-user-questions-tool-handler';
@@ -27,7 +28,7 @@ import {disabledDebugContext, hashValue, redactProviderConfig, summarizeText} fr
 
 import type {TokenUsageAnchor} from './context/context-compaction';
 
-import type {AgentCallbacks, AgentInstruction, AgentSessionInput, InteractionMode, LlmConfig, ProviderAgent, ProviderUsage, RunAgent, ToolApprovalDecision} from '../types/agent';
+import type {AgentCallbacks, AgentExecutionMode, AgentInstruction, AgentSessionInput, InteractionMode, LlmConfig, ProviderAgent, ProviderUsage, RunAgent, ToolApprovalDecision} from '../types/agent';
 import type {DebugContext} from '../debug/debug-context';
 import type {LifecycleHookDispatcher} from '../types/hooks';
 import type {UsageStore} from '../types/usage';
@@ -38,6 +39,7 @@ import type {
   GlobToolExecutionResult,
   GrepToolExecutionResult,
   ReadFilesToolExecutionResult,
+  ToolApprovalRequest,
   ToolCall,
   ToolDefinition,
   ToolExecutionResult,
@@ -52,6 +54,7 @@ import type {McpManager} from '../mcp/manager';
 const TOOL_REJECTED_BY_USER_TEXT = 'Tool execution was rejected by the user.';
 const RUNTIME_CONTEXT_NOTICE = 'Not a user request. Use silently; continue the current turn.';
 const PLAN_MODE_USER_PROMPT = 'Plan: discuss/inspect only; no file changes, mutating commands, tests/builds, dependency installs, branch/state changes, or MCP tools. Ask user to run /mode normal before implementing.';
+const INTERACTIVE_EXECUTION_MODE: AgentExecutionMode = {kind: 'interactive'};
 
 /**
  * 创建 continuation 用的 tool_call record；可见文本由 app 层按工具类型格式化。
@@ -201,6 +204,10 @@ async function executeToolCall(toolCall: ToolCall, state: AgentLoopRunState, cal
       return createAskUserQuestionsFailureResult(toolCall, parsed.message);
     }
 
+    if (state.executionMode.kind === 'headless') {
+      return createAskUserQuestionsCancelledResult(toolCall);
+    }
+
     const result = await Promise.resolve(callbacks.onUserQuestionRequest!(toolCall, parsed.value));
     throwIfAborted(state.abortSignal);
     return result;
@@ -221,7 +228,7 @@ async function executeToolCall(toolCall: ToolCall, state: AgentLoopRunState, cal
 
   const approval = riskAssessment.risk === 'approval_required' ? riskAssessment.approval : undefined;
   const approvalDecision = riskAssessment.risk === 'approval_required'
-    ? await Promise.resolve(callbacks.onToolApprovalRequest?.(toolCall, approval))
+    ? await resolveToolApprovalDecision(toolCall, approval, state, callbacks)
     : undefined;
   state.debug.emit('tool_call_approval', {
     decision: approvalDecision?.kind || (riskAssessment.risk === 'approval_required' ? 'missing' : 'not_required'),
@@ -238,6 +245,24 @@ async function executeToolCall(toolCall: ToolCall, state: AgentLoopRunState, cal
   const result = await state.executor.execute(toolCall, {abortSignal: state.abortSignal, changeRecorder: callbacks.changeRecorder});
   throwIfAborted(state.abortSignal);
   return result;
+}
+
+/**
+ * 根据 execution mode 决定是否等待 UI；headless 策略永远不会触碰交互 callback。
+ */
+async function resolveToolApprovalDecision(toolCall: ToolCall, approval: ToolApprovalRequest | undefined, state: AgentLoopRunState, callbacks: AgentCallbacks): Promise<ToolApprovalDecision> {
+  if (state.executionMode.kind === 'headless') {
+    if (state.executionMode.approvalPolicy === 'full-access') {
+      return {kind: 'allow_once'};
+    }
+
+    return {
+      kind: 'deny',
+      message: `Tool execution requires approval in headless mode: ${toolCall.toolName}. Re-run with --full-access to allow it.`
+    };
+  }
+
+  return Promise.resolve(callbacks.onToolApprovalRequest!(toolCall, approval));
 }
 
 /**
@@ -320,6 +345,7 @@ type AgentLoopRunState = {
   toolDefinitions: ToolDefinition[];
   mcpManager?: McpManager;
   abortSignal?: AbortSignal;
+  executionMode: AgentExecutionMode;
   hooks?: LifecycleHookDispatcher;
   debug: DebugContext;
 };
@@ -370,7 +396,7 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
    * 初始化单次 agent 调用需要的 provider、工具运行时和上下文窗口；三者来自同一份配置。
    * agent 的配置装配（loadConfig + initialize）下沉到 prepareAgent，拉模式下每轮重读配置。
    */
-  function initializeRunState(interactionMode: InteractionMode, abortSignal?: AbortSignal): AgentLoopRunState {
+  function initializeRunState(interactionMode: InteractionMode, abortSignal: AbortSignal | undefined, executionMode: AgentExecutionMode): AgentLoopRunState {
     const config = readLlmConfig();
     const registry = createRegistry(config);
     const agent = createConfiguredAgent(config);
@@ -394,6 +420,7 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
       toolDefinitions: registry.listDefinitions(),
       mcpManager,
       abortSignal,
+      executionMode,
       hooks,
       debug
     };
@@ -402,6 +429,7 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
   return async function runAgentLoop(session: AgentSessionInput, callbacks: AgentCallbacks = {}): Promise<string> {
     const abortSignal = session.abortSignal;
     const interactionMode = session.interactionMode || 'normal';
+    const executionMode = session.executionMode || INTERACTIVE_EXECUTION_MODE;
 
     throwIfAborted(abortSignal);
     callbacks.onThinking?.();
@@ -410,7 +438,7 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
     let state: AgentLoopRunState;
 
     try {
-      state = initializeRunState(interactionMode, abortSignal);
+      state = initializeRunState(interactionMode, abortSignal, executionMode);
     } catch (error: unknown) {
       throw normalizeError(error, '无法加载 LLM 配置');
     }

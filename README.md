@@ -1,6 +1,6 @@
 # echo-tui
 
-`@eumendies/echo-tui` 是一个运行在终端里的 Node.js LLM TUI。它支持流式回答、Markdown/代码高亮、会话恢复、slash 命令、skills、MCP 工具和受控本地工具调用，并提供普通对话、只读规划和 shell 执行多种模式。
+`@eumendies/echo-tui` 是一个运行在终端里的 Node.js LLM TUI，也支持无需 TTY 的单轮 CLI 对话。它支持流式回答、Markdown/代码高亮、会话恢复、slash 命令、skills、MCP 工具和受控本地工具调用，并提供普通对话、只读规划和 shell 执行多种模式。
 
 实现细节见 [docs/tui-architecture.md](./docs/tui-architecture.md)。
 
@@ -48,6 +48,23 @@ npm install
 npm run build
 npm start        # 等价于 build 后 node dist/bin/echo-tui.js
 ```
+
+### 单轮 CLI 对话
+
+使用 `--once` 执行一次非交互 assistant turn；命令会等待最终文本后退出，stdout 只输出纯文本结果，不进入 raw mode、不监听 stdin，也不创建可恢复 transcript session：
+
+```bash
+echo-tui --once "解释当前项目"
+echo-tui --once explain this project
+```
+
+默认情况下，单轮模式会继续执行安全的只读工具，但会立即拒绝需要审批的 patch、高风险 bash、memory mutation 和未信任 MCP 工具；`ask_user_questions` 会立即返回取消结果，不会等待输入。若明确允许本次运行修改工作区或系统状态，可使用：
+
+```bash
+echo-tui --once --full-access "按要求修改文件并运行检查"
+```
+
+`--full-access` 只作用于当前单轮，可能执行破坏性操作；单轮不建立 TUI 的 change checkpoint，因此不提供 transcript session 或 `/undo` 回滚。配置、provider、网络、工具或清理错误写入 stderr 并返回非零退出码。
 
 ## 配置模型
 
@@ -136,7 +153,7 @@ skill 放在 `.echo/skills/<name>/SKILL.md`（项目级）或 `~/.echo/skills/<n
 
 ## 工具与授权
 
-默认工具包括文件发现/搜索/读取、网页读取与搜索、bash 执行、`apply_patch` 编辑、skill 加载和用户提问；配置并启用后还有 MCP 工具。`apply_patch`、高风险 bash 和 `approval: "always"` 的 MCP 工具在执行前请求授权；plan 模式只暴露只读工具。工具没有沙箱，请只在信任当前工作区、模型和授权提示时允许执行。
+默认工具包括文件发现/搜索/读取、网页读取与搜索、bash 执行、`apply_patch` 编辑、skill 加载和用户提问；配置并启用后还有 MCP 工具。`apply_patch`、高风险 bash 和 `approval: "always"` 的 MCP 工具在 TUI 中执行前请求授权；plan 模式只暴露只读工具。单轮模式默认拒绝审批工具，只有显式 `--once --full-access` 才会自动允许当前已注册工具。工具没有沙箱，请只在信任当前工作区、模型和授权提示时允许执行。
 
 ## Lifecycle hooks
 

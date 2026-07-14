@@ -4,6 +4,10 @@ import type {ChangeFileRecorder} from './change-history';
 
 export type InteractionMode = 'normal' | 'plan' | 'shell' | 'shell-local';
 
+export type AgentExecutionMode =
+  | {kind: 'interactive'}
+  | {kind: 'headless'; approvalPolicy: 'deny' | 'full-access'};
+
 export function isShellInteractionMode(mode: InteractionMode): boolean {
   return mode === 'shell' || mode === 'shell-local';
 }
@@ -60,6 +64,7 @@ export type AgentSessionInput = {
   todoState?: TodoState;
   abortSignal?: AbortSignal;
   interactionMode?: InteractionMode;
+  executionMode?: AgentExecutionMode;
 };
 
 export type AgentInstructionSourceKind = 'global' | 'project';

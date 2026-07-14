@@ -18,6 +18,7 @@ flowchart LR
     dist_cli --> cli_main["src/cli/main.ts"]
     cli_main --> bootstrap["src/config/user-setup-bootstrap.ts"]
     cli_main --> app_main["src/app/main.ts"]
+    cli_main --> one_shot["src/cli/one-shot.ts"]
     app_main --> app_context["src/app/state/app-context.ts"]
     app_main --> terminal_tty["src/terminal/tty.ts"]
     app_main --> input_parser["src/input/key-parser.ts"]
@@ -47,6 +48,10 @@ flowchart LR
     app_context --> composer["src/input/composer.ts"]
     app_context --> transcript_store["src/persistence/transcript-store.ts"]
     app_main --> usage_store["src/persistence/usage-store.ts"]
+    one_shot --> mcp_manager
+    one_shot --> hooks
+    one_shot --> usage_store
+    one_shot --> agent_loop
     app_main --> command_runtime["src/app/command/command-runtime.ts"]
     command_runtime --> slash_resolver["src/commands/resolve-slash-command.ts"]
     command_runtime --> command_host["src/app/command/command-host.ts"]
@@ -76,7 +81,7 @@ flowchart LR
     terminal_tty --> ansi
 ```
 
-`npm start` 通过 `tsc` 生成 `dist/`，再运行 `dist/bin/echo-tui.js`；编译产物使用 CommonJS。`package.json#bin` 指向 `bin/echo-tui.ts`，对应编译产物解析并加载 `dist/src/cli/main.js`；未生成 `dist/` 时给出明确 build 提示并退出。`src/cli/main.ts` 是普通命令行入口：解析 `--help` / `--version`，无参数时先执行用户目录初始化（`bootstrapEchoUserSetup`），再调用 `src/app/main.ts` 的 `run()` 进入 TUI raw mode。`src/types/` 中的纯 TypeScript 文件描述 input、composer、transcript、command、render、app、agent、tool、diff、change-history、mcp 和 skill 的跨层协议。
+`npm start` 通过 `tsc` 生成 `dist/`，再运行 `dist/bin/echo-tui.js`；编译产物使用 CommonJS。`package.json#bin` 指向 `bin/echo-tui.ts`，对应编译产物解析并加载 `dist/src/cli/main.js`；未生成 `dist/` 时给出明确 build 提示并退出。`src/cli/main.ts` 是普通命令行入口：解析 `--help` / `--version` / `--once`，有效启动前执行用户目录初始化（`bootstrapEchoUserSetup`）；无参数时调用 `src/app/main.ts` 的 `run()` 进入 TUI raw mode，`--once` 则交给不创建 terminal、renderer 或 stdin listener 的 `src/cli/one-shot.ts`。`src/types/` 中的纯 TypeScript 文件描述 input、composer、transcript、command、render、app、agent、tool、diff、change-history、mcp 和 skill 的跨层协议。
 
 `src/app/main.ts` 是顶层编排层，面向一个 `AppContext` 组合根；`AppContext` 负责组合 `ComposerContext`、`TranscriptContext`、`ModelContext`、`TurnContext`、`RenderContext`、`SlashSuggestionContext` 和 `ChangeHistoryContext`，并提供顶层编排需要的门面。`ToolApprovalContext`、`UserQuestionContext` 和 `FilePickerContext` 由 `main.ts` 直接持有。composer、transcript records、session 指针、response lock、pending、working spinner、输入历史、slash suggestion、change history、context usage、interaction mode、MCP bootstrap 状态、status line 和 previous terminal size 由对应子 context、AppContext transient state 或 render state 持有；boxed composer 的 placeholder 只在 render 层生成。`main.ts` 负责依赖装配、通过 `createKeyParser()` 保持跨 stdin chunk 的输入解析状态、输入事件分发、LLM agent lifecycle、shell 命令执行、工具授权/用户问题/文件选择 callback 接入、MCP 初始化和 destructive replay 等顶层编排；普通 assistant turn 的回调到状态翻译下沉到 `src/app/assistant-turn-runner.ts`。具体走 footer-only redraw、transcript append 还是 destructive replay，由 `app-renderer` 门面统一编排。slash command session 和会话内事件分发由 `src/app/command/command-runtime.ts` 承载；handler 通过 `src/app/command/command-host.ts` 暴露的受控 app 能力触达 composer、transcript、model、config、skills、mcp、memory、mode、theme、context、usage、diff、undo、assistant 和 ui 语义操作。
 
@@ -90,7 +95,7 @@ slash runtime 通过三类稳定边界协调本地命令：
 
 | 概念 | 含义 | 实现位置 |
 | --- | --- | --- |
-| CLI 入口 | 普通命令行入口。解析 `--help` / `--version`，无参数时执行用户目录初始化后进入 TUI；bin shim 只负责定位编译产物 | `src/cli/main.ts`、`bin/echo-tui.ts` |
+| CLI 入口 | 普通命令行入口。解析 `--help` / `--version` / `--once`，有效启动时执行用户目录初始化；无参数进入 TUI，`--once` 进入 headless runner；bin shim 只负责定位编译产物 | `src/cli/main.ts`、`src/cli/one-shot.ts`、`bin/echo-tui.ts` |
 | 用户目录初始化 | 首次启动 bootstrap，只在缺失时创建 `~/.echo/config.json`（预置内置 fake agent provider/model）和内置 `echo-tui-setup` skill，不覆盖已有内容 | `src/config/user-setup-bootstrap.ts` |
 | interaction mode | 当前进程内的交互模式，含 `normal`、`plan`、`shell`、`shell-local`。Tab 在四者间循环，`/mode` 也可切换；plan 影响工具边界与 system prompt，shell/shell-local 把输入作为本地 bash 命令执行 | `src/app/state/app-context.ts`、`src/types/agent.ts` |
 | slash resolver | 统一的 slash 路由入口。对一段已提交文本按顺序询问 handlers 的 `match()`，命中后直接返回该 handler；未命中则返回 `null` 并回退为普通消息或 shell 命令 | `src/commands/resolve-slash-command.ts` |
@@ -112,6 +117,7 @@ slash runtime 通过三类稳定边界协调本地命令：
 | 用户 memory | 用户通过 `/memory` 显式维护的全局持久背景，存储于 `~/.echo/memories.json`；`/memory` 是其唯一的读取和修改入口，支持新增、编辑、Space 启停和确认删除。每轮真实 provider 请求重新读取并 transient 注入已启用项，绝不写入 transcript、session 或 compaction；内容会发送给 provider，不能当作秘密存储 | `src/memory/memory-store.ts`、`src/commands/memory-command-handler.ts` |
 | Agent memory | 与 user memory 分离存储于 `~/.echo/agent-memory/`，索引记录 global/project scope、catalog 名称、描述和启停状态，items 按 catalog id 分文件保存并各自记录启停状态。每轮 provider request 只注入当前 scope 的 enabled 有效 catalog 名称与描述，disabled project 不覆盖同名 enabled global catalog；scope 和 item 不进入 prompt。agent 仅通过 `read_memory`、`add_memory`、`update_memory` 和 `remove_memory` 操作 enabled catalog 和 items；用户明确要求记住的稳定信息也应存入语义化 agent catalog。读取结果按普通 tool result 进入 transcript/session/compaction，三个 mutation tools 需审批，`/memory` 提供 scope/catalog/item 的启停和人工纠错入口 | `src/memory/agent-memory-store.ts`、`src/tools/memory-tool-handler.ts` |
 | agent loop runtime | provider-neutral 的真实 agent 编排层。对 app 暴露 `RunAgent(session, callbacks)`，按拉模式每轮重读 LLM 配置和用户 memory，按 interaction mode 选择默认/只读 tool registry 并合并 MCP 工具，注入源码内置且不可用户覆盖的 transient system prompt（含 cwd、AGENTS.md、memory、plan 约束、skill catalog），维护 tool-call continuation 的 `TranscriptRecord[]`，按需触发上下文压缩，把真实 provider input usage 通过 context usage callback 回传 app，并把完整 provider usage 追加到 usage store；tool call 与 compaction 事实事件会旁路派发给 lifecycle hooks | `src/agent/agent-loop-runtime.ts` |
+| headless 单轮 runner | `--once` 的非交互生命周期。复用 MCP、hooks、debug、usage 和 agent loop，但不创建 raw mode、renderer、stdin listener 或 transcript session；以 `{kind: 'headless', approvalPolicy: 'deny'}` 默认拒绝审批工具，`full-access` 只在当前调用内允许已注册工具，用户问题直接返回取消结果；派发 assistant 生命周期 hook，成功只写最终纯文本，结束时关闭 MCP/debug 而不等待 hook 队列 | `src/cli/one-shot.ts`、`src/types/agent.ts` |
 | lifecycle hooks | 用户级可选旁路事件机制。`~/.echo/config.json#hooks` 可为 assistant turn、tool call 和 compaction 事件配置本地命令；hook stdin 接收 JSON payload，环境变量包含事件名和 cwd；hook 执行结果不显示、不写 transcript、不持久化、不回传模型，也不改变主流程；`/hooks` 通过配置草稿保留 disabled entries 与诊断，保存后只替换 root `hooks` 节点并 live reload dispatcher，synthetic test 只验证本地命令契约且输出只留在当前 command surface | `src/hooks/*`、`src/types/hooks.ts` |
 | provider agent setup | 按当前配置的 `agentType` 选择 provider adapter（openai / openai-chat / anthropic / codex / fake），并用配置和 tool registry 初始化；Codex OAuth provider 路由到独立 Codex adapter，每次请求前把本机 auth cache 解析为 access token，过期时用 refresh token 刷新到内存，不回写 Codex auth 文件；`prepareAgent` 供 `/compact` 等本地动作复用 | `src/agent/agent-setup.ts`、`src/agent/codex/agent.ts`、`src/config/codex-oauth.ts` |
 | tool message rendering | app 可见层把未完成 tool call 显示为 footer pending preview；需要用户参与的工具先进入 approval 或 user-question surface；tool result 到达后再按既有 schema 追加 `tool_call` 与 `tool_result` records。顶层 renderer 负责路由和通用 fallback，子目录分别承载 bash、apply_patch、use_skill、memory 及共享宽度/前缀逻辑；`use_skill` 成功结果只投影为简洁使用摘要。Memory tools 使用 Remembering/Recalling/Revising/Forgetting 动作摘要，成功 mutation 隐藏 result，read result 只显示无状态 content 列表；完整原始结果仍供 provider/session/compaction 使用 | `src/app/state/turn-context.ts`、`src/render/tool-message-renderer.ts`、`src/render/tool-message-renderers/` |

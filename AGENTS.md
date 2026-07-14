@@ -5,7 +5,7 @@
 This repository is a Node.js terminal TUI prototype with a real LLM adapter.
 
 - `bin/echo-tui.ts`: source CLI entry shim; compiled output runs from `dist/bin/echo-tui.js`.
-- `src/cli/`: command-line argument parsing for `echo-tui`, user setup bootstrap, help/version output, and TUI startup handoff.
+- `src/cli/`: command-line argument parsing for `echo-tui`, user setup bootstrap, help/version output, TUI startup handoff, and the non-interactive `--once` runner.
 - `src/app/`: application orchestration, runtime state contexts, command host/runtime, tool approval, and user-question flows.
 - `src/commands/`: slash command handlers for `/help`, `/config`, `/model`, `/effort`, `/mode`, `/status`, `/context`, `/usage`, `/clear`, `/compact`, `/diff`, `/undo`, `/resume`, `/mcp`, `/skills`, `/themes`, `/init`, `/review`, and direct skill invocation.
 - `src/agent/`: provider-neutral agent loop, context compaction, AGENTS.md instruction loading, reasoning summaries, OpenAI Responses/OpenAI Chat/Anthropic adapters, and fake agent fixture.
@@ -19,7 +19,7 @@ This repository is a Node.js terminal TUI prototype with a real LLM adapter.
 - `src/input/`: key parsing, input event types, and composer state.
 - `src/render/`: transcript blocks, Markdown/table/code projection, tool rendering, footer/status-line redraw logic, and layout helpers.
 - `src/terminal/`: ANSI helpers and TTY raw-mode setup/cleanup.
-- `src/types/`: pure TypeScript protocol types shared across layers.
+- `src/types/`: pure TypeScript protocol types shared across layers, including per-run interactive/headless execution mode.
 - `test/`: Node built-in test runner coverage (`node:test`).
 - `docs/`, `openspec/`: user/architecture documentation and proposals.
 - `scripts/`: small build-support scripts such as copying built-in theme assets.
@@ -71,6 +71,7 @@ For interactive TUI changes, also do targeted manual verification:
 5. Interaction modes and local flows: Tab mode cycling, `/mode normal|plan|shell|shell-local`, shell/shell-local execution, `@` file picker selection, and Esc cancellation/interruption where supported
 6. Tool/user interaction flows: apply-patch approval, high-risk bash approval, MCP approval where configured, `ask_user_questions` choice/inline input, `/skills` checkbox state changes, and Esc cancellation where supported
 7. Response lifecycle edges: response lock blocking Enter, Esc interrupting an active assistant turn, partial assistant persistence, local notices, and late callback isolation
+8. Headless CLI: `echo-tui --once "..."` with fake agent, non-TTY stdout, provider/config failure exit codes, default tool denial, and explicit `--full-access`
 
 ## Architecture Notes
 
@@ -81,6 +82,8 @@ Transcript roles include user, assistant, system, error, local notice, reasoning
 Provider requests prepend transient built-in context with runtime environment, AGENTS.md instructions loaded from `~/.echo/AGENTS.md` and applicable project paths, plan-mode constraints when active, and the current skill catalog. These instructions do not become transcript records.
 
 Footer state is transient and re-renderable: normal input shows composer, optional slash suggestions, optional file picker, and a status line with model/project/mode/key hints; command, approval, and user-question flows replace the input area with surfaces such as `info`, `select`, `resume`, `checkbox`, `skills`, `mcp`, `scale`, `choice`, `confirm`, `config`, `context`, `usage`, `file_picker`, and `diff`.
+
+The `--once` CLI path is separate from the TUI lifecycle: `src/cli/one-shot.ts` reuses the agent loop, MCP manager, hooks, debug context, and usage store without creating terminal raw mode, renderer, stdin listeners, or transcript sessions. Its per-run `executionMode` is headless with `approvalPolicy: 'deny'` by default and `full-access` only when explicitly requested; `ask_user_questions` returns cancellation instead of waiting for stdin.
 
 Normal redraw clears the previous app-owned region before writing the next snapshot. When terminal columns change, or terminal rows shrink, the app may perform destructive recovery by clearing the visible screen and scrollback, then repainting from the top-left. **The app must not switch to alternate screen.**
 

@@ -3,17 +3,22 @@ import path from 'node:path';
 
 import { run } from '../app/main';
 import {bootstrapEchoUserSetup} from '../config/user-setup-bootstrap';
+import {runOnce} from './one-shot';
+import type {RunOnceOptions} from './one-shot';
 
 type CliAction =
   | {kind: 'start'}
+  | {kind: 'once'; fullAccess: boolean; prompt: string}
   | {kind: 'help'}
   | {kind: 'version'}
+  | {kind: 'invalid'; message: string}
   | {kind: 'unknown'; command: string};
 
 type RunCliOptions = {
   argv?: string[];
   bootstrap?: () => void;
-  runApp?: () => void;
+  runApp?: () => void | Promise<void>;
+  runOnce?: (options: RunOnceOptions) => Promise<void>;
   stderr?: Pick<NodeJS.WriteStream, 'write'>;
   stdout?: Pick<NodeJS.WriteStream, 'write'>;
 };
@@ -22,10 +27,14 @@ const HELP_TEXT = `Usage: echo-tui [command] [options]
 
 Commands:
   echo-tui                         Start the terminal TUI in the current directory
+  echo-tui --once <prompt...>      Run one non-interactive assistant turn
 
 Options:
   -h, --help                       Show this help
   -v, --version                    Show version
+  --full-access                    Allow approval-required tools with --once only
+                                    WARNING: tools may modify the workspace/system;
+                                    this mode has no transcript session or undo history
 `;
 
 /**
@@ -46,13 +55,41 @@ function parseCliArgs(argv: string[]): CliAction {
     return {kind: 'version'};
   }
 
+  if (command === '--once') {
+    const promptParts: string[] = [];
+    let fullAccess = false;
+
+    for (const argument of argv.slice(1)) {
+      if (argument === '--full-access') {
+        fullAccess = true;
+        continue;
+      }
+
+      promptParts.push(argument);
+    }
+
+    if (promptParts.length === 0 || promptParts.join(' ').trim() === '') {
+      return {kind: 'invalid', message: '--once requires a prompt'};
+    }
+
+    return {
+      kind: 'once',
+      fullAccess,
+      prompt: promptParts.join(' ')
+    };
+  }
+
+  if (command === '--full-access') {
+    return {kind: 'invalid', message: '--full-access can only be used with --once'};
+  }
+
   return {kind: 'unknown', command};
 }
 
 /**
  * 执行真实 CLI 入口副作用：启动 TUI、输出帮助/版本或报告未知命令。
  */
-function runCli(options: RunCliOptions = {}): number {
+async function runCli(options: RunCliOptions = {}): Promise<number> {
   const action = parseCliArgs(options.argv || process.argv.slice(2));
   const stdout = options.stdout || process.stdout;
   const stderr = options.stderr || process.stderr;
@@ -68,7 +105,24 @@ function runCli(options: RunCliOptions = {}): number {
         return 1;
       }
 
-      (options.runApp || run)();
+      await (options.runApp || run)();
+      return 0;
+    }
+    case 'once': {
+      const bootstrap = options.bootstrap || bootstrapEchoUserSetup;
+
+      try {
+        bootstrap();
+        await (options.runOnce || runOnce)({
+          fullAccess: action.fullAccess,
+          prompt: action.prompt,
+          stdout
+        });
+      } catch (error: unknown) {
+        stderr.write(`Failed to run echo-tui once: ${error instanceof Error ? error.message : String(error)}\n`);
+        return 1;
+      }
+
       return 0;
     }
     case 'help':
@@ -79,6 +133,9 @@ function runCli(options: RunCliOptions = {}): number {
       return 0;
     case 'unknown':
       stderr.write(`Unknown command: ${action.command}\n\n${HELP_TEXT}`);
+      return 1;
+    case 'invalid':
+      stderr.write(`Invalid arguments: ${action.message}\n\n${HELP_TEXT}`);
       return 1;
   }
 }

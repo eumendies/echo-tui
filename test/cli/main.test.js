@@ -9,6 +9,28 @@ test('parseCliArgs starts app only for the no-args path', () => {
   assert.deepEqual(parseCliArgs([]), {kind: 'start'});
 });
 
+test('parseCliArgs recognizes once prompts and full-access', () => {
+  assert.deepEqual(parseCliArgs(['--once', 'explain', 'this', 'project']), {
+    kind: 'once',
+    fullAccess: false,
+    prompt: 'explain this project'
+  });
+  assert.deepEqual(parseCliArgs(['--once', '--full-access', 'make', 'a', 'change']), {
+    kind: 'once',
+    fullAccess: true,
+    prompt: 'make a change'
+  });
+  assert.deepEqual(parseCliArgs(['--once']), {kind: 'invalid', message: '--once requires a prompt'});
+  assert.deepEqual(parseCliArgs(['--once', '   ']), {kind: 'invalid', message: '--once requires a prompt'});
+  assert.deepEqual(parseCliArgs(['--full-access']), {kind: 'invalid', message: '--full-access can only be used with --once'});
+});
+
+test('help warns about full-access workspace and system changes', () => {
+  assert.match(HELP_TEXT, /--once/);
+  assert.match(HELP_TEXT, /workspace\/system/);
+  assert.match(HELP_TEXT, /no transcript session or undo history/);
+});
+
 test('parseCliArgs recognizes help and version aliases', () => {
   assert.deepEqual(parseCliArgs(['--help']), {kind: 'help'});
   assert.deepEqual(parseCliArgs(['-h']), {kind: 'help'});
@@ -58,7 +80,7 @@ test('package metadata points echo-tui bin at built JavaScript output', () => {
   assert.equal(fs.existsSync(path.join(builtinThemeDir, 'violet.json')), true);
 });
 
-test('runCli bootstraps user setup only for normal TUI startup', () => {
+test('runCli bootstraps user setup only for normal TUI startup', async () => {
   const calls = [];
   const writes = [];
   const options = {
@@ -73,16 +95,16 @@ test('runCli bootstraps user setup only for normal TUI startup', () => {
     stderr: {write: (text) => writes.push(['stderr', text])}
   };
 
-  assert.equal(runCli(options), 0);
+  assert.equal(await runCli(options), 0);
   assert.deepEqual(calls, ['bootstrap', 'run']);
   assert.deepEqual(writes, []);
 });
 
-test('runCli does not bootstrap help, version, or unknown command paths', () => {
+test('runCli does not bootstrap help, version, or unknown command paths', async () => {
   for (const argv of [['--help'], ['--version'], ['config'], ['init']]) {
     const calls = [];
     const writes = [];
-    const exitCode = runCli({
+    const exitCode = await runCli({
       argv,
       bootstrap() {
         calls.push('bootstrap');
@@ -100,10 +122,10 @@ test('runCli does not bootstrap help, version, or unknown command paths', () => 
   }
 });
 
-test('runCli reports bootstrap failure before starting TUI', () => {
+test('runCli reports bootstrap failure before starting TUI', async () => {
   const calls = [];
   const writes = [];
-  const exitCode = runCli({
+  const exitCode = await runCli({
     argv: [],
     bootstrap() {
       calls.push('bootstrap');
@@ -119,6 +141,55 @@ test('runCli reports bootstrap failure before starting TUI', () => {
   assert.equal(exitCode, 1);
   assert.deepEqual(calls, ['bootstrap']);
   assert.deepEqual(writes, [['stderr', 'Failed to initialize echo-tui user setup: permission denied\n']]);
+});
+
+test('runCli bootstraps and awaits one-shot execution', async () => {
+  const calls = [];
+  const stdout = {write: (text) => calls.push(['stdout', text])};
+  const stderr = {write: (text) => calls.push(['stderr', text])};
+
+  const exitCode = await runCli({
+    argv: ['--once', '--full-access', 'hello', 'world'],
+    bootstrap() {
+      calls.push(['bootstrap']);
+    },
+    runOnce: async (options) => {
+      calls.push(['once', options.prompt, options.fullAccess, options.stdout === stdout]);
+    },
+    stdout,
+    stderr
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(calls, [
+    ['bootstrap'],
+    ['once', 'hello world', true, true]
+  ]);
+});
+
+test('runCli reports one-shot bootstrap and execution failures', async () => {
+  const writes = [];
+  const stderr = {write: (text) => writes.push(text)};
+
+  assert.equal(await runCli({
+    argv: ['--once', 'hello'],
+    bootstrap() {
+      throw new Error('bootstrap failed');
+    },
+    stderr
+  }), 1);
+  assert.match(writes[0], /Failed to run echo-tui once: bootstrap failed/);
+
+  writes.length = 0;
+  assert.equal(await runCli({
+    argv: ['--once', 'hello'],
+    bootstrap() {},
+    runOnce: async () => {
+      throw new Error('provider failed');
+    },
+    stderr
+  }), 1);
+  assert.match(writes[0], /Failed to run echo-tui once: provider failed/);
 });
 
 test('postinstall script is best-effort and uses compiled bootstrap module', () => {
