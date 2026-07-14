@@ -280,6 +280,10 @@ test('default tool registry exposes developed tools', () => {
   assert.equal(registry.getHandler(GLOB_TOOL_NAME) !== undefined, true);
   assert.equal(registry.getHandler(GREP_TOOL_NAME) !== undefined, true);
   assert.equal(registry.getHandler(READ_FILES_TOOL_NAME) !== undefined, true);
+  assert.equal(registry.getHandler('read_memory') !== undefined, true);
+  assert.equal(registry.getHandler('add_memory') !== undefined, true);
+  assert.equal(registry.getHandler('update_memory') !== undefined, true);
+  assert.equal(registry.getHandler('remove_memory') !== undefined, true);
   assert.equal(registry.getHandler(CREATE_TODOS_TOOL_NAME) !== undefined, true);
   assert.equal(registry.getHandler(COMPLETE_TODO_TOOL_NAME) !== undefined, true);
   assert.equal(registry.getHandler(USE_SKILL_TOOL_NAME) !== undefined, true);
@@ -292,6 +296,10 @@ test('default tool registry exposes developed tools', () => {
     GLOB_TOOL_NAME,
     GREP_TOOL_NAME,
     READ_FILES_TOOL_NAME,
+    'read_memory',
+    'add_memory',
+    'update_memory',
+    'remove_memory',
     CREATE_TODOS_TOOL_NAME,
     COMPLETE_TODO_TOOL_NAME,
     USE_SKILL_TOOL_NAME,
@@ -3160,27 +3168,197 @@ test('apply_patch still rejects NUL and .git paths', async () => {
   }
 });
 
-test('apply_patch detects duplicate targets after resolving paths', async () => {
+test('apply_patch replaces the same file through repeated Begin Patch operations', async () => {
   const cwd = createTempWorkspace();
-  const target = path.join(cwd, 'same.txt');
+  const target = path.join(cwd, 'replace.txt');
+  fs.writeFileSync(target, 'old\n', 'utf8');
   const executor = createToolExecutor(createToolRegistry([createApplyPatchToolHandler({ cwd })]));
   const patch = [
+    '*** Begin Patch',
+    '*** Delete File: replace.txt',
+    '*** Add File: replace.txt',
+    '+new',
+    '+value',
+    '*** End Patch'
+  ].join('\n');
+
+  const result = await executor.execute(createPatchCall(patch));
+
+  assert.equal(result.ok, true);
+  assert.equal(result.text, 'Applied patch.\nChanged files:\n- replace.txt (updated)');
+  assert.equal(fs.readFileSync(target, 'utf8'), 'new\nvalue\n');
+  assert.deepEqual(result.display.files, [
+    {
+      path: 'replace.txt',
+      kind: 'deleted',
+      lines: [{kind: 'removed', text: 'old', postLine: null}]
+    },
+    {
+      path: 'replace.txt',
+      kind: 'added',
+      lines: [
+        {kind: 'added', text: 'new', postLine: 1},
+        {kind: 'added', text: 'value', postLine: 2}
+      ]
+    }
+  ]);
+});
+
+test('apply_patch replaces the same file through repeated unified diff operations', async () => {
+  const cwd = createTempWorkspace();
+  fs.writeFileSync(path.join(cwd, 'replace.txt'), 'old\n', 'utf8');
+  const executor = createToolExecutor(createToolRegistry([createApplyPatchToolHandler({ cwd })]));
+  const patch = [
+    '--- a/replace.txt',
+    '+++ /dev/null',
+    '@@ -1 +0,0 @@',
+    '-old',
     '--- /dev/null',
-    '+++ b/same.txt',
+    '+++ b/replace.txt',
     '@@ -0,0 +1 @@',
-    '+relative',
-    '--- /dev/null',
-    `+++ ${target}`,
-    '@@ -0,0 +1 @@',
-    '+absolute',
+    '+new',
     ''
   ].join('\n');
 
   const result = await executor.execute(createPatchCall(patch));
 
-  assert.equal(result.ok, false);
-  assert.match(result.text, /multiple file patches/);
+  assert.equal(result.ok, true);
+  assert.equal(result.text, 'Applied patch.\nChanged files:\n- replace.txt (updated)');
+  assert.equal(readWorkspaceFile(cwd, 'replace.txt'), 'new\n');
+  assert.deepEqual(result.display.files.map((file) => file.kind), ['deleted', 'added']);
+});
+
+test('apply_patch sequences repeated updates across relative and absolute paths', async () => {
+  const cwd = createTempWorkspace();
+  const target = path.join(cwd, 'same.txt');
+  const created = path.join(cwd, 'created.txt');
+  fs.writeFileSync(target, 'alpha\nbeta\n', 'utf8');
+  const executor = createToolExecutor(createToolRegistry([createApplyPatchToolHandler({ cwd })]));
+  const patch = [
+    '--- a/same.txt',
+    '+++ b/same.txt',
+    '@@ -1,2 +1,2 @@',
+    '-alpha',
+    '+ALPHA',
+    ' beta',
+    `--- ${target}`,
+    `+++ ${target}`,
+    '@@ -1,2 +1,2 @@',
+    ' ALPHA',
+    '-beta',
+    '+BETA',
+    '--- /dev/null',
+    '+++ b/created.txt',
+    '@@ -0,0 +1 @@',
+    '+first',
+    `--- ${created}`,
+    `+++ ${created}`,
+    '@@ -1 +1 @@',
+    '-first',
+    '+second',
+    ''
+  ].join('\n');
+
+  const result = await executor.execute(createPatchCall(patch));
+
+  assert.equal(result.ok, true);
+  assert.equal(readWorkspaceFile(cwd, 'same.txt'), 'ALPHA\nBETA\n');
+  assert.equal(readWorkspaceFile(cwd, 'created.txt'), 'second\n');
+  assert.equal((result.text.match(/same\.txt \(updated\)/g) || []).length, 1);
+  assert.equal((result.text.match(/created\.txt \(added\)/g) || []).length, 1);
+  assert.equal(result.display.files.length, 4);
+});
+
+test('apply_patch rejects invalid repeated state transitions without writing virtual changes', async () => {
+  const cwd = createTempWorkspace();
+  fs.writeFileSync(path.join(cwd, 'existing.txt'), 'old\n', 'utf8');
+  const executor = createToolExecutor(createToolRegistry([createApplyPatchToolHandler({ cwd })]));
+  const missingAfterDelete = [
+    '*** Begin Patch',
+    '*** Add File: untouched.txt',
+    '+created',
+    '*** Delete File: existing.txt',
+    '*** Update File: existing.txt',
+    '@@',
+    '-old',
+    '+changed',
+    '*** End Patch'
+  ].join('\n');
+
+  const missingResult = await executor.execute(createPatchCall(missingAfterDelete));
+
+  assert.equal(missingResult.ok, false);
+  assert.match(missingResult.text, /target file does not exist/);
+  assert.equal(readWorkspaceFile(cwd, 'existing.txt'), 'old\n');
+  assert.equal(fs.existsSync(path.join(cwd, 'untouched.txt')), false);
+
+  const staleSecondUpdate = [
+    '--- a/existing.txt',
+    '+++ b/existing.txt',
+    '@@ -1 +1 @@',
+    '-old',
+    '+middle',
+    '--- a/existing.txt',
+    '+++ b/existing.txt',
+    '@@ -1 +1 @@',
+    '-missing',
+    '+final',
+    ''
+  ].join('\n');
+  const staleResult = await executor.execute(createPatchCall(staleSecondUpdate));
+
+  assert.equal(staleResult.ok, false);
+  assert.match(staleResult.text, /matched 0 locations/);
+  assert.equal(readWorkspaceFile(cwd, 'existing.txt'), 'old\n');
+});
+
+test('apply_patch records one snapshot for replacement and undo restores original content', async () => {
+  const cwd = createTempWorkspace();
+  const target = path.join(cwd, 'replace.txt');
+  fs.writeFileSync(target, 'before\n', 'utf8');
+  const executor = createToolExecutor(createToolRegistry([createApplyPatchToolHandler({ cwd })]));
+  const history = new ChangeHistoryContext();
+  const patch = [
+    '*** Begin Patch',
+    '*** Delete File: replace.txt',
+    '*** Add File: replace.txt',
+    '+after',
+    '*** End Patch'
+  ].join('\n');
+
+  history.beginCheckpoint({cwd, transcriptStartIndex: 0});
+  const result = await executor.execute(createPatchCall(patch), {changeRecorder: history.createRecorder()});
+  history.finalizeCheckpoint();
+
+  assert.equal(result.ok, true);
+  assert.equal(readWorkspaceFile(cwd, 'replace.txt'), 'after\n');
+  assert.deepEqual(history.last.files.map((entry) => ({path: entry.path, state: entry.state})), [
+    {path: target, state: 'updated'}
+  ]);
+  assert.equal(history.executeUndo().ok, true);
+  assert.equal(readWorkspaceFile(cwd, 'replace.txt'), 'before\n');
+});
+
+test('apply_patch skips writes and change history for add then delete', async () => {
+  const cwd = createTempWorkspace();
+  const target = path.join(cwd, 'temporary.txt');
+  const executor = createToolExecutor(createToolRegistry([createApplyPatchToolHandler({ cwd })]));
+  const change = createRecordingChangeRecorder();
+  const patch = [
+    '*** Begin Patch',
+    '*** Add File: temporary.txt',
+    '+temporary',
+    '*** Delete File: temporary.txt',
+    '*** End Patch'
+  ].join('\n');
+
+  const result = await executor.execute(createPatchCall(patch), {changeRecorder: change.recorder});
+
+  assert.equal(result.ok, true);
+  assert.equal(result.text, 'Applied patch.\nChanged files:\n- none');
   assert.equal(fs.existsSync(target), false);
+  assert.deepEqual(change.calls.before, []);
+  assert.deepEqual(change.calls.after, []);
 });
 
 test('apply_patch rejects hunk mismatches and ambiguous hunks', async () => {

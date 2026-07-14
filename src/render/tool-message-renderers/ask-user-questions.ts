@@ -58,14 +58,27 @@ function renderAskUserQuestionsToolPairLines(
   ];
 }
 
+/**
+ * 渲染 ask_user_questions 调用；参数无效时省略数量，错误细节由对应 tool result 表达。
+ */
+function renderAskUserQuestionsToolCallLines(
+  call: TranscriptRecord,
+  resultStatus: unknown,
+  width: number,
+  theme: TuiTheme
+): string[] {
+  const payload = parseAskUserQuestionsArguments(call.argumentsText);
+  return renderAskUserQuestionsCallLines(payload, resultStatus, width, theme);
+}
+
 function renderAskUserQuestionsCallLines(
-  payload: AskUserQuestionsPayload,
+  payload: AskUserQuestionsPayload | null,
   resultStatus: unknown,
   width: number,
   theme: TuiTheme
 ): string[] {
   return renderPrefixedLines({
-    text: `AskUserQuestions(${payload.questions.length})`,
+    text: payload ? `AskUserQuestions(${payload.questions.length})` : 'AskUserQuestions',
     width,
     firstPrefix: '◆ ',
     continuationPrefix: '  ',
@@ -391,5 +404,6 @@ function hasExplicitOptionLabel(label: string, question: AskUserQuestion): boole
 
 export {
   ASK_USER_QUESTIONS_TOOL_NAME,
+  renderAskUserQuestionsToolCallLines,
   renderAskUserQuestionsToolPairLines
 };

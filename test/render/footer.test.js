@@ -1941,6 +1941,66 @@ test('renderFooterLayout separates choice focus from multi-select checked state'
   assert.ok(!otherLine.includes('\x1b[48;5;23m'));
 });
 
+test('renderFooterLayout renders choice tabs and separates single selected state from focus', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('ignored'),
+    commandSurface: {
+      kind: 'choice',
+      title: 'Question 2/2',
+      tabs: [
+        {label: 'Q1', status: 'complete'},
+        {label: 'Q2', status: 'missing'},
+        {label: '提交', status: 'blocked'}
+      ],
+      activeTabIndex: 1,
+      optionsTitle: '答案（单选）',
+      options: [
+        {label: 'A', selected: true},
+        {label: 'B', selected: false}
+      ],
+      focusedIndex: 1,
+      dismissHint: '←/→ 切换问题 · Enter 确认'
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    rows: 12,
+    width: 80
+  });
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+  const selectedLine = layout.lines[plainLines.findIndex((line) => line.includes('● A'))];
+  const focusedLine = layout.lines[plainLines.findIndex((line) => line.includes('▌ ○ B'))];
+
+  assert.ok(plainLines.some((line) => line.includes('[✓ Q1]') && line.includes('[! Q2]') && line.includes('[! 提交]')));
+  assert.ok(plainLines.some((line) => line.includes('  ● A')));
+  assert.ok(plainLines.some((line) => line.includes('▌ ○ B')));
+  assert.ok(!selectedLine.includes('\x1b[48;5;23m'));
+  assert.ok(focusedLine.includes('\x1b[48;5;23m'));
+  assert.ok(plainLines.some((line) => line.includes('←/→ 切换问题')));
+});
+
+test('renderFooterLayout preserves active choice tab in a constrained footer', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('ignored'),
+    commandSurface: {
+      kind: 'choice',
+      title: '提交答案',
+      tabs: [{label: 'Q1', status: 'complete'}, {label: '提交', status: 'ready'}],
+      activeTabIndex: 1,
+      options: [{label: '提交答案'}],
+      focusedIndex: 0,
+      dismissHint: '←/→ 切换问题 · Enter 提交'
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    rows: 7,
+    width: 80
+  });
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+
+  assert.ok(layout.lines.length <= 5);
+  assert.ok(plainLines.some((line) => line.includes('[✓ Q1]') && line.includes('[提交]')));
+});
+
 test('renderFooterLayout keeps focused multi-select inline input text outside active background', () => {
   const layout = renderFooterLayout({
     composer: createComposer('ignored'),

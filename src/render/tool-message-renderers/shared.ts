@@ -131,6 +131,7 @@ function wrapSingleContentLine(text: string, width: number, prefixWidth: number)
 
 export {
   TOOL_RESULT_MAX_DISPLAY_LINES,
+  TOOL_RESULT_TRUNCATION_TEXT,
   renderPrefixedLines,
   resolveToolCallPrefixStyle,
   truncateDisplayText,

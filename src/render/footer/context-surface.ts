@@ -10,6 +10,7 @@ import type {FooterLayout} from '../../types/render';
 
 const SEGMENT_LABELS: Record<ContextUsageSegmentCategory, string> = {
   system: '系统提示词',
+  memory: 'Memory',
   skills: 'Skills',
   tools: '工具',
   messages: '消息',
@@ -186,6 +187,10 @@ function frameLine(width: number, theme: FooterTheme): string {
 function segmentColor(category: ContextUsageSegmentCategory, theme: FooterTheme) {
   if (category === 'system') {
     return theme.colors.accent;
+  }
+
+  if (category === 'memory') {
+    return theme.colors.warning;
   }
 
   if (category === 'skills') {

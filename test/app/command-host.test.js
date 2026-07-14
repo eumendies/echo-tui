@@ -142,6 +142,37 @@ test('CommandHost theme facade lists selected builtin theme and applies selectio
   });
 });
 
+test('CommandHost memory facade persists user memories without exposing filesystem access to handlers', () => {
+  withTemporaryUserConfig(null, () => {
+    const {host} = createHostHarness();
+    const created = host.memory.create('使用 TypeScript');
+
+    assert.equal(created.ok, true);
+    assert.equal(host.memory.list().memories[0].content, '使用 TypeScript');
+    assert.equal(host.memory.update(created.memories[0].id, '使用 TypeScript 和中文注释').ok, true);
+    assert.equal(host.memory.delete(created.memories[0].id).ok, true);
+    assert.deepEqual(host.memory.list(), {ok: true, memories: []});
+  });
+});
+
+test('CommandHost memory facade manages scoped agent catalogs through current cwd', () => {
+  withTemporaryUserConfig(null, () => {
+    const {host} = createHostHarness();
+    const created = host.memory.addAgentMemory({catalog: 'rendering', description: 'Terminal rules', content: 'Use real cursors'});
+    assert.equal(created.ok, true);
+    const listed = host.memory.listAgentCatalogs();
+    assert.equal(listed.ok, true);
+    assert.equal(listed.catalogs[0].scope.kind, 'project');
+    const read = host.memory.readAgentCatalog('rendering');
+    assert.equal(read.ok, true);
+    assert.equal(read.memories[0].content, 'Use real cursors');
+    assert.equal(host.memory.setAgentCatalogEnabled('rendering', false).catalog.enabled, false);
+    assert.equal(host.memory.setAgentItemEnabled('rendering', read.memories[0].id, false).memories[0].enabled, false);
+    assert.equal(host.memory.updateAgentItem('rendering', read.memories[0].id, 'Use terminal cursors').ok, true);
+    assert.equal(host.memory.removeAgentItem('rendering', read.memories[0].id).removedCatalog, true);
+  });
+});
+
 test('CommandHost theme facade keeps current theme when selection cannot be saved', () => {
   withTemporaryThemeConfig('{broken', () => {
     const {calls, host, setThemes} = createHostHarness();

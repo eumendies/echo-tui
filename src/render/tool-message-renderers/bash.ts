@@ -24,11 +24,11 @@ type BashResultDisplay = {
 };
 
 type BashRailRow = {
-  style: 'command' | 'error' | 'muted' | 'title';
+  style: 'command' | 'error' | 'muted' | 'success' | 'title';
   text: string;
 };
 
-type BashRailStyle = 'tool' | 'toolError' | 'toolOutput';
+type BashRailStyle = 'tool' | 'toolError' | 'toolOutput' | 'toolSuccess';
 type BashStatusStyle = 'toolError' | 'toolOutput' | 'toolSuccess';
 
 /**
@@ -87,7 +87,9 @@ function renderBashRailLines(
 ): string[] {
   const parsedCommand = parseBashCommand(command);
   const failed = markerStyle === 'toolError';
-  const commandRows: BashRailRow[] = [{style: failed ? 'error' : 'title', text: title}];
+  const commandRailStyle: BashRailStyle = failed ? 'toolError' : markerStyle === 'toolSuccess' ? 'toolSuccess' : 'tool';
+  const titleStyle = failed ? 'error' : markerStyle === 'toolSuccess' ? 'success' : 'title';
+  const commandRows: BashRailRow[] = [{style: titleStyle, text: title}];
 
   commandRows.push(...parsedCommand.headerLines.map((text) => ({style: 'command' as const, text})));
   if (parsedCommand.scriptLines) {
@@ -95,7 +97,7 @@ function renderBashRailLines(
   }
   commandRows.push(...parsedCommand.trailerLines.map((text) => ({style: 'command' as const, text})));
 
-  const lines = renderRailRows(commandRows, width, theme, failed ? 'toolError' : 'tool', true, markerStyle);
+  const lines = renderRailRows(commandRows, width, theme, commandRailStyle, true, markerStyle);
 
   if (!result) {
     return lines;
@@ -154,6 +156,9 @@ function colorizeRailContent(style: BashRailRow['style'], text: string, theme: T
   }
   if (style === 'muted') {
     return blockText(theme, 'toolOutput', text);
+  }
+  if (style === 'success') {
+    return blockText(theme, 'toolSuccess', text);
   }
   if (style === 'title') {
     return blockText(theme, 'tool', text);

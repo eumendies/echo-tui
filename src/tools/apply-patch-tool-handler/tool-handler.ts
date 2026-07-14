@@ -272,7 +272,9 @@ function formatSuccess(changedFiles: ChangedFile[]): string {
   return [
     'Applied patch.',
     'Changed files:',
-    ...changedFiles.map((file) => `- ${file.filePath} (${file.kind})`)
+    ...(changedFiles.length === 0
+      ? ['- none']
+      : changedFiles.map((file) => `- ${file.filePath} (${file.kind})`))
   ].join('\n');
 }
 

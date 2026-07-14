@@ -12,6 +12,7 @@ const { EffortCommandHandler } = require('../../src/commands/effort-command-hand
 const { HelpCommandHandler } = require('../../src/commands/help-command-handler');
 const { HooksCommandHandler } = require('../../src/commands/hooks-command-handler');
 const { McpCommandHandler } = require('../../src/commands/mcp-command-handler');
+const { MemoryCommandHandler } = require('../../src/commands/memory-command-handler');
 const { MODEL_CONFIG_PATH_HINT, ModelCommandHandler } = require('../../src/commands/model-command-handler');
 const { ModeCommandHandler } = require('../../src/commands/mode-command-handler');
 const { ResumeCommandHandler, RESUME_PAGE_SIZE } = require('../../src/commands/resume-command-handler');
@@ -342,7 +343,7 @@ test('resolveSlashCommand asks handlers in order and returns the first match', (
 test('createDefaultSlashCommandHandlers wires handlers in order', () => {
   const handlers = createDefaultHandlersForTest();
 
-  assert.equal(handlers.length, 20);
+  assert.equal(handlers.length, 21);
   assert.equal(handlers.some((handler) => handler.name === 'skill'), false);
   assert.equal(handlers[0].name, 'help');
   assert.equal(handlers[1].name, 'config');
@@ -358,12 +359,13 @@ test('createDefaultSlashCommandHandlers wires handlers in order', () => {
   assert.equal(handlers[11].name, 'undo');
   assert.equal(handlers[12].name, 'resume');
   assert.equal(handlers[13].name, 'mcp');
-  assert.equal(handlers[14].name, 'hooks');
-  assert.equal(handlers[15].name, 'skills');
-  assert.equal(handlers[16].name, 'themes');
-  assert.equal(handlers[17].name, 'init');
-  assert.equal(handlers[18].name, 'review');
-  assert.equal(handlers[19].name, undefined);
+  assert.equal(handlers[14].name, 'memory');
+  assert.equal(handlers[15].name, 'hooks');
+  assert.equal(handlers[16].name, 'skills');
+  assert.equal(handlers[17].name, 'themes');
+  assert.equal(handlers[18].name, 'init');
+  assert.equal(handlers[19].name, 'review');
+  assert.equal(handlers[20].name, undefined);
   assert.equal(handlers[0] instanceof HelpCommandHandler, true);
   assert.equal(handlers[1] instanceof ConfigCommandHandler, true);
   assert.equal(handlers[2] instanceof ModelCommandHandler, true);
@@ -378,12 +380,13 @@ test('createDefaultSlashCommandHandlers wires handlers in order', () => {
   assert.equal(handlers[11] instanceof UndoCommandHandler, true);
   assert.equal(handlers[12] instanceof ResumeCommandHandler, true);
   assert.equal(handlers[13] instanceof McpCommandHandler, true);
-  assert.equal(handlers[14] instanceof HooksCommandHandler, true);
-  assert.equal(handlers[15] instanceof SkillsCommandHandler, true);
-  assert.equal(handlers[16] instanceof ThemesCommandHandler, true);
-  assert.equal(handlers[17] instanceof AgentWorkflowCommandHandler, true);
+  assert.equal(handlers[14] instanceof MemoryCommandHandler, true);
+  assert.equal(handlers[15] instanceof HooksCommandHandler, true);
+  assert.equal(handlers[16] instanceof SkillsCommandHandler, true);
+  assert.equal(handlers[17] instanceof ThemesCommandHandler, true);
   assert.equal(handlers[18] instanceof AgentWorkflowCommandHandler, true);
-  assert.equal(handlers[19] instanceof SkillInvocationCommandHandler, true);
+  assert.equal(handlers[19] instanceof AgentWorkflowCommandHandler, true);
+  assert.equal(handlers[20] instanceof SkillInvocationCommandHandler, true);
 });
 
 test('copyCommandHandler opens copy surface, toggles selection, and copies formatted text', async () => {
@@ -1170,6 +1173,7 @@ test('createSlashCommandDescriptors derives display metadata from handlers', () 
     { name: 'undo', description: '回退上一轮文件修改和会话记录' },
     { name: 'resume', description: '恢复历史会话' },
     { name: 'mcp', description: '查看和管理 MCP servers' },
+    { name: 'memory', description: '查看和管理持久 memory' },
     { name: 'hooks', description: '查看、管理和测试 lifecycle hooks' },
     { name: 'skills', description: '查看和管理 skills' },
     { name: 'themes', description: '切换主题' },

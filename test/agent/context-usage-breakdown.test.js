@@ -54,7 +54,31 @@ test('estimateContextUsageSegments classifies provider-visible records', () => {
   assert.ok(byCategory.tools > 0);
   assert.ok(byCategory.messages > 0);
   assert.ok(byCategory.reasoning > 0);
-  assert.equal(segments.length, 5);
+  assert.equal(segments.length, 6);
+});
+
+test('estimateContextUsageSegments separates user memory from the rest of the system prompt', () => {
+  const memoryText = '## User-managed memories\n- 回复使用中文';
+  const segments = estimateContextUsageSegments([
+    {role: 'system', text: `system prompt\n\n${memoryText}`}
+  ], [], 0, estimateTextTokens(memoryText));
+  const byCategory = Object.fromEntries(segments.map((segment) => [segment.category, segment.estimatedTokens]));
+
+  assert.ok(byCategory.memory > 0);
+  assert.ok(byCategory.system > 0);
+  assert.equal(byCategory.skills, 0);
+});
+
+test('estimateContextUsageSegments includes agent catalog prompt in memory tokens', () => {
+  const memoryText = '## User-managed memories\n- 中文';
+  const catalogText = '## Agent memory catalogs\n- rendering: terminal rules';
+  const segments = estimateContextUsageSegments([
+    {role: 'system', text: `system prompt\n\n${memoryText}\n\n${catalogText}`},
+    {role: 'tool_result', text: 'catalog item content', toolName: 'read_memory', toolCallId: 'call-1'}
+  ], [], 0, estimateTextTokens(`${memoryText}\n\n${catalogText}`));
+  const byCategory = Object.fromEntries(segments.map((segment) => [segment.category, segment.estimatedTokens]));
+  assert.ok(byCategory.memory > 0);
+  assert.ok(byCategory.tools > 0);
 });
 
 test('estimateContextUsageSegments classifies plan mode transient instruction as message context', () => {

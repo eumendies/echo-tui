@@ -2,6 +2,7 @@ import {DEFAULT_TUI_THEME, type TuiTheme} from '../config/theme-config';
 import {blockText} from './colors';
 import {
   ASK_USER_QUESTIONS_TOOL_NAME,
+  renderAskUserQuestionsToolCallLines,
   renderAskUserQuestionsToolPairLines
 } from './tool-message-renderers/ask-user-questions';
 import {
@@ -16,6 +17,7 @@ import {
   renderReadFilesToolCallLines,
   renderReadFilesToolResultLines
 } from './tool-message-renderers/read-files';
+import {isMemoryRenderToolName, renderMemoryToolCallLines, renderMemoryToolPairLines, renderMemoryToolResultLines} from './tool-message-renderers/memory';
 import {isTodoRenderToolName, renderTodoToolCallLines, renderTodoToolResultLines} from './tool-message-renderers/todo';
 import {
   USE_SKILL_TOOL_NAME,
@@ -74,6 +76,10 @@ function renderPairAwareToolPairLines(call: TranscriptRecord, result: Transcript
     return renderUseSkillToolPairLines(call, result, width, theme);
   }
 
+  if (isMemoryRenderToolName(call.toolName) && call.toolName === result.toolName) {
+    return renderMemoryToolPairLines(call, result, width, theme);
+  }
+
   return null;
 }
 
@@ -116,6 +122,10 @@ export function renderToolCallPreviewLines(toolName: string, argumentsText: stri
  * 根据 toolName 选择工具专属投影；未知工具降级为通用工具消息。
  */
 function renderToolRecordLines(record: TranscriptRecord, width: number, options: ToolRecordRenderOptions = {}, theme: TuiTheme): string[] {
+  if (record.toolName === ASK_USER_QUESTIONS_TOOL_NAME && record.role === 'tool_call') {
+    return renderAskUserQuestionsToolCallLines(record, options.callStatus, width, theme);
+  }
+
   if (record.toolName === APPLY_PATCH_TOOL_NAME) {
     if (record.role === 'tool_call') {
       return renderApplyPatchToolCallLines(record, width, options.callStatus, theme);
@@ -165,6 +175,16 @@ function renderToolRecordLines(record: TranscriptRecord, width: number, options:
 
     if (record.role === 'tool_result') {
       return renderUseSkillToolResultLines(record, width, theme);
+    }
+  }
+
+  if (isMemoryRenderToolName(record.toolName)) {
+    if (record.role === 'tool_call') {
+      return renderMemoryToolCallLines(record, width, options.callStatus, theme);
+    }
+
+    if (record.role === 'tool_result') {
+      return renderMemoryToolResultLines(record, width, theme);
     }
   }
 

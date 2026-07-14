@@ -22,7 +22,7 @@ export type ProviderUsage = {
   outputTokens?: number;
 };
 
-export type ContextUsageSegmentCategory = 'system' | 'skills' | 'tools' | 'messages' | 'reasoning';
+export type ContextUsageSegmentCategory = 'system' | 'memory' | 'skills' | 'tools' | 'messages' | 'reasoning';
 
 export type ContextUsageSegment = {
   category: ContextUsageSegmentCategory;

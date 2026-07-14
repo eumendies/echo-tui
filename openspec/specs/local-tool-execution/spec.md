@@ -152,7 +152,7 @@
 - **AND** `apply_patch` SHALL 继续按既有 approval 策略处理
 
 ### Requirement: apply_patch text editing tool
-系统 SHALL 提供本地工具 `apply_patch`，用于应用受支持的 patch 文本来新增、更新或删除 UTF-8 文本文件。该工具 SHALL 接收 JSON object 参数 `{ "patch": string }`，并 SHALL 返回可回传模型的结构化 tool execution result。
+系统 SHALL 提供本地工具 `apply_patch`，用于应用受支持的 patch 文本来新增、更新或删除 UTF-8 文本文件。该工具 SHALL 接收 JSON object 参数 `{ "patch": string }`，并 SHALL 返回可回传模型的结构化 tool execution result。单个 patch 中解析到同一绝对路径的多个文件操作 SHALL 按其声明顺序在同一虚拟文件状态上执行。
 
 #### Scenario: 默认注册 apply_patch 工具定义
 - **WHEN** 系统创建默认 tool registry
@@ -161,7 +161,7 @@
 - **THEN** 该 definition SHALL 声明工具应用 patch 到文本文件
 
 #### Scenario: 应用更新已有文件的 unified diff
-- **WHEN** `apply_patch` 收到针对已有文本文件的有效 unified diff
+- **WHEN** `apply_patch` 收到针对当前虚拟状态中已有文本文件的有效 unified diff
 - **THEN** handler SHALL 根据 hunk 的 context lines 和 removed lines 在当前文件中寻找精确唯一匹配
 - **THEN** handler SHALL 应用匹配 hunk 并写回更新后的文件内容
 - **THEN** result SHALL 标记 `ok: true` 并包含 changed files summary
@@ -174,29 +174,29 @@
 
 #### Scenario: 应用新增文件的 unified diff
 - **WHEN** `apply_patch` 收到 `--- /dev/null` 到 `+++ b/<path>` 的有效新增文件 patch
-- **THEN** handler SHALL 创建该文本文件
+- **THEN** handler SHALL 在目标路径的当前虚拟状态不存在时创建该文本文件
 - **THEN** handler SHALL 在必要时创建父目录
-- **THEN** 如果目标文件已存在，handler SHALL 返回 `ok: false` 且不得覆盖该文件
+- **THEN** 如果目标路径的当前虚拟状态已存在，handler SHALL 返回 `ok: false` 且不得覆盖该文件
 
 #### Scenario: 应用删除文件的 unified diff
 - **WHEN** `apply_patch` 收到 `--- a/<path>` 到 `+++ /dev/null` 的有效删除文件 patch
 - **THEN** handler SHALL 将该 patch 解析为删除目标文件的操作
 - **THEN** handler SHALL 接受常见 `deleted file mode` metadata 作为删除文件语义的一部分
-- **THEN** handler SHALL 使用删除 hunk 校验当前目标文件内容与 patch 表达的删除内容匹配
-- **THEN** handler SHALL 删除该文本文件
+- **THEN** handler SHALL 使用删除 hunk 校验当前虚拟文件内容与 patch 表达的删除内容匹配
+- **THEN** handler SHALL 删除该虚拟文件
 - **THEN** result SHALL 标记 `ok: true` 并包含 changed files summary
 
 #### Scenario: 应用 Begin Patch 新增文件
 - **WHEN** `apply_patch` 收到 `*** Begin Patch` / `*** Add File: <path>` / `*** End Patch` 格式的有效新增文件 patch
-- **THEN** handler SHALL 创建该文本文件
+- **THEN** handler SHALL 在目标路径的当前虚拟状态不存在时创建该文本文件
 - **THEN** handler SHALL 将 `+` 前缀行作为新增文件内容
 - **THEN** handler SHALL 复用相同路径校验和目标已存在检查
 
 #### Scenario: 应用 Begin Patch 删除文件
 - **WHEN** `apply_patch` 收到 `*** Begin Patch` / `*** Delete File: <path>` / `*** End Patch` 格式的有效删除文件 patch
 - **THEN** handler SHALL 将该 patch 解析为删除目标文件的操作
-- **THEN** handler SHALL 删除该普通 UTF-8 文本文件
-- **THEN** 如果目标文件不存在，handler SHALL 返回 `ok: false` 且不得写入任何其他文件
+- **THEN** handler SHALL 删除该普通 UTF-8 文本文件的虚拟状态
+- **THEN** 如果目标文件的当前虚拟状态不存在，handler SHALL 返回 `ok: false` 且不得写入任何其他文件
 - **THEN** handler SHALL 复用相同路径校验和安全上限检查
 
 #### Scenario: 应用 Begin Patch 更新文件
@@ -236,10 +236,32 @@
 - **THEN** handler SHALL 返回 `ok: false`
 - **THEN** handler SHALL 不写入任何文件
 
+#### Scenario: 同一路径操作按顺序共享虚拟状态
+- **WHEN** 一个 patch 中两个或更多操作经路径解析后指向同一绝对路径
+- **THEN** handler SHALL 按 patch 声明顺序执行这些操作
+- **THEN** 每个后续操作 SHALL 基于该路径前序操作后的虚拟存在性和内容校验
+- **THEN** 相对路径和绝对路径指向同一文件时 SHALL 视为同一虚拟文件
+
+#### Scenario: 删除后重建同名已有文件
+- **WHEN** 一个 patch 先删除已有文本文件，再新增解析为同一绝对路径的文件
+- **THEN** 新增操作 SHALL 基于该路径已删除的虚拟状态成功
+- **THEN** 成功后该路径在磁盘中 SHALL 包含新增操作提供的新内容
+- **THEN** handler SHALL 仅为该路径的最终状态执行一次写盘
+
+#### Scenario: 前序操作产生的内容可供后续更新匹配
+- **WHEN** 一个 patch 对同一解析后路径先成功新增或更新内容，再执行 update 操作
+- **THEN** 后续 update hunk SHALL 在前序操作产生的虚拟内容中按既有精确匹配规则定位
+- **THEN** 成功后磁盘内容 SHALL 等于全部顺序操作后的最终内容
+
+#### Scenario: 无效虚拟状态迁移拒绝整个 patch
+- **WHEN** 同一路径序列对当前虚拟状态执行不合法操作，例如对已存在状态新增、对已删除状态更新或删除
+- **THEN** handler SHALL 返回 `ok: false` 和简洁失败原因
+- **THEN** handler SHALL 不写入该 patch 涉及的任何文件
+
 #### Scenario: 多文件 patch 以 all-or-nothing 方式应用
-- **WHEN** `apply_patch` 收到包含多个文件操作的 patch
-- **THEN** handler SHALL 先在内存中解析、校验并应用全部操作
-- **THEN** 只有全部操作成功时，handler SHALL 写入所有目标文件
+- **WHEN** `apply_patch` 收到包含一个或多个文件操作的 patch
+- **THEN** handler SHALL 先在内存中解析、校验并按声明顺序应用全部操作
+- **THEN** 只有全部操作成功时，handler SHALL 为每个最终状态发生变化的解析后路径写入、创建或删除一次
 - **THEN** 任一操作失败时，handler SHALL 不写入任何目标文件
 
 #### Scenario: 路径解析和基础路径拒绝
@@ -266,7 +288,7 @@
 - **THEN** handler SHALL 不写入、创建或删除任何文件
 
 #### Scenario: 删除目标必须是可追踪文本文件
-- **WHEN** `apply_patch` 删除操作的目标文件不存在、是目录、是 symlink、不是普通文件、包含 NUL 字节或超过单文件安全上限
+- **WHEN** `apply_patch` 首次从磁盘读取删除操作的目标文件，且该文件不存在、是目录、是 symlink、不是普通文件、包含 NUL 字节或超过单文件安全上限
 - **THEN** handler SHALL 返回 `ok: false`
 - **THEN** result 文本 SHALL 包含简洁失败原因
 - **THEN** handler SHALL 不写入、创建或删除任何文件
@@ -283,9 +305,10 @@
 - **THEN** result 文本 SHALL 包含简洁失败原因
 
 #### Scenario: 限制 patch 和文件规模
-- **WHEN** patch 文本、单个目标文件、文件数量或 hunk 数量超过内置安全上限
+- **WHEN** patch 文本、单个目标文件、文件操作数量或 hunk 数量超过内置安全上限
 - **THEN** handler SHALL 返回 `ok: false`
 - **THEN** handler SHALL 不写入、创建或删除任何文件
+
 ### Requirement: ask_user_questions 工具注册
 系统 SHALL 在默认本地 tool registry 中注册 `ask_user_questions` 工具定义，使 provider request 可以携带该 function tool schema。该工具的用户交互执行 SHALL 由 agent loop/app callback 处理，而不是由普通 tool executor handler 直接访问 TUI 状态。
 
@@ -402,6 +425,7 @@
 - **WHEN** `apply_patch` 无法将 patch input 解析为支持的操作
 - **THEN** result SHALL 保持 `ok: false` 和现有简洁解析失败原因
 - **THEN** result SHALL NOT require display metadata
+
 ### Requirement: grep local text search tool
 系统 SHALL 提供本地工具 `grep`，用于在本地文件中搜索文本并返回结构化、受限的匹配结果。该工具 SHALL 接收 JSON object 参数 `{ "pattern": string, "paths"?: string[] | null, "glob"?: string | null, "literal"?: boolean | null, "case_sensitive"?: boolean | null }`。该工具 SHALL 使用本地 ripgrep 执行搜索，但 SHALL NOT 通过 shell 拼接命令。
 
