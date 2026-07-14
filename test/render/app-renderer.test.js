@@ -748,6 +748,30 @@ test('renderTranscriptLines projects ask_user_questions single and multi answers
   assert.match(renderedLines[1], /\x1b\[38;2;85;85;85m/);
 });
 
+test('renderTranscriptLines and pending preview summarize valid unpaired ask_user_questions calls', () => {
+  const call = createAskUserQuestionsCall('pending-questions-call', [
+    {question: 'Pick one?', options: [{label: 'Yes'}, {label: 'No'}]},
+    {question: 'Pick many?', multiSelect: true, options: [{label: 'A'}, {label: 'B'}]}
+  ]);
+  const callLines = renderTranscriptLines([call], 80).map((line) => stripAnsi(line));
+  const previewLines = renderToolCallPreviewLines(ASK_USER_QUESTIONS_TOOL_NAME, call.argumentsText, 80).map((line) => stripAnsi(line));
+
+  assert.ok(callLines.includes('◆ AskUserQuestions(2)'));
+  assert.ok(previewLines.includes('◆ AskUserQuestions(2)'));
+  assert.equal(callLines.some((line) => line.includes('"questions"')), false);
+  assert.equal(previewLines.some((line) => line.includes('"questions"')), false);
+});
+
+test('renderTranscriptLines keeps malformed unpaired ask_user_questions calls concise', () => {
+  const lines = renderTranscriptLines([{
+    ...createAskUserQuestionsCall('invalid-pending-questions-call', [{question: 'Pick?', options: [{label: 'A'}]}]),
+    argumentsText: '{not-json'
+  }], 80).map((line) => stripAnsi(line));
+
+  assert.ok(lines.includes('◆ AskUserQuestions'));
+  assert.equal(lines.some((line) => line.includes('{not-json')), false);
+});
+
 test('renderTranscriptLines projects ask_user_questions Other and cancelled receipts', () => {
   const otherLines = renderTranscriptLines([
     createAskUserQuestionsCall('other-call', [
@@ -802,7 +826,7 @@ test('renderTranscriptLines falls back for invalid ask_user_questions pair shape
         argumentsText: '{not-json'
       },
       result: createAskUserQuestionsResult('invalid-args', {answers: [{index: 0, selected: 'A'}]}),
-      expected: '{not-json'
+      expected: '"selected":"A"'
     },
     {
       call: createAskUserQuestionsCall('invalid-result', validQuestions),
@@ -825,10 +849,10 @@ test('renderTranscriptLines falls back for invalid ask_user_questions pair shape
     const renderedLines = renderTranscriptLines([call, result], 80);
     const lines = renderedLines.map((line) => stripAnsi(line));
 
-    assert.ok(lines.some((line) => line.startsWith('◆ ask_user_questions(')));
+    assert.ok(lines.some((line) => line.startsWith('◆ AskUserQuestions')));
     assert.ok(lines.some((line) => line.includes(expected)));
-    assert.equal(lines.some((line) => line.includes('AskUserQuestions')), false);
-    assert.match(renderedLines[0], /\x1b\[38;2;0;170;0m◆\x1b\[39m ask_user_questions/);
+    assert.equal(lines.some((line) => line.includes('ask_user_questions(')), false);
+    assert.match(renderedLines[0], /\x1b\[38;2;0;170;0m◆\x1b\[39m AskUserQuestions/);
   }
 });
 

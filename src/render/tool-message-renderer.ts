@@ -2,6 +2,7 @@ import {DEFAULT_TUI_THEME, type TuiTheme} from '../config/theme-config';
 import {blockText} from './colors';
 import {
   ASK_USER_QUESTIONS_TOOL_NAME,
+  renderAskUserQuestionsToolCallLines,
   renderAskUserQuestionsToolPairLines
 } from './tool-message-renderers/ask-user-questions';
 import {
@@ -121,6 +122,10 @@ export function renderToolCallPreviewLines(toolName: string, argumentsText: stri
  * 根据 toolName 选择工具专属投影；未知工具降级为通用工具消息。
  */
 function renderToolRecordLines(record: TranscriptRecord, width: number, options: ToolRecordRenderOptions = {}, theme: TuiTheme): string[] {
+  if (record.toolName === ASK_USER_QUESTIONS_TOOL_NAME && record.role === 'tool_call') {
+    return renderAskUserQuestionsToolCallLines(record, options.callStatus, width, theme);
+  }
+
   if (record.toolName === APPLY_PATCH_TOOL_NAME) {
     if (record.role === 'tool_call') {
       return renderApplyPatchToolCallLines(record, width, options.callStatus, theme);
