@@ -1387,6 +1387,18 @@ test('modelCommandHandler shows selectable models, confirms, cancels, and report
   assert.equal(calls.sessionUpdates[0].surface.selectedIndex, 0);
   assert.equal(calls.sessionUpdates[0].data.selectedIndex, 0);
 
+  modelCommandHandler.handleEvent(host.session.getActive(), { type: INPUT_EVENTS.MOVE_DOWN }, host);
+  assert.equal(calls.sessionUpdates[1].surface.selectedIndex, 1);
+
+  modelCommandHandler.handleEvent(host.session.getActive(), { type: INPUT_EVENTS.MOVE_DOWN }, host);
+  assert.equal(calls.sessionUpdates[2].surface.selectedIndex, 0);
+
+  modelCommandHandler.handleEvent(host.session.getActive(), { type: INPUT_EVENTS.MOVE_UP }, host);
+  assert.equal(calls.sessionUpdates[3].surface.selectedIndex, 1);
+
+  modelCommandHandler.handleEvent(host.session.getActive(), { type: INPUT_EVENTS.MOVE_DOWN }, host);
+  assert.equal(calls.sessionUpdates[4].surface.selectedIndex, 0);
+
   modelCommandHandler.handleEvent(host.session.getActive(), { type: INPUT_EVENTS.SUBMIT }, host);
   assert.deepEqual(calls.modelSelections, ['fast']);
   assert.equal(calls.sessionCloses, 1);
