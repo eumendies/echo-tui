@@ -3,12 +3,14 @@ import path from 'node:path';
 
 import {
   getDefaultConfigPath,
+  readLlmConfig,
   readLlmModelConfigInfo
 } from '../../config/llm-config';
 import {redactSensitiveText} from '../../agent/agent-errors';
 import {REASONING_EFFORTS} from '../../types/agent';
 import type {LlmModelConfigInfo} from '../../config/llm-config';
 import type {ReasoningEffort} from '../../types/agent';
+import type {AgentType} from '../../types/agent';
 import type {StatusLineModelState} from '../../types/render';
 
 type ModelCommandProfile = {
@@ -46,6 +48,14 @@ type SelectEffortResult = {
   ok: boolean;
   error?: string;
 };
+
+type ModelStatusInfo = {
+  agentType: AgentType;
+  model: string;
+  provider: string;
+};
+
+type ModelStatusInfoResult = ModelStatusInfo | {error: string};
 
 type JsonObject = Record<string, unknown>;
 
@@ -148,6 +158,28 @@ class ModelContext {
       models: this.models.map((model) => ({...model})),
       selectedIndex: this.selectedIndex
     };
+  }
+
+  /**
+   * 读取 `/status` 所需的当前模型、provider id 和 adapter 类型，不返回凭据或 headers。
+   */
+  createStatusInfo(): ModelStatusInfoResult {
+    try {
+      const modelInfo = normalizeModelInfo(readLlmModelConfigInfo());
+      const selectedModel = modelInfo.models[modelInfo.selectedIndex] || modelInfo.models[0];
+
+      if (!selectedModel) {
+        return {error: 'LLM 配置缺少 models'};
+      }
+
+      return {
+        agentType: readLlmConfig().agentType,
+        model: selectedModel.model || selectedModel.id,
+        provider: selectedModel.provider
+      };
+    } catch (error: unknown) {
+      return {error: sanitizeModelConfigError(error, '无法读取当前模型配置')};
+    }
   }
 
   /**
@@ -308,6 +340,8 @@ export type {
   ModelCommandInfo,
   ModelCommandInfoResult,
   ModelCommandProfile,
+  ModelStatusInfo,
+  ModelStatusInfoResult,
   EffortCommandInfo,
   EffortCommandInfoResult,
   SelectEffortResult,

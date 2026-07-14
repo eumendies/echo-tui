@@ -6,6 +6,7 @@ import {redactSensitiveText} from '../agent/agent-errors';
 
 const CODEX_OAUTH_BACKEND_BASE_URL = 'https://chatgpt.com/backend-api/codex';
 const CODEX_OAUTH_MODELS_URL = `${CODEX_OAUTH_BACKEND_BASE_URL}/models?client_version=1.0.0`;
+const CODEX_OAUTH_USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage';
 const CODEX_OAUTH_TOKEN_URL = 'https://auth.openai.com/oauth/token';
 const CODEX_OAUTH_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
 const ACCESS_TOKEN_EXPIRY_SKEW_MS = 60_000;
@@ -28,10 +29,33 @@ type CodexOAuthCredentialDependencies = {
   tokenUrl?: string;
 };
 
+type CodexUsageWindow = {
+  resetAt: number;
+  usedPercent: number;
+};
+
+type CodexUsage = {
+  primary: CodexUsageWindow;
+  secondary?: CodexUsageWindow;
+};
+
+type CodexUsageDependencies = {
+  fetch?: typeof fetch;
+  resolveCredential?: (config: CodexOAuthRuntimeConfig) => Promise<CodexOAuthCredential>;
+  usageUrl?: string;
+};
+
 class CodexOAuthCredentialError extends Error {
   constructor(message: string) {
     super(redactSensitiveText(message));
     this.name = 'CodexOAuthCredentialError';
+  }
+}
+
+class CodexUsageError extends Error {
+  constructor(message: string) {
+    super(redactSensitiveText(message));
+    this.name = 'CodexUsageError';
   }
 }
 
@@ -176,6 +200,90 @@ async function refreshCodexOAuthCredential(credential: CodexOAuthCredential, dep
   };
 }
 
+/**
+ * 查询 ChatGPT Codex 账户的主、次限额窗口，只返回展示所需的非敏感字段。
+ */
+async function queryCodexUsage(config: CodexOAuthRuntimeConfig = {}, dependencies: CodexUsageDependencies = {}): Promise<CodexUsage> {
+  const resolveCredential = dependencies.resolveCredential || resolveCodexOAuthCredential;
+  const requestFetch = dependencies.fetch || fetch;
+  let credential: CodexOAuthCredential;
+
+  try {
+    credential = await resolveCredential(config);
+  } catch (error: unknown) {
+    throw new CodexUsageError(`无法读取 Codex OAuth 凭据：${formatError(error)}`);
+  }
+
+  let response: Response;
+
+  try {
+    response = await requestFetch(dependencies.usageUrl || CODEX_OAUTH_USAGE_URL, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${credential.accessToken}`,
+        ...(credential.accountId ? {'ChatGPT-Account-ID': credential.accountId} : {})
+      }
+    });
+  } catch (error: unknown) {
+    throw new CodexUsageError(`Codex 用量请求失败：${formatError(error)}`);
+  }
+
+  if (!response.ok) {
+    throw new CodexUsageError(`Codex 用量请求失败：HTTP ${response.status}`);
+  }
+
+  let payload: unknown;
+
+  try {
+    payload = await response.json();
+  } catch {
+    throw new CodexUsageError('Codex 用量响应不是有效 JSON');
+  }
+
+  return parseCodexUsageResponse(payload);
+}
+
+/**
+ * 校验 Codex usage 响应并把秒级 reset 时间转换成毫秒时间戳。
+ */
+function parseCodexUsageResponse(payload: unknown): CodexUsage {
+  if (!isRecord(payload) || !isRecord(payload.rate_limit)) {
+    throw new CodexUsageError('Codex 用量响应缺少 rate_limit');
+  }
+
+  const secondary = payload.rate_limit.secondary_window;
+
+  return {
+    primary: parseUsageWindow(payload.rate_limit.primary_window, 'primary_window'),
+    ...(secondary === null || secondary === undefined
+      ? {}
+      : {secondary: parseUsageWindow(secondary, 'secondary_window')})
+  };
+}
+
+function parseUsageWindow(value: unknown, label: string): CodexUsageWindow {
+  const window = isRecord(value) ? value : undefined;
+  const usedPercent = window?.used_percent;
+  const resetAt = window?.reset_at;
+
+  if (typeof usedPercent !== 'number' || !Number.isFinite(usedPercent)) {
+    throw new CodexUsageError(`Codex 用量响应的 ${label}.used_percent 无效`);
+  }
+
+  if (typeof resetAt !== 'number' || !Number.isFinite(resetAt) || resetAt <= 0) {
+    throw new CodexUsageError(`Codex 用量响应的 ${label}.reset_at 无效`);
+  }
+
+  return {
+    usedPercent: Math.min(100, Math.max(0, usedPercent)),
+    resetAt: resetAt < 10_000_000_000 ? resetAt * 1000 : resetAt
+  };
+}
+
+function formatError(error: unknown): string {
+  return error instanceof Error && error.message.trim() !== '' ? error.message : '未知错误';
+}
+
 function readJwtExpiry(token: string | undefined): number | undefined {
   const payload = readJwtPayload(token);
   const exp = payload && typeof payload.exp === 'number' && Number.isFinite(payload.exp)
@@ -243,9 +351,13 @@ function isNodeErrorCode(error: unknown, code: string): boolean {
 export {
   CODEX_OAUTH_BACKEND_BASE_URL,
   CODEX_OAUTH_MODELS_URL,
+  CODEX_OAUTH_USAGE_URL,
   CodexOAuthCredentialError,
+  CodexUsageError,
   isCodexOAuthCredentialExpired,
   parseCodexOAuthCredential,
+  parseCodexUsageResponse,
+  queryCodexUsage,
   readCodexOAuthCredential,
   refreshCodexOAuthCredential,
   resolveCodexAuthFilePath,
@@ -255,5 +367,8 @@ export {
 export type {
   CodexOAuthCredential,
   CodexOAuthCredentialDependencies,
-  CodexOAuthRuntimeConfig
+  CodexOAuthRuntimeConfig,
+  CodexUsage,
+  CodexUsageDependencies,
+  CodexUsageWindow
 };

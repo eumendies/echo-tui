@@ -88,8 +88,16 @@ function createHostHarness(options = {}) {
         return 'plan';
       },
       modelContext: options.modelContext || {
+        createStatusInfo() {
+          return {error: 'LLM 配置缺少 models'};
+        },
         refreshModelState() {
           calls.modelRefreshes += 1;
+        }
+      },
+      transcriptContext: {
+        getCurrentSessionId() {
+          return options.sessionId || null;
         }
       },
       setTheme(theme) {
@@ -110,7 +118,8 @@ function createHostHarness(options = {}) {
     renderFooter() {},
     renderResizeRecovery() {
       calls.resizeRecoveries += 1;
-    }
+    },
+    queryCodexUsage: options.queryCodexUsage
   });
 
   return {calls, host, setThemes};
@@ -319,6 +328,104 @@ test('CommandHost config facade does not refresh model cache when save fails', (
     assert.match(result.error, /至少需要配置一个 provider/);
     assert.equal(calls.modelRefreshes, 0);
     assert.equal(calls.contextUsageClears, 0);
+  });
+});
+
+test('CommandHost status facade aggregates non-sensitive runtime state and Codex usage', async () => {
+  await withTemporaryUserConfig(JSON.stringify({
+    llm: {
+      selectedModel: 'codex-main',
+      providers: {
+        codex: {preset: 'openai-codex-oauth', codexAuthFile: '/tmp/codex-auth.json'}
+      },
+      models: [{id: 'codex-main', provider: 'codex', model: 'gpt-codex'}]
+    }
+  }), async ({configPath}) => {
+    const homeDir = path.dirname(path.dirname(configPath));
+    const cwd = path.join(homeDir, 'project');
+    fs.mkdirSync(path.join(cwd, '.git'), {recursive: true});
+    fs.writeFileSync(path.join(homeDir, '.echo', 'AGENTS.md'), 'global instructions', 'utf8');
+    fs.writeFileSync(path.join(cwd, 'AGENTS.md'), 'project instructions', 'utf8');
+    const queryCalls = [];
+    const modelContext = new ModelContext();
+    const {host} = createHostHarness({
+      cwd,
+      modelContext,
+      sessionId: 'session-status',
+      async queryCodexUsage(config) {
+        queryCalls.push(config);
+        return {
+          primary: {usedPercent: 20, resetAt: 1_800_000_000_000},
+          secondary: {usedPercent: 30, resetAt: 1_900_000_000_000}
+        };
+      }
+    });
+
+    host.memory.create('enabled user memory');
+    const disabled = host.memory.create('disabled user memory');
+    host.memory.setEnabled(disabled.memories.at(-1).id, false);
+    const catalogResult = host.memory.addAgentMemory({catalog: 'runtime', description: 'Runtime preferences', content: 'catalog item', scope: 'global'});
+    assert.equal(catalogResult.ok, true);
+
+    const snapshot = host.status.createSnapshot();
+    const usage = await host.status.queryCodexUsage();
+
+    assert.equal(snapshot.cwd, cwd);
+    assert.equal(snapshot.sessionId, 'session-status');
+    assert.deepEqual(snapshot.model, {agentType: 'codex', model: 'gpt-codex', provider: 'codex'});
+    assert.deepEqual(snapshot.agentInstructions.map((source) => source.sourceKind), ['global', 'project']);
+    assert.equal(snapshot.userMemoryCount, 1);
+    assert.deepEqual(snapshot.agentMemoryCatalogs, [{name: 'runtime', scope: 'global'}]);
+    assert.deepEqual(snapshot.diagnostics, []);
+    assert.deepEqual(queryCalls, [{authFilePath: '/tmp/codex-auth.json'}]);
+    assert.equal(usage.status, 'available');
+    assert.equal(usage.primary.usedPercent, 20);
+  });
+});
+
+test('CommandHost status facade preserves empty state and reports local read failures', async () => {
+  await withTemporaryUserConfig('{broken config', async ({configPath}) => {
+    fs.writeFileSync(path.join(path.dirname(configPath), 'memories.json'), '{broken memories', 'utf8');
+    let didQuery = false;
+    const {host} = createHostHarness({
+      modelContext: new ModelContext(),
+      async queryCodexUsage() {
+        didQuery = true;
+        throw new Error('should not query');
+      }
+    });
+
+    const snapshot = host.status.createSnapshot();
+    const usage = await host.status.queryCodexUsage();
+
+    assert.equal(snapshot.model, null);
+    assert.equal(snapshot.sessionId, null);
+    assert.equal(snapshot.userMemoryCount, 0);
+    assert.equal(snapshot.agentMemoryCatalogs.length, 0);
+    assert.equal(snapshot.diagnostics.length >= 2, true);
+    assert.equal(usage.status, 'unavailable');
+    assert.equal(didQuery, false);
+  });
+});
+
+test('CommandHost status facade skips Codex request for non-Codex provider', async () => {
+  await withTemporaryUserConfig(JSON.stringify({
+    llm: {
+      providers: {chat: {preset: 'openai-chat-compatible-api', apiKey: 'secret'}},
+      models: [{id: 'chat', provider: 'chat', model: 'gpt-chat'}]
+    }
+  }), async () => {
+    let didQuery = false;
+    const {host} = createHostHarness({
+      modelContext: new ModelContext(),
+      async queryCodexUsage() {
+        didQuery = true;
+        throw new Error('should not query');
+      }
+    });
+
+    assert.deepEqual(await host.status.queryCodexUsage(), {status: 'not_applicable'});
+    assert.equal(didQuery, false);
   });
 });
 

@@ -1,5 +1,5 @@
 import type { InputEvent } from './input';
-import type { ContextUsage, InteractionMode, ReasoningEffort } from './agent';
+import type { AgentType, ContextUsage, InteractionMode, ReasoningEffort } from './agent';
 import type {DiffFile, DiffSourceInfo, DiffSourceResult} from './diff';
 import type { CompactionState, TranscriptRecord, TranscriptSessionMetadata } from './transcript';
 import type {UndoExecuteResult, UndoSummary} from './change-history';
@@ -311,6 +311,51 @@ export type UsageCommandSurface = {
   title?: string;
 };
 
+export type CommandStatusSnapshot = {
+  agentInstructions: Array<{
+    filePath: string;
+    label: string;
+    sourceKind: 'global' | 'project';
+  }>;
+  agentMemoryCatalogs: Array<{
+    name: string;
+    scope: 'global' | 'project';
+  }>;
+  cwd: string;
+  diagnostics: string[];
+  model: {
+    agentType: AgentType;
+    model: string;
+    provider: string;
+  } | null;
+  sessionId: string | null;
+  userMemoryCount: number;
+};
+
+export type CommandCodexUsageWindow = {
+  resetAt: number;
+  usedPercent: number;
+};
+
+export type CommandCodexUsageResult =
+  | {
+      status: 'available';
+      primary: CommandCodexUsageWindow;
+      secondary?: CommandCodexUsageWindow;
+    }
+  | {status: 'not_applicable'}
+  | {status: 'unavailable'; error: string};
+
+export type StatusCommandUsageState = CommandCodexUsageResult | {status: 'loading'};
+
+export type StatusCommandSurface = {
+  dismissHint?: string;
+  kind: 'status';
+  snapshot: CommandStatusSnapshot;
+  title?: string;
+  usage: StatusCommandUsageState;
+};
+
 export type CopyableMessageRole = 'user' | 'assistant';
 
 export type CopyableMessageRecord = {
@@ -374,7 +419,7 @@ export type DiffCommandSurface = {
   title?: string;
 };
 
-export type CommandSurface = InfoCommandSurface | SelectCommandSurface | ResumeCommandSurface | CheckboxCommandSurface | SkillsCommandSurface | McpCommandSurface | MemoryCommandSurface | HooksCommandSurface | ScaleCommandSurface | ChoiceCommandSurface | ConfirmCommandSurface | ConfigCommandSurface | ContextUsageCommandSurface | UsageCommandSurface | CopyCommandSurface | FilePickerCommandSurface | DiffCommandSurface;
+export type CommandSurface = InfoCommandSurface | SelectCommandSurface | ResumeCommandSurface | CheckboxCommandSurface | SkillsCommandSurface | McpCommandSurface | MemoryCommandSurface | HooksCommandSurface | ScaleCommandSurface | ChoiceCommandSurface | ConfirmCommandSurface | ConfigCommandSurface | ContextUsageCommandSurface | UsageCommandSurface | StatusCommandSurface | CopyCommandSurface | FilePickerCommandSurface | DiffCommandSurface;
 
 export type CommandModelProfile = {
   id: string;
@@ -546,6 +591,10 @@ export type CommandHostApp = {
   };
   context: {
     getUsage(): ContextUsage | null;
+  };
+  status: {
+    createSnapshot(): CommandStatusSnapshot;
+    queryCodexUsage(): Promise<CommandCodexUsageResult>;
   };
   usage: {
     listDailyUsage(options?: UsageQueryOptions): UsageDailyAggregate[];

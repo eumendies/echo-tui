@@ -7,6 +7,7 @@ const { ECHO_SPINNER_ACTIVE_FRAME_COUNT, ECHO_SPINNER_FRAME_INTERVAL_MS, getEcho
 const { renderDiffSurface } = require('../../src/render/footer/diff-surface');
 const { renderFooterLayout } = require('../../src/render/footer');
 const { humanizeTokens } = require('../../src/render/footer/usage-surface');
+const { renderStatusSurface } = require('../../src/render/footer/status-surface');
 const { displayWidth, safeRenderWidth, stripAnsi } = require('../../src/render/layout');
 
 const DEFAULT_STATUS_LINE = {
@@ -400,6 +401,138 @@ test('renderFooterLayout applies custom theme to scale and context surfaces', ()
   assert.ok(context.includes('\x1b[38;2;7;8;9m'));
   assert.ok(context.includes('\x1b[38;2;30;31;32m'));
   assert.equal(context.includes('\x1b[38;2;10;11;12m─'), false);
+});
+
+test('renderFooterLayout renders runtime status and Codex usage progress bars', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: {
+      kind: 'status',
+      title: 'Status',
+      snapshot: {
+        cwd: '/work/echo-tui',
+        sessionId: 'session-123',
+        model: {agentType: 'codex', model: 'gpt-codex', provider: 'codex-main'},
+        agentInstructions: [
+          {sourceKind: 'global', label: 'AGENTS.md', filePath: '/home/user/.echo/AGENTS.md'},
+          {sourceKind: 'project', label: 'AGENTS.md', filePath: '/work/echo-tui/AGENTS.md'}
+        ],
+        userMemoryCount: 2,
+        agentMemoryCatalogs: [{scope: 'project', name: 'runtime'}],
+        diagnostics: []
+      },
+      usage: {
+        status: 'available',
+        primary: {usedPercent: 25, resetAt: Date.parse('2030-01-02T03:04:00.000Z')},
+        secondary: {usedPercent: 80.5, resetAt: Date.parse('2030-02-03T04:05:00.000Z')}
+      }
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    theme: CUSTOM_THEME,
+    rows: 30,
+    width: 90
+  });
+  const plain = layout.lines.map((line) => stripAnsi(line)).join('\n');
+
+  assert.match(plain, /Status/);
+  assert.doesNotMatch(plain, /Runtime Status/);
+  assert.match(plain, /目录\s+\/work\/echo-tui/);
+  assert.match(plain, /模型\s+gpt-codex/);
+  assert.match(plain, /Provider\s+codex-main \(codex\)/);
+  assert.match(plain, /Session\s+session-123/);
+  assert.match(plain, /AGENTS\s+global:AGENTS\.md, project:AGENTS\.md/);
+  assert.match(plain, /Memory\s+user:2 · catalogs:project:runtime/);
+  assert.match(plain, /5 小时.*25%.*2030-01-02 03:04/);
+  assert.match(plain, /每周.*80\.5%.*2030-02-03 04:05/);
+  assert.match(plain, /█+░+/);
+  assert.equal(/context|ctx|上下文/i.test(plain), false);
+  assert.equal(layout.showCursor, false);
+  assert.ok(layout.lines.every((line) => displayWidth(line) <= safeRenderWidth(90)));
+  assert.ok(layout.lines.join('\n').includes('\x1b[38;2;1;2;3m'));
+  assert.ok(layout.lines.join('\n').includes('\x1b[38;2;13;14;15m'));
+});
+
+test('renderStatusSurface handles loading, unavailable, not-applicable, and empty state', () => {
+  const snapshot = {
+    cwd: '/tmp/project',
+    sessionId: null,
+    model: null,
+    agentInstructions: [],
+    userMemoryCount: 0,
+    agentMemoryCatalogs: [],
+    diagnostics: ['无法读取 memory']
+  };
+  const states = [
+    [{status: 'loading'}, /正在查询/],
+    [{status: 'unavailable', error: '网络不可用'}, /不可用.*网络不可用/]
+  ];
+
+  for (const [usage, expected] of states) {
+    const layout = renderStatusSurface({kind: 'status', snapshot, usage}, 70, 20, CUSTOM_THEME.footer);
+    const plain = layout.lines.map((line) => stripAnsi(line)).join('\n');
+    assert.match(plain, /Session\s+未创建/);
+    assert.match(plain, /AGENTS\s+无/);
+    assert.match(plain, /Memory\s+user:0 · catalogs:无/);
+    assert.match(plain, expected);
+    assert.ok(layout.lines.every((line) => displayWidth(line) <= safeRenderWidth(70)));
+  }
+
+  const notApplicable = renderStatusSurface({kind: 'status', snapshot, usage: {status: 'not_applicable'}}, 70, 20, CUSTOM_THEME.footer);
+  const notApplicablePlain = notApplicable.lines.map((line) => stripAnsi(line)).join('\n');
+  assert.doesNotMatch(notApplicablePlain, /Codex/);
+  assert.doesNotMatch(notApplicablePlain, /5 小时|每周/);
+});
+
+test('renderStatusSurface preserves both quota labels, bars, and percentages in narrow terminal', () => {
+  const layout = renderStatusSurface({
+    kind: 'status',
+    snapshot: {
+      cwd: '/a/very/long/project/path/that/will/be/clamped',
+      sessionId: null,
+      model: {agentType: 'codex', model: 'gpt-codex', provider: 'codex'},
+      agentInstructions: [],
+      userMemoryCount: 0,
+      agentMemoryCatalogs: [],
+      diagnostics: []
+    },
+    usage: {
+      status: 'available',
+      primary: {usedPercent: 12, resetAt: Date.parse('2030-01-02T03:04:00.000Z')},
+      secondary: {usedPercent: 67, resetAt: Date.parse('2030-02-03T04:05:00.000Z')}
+    }
+  }, 32, 10, CUSTOM_THEME.footer);
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+  const plain = plainLines.join('\n');
+
+  assert.match(plain, /5 小时.*12%/);
+  assert.match(plain, /每周.*67%/);
+  assert.equal(plainLines.filter((line) => /[█░]+/.test(line)).length, 2);
+  assert.ok(layout.lines.length <= 10);
+  assert.ok(layout.lines.every((line) => displayWidth(line) <= safeRenderWidth(32)));
+});
+
+test('renderStatusSurface keeps primary progress when Codex omits weekly window', () => {
+  const layout = renderStatusSurface({
+    kind: 'status',
+    snapshot: {
+      cwd: '/tmp/project',
+      sessionId: null,
+      model: {agentType: 'codex', model: 'gpt-codex', provider: 'codex'},
+      agentInstructions: [],
+      userMemoryCount: 0,
+      agentMemoryCatalogs: [],
+      diagnostics: []
+    },
+    usage: {
+      status: 'available',
+      primary: {usedPercent: 12, resetAt: Date.parse('2030-01-02T03:04:00.000Z')}
+    }
+  }, 70, 20, CUSTOM_THEME.footer);
+  const plain = layout.lines.map((line) => stripAnsi(line)).join('\n');
+
+  assert.match(plain, /5 小时.*12%/);
+  assert.match(plain, /每周\s+暂无数据/);
 });
 
 test('renderFooterLayout renders usage surface with totals, hidden days, and daily rows', () => {

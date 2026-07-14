@@ -41,6 +41,13 @@ class TranscriptContext {
   }
 
   /**
+   * 返回当前持久化 session id；新会话尚未首次落盘时返回 null。
+   */
+  getCurrentSessionId(): string | null {
+    return this.currentSessionId;
+  }
+
+  /**
    * 列出当前 cwd 下可恢复的会话 metadata。
    */
   listResumeSessions(): TranscriptSessionMetadata[] {

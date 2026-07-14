@@ -147,7 +147,7 @@ handler 协议保持最小：
 
 这让“无交互命令”和“有交互命令”共享同一套总线，而不是拆成两套 app 分支。
 
-默认 handlers 在 app 装配阶段无参实例化：`createDefaultSlashCommandHandlers()` 创建 `/help`、`/config`、`/model`、`/effort`、`/mode`、`/context`、`/usage`、`/memory`、`/clear`、`/compact`、`/diff`、`/undo`、`/resume`、`/mcp`、`/hooks`、`/skills`、`/themes`、内置 agent workflow（`/init`、`/review`）和 direct skill invocation handler。命令需要的 app 能力在运行时由 `CommandHost` 提供。`createSlashCommandDescriptors()` 从同一组 handlers 派生命令 `{name, description}`，再与 enabled skill descriptors 合并去重，供普通 composer 输入态下的 slash suggestion 使用，避免维护第二份命令/skill 清单。
+默认 handlers 在 app 装配阶段无参实例化：`createDefaultSlashCommandHandlers()` 创建 `/help`、`/config`、`/model`、`/effort`、`/mode`、`/status`、`/context`、`/usage`、`/memory`、`/clear`、`/compact`、`/diff`、`/undo`、`/resume`、`/mcp`、`/hooks`、`/skills`、`/themes`、内置 agent workflow（`/init`、`/review`）和 direct skill invocation handler。命令需要的 app 能力在运行时由 `CommandHost` 提供。`createSlashCommandDescriptors()` 从同一组 handlers 派生命令 `{name, description}`，再与 enabled skill descriptors 合并去重，供普通 composer 输入态下的 slash suggestion 使用，避免维护第二份命令/skill 清单。
 
 `AppContext` 作为组合根和门面：构造期创建 `ComposerContext`、`TranscriptContext`、`ModelContext`、`TurnContext`、`RenderContext`、`SlashSuggestionContext` 和 `ChangeHistoryContext`，并保存当前进程内 interaction mode、context usage 和 MCP bootstrap 状态；`ToolApprovalContext`、`UserQuestionContext` 和 `FilePickerContext` 由 `main.ts` 持有。AppContext 为 `main.ts` 顶层编排保留稳定转发入口。
 
@@ -169,6 +169,7 @@ handler 协议保持最小：
 | `mode` | 读取与设置当前 interaction mode，并清空 context usage 后重绘 footer |
 | `theme` | 为 `/themes` 列出内置 theme metadata、保存当前 base theme id、更新当前进程 render theme 并触发完整重绘 |
 | `context` | 为 `/context` 返回最近一次真实 provider context usage 快照 |
+| `status` | 为 `/status` 聚合 cwd、AGENTS 来源、有效 memory、model/provider 与 session id；Codex provider 额外复用 OAuth 凭据查询账户配额，失败只返回脱敏不可用状态 |
 | `usage` | 为 `/usage` 返回 usage store 的每日聚合快照；命令只读，不追加 transcript，也不触发 provider request |
 | `diff` | 为 `/diff` 读取 diff 数据源，并返回当前 command surface 的渲染视口预算 |
 | `undo` | 为 `/undo` 读取 checkpoint 摘要并执行回退 |
@@ -381,6 +382,7 @@ flowchart TB
 | `config` | `/config` provider/model 配置面板 | 渲染 provider/header/model 分层页面、preset 选择、校验错误、未保存确认和保存结果，隐藏光标 |
 | `context` | `/context` 上下文占用详情 | 渲染最近一次真实 provider usage 与分类占用，隐藏光标 |
 | `usage` | `/usage` 每日 token 用量面板 | 渲染累计输入/输出/缓存命中、日期窗口、每日堆叠柱状图、图例和导航提示，隐藏光标 |
+| `status` | `/status` 运行状态与 Codex 配额面板 | 渲染本地运行状态；以进度条展示 Codex OAuth 5 小时/每周配额、百分比和重置时间，隐藏光标 |
 | `file_picker` | composer `@` 文件选择器 | 左侧渲染当前目录条目与多选状态，右侧渲染文本/代码预览，隐藏光标 |
 | `diff` | `/diff` 差异查看面板 | 左侧文件列表，右侧宽屏 side-by-side、窄屏 unified 和 fallback 提示，隐藏光标 |
 
@@ -404,6 +406,7 @@ renderer 只理解这些 surface kind，不理解具体命令、tool approval、
 | `src/commands/model-command-handler.ts` | `ModelCommandHandler` | `/model` 多模型 select、确认持久化 `llm.selectedModel` |
 | `src/commands/effort-command-handler.ts` | `EffortCommandHandler` | `/effort` scale surface，覆盖当前模型 `reasoning.effort` |
 | `src/commands/mode-command-handler.ts` | `ModeCommandHandler`、`parseModeArgument` | `/mode` 选择或直接切换 normal/plan/shell/shell-local |
+| `src/commands/status-command-handler.ts` | `StatusCommandHandler`、`createStatusSurface` | `/status` 同步打开本地状态，异步查询 Codex 配额并隔离迟到结果 |
 | `src/commands/context-command-handler.ts` | `ContextCommandHandler`、`createContextUsageSurface` | `/context` 只读上下文占用面板 |
 | `src/commands/usage-command-handler.ts` | `UsageCommandHandler`、`createUsageSurface` | `/usage` 只读每日 token 用量面板，支持日期窗口平移和关闭 |
 | `src/commands/clear-command-handler.ts` | `ClearCommandHandler` | `/clear` confirm surface，清空可见 transcript 并 detach session |
@@ -436,7 +439,7 @@ renderer 只理解这些 surface kind，不理解具体命令、tool approval、
 | `src/persistence/usage-store.ts` | `createUsageStore`、`createUsageEvent`、`formatLocalDay` | append-only JSONL token usage 账本，按月份写入、容错读取并聚合每日用量 |
 | `src/config/llm-config.ts` | `readLlmConfig`、`readLlmModelConfigInfo`、`resolveContextWindow`、`getDefaultConfigPath` | 读取并校验 `llm.providers`/`models`/`selectedModel`/`reasoning`，按 preset 解析运行时配置，归一化当前选中配置，三级回退 context window；Codex OAuth provider 只输出运行时 `codexOAuth` source，不要求 API key |
 | `src/config/provider-presets.ts` | `listProviderPresets`、`getProviderPreset`、`providerRequiresApiKey` | 内置 provider preset catalog（协议预设、Codex OAuth 与固定 Base URL 厂商预设），把 preset 映射为 agentType/baseURL/headers/API key 要求 |
-| `src/config/codex-oauth.ts` | `resolveCodexOAuthCredential`、`refreshCodexOAuthCredential`、`resolveCodexAuthFilePath` | 读取现有 Codex OAuth auth cache、解析 JWT 过期时间和 account id、按需 refresh access token；refresh 结果只驻留内存，不回写 auth cache |
+| `src/config/codex-oauth.ts` | `resolveCodexOAuthCredential`、`refreshCodexOAuthCredential`、`resolveCodexAuthFilePath`、`queryCodexUsage`、`parseCodexUsageResponse` | 读取现有 Codex OAuth auth cache、按需 refresh access token，并通过 `backend-api/wham/usage` 查询 5 小时/每周限额；凭据和查询错误统一脱敏，refresh 结果只驻留内存 |
 | `src/config/llm-config-editor.ts` | `readLlmConfigDraft`、`saveLlmConfigDraft`、`validateConfigDraft` | `/config` 草稿读写、headers/context window 校验、隐藏 reasoning round-trip、Codex OAuth 无 API key 保存、原子写入 |
 | `src/config/provider-model-list.ts` | `listProviderModels`、`resolveProviderConnection` | `/config` 的 list models，按 preset 选择 OpenAI/Anthropic/Codex models API 并脱敏错误 |
 | `src/config/mcp-config.ts` | `readMcpConfig`、`readMcpConfigDraft`、`saveMcpEnabledStateDraft` | 读取运行时 MCP 配置、`/mcp` 面板草稿（含 disabled/invalid），只改 enabled 开关的原子写入 |

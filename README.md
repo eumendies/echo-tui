@@ -121,7 +121,9 @@ API key 不要提交到仓库。更多配置说明见内置 `echo-tui-setup` ski
 | --- | --- |
 | `/help` | 查看帮助 |
 | `/config` `/model` `/effort` | 配置 provider/model、切换模型、调整推理等级 |
-| `/mode` `/context` | 切换交互模式、查看上下文占用 |
+| `/mode` | 切换交互模式 |
+| `/status` | 查看目录、AGENTS、memory、model/provider、session，以及 Codex OAuth 5 小时/每周配额进度 |
+| `/context` `/usage` | 查看 provider 上下文占用、本地每日 token 用量 |
 | `/clear` `/compact` `/resume` | 清屏、压缩上下文、恢复历史会话 |
 | `/diff` `/undo` | 查看文件差异、回退上一轮文件修改与会话记录 |
 | `/mcp` `/hooks` `/skills` `/themes` | 管理 MCP server、lifecycle hooks、skills、内置主题 |
