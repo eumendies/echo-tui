@@ -5,7 +5,6 @@ const {
   calibrateContextUsageSegments,
   estimateContextUsageSegments
 } = require('../../src/agent/context/context-usage-breakdown');
-const {PLAN_MODE_USER_PROMPT} = require('../../src/agent/agent-loop-runtime');
 const { estimateTextTokens } = require('../../src/agent/context/token-estimator');
 
 test('estimateTextTokens is shared by token estimator module', () => {
@@ -81,11 +80,11 @@ test('estimateContextUsageSegments includes agent catalog prompt in memory token
   assert.ok(byCategory.tools > 0);
 });
 
-test('estimateContextUsageSegments classifies plan mode transient instruction as message context', () => {
+test('estimateContextUsageSegments classifies persisted mode transition as message context', () => {
+  const transitionText = '[Interaction Mode Transition]\nfrom: normal\nto: plan\n\n[Mode Instructions]\nPlan mode is active.\n\n[User Request]\nactual task';
   const segments = estimateContextUsageSegments([
     {role: 'system', text: 'stable system prompt'},
-    {role: 'user', text: PLAN_MODE_USER_PROMPT},
-    {role: 'user', text: 'actual task'}
+    {role: 'user', text: transitionText, modeTransition: {from: 'normal', to: 'plan'}}
   ]);
   const byCategory = Object.fromEntries(segments.map((segment) => [segment.category, segment.estimatedTokens]));
 

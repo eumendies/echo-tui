@@ -102,6 +102,23 @@ test('renderTranscriptLines uses displayText for user records when present', () 
   assert.equal(lines.some((line) => line.includes('Skill Instructions')), false);
 });
 
+test('renderTranscriptLines hides mode transition prompt behind user display text', () => {
+  const lines = renderTranscriptLines(
+    [{
+      role: 'user',
+      text: '[Interaction Mode Transition]\nfrom: plan\nto: normal\n\n[Mode Instructions]\nPrevious Plan Mode restrictions no longer apply.\n\n[User Request]\nimplement now',
+      displayText: 'implement now',
+      interactionMode: 'normal',
+      modeTransition: {from: 'plan', to: 'normal'}
+    }],
+    80
+  ).map((line) => stripAnsi(line));
+
+  assert.ok(lines.some((line) => line.startsWith('▌ implement now')));
+  assert.equal(lines.some((line) => line.includes('Interaction Mode Transition')), false);
+  assert.equal(lines.some((line) => line.includes('Mode Instructions')), false);
+});
+
 test('renderTranscriptLines colors plan mode user prefix with footer plan color', () => {
   const theme = createTuiTheme({
     blocks: {

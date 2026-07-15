@@ -22,6 +22,46 @@ import type {ChangeFileRecorder, UndoExecuteResult, UndoSummary} from '../../typ
 import type {ToolApprovalContext} from './tool-approval-context';
 import type {AssistantTurnHandle, InterruptAssistantTurnResult} from './turn-context';
 
+type AgentInteractionMode = 'normal' | 'plan';
+
+const PLAN_MODE_INSTRUCTIONS = 'Plan mode is active. Discuss and inspect only; do not modify files, run mutating commands, run tests or builds, install dependencies, change branch or repository state, or use MCP tools. Ask the user to switch to /mode normal before implementing.';
+const NORMAL_MODE_INSTRUCTIONS = 'Normal mode is active. Previous Plan Mode restrictions no longer apply. You may implement changes and use mutation tools, subject to the normal tool approval and risk policies.';
+
+function isInteractionMode(value: unknown): value is InteractionMode {
+  return value === 'normal' || value === 'plan' || value === 'shell' || value === 'shell-local';
+}
+
+/**
+ * 把四种 UI interaction mode 收敛为模型可见的执行或规划语义。
+ */
+function toAgentInteractionMode(mode: InteractionMode): AgentInteractionMode {
+  return mode === 'plan' ? 'plan' : 'normal';
+}
+
+/**
+ * 仅在模型可见 mode 改变时包装 user message；返回 null 表示原文可直接提交。
+ */
+function createModeTransitionUserMessage(userText: string, from: AgentInteractionMode, to: AgentInteractionMode): {metadata: {from: AgentInteractionMode; to: AgentInteractionMode}; text: string} | null {
+  if (from === to) {
+    return null;
+  }
+
+  return {
+    metadata: {from, to},
+    text: [
+      '[Interaction Mode Transition]',
+      `from: ${from}`,
+      `to: ${to}`,
+      '',
+      '[Mode Instructions]',
+      to === 'plan' ? PLAN_MODE_INSTRUCTIONS : NORMAL_MODE_INSTRUCTIONS,
+      '',
+      '[User Request]',
+      userText
+    ].join('\n')
+  };
+}
+
 /**
  * 组合单个 createApp 实例需要的语义 context；状态由各子 context 自己持有。
  */
@@ -37,6 +77,7 @@ class AppContext {
   renderContext: RenderContext;
   slashSuggestionContext: SlashSuggestionContext;
   interactionMode: InteractionMode;
+  lastSubmittedAgentMode: AgentInteractionMode;
   contextUsage: ContextUsage | null;
   mcpBootstrapStatus: 'idle' | 'initializing' | 'ready';
 
@@ -57,6 +98,7 @@ class AppContext {
     this.changeHistoryContext = new ChangeHistoryContext();
     this.theme = theme;
     this.interactionMode = 'normal';
+    this.lastSubmittedAgentMode = 'normal';
     this.contextUsage = null;
     this.mcpBootstrapStatus = 'idle';
     this.slashSuggestionContext = new SlashSuggestionContext([], {
@@ -147,7 +189,7 @@ class AppContext {
   }
 
   /**
-   * 返回当前交互模式；plan mode 只影响当前进程，不写入 transcript 或配置。
+   * 返回当前交互模式；mode 选择不写配置，模型可见切换由下一条 user record 持久化。
    */
   getInteractionMode(): InteractionMode {
     return this.interactionMode;
@@ -297,6 +339,7 @@ class AppContext {
 
     if (loadedSession) {
       this.changeHistoryContext.restoreHistory(this.transcriptContext.changeHistory);
+      this.rebuildLastSubmittedAgentMode();
     }
 
     return loadedSession;
@@ -315,6 +358,7 @@ class AppContext {
   clearTranscriptRecords(): void {
     this.transcriptContext.clearRecords();
     this.changeHistoryContext.restoreHistory(this.transcriptContext.changeHistory);
+    this.lastSubmittedAgentMode = 'normal';
   }
 
   /**
@@ -415,6 +459,7 @@ class AppContext {
         nextChangeHistory
       );
       this.changeHistoryContext.markLastUsed();
+      this.rebuildLastSubmittedAgentMode();
       this.clearContextUsage();
       return result;
     } catch (error: unknown) {
@@ -471,10 +516,41 @@ class AppContext {
   }
 
   /**
-   * 提交用户消息并进入响应中状态。
+   * 提交用户消息并进入响应中状态；mode 改变时把一次性切换说明写入 provider-facing text。
    */
   beginUserTurn(userText: string, options: {historyText?: string; displayText?: string; metadata?: Record<string, unknown>; attachments?: ToolExecutionResult['attachments']} = {}): TranscriptRecord {
-    return this.turnContext.beginUserTurn(userText, options);
+    const currentAgentMode = toAgentInteractionMode(this.interactionMode);
+    const transition = createModeTransitionUserMessage(userText, this.lastSubmittedAgentMode, currentAgentMode);
+    const record = this.turnContext.beginUserTurn(transition?.text || userText, {
+      ...options,
+      ...(transition ? {displayText: options.displayText || userText} : {}),
+      metadata: {
+        ...(options.metadata || {}),
+        ...(transition ? {
+          interactionMode: this.interactionMode,
+          modeTransition: transition.metadata
+        } : {})
+      }
+    });
+
+    this.lastSubmittedAgentMode = currentAgentMode;
+    return record;
+  }
+
+  /**
+   * 从当前 transcript 尾部重建上一条模型可见 mode；旧记录缺少 metadata 时回退 normal。
+   */
+  private rebuildLastSubmittedAgentMode(): void {
+    for (let index = this.transcriptRecords.length - 1; index >= 0; index -= 1) {
+      const record = this.transcriptRecords[index];
+
+      if (record.role === 'user' && isInteractionMode(record.interactionMode)) {
+        this.lastSubmittedAgentMode = toAgentInteractionMode(record.interactionMode);
+        return;
+      }
+    }
+
+    this.lastSubmittedAgentMode = 'normal';
   }
 
   /**

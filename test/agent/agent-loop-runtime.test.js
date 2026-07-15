@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { PLAN_MODE_USER_PROMPT, buildProviderRecords, createAgentLoopRuntime } = require('../../src/agent/agent-loop-runtime');
+const { buildProviderRecords, createAgentLoopRuntime } = require('../../src/agent/agent-loop-runtime');
 const { createBuiltInSystemPrompt } = require('../../src/agent/system-prompt');
 const llmConfigModule = require('../../src/config/llm-config');
 const agentSetupModule = require('../../src/agent/agent-setup');
@@ -104,7 +104,7 @@ test('buildProviderRecords includes skill catalog without skill body', () => {
 });
 
 test('buildProviderRecords includes AGENTS instructions with precedence text', () => {
-  const records = buildProviderRecords([{ role: 'user', text: 'follow repo rules' }], TEST_CWD, undefined, [], 'normal', [
+  const records = buildProviderRecords([{ role: 'user', text: 'follow repo rules' }], TEST_CWD, undefined, [], [
     {
       content: 'Use concise Chinese replies.',
       filePath: '/home/user/.echo/AGENTS.md',
@@ -130,7 +130,7 @@ test('buildProviderRecords includes AGENTS instructions with precedence text', (
 });
 
 test('buildProviderRecords injects user memories only into the transient system prompt', () => {
-  const records = buildProviderRecords([{role: 'user', text: '继续'}], TEST_CWD, undefined, [], 'normal', [], undefined, [{
+  const records = buildProviderRecords([{role: 'user', text: '继续'}], TEST_CWD, undefined, [], [], undefined, [{
     id: 'memory-1',
     content: '回复使用中文。',
     enabled: true,
@@ -145,7 +145,7 @@ test('buildProviderRecords injects user memories only into the transient system 
 });
 
 test('buildProviderRecords excludes disabled user memories', () => {
-  const records = buildProviderRecords([{role: 'user', text: '继续'}], TEST_CWD, undefined, [], 'normal', [], undefined, [{
+  const records = buildProviderRecords([{role: 'user', text: '继续'}], TEST_CWD, undefined, [], [], undefined, [{
     id: 'memory-1',
     content: '不应注入。',
     enabled: false,
@@ -158,7 +158,7 @@ test('buildProviderRecords excludes disabled user memories', () => {
 });
 
 test('buildProviderRecords injects only agent memory catalog names and descriptions', () => {
-  const records = buildProviderRecords([{role: 'user', text: '继续'}], TEST_CWD, undefined, [], 'normal', [], undefined, [], [{
+  const records = buildProviderRecords([{role: 'user', text: '继续'}], TEST_CWD, undefined, [], [], undefined, [], [{
     id: 'catalog-1',
     name: 'rendering',
     description: 'Terminal rendering rules',
@@ -236,30 +236,15 @@ test('createAgentLoopRuntime excludes disabled catalogs and falls back to enable
   });
 });
 
-test('buildProviderRecords keeps system prompt stable and injects plan mode in runtime context suffix', () => {
-  const normalRecords = buildProviderRecords([{ role: 'user', text: 'plan this' }], TEST_CWD);
-  const planRecords = buildProviderRecords([{ role: 'user', text: 'plan this' }], TEST_CWD, undefined, [], 'plan');
+test('buildProviderRecords does not inject mode runtime context', () => {
+  const records = buildProviderRecords([{ role: 'user', text: 'plan this' }], TEST_CWD);
 
-  assert.equal(planRecords[0].role, 'system');
-  assert.equal(planRecords[0].text, normalRecords[0].text);
-  assert.equal(planRecords[0].text.includes(PLAN_MODE_USER_PROMPT), false);
-  assert.deepEqual(planRecords.slice(0, normalRecords.length), normalRecords);
-  assert.deepEqual(planRecords, [
+  assert.deepEqual(records, [
     { role: 'system', text: createBuiltInSystemPrompt({ cwd: TEST_CWD }) },
-    { role: 'user', text: 'plan this' },
-    {
-      role: 'user',
-      text: [
-        '# Echo Runtime Context',
-        '',
-        'Not a user request. Use silently; continue the current turn.',
-        '',
-        '## Mode',
-        PLAN_MODE_USER_PROMPT
-      ].join('\n')
-    }
+    { role: 'user', text: 'plan this' }
   ]);
-  assert.equal(planRecords.at(-1).text.includes('/mode normal'), true);
+  assert.equal(records.some((record) => record.text.includes('## Mode')), false);
+  assert.equal(records.some((record) => record.text.includes('/mode normal')), false);
 });
 
 test('buildProviderRecords injects todo runtime context without changing system prompt', () => {
@@ -271,7 +256,7 @@ test('buildProviderRecords injects todo runtime context without changing system 
     ]
   };
   const normalRecords = buildProviderRecords([{ role: 'user', text: 'continue' }], TEST_CWD);
-  const todoRecords = buildProviderRecords([{ role: 'user', text: 'continue' }], TEST_CWD, undefined, [], 'normal', [], todoState);
+  const todoRecords = buildProviderRecords([{ role: 'user', text: 'continue' }], TEST_CWD, undefined, [], [], todoState);
 
   assert.equal(todoRecords[0].text, normalRecords[0].text);
   assert.deepEqual(todoRecords.slice(0, normalRecords.length), normalRecords);
@@ -286,7 +271,7 @@ test('buildProviderRecords injects todo runtime context without changing system 
 });
 
 test('buildProviderRecords omits completed-only todo state from runtime context', () => {
-  const records = buildProviderRecords([{ role: 'user', text: 'continue' }], TEST_CWD, undefined, [], 'normal', [], {
+  const records = buildProviderRecords([{ role: 'user', text: 'continue' }], TEST_CWD, undefined, [], [], {
     updatedAt: '2026-06-30T00:00:00.000Z',
     items: [{id: 'todo_1', text: 'done task', status: 'completed'}]
   });
@@ -295,7 +280,7 @@ test('buildProviderRecords omits completed-only todo state from runtime context'
 });
 
 test('buildProviderRecords omits runtime context when no runtime state exists', () => {
-  const records = buildProviderRecords([{ role: 'user', text: 'continue' }], TEST_CWD, undefined, [], 'normal', [], {
+  const records = buildProviderRecords([{ role: 'user', text: 'continue' }], TEST_CWD, undefined, [], [], {
     updatedAt: '2026-06-30T00:00:00.000Z',
     items: []
   });
@@ -303,20 +288,17 @@ test('buildProviderRecords omits runtime context when no runtime state exists', 
   assert.deepEqual(records.slice(1), [{ role: 'user', text: 'continue' }]);
 });
 
-test('buildProviderRecords appends plan instruction after active records', () => {
+test('buildProviderRecords does not append mode context after compacted active records', () => {
   const records = buildProviderRecords([{role: 'user', text: 'next task'}], TEST_CWD, {
     summaryText: 'Earlier context.',
     activeStartIndex: 4,
     createdAt: '2026-06-29T00:00:00.000Z'
-  }, [], 'plan');
+  });
 
-  assert.deepEqual(records.map((record) => record.role), ['system', 'user', 'user', 'user']);
+  assert.deepEqual(records.map((record) => record.role), ['system', 'user', 'user']);
   assert.equal(records[1].text, 'Here is a structured summary of the earlier conversation:\nEarlier context.');
   assert.equal(records[2].text, 'next task');
-  assert.match(records[3].text, /# Echo Runtime Context/);
-  assert.match(records[3].text, /## Mode/);
-  assert.match(records[3].text, /Plan: discuss\/inspect only/);
-  assert.equal(records[3].text.includes('/mode normal'), true);
+  assert.equal(records.some((record) => record.text.includes('# Echo Runtime Context')), false);
 });
 
 test('built-in system prompt distinguishes directory reading from path and content search', () => {
@@ -689,9 +671,8 @@ test('createAgentLoopRuntime creates todos, persists state, and injects suffix o
   assert.equal(toolResults[0].ok, true);
   assert.match(providerRecords[1].at(-1).text, /# Echo Runtime Context/);
   assert.match(providerRecords[1].at(-1).text, /Not a user request/);
-  assert.match(providerRecords[1].at(-1).text, /## Mode/);
-  assert.match(providerRecords[1].at(-1).text, /Plan: discuss\/inspect only/);
-  assert.equal(providerRecords[1].at(-1).text.includes('/mode normal'), true);
+  assert.doesNotMatch(providerRecords[1].at(-1).text, /## Mode/);
+  assert.equal(providerRecords[1].at(-1).text.includes('/mode normal'), false);
   assert.match(providerRecords[1].at(-1).text, /## Todos/);
   assert.match(providerRecords[1].at(-1).text, /\[todo_1\] inspect state/);
 });

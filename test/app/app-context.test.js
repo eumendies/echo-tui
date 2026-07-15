@@ -646,6 +646,115 @@ test('AppContext cycles through four interaction modes', () => {
   assert.equal(context.createRenderState().statusLine.mode, 'idle');
 });
 
+test('AppContext injects only effective model-visible mode transitions and ignores shell commands', () => {
+  const context = createContext();
+
+  context.setInteractionMode('plan');
+  context.setInteractionMode('shell');
+  context.setInteractionMode('normal');
+  const unchanged = context.beginUserTurn('normal request');
+  context.finishAssistantTurn('done');
+
+  assert.equal(unchanged.text, 'normal request');
+  assert.equal(unchanged.modeTransition, undefined);
+
+  context.setInteractionMode('plan');
+  const enteringPlan = context.beginUserTurn('inspect only');
+  context.finishAssistantTurn('planned');
+
+  assert.deepEqual(enteringPlan.modeTransition, {from: 'normal', to: 'plan'});
+
+  context.setInteractionMode('shell');
+  context.beginShellCommand('pwd');
+  context.finishShellCommand({
+    command: 'pwd',
+    durationMs: 1,
+    exitCode: 0,
+    output: '/tmp/echo_tui\n',
+    stderr: '',
+    stdout: '/tmp/echo_tui\n',
+    timedOut: false,
+    truncated: false
+  }, true);
+  context.setInteractionMode('normal');
+  const leavingPlan = context.beginUserTurn('implement now');
+
+  assert.deepEqual(leavingPlan.modeTransition, {from: 'plan', to: 'normal'});
+  assert.match(leavingPlan.text, /Previous Plan Mode restrictions no longer apply/);
+});
+
+test('AppContext preserves display text and composer history for mode transition messages', () => {
+  const context = createContext();
+  context.setInteractionMode('plan');
+
+  const record = context.beginUserTurn('expanded image request', {
+    displayText: '@image.png',
+    historyText: '@image.png'
+  });
+
+  assert.match(record.text, /\[User Request\]\nexpanded image request$/);
+  assert.equal(record.displayText, '@image.png');
+  assert.deepEqual(context.composerContext.getInputHistory(), ['@image.png']);
+});
+
+test('AppContext rebuilds model-visible mode after resume and clear', () => {
+  const transcriptStore = createFakeTranscriptStore([{
+    sessionId: 'plan-session',
+    cwd: '/tmp/echo_tui',
+    createdAt: '2026-05-19T00:00:00.000Z',
+    updatedAt: '2026-05-19T00:00:00.000Z',
+    records: [
+      {role: 'user', text: 'plan request', interactionMode: 'plan'},
+      {role: 'assistant', text: 'plan response'}
+    ]
+  }]);
+  const context = createContext({transcriptStore});
+
+  assert.ok(context.loadTranscriptSession('plan-session'));
+  context.setInteractionMode('normal');
+  const afterResume = context.beginUserTurn('implement after resume');
+  context.finishAssistantTurn('done');
+
+  assert.deepEqual(afterResume.modeTransition, {from: 'plan', to: 'normal'});
+
+  context.setInteractionMode('plan');
+  context.clearTranscriptRecords();
+  const afterClear = context.beginUserTurn('new plan context');
+
+  assert.deepEqual(afterClear.modeTransition, {from: 'normal', to: 'plan'});
+});
+
+test('AppContext rebuilds model-visible mode after undo truncates a transition', () => {
+  const transcriptStore = createFakeTranscriptStore([{
+    sessionId: 'undo-mode-session',
+    cwd: '/tmp/echo_tui',
+    createdAt: '2026-05-19T00:00:00.000Z',
+    updatedAt: '2026-05-19T00:00:00.000Z',
+    records: [
+      {role: 'user', text: 'normal request', interactionMode: 'normal'},
+      {role: 'assistant', text: 'normal response'},
+      {role: 'user', text: 'plan request', interactionMode: 'plan', modeTransition: {from: 'normal', to: 'plan'}},
+      {role: 'assistant', text: 'plan response'}
+    ],
+    changeHistory: [{
+      id: 'mode-checkpoint',
+      createdAt: '2026-05-19T00:00:01.000Z',
+      cwd: '/tmp/echo_tui',
+      transcriptStartIndex: 2,
+      status: 'ready',
+      files: []
+    }]
+  }]);
+  const context = createContext({transcriptStore});
+
+  assert.ok(context.loadTranscriptSession('undo-mode-session'));
+  context.setInteractionMode('plan');
+  assert.equal(context.executeUndo().ok, true);
+  const afterUndo = context.beginUserTurn('plan again');
+
+  assert.deepEqual(afterUndo.modeTransition, {from: 'normal', to: 'plan'});
+});
+
 test('AppContext stores transient context usage in render state without persistence', () => {
   const transcriptStore = createFakeTranscriptStore();
   const context = createContext({ transcriptStore });

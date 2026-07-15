@@ -150,18 +150,25 @@ test('runAssistantTurn emits start and end hooks without adding hook records', a
   assert.equal(harness.appContext.responding, false);
 });
 
-test('runAssistantTurn stores submit interaction mode on user records', async () => {
+test('runAssistantTurn stores plan transition prompt while preserving display, history, metadata, and attachments', async () => {
   const harness = createHarness();
   harness.appContext.setInteractionMode('plan');
+  const attachments = [{kind: 'image', mediaType: 'image/png', dataBase64: 'aGVsbG8=', sizeBytes: 5}];
+  let capturedSession;
 
   await runAssistantTurn({
     ...harness.input,
+    userText: 'expanded request',
+    displayText: '@request.png',
+    historyText: '@request.png',
+    attachments,
     metadata: {
       skillInvocation: {
         skillName: 'example'
       }
     },
-    async runAgent(_session, callbacks) {
+    async runAgent(session, callbacks) {
+      capturedSession = session;
       callbacks.onComplete('done');
       return 'done';
     }
@@ -169,8 +176,61 @@ test('runAssistantTurn stores submit interaction mode on user records', async ()
 
   const userRecord = harness.appended[0];
   assert.equal(userRecord.role, 'user');
+  assert.match(userRecord.text, /\[Interaction Mode Transition\]/);
+  assert.match(userRecord.text, /from: normal/);
+  assert.match(userRecord.text, /to: plan/);
+  assert.match(userRecord.text, /\[User Request\]\nexpanded request$/);
+  assert.equal(userRecord.displayText, '@request.png');
   assert.equal(userRecord.interactionMode, 'plan');
+  assert.deepEqual(userRecord.modeTransition, {from: 'normal', to: 'plan'});
   assert.deepEqual(userRecord.skillInvocation, {skillName: 'example'});
+  assert.deepEqual(userRecord.attachments, attachments);
+  assert.equal(capturedSession.interactionMode, 'plan');
+  assert.equal(capturedSession.records[0].text, userRecord.text);
+  assert.deepEqual(harness.appContext.composerContext.getInputHistory(), ['@request.png']);
+});
+
+test('runAssistantTurn injects only effective mode transitions across turns', async () => {
+  const harness = createHarness();
+
+  harness.appContext.setInteractionMode('plan');
+  await runAssistantTurn({
+    ...harness.input,
+    userText: 'plan first',
+    async runAgent(_session, callbacks) {
+      callbacks.onComplete('planned');
+      return 'planned';
+    }
+  });
+
+  await runAssistantTurn({
+    ...harness.input,
+    userText: 'plan second',
+    async runAgent(_session, callbacks) {
+      callbacks.onComplete('still planned');
+      return 'still planned';
+    }
+  });
+
+  harness.appContext.setInteractionMode('normal');
+  await runAssistantTurn({
+    ...harness.input,
+    userText: 'implement now',
+    async runAgent(_session, callbacks) {
+      callbacks.onComplete('implemented');
+      return 'implemented';
+    }
+  });
+
+  const userRecords = harness.appContext.transcriptRecords.filter((record) => record.role === 'user');
+  assert.deepEqual(userRecords.map((record) => record.modeTransition), [
+    {from: 'normal', to: 'plan'},
+    undefined,
+    {from: 'plan', to: 'normal'}
+  ]);
+  assert.equal(userRecords[1].text, 'plan second');
+  assert.match(userRecords[2].text, /Previous Plan Mode restrictions no longer apply/);
+  assert.equal(userRecords[2].displayText, 'implement now');
 });
 
 test('runAssistantTurn persists provider records without visible assistant text', async () => {

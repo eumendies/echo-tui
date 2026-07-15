@@ -235,7 +235,7 @@ function createLastMessagePreview(records: import('../types/transcript').Transcr
   }
 
   const lastRecord = records[records.length - 1];
-  return String(lastRecord.text || '').replace(/\s+/g, ' ').slice(0, 60);
+  return normalizePreviewText(createRecordPreviewText(lastRecord)).slice(0, 60);
 }
 
 function createSessionPreviewRecords(records: import('../types/transcript').TranscriptRecord[]): import('../types/transcript').TranscriptSessionPreviewRecord[] {
@@ -243,7 +243,7 @@ function createSessionPreviewRecords(records: import('../types/transcript').Tran
 
   for (let index = records.length - 1; index >= 0 && previewRecords.length < SESSION_PREVIEW_RECORD_LIMIT; index -= 1) {
     const record = records[index];
-    const text = normalizePreviewText(record.text).slice(0, SESSION_PREVIEW_TEXT_LIMIT);
+    const text = normalizePreviewText(createRecordPreviewText(record)).slice(0, SESSION_PREVIEW_TEXT_LIMIT);
 
     if (text.length === 0) {
       continue;
@@ -257,6 +257,10 @@ function createSessionPreviewRecords(records: import('../types/transcript').Tran
   }
 
   return previewRecords.reverse();
+}
+
+function createRecordPreviewText(record: import('../types/transcript').TranscriptRecord): unknown {
+  return record.role === 'user' && typeof record.displayText === 'string' ? record.displayText : record.text;
 }
 
 function normalizePreviewText(text: unknown): string {

@@ -197,3 +197,21 @@ test('createTranscriptStore lists valid JSONL sessions by updatedAt with bounded
   assert.equal(sessions[0].previewRecords[0].text.length, 500);
   assert.equal(sessions[1].sessionId, first.sessionId);
 });
+
+test('createTranscriptStore hides provider-facing mode prompts from session previews', () => {
+  const rootDir = createTempRoot();
+  const store = createTranscriptStore({rootDir});
+  const cwd = '/tmp/example/project';
+  store.createSession(cwd, createAppendRecordsOperation([{
+    role: 'user',
+    text: '[Interaction Mode Transition]\n[Mode Instructions]\ninternal\n[User Request]\ninspect',
+    displayText: 'inspect',
+    interactionMode: 'plan',
+    modeTransition: {from: 'normal', to: 'plan'}
+  }]), '2026-07-01T00:00:00.000Z');
+
+  const [session] = store.listSessions(cwd);
+
+  assert.equal(session.lastMessagePreview, 'inspect');
+  assert.deepEqual(session.previewRecords, [{role: 'user', text: 'inspect'}]);
+});
