@@ -10,6 +10,7 @@ import {
 import {classifyToolCallRisk} from '../tools/tool-risk-classifier';
 import {createToolExecutor} from '../tools/tool-executor';
 import {createDefaultToolRegistry} from '../tools/tool-registry';
+import {createToolCallTranscriptRecord, createToolResultTranscriptRecord} from '../tools/tool-transcript-record';
 import {executeTodoToolCall, isTodoToolName} from '../tools/todo-tool-handler';
 import {createMcpToolRegistry, mergeToolRegistries} from '../mcp/tool-adapter';
 import {getMcpToolApproval} from '../mcp/manager';
@@ -33,21 +34,7 @@ import type {DebugContext} from '../debug/debug-context';
 import type {LifecycleHookDispatcher} from '../types/hooks';
 import type {UsageStore} from '../types/usage';
 import type {SkillCatalogEntry} from '../types/skill';
-import type {
-  ApplyPatchToolExecutionResult,
-  BashToolExecutionResult,
-  GlobToolExecutionResult,
-  GrepToolExecutionResult,
-  ReadFilesToolExecutionResult,
-  ToolApprovalRequest,
-  ToolCall,
-  ToolDefinition,
-  ToolExecutionResult,
-  ToolExecutor,
-  ToolRegistry,
-  WebFetchToolExecutionResult,
-  WebSearchToolExecutionResult
-} from '../types/tool';
+import type {ToolApprovalRequest, ToolCall, ToolDefinition, ToolExecutionResult, ToolExecutor, ToolRegistry} from '../types/tool';
 import type {CompactionState, TodoState, TranscriptRecord} from '../types/transcript';
 import type {McpManager} from '../mcp/manager';
 
@@ -55,101 +42,6 @@ const TOOL_REJECTED_BY_USER_TEXT = 'Tool execution was rejected by the user.';
 const RUNTIME_CONTEXT_NOTICE = 'Not a user request. Use silently; continue the current turn.';
 const PLAN_MODE_USER_PROMPT = 'Plan: discuss/inspect only; no file changes, mutating commands, tests/builds, dependency installs, branch/state changes, or MCP tools. Ask user to run /mode normal before implementing.';
 const INTERACTIVE_EXECUTION_MODE: AgentExecutionMode = {kind: 'interactive'};
-
-/**
- * 创建 continuation 用的 tool_call record；可见文本由 app 层按工具类型格式化。
- */
-function createToolCallRecord(call: ToolCall): TranscriptRecord {
-  return {
-    role: 'tool_call',
-    text: '',
-    toolCallId: call.callId,
-    toolName: call.toolName,
-    argumentsText: call.argumentsText
-  };
-}
-
-/**
- * 创建 continuation 用的 tool_result record，保留执行状态供下一轮 provider input 回注。
- */
-function createToolResultRecord(result: ToolExecutionResult): TranscriptRecord {
-  const baseRecord = {
-    role: 'tool_result' as const,
-    text: result.text,
-    toolCallId: result.callId,
-    toolName: result.toolName,
-    ok: result.ok,
-    ...(result.attachments ? {attachments: result.attachments} : {})
-  };
-
-  switch (result.toolName) {
-    case 'run_bash_command': {
-      const bashResult = result as BashToolExecutionResult;
-
-      return {
-        ...baseRecord,
-        exitCode: bashResult.exitCode,
-        timedOut: bashResult.timedOut,
-        truncated: bashResult.truncated,
-        durationMs: bashResult.durationMs
-      };
-    }
-    case 'glob': {
-      const globResult = result as GlobToolExecutionResult;
-
-      return {
-        ...baseRecord,
-        exitCode: globResult.exitCode,
-        truncated: globResult.truncated
-      };
-    }
-    case 'grep': {
-      const grepResult = result as GrepToolExecutionResult;
-
-      return {
-        ...baseRecord,
-        exitCode: grepResult.exitCode,
-        truncated: grepResult.truncated
-      };
-    }
-    case 'read_files': {
-      const readFilesResult = result as ReadFilesToolExecutionResult;
-
-      return {
-        ...baseRecord,
-        truncated: readFilesResult.truncated
-      };
-    }
-    case 'web_fetch': {
-      const webFetchResult = result as WebFetchToolExecutionResult;
-
-      return {
-        ...baseRecord,
-        timedOut: webFetchResult.timedOut,
-        truncated: webFetchResult.truncated
-      };
-    }
-    case 'web_search': {
-      const webSearchResult = result as WebSearchToolExecutionResult;
-
-      return {
-        ...baseRecord,
-        timedOut: webSearchResult.timedOut,
-        truncated: webSearchResult.truncated
-      };
-    }
-    case 'apply_patch': {
-      const applyPatchResult = result as ApplyPatchToolExecutionResult;
-
-      return {
-        ...baseRecord,
-        ...(applyPatchResult.display ? {display: applyPatchResult.display} : {})
-      };
-    }
-  }
-
-  return baseRecord;
-}
 
 /**
  * 用户拒绝工具授权时，生成 provider 可消费的 tool result，保证 continuation 不缺结果。
@@ -606,7 +498,7 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
       for (const toolCall of toolCalls) {
         throwIfAborted(abortSignal);
         callbacks.onToolCall?.(toolCall);
-        recordRegion.push(createToolCallRecord(toolCall));
+        recordRegion.push(createToolCallTranscriptRecord(toolCall));
         state.debug.emit('tool_call_start', {
           argumentsText: summarizeText(toolCall.argumentsText, 0),
           interactionMode,
@@ -623,7 +515,7 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
         const result = await executeToolCall(toolCall, state, callbacks);
         throwIfAborted(abortSignal);
         callbacks.onToolResult?.(result);
-        recordRegion.push(createToolResultRecord(result));
+        recordRegion.push(createToolResultTranscriptRecord(result));
         state.debug.emit('tool_call_end', {
           interactionMode,
           ok: result.ok,

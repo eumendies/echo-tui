@@ -153,6 +153,45 @@ test('runAssistantTurn persists provider records without visible assistant text'
   assert.deepEqual(harness.appContext.transcriptRecords.map((record) => record.role), ['user', 'openai_chat_reasoning', 'assistant']);
 });
 
+test('runAssistantTurn persists shared tool records with result metadata', async () => {
+  const harness = createHarness();
+  const attachments = [{
+    kind: 'image',
+    mediaType: 'image/png',
+    dataBase64: 'aGVsbG8=',
+    path: '/tmp/screenshot.png',
+    sizeBytes: 5
+  }];
+
+  await runAssistantTurn({
+    ...harness.input,
+    async runAgent(_session, callbacks) {
+      callbacks.onToolCall({
+        callId: 'call_search',
+        toolName: 'web_search',
+        argumentsText: '{"query":"Echo TUI"}'
+      });
+      callbacks.onToolResult({
+        callId: 'call_search',
+        toolName: 'web_search',
+        ok: true,
+        text: 'search result',
+        timedOut: false,
+        truncated: true,
+        attachments
+      });
+      callbacks.onComplete('done');
+      return 'done';
+    }
+  });
+
+  const [toolCall, toolResult] = harness.appContext.transcriptRecords.slice(1, 3);
+  assert.equal(toolCall.text, 'web_search({"query":"Echo TUI"})');
+  assert.equal(toolResult.timedOut, false);
+  assert.equal(toolResult.truncated, true);
+  assert.deepEqual(toolResult.attachments, attachments);
+});
+
 test('runAssistantTurn emits error hook while preserving error transcript behavior', async () => {
   const harness = createHarness();
 

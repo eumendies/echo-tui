@@ -1,16 +1,9 @@
 import {redactSensitiveText} from '../../agent/agent-errors';
 
 import type {PendingState, WorkingState} from '../../types/render';
-import type {
-  ApplyPatchToolExecutionResult,
-  BashToolExecutionResult,
-  GlobToolExecutionResult,
-  GrepToolExecutionResult,
-  ReadFilesToolExecutionResult,
-  ToolCall,
-  ToolExecutionResult,
-  WebFetchToolExecutionResult
-} from '../../types/tool';
+import {createToolCallTranscriptRecord, createToolResultTranscriptRecord} from '../../tools/tool-transcript-record';
+
+import type {ToolCall, ToolExecutionResult} from '../../types/tool';
 import type {ShellTranscriptRecord, TranscriptRecord} from '../../types/transcript';
 import type {BashCommandOutputEvent, BashCommandRunResult} from '../../tools/bash-command-runner';
 
@@ -483,7 +476,7 @@ class TurnContext {
   appendToolCall(call: ToolCall): TranscriptRecord {
     this.clearPending();
 
-    return this.transcriptContext.appendRecord(createToolCallRecord(call));
+    return this.transcriptContext.appendRecord(createToolCallTranscriptRecord(call));
   }
 
   /**
@@ -492,7 +485,7 @@ class TurnContext {
   appendToolResult(result: ToolExecutionResult): TranscriptRecord {
     this.clearPending();
 
-    return this.transcriptContext.appendRecord(createToolResultRecord(result));
+    return this.transcriptContext.appendRecord(createToolResultTranscriptRecord(result));
   }
 
   /**
@@ -506,10 +499,10 @@ class TurnContext {
     this.clearPending();
 
     if (pendingToolCall) {
-      records.push(this.transcriptContext.appendRecord(createToolCallRecord(pendingToolCall)));
+      records.push(this.transcriptContext.appendRecord(createToolCallTranscriptRecord(pendingToolCall)));
     }
 
-    records.push(this.transcriptContext.appendRecord(createToolResultRecord(result)));
+    records.push(this.transcriptContext.appendRecord(createToolResultTranscriptRecord(result)));
 
     return records;
   }
@@ -579,100 +572,6 @@ class TurnContext {
   }
 }
 
-/**
- * 把工具执行结果转换为既有 transcript record 结构，避免引入新的持久化 schema。
- */
-function createToolResultRecord(result: ToolExecutionResult): TranscriptRecord {
-  switch (result.toolName) {
-    case 'run_bash_command': {
-      const bashResult = result as BashToolExecutionResult;
-
-      return {
-        role: 'tool_result',
-        text: bashResult.text,
-        toolCallId: bashResult.callId,
-        toolName: bashResult.toolName,
-        ok: bashResult.ok,
-        exitCode: bashResult.exitCode,
-        timedOut: bashResult.timedOut,
-        truncated: bashResult.truncated,
-        durationMs: bashResult.durationMs
-      };
-    }
-    case 'glob': {
-      const globResult = result as GlobToolExecutionResult;
-
-      return {
-        role: 'tool_result',
-        text: globResult.text,
-        toolCallId: globResult.callId,
-        toolName: globResult.toolName,
-        ok: globResult.ok,
-        exitCode: globResult.exitCode,
-        truncated: globResult.truncated
-      };
-    }
-    case 'grep': {
-      const grepResult = result as GrepToolExecutionResult;
-
-      return {
-        role: 'tool_result',
-        text: grepResult.text,
-        toolCallId: grepResult.callId,
-        toolName: grepResult.toolName,
-        ok: grepResult.ok,
-        exitCode: grepResult.exitCode,
-        truncated: grepResult.truncated
-      };
-    }
-    case 'read_files': {
-      const readFilesResult = result as ReadFilesToolExecutionResult;
-
-      return {
-        role: 'tool_result',
-        text: readFilesResult.text,
-        toolCallId: readFilesResult.callId,
-        toolName: readFilesResult.toolName,
-        ok: readFilesResult.ok,
-        truncated: readFilesResult.truncated
-      };
-    }
-    case 'web_fetch': {
-      const webFetchResult = result as WebFetchToolExecutionResult;
-
-      return {
-        role: 'tool_result',
-        text: webFetchResult.text,
-        toolCallId: webFetchResult.callId,
-        toolName: webFetchResult.toolName,
-        ok: webFetchResult.ok,
-        timedOut: webFetchResult.timedOut,
-        truncated: webFetchResult.truncated
-      };
-    }
-    case 'apply_patch': {
-      const applyPatchResult = result as ApplyPatchToolExecutionResult;
-
-      return {
-        role: 'tool_result',
-        text: applyPatchResult.text,
-        toolCallId: applyPatchResult.callId,
-        toolName: applyPatchResult.toolName,
-        ok: applyPatchResult.ok,
-        ...(applyPatchResult.display ? {display: applyPatchResult.display} : {})
-      };
-    }
-  }
-
-  return {
-      role: 'tool_result',
-      text: result.text,
-      toolCallId: result.callId,
-      toolName: result.toolName,
-      ok: result.ok
-  };
-}
-
 function createShellRecord(result: BashCommandRunResult, includeInContext: boolean): ShellTranscriptRecord {
   return {
     role: 'shell',
@@ -712,34 +611,6 @@ function formatShellRecordText(result: BashCommandRunResult, includeInContext: b
   }
 
   return lines.join('\n');
-}
-
-/**
- * 把暂存的工具调用转换为既有 transcript record 结构，供 result 到达后延迟落盘。
- */
-function createToolCallRecord(call: ToolCall): TranscriptRecord {
-  return {
-    role: 'tool_call',
-    text: formatToolCallText(call),
-    toolCallId: call.callId,
-    toolName: call.toolName,
-    argumentsText: call.argumentsText
-  };
-}
-
-function formatToolCallText(call: ToolCall): string {
-  const command = extractCommandArgument(call.argumentsText);
-
-  return command ? `$ ${command}` : `${call.toolName}(${call.argumentsText})`;
-}
-
-function extractCommandArgument(argumentsText: string): string {
-  try {
-    const parsed = JSON.parse(argumentsText) as {command?: unknown};
-    return typeof parsed.command === 'string' ? parsed.command : '';
-  } catch {
-    return '';
-  }
 }
 
 export {
