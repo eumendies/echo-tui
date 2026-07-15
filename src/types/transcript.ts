@@ -143,6 +143,72 @@ export type TranscriptSessionMetadata = {
   previewRecords: TranscriptSessionPreviewRecord[];
 };
 
+export type TranscriptJournalStart = {
+  schemaVersion: 1;
+  op: 'session_start';
+  sessionId: string;
+  cwd: string;
+  createdAt: string;
+};
+
+export type AppendRecordsJournalOperation = {
+  op: 'append_records';
+  records: TranscriptRecord[];
+};
+
+export type TruncateRecordsJournalOperation = {
+  op: 'truncate_records';
+  recordCount: number;
+};
+
+export type SetChangeHistoryJournalOperation = {
+  op: 'set_change_history';
+  changeHistory: ChangeCheckpoint[];
+};
+
+export type SetCompactionJournalOperation = {
+  op: 'set_compaction';
+  compaction: CompactionState | null;
+};
+
+export type SetTodoStateJournalOperation = {
+  op: 'set_todo_state';
+  todoState: TodoState;
+};
+
+export type TranscriptJournalSubOperation =
+  | AppendRecordsJournalOperation
+  | TruncateRecordsJournalOperation
+  | SetChangeHistoryJournalOperation
+  | SetCompactionJournalOperation
+  | SetTodoStateJournalOperation;
+
+export type BatchJournalOperation = {
+  op: 'batch';
+  operations: TranscriptJournalSubOperation[];
+};
+
+export type TranscriptJournalOperation = TranscriptJournalSubOperation | BatchJournalOperation;
+
+export type TranscriptJournalEntry = TranscriptJournalOperation & {
+  schemaVersion: 1;
+  seq: number;
+  updatedAt: string;
+};
+
+export type TranscriptSessionJournalReference = {
+  sessionId: string;
+  cwd: string;
+  createdAt: string;
+  updatedAt: string;
+  sequence: number;
+};
+
+export type LoadedTranscriptSession = {
+  session: TranscriptSession;
+  reference: TranscriptSessionJournalReference;
+};
+
 export type TranscriptProjectMetadata = {
   schemaVersion: number;
   cwd: string;
@@ -150,12 +216,12 @@ export type TranscriptProjectMetadata = {
 };
 
 export type TranscriptStore = {
-  createSession: (cwd: string, records?: TranscriptRecord[], now?: string) => TranscriptSession;
+  createSession: (cwd: string, operation: TranscriptJournalOperation, now?: string) => TranscriptSessionJournalReference;
+  appendSession: (cwd: string, reference: TranscriptSessionJournalReference, operation: TranscriptJournalOperation, now?: string) => TranscriptSessionJournalReference;
   getDefaultRootDir: () => string;
   getProjectDir: (cwd: string) => string;
   getProjectMetadata: (cwd: string) => TranscriptProjectMetadata;
   getSessionFilePath: (cwd: string, sessionId: string) => string;
   listSessions: (cwd: string) => TranscriptSessionMetadata[];
-  loadSession: (cwd: string, sessionId: string) => TranscriptSession | null;
-  saveSession: (cwd: string, session: TranscriptSession) => TranscriptSession;
+  loadSession: (cwd: string, sessionId: string) => LoadedTranscriptSession | null;
 };

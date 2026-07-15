@@ -1,14 +1,14 @@
-import fs from 'node:fs';
-import path from 'node:path';
-
 import {
   getDefaultConfigPath,
+  readLlmConfig,
   readLlmModelConfigInfo
 } from '../../config/llm-config';
+import {JsonConfigFile} from '../../config/json-config-file';
 import {redactSensitiveText} from '../../agent/agent-errors';
 import {REASONING_EFFORTS} from '../../types/agent';
 import type {LlmModelConfigInfo} from '../../config/llm-config';
 import type {ReasoningEffort} from '../../types/agent';
+import type {AgentType} from '../../types/agent';
 import type {StatusLineModelState} from '../../types/render';
 
 type ModelCommandProfile = {
@@ -46,6 +46,14 @@ type SelectEffortResult = {
   ok: boolean;
   error?: string;
 };
+
+type ModelStatusInfo = {
+  agentType: AgentType;
+  model: string;
+  provider: string;
+};
+
+type ModelStatusInfoResult = ModelStatusInfo | {error: string};
 
 type JsonObject = Record<string, unknown>;
 
@@ -151,6 +159,28 @@ class ModelContext {
   }
 
   /**
+   * 读取 `/status` 所需的当前模型、provider id 和 adapter 类型，不返回凭据或 headers。
+   */
+  createStatusInfo(): ModelStatusInfoResult {
+    try {
+      const modelInfo = normalizeModelInfo(readLlmModelConfigInfo());
+      const selectedModel = modelInfo.models[modelInfo.selectedIndex] || modelInfo.models[0];
+
+      if (!selectedModel) {
+        return {error: 'LLM 配置缺少 models'};
+      }
+
+      return {
+        agentType: readLlmConfig().agentType,
+        model: selectedModel.model || selectedModel.id,
+        provider: selectedModel.provider
+      };
+    } catch (error: unknown) {
+      return {error: sanitizeModelConfigError(error, '无法读取当前模型配置')};
+    }
+  }
+
+  /**
    * 读取 /effort 命令需要展示的当前模型推理等级信息；失败时返回可直接展示的错误摘要。
    */
   createEffortCommandInfo(): EffortCommandInfoResult {
@@ -210,38 +240,28 @@ class ModelContext {
   selectEffort(effort: ReasoningEffort): SelectEffortResult {
     try {
       const targetPath = getDefaultConfigPath();
-      const rawConfig = fs.readFileSync(targetPath, 'utf8');
-      let parsedConfig: unknown;
+      const configFile = new JsonConfigFile(targetPath);
 
-      try {
-        parsedConfig = JSON.parse(rawConfig);
-      } catch {
-        throw new Error(`LLM 配置文件不是有效 JSON：${targetPath}`);
-      }
+      configFile.update((parsedConfig) => {
+        if (!isJsonObject(parsedConfig.llm)) {
+          throw new Error('LLM 配置 llm 必须是对象');
+        }
 
-      if (!isJsonObject(parsedConfig) || !isJsonObject(parsedConfig.llm)) {
-        throw new Error('LLM 配置 llm 必须是对象');
-      }
+        const info = readLlmModelConfigInfo();
+        const models = parsedConfig.llm.models;
 
-      const info = readLlmModelConfigInfo();
-      const models = parsedConfig.llm.models;
+        if (!Array.isArray(models)) {
+          throw new Error('LLM 配置缺少 models');
+        }
 
-      if (!Array.isArray(models)) {
-        throw new Error('LLM 配置缺少 models');
-      }
+        const selectedModel = models.find((model): model is JsonObject => isJsonObject(model) && model.id === info.selectedModelId);
 
-      const selectedModel = models.find((model): model is JsonObject => isJsonObject(model) && model.id === info.selectedModelId);
+        if (!selectedModel) {
+          throw new Error(`无法更新不存在的模型：${info.selectedModelId}`);
+        }
 
-      if (!selectedModel) {
-        throw new Error(`无法更新不存在的模型：${info.selectedModelId}`);
-      }
-
-      selectedModel.reasoning = isJsonObject(selectedModel.reasoning) ? {...selectedModel.reasoning, effort} : {effort};
-
-      const tempPath = createTempConfigPath(targetPath);
-      fs.mkdirSync(path.dirname(targetPath), {recursive: true});
-      fs.writeFileSync(tempPath, `${JSON.stringify(parsedConfig, null, 2)}\n`);
-      fs.renameSync(tempPath, targetPath);
+        selectedModel.reasoning = isJsonObject(selectedModel.reasoning) ? {...selectedModel.reasoning, effort} : {effort};
+      }, {allowMissing: false});
       this.refreshModelState();
 
       return {ok: true};
@@ -257,31 +277,21 @@ class ModelContext {
 
   private writeSelectedModel(modelId: string): void {
     const targetPath = getDefaultConfigPath();
-    const rawConfig = fs.readFileSync(targetPath, 'utf8');
-    let parsedConfig: unknown;
+    const configFile = new JsonConfigFile(targetPath);
 
-    try {
-      parsedConfig = JSON.parse(rawConfig);
-    } catch {
-      throw new Error(`LLM 配置文件不是有效 JSON：${targetPath}`);
-    }
+    configFile.update((parsedConfig) => {
+      if (!isJsonObject(parsedConfig.llm)) {
+        throw new Error('LLM 配置 llm 必须是对象');
+      }
 
-    if (!isJsonObject(parsedConfig) || !isJsonObject(parsedConfig.llm)) {
-      throw new Error('LLM 配置 llm 必须是对象');
-    }
+      const info = readLlmModelConfigInfo();
 
-    const info = readLlmModelConfigInfo();
+      if (!info.models.some((profile) => profile.id === modelId)) {
+        throw new Error(`无法选择不存在的模型：${modelId}`);
+      }
 
-    if (!info.models.some((profile) => profile.id === modelId)) {
-      throw new Error(`无法选择不存在的模型：${modelId}`);
-    }
-
-    parsedConfig.llm.selectedModel = modelId;
-
-    const tempPath = createTempConfigPath(targetPath);
-    fs.mkdirSync(path.dirname(targetPath), {recursive: true});
-    fs.writeFileSync(tempPath, `${JSON.stringify(parsedConfig, null, 2)}\n`);
-    fs.renameSync(tempPath, targetPath);
+      parsedConfig.llm.selectedModel = modelId;
+    }, {allowMissing: false});
   }
 
   /**
@@ -296,10 +306,6 @@ class ModelContext {
   }
 }
 
-function createTempConfigPath(targetPath: string): string {
-  return `${targetPath}.tmp-${process.pid}-${Date.now()}`;
-}
-
 export {
   ModelContext
 };
@@ -308,6 +314,8 @@ export type {
   ModelCommandInfo,
   ModelCommandInfoResult,
   ModelCommandProfile,
+  ModelStatusInfo,
+  ModelStatusInfoResult,
   EffortCommandInfo,
   EffortCommandInfoResult,
   SelectEffortResult,

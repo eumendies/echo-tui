@@ -36,12 +36,22 @@ function createContext(overrides = {}) {
 function createFakeTranscriptStore(initialSessions = []) {
   const sessionsByCwd = new Map();
   const saveCalls = [];
+  const operations = [];
   let nextSessionIndex = 1;
 
   for (const session of initialSessions) {
     const cwd = session.cwd || '/tmp/echo_tui';
     const sessions = sessionsByCwd.get(cwd) || [];
-    sessions.push(cloneSession({ ...session, cwd }));
+    sessions.push({
+      session: cloneSession({...session, cwd}),
+      reference: {
+        sessionId: session.sessionId,
+        cwd,
+        createdAt: session.createdAt,
+        updatedAt: session.updatedAt,
+        sequence: 0
+      }
+    });
     sessionsByCwd.set(cwd, sessions);
     nextSessionIndex = Math.max(nextSessionIndex, extractSessionIndex(session.sessionId) + 1);
   }
@@ -54,7 +64,7 @@ function createFakeTranscriptStore(initialSessions = []) {
     return sessionsByCwd.get(cwd);
   }
 
-  function createSession(cwd, records = []) {
+  function createSession(cwd, operation) {
     const timestamp = `2026-05-19T00:00:0${nextSessionIndex}.000Z`;
     const session = {
       schemaVersion: 1,
@@ -62,31 +72,46 @@ function createFakeTranscriptStore(initialSessions = []) {
       cwd,
       createdAt: timestamp,
       updatedAt: timestamp,
-      records: records.map((record) => ({ ...record }))
+      records: []
+    };
+    const reference = {
+      sessionId: session.sessionId,
+      cwd,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      sequence: 1
     };
 
     nextSessionIndex += 1;
-    return session;
+    applyOperation(session, operation);
+    getSessions(cwd).push({session, reference});
+    operations.push(structuredClone(operation));
+    saveCalls.push(cloneSession(session));
+    return {...reference};
   }
 
-  function saveSession(cwd, session) {
-    const sessions = getSessions(cwd);
-    const savedSession = cloneSession({ ...session, cwd });
-    const existingIndex = sessions.findIndex((candidate) => candidate.sessionId === savedSession.sessionId);
+  function appendSession(cwd, reference, operation) {
+    const entry = getSessions(cwd).find((candidate) => candidate.reference.sessionId === reference.sessionId);
 
-    if (existingIndex >= 0) {
-      sessions[existingIndex] = savedSession;
-    } else {
-      sessions.push(savedSession);
+    if (!entry) {
+      throw new Error('missing session');
     }
 
-    saveCalls.push(cloneSession(savedSession));
-    return cloneSession(savedSession);
+    applyOperation(entry.session, operation);
+    operations.push(structuredClone(operation));
+    entry.reference = {
+      ...entry.reference,
+      updatedAt: new Date().toISOString(),
+      sequence: entry.reference.sequence + 1
+    };
+    entry.session.updatedAt = entry.reference.updatedAt;
+    saveCalls.push(cloneSession(entry.session));
+    return {...entry.reference};
   }
 
   function listSessions(cwd) {
     return getSessions(cwd)
-      .map((session) => ({
+      .map(({session}) => ({
         sessionId: session.sessionId,
         createdAt: session.createdAt,
         updatedAt: session.updatedAt,
@@ -99,16 +124,17 @@ function createFakeTranscriptStore(initialSessions = []) {
   }
 
   function loadSession(cwd, sessionId) {
-    const session = getSessions(cwd).find((candidate) => candidate.sessionId === sessionId);
-    return session ? cloneSession(session) : null;
+    const entry = getSessions(cwd).find((candidate) => candidate.reference.sessionId === sessionId);
+    return entry ? {session: cloneSession(entry.session), reference: {...entry.reference}} : null;
   }
 
   return {
     createSession,
+    appendSession,
     listSessions,
     loadSession,
-    saveCalls,
-    saveSession
+    operations,
+    saveCalls
   };
 }
 
@@ -116,9 +142,35 @@ function cloneSession(session) {
   return {
     ...session,
     ...(session.changeHistory ? {changeHistory: structuredClone(session.changeHistory)} : {}),
+    ...(session.compaction ? {compaction: {...session.compaction}} : {}),
     ...(session.todoState ? {todoState: structuredClone(session.todoState)} : {}),
     records: (session.records || []).map((record) => ({ ...record }))
   };
+}
+
+function applyOperation(session, operation) {
+  if (operation.op === 'batch') {
+    for (const item of operation.operations) {
+      applyOperation(session, item);
+    }
+    return;
+  }
+
+  if (operation.op === 'append_records') {
+    session.records.push(...operation.records.map((record) => ({...record})));
+  } else if (operation.op === 'truncate_records') {
+    session.records.length = operation.recordCount;
+  } else if (operation.op === 'set_change_history') {
+    session.changeHistory = structuredClone(operation.changeHistory);
+  } else if (operation.op === 'set_compaction') {
+    if (operation.compaction) {
+      session.compaction = {...operation.compaction};
+    } else {
+      delete session.compaction;
+    }
+  } else if (operation.op === 'set_todo_state') {
+    session.todoState = structuredClone(operation.todoState);
+  }
 }
 
 function createPreviewRecords(records) {
@@ -213,6 +265,78 @@ test('AppContext undo restores transcript records and compaction state', () => {
   assert.deepEqual(context.transcriptContext.compaction, compaction);
   assert.equal(transcriptStore.saveCalls.at(-1).records.length, 1);
   assert.deepEqual(transcriptStore.saveCalls.at(-1).compaction, compaction);
+  assert.deepEqual(transcriptStore.operations.at(-1).operations.map((operation) => operation.op), [
+    'truncate_records',
+    'set_compaction',
+    'set_change_history'
+  ]);
+});
+
+test('AppContext appends compaction notice and state in one journal batch', () => {
+  const transcriptStore = createFakeTranscriptStore();
+  const context = createContext({transcriptStore});
+  const compaction = {summaryText: 'summary', activeStartIndex: 1, createdAt: '2026-05-19T00:00:00.000Z'};
+
+  context.appendTranscriptRecord({role: 'user', text: 'before'});
+  context.applyCompaction(compaction);
+
+  const operation = transcriptStore.operations.at(-1);
+  assert.equal(operation.op, 'batch');
+  assert.deepEqual(operation.operations.map((item) => item.op), ['append_records', 'set_compaction']);
+  assert.deepEqual(operation.operations[0].records, [{
+    role: 'compaction_notice',
+    text: '已将较早的 1 条历史压缩为摘要'
+  }]);
+  assert.deepEqual(operation.operations[1].compaction, compaction);
+});
+
+test('AppContext does not retain records whose journal append fails', () => {
+  const transcriptStore = createFakeTranscriptStore();
+  const context = createContext({transcriptStore});
+  const appendSession = transcriptStore.appendSession;
+
+  context.appendTranscriptRecord({role: 'user', text: 'saved'});
+  transcriptStore.appendSession = () => {
+    throw new Error('append failed');
+  };
+
+  assert.throws(() => context.appendTranscriptRecord({role: 'assistant', text: 'not saved'}), /append failed/);
+  assert.deepEqual(context.transcriptRecords, [{role: 'user', text: 'saved'}]);
+
+  transcriptStore.appendSession = appendSession;
+  context.appendTranscriptRecord({role: 'assistant', text: 'continued'});
+  assert.deepEqual(transcriptStore.saveCalls.at(-1).records, [
+    {role: 'user', text: 'saved'},
+    {role: 'assistant', text: 'continued'}
+  ]);
+});
+
+test('AppContext keeps the undo checkpoint when journal truncation fails', () => {
+  const transcriptStore = createFakeTranscriptStore();
+  const context = createContext({transcriptStore});
+  const appendSession = transcriptStore.appendSession;
+
+  context.appendTranscriptRecord({role: 'user', text: 'before'});
+  context.beginChangeCheckpoint();
+  context.appendTranscriptRecord({role: 'user', text: 'change'});
+  context.finalizeChangeCheckpoint();
+  transcriptStore.appendSession = (_cwd, _reference, operation) => {
+    if (operation.op === 'batch' && operation.operations.some((item) => item.op === 'truncate_records')) {
+      throw new Error('truncate failed');
+    }
+
+    return appendSession(_cwd, _reference, operation);
+  };
+
+  const result = context.executeUndo();
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'restore_failed');
+  assert.equal(context.getUndoSummary().status, 'ready');
+  assert.deepEqual(context.transcriptRecords, [
+    {role: 'user', text: 'before'},
+    {role: 'user', text: 'change'}
+  ]);
 });
 
 test('AppContext undo can remove interrupted turn records without appending a success notice', () => {
@@ -520,6 +644,115 @@ test('AppContext cycles through four interaction modes', () => {
   assert.equal(context.getAgentSession().interactionMode, 'shell-local');
   assert.equal(context.cycleInteractionMode(), 'normal');
   assert.equal(context.createRenderState().statusLine.mode, 'idle');
+});
+
+test('AppContext injects only effective model-visible mode transitions and ignores shell commands', () => {
+  const context = createContext();
+
+  context.setInteractionMode('plan');
+  context.setInteractionMode('shell');
+  context.setInteractionMode('normal');
+  const unchanged = context.beginUserTurn('normal request');
+  context.finishAssistantTurn('done');
+
+  assert.equal(unchanged.text, 'normal request');
+  assert.equal(unchanged.modeTransition, undefined);
+
+  context.setInteractionMode('plan');
+  const enteringPlan = context.beginUserTurn('inspect only');
+  context.finishAssistantTurn('planned');
+
+  assert.deepEqual(enteringPlan.modeTransition, {from: 'normal', to: 'plan'});
+
+  context.setInteractionMode('shell');
+  context.beginShellCommand('pwd');
+  context.finishShellCommand({
+    command: 'pwd',
+    durationMs: 1,
+    exitCode: 0,
+    output: '/tmp/echo_tui\n',
+    stderr: '',
+    stdout: '/tmp/echo_tui\n',
+    timedOut: false,
+    truncated: false
+  }, true);
+  context.setInteractionMode('normal');
+  const leavingPlan = context.beginUserTurn('implement now');
+
+  assert.deepEqual(leavingPlan.modeTransition, {from: 'plan', to: 'normal'});
+  assert.match(leavingPlan.text, /Previous Plan Mode restrictions no longer apply/);
+});
+
+test('AppContext preserves display text and composer history for mode transition messages', () => {
+  const context = createContext();
+  context.setInteractionMode('plan');
+
+  const record = context.beginUserTurn('expanded image request', {
+    displayText: '@image.png',
+    historyText: '@image.png'
+  });
+
+  assert.match(record.text, /\[User Request\]\nexpanded image request$/);
+  assert.equal(record.displayText, '@image.png');
+  assert.deepEqual(context.composerContext.getInputHistory(), ['@image.png']);
+});
+
+test('AppContext rebuilds model-visible mode after resume and clear', () => {
+  const transcriptStore = createFakeTranscriptStore([{
+    sessionId: 'plan-session',
+    cwd: '/tmp/echo_tui',
+    createdAt: '2026-05-19T00:00:00.000Z',
+    updatedAt: '2026-05-19T00:00:00.000Z',
+    records: [
+      {role: 'user', text: 'plan request', interactionMode: 'plan'},
+      {role: 'assistant', text: 'plan response'}
+    ]
+  }]);
+  const context = createContext({transcriptStore});
+
+  assert.ok(context.loadTranscriptSession('plan-session'));
+  context.setInteractionMode('normal');
+  const afterResume = context.beginUserTurn('implement after resume');
+  context.finishAssistantTurn('done');
+
+  assert.deepEqual(afterResume.modeTransition, {from: 'plan', to: 'normal'});
+
+  context.setInteractionMode('plan');
+  context.clearTranscriptRecords();
+  const afterClear = context.beginUserTurn('new plan context');
+
+  assert.deepEqual(afterClear.modeTransition, {from: 'normal', to: 'plan'});
+});
+
+test('AppContext rebuilds model-visible mode after undo truncates a transition', () => {
+  const transcriptStore = createFakeTranscriptStore([{
+    sessionId: 'undo-mode-session',
+    cwd: '/tmp/echo_tui',
+    createdAt: '2026-05-19T00:00:00.000Z',
+    updatedAt: '2026-05-19T00:00:00.000Z',
+    records: [
+      {role: 'user', text: 'normal request', interactionMode: 'normal'},
+      {role: 'assistant', text: 'normal response'},
+      {role: 'user', text: 'plan request', interactionMode: 'plan', modeTransition: {from: 'normal', to: 'plan'}},
+      {role: 'assistant', text: 'plan response'}
+    ],
+    changeHistory: [{
+      id: 'mode-checkpoint',
+      createdAt: '2026-05-19T00:00:01.000Z',
+      cwd: '/tmp/echo_tui',
+      transcriptStartIndex: 2,
+      status: 'ready',
+      files: []
+    }]
+  }]);
+  const context = createContext({transcriptStore});
+
+  assert.ok(context.loadTranscriptSession('undo-mode-session'));
+  context.setInteractionMode('plan');
+  assert.equal(context.executeUndo().ok, true);
+  const afterUndo = context.beginUserTurn('plan again');
+
+  assert.deepEqual(afterUndo.modeTransition, {from: 'normal', to: 'plan'});
 });
 
 test('AppContext stores transient context usage in render state without persistence', () => {

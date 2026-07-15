@@ -1,20 +1,13 @@
-import fs from 'node:fs';
-import path from 'node:path';
-
 import {redactSensitiveText} from '../agent/agent-errors';
+import {JsonConfigFile, JsonConfigFileError, type JsonConfigFileOptions} from './json-config-file';
 import {getDefaultConfigPath} from './llm-config';
 import {getProviderPreset, providerRequiresApiKey} from './provider-presets';
 import type {ConfigModelDraft, ConfigProviderDraft, LlmConfigDraft} from '../types/command';
 
 type JsonObject = Record<string, unknown>;
 
-type ConfigEditorOptions = {
+type ConfigEditorOptions = JsonConfigFileOptions & {
   configPath?: string;
-  readFile?: (filePath: string, encoding: BufferEncoding) => string;
-  mkdir?: (dirPath: string, options: {recursive: boolean}) => unknown;
-  writeFile?: (filePath: string, data: string) => unknown;
-  rename?: (oldPath: string, newPath: string) => unknown;
-  createTempPath?: (targetPath: string) => string;
 };
 
 type ConfigValidationResult =
@@ -38,37 +31,20 @@ function getConfigPath(options: ConfigEditorOptions = {}): string {
 
 function readRootConfig(options: ConfigEditorOptions = {}): JsonObject {
   const configPath = getConfigPath(options);
-  const readFile = options.readFile || fs.readFileSync;
-
-  let rawConfig: string;
 
   try {
-    rawConfig = readFile(configPath, 'utf8');
+    return new JsonConfigFile(configPath, options).readOrEmpty();
   } catch (error: unknown) {
-    if (isNodeErrorCode(error, 'ENOENT')) {
-      return {};
+    if (error instanceof JsonConfigFileError && error.kind === 'invalid_json') {
+      throw new LlmConfigEditorError(`LLM 配置文件不是有效 JSON：${configPath}`);
+    }
+
+    if (error instanceof JsonConfigFileError && error.kind === 'invalid_root') {
+      throw new LlmConfigEditorError(`LLM 配置文件根节点必须是对象：${configPath}`);
     }
 
     throw new LlmConfigEditorError(`无法读取 LLM 配置文件：${configPath}`);
   }
-
-  let parsed: unknown;
-
-  try {
-    parsed = JSON.parse(rawConfig);
-  } catch {
-    throw new LlmConfigEditorError(`LLM 配置文件不是有效 JSON：${configPath}`);
-  }
-
-  if (!isJsonObject(parsed)) {
-    throw new LlmConfigEditorError(`LLM 配置文件根节点必须是对象：${configPath}`);
-  }
-
-  return parsed;
-}
-
-function isNodeErrorCode(error: unknown, code: string): boolean {
-  return Boolean(error && typeof error === 'object' && 'code' in error && error.code === code);
 }
 
 function readOptionalString(source: JsonObject, fieldName: string): string | undefined {
@@ -275,12 +251,7 @@ function saveLlmConfigDraft(draft: LlmConfigDraft, options: ConfigEditorOptions 
   }
 
   const targetPath = getConfigPath(options);
-  const mkdir = options.mkdir || fs.mkdirSync;
-  const writeFile = options.writeFile || fs.writeFileSync;
-  const rename = options.rename || fs.renameSync;
-  const createTempPath = options.createTempPath || ((pathName: string) => `${pathName}.tmp-${process.pid}-${Date.now()}`);
-  const rootConfig = cloneJsonObject(normalized.rootConfig);
-  const llmConfig = isJsonObject(rootConfig.llm) ? {...rootConfig.llm} : {};
+  const configFile = new JsonConfigFile(targetPath, options);
   const providers: JsonObject = {};
   const models: JsonObject[] = [];
 
@@ -321,16 +292,37 @@ function saveLlmConfigDraft(draft: LlmConfigDraft, options: ConfigEditorOptions 
     }
   }
 
-  llmConfig.providers = providers;
-  llmConfig.models = models;
-  llmConfig.selectedModel = normalized.selectedModelId;
-  rootConfig.llm = llmConfig;
+  try {
+    let rootConfig: JsonObject;
 
-  const tempPath = createTempPath(targetPath);
+    try {
+      rootConfig = configFile.read();
+    } catch (error: unknown) {
+      if (!(error instanceof JsonConfigFileError) || error.kind !== 'missing') {
+        throw error;
+      }
 
-  mkdir(path.dirname(targetPath), {recursive: true});
-  writeFile(tempPath, `${JSON.stringify(rootConfig, null, 2)}\n`);
-  rename(tempPath, targetPath);
+      rootConfig = cloneJsonObject(normalized.rootConfig);
+    }
+
+    const llmConfig = isJsonObject(rootConfig.llm) ? {...rootConfig.llm} : {};
+
+    llmConfig.providers = providers;
+    llmConfig.models = models;
+    llmConfig.selectedModel = normalized.selectedModelId;
+    rootConfig.llm = llmConfig;
+    configFile.write(rootConfig);
+  } catch (error: unknown) {
+    if (error instanceof JsonConfigFileError && error.kind === 'invalid_json') {
+      throw new LlmConfigEditorError(`LLM 配置文件不是有效 JSON：${targetPath}`);
+    }
+
+    if (error instanceof JsonConfigFileError && error.kind === 'invalid_root') {
+      throw new LlmConfigEditorError(`LLM 配置文件根节点必须是对象：${targetPath}`);
+    }
+
+    throw error;
+  }
 }
 
 export {

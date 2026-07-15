@@ -18,6 +18,7 @@ const { ModeCommandHandler } = require('../../src/commands/mode-command-handler'
 const { ResumeCommandHandler, RESUME_PAGE_SIZE } = require('../../src/commands/resume-command-handler');
 const { SkillsCommandHandler } = require('../../src/commands/skills-command-handler');
 const { SkillInvocationCommandHandler } = require('../../src/commands/skill-invocation-command-handler');
+const { StatusCommandHandler } = require('../../src/commands/status-command-handler');
 const { ThemesCommandHandler } = require('../../src/commands/themes-command-handler');
 const { UndoCommandHandler } = require('../../src/commands/undo-command-handler');
 const { UsageCommandHandler } = require('../../src/commands/usage-command-handler');
@@ -57,6 +58,7 @@ function createFakeHost(options = {}) {
     sessionCloses: 0,
     sessionOpens: [],
     sessionUpdates: [],
+    statusQueries: 0,
     clipboardWrites: [],
     transcriptAppends: [],
     themeSelections: [],
@@ -219,6 +221,25 @@ function createFakeHost(options = {}) {
         return options.contextUsage ? structuredClone(options.contextUsage) : null;
       }
     },
+    status: {
+      createSnapshot() {
+        return structuredClone(options.statusSnapshot || {
+          cwd: '/tmp/echo_tui',
+          sessionId: null,
+          model: {agentType: 'fake', model: 'echo-fake-agent', provider: 'fake'},
+          agentInstructions: [],
+          userMemoryCount: 0,
+          agentMemoryCatalogs: [],
+          diagnostics: []
+        });
+      },
+      queryCodexUsage() {
+        calls.statusQueries += 1;
+        return options.queryStatusUsage
+          ? options.queryStatusUsage()
+          : Promise.resolve({status: 'unavailable', error: 'Codex 用量不可用'});
+      }
+    },
     usage: {
       listDailyUsage(query) {
         calls.usageQueries = calls.usageQueries || [];
@@ -343,50 +364,163 @@ test('resolveSlashCommand asks handlers in order and returns the first match', (
 test('createDefaultSlashCommandHandlers wires handlers in order', () => {
   const handlers = createDefaultHandlersForTest();
 
-  assert.equal(handlers.length, 21);
+  assert.equal(handlers.length, 22);
   assert.equal(handlers.some((handler) => handler.name === 'skill'), false);
   assert.equal(handlers[0].name, 'help');
   assert.equal(handlers[1].name, 'config');
   assert.equal(handlers[2].name, 'model');
   assert.equal(handlers[3].name, 'effort');
   assert.equal(handlers[4].name, 'mode');
-  assert.equal(handlers[5].name, 'context');
-  assert.equal(handlers[6].name, 'usage');
-  assert.equal(handlers[7].name, 'copy');
-  assert.equal(handlers[8].name, 'clear');
-  assert.equal(handlers[9].name, 'compact');
-  assert.equal(handlers[10].name, 'diff');
-  assert.equal(handlers[11].name, 'undo');
-  assert.equal(handlers[12].name, 'resume');
-  assert.equal(handlers[13].name, 'mcp');
-  assert.equal(handlers[14].name, 'memory');
-  assert.equal(handlers[15].name, 'hooks');
-  assert.equal(handlers[16].name, 'skills');
-  assert.equal(handlers[17].name, 'themes');
-  assert.equal(handlers[18].name, 'init');
-  assert.equal(handlers[19].name, 'review');
-  assert.equal(handlers[20].name, undefined);
+  assert.equal(handlers[5].name, 'status');
+  assert.equal(handlers[6].name, 'context');
+  assert.equal(handlers[7].name, 'usage');
+  assert.equal(handlers[8].name, 'copy');
+  assert.equal(handlers[9].name, 'clear');
+  assert.equal(handlers[10].name, 'compact');
+  assert.equal(handlers[11].name, 'diff');
+  assert.equal(handlers[12].name, 'undo');
+  assert.equal(handlers[13].name, 'resume');
+  assert.equal(handlers[14].name, 'mcp');
+  assert.equal(handlers[15].name, 'memory');
+  assert.equal(handlers[16].name, 'hooks');
+  assert.equal(handlers[17].name, 'skills');
+  assert.equal(handlers[18].name, 'themes');
+  assert.equal(handlers[19].name, 'init');
+  assert.equal(handlers[20].name, 'review');
+  assert.equal(handlers[21].name, undefined);
   assert.equal(handlers[0] instanceof HelpCommandHandler, true);
   assert.equal(handlers[1] instanceof ConfigCommandHandler, true);
   assert.equal(handlers[2] instanceof ModelCommandHandler, true);
   assert.equal(handlers[3] instanceof EffortCommandHandler, true);
   assert.equal(handlers[4] instanceof ModeCommandHandler, true);
-  assert.equal(handlers[5] instanceof ContextCommandHandler, true);
-  assert.equal(handlers[6] instanceof UsageCommandHandler, true);
-  assert.equal(handlers[7] instanceof CopyCommandHandler, true);
-  assert.equal(handlers[8] instanceof ClearCommandHandler, true);
-  assert.equal(handlers[9] instanceof CompactCommandHandler, true);
-  assert.equal(handlers[10] instanceof DiffCommandHandler, true);
-  assert.equal(handlers[11] instanceof UndoCommandHandler, true);
-  assert.equal(handlers[12] instanceof ResumeCommandHandler, true);
-  assert.equal(handlers[13] instanceof McpCommandHandler, true);
-  assert.equal(handlers[14] instanceof MemoryCommandHandler, true);
-  assert.equal(handlers[15] instanceof HooksCommandHandler, true);
-  assert.equal(handlers[16] instanceof SkillsCommandHandler, true);
-  assert.equal(handlers[17] instanceof ThemesCommandHandler, true);
-  assert.equal(handlers[18] instanceof AgentWorkflowCommandHandler, true);
+  assert.equal(handlers[5] instanceof StatusCommandHandler, true);
+  assert.equal(handlers[6] instanceof ContextCommandHandler, true);
+  assert.equal(handlers[7] instanceof UsageCommandHandler, true);
+  assert.equal(handlers[8] instanceof CopyCommandHandler, true);
+  assert.equal(handlers[9] instanceof ClearCommandHandler, true);
+  assert.equal(handlers[10] instanceof CompactCommandHandler, true);
+  assert.equal(handlers[11] instanceof DiffCommandHandler, true);
+  assert.equal(handlers[12] instanceof UndoCommandHandler, true);
+  assert.equal(handlers[13] instanceof ResumeCommandHandler, true);
+  assert.equal(handlers[14] instanceof McpCommandHandler, true);
+  assert.equal(handlers[15] instanceof MemoryCommandHandler, true);
+  assert.equal(handlers[16] instanceof HooksCommandHandler, true);
+  assert.equal(handlers[17] instanceof SkillsCommandHandler, true);
+  assert.equal(handlers[18] instanceof ThemesCommandHandler, true);
   assert.equal(handlers[19] instanceof AgentWorkflowCommandHandler, true);
-  assert.equal(handlers[20] instanceof SkillInvocationCommandHandler, true);
+  assert.equal(handlers[20] instanceof AgentWorkflowCommandHandler, true);
+  assert.equal(handlers[21] instanceof SkillInvocationCommandHandler, true);
+});
+
+test('statusCommandHandler loads Codex usage and isolates late results', async () => {
+  const handler = new StatusCommandHandler();
+  let resolveUsage;
+  const usagePromise = new Promise((resolve) => {
+    resolveUsage = resolve;
+  });
+  const snapshot = {
+    cwd: '/tmp/project',
+    sessionId: 'session-1',
+    model: {agentType: 'codex', model: 'gpt-codex', provider: 'codex'},
+    agentInstructions: [],
+    userMemoryCount: 0,
+    agentMemoryCatalogs: [],
+    diagnostics: []
+  };
+  const harness = createFakeHost({statusSnapshot: snapshot, queryStatusUsage: () => usagePromise});
+
+  assert.equal(handler.match('/status'), true);
+  assert.equal(handler.match('/status now'), false);
+  assert.equal(resolveSlashCommand('/status', createDefaultHandlersForTest()).name, 'status');
+
+  let session = startCommand(handler, '/status', harness.host);
+  assert.equal(session.surface.kind, 'status');
+  assert.equal(session.surface.usage.status, 'loading');
+  assert.equal(harness.calls.statusQueries, 1);
+  assert.deepEqual(harness.calls.transcriptAppends, []);
+
+  resolveUsage({
+    status: 'available',
+    primary: {usedPercent: 25, resetAt: 1_800_000_000_000},
+    secondary: {usedPercent: 50, resetAt: 1_900_000_000_000}
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  session = harness.host.session.getActive();
+  assert.equal(session.surface.usage.status, 'available');
+  assert.equal(session.surface.usage.primary.usedPercent, 25);
+  assert.equal(harness.calls.sessionUpdates.length, 1);
+  assert.equal(harness.calls.renders, 1);
+
+  handler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: 'q'}, harness.host);
+  assert.equal(harness.calls.sessionCloses, 1);
+  assert.equal(harness.calls.resets, 2);
+
+  let resolveLate;
+  const lateHarness = createFakeHost({
+    statusSnapshot: snapshot,
+    queryStatusUsage: () => new Promise((resolve) => {
+      resolveLate = resolve;
+    })
+  });
+  session = startCommand(handler, '/status', lateHarness.host);
+  handler.handleEvent(session, {type: INPUT_EVENTS.ESCAPE}, lateHarness.host);
+  resolveLate({status: 'unavailable', error: 'late'});
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(lateHarness.calls.sessionUpdates.length, 0);
+  assert.equal(lateHarness.calls.renders, 0);
+});
+
+test('statusCommandHandler resolves non-Codex usage and maps query rejection', async () => {
+  const handler = new StatusCommandHandler();
+  const local = createFakeHost({
+    queryStatusUsage: () => Promise.resolve({status: 'not_applicable'})
+  });
+  let session = startCommand(handler, '/status', local.host);
+
+  assert.equal(session.surface.usage.status, 'loading');
+  assert.equal(local.calls.statusQueries, 1);
+  await new Promise((resolve) => setImmediate(resolve));
+  session = local.host.session.getActive();
+  assert.equal(session.surface.usage.status, 'not_applicable');
+  handler.handleEvent(session, {type: INPUT_EVENTS.SUBMIT}, local.host);
+  assert.equal(local.calls.sessionCloses, 1);
+
+  const failed = createFakeHost({
+    statusSnapshot: {
+      cwd: '/tmp/project',
+      sessionId: null,
+      model: {agentType: 'codex', model: 'gpt-codex', provider: 'codex'},
+      agentInstructions: [],
+      userMemoryCount: 0,
+      agentMemoryCatalogs: [],
+      diagnostics: []
+    },
+    queryStatusUsage: () => Promise.reject(new Error('usage failed'))
+  });
+  startCommand(handler, '/status', failed.host);
+  await new Promise((resolve) => setImmediate(resolve));
+  session = failed.host.session.getActive();
+  assert.equal(session.surface.usage.status, 'unavailable');
+  assert.match(session.surface.usage.error, /usage failed/);
+
+  const missingModel = createFakeHost({
+    statusSnapshot: {
+      cwd: '/tmp/project',
+      sessionId: null,
+      model: null,
+      agentInstructions: [],
+      userMemoryCount: 0,
+      agentMemoryCatalogs: [],
+      diagnostics: ['无法读取当前模型配置']
+    },
+    queryStatusUsage: () => Promise.resolve({status: 'unavailable', error: '无法读取当前模型配置'})
+  });
+  startCommand(handler, '/status', missingModel.host);
+  assert.equal(missingModel.calls.statusQueries, 1);
+  await new Promise((resolve) => setImmediate(resolve));
+  session = missingModel.host.session.getActive();
+  assert.equal(session.surface.usage.status, 'unavailable');
+  assert.match(session.surface.usage.error, /无法读取当前模型配置/);
 });
 
 test('copyCommandHandler opens copy surface, toggles selection, and copies formatted text', async () => {
@@ -1164,6 +1298,7 @@ test('createSlashCommandDescriptors derives display metadata from handlers', () 
     { name: 'model', description: '切换模型' },
     { name: 'effort', description: '调整推理等级' },
     { name: 'mode', description: '切换交互模式' },
+    { name: 'status', description: '查看运行状态与 Codex 用量' },
     { name: 'context', description: '查看 context 占用详情' },
     { name: 'usage', description: '查看每日 token 用量' },
     { name: 'copy', description: '复制会话消息' },
@@ -1251,6 +1386,18 @@ test('modelCommandHandler shows selectable models, confirms, cancels, and report
   modelCommandHandler.handleEvent(session, { type: INPUT_EVENTS.MOVE_UP }, host);
   assert.equal(calls.sessionUpdates[0].surface.selectedIndex, 0);
   assert.equal(calls.sessionUpdates[0].data.selectedIndex, 0);
+
+  modelCommandHandler.handleEvent(host.session.getActive(), { type: INPUT_EVENTS.MOVE_DOWN }, host);
+  assert.equal(calls.sessionUpdates[1].surface.selectedIndex, 1);
+
+  modelCommandHandler.handleEvent(host.session.getActive(), { type: INPUT_EVENTS.MOVE_DOWN }, host);
+  assert.equal(calls.sessionUpdates[2].surface.selectedIndex, 0);
+
+  modelCommandHandler.handleEvent(host.session.getActive(), { type: INPUT_EVENTS.MOVE_UP }, host);
+  assert.equal(calls.sessionUpdates[3].surface.selectedIndex, 1);
+
+  modelCommandHandler.handleEvent(host.session.getActive(), { type: INPUT_EVENTS.MOVE_DOWN }, host);
+  assert.equal(calls.sessionUpdates[4].surface.selectedIndex, 0);
 
   modelCommandHandler.handleEvent(host.session.getActive(), { type: INPUT_EVENTS.SUBMIT }, host);
   assert.deepEqual(calls.modelSelections, ['fast']);

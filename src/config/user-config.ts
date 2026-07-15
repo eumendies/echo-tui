@@ -1,6 +1,7 @@
-import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+
+import {JsonConfigFile} from './json-config-file';
 
 type UserConfigSource = Record<string, unknown>;
 
@@ -18,25 +19,8 @@ function getDefaultUserConfigPath(): string {
  */
 function readOptionalUserConfig(options: ReadUserConfigOptions = {}): UserConfigSource {
   const configPath = options.configPath || getDefaultUserConfigPath();
-  const readFile = options.readFile || fs.readFileSync;
-  let rawConfig: string;
 
-  try {
-    rawConfig = readFile(configPath, 'utf8');
-  } catch {
-    return {};
-  }
-
-  try {
-    const parsedConfig: unknown = JSON.parse(rawConfig);
-    return isPlainObject(parsedConfig) ? parsedConfig : {};
-  } catch {
-    return {};
-  }
-}
-
-function isPlainObject(value: unknown): value is UserConfigSource {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+  return new JsonConfigFile(configPath, {readFile: options.readFile}).readOptional();
 }
 
 export {

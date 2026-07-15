@@ -76,7 +76,13 @@ function moveModelSelection(session: CommandSession<ModelCommandInfo>, direction
     return;
   }
 
-  const selectedIndex = Math.min(Math.max(0, data.selectedIndex + direction), data.models.length - 1);
+  const modelCount = data.models.length;
+
+  if (modelCount === 0) {
+    return;
+  }
+
+  const selectedIndex = (data.selectedIndex + direction + modelCount) % modelCount;
   const nextData = {
     ...data,
     selectedIndex

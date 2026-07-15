@@ -5,6 +5,13 @@ const os = require('node:os');
 const path = require('node:path');
 
 const {
+  createAppendRecordsOperation,
+  createBatchOperation,
+  createSetChangeHistoryOperation,
+  createSetCompactionOperation,
+  createSetTodoStateOperation
+} = require('../../src/persistence/transcript-journal');
+const {
   STORE_SCHEMA_VERSION,
   createTranscriptStore
 } = require('../../src/persistence/transcript-store');
@@ -13,297 +20,198 @@ function createTempRoot() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'echo-tui-store-'));
 }
 
-test('createTranscriptStore saves sessions under ~/.echo-style project partitions', () => {
+test('createTranscriptStore atomically creates a JSONL journal under the project partition', () => {
   const rootDir = createTempRoot();
-  const store = createTranscriptStore({ rootDir });
+  const store = createTranscriptStore({rootDir});
   const cwd = '/tmp/example/project';
-  const session = store.createSession(cwd, [{ role: 'user', text: 'hello' }], '2026-05-19T10:00:00.000Z');
+  const reference = store.createSession(
+    cwd,
+    createAppendRecordsOperation([{role: 'user', text: 'hello'}]),
+    '2026-07-01T00:00:00.000Z'
+  );
+  const filePath = store.getSessionFilePath(cwd, reference.sessionId);
+  const lines = fs.readFileSync(filePath, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
 
-  const saved = store.saveSession(cwd, session);
-  const projectDir = store.getProjectDir(cwd);
-  const projectMetadata = JSON.parse(fs.readFileSync(path.join(projectDir, 'project.json'), 'utf8'));
-
-  assert.equal(projectDir.startsWith(path.join(rootDir, 'projects')), true);
-  assert.deepEqual(projectMetadata, store.getProjectMetadata(cwd));
-  assert.deepEqual(saved.records, [{ role: 'user', text: 'hello' }]);
-  assert.equal(fs.existsSync(store.getSessionFilePath(cwd, session.sessionId)), true);
+  assert.equal(path.extname(filePath), '.jsonl');
+  assert.equal(store.getProjectDir(cwd).startsWith(path.join(rootDir, 'projects')), true);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(store.getProjectDir(cwd), 'project.json'), 'utf8')), store.getProjectMetadata(cwd));
+  assert.deepEqual(lines, [
+    {
+      schemaVersion: STORE_SCHEMA_VERSION,
+      op: 'session_start',
+      sessionId: reference.sessionId,
+      cwd,
+      createdAt: '2026-07-01T00:00:00.000Z'
+    },
+    {
+      schemaVersion: STORE_SCHEMA_VERSION,
+      op: 'append_records',
+      seq: 1,
+      updatedAt: '2026-07-01T00:00:00.000Z',
+      records: [{role: 'user', text: 'hello'}]
+    }
+  ]);
+  assert.deepEqual(fs.readdirSync(path.dirname(filePath)).filter((name) => name.includes('.tmp-')), []);
   assert.equal(fs.existsSync(path.join(cwd, '.echo_tui')), false);
 });
 
-test('createTranscriptStore loads saved sessions and keeps transcript-only schema', () => {
+test('createTranscriptStore appends operations without rewriting earlier journal lines', () => {
   const rootDir = createTempRoot();
-  const store = createTranscriptStore({ rootDir });
+  const store = createTranscriptStore({rootDir});
   const cwd = '/tmp/example/project';
-  const session = store.createSession(cwd, [
-    { role: 'user', text: 'hello', createdAt: '2026-05-19T10:00:00.000Z' },
-    { role: 'assistant', text: 'world', createdAt: '2026-05-19T10:00:01.000Z' }
-  ], '2026-05-19T10:00:00.000Z');
+  const reference = store.createSession(cwd, createAppendRecordsOperation([{role: 'user', text: 'hello'}]), '2026-07-01T00:00:00.000Z');
+  const filePath = store.getSessionFilePath(cwd, reference.sessionId);
+  const originalJournal = fs.readFileSync(filePath, 'utf8');
+  const nextReference = store.appendSession(
+    cwd,
+    reference,
+    createBatchOperation([
+      createAppendRecordsOperation([{role: 'assistant', text: 'world'}]),
+      createSetCompactionOperation({summaryText: 'earlier context', activeStartIndex: 1, createdAt: '2026-07-01T00:00:01.000Z'}),
+      createSetTodoStateOperation({updatedAt: '2026-07-01T00:00:01.000Z', items: [{id: 'todo_1', text: 'verify journal', status: 'open'}]})
+    ]),
+    '2026-07-01T00:00:01.000Z'
+  );
+  const journal = fs.readFileSync(filePath, 'utf8');
+  const loaded = store.loadSession(cwd, reference.sessionId);
 
-  store.saveSession(cwd, session);
-  const loaded = store.loadSession(cwd, session.sessionId);
-
+  assert.equal(journal.startsWith(originalJournal), true);
+  assert.equal(journal.trim().split('\n').length, 3);
+  assert.deepEqual(nextReference, {
+    ...reference,
+    sequence: 2,
+    updatedAt: '2026-07-01T00:00:01.000Z'
+  });
   assert.deepEqual(loaded, {
-    schemaVersion: STORE_SCHEMA_VERSION,
-    sessionId: session.sessionId,
-    cwd,
-    createdAt: '2026-05-19T10:00:00.000Z',
-    updatedAt: '2026-05-19T10:00:00.000Z',
-    records: [
-      { role: 'user', text: 'hello', createdAt: '2026-05-19T10:00:00.000Z' },
-      { role: 'assistant', text: 'world', createdAt: '2026-05-19T10:00:01.000Z' }
-    ],
-    todoState: {items: [], updatedAt: ''}
-  });
-  assert.equal(JSON.stringify(loaded).includes('inputHistory'), false);
-});
-
-test('createTranscriptStore persists reasoning summary records', () => {
-  const rootDir = createTempRoot();
-  const store = createTranscriptStore({ rootDir });
-  const cwd = '/tmp/example/project';
-  const session = store.createSession(cwd, [
-    { role: 'user', text: 'hello' },
-    { role: 'reasoning_summary', text: 'I will inspect first.' },
-    { role: 'assistant', text: 'world' }
-  ], '2026-05-19T10:00:00.000Z');
-
-  store.saveSession(cwd, session);
-  const loaded = store.loadSession(cwd, session.sessionId);
-
-  assert.deepEqual(loaded.records, [
-    { role: 'user', text: 'hello' },
-    { role: 'reasoning_summary', text: 'I will inspect first.' },
-    { role: 'assistant', text: 'world' }
-  ]);
-});
-
-test('createTranscriptStore persists and reloads compaction metadata while keeping full records', () => {
-  const rootDir = createTempRoot();
-  const store = createTranscriptStore({ rootDir });
-  const cwd = '/tmp/example/project';
-  const session = store.createSession(cwd, [
-    { role: 'user', text: 'hello' },
-    { role: 'assistant', text: 'world' }
-  ], '2026-05-19T10:00:00.000Z');
-
-  store.saveSession(cwd, {
-    ...session,
-    compaction: {
-      summaryText: '结构化摘要',
-      activeStartIndex: 1,
-      createdAt: '2026-05-19T10:05:00.000Z'
-    }
-  });
-  const loaded = store.loadSession(cwd, session.sessionId);
-
-  assert.deepEqual(loaded.compaction, {
-    summaryText: '结构化摘要',
-    activeStartIndex: 1,
-    createdAt: '2026-05-19T10:05:00.000Z'
-  });
-  // 完整 records 不因压缩被删除。
-  assert.deepEqual(loaded.records, [
-    { role: 'user', text: 'hello' },
-    { role: 'assistant', text: 'world' }
-  ]);
-});
-
-test('createTranscriptStore persists and reloads change history metadata', () => {
-  const rootDir = createTempRoot();
-  const store = createTranscriptStore({ rootDir });
-  const cwd = '/tmp/example/project';
-  const session = store.createSession(cwd, [{ role: 'user', text: 'hello' }], '2026-05-19T10:00:00.000Z');
-  const changeHistory = [
-    {
-      id: 'checkpoint-1',
-      createdAt: '2026-05-19T10:01:00.000Z',
+    session: {
+      schemaVersion: STORE_SCHEMA_VERSION,
+      sessionId: reference.sessionId,
       cwd,
-      transcriptStartIndex: 0,
-      status: 'ready',
-      files: [{
-        path: '/tmp/example/project/file.txt',
-        snapshot: {exists: true, content: 'before\n', mode: 0o644},
-        state: 'updated'
-      }]
+      createdAt: '2026-07-01T00:00:00.000Z',
+      updatedAt: '2026-07-01T00:00:01.000Z',
+      records: [{role: 'user', text: 'hello'}, {role: 'assistant', text: 'world'}],
+      compaction: {summaryText: 'earlier context', activeStartIndex: 1, createdAt: '2026-07-01T00:00:01.000Z'},
+      todoState: {updatedAt: '2026-07-01T00:00:01.000Z', items: [{id: 'todo_1', text: 'verify journal', status: 'open'}]}
     },
-    {
-      id: 'invalid-1',
-      createdAt: '2026-05-19T10:02:00.000Z',
-      cwd,
-      transcriptStartIndex: 1,
-      status: 'invalid',
-      invalidReason: '写入型 bash 不可追踪',
-      files: []
-    }
-  ];
-
-  store.saveSession(cwd, {
-    ...session,
-    changeHistory
-  });
-  const loaded = store.loadSession(cwd, session.sessionId);
-
-  assert.deepEqual(loaded.changeHistory, changeHistory);
-});
-
-test('createTranscriptStore persists and clones todo state metadata', () => {
-  const rootDir = createTempRoot();
-  const store = createTranscriptStore({ rootDir });
-  const cwd = '/tmp/example/project';
-  const session = store.createSession(cwd, [{ role: 'user', text: 'hello' }], '2026-05-19T10:00:00.000Z');
-  const todoState = {
-    updatedAt: '2026-05-19T10:01:00.000Z',
-    items: [
-      {id: 'todo_1', text: 'first', status: 'open'},
-      {id: 'todo_2', text: 'second', status: 'completed'}
-    ]
-  };
-
-  const saved = store.saveSession(cwd, {
-    ...session,
-    todoState
-  });
-
-  todoState.items[0].text = 'mutated';
-  saved.todoState.items[1].text = 'also mutated';
-
-  const loaded = store.loadSession(cwd, session.sessionId);
-
-  assert.deepEqual(loaded.todoState, {
-    updatedAt: '2026-05-19T10:01:00.000Z',
-    items: [
-      {id: 'todo_1', text: 'first', status: 'open'},
-      {id: 'todo_2', text: 'second', status: 'completed'}
-    ]
+    reference: nextReference
   });
 });
 
-test('createTranscriptStore falls back to empty todo state for legacy or invalid todo data', () => {
+test('createTranscriptStore replays change history and preserves caller-owned operation data', () => {
   const rootDir = createTempRoot();
-  const store = createTranscriptStore({ rootDir });
+  const store = createTranscriptStore({rootDir});
   const cwd = '/tmp/example/project';
-  const session = store.createSession(cwd, [{ role: 'user', text: 'hello' }], '2026-05-19T10:00:00.000Z');
-
-  store.saveSession(cwd, session);
-  assert.deepEqual(store.loadSession(cwd, session.sessionId).todoState, {items: [], updatedAt: ''});
-
-  const filePath = store.getSessionFilePath(cwd, session.sessionId);
-  const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-  raw.todoState = {items: [{id: '', text: 'bad', status: 'open'}], updatedAt: 'bad'};
-  fs.writeFileSync(filePath, JSON.stringify(raw), 'utf8');
-
-  assert.deepEqual(store.loadSession(cwd, session.sessionId).todoState, {items: [], updatedAt: ''});
-});
-
-test('createTranscriptStore overwrites sessions atomically without leaving tmp files behind', () => {
-  const rootDir = createTempRoot();
-  const store = createTranscriptStore({ rootDir });
-  const cwd = '/tmp/example/project';
-  const session = store.createSession(cwd, [{ role: 'user', text: 'hello' }], '2026-05-19T10:00:00.000Z');
-
-  store.saveSession(cwd, session);
-  store.saveSession(cwd, {
-    ...session,
-    updatedAt: '2026-05-19T10:00:05.000Z',
-    records: [...session.records, { role: 'assistant', text: 'world' }]
-  });
-
-  const sessionsDir = path.dirname(store.getSessionFilePath(cwd, session.sessionId));
-  assert.deepEqual(fs.readdirSync(sessionsDir).filter((name) => name.includes('.tmp-')), []);
-
-  const loaded = store.loadSession(cwd, session.sessionId);
-  assert.deepEqual(loaded.records, [
-    { role: 'user', text: 'hello' },
-    { role: 'assistant', text: 'world' }
-  ]);
-});
-
-test('createTranscriptStore lists sessions by updatedAt desc and skips invalid files', () => {
-  const rootDir = createTempRoot();
-  const store = createTranscriptStore({ rootDir });
-  const cwd = '/tmp/example/project';
-  const first = store.createSession(cwd, [{ role: 'user', text: 'first' }], '2026-05-19T10:00:00.000Z');
-  const second = store.createSession(cwd, [
-    { role: 'user', text: 'first question' },
-    { role: 'tool_call', text: 'run search' },
-    { role: 'tool_result', text: 'search result' },
-    { role: 'assistant', text: 'second message' }
-  ], '2026-05-19T10:00:01.000Z');
-
-  store.saveSession(cwd, first);
-  store.saveSession(cwd, {
-    ...second,
-    updatedAt: '2026-05-19T12:00:00.000Z'
-  });
-
-  const sessionsDir = path.dirname(store.getSessionFilePath(cwd, first.sessionId));
-  fs.writeFileSync(path.join(sessionsDir, 'broken.json'), '{not-json');
-  fs.writeFileSync(path.join(sessionsDir, 'wrong-schema.json'), JSON.stringify({
-    schemaVersion: 999,
+  const history = [{
+    id: 'checkpoint-1',
+    createdAt: '2026-07-01T00:00:00.000Z',
     cwd,
-    sessionId: 'wrong',
-    createdAt: '2026-05-19T10:00:00.000Z',
-    updatedAt: '2026-05-19T10:00:00.000Z',
-    records: []
-  }));
+    transcriptStartIndex: 0,
+    status: 'ready',
+    files: []
+  }];
+  const reference = store.createSession(cwd, createBatchOperation([
+    createAppendRecordsOperation([{role: 'user', text: 'hello'}]),
+    createSetChangeHistoryOperation(history)
+  ]), '2026-07-01T00:00:00.000Z');
 
-  assert.deepEqual(store.listSessions(cwd).map((session) => ({
-    sessionId: session.sessionId,
-    updatedAt: session.updatedAt,
-    messageCount: session.messageCount,
-    lastMessagePreview: session.lastMessagePreview,
-    previewRecords: session.previewRecords
-  })), [
-    {
-      sessionId: second.sessionId,
-      updatedAt: '2026-05-19T12:00:00.000Z',
-      messageCount: 4,
-      lastMessagePreview: 'second message',
-      previewRecords: [
-        { role: 'user', text: 'first question' },
-        { role: 'tool_call', text: 'run search' },
-        { role: 'tool_result', text: 'search result' },
-        { role: 'assistant', text: 'second message' }
-      ]
-    },
-    {
-      sessionId: first.sessionId,
-      updatedAt: '2026-05-19T10:00:00.000Z',
-      messageCount: 1,
-      lastMessagePreview: 'first',
-      previewRecords: [{ role: 'user', text: 'first' }]
-    }
+  history[0].id = 'mutated';
+
+  assert.deepEqual(store.loadSession(cwd, reference.sessionId).session.changeHistory, [{
+    id: 'checkpoint-1',
+    createdAt: '2026-07-01T00:00:00.000Z',
+    cwd,
+    transcriptStartIndex: 0,
+    status: 'ready',
+    files: []
+  }]);
+});
+
+test('createTranscriptStore tolerates a torn final write and rejects corrupt earlier journal data', () => {
+  const rootDir = createTempRoot();
+  const store = createTranscriptStore({rootDir});
+  const cwd = '/tmp/example/project';
+  const reference = store.createSession(cwd, createAppendRecordsOperation([{role: 'user', text: 'saved'}]), '2026-07-01T00:00:00.000Z');
+  const filePath = store.getSessionFilePath(cwd, reference.sessionId);
+
+  fs.appendFileSync(filePath, '{"schemaVersion":1,"seq":2', 'utf8');
+  const recovered = store.loadSession(cwd, reference.sessionId);
+  const nextReference = store.appendSession(
+    cwd,
+    recovered.reference,
+    createAppendRecordsOperation([{role: 'assistant', text: 'continued'}]),
+    '2026-07-01T00:00:02.000Z'
+  );
+
+  assert.deepEqual(store.loadSession(cwd, reference.sessionId).session.records, [
+    {role: 'user', text: 'saved'},
+    {role: 'assistant', text: 'continued'}
+  ]);
+  assert.equal(nextReference.sequence, 2);
+  assert.equal(fs.readFileSync(filePath, 'utf8').includes('{"schemaVersion":1,"seq":2{"'), false);
+
+  fs.writeFileSync(filePath, `${fs.readFileSync(filePath, 'utf8').split('\n')[0]}\n{bad json\n${JSON.stringify({schemaVersion: 1, op: 'append_records', seq: 2, updatedAt: '2026-07-01T00:00:02.000Z', records: []})}\n`, 'utf8');
+  assert.equal(store.loadSession(cwd, reference.sessionId), null);
+});
+
+test('createTranscriptStore repairs a valid final line without newline before continuing', () => {
+  const rootDir = createTempRoot();
+  const store = createTranscriptStore({rootDir});
+  const cwd = '/tmp/example/project';
+  const reference = store.createSession(cwd, createAppendRecordsOperation([{role: 'user', text: 'saved'}]), '2026-07-01T00:00:00.000Z');
+  const filePath = store.getSessionFilePath(cwd, reference.sessionId);
+
+  fs.writeFileSync(filePath, fs.readFileSync(filePath, 'utf8').trimEnd(), 'utf8');
+  const recovered = store.loadSession(cwd, reference.sessionId);
+  store.appendSession(cwd, recovered.reference, createAppendRecordsOperation([{role: 'assistant', text: 'continued'}]), '2026-07-01T00:00:01.000Z');
+
+  assert.deepEqual(store.loadSession(cwd, reference.sessionId).session.records, [
+    {role: 'user', text: 'saved'},
+    {role: 'assistant', text: 'continued'}
   ]);
 });
 
-test('createTranscriptStore derives bounded resume preview with more records and longer text', () => {
+test('createTranscriptStore lists valid JSONL sessions by updatedAt with bounded previews', () => {
   const rootDir = createTempRoot();
-  const store = createTranscriptStore({ rootDir });
+  const store = createTranscriptStore({rootDir});
   const cwd = '/tmp/example/project';
+  const first = store.createSession(cwd, createAppendRecordsOperation([{role: 'user', text: 'first'}]), '2026-07-01T00:00:00.000Z');
   const records = Array.from({length: 25}, (_value, index) => ({
     role: index % 2 === 0 ? 'user' : 'assistant',
-    text: `record-${index} ` + 'x'.repeat(600)
+    text: `record-${index} ${'x'.repeat(600)}`
   }));
-  const session = store.createSession(cwd, records, '2026-05-19T10:00:00.000Z');
+  const second = store.createSession(cwd, createAppendRecordsOperation(records), '2026-07-01T00:00:01.000Z');
 
-  store.saveSession(cwd, session);
-  const [metadata] = store.listSessions(cwd);
+  store.appendSession(cwd, second, createSetTodoStateOperation({items: [], updatedAt: '2026-07-01T12:00:00.000Z'}), '2026-07-01T12:00:00.000Z');
+  fs.writeFileSync(path.join(path.dirname(store.getSessionFilePath(cwd, first.sessionId)), 'broken.jsonl'), '{not-json', 'utf8');
+  fs.writeFileSync(path.join(path.dirname(store.getSessionFilePath(cwd, first.sessionId)), 'legacy.json'), JSON.stringify({sessionId: 'legacy'}), 'utf8');
 
-  assert.equal(metadata.previewRecords.length, 20);
-  assert.equal(metadata.previewRecords[0].text.startsWith('record-5 '), true);
-  assert.equal(metadata.previewRecords.at(-1).text.startsWith('record-24 '), true);
-  assert.equal(metadata.previewRecords[0].text.length, 500);
+  const sessions = store.listSessions(cwd);
+
+  assert.equal(sessions.length, 2);
+  assert.equal(sessions[0].sessionId, second.sessionId);
+  assert.equal(sessions[0].updatedAt, '2026-07-01T12:00:00.000Z');
+  assert.equal(sessions[0].messageCount, 25);
+  assert.equal(sessions[0].lastMessagePreview.startsWith('record-24 '), true);
+  assert.equal(sessions[0].previewRecords.length, 20);
+  assert.equal(sessions[0].previewRecords[0].text.startsWith('record-5 '), true);
+  assert.equal(sessions[0].previewRecords[0].text.length, 500);
+  assert.equal(sessions[1].sessionId, first.sessionId);
 });
 
-test('createTranscriptStore returns null when session file is missing or cwd mismatches', () => {
+test('createTranscriptStore hides provider-facing mode prompts from session previews', () => {
   const rootDir = createTempRoot();
-  const store = createTranscriptStore({ rootDir });
+  const store = createTranscriptStore({rootDir});
   const cwd = '/tmp/example/project';
-  const otherCwd = '/tmp/example/other';
-  const session = store.createSession(cwd, [{ role: 'user', text: 'hello' }], '2026-05-19T10:00:00.000Z');
+  store.createSession(cwd, createAppendRecordsOperation([{
+    role: 'user',
+    text: '[Interaction Mode Transition]\n[Mode Instructions]\ninternal\n[User Request]\ninspect',
+    displayText: 'inspect',
+    interactionMode: 'plan',
+    modeTransition: {from: 'normal', to: 'plan'}
+  }]), '2026-07-01T00:00:00.000Z');
 
-  store.saveSession(cwd, session);
+  const [session] = store.listSessions(cwd);
 
-  assert.equal(store.loadSession(cwd, 'missing'), null);
-  assert.equal(store.loadSession(otherCwd, session.sessionId), null);
+  assert.equal(session.lastMessagePreview, 'inspect');
+  assert.deepEqual(session.previewRecords, [{role: 'user', text: 'inspect'}]);
 });

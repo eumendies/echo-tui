@@ -1,6 +1,4 @@
-import fs from 'node:fs';
-import path from 'node:path';
-
+import {JsonConfigFile, type JsonConfigFileOptions} from '../config/json-config-file';
 import {getDefaultUserConfigPath, readOptionalUserConfig} from '../config/user-config';
 import {LIFECYCLE_HOOK_EVENTS} from '../types/hooks';
 
@@ -19,12 +17,7 @@ const MAX_HOOK_TIMEOUT_MS = 30_000;
 
 const EVENT_SET = new Set<string>(LIFECYCLE_HOOK_EVENTS);
 
-type LifecycleHookConfigDraftOptions = ReadUserConfigOptions & {
-  createTempPath?: (targetPath: string) => string;
-  mkdir?: typeof fs.mkdirSync;
-  rename?: typeof fs.renameSync;
-  writeFile?: typeof fs.writeFileSync;
-};
+type LifecycleHookConfigDraftOptions = ReadUserConfigOptions & JsonConfigFileOptions;
 type HookDraftEntryParseResult =
   | {entry: LifecycleHookDraftEntry; ok: true}
   | {message: string; ok: false};
@@ -111,24 +104,16 @@ function saveLifecycleHookConfigDraft(draft: LifecycleHookConfigDraft, options: 
   }
 
   const targetPath = options.configPath || draft.configPath || getDefaultLifecycleHookConfigPath();
-  const readFile = options.readFile || fs.readFileSync;
-  const mkdir = options.mkdir || fs.mkdirSync;
-  const writeFile = options.writeFile || fs.writeFileSync;
-  const rename = options.rename || fs.renameSync;
-  const createTempPath = options.createTempPath || ((pathName: string) => `${pathName}.tmp-${process.pid}-${Date.now()}`);
-  const rootConfig = readUserConfigForSave({configPath: targetPath, readFile});
   const hooks = createLifecycleHookConfigNodeFromDraft(draft);
+  const configFile = new JsonConfigFile(targetPath, options);
 
-  if (Object.keys(hooks).length > 0) {
-    rootConfig.hooks = hooks;
-  } else {
-    delete rootConfig.hooks;
-  }
-
-  const tempPath = createTempPath(targetPath);
-  mkdir(path.dirname(targetPath), {recursive: true});
-  writeFile(tempPath, `${JSON.stringify(rootConfig, null, 2)}\n`);
-  rename(tempPath, targetPath);
+  configFile.update((rootConfig) => {
+    if (Object.keys(hooks).length > 0) {
+      rootConfig.hooks = hooks;
+    } else {
+      delete rootConfig.hooks;
+    }
+  });
 }
 
 function createLifecycleHookRuntimeConfigFromDraft(draft: LifecycleHookConfigDraft): LifecycleHookConfig {
@@ -282,37 +267,6 @@ function readOptionalBoolean(value: unknown): {ok: true; value: boolean} | {ok: 
 
 function isIntegerInRange(value: unknown, min: number, max: number): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max;
-}
-
-function readUserConfigForSave(options: ReadUserConfigOptions = {}): UserConfigSource {
-  const configPath = options.configPath || getDefaultLifecycleHookConfigPath();
-  const readFile = options.readFile || fs.readFileSync;
-  let rawConfig: string;
-
-  try {
-    rawConfig = readFile(configPath, 'utf8');
-  } catch (error: unknown) {
-    const code = typeof error === 'object' && error !== null && 'code' in error ? (error as {code?: unknown}).code : undefined;
-
-    if (code === 'ENOENT') {
-      return {};
-    }
-
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`无法读取 hooks 配置文件：${message}`);
-  }
-
-  try {
-    const parsed: unknown = JSON.parse(rawConfig);
-
-    if (isPlainObject(parsed)) {
-      return {...parsed};
-    }
-  } catch {
-    throw new Error(`hooks 配置文件不是有效 JSON：${configPath}`);
-  }
-
-  throw new Error(`hooks 配置文件根节点必须是对象：${configPath}`);
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

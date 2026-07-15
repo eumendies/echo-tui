@@ -18,6 +18,7 @@ flowchart LR
     dist_cli --> cli_main["src/cli/main.ts"]
     cli_main --> bootstrap["src/config/user-setup-bootstrap.ts"]
     cli_main --> app_main["src/app/main.ts"]
+    cli_main --> one_shot["src/cli/one-shot.ts"]
     app_main --> app_context["src/app/state/app-context.ts"]
     app_main --> terminal_tty["src/terminal/tty.ts"]
     app_main --> input_parser["src/input/key-parser.ts"]
@@ -47,6 +48,10 @@ flowchart LR
     app_context --> composer["src/input/composer.ts"]
     app_context --> transcript_store["src/persistence/transcript-store.ts"]
     app_main --> usage_store["src/persistence/usage-store.ts"]
+    one_shot --> mcp_manager
+    one_shot --> hooks
+    one_shot --> usage_store
+    one_shot --> agent_loop
     app_main --> command_runtime["src/app/command/command-runtime.ts"]
     command_runtime --> slash_resolver["src/commands/resolve-slash-command.ts"]
     command_runtime --> command_host["src/app/command/command-host.ts"]
@@ -76,7 +81,7 @@ flowchart LR
     terminal_tty --> ansi
 ```
 
-`npm start` 通过 `tsc` 生成 `dist/`，再运行 `dist/bin/echo-tui.js`；编译产物使用 CommonJS。`package.json#bin` 指向 `bin/echo-tui.ts`，对应编译产物解析并加载 `dist/src/cli/main.js`；未生成 `dist/` 时给出明确 build 提示并退出。`src/cli/main.ts` 是普通命令行入口：解析 `--help` / `--version`，无参数时先执行用户目录初始化（`bootstrapEchoUserSetup`），再调用 `src/app/main.ts` 的 `run()` 进入 TUI raw mode。`src/types/` 中的纯 TypeScript 文件描述 input、composer、transcript、command、render、app、agent、tool、diff、change-history、mcp 和 skill 的跨层协议。
+`npm start` 通过 `tsc` 生成 `dist/`，再运行 `dist/bin/echo-tui.js`；编译产物使用 CommonJS。`package.json#bin` 指向 `bin/echo-tui.ts`，对应编译产物解析并加载 `dist/src/cli/main.js`；未生成 `dist/` 时给出明确 build 提示并退出。`src/cli/main.ts` 是普通命令行入口：解析 `--help` / `--version` / `--once`，有效启动前执行用户目录初始化（`bootstrapEchoUserSetup`）；无参数时调用 `src/app/main.ts` 的 `run()` 进入 TUI raw mode，`--once` 则交给不创建 terminal、renderer 或 stdin listener 的 `src/cli/one-shot.ts`。`src/types/` 中的纯 TypeScript 文件描述 input、composer、transcript、command、render、app、agent、tool、diff、change-history、mcp 和 skill 的跨层协议。
 
 `src/app/main.ts` 是顶层编排层，面向一个 `AppContext` 组合根；`AppContext` 负责组合 `ComposerContext`、`TranscriptContext`、`ModelContext`、`TurnContext`、`RenderContext`、`SlashSuggestionContext` 和 `ChangeHistoryContext`，并提供顶层编排需要的门面。`ToolApprovalContext`、`UserQuestionContext` 和 `FilePickerContext` 由 `main.ts` 直接持有。composer、transcript records、session 指针、response lock、pending、working spinner、输入历史、slash suggestion、change history、context usage、interaction mode、MCP bootstrap 状态、status line 和 previous terminal size 由对应子 context、AppContext transient state 或 render state 持有；boxed composer 的 placeholder 只在 render 层生成。`main.ts` 负责依赖装配、通过 `createKeyParser()` 保持跨 stdin chunk 的输入解析状态、输入事件分发、LLM agent lifecycle、shell 命令执行、工具授权/用户问题/文件选择 callback 接入、MCP 初始化和 destructive replay 等顶层编排；普通 assistant turn 的回调到状态翻译下沉到 `src/app/assistant-turn-runner.ts`。具体走 footer-only redraw、transcript append 还是 destructive replay，由 `app-renderer` 门面统一编排。slash command session 和会话内事件分发由 `src/app/command/command-runtime.ts` 承载；handler 通过 `src/app/command/command-host.ts` 暴露的受控 app 能力触达 composer、transcript、model、config、skills、mcp、memory、mode、theme、context、usage、diff、undo、assistant 和 ui 语义操作。
 
@@ -90,9 +95,9 @@ slash runtime 通过三类稳定边界协调本地命令：
 
 | 概念 | 含义 | 实现位置 |
 | --- | --- | --- |
-| CLI 入口 | 普通命令行入口。解析 `--help` / `--version`，无参数时执行用户目录初始化后进入 TUI；bin shim 只负责定位编译产物 | `src/cli/main.ts`、`bin/echo-tui.ts` |
+| CLI 入口 | 普通命令行入口。解析 `--help` / `--version` / `--once`，有效启动时执行用户目录初始化；无参数进入 TUI，`--once` 进入 headless runner；bin shim 只负责定位编译产物 | `src/cli/main.ts`、`src/cli/one-shot.ts`、`bin/echo-tui.ts` |
 | 用户目录初始化 | 首次启动 bootstrap，只在缺失时创建 `~/.echo/config.json`（预置内置 fake agent provider/model）和内置 `echo-tui-setup` skill，不覆盖已有内容 | `src/config/user-setup-bootstrap.ts` |
-| interaction mode | 当前进程内的交互模式，含 `normal`、`plan`、`shell`、`shell-local`。Tab 在四者间循环，`/mode` 也可切换；plan 影响工具边界与 system prompt，shell/shell-local 把输入作为本地 bash 命令执行 | `src/app/state/app-context.ts`、`src/types/agent.ts` |
+| interaction mode | 当前进程内的交互模式，含 `normal`、`plan`、`shell`、`shell-local`。Tab 在四者间循环，`/mode` 也可切换；normal/plan 的模型可见切换只包装到切换后首条 user record，plan 同时影响工具风险边界，shell/shell-local 把输入作为本地 bash 命令执行 | `src/app/state/app-context.ts`、`src/types/agent.ts` |
 | slash resolver | 统一的 slash 路由入口。对一段已提交文本按顺序询问 handlers 的 `match()`，命中后直接返回该 handler；未命中则返回 `null` 并回退为普通消息或 shell 命令 | `src/commands/resolve-slash-command.ts` |
 | slash handler | 每个本地命令的实例协议对象。至少实现 `match(text)` 和 `start(text, host)`，并暴露用户可见 `name` / `description` 供 slash 提示；交互式命令额外实现 `handleEvent(session, event, host)`。handler 只通过 `CommandHost` 调用受控 app 能力 | `src/commands/*-command-handler.ts` |
 | agent workflow | `/init` 和 `/review` 内置工作流。handler 把固定 prompt 通过 `submit_user_message` 交回普通用户消息流程，plan 模式下提交时自动切回 normal；后续走正常 agent lifecycle | `src/commands/agent-workflows/*` |
@@ -104,14 +109,15 @@ slash runtime 通过三类稳定边界协调本地命令：
 | user question context | `ask_user_questions` tool 的阻塞式用户问题状态。逐题投影为 `choice` surface，支持预设选项、Other inline 输入和 Esc 取消，最终构造 tool result 交回 agent continuation | `src/app/state/user-question-context.ts`、`src/tools/ask-user-questions-tool-handler.ts` |
 | file picker context | composer 内 `@` 文件选择器的 transient 状态。展示当前目录直接子项、查询过滤、文本/代码预览，支持方向键移动、进入/返回目录、Space 多选、Enter 插入 mention，复用 read_files 的资源分类 | `src/app/state/file-picker-context.ts`、`src/input/file-mentions.ts` |
 | status line | 普通输入 footer 底部的一行 segmented 状态。左侧展示当前模型、显式配置的推理等级和项目名，右侧展示最近一次真实 provider context usage 与输入/工作模式；模型 label 与 reasoning effort 来自 `ModelContext` 的实例级模型状态缓存，普通 redraw/render path 只读内存，不同步读取 `~/.echo/config.json`；`/model`、`/effort` 和 `/config` 保存成功后刷新该缓存。command/approval/user-question/file-picker surface 会替换普通输入区域 | `src/render/footer.ts`、`src/types/render.ts`、`src/app/state/model-context.ts` |
-| transcript store | 按 cwd hash 分区的本地 JSON session 存储。默认根目录是 `~/.echo/echo_tui/`，保存 transcript records、compaction 和供 `/undo` / `/diff` 共用的可序列化 change history；不保存 composer、pending、command session 或输入历史 | `src/persistence/transcript-store.ts` |
+| transcript store | 按 cwd hash 分区的本地 append-only JSONL session journal。默认根目录是 `~/.echo/echo_tui/`；每个 session 以 `session_start` 首行建立身份，随后逐行追加 records、compaction、todo 和 `/undo` / `/diff` 共用的 change history 操作。重放忽略末尾未完成写入，真正恢复 session 时会原子移除无效尾部后再允许续写，但拒绝中间损坏；不保存 composer、pending、command session 或输入历史 | `src/persistence/transcript-store.ts`、`src/persistence/transcript-journal.ts` |
 | usage store | 独立于 transcript 的 append-only JSONL token 用量账本，默认位于用户级 `usage/` 分区，按月份写入并按本地日期聚合；只保存 provider/model/mode/cwd hash 和 token 统计，不保存 prompt、响应文本、工具参数或凭据 | `src/persistence/usage-store.ts`、`src/types/usage.ts` |
 | change history context | assistant loop 的 change checkpoint 栈，记录受控文件 snapshot 快照和 `pending` / `created` / `updated` 写入状态；同一份 history 同时服务 `/undo` 回退和 `/diff` fallback | `src/app/state/change-history-context.ts` |
 | LLM config | 从 `~/.echo/config.json` 读取必填 `llm.providers`、`llm.models`、可选 `llm.selectedModel` / `contextWindow` / `reasoning` 配置；model profile 通过 `provider` 引用 provider profile，provider profile 通过 `preset` 引用内置 provider preset catalog，解析层把当前选择归一化为单个运行时 `{agentType, apiKey, baseURL, codexOAuth, headers, model, reasoningEffort, reasoningSummary, contextWindow, tools}` 配置；用户配置不暴露 `agentType`，协议类型由 preset 后台解析；`openai-codex-oauth` preset 不要求 `apiKey`，只记录可选 `codexAuthFile`，运行时按 `codexAuthFile` → `CODEX_HOME/auth.json` → `~/.codex/auth.json` 读取既有 Codex OAuth cache；`headers` 是 preset 固定 headers 与 provider profile 手写 headers 的合并结果；context window 按用户配置 → 内置模型映射 → 默认窗口三级回退 | `src/config/llm-config.ts`、`src/config/provider-presets.ts`、`src/config/codex-oauth.ts` |
 | MCP manager | 启动期统一初始化 enabled MCP servers，单 server 失败只记录脱敏诊断；以 `mcp__<server>__<tool>` 命名空间暴露工具、按名调用、保存 per-tool approval、支持重载与关闭 | `src/mcp/manager.ts`、`src/mcp/client.ts`、`src/config/mcp-config.ts` |
 | 用户 memory | 用户通过 `/memory` 显式维护的全局持久背景，存储于 `~/.echo/memories.json`；`/memory` 是其唯一的读取和修改入口，支持新增、编辑、Space 启停和确认删除。每轮真实 provider 请求重新读取并 transient 注入已启用项，绝不写入 transcript、session 或 compaction；内容会发送给 provider，不能当作秘密存储 | `src/memory/memory-store.ts`、`src/commands/memory-command-handler.ts` |
 | Agent memory | 与 user memory 分离存储于 `~/.echo/agent-memory/`，索引记录 global/project scope、catalog 名称、描述和启停状态，items 按 catalog id 分文件保存并各自记录启停状态。每轮 provider request 只注入当前 scope 的 enabled 有效 catalog 名称与描述，disabled project 不覆盖同名 enabled global catalog；scope 和 item 不进入 prompt。agent 仅通过 `read_memory`、`add_memory`、`update_memory` 和 `remove_memory` 操作 enabled catalog 和 items；用户明确要求记住的稳定信息也应存入语义化 agent catalog。读取结果按普通 tool result 进入 transcript/session/compaction，三个 mutation tools 需审批，`/memory` 提供 scope/catalog/item 的启停和人工纠错入口 | `src/memory/agent-memory-store.ts`、`src/tools/memory-tool-handler.ts` |
-| agent loop runtime | provider-neutral 的真实 agent 编排层。对 app 暴露 `RunAgent(session, callbacks)`，按拉模式每轮重读 LLM 配置和用户 memory，按 interaction mode 选择默认/只读 tool registry 并合并 MCP 工具，注入源码内置且不可用户覆盖的 transient system prompt（含 cwd、AGENTS.md、memory、plan 约束、skill catalog），维护 tool-call continuation 的 `TranscriptRecord[]`，按需触发上下文压缩，把真实 provider input usage 通过 context usage callback 回传 app，并把完整 provider usage 追加到 usage store；tool call 与 compaction 事实事件会旁路派发给 lifecycle hooks | `src/agent/agent-loop-runtime.ts` |
+| agent loop runtime | provider-neutral 的真实 agent 编排层。对 app 暴露 `RunAgent(session, callbacks)`，按拉模式每轮重读 LLM 配置和用户 memory，装配默认 registry 并合并 MCP 工具，注入源码内置且不可用户覆盖的 transient system prompt（含 cwd、AGENTS.md、memory、skill catalog）和仅含 open todo 的 runtime suffix，维护 tool-call continuation 的 `TranscriptRecord[]`，按需触发上下文压缩，把真实 provider input usage 通过 context usage callback 回传 app，并把完整 provider usage 追加到 usage store；plan 写操作由 interaction mode 风险分类拒绝，tool call 与 compaction 事实事件会旁路派发给 lifecycle hooks | `src/agent/agent-loop-runtime.ts` |
+| headless 单轮 runner | `--once` 的非交互生命周期。复用 MCP、hooks、debug、usage 和 agent loop，但不创建 raw mode、renderer、stdin listener 或 transcript session；以 `{kind: 'headless', approvalPolicy: 'deny'}` 默认拒绝审批工具，`full-access` 只在当前调用内允许已注册工具，用户问题直接返回取消结果；派发 assistant 生命周期 hook，成功只写最终纯文本，结束时关闭 MCP/debug 而不等待 hook 队列 | `src/cli/one-shot.ts`、`src/types/agent.ts` |
 | lifecycle hooks | 用户级可选旁路事件机制。`~/.echo/config.json#hooks` 可为 assistant turn、tool call 和 compaction 事件配置本地命令；hook stdin 接收 JSON payload，环境变量包含事件名和 cwd；hook 执行结果不显示、不写 transcript、不持久化、不回传模型，也不改变主流程；`/hooks` 通过配置草稿保留 disabled entries 与诊断，保存后只替换 root `hooks` 节点并 live reload dispatcher，synthetic test 只验证本地命令契约且输出只留在当前 command surface | `src/hooks/*`、`src/types/hooks.ts` |
 | provider agent setup | 按当前配置的 `agentType` 选择 provider adapter（openai / openai-chat / anthropic / codex / fake），并用配置和 tool registry 初始化；Codex OAuth provider 路由到独立 Codex adapter，每次请求前把本机 auth cache 解析为 access token，过期时用 refresh token 刷新到内存，不回写 Codex auth 文件；`prepareAgent` 供 `/compact` 等本地动作复用 | `src/agent/agent-setup.ts`、`src/agent/codex/agent.ts`、`src/config/codex-oauth.ts` |
 | tool message rendering | app 可见层把未完成 tool call 显示为 footer pending preview；需要用户参与的工具先进入 approval 或 user-question surface；tool result 到达后再按既有 schema 追加 `tool_call` 与 `tool_result` records。顶层 renderer 负责路由和通用 fallback，子目录分别承载 bash、apply_patch、use_skill、memory 及共享宽度/前缀逻辑；`use_skill` 成功结果只投影为简洁使用摘要。Memory tools 使用 Remembering/Recalling/Revising/Forgetting 动作摘要，成功 mutation 隐藏 result，read result 只显示无状态 content 列表；完整原始结果仍供 provider/session/compaction 使用 | `src/app/state/turn-context.ts`、`src/render/tool-message-renderer.ts`、`src/render/tool-message-renderers/` |
@@ -147,7 +153,7 @@ handler 协议保持最小：
 
 这让“无交互命令”和“有交互命令”共享同一套总线，而不是拆成两套 app 分支。
 
-默认 handlers 在 app 装配阶段无参实例化：`createDefaultSlashCommandHandlers()` 创建 `/help`、`/config`、`/model`、`/effort`、`/mode`、`/context`、`/usage`、`/memory`、`/clear`、`/compact`、`/diff`、`/undo`、`/resume`、`/mcp`、`/hooks`、`/skills`、`/themes`、内置 agent workflow（`/init`、`/review`）和 direct skill invocation handler。命令需要的 app 能力在运行时由 `CommandHost` 提供。`createSlashCommandDescriptors()` 从同一组 handlers 派生命令 `{name, description}`，再与 enabled skill descriptors 合并去重，供普通 composer 输入态下的 slash suggestion 使用，避免维护第二份命令/skill 清单。
+默认 handlers 在 app 装配阶段无参实例化：`createDefaultSlashCommandHandlers()` 创建 `/help`、`/config`、`/model`、`/effort`、`/mode`、`/status`、`/context`、`/usage`、`/memory`、`/clear`、`/compact`、`/diff`、`/undo`、`/resume`、`/mcp`、`/hooks`、`/skills`、`/themes`、内置 agent workflow（`/init`、`/review`）和 direct skill invocation handler。命令需要的 app 能力在运行时由 `CommandHost` 提供。`createSlashCommandDescriptors()` 从同一组 handlers 派生命令 `{name, description}`，再与 enabled skill descriptors 合并去重，供普通 composer 输入态下的 slash suggestion 使用，避免维护第二份命令/skill 清单。
 
 `AppContext` 作为组合根和门面：构造期创建 `ComposerContext`、`TranscriptContext`、`ModelContext`、`TurnContext`、`RenderContext`、`SlashSuggestionContext` 和 `ChangeHistoryContext`，并保存当前进程内 interaction mode、context usage 和 MCP bootstrap 状态；`ToolApprovalContext`、`UserQuestionContext` 和 `FilePickerContext` 由 `main.ts` 持有。AppContext 为 `main.ts` 顶层编排保留稳定转发入口。
 
@@ -169,6 +175,7 @@ handler 协议保持最小：
 | `mode` | 读取与设置当前 interaction mode，并清空 context usage 后重绘 footer |
 | `theme` | 为 `/themes` 列出内置 theme metadata、保存当前 base theme id、更新当前进程 render theme 并触发完整重绘 |
 | `context` | 为 `/context` 返回最近一次真实 provider context usage 快照 |
+| `status` | 为 `/status` 聚合 cwd、AGENTS 来源、有效 memory、model/provider 与 session id；Codex provider 额外复用 OAuth 凭据查询账户配额，失败只返回脱敏不可用状态 |
 | `usage` | 为 `/usage` 返回 usage store 的每日聚合快照；命令只读，不追加 transcript，也不触发 provider request |
 | `diff` | 为 `/diff` 读取 diff 数据源，并返回当前 command surface 的渲染视口预算 |
 | `undo` | 为 `/undo` 读取 checkpoint 摘要并执行回退 |
@@ -273,7 +280,7 @@ flowchart TB
 
 response 期间不会启动第二次提交。每个普通 turn 开始时先创建 change checkpoint（记录 transcript 边界、compaction 状态和受控文件 snapshot），结束（完成、失败或中断）时 finalize 并持久化，供 `/undo` 和 `/diff` 使用。Esc 中断当前 assistant response：app abort 当前 turn、停止接受该 turn 的 stream/tool 回调、保留已可见 partial assistant draft，并追加本地中断 notice；迟到回调被 turn token 隔离。thinking spinner 表示首字响应前的等待；首个 assistant token 到达后切换为 working spinner 并显示已耗时。
 
-`runAssistantTurn`（`src/app/assistant-turn-runner.ts`）把 agent 回调翻译为 app 状态：`onThinking` / `onToken` 驱动 spinner 与 pending preview，`onCompacted` 追加压缩提示，`onContextUsage` 更新 status line，`onAssistantSegment` 落盘 tool call 前的中间 assistant 段，`onReasoningSummary` 追加可见 reasoning 摘要，`onToolCall` 暂存 pending preview，`onToolApprovalRequest` / `onUserQuestionRequest` 转交对应 context，`onToolResult` 成对追加 tool records，`onComplete` 提交最终 assistant record。CLI 默认通过 `createAgentLoopRuntime(cwd, mcpManager, hooks, debug, usageStore)` 编排真实 agent lifecycle：runtime 拉模式每轮重读配置、按 interaction mode 选择 tool registry（plan 用只读 registry，否则默认 registry 合并 MCP 工具）、初始化对应 provider agent、维护 continuation 记录，并把每次流式 turn 委托给 provider agent。provider adapter 在 stream 完成时尽量回传输入、缓存命中输入、缓存创建输入和输出 token；runtime 用最近一次 context usage 回调继续服务 `/context` 和 status line，同时把可用 provider usage 作为非敏感事件追加到 usage store，写入失败只进 debug 事件，不污染 transcript 或中断 assistant turn。lifecycle hooks 由 `main.ts` 装配一次并注入 runner/runtime；它们只观察 assistant turn、tool call 和 compaction 事件，hook 输出和失败不进入 renderer、transcript、session 或 provider request。`/hooks` 保存通过 `CommandHost.hooks` 更新用户配置后调用 dispatcher reload，reload 只影响后续 emit，已入队或正在运行的 hook job 继续使用入队时捕获的 entry 与 payload；synthetic test 走独立执行入口，不触发真实 lifecycle event，捕获的 stdout/stderr 只投影到当前 footer surface。provider adapter 只在 provider 边界转换 transcript，因此本地 `error`、`local_notice`、`compaction_notice` 与可见 `reasoning_summary` record 可持久化、可恢复，但不会发送给模型。
+`runAssistantTurn`（`src/app/assistant-turn-runner.ts`）把 agent 回调翻译为 app 状态：提交边界先由 `AppContext` 比较当前 mode 与上一条模型可见 mode；发生 normal/plan 切换时，`AppContext` 把切换说明和用户请求写入 provider-facing `text`，同时用 `displayText` / `historyText` 保持 transcript 与 composer 只展示用户原文。该 transition 只写入切换后首条 user record，随 session、resume 和 compaction 持久化；同 mode 后续消息不重复注入。随后 `onThinking` / `onToken` 驱动 spinner 与 pending preview，`onCompacted` 追加压缩提示，`onContextUsage` 更新 status line，`onAssistantSegment` 落盘 tool call 前的中间 assistant 段，`onReasoningSummary` 追加可见 reasoning 摘要，`onToolCall` 暂存 pending preview，`onToolApprovalRequest` / `onUserQuestionRequest` 转交对应 context，`onToolResult` 成对追加 tool records，`onComplete` 提交最终 assistant record。CLI 默认通过 `createAgentLoopRuntime(cwd, mcpManager, hooks, debug, usageStore)` 编排真实 agent lifecycle：runtime 拉模式每轮重读配置、初始化对应 provider agent、维护 continuation 记录，并把每次流式 turn 委托给 provider agent；interaction mode 继续驱动 plan 工具风险分类，runtime suffix 只同步当前 open todo。provider adapter 在 stream 完成时尽量回传输入、缓存命中输入、缓存创建输入和输出 token；runtime 用最近一次 context usage 回调继续服务 `/context` 和 status line，同时把可用 provider usage 作为非敏感事件追加到 usage store，写入失败只进 debug 事件，不污染 transcript 或中断 assistant turn。lifecycle hooks 由 `main.ts` 装配一次并注入 runner/runtime；它们只观察 assistant turn、tool call 和 compaction 事件，hook 输出和失败不进入 renderer、transcript、session 或 provider request。`/hooks` 保存通过 `CommandHost.hooks` 更新用户配置后调用 dispatcher reload，reload 只影响后续 emit，已入队或正在运行的 hook job 继续使用入队时捕获的 entry 与 payload；synthetic test 走独立执行入口，不触发真实 lifecycle event，捕获的 stdout/stderr 只投影到当前 footer surface。provider adapter 只在 provider 边界转换 transcript，因此本地 `error`、`local_notice`、`compaction_notice` 与可见 `reasoning_summary` record 可持久化、可恢复，但不会发送给模型。
 
 ## shell 子流程
 
@@ -381,6 +388,7 @@ flowchart TB
 | `config` | `/config` provider/model 配置面板 | 渲染 provider/header/model 分层页面、preset 选择、校验错误、未保存确认和保存结果，隐藏光标 |
 | `context` | `/context` 上下文占用详情 | 渲染最近一次真实 provider usage 与分类占用，隐藏光标 |
 | `usage` | `/usage` 每日 token 用量面板 | 渲染累计输入/输出/缓存命中、日期窗口、每日堆叠柱状图、图例和导航提示，隐藏光标 |
+| `status` | `/status` 运行状态与 Codex 配额面板 | 渲染本地运行状态；以进度条展示 Codex OAuth 5 小时/每周配额、百分比和重置时间，隐藏光标 |
 | `file_picker` | composer `@` 文件选择器 | 左侧渲染当前目录条目与多选状态，右侧渲染文本/代码预览，隐藏光标 |
 | `diff` | `/diff` 差异查看面板 | 左侧文件列表，右侧宽屏 side-by-side、窄屏 unified 和 fallback 提示，隐藏光标 |
 
@@ -404,6 +412,7 @@ renderer 只理解这些 surface kind，不理解具体命令、tool approval、
 | `src/commands/model-command-handler.ts` | `ModelCommandHandler` | `/model` 多模型 select、确认持久化 `llm.selectedModel` |
 | `src/commands/effort-command-handler.ts` | `EffortCommandHandler` | `/effort` scale surface，覆盖当前模型 `reasoning.effort` |
 | `src/commands/mode-command-handler.ts` | `ModeCommandHandler`、`parseModeArgument` | `/mode` 选择或直接切换 normal/plan/shell/shell-local |
+| `src/commands/status-command-handler.ts` | `StatusCommandHandler`、`createStatusSurface` | `/status` 同步打开本地状态，异步查询 Codex 配额并隔离迟到结果 |
 | `src/commands/context-command-handler.ts` | `ContextCommandHandler`、`createContextUsageSurface` | `/context` 只读上下文占用面板 |
 | `src/commands/usage-command-handler.ts` | `UsageCommandHandler`、`createUsageSurface` | `/usage` 只读每日 token 用量面板，支持日期窗口平移和关闭 |
 | `src/commands/clear-command-handler.ts` | `ClearCommandHandler` | `/clear` confirm surface，清空可见 transcript 并 detach session |
@@ -432,11 +441,11 @@ renderer 只理解这些 surface kind，不理解具体命令、tool approval、
 | `src/app/state/user-question-context.ts` | `UserQuestionContext`、`request`、`getSurface`、`handleEvent` | `ask_user_questions` 逐题选择，构造 tool result |
 | `src/app/state/file-picker-context.ts` | `FilePickerContext`、`loadDirectoryEntries` | composer `@` 文件选择器状态、目录加载、预览和插入语义 |
 | `src/app/diff/source.ts` | `createDiffSourceResult`、`createGitDiffSource`、`createHistoryDiffSource` | `/diff` 数据源解析，优先 Git worktree diff，失败回退 change history |
-| `src/persistence/transcript-store.ts` | `createTranscriptStore`、`createSession`、`saveSession`、`listSessions`、`loadSession` | 按 cwd hash 分区保存/读取 JSON transcript session，默认 `~/.echo/echo_tui/` |
+| `src/persistence/transcript-store.ts` | `createTranscriptStore`、`createSession`、`appendSession`、`listSessions`、`loadSession` | 按 cwd hash 分区创建和重放 JSONL transcript journal；首次通过临时文件原子落位，后续操作逐行追加，默认 `~/.echo/echo_tui/` |
 | `src/persistence/usage-store.ts` | `createUsageStore`、`createUsageEvent`、`formatLocalDay` | append-only JSONL token usage 账本，按月份写入、容错读取并聚合每日用量 |
 | `src/config/llm-config.ts` | `readLlmConfig`、`readLlmModelConfigInfo`、`resolveContextWindow`、`getDefaultConfigPath` | 读取并校验 `llm.providers`/`models`/`selectedModel`/`reasoning`，按 preset 解析运行时配置，归一化当前选中配置，三级回退 context window；Codex OAuth provider 只输出运行时 `codexOAuth` source，不要求 API key |
 | `src/config/provider-presets.ts` | `listProviderPresets`、`getProviderPreset`、`providerRequiresApiKey` | 内置 provider preset catalog（协议预设、Codex OAuth 与固定 Base URL 厂商预设），把 preset 映射为 agentType/baseURL/headers/API key 要求 |
-| `src/config/codex-oauth.ts` | `resolveCodexOAuthCredential`、`refreshCodexOAuthCredential`、`resolveCodexAuthFilePath` | 读取现有 Codex OAuth auth cache、解析 JWT 过期时间和 account id、按需 refresh access token；refresh 结果只驻留内存，不回写 auth cache |
+| `src/config/codex-oauth.ts` | `resolveCodexOAuthCredential`、`refreshCodexOAuthCredential`、`resolveCodexAuthFilePath`、`queryCodexUsage`、`parseCodexUsageResponse` | 读取现有 Codex OAuth auth cache、按需 refresh access token，并通过 `backend-api/wham/usage` 查询 5 小时/每周限额；凭据和查询错误统一脱敏，refresh 结果只驻留内存 |
 | `src/config/llm-config-editor.ts` | `readLlmConfigDraft`、`saveLlmConfigDraft`、`validateConfigDraft` | `/config` 草稿读写、headers/context window 校验、隐藏 reasoning round-trip、Codex OAuth 无 API key 保存、原子写入 |
 | `src/config/provider-model-list.ts` | `listProviderModels`、`resolveProviderConnection` | `/config` 的 list models，按 preset 选择 OpenAI/Anthropic/Codex models API 并脱敏错误 |
 | `src/config/mcp-config.ts` | `readMcpConfig`、`readMcpConfigDraft`、`saveMcpEnabledStateDraft` | 读取运行时 MCP 配置、`/mcp` 面板草稿（含 disabled/invalid），只改 enabled 开关的原子写入 |

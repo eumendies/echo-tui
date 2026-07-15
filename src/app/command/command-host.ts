@@ -1,19 +1,24 @@
 import {prepareAgent} from '../../agent/agent-setup';
 import {runCompaction} from '../../agent/context/context-compaction';
+import {loadAgentInstructions} from '../../agent/agent-instructions';
+import {redactSensitiveText} from '../../agent/agent-errors';
+import {readLlmConfig} from '../../config/llm-config';
 import {readLlmConfigDraft, saveLlmConfigDraft} from '../../config/llm-config-editor';
+import {queryCodexUsage} from '../../config/codex-oauth';
 import {readMcpConfigDraft, saveMcpEnabledStateDraft} from '../../config/mcp-config';
 import {createLifecycleHookRuntimeConfigFromDraft, readLifecycleHookConfigDraft, saveLifecycleHookConfigDraft} from '../../hooks/config';
 import {createLifecycleHookSyntheticPayload, executeLifecycleHookSyntheticTest} from '../../hooks/synthetic-test';
 import {listProviderModels} from '../../config/provider-model-list';
 import {listBuiltinThemes, readTuiTheme, readTuiThemeBaseId, selectBuiltinTheme} from '../../config/theme-config';
 import {createUserMemory, deleteUserMemory, readUserMemories, setUserMemoryEnabled, updateUserMemory} from '../../memory/memory-store';
-import {addAgentMemory, listAgentMemoryCatalogs, readAgentMemoryCatalog, removeAgentMemoryCatalog, removeAgentMemoryItem, setAgentMemoryCatalogEnabled, setAgentMemoryItemEnabled, updateAgentMemoryCatalog, updateAgentMemoryItem} from '../../memory/agent-memory-store';
+import {addAgentMemory, listAgentMemoryCatalogs, listEffectiveAgentMemoryCatalogs, readAgentMemoryCatalog, removeAgentMemoryCatalog, removeAgentMemoryItem, setAgentMemoryCatalogEnabled, setAgentMemoryItemEnabled, updateAgentMemoryCatalog, updateAgentMemoryItem} from '../../memory/agent-memory-store';
 import {calculateCommandSurfaceMaxLines} from '../../render/footer';
 import {sanitizeMcpError} from '../../mcp/manager';
 import {createSkillManager} from '../../skills/skill-manager';
 import {writeClipboardText} from '../clipboard';
 
-import type {CommandCompactionResult, CommandHostApp, CommandMcpServerInfo, CopyableMessageRecord} from '../../types/command';
+import type {CommandCompactionResult, CommandHostApp, CommandMcpServerInfo, CommandStatusSnapshot, CopyableMessageRecord} from '../../types/command';
+import type {CodexUsage} from '../../config/codex-oauth';
 import type {TranscriptRecord} from '../../types/transcript';
 import type {LifecycleHookDispatcher} from '../../types/hooks';
 import type {UsageStore} from '../../types/usage';
@@ -28,6 +33,7 @@ type CommandHostOptions = {
   mcpManager?: McpManager;
   renderFooter: () => void;
   renderResizeRecovery: () => void;
+  queryCodexUsage?: typeof queryCodexUsage;
   usageStore?: UsageStore;
 };
 
@@ -39,6 +45,7 @@ type CommandHostOptions = {
  */
 function createCommandHost(options: CommandHostOptions): CommandHostApp {
   const {appContext, appendRecord, exit, hooks, mcpManager, renderFooter, renderResizeRecovery, usageStore} = options;
+  const queryUsage = options.queryCodexUsage || queryCodexUsage;
   const skillManager = createSkillManager({cwd: () => appContext.getCurrentCwd()});
 
   return {
@@ -361,6 +368,30 @@ function createCommandHost(options: CommandHostOptions): CommandHostApp {
           : null;
       }
     },
+    status: {
+      createSnapshot() {
+        return createStatusSnapshot(appContext);
+      },
+      async queryCodexUsage() {
+        let config;
+
+        try {
+          config = readLlmConfig();
+        } catch (error: unknown) {
+          return {status: 'unavailable' as const, error: formatStatusError(error, '无法读取当前模型配置')};
+        }
+
+        if (config.agentType !== 'codex') {
+          return {status: 'not_applicable' as const};
+        }
+
+        try {
+          return createAvailableCodexUsage(await queryUsage(config.codexOAuth || {}));
+        } catch (error: unknown) {
+          return {status: 'unavailable' as const, error: formatStatusError(error, 'Codex 用量不可用')};
+        }
+      }
+    },
     usage: {
       listDailyUsage(query) {
         return usageStore ? usageStore.listDailyUsage(query) : [];
@@ -460,9 +491,63 @@ function createCopyableRecords(records: TranscriptRecord[]): CopyableMessageReco
     }));
 }
 
+/**
+ * 聚合 `/status` 所需的本地只读信息；各来源失败时保留其余可用字段。
+ */
+function createStatusSnapshot(appContext: AppContext): CommandStatusSnapshot {
+  const cwd = appContext.getCurrentCwd();
+  const userMemoryResult = readUserMemories();
+  const agentMemoryResult = listEffectiveAgentMemoryCatalogs(cwd);
+  const modelResult = appContext.modelContext.createStatusInfo();
+  const diagnostics: string[] = [];
+
+  if (!userMemoryResult.ok) {
+    diagnostics.push(userMemoryResult.error);
+  }
+
+  if (!agentMemoryResult.ok) {
+    diagnostics.push(agentMemoryResult.error);
+  }
+
+  if ('error' in modelResult) {
+    diagnostics.push(modelResult.error);
+  }
+
+  return {
+    cwd,
+    sessionId: appContext.transcriptContext.getCurrentSessionId(),
+    model: 'error' in modelResult ? null : {...modelResult},
+    agentInstructions: loadAgentInstructions({cwd}).map((instruction) => ({
+      filePath: instruction.filePath,
+      label: instruction.label,
+      sourceKind: instruction.sourceKind
+    })),
+    userMemoryCount: userMemoryResult.ok
+      ? userMemoryResult.memories.filter((memory) => memory.enabled).length
+      : 0,
+    agentMemoryCatalogs: agentMemoryResult.ok
+      ? agentMemoryResult.catalogs.map((catalog) => ({name: catalog.name, scope: catalog.scope.kind}))
+      : [],
+    diagnostics: diagnostics.map((diagnostic) => redactSensitiveText(diagnostic))
+  };
+}
+
+function createAvailableCodexUsage(usage: CodexUsage) {
+  return {
+    status: 'available' as const,
+    primary: {...usage.primary},
+    ...(usage.secondary ? {secondary: {...usage.secondary}} : {})
+  };
+}
+
+function formatStatusError(error: unknown, fallback: string): string {
+  return redactSensitiveText(error instanceof Error && error.message.trim() !== '' ? error.message : fallback);
+}
+
 export {
   createCommandHost,
-  createCopyableRecords
+  createCopyableRecords,
+  createStatusSnapshot
 };
 
 export type {

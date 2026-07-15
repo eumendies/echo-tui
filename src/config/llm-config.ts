@@ -1,8 +1,6 @@
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-
 import {REASONING_EFFORTS, REASONING_SUMMARIES} from '../types/agent';
+import {JsonConfigFile, JsonConfigFileError} from './json-config-file';
+import {getDefaultUserConfigPath} from './user-config';
 import {getProviderPreset, providerRequiresApiKey} from './provider-presets';
 import type {AgentType, BashToolConfig, LlmConfig, ReasoningEffort, ReasoningSummary, ToolRuntimeConfig} from '../types/agent';
 import type {ProviderPreset} from './provider-presets';
@@ -143,7 +141,7 @@ class LlmConfigError extends Error {
 }
 
 function getDefaultConfigPath(): string {
-  return path.join(os.homedir(), '.echo', 'config.json');
+  return getDefaultUserConfigPath();
 }
 
 type ConfigSource = Record<string, unknown>;
@@ -502,34 +500,24 @@ function resolveSelectedProviderConfig(selectedProfile: LlmModelProfile, provide
 
 function readParsedConfig(options: ReadLlmConfigOptions = {}): ConfigSource {
   const configPath = options.configPath || getDefaultConfigPath();
-  const readFile = options.readFile || fs.readFileSync;
-  let rawConfig: string;
 
   try {
-    rawConfig = readFile(configPath, 'utf8');
+    return new JsonConfigFile(configPath, {readFile: options.readFile}).read();
   } catch (error: unknown) {
-    if (
-      typeof error === 'object' &&
-      error !== null &&
-      'code' in error &&
-      error.code === 'ENOENT'
-    ) {
+    if (error instanceof JsonConfigFileError && error.kind === 'missing') {
       throw new LlmConfigError(`LLM 配置文件不存在：${configPath}`);
+    }
+
+    if (error instanceof JsonConfigFileError && error.kind === 'invalid_json') {
+      throw new LlmConfigError(`LLM 配置文件不是有效 JSON：${configPath}`);
+    }
+
+    if (error instanceof JsonConfigFileError && error.kind === 'invalid_root') {
+      throw new LlmConfigError('LLM 配置 根节点必须是对象');
     }
 
     throw new LlmConfigError(`无法读取 LLM 配置文件：${configPath}`);
   }
-
-  let parsedConfig: unknown;
-
-  try {
-    parsedConfig = JSON.parse(rawConfig);
-  } catch {
-    throw new LlmConfigError(`LLM 配置文件不是有效 JSON：${configPath}`);
-  }
-
-  assertPlainObject(parsedConfig, '根节点');
-  return parsedConfig;
 }
 
 function readLlmConfigSource(options: ReadLlmConfigOptions = {}): ConfigSource {

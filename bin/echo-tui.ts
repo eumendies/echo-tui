@@ -11,12 +11,16 @@ if (!cliMainPath) {
   process.exit(1);
 }
 
-const { runCli } = require(cliMainPath) as { runCli: () => number };
-const exitCode = runCli();
+const { runCli } = require(cliMainPath) as { runCli: () => Promise<number> };
 
-if (exitCode !== 0) {
-  process.exit(exitCode);
-}
+void runCli().then((exitCode) => {
+  if (exitCode !== 0) {
+    process.exit(exitCode);
+  }
+}).catch((error: unknown) => {
+  process.stderr.write(`echo-tui failed: ${error instanceof Error ? error.message : String(error)}\n`);
+  process.exit(1);
+});
 
 /**
  * 根据当前 bin 所在位置解析编译后的 CLI main；源码 bin 和 dist/bin 都复用同一份逻辑。

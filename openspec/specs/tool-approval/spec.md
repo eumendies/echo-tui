@@ -2,21 +2,19 @@
 
 ## Purpose
 定义本地工具执行前的用户授权拦截、授权决策和拒绝结果语义，第一版覆盖 `apply_patch` 写文件工具。
-
 ## Requirements
-
 ### Requirement: apply_patch 执行前授权
-系统 SHALL 在执行本地 `apply_patch`、`add_memory`、`update_memory` 和 `remove_memory` 工具前请求用户授权。授权发生在 tool executor 调用具体 handler 之前；用户允许时 SHALL 执行本次工具调用，用户拒绝或提交反馈文本时 SHALL NOT 执行工具，并 SHALL 生成可回传模型的 tool result。授权请求的可见 UI SHALL 使用通用 choice surface 呈现，而不是普通 select command surface。MCP tools SHALL 根据 server 审批策略复用同一授权流程：默认执行前授权，显式信任的 server 可跳过授权。只读 `read_memory` SHALL 不因 memory mutation 审批规则触发授权。
+在交互式 TUI 或默认单轮模式下，系统 SHALL 在执行本地 `apply_patch`、`add_memory`、`update_memory` 和 `remove_memory` 工具前请求用户授权。授权发生在 tool executor 调用具体 handler 之前；用户允许时 SHALL 执行本次工具调用，用户拒绝或提交反馈文本时 SHALL NOT 执行工具，并 SHALL 生成可回传模型的 tool result。MCP tools SHALL 根据 server 审批策略复用同一授权流程：默认执行前授权，显式信任的 server 可跳过授权。只读 `read_memory` SHALL 不因 memory mutation 审批规则触发授权。`echo-tui --once --full-access` 是显式非交互例外：对当前单轮中被风险分类为 approval-required 的已注册工具 SHALL 自动允许，不得等待 UI。
 
 #### Scenario: apply_patch 执行前请求授权
-- **WHEN** agent loop runtime 收到工具名为 `apply_patch` 的 tool call
+- **WHEN** 交互式 TUI 或默认单轮 agent loop runtime 收到工具名为 `apply_patch` 的 tool call
 - **THEN** 系统 SHALL 在调用 tool executor 执行该 tool call 前请求用户授权
-- **THEN** 系统 SHALL 在用户作出授权决策前暂停该 tool call 的执行
-- **THEN** TUI SHALL 使用通用 choice surface 显示该授权请求
+- **THEN** 交互式 TUI SHALL 使用通用 choice surface 显示该授权请求
+- **THEN** 默认单轮模式 SHALL 返回非交互失败结果而不是等待 surface 输入
 
 #### Scenario: Memory mutation 执行前请求授权
-- **WHEN** agent loop runtime 收到 `add_memory`、`update_memory` 或 `remove_memory` tool call
-- **THEN** 系统 SHALL 在执行持久 memory mutation 前请求用户授权
+- **WHEN** 交互式 TUI 或默认单轮 agent loop runtime 收到 `add_memory`、`update_memory` 或 `remove_memory` tool call
+- **THEN** 系统 SHALL 在执行持久 memory mutation 前请求授权或生成默认单轮拒绝结果
 - **THEN** 授权 preview SHALL 显示 user/agent 类型、目标 catalog/item 和将写入或删除的内容摘要
 - **THEN** global scope agent memory mutation SHALL 明确显示其全局影响
 
@@ -26,10 +24,9 @@
 - **THEN** 系统 SHALL NOT 因 memory mutation 审批规则请求用户选择
 
 #### Scenario: MCP tool 默认执行前请求授权
-- **WHEN** agent loop runtime 收到未显式信任 server 的 MCP tool call
-- **THEN** 系统 SHALL 在调用 MCP server 前请求用户授权
-- **THEN** 系统 SHALL 在用户作出授权决策前暂停该 tool call 的执行
-- **THEN** TUI SHALL 使用通用 choice surface 显示该授权请求
+- **WHEN** 交互式 TUI 或默认单轮 agent loop runtime 收到未显式信任 server 的 MCP tool call
+- **THEN** 交互式 TUI SHALL 在调用 MCP server 前请求用户授权
+- **THEN** 默认单轮模式 SHALL 生成失败 tool result 而不是等待用户选择
 
 #### Scenario: 用户允许本次执行
 - **WHEN** `apply_patch`、memory mutation 或 MCP tool 授权请求处于活跃状态且用户选择 `Allow once`
@@ -63,6 +60,16 @@
 - **WHEN** `apply_patch` 或 memory mutation 授权请求显示 choice surface
 - **THEN** 选项列表 SHALL 包含 `Allow once`、会话级 allow、`Allow all tools for this session`、`Deny` 和 `Tell model what to do`
 - **THEN** 系统 SHALL NOT 为 `Allow once` 或 `Deny` 生成冗长的 option description
+
+#### Scenario: full-access 自动允许 approval-required 工具
+- **WHEN** 用户使用 `echo-tui --once --full-access <prompt>` 且 agent 请求 approval-required 的已注册工具
+- **THEN** 系统 SHALL NOT 打开 TUI approval surface 或等待 stdin
+- **THEN** 系统 SHALL 直接执行该工具并把真实结果回传给模型
+- **THEN** 该自动允许策略 SHALL 只影响当前单轮运行
+
+#### Scenario: full-access 不改变普通 TUI 授权
+- **WHEN** 用户未使用 `echo-tui --once --full-access` 而在普通 TUI 中请求 approval-required 工具
+- **THEN** 系统 SHALL 继续使用现有 choice surface、结构化授权决策和会话授权缓存
 
 ### Requirement: 工具授权决策模型
 系统 SHALL 使用结构化工具授权决策表示用户选择。决策模型 SHALL 支持允许本次执行、拒绝本次执行、提供文本反馈、允许当前会话内同名非 bash 工具、允许当前会话内同一 bash command，以及允许当前会话内所有需审批工具调用。系统 SHALL NOT 依赖 boolean 作为唯一授权协议。
@@ -162,7 +169,6 @@
 - **THEN** 授权 surface SHALL NOT 显示系统风险分类生成的 reason 文案
 - **THEN** 授权 surface SHALL 让用户基于 command preview 自行判断是否允许执行
 
-
 ### Requirement: apply_patch 删除授权 preview
 工具授权 permission gate SHALL 在 `apply_patch` 请求包含删除文件操作时显示明确的删除 preview。该 preview SHALL 使用轻量 patch header 扫描或等价机制生成，并 SHALL 只作为用户识别风险的展示信息；最终安全校验仍由 `apply_patch` handler 在执行阶段完成。
 
@@ -189,6 +195,7 @@
 - **THEN** permission gate SHALL 继续遵守 footer 全局高度预算
 - **THEN** preview SHALL 可被裁剪或摘要化
 - **THEN** 被裁剪或摘要化时 SHALL 保留至少一个可见的删除标记或等价删除摘要
+
 ### Requirement: 工具授权详情高度受限
 工具授权 permission gate SHALL 遵守 footer 全局高度预算。高危 bash command preview 很长时，授权 UI SHALL 裁剪或摘要化长内容，并 SHALL 显示 `truncated`、省略号或等价提示，同时保留用户作出决策所需的标题、授权选项、拒绝路径和操作提示。当高度足以容纳所有授权 option 行时，preview SHALL 让位给全部授权选项。
 

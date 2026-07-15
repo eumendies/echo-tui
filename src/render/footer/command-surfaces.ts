@@ -12,6 +12,7 @@ import { renderMemorySurface } from './memory-surface';
 import { renderResumeSurface } from './resume-surface';
 import { renderScaleSurface } from './scale-surface';
 import { renderSkillsSurface } from './skills-surface';
+import { renderStatusSurface } from './status-surface';
 import { renderUsageSurface } from './usage-surface';
 import { activeBackground, renderFocusBar, resolveFooterTheme, tokenText, type TuiTheme, type FooterTheme } from '../colors';
 import { clampPlainText, formatSelectOptionText, padVisibleText } from './text';
@@ -90,6 +91,10 @@ export function renderCommandSurface(commandSurface: CommandSurface, width: numb
 
   if (commandSurface.kind === 'usage') {
     return renderUsageSurface(commandSurface, width, options.maxLines, theme);
+  }
+
+  if (commandSurface.kind === 'status') {
+    return renderStatusSurface(commandSurface, width, options.maxLines, theme);
   }
 
   if (commandSurface.kind === 'copy') {

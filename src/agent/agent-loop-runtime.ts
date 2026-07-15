@@ -3,12 +3,14 @@ import crypto from 'node:crypto';
 import {readLlmConfig, resolveContextWindow} from '../config/llm-config';
 import {
   ASK_USER_QUESTIONS_TOOL_NAME,
+  createAskUserQuestionsCancelledResult,
   createAskUserQuestionsFailureResult,
   parseAskUserQuestionsToolCall
 } from '../tools/ask-user-questions-tool-handler';
 import {classifyToolCallRisk} from '../tools/tool-risk-classifier';
 import {createToolExecutor} from '../tools/tool-executor';
 import {createDefaultToolRegistry} from '../tools/tool-registry';
+import {createToolCallTranscriptRecord, createToolResultTranscriptRecord} from '../tools/tool-transcript-record';
 import {executeTodoToolCall, isTodoToolName} from '../tools/todo-tool-handler';
 import {createMcpToolRegistry, mergeToolRegistries} from '../mcp/tool-adapter';
 import {getMcpToolApproval} from '../mcp/manager';
@@ -27,126 +29,18 @@ import {disabledDebugContext, hashValue, redactProviderConfig, summarizeText} fr
 
 import type {TokenUsageAnchor} from './context/context-compaction';
 
-import type {AgentCallbacks, AgentInstruction, AgentSessionInput, InteractionMode, LlmConfig, ProviderAgent, ProviderUsage, RunAgent, ToolApprovalDecision} from '../types/agent';
+import type {AgentCallbacks, AgentExecutionMode, AgentInstruction, AgentSessionInput, InteractionMode, LlmConfig, ProviderAgent, ProviderUsage, RunAgent, ToolApprovalDecision} from '../types/agent';
 import type {DebugContext} from '../debug/debug-context';
 import type {LifecycleHookDispatcher} from '../types/hooks';
 import type {UsageStore} from '../types/usage';
 import type {SkillCatalogEntry} from '../types/skill';
-import type {
-  ApplyPatchToolExecutionResult,
-  BashToolExecutionResult,
-  GlobToolExecutionResult,
-  GrepToolExecutionResult,
-  ReadFilesToolExecutionResult,
-  ToolCall,
-  ToolDefinition,
-  ToolExecutionResult,
-  ToolExecutor,
-  ToolRegistry,
-  WebFetchToolExecutionResult,
-  WebSearchToolExecutionResult
-} from '../types/tool';
+import type {ToolApprovalRequest, ToolCall, ToolDefinition, ToolExecutionResult, ToolExecutor, ToolRegistry} from '../types/tool';
 import type {CompactionState, TodoState, TranscriptRecord} from '../types/transcript';
 import type {McpManager} from '../mcp/manager';
 
 const TOOL_REJECTED_BY_USER_TEXT = 'Tool execution was rejected by the user.';
-const RUNTIME_CONTEXT_NOTICE = 'Not a user request. Use silently; continue the current turn.';
-const PLAN_MODE_USER_PROMPT = 'Plan: discuss/inspect only; no file changes, mutating commands, tests/builds, dependency installs, branch/state changes, or MCP tools. Ask user to run /mode normal before implementing.';
-
-/**
- * 创建 continuation 用的 tool_call record；可见文本由 app 层按工具类型格式化。
- */
-function createToolCallRecord(call: ToolCall): TranscriptRecord {
-  return {
-    role: 'tool_call',
-    text: '',
-    toolCallId: call.callId,
-    toolName: call.toolName,
-    argumentsText: call.argumentsText
-  };
-}
-
-/**
- * 创建 continuation 用的 tool_result record，保留执行状态供下一轮 provider input 回注。
- */
-function createToolResultRecord(result: ToolExecutionResult): TranscriptRecord {
-  const baseRecord = {
-    role: 'tool_result' as const,
-    text: result.text,
-    toolCallId: result.callId,
-    toolName: result.toolName,
-    ok: result.ok,
-    ...(result.attachments ? {attachments: result.attachments} : {})
-  };
-
-  switch (result.toolName) {
-    case 'run_bash_command': {
-      const bashResult = result as BashToolExecutionResult;
-
-      return {
-        ...baseRecord,
-        exitCode: bashResult.exitCode,
-        timedOut: bashResult.timedOut,
-        truncated: bashResult.truncated,
-        durationMs: bashResult.durationMs
-      };
-    }
-    case 'glob': {
-      const globResult = result as GlobToolExecutionResult;
-
-      return {
-        ...baseRecord,
-        exitCode: globResult.exitCode,
-        truncated: globResult.truncated
-      };
-    }
-    case 'grep': {
-      const grepResult = result as GrepToolExecutionResult;
-
-      return {
-        ...baseRecord,
-        exitCode: grepResult.exitCode,
-        truncated: grepResult.truncated
-      };
-    }
-    case 'read_files': {
-      const readFilesResult = result as ReadFilesToolExecutionResult;
-
-      return {
-        ...baseRecord,
-        truncated: readFilesResult.truncated
-      };
-    }
-    case 'web_fetch': {
-      const webFetchResult = result as WebFetchToolExecutionResult;
-
-      return {
-        ...baseRecord,
-        timedOut: webFetchResult.timedOut,
-        truncated: webFetchResult.truncated
-      };
-    }
-    case 'web_search': {
-      const webSearchResult = result as WebSearchToolExecutionResult;
-
-      return {
-        ...baseRecord,
-        timedOut: webSearchResult.timedOut,
-        truncated: webSearchResult.truncated
-      };
-    }
-    case 'apply_patch': {
-      const applyPatchResult = result as ApplyPatchToolExecutionResult;
-
-      return {
-        ...baseRecord,
-        ...(applyPatchResult.display ? {display: applyPatchResult.display} : {})
-      };
-    }
-  }
-
-  return baseRecord;
-}
+const RUNTIME_CONTEXT_NOTICE = 'Not a user request. Auto-Generated by the code. Use silently.';
+const INTERACTIVE_EXECUTION_MODE: AgentExecutionMode = {kind: 'interactive'};
 
 /**
  * 用户拒绝工具授权时，生成 provider 可消费的 tool result，保证 continuation 不缺结果。
@@ -201,6 +95,10 @@ async function executeToolCall(toolCall: ToolCall, state: AgentLoopRunState, cal
       return createAskUserQuestionsFailureResult(toolCall, parsed.message);
     }
 
+    if (state.executionMode.kind === 'headless') {
+      return createAskUserQuestionsCancelledResult(toolCall);
+    }
+
     const result = await Promise.resolve(callbacks.onUserQuestionRequest!(toolCall, parsed.value));
     throwIfAborted(state.abortSignal);
     return result;
@@ -221,7 +119,7 @@ async function executeToolCall(toolCall: ToolCall, state: AgentLoopRunState, cal
 
   const approval = riskAssessment.risk === 'approval_required' ? riskAssessment.approval : undefined;
   const approvalDecision = riskAssessment.risk === 'approval_required'
-    ? await Promise.resolve(callbacks.onToolApprovalRequest?.(toolCall, approval))
+    ? await resolveToolApprovalDecision(toolCall, approval, state, callbacks)
     : undefined;
   state.debug.emit('tool_call_approval', {
     decision: approvalDecision?.kind || (riskAssessment.risk === 'approval_required' ? 'missing' : 'not_required'),
@@ -241,10 +139,28 @@ async function executeToolCall(toolCall: ToolCall, state: AgentLoopRunState, cal
 }
 
 /**
+ * 根据 execution mode 决定是否等待 UI；headless 策略永远不会触碰交互 callback。
+ */
+async function resolveToolApprovalDecision(toolCall: ToolCall, approval: ToolApprovalRequest | undefined, state: AgentLoopRunState, callbacks: AgentCallbacks): Promise<ToolApprovalDecision> {
+  if (state.executionMode.kind === 'headless') {
+    if (state.executionMode.approvalPolicy === 'full-access') {
+      return {kind: 'allow_once'};
+    }
+
+    return {
+      kind: 'deny',
+      message: `Tool execution requires approval in headless mode: ${toolCall.toolName}. Re-run with --full-access to allow it.`
+    };
+  }
+
+  return Promise.resolve(callbacks.onToolApprovalRequest!(toolCall, approval));
+}
+
+/**
  * 构造 provider 请求上下文：稳定前缀 + 活跃区间记录 + 运行时 suffix。
  * system prompt、摘要和运行时状态只存在于 provider 上下文，不写回 app transcript。
  */
-function buildProviderRecords(activeRecords: TranscriptRecord[], cwd: string, compaction?: CompactionState, skillCatalog: SkillCatalogEntry[] = [], interactionMode: InteractionMode = 'normal', agentInstructions: AgentInstruction[] = [], todoState?: TodoState, userMemories: import('../types/memory').UserMemory[] = [], agentMemoryCatalogs: import('../types/memory').AgentMemoryCatalog[] = []): TranscriptRecord[] {
+function buildProviderRecords(activeRecords: TranscriptRecord[], cwd: string, compaction?: CompactionState, skillCatalog: SkillCatalogEntry[] = [], agentInstructions: AgentInstruction[] = [], todoState?: TodoState, userMemories: import('../types/memory').UserMemory[] = [], agentMemoryCatalogs: import('../types/memory').AgentMemoryCatalog[] = []): TranscriptRecord[] {
   const prefix: TranscriptRecord[] = [
     {
       role: 'system',
@@ -259,18 +175,14 @@ function buildProviderRecords(activeRecords: TranscriptRecord[], cwd: string, co
     });
   }
 
-  const suffix = createRuntimeContextSuffixRecords(todoState, interactionMode);
+  const suffix = createRuntimeContextSuffixRecords(todoState);
 
   return [...prefix, ...activeRecords.filter((record) => record.role !== 'reasoning_summary'), ...suffix];
 }
 
-function createRuntimeContextSuffixRecords(todoState: TodoState | undefined, interactionMode: InteractionMode): TranscriptRecord[] {
+function createRuntimeContextSuffixRecords(todoState: TodoState | undefined): TranscriptRecord[] {
   const sections: string[][] = [];
   const todoLines = createTodoRuntimeContextLines(todoState);
-
-  if (interactionMode === 'plan') {
-    sections.push(['## Mode', PLAN_MODE_USER_PROMPT]);
-  }
 
   if (todoLines.length > 0) {
     sections.push(todoLines);
@@ -320,6 +232,7 @@ type AgentLoopRunState = {
   toolDefinitions: ToolDefinition[];
   mcpManager?: McpManager;
   abortSignal?: AbortSignal;
+  executionMode: AgentExecutionMode;
   hooks?: LifecycleHookDispatcher;
   debug: DebugContext;
 };
@@ -370,7 +283,7 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
    * 初始化单次 agent 调用需要的 provider、工具运行时和上下文窗口；三者来自同一份配置。
    * agent 的配置装配（loadConfig + initialize）下沉到 prepareAgent，拉模式下每轮重读配置。
    */
-  function initializeRunState(interactionMode: InteractionMode, abortSignal?: AbortSignal): AgentLoopRunState {
+  function initializeRunState(interactionMode: InteractionMode, abortSignal: AbortSignal | undefined, executionMode: AgentExecutionMode): AgentLoopRunState {
     const config = readLlmConfig();
     const registry = createRegistry(config);
     const agent = createConfiguredAgent(config);
@@ -394,6 +307,7 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
       toolDefinitions: registry.listDefinitions(),
       mcpManager,
       abortSignal,
+      executionMode,
       hooks,
       debug
     };
@@ -402,6 +316,7 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
   return async function runAgentLoop(session: AgentSessionInput, callbacks: AgentCallbacks = {}): Promise<string> {
     const abortSignal = session.abortSignal;
     const interactionMode = session.interactionMode || 'normal';
+    const executionMode = session.executionMode || INTERACTIVE_EXECUTION_MODE;
 
     throwIfAborted(abortSignal);
     callbacks.onThinking?.();
@@ -410,7 +325,7 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
     let state: AgentLoopRunState;
 
     try {
-      state = initializeRunState(interactionMode, abortSignal);
+      state = initializeRunState(interactionMode, abortSignal, executionMode);
     } catch (error: unknown) {
       throw normalizeError(error, '无法加载 LLM 配置');
     }
@@ -511,7 +426,7 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
       const userMemories = memoryResult.ok ? memoryResult.memories : [];
       const agentMemoryResult = listEffectiveAgentMemoryCatalogs(cwd);
       const agentMemoryCatalogs = agentMemoryResult.ok ? agentMemoryResult.catalogs : [];
-      const providerRecords = buildProviderRecords(activeRecords, cwd, compactionState, state.skillCatalog, interactionMode, state.agentInstructions, state.todoState, userMemories, agentMemoryCatalogs);
+      const providerRecords = buildProviderRecords(activeRecords, cwd, compactionState, state.skillCatalog, state.agentInstructions, state.todoState, userMemories, agentMemoryCatalogs);
       state.debug.emit('provider_request_built', {
         activeRecordCount: activeRecords.length,
         activeStartIndex,
@@ -578,7 +493,7 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
       for (const toolCall of toolCalls) {
         throwIfAborted(abortSignal);
         callbacks.onToolCall?.(toolCall);
-        recordRegion.push(createToolCallRecord(toolCall));
+        recordRegion.push(createToolCallTranscriptRecord(toolCall));
         state.debug.emit('tool_call_start', {
           argumentsText: summarizeText(toolCall.argumentsText, 0),
           interactionMode,
@@ -595,7 +510,7 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
         const result = await executeToolCall(toolCall, state, callbacks);
         throwIfAborted(abortSignal);
         callbacks.onToolResult?.(result);
-        recordRegion.push(createToolResultRecord(result));
+        recordRegion.push(createToolResultTranscriptRecord(result));
         state.debug.emit('tool_call_end', {
           interactionMode,
           ok: result.ok,
@@ -617,4 +532,4 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
   };
 }
 
-export {PLAN_MODE_USER_PROMPT, buildProviderRecords, createAgentLoopRuntime};
+export {buildProviderRecords, createAgentLoopRuntime};

@@ -191,6 +191,7 @@ test('saveLlmConfigDraft omits empty API key for fake provider', () => {
     configPath: '/tmp/echo/config.json',
     createTempPath: (targetPath) => `${targetPath}.tmp-test`,
     mkdir() {},
+    readFile: readConfigError('ENOENT'),
     writeFile(filePath, data) {
       writes.push([filePath, data]);
     },
@@ -211,6 +212,10 @@ test('saveLlmConfigDraft preserves unrelated config and writes atomically', () =
   const writes = [];
   const renames = [];
   const mkdirs = [];
+  const rootConfig = {
+    tools: {bash: {timeoutMs: 2000}},
+    llm: {unknown: true}
+  };
 
   saveLlmConfigDraft({
     providers: [{
@@ -228,16 +233,14 @@ test('saveLlmConfigDraft preserves unrelated config and writes atomically', () =
       }]
     }],
     selectedModelId: 'chat-gpt',
-    rootConfig: {
-      tools: {bash: {timeoutMs: 2000}},
-      llm: {unknown: true}
-    }
+    rootConfig
   }, {
     configPath: '/tmp/echo/config.json',
     createTempPath: (targetPath) => `${targetPath}.tmp-test`,
     mkdir(dirPath, options) {
       mkdirs.push([dirPath, options]);
     },
+    readFile: readConfigFrom(JSON.stringify(rootConfig)),
     writeFile(filePath, data) {
       writes.push([filePath, data]);
     },
@@ -270,6 +273,42 @@ test('saveLlmConfigDraft preserves unrelated config and writes atomically', () =
   assert.equal(saved.llm.selectedModel, 'chat-gpt');
 });
 
+test('saveLlmConfigDraft falls back to draft root when config file disappears', () => {
+  const writes = [];
+
+  saveLlmConfigDraft({
+    providers: [{
+      id: 'default',
+      label: 'Fake Agent',
+      preset: 'fake-agent',
+      apiKey: '',
+      models: [{id: 'default', model: 'echo-fake-agent'}]
+    }],
+    selectedModelId: 'default',
+    rootConfig: {
+      hooks: {assistant_turn_end: ['echo done']},
+      mcp: {enabled: false},
+      tools: {bash: {timeoutMs: 2000}}
+    }
+  }, {
+    configPath: '/tmp/echo/config.json',
+    createTempPath: (targetPath) => `${targetPath}.tmp-test`,
+    mkdir() {},
+    readFile: readConfigError('ENOENT'),
+    rename() {},
+    writeFile(_filePath, data) {
+      writes.push(data);
+    }
+  });
+
+  const saved = JSON.parse(writes[0]);
+
+  assert.deepEqual(saved.hooks, {assistant_turn_end: ['echo done']});
+  assert.deepEqual(saved.mcp, {enabled: false});
+  assert.deepEqual(saved.tools, {bash: {timeoutMs: 2000}});
+  assert.equal(saved.llm.selectedModel, 'default');
+});
+
 test('saveLlmConfigDraft writes Codex OAuth provider without API key', () => {
   const writes = [];
 
@@ -288,6 +327,7 @@ test('saveLlmConfigDraft writes Codex OAuth provider without API key', () => {
     configPath: '/tmp/echo/config.json',
     createTempPath: (targetPath) => `${targetPath}.tmp-test`,
     mkdir() {},
+    readFile: readConfigError('ENOENT'),
     writeFile(filePath, data) {
       writes.push([filePath, data]);
     },
