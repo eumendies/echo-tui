@@ -1,6 +1,4 @@
-import fs from 'node:fs';
-import path from 'node:path';
-
+import {JsonConfigFile, type JsonConfigFileOptions} from './json-config-file';
 import {getDefaultUserConfigPath, readOptionalUserConfig} from './user-config';
 
 import type {McpApprovalMode, McpConfig, McpConfigDiagnostic, McpConfigDraft, McpEnabledStateDraft, McpServerConfig, McpServerConfigDraft} from '../types/mcp';
@@ -12,13 +10,7 @@ const MAX_MCP_TIMEOUT_MS = 120_000;
 
 type ConfigSource = UserConfigSource;
 type ReadMcpConfigOptions = ReadUserConfigOptions;
-type McpConfigDraftOptions = ReadUserConfigOptions & {
-  mkdir?: typeof fs.mkdirSync;
-  writeFile?: typeof fs.writeFileSync;
-  rename?: typeof fs.renameSync;
-  createTempPath?: (targetPath: string) => string;
-};
-type McpConfigReadMode = 'optional' | 'strict';
+type McpConfigDraftOptions = ReadUserConfigOptions & JsonConfigFileOptions;
 type ParsedMcpServerEntry = {
   name: string;
   rawServer: unknown;
@@ -84,40 +76,33 @@ function readMcpConfigDraft(options: ReadMcpConfigOptions = {}): McpConfigDraft 
  */
 function saveMcpEnabledStateDraft(draft: McpEnabledStateDraft, options: McpConfigDraftOptions = {}): void {
   const targetPath = options.configPath || getDefaultMcpConfigPath();
-  const readFile = options.readFile || fs.readFileSync;
-  const mkdir = options.mkdir || fs.mkdirSync;
-  const writeFile = options.writeFile || fs.writeFileSync;
-  const rename = options.rename || fs.renameSync;
-  const createTempPath = options.createTempPath || ((pathName: string) => `${pathName}.tmp-${process.pid}-${Date.now()}`);
-  const rootConfig = readUserConfig({configPath: targetPath, readFile}, 'strict');
-  const mcp = isPlainObject(rootConfig.mcp) ? {...rootConfig.mcp} : {};
-  const servers = isPlainObject(mcp.servers) ? {...mcp.servers} : {};
+  const configFile = new JsonConfigFile(targetPath, options);
 
-  mcp.enabled = Boolean(draft.enabled);
+  configFile.update((rootConfig) => {
+    const mcp = isPlainObject(rootConfig.mcp) ? {...rootConfig.mcp} : {};
+    const servers = isPlainObject(mcp.servers) ? {...mcp.servers} : {};
 
-  for (const serverState of draft.servers) {
-    if (typeof serverState.name !== 'string' || serverState.name.trim() === '') {
-      continue;
+    mcp.enabled = Boolean(draft.enabled);
+
+    for (const serverState of draft.servers) {
+      if (typeof serverState.name !== 'string' || serverState.name.trim() === '') {
+        continue;
+      }
+
+      const currentServer = servers[serverState.name];
+
+      if (isPlainObject(currentServer)) {
+        servers[serverState.name] = {...currentServer, enabled: Boolean(serverState.enabled)};
+      }
     }
 
-    const currentServer = servers[serverState.name];
-
-    if (isPlainObject(currentServer)) {
-      servers[serverState.name] = {...currentServer, enabled: Boolean(serverState.enabled)};
-    }
-  }
-
-  mcp.servers = servers;
-  rootConfig.mcp = mcp;
-
-  const tempPath = createTempPath(targetPath);
-  mkdir(path.dirname(targetPath), {recursive: true});
-  writeFile(tempPath, `${JSON.stringify(rootConfig, null, 2)}\n`);
-  rename(tempPath, targetPath);
+    mcp.servers = servers;
+    rootConfig.mcp = mcp;
+  }, {allowMissing: false});
 }
 
-function readMcpConfigModel(options: ReadMcpConfigOptions = {}, mode: McpConfigReadMode = 'optional'): {enabled: boolean; servers: ParsedMcpServerEntry[]} {
-  const root = readUserConfig(options, mode);
+function readMcpConfigModel(options: ReadMcpConfigOptions = {}): {enabled: boolean; servers: ParsedMcpServerEntry[]} {
+  const root = readOptionalUserConfig(options);
   const mcp = isPlainObject(root.mcp) ? root.mcp : {};
   const serversRoot = isPlainObject(mcp.servers) ? mcp.servers : {};
 
@@ -129,35 +114,6 @@ function readMcpConfigModel(options: ReadMcpConfigOptions = {}, mode: McpConfigR
       result: parseMcpServerConfig(name, rawServer)
     }))
   };
-}
-
-function readUserConfig(options: ReadMcpConfigOptions = {}, mode: McpConfigReadMode = 'optional'): ConfigSource {
-  if (mode === 'optional') {
-    return readOptionalUserConfig(options);
-  }
-
-  const configPath = options.configPath || getDefaultMcpConfigPath();
-  const readFile = options.readFile || fs.readFileSync;
-  let rawConfig: string;
-
-  try {
-    rawConfig = readFile(configPath, 'utf8');
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`无法读取 MCP 配置文件：${message}`);
-  }
-
-  try {
-    const parsed: unknown = JSON.parse(rawConfig);
-
-    if (isPlainObject(parsed)) {
-      return {...parsed};
-    }
-  } catch {
-    throw new Error(`MCP 配置文件不是有效 JSON：${configPath}`);
-  }
-
-  throw new Error(`MCP 配置文件根节点必须是对象：${configPath}`);
 }
 
 function createValidServerDraft(server: McpServerConfig): McpServerConfigDraft {

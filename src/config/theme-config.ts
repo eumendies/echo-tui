@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import {JsonConfigFile, JsonConfigFileError, type JsonConfigFileOptions} from './json-config-file';
+
 type RgbColor = readonly [number, number, number];
 
 type RgbThemeColor = {
@@ -135,12 +137,7 @@ type BuiltinThemeOptions = {
   themesDir?: string;
 };
 
-type SelectBuiltinThemeOptions = ReadTuiThemeOptions & {
-  createTempPath?: (targetPath: string) => string;
-  mkdir?: (dirPath: string, options: {recursive: boolean}) => unknown;
-  rename?: (oldPath: string, newPath: string) => unknown;
-  writeFile?: (filePath: string, data: string) => unknown;
-};
+type SelectBuiltinThemeOptions = ReadTuiThemeOptions & JsonConfigFileOptions;
 
 type SelectBuiltinThemeResult =
   | {ok: true}
@@ -301,16 +298,9 @@ function readBuiltinTheme(themeId: string, options: BuiltinThemeOptions = {}): T
 function readTuiTheme(options: ReadTuiThemeOptions = {}): TuiTheme {
   const configPath = options.configPath || getDefaultThemeConfigPath();
   const readFile = options.readFile || fs.readFileSync;
-  let rawConfig: string;
 
   try {
-    rawConfig = readFile(configPath, 'utf8');
-  } catch {
-    return cloneTheme(DEFAULT_TUI_THEME);
-  }
-
-  try {
-    const parsedConfig: unknown = JSON.parse(rawConfig);
+    const parsedConfig = new JsonConfigFile(configPath, {readFile}).readOptional();
     return normalizeTuiTheme(parsedConfig, resolveTuiThemeBase(parsedConfig, {readFile}));
   } catch {
     return cloneTheme(DEFAULT_TUI_THEME);
@@ -323,15 +313,13 @@ function readTuiTheme(options: ReadTuiThemeOptions = {}): TuiTheme {
 function readTuiThemeBaseId(options: ReadTuiThemeOptions = {}): string {
   const configPath = options.configPath || getDefaultThemeConfigPath();
   const readFile = options.readFile || fs.readFileSync;
-  let parsedConfig: unknown;
 
   try {
-    parsedConfig = JSON.parse(readFile(configPath, 'utf8'));
+    const parsedConfig = new JsonConfigFile(configPath, {readFile}).readOptional();
+    return resolveTuiThemeBaseId(parsedConfig, {readFile});
   } catch {
     return 'default';
   }
-
-  return resolveTuiThemeBaseId(parsedConfig, {readFile});
 }
 
 /**
@@ -339,39 +327,26 @@ function readTuiThemeBaseId(options: ReadTuiThemeOptions = {}): string {
  */
 function selectBuiltinTheme(themeId: string, options: SelectBuiltinThemeOptions = {}): SelectBuiltinThemeResult {
   const readFile = options.readFile || fs.readFileSync;
-  const mkdir = options.mkdir || fs.mkdirSync;
-  const writeFile = options.writeFile || fs.writeFileSync;
-  const rename = options.rename || fs.renameSync;
-  const createTempPath = options.createTempPath || ((targetPath: string) => `${targetPath}.tmp-${process.pid}-${Date.now()}`);
   const targetPath = options.configPath || getDefaultThemeConfigPath();
 
   if (!readBuiltinTheme(themeId, {readFile})) {
     return {ok: false, error: `未知 theme: ${themeId}`};
   }
 
-  let rootConfig: ConfigSource = {};
-
   try {
-    rootConfig = JSON.parse(readFile(targetPath, 'utf8')) as ConfigSource;
-  } catch (error: unknown) {
-    if (!isMissingFileError(error)) {
-      return {ok: false, error: '无法读取 theme.json'};
-    }
-  }
-
-  if (!isPlainObject(rootConfig)) {
-    return {ok: false, error: 'theme.json 必须是 JSON object'};
-  }
-
-  rootConfig.theme = themeId;
-
-  try {
-    const tempPath = createTempPath(targetPath);
-    mkdir(path.dirname(targetPath), {recursive: true});
-    writeFile(tempPath, `${JSON.stringify(rootConfig, null, 2)}\n`);
-    rename(tempPath, targetPath);
+    new JsonConfigFile(targetPath, options).update((rootConfig) => {
+      rootConfig.theme = themeId;
+    });
     return {ok: true};
   } catch (error: unknown) {
+    if (error instanceof JsonConfigFileError && error.kind === 'invalid_root') {
+      return {ok: false, error: 'theme.json 必须是 JSON object'};
+    }
+
+    if (error instanceof JsonConfigFileError) {
+      return {ok: false, error: '无法读取 theme.json'};
+    }
+
     return {
       ok: false,
       error: error instanceof Error ? error.message : String(error)
@@ -651,10 +626,6 @@ function isPlainObject(value: unknown): value is ConfigSource {
 
 function isValidBuiltinThemeId(themeId: string): boolean {
   return BUILTIN_THEME_ID_PATTERN.test(themeId);
-}
-
-function isMissingFileError(error: unknown): boolean {
-  return isPlainObject(error) && error.code === 'ENOENT';
 }
 
 function readBuiltinThemeFromDisk(themeId: string, baseTheme: TuiTheme, options: BuiltinThemeOptions = {}): TuiTheme | null {

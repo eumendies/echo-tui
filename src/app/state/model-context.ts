@@ -1,11 +1,9 @@
-import fs from 'node:fs';
-import path from 'node:path';
-
 import {
   getDefaultConfigPath,
   readLlmConfig,
   readLlmModelConfigInfo
 } from '../../config/llm-config';
+import {JsonConfigFile} from '../../config/json-config-file';
 import {redactSensitiveText} from '../../agent/agent-errors';
 import {REASONING_EFFORTS} from '../../types/agent';
 import type {LlmModelConfigInfo} from '../../config/llm-config';
@@ -242,38 +240,28 @@ class ModelContext {
   selectEffort(effort: ReasoningEffort): SelectEffortResult {
     try {
       const targetPath = getDefaultConfigPath();
-      const rawConfig = fs.readFileSync(targetPath, 'utf8');
-      let parsedConfig: unknown;
+      const configFile = new JsonConfigFile(targetPath);
 
-      try {
-        parsedConfig = JSON.parse(rawConfig);
-      } catch {
-        throw new Error(`LLM 配置文件不是有效 JSON：${targetPath}`);
-      }
+      configFile.update((parsedConfig) => {
+        if (!isJsonObject(parsedConfig.llm)) {
+          throw new Error('LLM 配置 llm 必须是对象');
+        }
 
-      if (!isJsonObject(parsedConfig) || !isJsonObject(parsedConfig.llm)) {
-        throw new Error('LLM 配置 llm 必须是对象');
-      }
+        const info = readLlmModelConfigInfo();
+        const models = parsedConfig.llm.models;
 
-      const info = readLlmModelConfigInfo();
-      const models = parsedConfig.llm.models;
+        if (!Array.isArray(models)) {
+          throw new Error('LLM 配置缺少 models');
+        }
 
-      if (!Array.isArray(models)) {
-        throw new Error('LLM 配置缺少 models');
-      }
+        const selectedModel = models.find((model): model is JsonObject => isJsonObject(model) && model.id === info.selectedModelId);
 
-      const selectedModel = models.find((model): model is JsonObject => isJsonObject(model) && model.id === info.selectedModelId);
+        if (!selectedModel) {
+          throw new Error(`无法更新不存在的模型：${info.selectedModelId}`);
+        }
 
-      if (!selectedModel) {
-        throw new Error(`无法更新不存在的模型：${info.selectedModelId}`);
-      }
-
-      selectedModel.reasoning = isJsonObject(selectedModel.reasoning) ? {...selectedModel.reasoning, effort} : {effort};
-
-      const tempPath = createTempConfigPath(targetPath);
-      fs.mkdirSync(path.dirname(targetPath), {recursive: true});
-      fs.writeFileSync(tempPath, `${JSON.stringify(parsedConfig, null, 2)}\n`);
-      fs.renameSync(tempPath, targetPath);
+        selectedModel.reasoning = isJsonObject(selectedModel.reasoning) ? {...selectedModel.reasoning, effort} : {effort};
+      }, {allowMissing: false});
       this.refreshModelState();
 
       return {ok: true};
@@ -289,31 +277,21 @@ class ModelContext {
 
   private writeSelectedModel(modelId: string): void {
     const targetPath = getDefaultConfigPath();
-    const rawConfig = fs.readFileSync(targetPath, 'utf8');
-    let parsedConfig: unknown;
+    const configFile = new JsonConfigFile(targetPath);
 
-    try {
-      parsedConfig = JSON.parse(rawConfig);
-    } catch {
-      throw new Error(`LLM 配置文件不是有效 JSON：${targetPath}`);
-    }
+    configFile.update((parsedConfig) => {
+      if (!isJsonObject(parsedConfig.llm)) {
+        throw new Error('LLM 配置 llm 必须是对象');
+      }
 
-    if (!isJsonObject(parsedConfig) || !isJsonObject(parsedConfig.llm)) {
-      throw new Error('LLM 配置 llm 必须是对象');
-    }
+      const info = readLlmModelConfigInfo();
 
-    const info = readLlmModelConfigInfo();
+      if (!info.models.some((profile) => profile.id === modelId)) {
+        throw new Error(`无法选择不存在的模型：${modelId}`);
+      }
 
-    if (!info.models.some((profile) => profile.id === modelId)) {
-      throw new Error(`无法选择不存在的模型：${modelId}`);
-    }
-
-    parsedConfig.llm.selectedModel = modelId;
-
-    const tempPath = createTempConfigPath(targetPath);
-    fs.mkdirSync(path.dirname(targetPath), {recursive: true});
-    fs.writeFileSync(tempPath, `${JSON.stringify(parsedConfig, null, 2)}\n`);
-    fs.renameSync(tempPath, targetPath);
+      parsedConfig.llm.selectedModel = modelId;
+    }, {allowMissing: false});
   }
 
   /**
@@ -326,10 +304,6 @@ class ModelContext {
     this.reasoningEffort = undefined;
     this.selectedIndex = -1;
   }
-}
-
-function createTempConfigPath(targetPath: string): string {
-  return `${targetPath}.tmp-${process.pid}-${Date.now()}`;
 }
 
 export {
