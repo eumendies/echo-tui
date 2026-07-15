@@ -1,0 +1,18 @@
+src/app/state/app-context.ts
+  h_648a605945768c 25-64,80,101,192,342,361,462,519,522-553
+src/agent/agent-loop-runtime.ts
+  h_648a605945768c 42
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "0846ef81987d55ebf3f04b12355179a8406c071a",
+  "prompts": {},
+  "humans": {
+    "h_648a605945768c": {
+      "author": "eumendies <1431538355@qq.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
