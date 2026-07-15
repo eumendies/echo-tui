@@ -340,6 +340,13 @@ class AppContext {
   }
 
   /**
+   * 成组追加紧邻 records 并仅写入一个 journal 操作，供 provider 与 tool 成对结果使用。
+   */
+  appendTranscriptRecords(records: TranscriptRecord[]): TranscriptRecord[] {
+    return this.transcriptContext.appendRecords(records);
+  }
+
+  /**
    * 开始记录本轮 assistant loop 的文件变更 checkpoint。
    */
   beginChangeCheckpoint(): void {
@@ -390,7 +397,7 @@ class AppContext {
   }
 
   /**
-   * 执行一次 undo：先恢复文件，再恢复 transcript 和 compaction。
+   * 执行一次 undo：先恢复文件，再以一个 journal batch 回退 transcript、compaction 和 history。
    */
   executeUndo(): UndoExecuteResult {
     const result = this.changeHistoryContext.executeUndo();
@@ -400,9 +407,14 @@ class AppContext {
     }
 
     try {
-      this.transcriptContext.restoreToBoundary(result.checkpoint.transcriptStartIndex, result.checkpoint.compactionBefore);
+      const nextChangeHistory = this.changeHistoryContext.getHistory();
+      nextChangeHistory.pop();
+      this.transcriptContext.restoreToBoundary(
+        result.checkpoint.transcriptStartIndex,
+        result.checkpoint.compactionBefore,
+        nextChangeHistory
+      );
       this.changeHistoryContext.markLastUsed();
-      this.syncChangeHistory(true);
       this.clearContextUsage();
       return result;
     } catch (error: unknown) {
@@ -440,7 +452,7 @@ class AppContext {
 
   /**
    * 应用一次压缩结果：先更新内存压缩状态，再追加可见提示块记录；
-   * 由 appendRecord 一次性落盘 compaction 与 notice，避免重复全量写。提示块不发送给 provider。
+   * 由 appendRecord 一次性追加 compaction 与 notice journal batch。提示块不发送给 provider。
    */
   applyCompaction(compaction: CompactionState): TranscriptRecord {
     this.transcriptContext.setCompaction(compaction);

@@ -8,34 +8,75 @@ const {UserQuestionContext} = require('../../src/app/state/user-question-context
 
 function createFakeTranscriptStore() {
   let currentSession = null;
+  let currentReference = null;
 
   return {
-    createSession(cwd, records = []) {
-      return {
+    createSession(cwd, operation) {
+      currentSession = {
         schemaVersion: 1,
         sessionId: 'session-1',
         cwd,
         createdAt: '2026-06-29T00:00:00.000Z',
         updatedAt: '2026-06-29T00:00:00.000Z',
-        records: records.map((record) => ({...record}))
+        records: []
       };
+      applyOperation(currentSession, operation);
+      currentReference = {
+        sessionId: currentSession.sessionId,
+        cwd,
+        createdAt: currentSession.createdAt,
+        updatedAt: currentSession.updatedAt,
+        sequence: 1
+      };
+      return {...currentReference};
+    },
+    appendSession(cwd, reference, operation) {
+      if (!currentSession || reference.sessionId !== currentSession.sessionId) {
+        throw new Error('missing session');
+      }
+
+      applyOperation(currentSession, operation);
+      currentReference = {
+        ...currentReference,
+        cwd,
+        updatedAt: '2026-06-29T00:00:00.000Z',
+        sequence: currentReference.sequence + 1
+      };
+      currentSession.updatedAt = currentReference.updatedAt;
+      return {...currentReference};
     },
     listSessions() {
       return [];
     },
     loadSession() {
-      return currentSession ? structuredClone(currentSession) : null;
-    },
-    saveSession(cwd, session) {
-      currentSession = {
-        ...session,
-        cwd,
-        updatedAt: '2026-06-29T00:00:00.000Z',
-        records: session.records.map((record) => ({...record}))
-      };
-      return structuredClone(currentSession);
+      return currentSession ? {session: structuredClone(currentSession), reference: {...currentReference}} : null;
     }
   };
+}
+
+function applyOperation(session, operation) {
+  if (operation.op === 'batch') {
+    for (const item of operation.operations) {
+      applyOperation(session, item);
+    }
+    return;
+  }
+
+  if (operation.op === 'append_records') {
+    session.records.push(...operation.records.map((record) => ({...record})));
+  } else if (operation.op === 'truncate_records') {
+    session.records.length = operation.recordCount;
+  } else if (operation.op === 'set_change_history') {
+    session.changeHistory = structuredClone(operation.changeHistory);
+  } else if (operation.op === 'set_compaction') {
+    if (operation.compaction) {
+      session.compaction = {...operation.compaction};
+    } else {
+      delete session.compaction;
+    }
+  } else if (operation.op === 'set_todo_state') {
+    session.todoState = structuredClone(operation.todoState);
+  }
 }
 
 function createHarness() {
@@ -186,6 +227,12 @@ test('runAssistantTurn persists shared tool records with result metadata', async
   });
 
   const [toolCall, toolResult] = harness.appContext.transcriptRecords.slice(1, 3);
+  assert.deepEqual(harness.appContext.transcriptRecords.map((record) => record.role), [
+    'user',
+    'tool_call',
+    'tool_result',
+    'assistant'
+  ]);
   assert.equal(toolCall.text, 'web_search({"query":"Echo TUI"})');
   assert.equal(toolResult.timedOut, false);
   assert.equal(toolResult.truncated, true);

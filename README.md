@@ -184,13 +184,13 @@ skill 放在 `.echo/skills/<name>/SKILL.md`（项目级）或 `~/.echo/skills/<n
 
 ## 会话存储
 
-会话按工作目录分区保存为本地明文 JSON：
+会话按工作目录分区保存为本地明文 append-only JSONL journal：
 
 ```text
-~/.echo/echo_tui/projects/{cwd-hash}/sessions/{session-id}.json
+~/.echo/echo_tui/projects/{cwd-hash}/sessions/{session-id}.jsonl
 ```
 
-清理历史可删除对应 session 文件或整个 `~/.echo/echo_tui/` 目录。
+加载时会顺序重放 journal；旧 `.json` session 不会被读取或迁移。`/undo` 截断的历史仍物理保留在 journal 中。清理历史可删除对应 session 文件或整个 `~/.echo/echo_tui/` 目录。
 
 ## 开发命令
 

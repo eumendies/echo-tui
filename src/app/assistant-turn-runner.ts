@@ -125,7 +125,7 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
           return;
         }
 
-        appendRecords(records.map((record) => appContext.appendTranscriptRecord(record)));
+        appendRecords(appContext.appendTranscriptRecords(records));
       },
       onAssistantSegment(segmentText: string) {
         if (!isCurrentTurn()) {
@@ -178,7 +178,7 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
         }
 
         appContext.cancelStreamingRender();
-        appendRecords(appContext.appendPendingToolResult(result));
+        appendRecords(appContext.appendTranscriptRecords(appContext.appendPendingToolResult(result)));
       },
       onTodoStateChange(todoState) {
         if (!isCurrentTurn()) {

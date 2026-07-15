@@ -489,7 +489,8 @@ class TurnContext {
   }
 
   /**
-   * 工具结果到达后，把暂存 call 和 result 按既有 transcript 类型顺序落盘。
+   * 工具结果到达后，消费暂存 call 并按既有 transcript 类型顺序构造 records。
+   * 调用方必须通过 TranscriptContext 成组落盘，避免 tool pair 被逐条或重复持久化。
    */
   appendPendingToolResult(result: ToolExecutionResult): TranscriptRecord[] {
     const records: TranscriptRecord[] = [];
@@ -499,10 +500,10 @@ class TurnContext {
     this.clearPending();
 
     if (pendingToolCall) {
-      records.push(this.transcriptContext.appendRecord(createToolCallTranscriptRecord(pendingToolCall)));
+      records.push(createToolCallTranscriptRecord(pendingToolCall));
     }
 
-    records.push(this.transcriptContext.appendRecord(createToolResultTranscriptRecord(result)));
+    records.push(createToolResultTranscriptRecord(result));
 
     return records;
   }
