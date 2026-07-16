@@ -177,7 +177,6 @@ test('createCommandRuntime returns submit_user_message command result', () => {
       return {
         kind: 'submit_user_message',
         text: 'loaded skill content',
-        historyText: '/review src/foo.ts',
         displayText: '/review src/foo.ts',
         metadata: { skillInvocation: { source: 'slash', skillName: 'review' } }
       };
@@ -192,7 +191,6 @@ test('createCommandRuntime returns submit_user_message command result', () => {
   assert.deepEqual(harness.runtime.startFromText('/review src/foo.ts'), {
     kind: 'submit_user_message',
     text: 'loaded skill content',
-    historyText: '/review src/foo.ts',
     displayText: '/review src/foo.ts',
     metadata: { skillInvocation: { source: 'slash', skillName: 'review' } }
   });

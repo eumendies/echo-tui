@@ -219,7 +219,6 @@ function createApp(runAgent: RunAgent, mcpManager?: McpManager, hooks?: Lifecycl
       return;
     }
 
-    let historyText: string | undefined;
     let displayText: string | undefined;
     let userMetadata: Record<string, unknown> | undefined;
     let userAttachments: ToolResultAttachment[] | undefined;
@@ -231,7 +230,6 @@ function createApp(runAgent: RunAgent, mcpManager?: McpManager, hooks?: Lifecycl
 
     if (commandResult.kind === 'submit_user_message') {
       userText = commandResult.text;
-      historyText = commandResult.historyText;
       displayText = commandResult.displayText;
       userMetadata = commandResult.metadata;
       modelProfileId = commandResult.modelProfileId;
@@ -258,7 +256,6 @@ function createApp(runAgent: RunAgent, mcpManager?: McpManager, hooks?: Lifecycl
       toolApproval,
       userQuestion,
       userText,
-      historyText,
       displayText,
       metadata: userMetadata,
       modelProfileId,

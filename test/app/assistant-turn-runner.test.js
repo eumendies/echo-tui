@@ -161,7 +161,6 @@ test('runAssistantTurn stores plan transition prompt while preserving display, h
     ...harness.input,
     userText: 'expanded request',
     displayText: '@request.png',
-    historyText: '@request.png',
     attachments,
     metadata: {
       skillInvocation: {

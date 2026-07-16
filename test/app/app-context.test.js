@@ -745,8 +745,7 @@ test('AppContext preserves display text and composer history for mode transition
   context.setInteractionMode('plan');
 
   const record = context.beginUserTurn('expanded image request', {
-    displayText: '@image.png',
-    historyText: '@image.png'
+    displayText: '@image.png'
   });
 
   assert.match(record.text, /\[User Request\]\nexpanded image request$/);

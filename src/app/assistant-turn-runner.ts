@@ -16,7 +16,6 @@ type AssistantTurnRunnerInput = {
   toolApproval: ToolApprovalContext;
   userQuestion: UserQuestionContext;
   userText: string;
-  historyText?: string;
   displayText?: string;
   metadata?: Record<string, unknown>;
   modelProfileId?: string;
@@ -39,7 +38,6 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
     toolApproval,
     userQuestion,
     userText,
-    historyText,
     displayText,
     metadata,
     modelProfileId,
@@ -54,7 +52,6 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
   appContext.beginChangeCheckpoint();
   const interactionMode = appContext.getInteractionMode();
   const userRecord = appContext.beginUserTurn(userText, {
-    historyText,
     displayText,
     metadata: {...(metadata || {}), interactionMode},
     attachments

@@ -35,7 +35,6 @@ export class SkillInvocationCommandHandler implements CommandHandler {
       return {
         kind: 'submit_user_message',
         text: result.text,
-        historyText: String(text),
         displayText: String(text),
         metadata: result.metadata,
         ...(result.modelProfileId ? {modelProfileId: result.modelProfileId} : {})

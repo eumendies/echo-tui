@@ -66,7 +66,6 @@ test('AgentWorkflowCommandHandler matches argument policy and preserves optional
   assert.deepEqual(reviewHandler.start('/review src/foo.ts', host), {
     kind: 'submit_user_message',
     text: 'review:src/foo.ts',
-    historyText: '/review src/foo.ts',
     displayText: '/review src/foo.ts',
     metadata: {
       agentWorkflow: {

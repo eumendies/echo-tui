@@ -836,7 +836,6 @@ test('built-in /init workflow wins before direct skill invocation fallback', () 
   assert.deepEqual(plan.calls.modeSelections, ['normal']);
   assert.deepEqual(plan.calls.transcriptAppends, [{role: 'local_notice', text: '已从 plan mode 切换到 normal mode 以运行 /init 流程。'}]);
   assert.equal(result.kind, 'submit_user_message');
-  assert.equal(result.historyText, '/init');
   assert.equal(result.displayText, '/init');
   assert.deepEqual(result.metadata, {
     agentWorkflow: {
@@ -868,7 +867,6 @@ test('built-in /review workflow wins before direct skill invocation fallback', (
   assert.deepEqual(plan.calls.modeSelections, ['normal']);
   assert.deepEqual(plan.calls.transcriptAppends, [{role: 'local_notice', text: '已从 plan mode 切换到 normal mode 以运行 /review 流程。'}]);
   assert.equal(result.kind, 'submit_user_message');
-  assert.equal(result.historyText, '/review');
   assert.equal(result.displayText, '/review');
   assert.deepEqual(result.metadata, {
     agentWorkflow: {

@@ -649,7 +649,7 @@ export type CommandHandler<TData extends object = Record<string, unknown>> = {
 export type CommandStartResult =
   | {kind: 'not_matched'}
   | {kind: 'handled'}
-  | {kind: 'submit_user_message'; text: string; historyText: string; displayText?: string; metadata?: Record<string, unknown>; modelProfileId?: string};
+  | {kind: 'submit_user_message'; text: string; displayText?: string; metadata?: Record<string, unknown>; modelProfileId?: string};
 
 export type MatchableCommandHandler<TData extends object = Record<string, unknown>> =
   CommandHandler<TData> & {

@@ -518,7 +518,7 @@ class AppContext {
   /**
    * 提交用户消息并进入响应中状态；mode 改变时把一次性切换说明写入 provider-facing text。
    */
-  beginUserTurn(userText: string, options: {historyText?: string; displayText?: string; metadata?: Record<string, unknown>; attachments?: ToolExecutionResult['attachments']} = {}): TranscriptRecord {
+  beginUserTurn(userText: string, options: {displayText?: string; metadata?: Record<string, unknown>; attachments?: ToolExecutionResult['attachments']} = {}): TranscriptRecord {
     const currentAgentMode = toAgentInteractionMode(this.interactionMode);
     const transition = createModeTransitionUserMessage(userText, this.lastSubmittedAgentMode, currentAgentMode);
     const record = this.turnContext.beginUserTurn(transition?.text || userText, {

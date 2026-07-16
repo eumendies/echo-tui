@@ -300,9 +300,9 @@ class TurnContext {
   /**
    * 提交用户消息并进入响应中状态。
    */
-  beginUserTurn(userText: string, options: {historyText?: string; displayText?: string; metadata?: Record<string, unknown>; attachments?: ToolExecutionResult['attachments']} = {}): TranscriptRecord {
+  beginUserTurn(userText: string, options: {displayText?: string; metadata?: Record<string, unknown>; attachments?: ToolExecutionResult['attachments']} = {}): TranscriptRecord {
     this.composerContext.leaveHistoryBrowsing();
-    this.composerContext.recordInput(options.historyText || userText);
+    this.composerContext.recordInput(options.displayText || userText);
     this.composerContext.reset();
     this.responding = true;
     this.cancelStreamingRender();
