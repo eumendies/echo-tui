@@ -42,6 +42,15 @@ export type AgentMemoryCatalogReadResult =
   | {ok: true; catalog: AgentMemoryCatalog; memories: AgentMemoryItem[]}
   | {ok: false; error: string};
 
+export type EffectiveAgentMemoryCatalog = {
+  catalog: AgentMemoryCatalog;
+  memories: AgentMemoryItem[];
+};
+
+export type EffectiveAgentMemoryCatalogReadResult =
+  | {ok: true; catalogs: EffectiveAgentMemoryCatalog[]}
+  | {ok: false; error: string};
+
 export type AgentMemoryMutationResult =
   | {ok: true; catalogs: AgentMemoryCatalog[]; catalog?: AgentMemoryCatalog; memories?: AgentMemoryItem[]; removedCatalog?: boolean}
   | {ok: false; error: string};

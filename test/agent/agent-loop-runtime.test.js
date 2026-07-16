@@ -5,6 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { buildProviderRecords, createAgentLoopRuntime } = require('../../src/agent/agent-loop-runtime');
+const {formatAgentMemoryCatalogPrompt, formatUserMemoriesPrompt} = require('../../src/agent/memory-prompt');
 const { createBuiltInSystemPrompt } = require('../../src/agent/system-prompt');
 const llmConfigModule = require('../../src/config/llm-config');
 const agentSetupModule = require('../../src/agent/agent-setup');
@@ -130,13 +131,14 @@ test('buildProviderRecords includes AGENTS instructions with precedence text', (
 });
 
 test('buildProviderRecords injects user memories only into the transient system prompt', () => {
-  const records = buildProviderRecords([{role: 'user', text: '继续'}], TEST_CWD, undefined, [], [], undefined, [{
+  const memoryPrompt = formatUserMemoriesPrompt([{
     id: 'memory-1',
     content: '回复使用中文。',
     enabled: true,
     createdAt: '2026-07-12T07:00:00.000Z',
     updatedAt: '2026-07-12T07:00:00.000Z'
   }]);
+  const records = buildProviderRecords([{role: 'user', text: '继续'}], TEST_CWD, undefined, [], [], undefined, [memoryPrompt]);
 
   assert.match(records[0].text, /User-managed memories/);
   assert.match(records[0].text, /回复使用中文/);
@@ -145,25 +147,27 @@ test('buildProviderRecords injects user memories only into the transient system 
 });
 
 test('buildProviderRecords excludes disabled user memories', () => {
-  const records = buildProviderRecords([{role: 'user', text: '继续'}], TEST_CWD, undefined, [], [], undefined, [{
+  const memoryPrompt = formatUserMemoriesPrompt([{
     id: 'memory-1',
     content: '不应注入。',
     enabled: false,
     createdAt: '2026-07-12T07:00:00.000Z',
     updatedAt: '2026-07-12T07:00:00.000Z'
   }]);
+  const records = buildProviderRecords([{role: 'user', text: '继续'}], TEST_CWD, undefined, [], [], undefined, [memoryPrompt]);
 
   assert.doesNotMatch(records[0].text, /User-managed memories/);
   assert.doesNotMatch(records[0].text, /不应注入/);
 });
 
 test('buildProviderRecords injects only agent memory catalog names and descriptions', () => {
-  const records = buildProviderRecords([{role: 'user', text: '继续'}], TEST_CWD, undefined, [], [], undefined, [], [{
+  const memoryPrompt = formatAgentMemoryCatalogPrompt([{
     id: 'catalog-1',
     name: 'rendering',
     description: 'Terminal rendering rules',
     scope: {kind: 'project', projectRoot: TEST_CWD}
   }]);
+  const records = buildProviderRecords([{role: 'user', text: '继续'}], TEST_CWD, undefined, [], [], undefined, [memoryPrompt]);
 
   assert.match(records[0].text, /Agent memory catalogs/);
   assert.match(records[0].text, /rendering: Terminal rendering rules/);
@@ -196,7 +200,7 @@ test('createAgentLoopRuntime rereads saved memory before each provider request',
   });
 });
 
-test('createAgentLoopRuntime rereads the agent memory catalog index before each provider request', async () => {
+test('createAgentLoopRuntime rereads and expands small agent memory before each provider request', async () => {
   await withTemporaryMemoryHome(async () => {
     addAgentMemory(TEST_CWD, {catalog: 'rendering', description: 'First description', content: 'private item'});
     const requests = [];
@@ -208,8 +212,73 @@ test('createAgentLoopRuntime rereads the agent memory catalog index before each 
       await runtime({records: [{role: 'user', text: 'second'}]});
     });
     assert.match(requests[0][0].text, /First description/);
-    assert.doesNotMatch(requests[0][0].text, /private item|Second description/);
+    assert.match(requests[0][0].text, /private item/);
+    assert.doesNotMatch(requests[0][0].text, /Second description/);
     assert.match(requests[1][0].text, /Second description/);
+    assert.match(requests[1][0].text, /private item/);
+  });
+});
+
+test('createAgentLoopRuntime falls back to the complete catalog index when one item file is unreadable', async () => {
+  await withTemporaryMemoryHome(async () => {
+    const first = addAgentMemory(TEST_CWD, {catalog: 'first', description: 'First description', content: 'first item'});
+    const second = addAgentMemory(TEST_CWD, {catalog: 'second', description: 'Second description', content: 'second item'});
+    fs.writeFileSync(path.join(os.homedir(), '.echo', 'agent-memory', 'catalogs', `${second.catalog.id}.json`), '{bad', 'utf8');
+    const requests = [];
+    const agent = {initialize() {}, async runTurn(records) { requests.push(records); return {draft: 'done', toolCalls: []}; }};
+
+    await withPatchedAgentRuntime(agent, () => {
+      const runtime = createAgentLoopRuntime(TEST_CWD);
+      return runtime({records: [{role: 'user', text: 'first'}]});
+    });
+
+    assert.match(requests[0][0].text, /First description/);
+    assert.match(requests[0][0].text, /Second description/);
+    assert.doesNotMatch(requests[0][0].text, /first item|second item/);
+    assert.equal(first.ok, true);
+  });
+});
+
+test('createAgentLoopRuntime counts the selected expanded agent memory prompt as memory context', async () => {
+  await withTemporaryMemoryHome(async () => {
+    addAgentMemory(TEST_CWD, {catalog: 'rendering', description: 'Terminal rules', content: 'Use real cursors.'});
+    const providerRecords = [];
+    const contextUsages = [];
+    const agent = {
+      initialize() {},
+      async runTurn(records) {
+        providerRecords.push(records);
+        return {draft: 'done', toolCalls: [], usageInputTokens: 10_000};
+      }
+    };
+
+    await withPatchedAgentRuntime(agent, () => {
+      const runtime = createAgentLoopRuntime(TEST_CWD);
+      return runtime({records: [{role: 'user', text: 'first'}]}, {onContextUsage(usage) { contextUsages.push(usage); }});
+    });
+
+    assert.match(providerRecords[0][0].text, /Use real cursors/);
+    assert.ok(contextUsages[0].segments.find((segment) => segment.category === 'memory').tokens > 0);
+  });
+});
+
+test('createAgentLoopRuntime records a non-sensitive agent memory prompt summary in debug context', async () => {
+  await withTemporaryMemoryHome(async () => {
+    addAgentMemory(TEST_CWD, {catalog: 'rendering', description: 'Private description', content: 'private memory content'});
+    const debug = createDebugRecorder();
+    const agent = {initialize() {}, async runTurn() { return {draft: 'done', toolCalls: []}; }};
+
+    await withPatchedAgentRuntime(agent, () => {
+      const runtime = createAgentLoopRuntime(TEST_CWD, undefined, undefined, debug.context);
+      return runtime({records: [{role: 'user', text: 'first'}]});
+    });
+
+    const request = debug.events.find((event) => event.event === 'provider_request_built');
+    assert.equal(request.payload.agentMemoryMode, 'expanded');
+    assert.equal(request.payload.agentMemoryCatalogCount, 1);
+    assert.equal(request.payload.agentMemoryItemCount, 1);
+    assert.equal(request.payload.agentMemoryTokens > 0, true);
+    assert.doesNotMatch(JSON.stringify(request.payload), /Private description|private memory content/);
   });
 });
 

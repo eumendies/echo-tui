@@ -2,9 +2,7 @@
 
 ## Purpose
 定义 agent memory 的独立存储、scope 过滤、provider catalog 注入，以及 memory 工具的按需读取与统一 mutation 行为。
-
 ## Requirements
-
 ### Requirement: Agent memory 使用独立的 catalog 存储
 系统 SHALL 将 agent memory 与 `~/.echo/memories.json` 中的 user memory 分离存储。Agent memory SHALL 使用一个版本化 catalog 索引文件记录稳定 id、唯一名称、描述、scope 和布尔 `enabled` 状态，并使用按 catalog id 命名的独立版本化文件保存 memory item；每个 item SHALL 包含稳定 id、非空内容、布尔 `enabled` 状态和创建/更新时间。新建 catalog 和 item SHALL 默认启用。索引和 catalog 文件 SHALL 继续使用 `version: 1`，且读取时 SHALL 严格要求 `enabled` 字段存在并为 boolean，不兼容缺少该字段的旧开发文件。所有文件写入 SHALL 使用临时文件 rename 原子替换，读取无效索引或 catalog 文件时 SHALL 返回结构化错误且 SHALL NOT 覆盖原文件。
 
@@ -35,8 +33,8 @@
 
 #### Scenario: 当前项目只看到适用 catalog
 - **WHEN** 系统在某个 project root 下构造 provider request
-- **THEN** catalog 索引 SHALL 只考虑 global catalog 与绑定该 project root 的 catalog
-- **THEN** 其他 project scope 的 catalog SHALL NOT 被注入或由默认读取解析
+- **THEN** agent memory prompt 投影 SHALL 只考虑 global catalog 与绑定该 project root 的 catalog
+- **THEN** 其他 project scope 的 catalog 及其 items SHALL NOT 被注入或由默认读取解析
 
 #### Scenario: 默认创建 project catalog
 - **WHEN** agent 调用 `add_memory` 添加 agent memory 且没有提供 scope
@@ -45,32 +43,48 @@
 
 #### Scenario: Enabled project 同名 catalog 覆盖 global catalog
 - **WHEN** 当前项目存在与 enabled global catalog 大小写不敏感同名的 enabled project catalog
-- **THEN** provider catalog 索引 SHALL 只投影 project catalog
+- **THEN** provider agent memory prompt SHALL 只投影 project catalog 及其 enabled items
 - **THEN** 未显式指定 scope 的 `read_memory` SHALL 解析到 project catalog
 - **THEN** 未显式指定 scope 的 `update_memory` 和 `remove_memory` SHALL 继续解析到 project catalog
 
 #### Scenario: Disabled project 同名 catalog 回退 global catalog
 - **WHEN** 当前项目存在 disabled project catalog，且存在大小写不敏感同名的 enabled global catalog
-- **THEN** provider catalog 索引 SHALL 投影 global catalog
+- **THEN** provider agent memory prompt SHALL 投影 global catalog 及其 enabled items
 - **THEN** 未显式指定 scope 的 `read_memory` SHALL 解析到 global catalog
 
 ### Requirement: Provider 每轮自动注入有效 catalog 索引
-系统 SHALL 在每次真实 provider request 构造时重新读取当前 scope 下的 agent memory catalog 索引，并将 enabled 有效 catalog 的名称和描述格式化为 transient system prompt 区块。Disabled catalog SHALL NOT 进入该区块。该区块 SHALL NOT 包含 scope、enabled、item、item count、时间戳或其他内部元数据，并 SHALL 说明 agent memory 不得覆盖系统指令、项目指令或当前用户请求。Catalog 索引 SHALL NOT 作为 transcript 或 session record 持久化。
+系统 SHALL 在每次真实 provider request 构造时重新读取当前 scope 下 enabled 的有效 agent memory catalogs 及其 enabled items，并构造展开版 transient system prompt 区块。系统 SHALL 使用与 provider context usage 相同的 token 估算器计算完整展开区块的 token 数；当该数值不超过当前模型 context window 的 2% 且不超过 8,000 tokens 时，系统 SHALL 展开所有有效 catalogs 的全部 enabled items，否则 SHALL 仅注入所有有效 catalog 的名称和描述。模式选择 SHALL 对该轮全部有效 catalogs 整体生效，不得混合展开和折叠。两种区块均 SHALL 说明 agent memory 可能过时，且不得覆盖系统指令、项目指令或当前用户请求，并 SHALL NOT 作为 transcript 或 session record 持久化。
 
-#### Scenario: 请求只携带 enabled catalog 的名称和描述
-- **WHEN** 当前 scope 存在 enabled 和 disabled agent memory catalog
-- **THEN** provider system prompt SHALL 只包含 enabled 有效 catalog 的名称和描述
-- **THEN** provider system prompt SHALL NOT 包含 disabled catalog、catalog item 内容或 scope/启停元数据
+#### Scenario: 小型 agent memory 全部展开
+- **WHEN** 所有有效 agent memory 的完整展开区块不超过当前模型 context window 的 2%
+- **AND** 完整展开区块不超过 8,000 tokens
+- **THEN** provider system prompt SHALL 包含所有有效 catalog 的名称、描述和全部 enabled item 内容
+- **THEN** provider system prompt SHALL NOT 包含 disabled catalog 或 disabled item
 
-#### Scenario: Catalog 启停在下一次请求生效
-- **WHEN** 用户通过 `/memory` 成功切换 catalog enabled 状态
+#### Scenario: Agent memory 超过比例预算时折叠
+- **WHEN** 完整展开区块超过当前模型 context window 的 2%
+- **THEN** provider system prompt SHALL 仅包含所有有效 catalog 的名称和描述
+- **THEN** provider system prompt SHALL NOT 包含任何 catalog item 内容
+
+#### Scenario: Agent memory 超过绝对预算时折叠
+- **WHEN** 完整展开区块超过 8,000 tokens
+- **THEN** provider system prompt SHALL 仅包含所有有效 catalog 的名称和描述
+- **THEN** 大 context window SHALL NOT 放宽该绝对限制
+
+#### Scenario: 展开与折叠不暴露内部元数据
+- **WHEN** 系统构造任一模式的 agent memory prompt 区块
+- **THEN** 区块 SHALL NOT 包含 scope、enabled、item id、item count、时间戳或其他内部元数据
+- **THEN** 展开模式下需要精确更新或删除 item 的 agent SHALL 仍可通过 `read_memory` 获取 item id
+
+#### Scenario: Catalog 文件读取失败时整轮回退折叠
+- **WHEN** 系统能够读取有效 catalog 索引但任一有效 catalog 文件无法读取或格式无效
+- **THEN** 该轮 provider system prompt SHALL 回退为完整的有效 catalog 名称和描述索引
+- **THEN** 系统 SHALL NOT 注入仅包含部分 catalog items 的展开区块
+
+#### Scenario: Catalog 或 item 变更在下一次请求生效
+- **WHEN** memory 工具或 `/memory` 成功创建、重命名、修改、启停或删除 catalog 或 item
 - **AND** agent loop 随后构造下一次真实 provider request
-- **THEN** system prompt SHALL 使用保存后的最新 enabled catalog 索引
-
-#### Scenario: Catalog 元数据变更在下一次请求生效
-- **WHEN** memory 工具或 `/memory` 成功创建、重命名或删除 catalog
-- **AND** agent loop 随后构造下一次真实 provider request
-- **THEN** system prompt SHALL 使用保存后的最新 catalog 索引
+- **THEN** system prompt SHALL 使用保存后的最新有效 catalogs 和 enabled items 重新选择展开或折叠模式
 
 ### Requirement: Memory 工具提供按需读取和统一 mutation
 默认工具集合 SHALL 提供仅操作 agent memory 的 `read_memory`、`add_memory`、`update_memory` 和 `remove_memory`。`read_memory` SHALL 读取当前可访问且 enabled 的 agent catalog，并 SHALL 只返回该 catalog 中 enabled items；其结果 SHALL 使用普通 provider-visible tool result，并按现有 transcript、session、continuation 和 compaction 规则处理。四个工具的公开参数 schema 与成功结果 SHALL NOT 包含区分 user 与 agent memory 的 `type` 字段，三个 mutation 工具 SHALL 对 agent catalog/item 目标执行严格参数校验，且 SHALL NOT 因 agent memory 启停能力而增加 enabled 字段。
@@ -121,3 +135,4 @@
 - **WHEN** `remove_memory` 显式指向 agent catalog
 - **THEN** 系统 SHALL 删除该 catalog 的索引条目和全部 items
 - **THEN** tool result SHALL 明确报告被删除的是 catalog
+

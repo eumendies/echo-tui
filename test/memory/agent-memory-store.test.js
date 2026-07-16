@@ -9,6 +9,7 @@ const {
   listAgentMemoryCatalogs,
   listEffectiveAgentMemoryCatalogs,
   readAgentMemoryCatalog,
+  readEffectiveAgentMemoryCatalogs,
   readEffectiveAgentMemoryCatalog,
   removeAgentMemoryCatalog,
   removeAgentMemoryItem,
@@ -102,6 +103,37 @@ test('agent memory store keeps disabled items manageable but filters them from e
   assert.equal(result.memories.find((item) => item.id === secondId).enabled, true);
   assert.deepEqual(readAgentMemoryCatalog(project, 'rendering', undefined, options).memories.map((item) => item.content), ['first', 'second']);
   assert.deepEqual(readEffectiveAgentMemoryCatalog(project, 'rendering', undefined, options).memories.map((item) => item.content), ['second']);
+});
+
+test('agent memory store reads one effective catalog snapshot with enabled items only', () => {
+  const {root, project, options} = fixture();
+  const other = path.join(root, 'other');
+  fs.mkdirSync(path.join(other, '.git'), {recursive: true});
+  assert.equal(addAgentMemory(project, {catalog: 'shared', description: 'global', content: 'global item', scope: 'global'}, options).ok, true);
+  assert.equal(addAgentMemory(project, {catalog: 'shared', description: 'project', content: 'project item'}, options).ok, true);
+  let filtered = addAgentMemory(project, {catalog: 'filtering', description: 'rules', content: 'disabled item'}, options);
+  const disabledId = filtered.memories[0].id;
+  filtered = addAgentMemory(project, {catalog: 'filtering', content: 'enabled item'}, options);
+  assert.equal(setAgentMemoryItemEnabled(project, 'filtering', disabledId, false, undefined, options).ok, true);
+  assert.equal(addAgentMemory(other, {catalog: 'other-only', description: 'other', content: 'other item'}, options).ok, true);
+
+  const result = readEffectiveAgentMemoryCatalogs(project, options);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.catalogs.map((entry) => [entry.catalog.name, entry.catalog.description, entry.memories.map((item) => item.content)]), [
+    ['shared', 'project', ['project item']],
+    ['filtering', 'rules', ['enabled item']]
+  ]);
+});
+
+test('agent memory store rejects partial effective snapshots when one catalog file is unreadable', () => {
+  const {project, options} = fixture();
+  const first = addAgentMemory(project, {catalog: 'first', description: 'first', content: 'first item'}, options);
+  assert.equal(addAgentMemory(project, {catalog: 'second', description: 'second', content: 'second item'}, options).ok, true);
+  fs.unlinkSync(path.join(options.storageRoot, 'catalogs', `${first.catalog.id}.json`));
+
+  const result = readEffectiveAgentMemoryCatalogs(project, options);
+  assert.equal(result.ok, false);
+  assert.match(result.error, /无法读取 agent memory catalog/);
 });
 
 test('agent memory store preserves invalid index and reports failed writes', () => {

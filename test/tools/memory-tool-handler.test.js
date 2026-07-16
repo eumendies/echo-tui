@@ -132,4 +132,6 @@ test('memory tool schemas expose four focused agent tools', () => {
     ['target', 'catalog'],
     ['target', 'catalog']
   ]);
+  assert.match(definitions[0].description, /catalog index or already-expanded memory content/);
+  assert.match(definitions[0].description, /item ids for precise updates or removal/);
 });

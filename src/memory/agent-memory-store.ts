@@ -4,7 +4,7 @@ import * as path from 'node:path';
 
 import {findProjectRoot} from '../agent/agent-instructions';
 
-import type {AgentMemoryCatalog, AgentMemoryCatalogListResult, AgentMemoryCatalogReadResult, AgentMemoryItem, AgentMemoryMutationResult, AgentMemoryScope} from '../types/memory';
+import type {AgentMemoryCatalog, AgentMemoryCatalogListResult, AgentMemoryCatalogReadResult, AgentMemoryItem, AgentMemoryMutationResult, AgentMemoryScope, EffectiveAgentMemoryCatalogReadResult} from '../types/memory';
 
 const AGENT_MEMORY_VERSION = 1;
 const AGENT_MEMORY_DIR_NAME = 'agent-memory';
@@ -77,6 +77,30 @@ function listEffectiveAgentMemoryCatalogs(cwd: string, options: AgentMemoryStore
   }
 
   return {ok: true, catalogs: Array.from(effective.values()).map(cloneCatalog)};
+}
+
+/** 读取 provider 可见的有效 catalog 快照及其 enabled items；任一文件失败时拒绝返回部分结果。 */
+function readEffectiveAgentMemoryCatalogs(cwd: string, options: AgentMemoryStoreOptions = {}): EffectiveAgentMemoryCatalogReadResult {
+  const listed = listEffectiveAgentMemoryCatalogs(cwd, options);
+  if (!listed.ok) {
+    return listed;
+  }
+
+  const catalogs = [];
+
+  for (const catalog of listed.catalogs) {
+    const file = readCatalogFile(catalog, options);
+    if (!file.ok) {
+      return file;
+    }
+
+    catalogs.push({
+      catalog: cloneCatalog(catalog),
+      memories: file.memories.filter((item) => item.enabled).map(cloneItem)
+    });
+  }
+
+  return {ok: true, catalogs};
 }
 
 /** 读取一个可访问 catalog；未指定 scope 时应用 project 覆盖 global 规则。 */
@@ -691,6 +715,7 @@ export {
   addAgentMemory,
   listAgentMemoryCatalogs,
   listEffectiveAgentMemoryCatalogs,
+  readEffectiveAgentMemoryCatalogs,
   readAgentMemoryCatalog,
   readEffectiveAgentMemoryCatalog,
   removeAgentMemoryCatalog,
