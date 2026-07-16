@@ -1,0 +1,62 @@
+openspec/changes/archive/2026-07-16-add-skill-model-overrides/tasks.md
+  h_648a605945768c 1-30
+test/render/footer.test.js
+  h_648a605945768c 1799-1800,1803,1814-1824,1837-1838,1878-1907
+src/commands/skills-command-handler.ts
+  h_648a605945768c 8-9,15,17,20-26,38,47,53-106,118,148-154,168
+test/app/assistant-turn-runner.test.js
+  h_648a605945768c 5,327-422
+src/agent/agent-loop-runtime.ts
+  s_b944d1975fca44::t_67483215038dee 419,423
+  h_648a605945768c 420-422 gitai:{"mixed_line_ranges":[{"Range":[420,421]}],"operations":[]}
+src/render/footer/skills-surface.ts
+  h_648a605945768c 5,13,25,85,89-92,95,97-99,125
+src/app/assistant-turn-runner.ts
+  h_648a605945768c 22,45,63,67-74,86,264-266,270-273
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "7ac89ff2f551d429ca45e4c87fefb0545a17aeab",
+  "prompts": {},
+  "humans": {
+    "h_648a605945768c": {
+      "author": "eumendies <1431538355@qq.com>"
+    }
+  },
+  "sessions": {
+    "s_b944d1975fca44": {
+      "agent_id": {
+        "tool": "trae-cue",
+        "id": "ai_tab-icr-2bbef841-9ce7-4918-b45d-a0b7bc291782",
+        "model": "default"
+      },
+      "human_author": "eumendies <1431538355@qq.com>"
+    }
+  },
+  "attestation_metadata": {
+    "src/agent/agent-loop-runtime.ts": [
+      {
+        "hash": "h_648a605945768c",
+        "line_ranges": [
+          {
+            "Range": [
+              420,
+              422
+            ]
+          }
+        ],
+        "mixed_line_ranges": [
+          {
+            "Range": [
+              420,
+              421
+            ]
+          }
+        ],
+        "operations": []
+      }
+    ]
+  },
+  "remote_transcripts": {}
+}
