@@ -173,10 +173,13 @@ function renderStatusLineText(statusLine: StatusLineState | undefined, width: nu
 }
 
 function createLeftStatusSegments(statusLine: StatusLineState, theme: FooterTheme): StatusSegment[] {
+  const modelLabel = statusLine.skillOverride
+    ? `${statusLine.modelLabel} (SKILL override)`
+    : statusLine.modelLabel;
   const segments: StatusSegment[] = [
     {
-      plain: statusLine.modelLabel,
-      rendered: tokenText(theme, 'accentStrong', ansi.bold(statusLine.modelLabel))
+      plain: modelLabel,
+      rendered: tokenText(theme, 'accentStrong', ansi.bold(modelLabel))
     }
   ];
 

@@ -276,7 +276,7 @@ class AppContext {
    * 读取当前选择模型的展示名；配置不可用时返回稳定占位，避免 footer 重绘打断主流程。
    */
   private createStatusLineModelState(): StatusLineModelState {
-    return this.modelContext.getStatusLineModelState();
+    return this.turnContext.getActiveStatusLineModelState() ?? this.modelContext.getStatusLineModelState();
   }
 
   /**
@@ -556,8 +556,20 @@ class AppContext {
   /**
    * 创建当前 assistant turn 句柄，主流程只使用句柄绑定回调和 agent signal。
    */
-  beginAssistantTurn(): AssistantTurnHandle {
-    return this.turnContext.beginAssistantTurn();
+  beginAssistantTurn(modelProfileId?: string): AssistantTurnHandle {
+    const statusLineModel = modelProfileId
+      ? this.modelContext.resolveSkillOverrideStatusLineModelState(modelProfileId)
+      : undefined;
+
+    return this.turnContext.beginAssistantTurn(statusLineModel);
+  }
+
+  /**
+   * 返回当前 assistant turn 已生效的 skill override 模型名，供主流程生成本地提示。
+   */
+  getActiveSkillOverrideModelLabel(): string | undefined {
+    const statusLineModel = this.turnContext.getActiveStatusLineModelState();
+    return statusLineModel?.skillOverride ? statusLineModel.modelLabel : undefined;
   }
 
   /**

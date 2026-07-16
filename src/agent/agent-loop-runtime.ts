@@ -283,8 +283,8 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
    * 初始化单次 agent 调用需要的 provider、工具运行时和上下文窗口；三者来自同一份配置。
    * agent 的配置装配（loadConfig + initialize）下沉到 prepareAgent，拉模式下每轮重读配置。
    */
-  function initializeRunState(interactionMode: InteractionMode, abortSignal: AbortSignal | undefined, executionMode: AgentExecutionMode): AgentLoopRunState {
-    const config = readLlmConfig();
+  function initializeRunState(interactionMode: InteractionMode, abortSignal: AbortSignal | undefined, executionMode: AgentExecutionMode, modelProfileId?: string): AgentLoopRunState {
+    const config = readLlmConfig({modelProfileId});
     const registry = createRegistry(config);
     const agent = createConfiguredAgent(config);
 
@@ -325,7 +325,7 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
     let state: AgentLoopRunState;
 
     try {
-      state = initializeRunState(interactionMode, abortSignal, executionMode);
+      state = initializeRunState(interactionMode, abortSignal, executionMode, session.modelProfileId);
     } catch (error: unknown) {
       throw normalizeError(error, '无法加载 LLM 配置');
     }
@@ -416,6 +416,11 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
       }
     }
 
+    /**
+     * ----------------------------
+     *            主循环
+     * ----------------------------
+     */
     while (true) {
       await maybeCompact();
       throwIfAborted(abortSignal);

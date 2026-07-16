@@ -125,6 +125,14 @@ function createHostHarness(options = {}) {
   return {calls, host, setThemes};
 }
 
+function writeProjectSkill(cwd, name, description = 'Test skill') {
+  const rootDir = path.join(cwd, '.echo', 'skills');
+  const skillDir = path.join(rootDir, name);
+  fs.mkdirSync(skillDir, {recursive: true});
+  fs.writeFileSync(path.join(skillDir, 'SKILL.md'), `---\nname: ${name}\ndescription: ${description}\n---\n# ${name}\n`, 'utf8');
+  return rootDir;
+}
+
 test('CommandHost theme facade lists selected builtin theme and applies selection', () => {
   withTemporaryThemeConfig(JSON.stringify({
     theme: 'amber',
@@ -161,6 +169,27 @@ test('CommandHost memory facade persists user memories without exposing filesyst
     assert.equal(host.memory.update(created.memories[0].id, '使用 TypeScript 和中文注释').ok, true);
     assert.equal(host.memory.delete(created.memories[0].id).ok, true);
     assert.deepEqual(host.memory.list(), {ok: true, memories: []});
+  });
+});
+
+test('CommandHost skill invocation exposes the effective root model override separately from metadata', () => {
+  withTemporaryUserConfig(JSON.stringify({}), ({configPath}) => {
+    const homeDir = path.dirname(path.dirname(configPath));
+    const cwd = path.join(homeDir, 'project');
+    const rootDir = writeProjectSkill(cwd, 'review', 'Review code');
+    fs.writeFileSync(path.join(rootDir, 'skills.json'), JSON.stringify({
+      schemaVersion: 2,
+      disabled: [],
+      modelOverrides: {review: 'review-profile'}
+    }), 'utf8');
+    const {host} = createHostHarness({cwd});
+    const result = host.skills.createSkillInvocation('review', 'src/foo.ts');
+
+    assert.equal(result.ok, true);
+    assert.equal(result.modelProfileId, 'review-profile');
+    assert.equal('modelProfileId' in result.metadata.skillInvocation, false);
+    assert.match(result.text, /\[Skill Invocation\]/);
+    assert.match(result.text, /\[User Request\]\nsrc\/foo\.ts/);
   });
 });
 

@@ -394,23 +394,42 @@ test('skill manager reads disabled state and saves by effective source root', ()
   writeSkill(userSkillsDir, 'unit-test', 'name: unit-test\ndescription: Generate unit tests', '# Unit Test');
   writeSkill(userSkillsDir, 'review', 'name: review\ndescription: User review', '# User Review');
   writeSkill(projectSkillsDir, 'review', 'name: review\ndescription: Project review', '# Project Review');
-  fs.writeFileSync(path.join(projectSkillsDir, 'skills.json'), JSON.stringify({ schemaVersion: 1, disabled: ['review'] }), 'utf8');
+  fs.writeFileSync(path.join(userSkillsDir, 'skills.json'), JSON.stringify({
+    schemaVersion: 2,
+    disabled: [],
+    modelOverrides: {review: 'ignored-user-profile'}
+  }), 'utf8');
+  fs.writeFileSync(path.join(projectSkillsDir, 'skills.json'), JSON.stringify({
+    schemaVersion: 2,
+    disabled: ['review'],
+    modelOverrides: {review: 'project-profile'}
+  }), 'utf8');
 
   const manager = createSkillManager({ cwd, projectSkillsDir, userSkillsDir });
 
-  assert.deepEqual(manager.listSkills().map(({ name, enabled, sourceKind }) => ({ name, enabled, sourceKind })), [
-    { name: 'review', enabled: false, sourceKind: 'project' },
-    { name: 'unit-test', enabled: true, sourceKind: 'user' }
+  assert.deepEqual(manager.listSkills().map(({ name, enabled, sourceKind, modelProfileId }) => ({ name, enabled, sourceKind, modelProfileId })), [
+    { name: 'review', enabled: false, sourceKind: 'project', modelProfileId: 'project-profile' },
+    { name: 'unit-test', enabled: true, sourceKind: 'user', modelProfileId: undefined }
   ]);
   assert.deepEqual(manager.listCatalog().map((skill) => skill.name), ['unit-test']);
   const disabled = manager.loadSkill('review');
   assert.equal(disabled.ok, false);
   assert.equal(disabled.reason, 'disabled');
 
-  manager.saveSkillStates(manager.listSkills().map((skill) => skill.name === 'review' ? { ...skill, enabled: true } : { ...skill, enabled: false }));
+  manager.saveSkillStates(manager.listSkills().map((skill) => skill.name === 'review'
+    ? { ...skill, enabled: true, modelProfileId: undefined }
+    : { ...skill, enabled: false, modelProfileId: 'user-profile' }));
 
-  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(projectSkillsDir, 'skills.json'), 'utf8')).disabled, []);
-  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(userSkillsDir, 'skills.json'), 'utf8')).disabled, ['unit-test']);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(projectSkillsDir, 'skills.json'), 'utf8')), {
+    schemaVersion: 2,
+    disabled: [],
+    modelOverrides: {}
+  });
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(userSkillsDir, 'skills.json'), 'utf8')), {
+    schemaVersion: 2,
+    disabled: ['unit-test'],
+    modelOverrides: {'unit-test': 'user-profile'}
+  });
 });
 
 test('skill manager falls back to enabled on invalid state file', () => {

@@ -29,7 +29,7 @@ async function withPatchedAgentRuntime(agent, callback, config = TEST_CONFIG) {
   const originalReadLlmConfig = llmConfigModule.readLlmConfig;
   const originalCreateConfiguredAgent = agentSetupModule.createConfiguredAgent;
 
-  llmConfigModule.readLlmConfig = () => config;
+  llmConfigModule.readLlmConfig = typeof config === 'function' ? config : () => config;
   agentSetupModule.createConfiguredAgent = () => agent;
 
   try {
@@ -402,6 +402,112 @@ test('createAgentLoopRuntime emits provider records callback before visible comp
     ['summary', 'visible'],
     ['complete', 'done']
   ]);
+});
+
+test('createAgentLoopRuntime uses one overridden config for provider, context, usage, and continuation', async () => {
+  const initialized = [];
+  const contextUsages = [];
+  const usageEvents = [];
+  let turnCount = 0;
+  const agent = {
+    initialize(config) {
+      initialized.push(config);
+    },
+    async runTurn() {
+      turnCount += 1;
+
+      if (turnCount === 1) {
+        return {
+          draft: '',
+          toolCalls: [{callId: 'todo', toolName: 'create_todos', argumentsText: JSON.stringify({items: ['continue']})}],
+          usageInputTokens: 50,
+          usage: {outputTokens: 2}
+        };
+      }
+
+      return {draft: 'done', toolCalls: [], usageInputTokens: 60, usage: {outputTokens: 3}};
+    }
+  };
+  const overrideConfig = {
+    ...TEST_CONFIG,
+    model: 'override-model',
+    contextWindow: 777,
+    tools: {bash: {timeoutMs: 4321, maxOutputBytes: 2048}}
+  };
+
+  await withPatchedAgentRuntime(agent, async () => {
+    const runtime = createAgentLoopRuntime(TEST_CWD, undefined, undefined, undefined, {
+      appendEvent(event) {
+        usageEvents.push(event);
+      }
+    });
+    await runtime({records: [{role: 'user', text: 'work'}], modelProfileId: 'override-profile'}, {
+      onContextUsage(usage) {
+        contextUsages.push(usage);
+      }
+    });
+  }, (options) => {
+    assert.equal(options.modelProfileId, 'override-profile');
+    return overrideConfig;
+  });
+
+  assert.equal(initialized.length, 1);
+  assert.equal(initialized[0].model, 'override-model');
+  assert.equal(initialized[0].tools.bash.timeoutMs, 4321);
+  assert.deepEqual(contextUsages.map((usage) => usage.contextWindow), [777, 777]);
+  assert.deepEqual(usageEvents.map((event) => [event.model, event.contextWindow]), [
+    ['override-model', 777],
+    ['override-model', 777]
+  ]);
+});
+
+test('autonomous use_skill keeps the model initialized for normal and slash override turns', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-skill-model-runtime-'));
+  const skillDir = path.join(cwd, '.echo', 'skills', 'loaded-skill');
+  const initializedModels = [];
+  const configOptions = [];
+  const toolResults = [];
+  let turnCount = 0;
+
+  fs.mkdirSync(skillDir, {recursive: true});
+  fs.writeFileSync(path.join(skillDir, 'SKILL.md'), '---\nname: loaded-skill\ndescription: Loaded skill\n---\n# Loaded\n', 'utf8');
+  fs.writeFileSync(path.join(cwd, '.echo', 'skills', 'skills.json'), JSON.stringify({
+    schemaVersion: 2,
+    disabled: [],
+    modelOverrides: {'loaded-skill': 'different-profile'}
+  }), 'utf8');
+
+  const agent = {
+    initialize(config) {
+      initializedModels.push(config.model);
+    },
+    async runTurn() {
+      turnCount += 1;
+      return turnCount % 2 === 1
+        ? {draft: '', toolCalls: [{callId: `skill-${turnCount}`, toolName: 'use_skill', argumentsText: JSON.stringify({name: 'loaded-skill'})}]}
+        : {draft: 'done', toolCalls: []};
+    }
+  };
+
+  try {
+    await withPatchedAgentRuntime(agent, async () => {
+      const runtime = createAgentLoopRuntime(cwd);
+      const callbacks = {onToolResult(result) { toolResults.push(result); }};
+
+      await runtime({records: [{role: 'user', text: 'normal'}]}, callbacks);
+      await runtime({records: [{role: 'user', text: 'slash'}], modelProfileId: 'slash-profile'}, callbacks);
+    }, (options) => {
+      configOptions.push(options.modelProfileId);
+      return {...TEST_CONFIG, model: options.modelProfileId === 'slash-profile' ? 'slash-model' : 'current-model'};
+    });
+  } finally {
+    fs.rmSync(cwd, {recursive: true, force: true});
+  }
+
+  assert.deepEqual(configOptions, [undefined, 'slash-profile']);
+  assert.deepEqual(initializedModels, ['current-model', 'slash-model']);
+  assert.equal(toolResults.length, 2);
+  assert.equal(toolResults.every((result) => result.ok), true);
 });
 
 test('createAgentLoopRuntime keeps provider-visible tool definitions stable across normal and plan modes', async () => {

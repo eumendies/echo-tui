@@ -225,6 +225,64 @@ test('readLlmConfig resolves selected multi-model profile with referenced provid
   });
 });
 
+test('readLlmConfig applies a valid per-run profile override without changing configured selection', () => {
+  const source = JSON.stringify({
+    llm: {
+      selectedModel: 'deep',
+      providers: {
+        current: {preset: OPENAI_PRESET, apiKey: 'current-key', baseURL: 'https://current.example/v1'},
+        fast: {preset: ANTHROPIC_PRESET, apiKey: 'fast-key', baseURL: 'https://fast.example/v1'}
+      },
+      models: [
+        {id: 'deep', provider: 'current', model: 'gpt-deep', contextWindow: 200000, reasoning: {effort: 'high'}},
+        {id: 'fast', provider: 'fast', model: 'claude-fast', contextWindow: 64000, reasoning: {effort: 'low'}}
+      ]
+    }
+  });
+  const overridden = readLlmConfig({
+    configPath: '/tmp/echo-config.json',
+    modelProfileId: 'fast',
+    readFile: readConfigFrom(source)
+  });
+  const current = readLlmConfig({
+    configPath: '/tmp/echo-config.json',
+    readFile: readConfigFrom(source)
+  });
+
+  assert.deepEqual(overridden, {
+    apiKey: 'fast-key',
+    agentType: 'anthropic',
+    baseURL: 'https://fast.example/v1',
+    model: 'claude-fast',
+    reasoningEffort: 'low',
+    contextWindow: 64000,
+    tools: DEFAULT_TOOLS
+  });
+  assert.equal(current.model, 'gpt-deep');
+  assert.equal(current.agentType, 'openai');
+  assert.equal(current.reasoningEffort, 'high');
+  assert.equal(current.contextWindow, 200000);
+});
+
+test('readLlmConfig falls back to the configured current profile for a stale per-run override', () => {
+  const config = readLlmConfig({
+    configPath: '/tmp/echo-config.json',
+    modelProfileId: 'deleted-profile',
+    readFile: readConfigFrom(JSON.stringify({
+      llm: {
+        selectedModel: 'deep',
+        providers: {shared: {preset: OPENAI_PRESET, apiKey: 'shared-key'}},
+        models: [
+          {id: 'fast', provider: 'shared', model: 'gpt-fast'},
+          {id: 'deep', provider: 'shared', model: 'gpt-deep'}
+        ]
+      }
+    }))
+  });
+
+  assert.equal(config.model, 'gpt-deep');
+});
+
 test('readLlmConfig supports multiple provider configs', () => {
   const config = readLlmConfig({
     configPath: '/tmp/echo-config.json',

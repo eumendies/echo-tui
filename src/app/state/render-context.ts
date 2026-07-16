@@ -113,6 +113,7 @@ class RenderContext {
       projectName: path.basename(this.getCurrentCwd()) || this.getCurrentCwd(),
       modelLabel: modelLabel && modelLabel.trim() !== '' ? modelLabel : 'model unavailable',
       ...(model?.reasoningEffort ? {reasoningEffort: model.reasoningEffort} : {}),
+      ...(model?.skillOverride ? {skillOverride: true} : {}),
       mode,
       ...(allowAllTools ? {allowAllTools: true} : {}),
       ...(contextUsage ? {contextUsage} : {}),

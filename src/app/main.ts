@@ -223,6 +223,7 @@ function createApp(runAgent: RunAgent, mcpManager?: McpManager, hooks?: Lifecycl
     let displayText: string | undefined;
     let userMetadata: Record<string, unknown> | undefined;
     let userAttachments: ToolResultAttachment[] | undefined;
+    let modelProfileId: string | undefined;
 
     if (commandResult.kind === 'not_matched' && isShellInteractionMode(appContext.getInteractionMode())) {
       return submitShellCommand(userText);
@@ -233,6 +234,7 @@ function createApp(runAgent: RunAgent, mcpManager?: McpManager, hooks?: Lifecycl
       historyText = commandResult.historyText;
       displayText = commandResult.displayText;
       userMetadata = commandResult.metadata;
+      modelProfileId = commandResult.modelProfileId;
     }
 
     const expanded = await expandFileMentionsForUserText(userText, appContext.getCurrentCwd());
@@ -259,6 +261,7 @@ function createApp(runAgent: RunAgent, mcpManager?: McpManager, hooks?: Lifecycl
       historyText,
       displayText,
       metadata: userMetadata,
+      modelProfileId,
       attachments: userAttachments,
       debug,
       appendRecord,

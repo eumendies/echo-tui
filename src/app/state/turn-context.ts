@@ -1,6 +1,6 @@
 import {redactSensitiveText} from '../../agent/agent-errors';
 
-import type {PendingState, WorkingState} from '../../types/render';
+import type {PendingState, StatusLineModelState, WorkingState} from '../../types/render';
 import {createToolCallTranscriptRecord, createToolResultTranscriptRecord} from '../../tools/tool-transcript-record';
 
 import type {ToolCall, ToolExecutionResult} from '../../types/tool';
@@ -35,6 +35,7 @@ type AssistantTurnHandle = {
 type ActiveAssistantTurn = {
   id: number;
   controller: AbortController;
+  statusLineModel?: StatusLineModelState;
 };
 
 type InterruptAssistantTurnResult = {
@@ -200,16 +201,25 @@ class TurnContext {
   /**
    * 创建当前 assistant turn 的身份与中断信号，供 app 层绑定本次 agent 调用。
    */
-  beginAssistantTurn(): AssistantTurnHandle {
+  beginAssistantTurn(statusLineModel?: StatusLineModelState): AssistantTurnHandle {
     const activeTurn = {
       id: this.nextAssistantTurnId,
-      controller: new AbortController()
+      controller: new AbortController(),
+      ...(statusLineModel ? {statusLineModel: {...statusLineModel}} : {})
     };
 
     this.nextAssistantTurnId += 1;
     this.activeAssistantTurn = activeTurn;
 
     return {id: activeTurn.id, abortSignal: activeTurn.controller.signal};
+  }
+
+  /**
+   * 返回当前 assistant turn 的临时 status line 模型；普通 turn 不覆盖全局模型展示。
+   */
+  getActiveStatusLineModelState(): StatusLineModelState | undefined {
+    const statusLineModel = this.activeAssistantTurn?.statusLineModel;
+    return statusLineModel ? {...statusLineModel} : undefined;
   }
 
   /**

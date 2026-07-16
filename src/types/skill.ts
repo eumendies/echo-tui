@@ -14,10 +14,11 @@ export type SkillDefinition = SkillCatalogEntry & {
 
 export type SkillListItem = SkillCatalogEntry & {
   enabled: boolean;
+  modelProfileId?: string;
 };
 
 export type SkillLoadResult =
-  | {ok: true; skill: SkillDefinition}
+  | {ok: true; skill: SkillDefinition; modelProfileId?: string}
   | {ok: false; reason: 'disabled' | 'invalid' | 'missing'; message: string; availableSkills: SkillCatalogEntry[]};
 
 export type SkillUseRecord = {

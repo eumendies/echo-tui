@@ -67,6 +67,7 @@ export type StatusLineMode = 'idle' | 'command' | 'thinking' | 'streaming' | 'to
 export type StatusLineModelState = {
   modelLabel: string;
   reasoningEffort?: ReasoningEffort;
+  skillOverride?: boolean;
 };
 
 export type StatusLineActivityState = {
@@ -78,6 +79,7 @@ export type StatusLineState = {
   projectName: string;
   modelLabel: string;
   reasoningEffort?: ReasoningEffort;
+  skillOverride?: boolean;
   mode: StatusLineMode;
   allowAllTools?: boolean;
   contextUsage?: ContextUsage;

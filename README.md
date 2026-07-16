@@ -151,7 +151,9 @@ normal 与 plan 之间发生模型可见切换时，模式说明只会加入切�
 
 ## Skills
 
-skill 放在 `.echo/skills/<name>/SKILL.md`（项目级）或 `~/.echo/skills/<name>/SKILL.md`（用户级），同名时项目级覆盖用户级。每个 `SKILL.md` 需要 `name` / `description` frontmatter 加 Markdown 指令。用 `/skills` 启用或停用。
+skill 放在 `.echo/skills/<name>/SKILL.md`（项目级）或 `~/.echo/skills/<name>/SKILL.md`（用户级），同名时项目级覆盖用户级。每个 `SKILL.md` 需要 `name` / `description` frontmatter 加 Markdown 指令。用 `/skills` 管理启停状态：Space 切换启停，Left/Right 在“当前模型”和已配置 model profiles 之间循环，Enter 统一保存，Esc 放弃草稿。
+
+“当前模型”会在每次显式 `/<skill-name>` 调用开始时动态跟随全局当前模型；固定 profile 只覆盖这一次显式 slash turn，开始时追加一条仅本地可见的模型切换 notice，执行期间 status line 显示为 `<model> (SKILL override)`，结束后恢复全局模型。覆盖不修改 `/model` 的全局选择，也不影响后续普通 turn。模型在普通 turn 中自主调用 `use_skill` 时不会应用该 skill 的模型策略；profile 已删除时自动回退到全局当前模型，且不显示 override 标记或切换 notice。
 
 ## 工具与授权
 

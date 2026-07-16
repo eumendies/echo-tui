@@ -5,14 +5,24 @@ import type {
   CommandHost,
   CommandSession,
   CommandSkillInfo,
+  CommandSkillSurfaceInfo,
+  CommandModelProfile,
   SkillsCommandSurface
 } from '../types/command';
 import type {InputEvent} from '../types/input';
 
 type SkillsManageData = {
+  modelOptions: SkillModelOption[];
   selectedIndex: number;
-  skills: CommandSkillInfo[];
+  skills: CommandSkillSurfaceInfo[];
 };
+
+type SkillModelOption = {
+  label: string;
+  modelProfileId?: string;
+};
+
+const CURRENT_MODEL_LABEL = '当前模型';
 
 function createSkillsSurface(data: SkillsManageData): SkillsCommandSurface {
   return {
@@ -25,7 +35,7 @@ function createSkillsSurface(data: SkillsManageData): SkillsCommandSurface {
       '项目级目录：.echo/skills/<name>/SKILL.md',
       '用户级目录：~/.echo/skills/<name>/SKILL.md'
     ],
-    dismissHint: 'Space 切换 · Enter 保存 · Esc 取消'
+    dismissHint: '←/→ 模型 (仅限slash调用) · Space 启停 · Enter 保存 · Esc 取消'
   };
 }
 
@@ -34,9 +44,66 @@ function normalizeSkillsManageData(source: SkillsManageData): SkillsManageData {
   const selectedIndex = Math.min(Math.max(0, source.selectedIndex), maxIndex);
 
   return {
+    modelOptions: source.modelOptions.map((option) => ({...option})),
     selectedIndex,
     skills: source.skills.map((skill) => ({...skill}))
   };
+}
+
+function createModelOptions(host: CommandHost): SkillModelOption[] {
+  const modelInfo = host.model.createModelCommandInfo();
+
+  if (!('models' in modelInfo)) {
+    return [{label: CURRENT_MODEL_LABEL}];
+  }
+
+  return [
+    {label: CURRENT_MODEL_LABEL},
+    ...modelInfo.models.map((profile) => ({
+      label: createModelLabel(profile),
+      modelProfileId: profile.id
+    }))
+  ];
+}
+
+function createModelLabel(profile: CommandModelProfile): string {
+  return profile.id;
+}
+
+function createSkillsManageData(skills: CommandSkillInfo[], modelOptions: SkillModelOption[]): SkillsManageData {
+  const validProfileIds = new Set(modelOptions.flatMap((option) => option.modelProfileId ? [option.modelProfileId] : []));
+
+  return normalizeSkillsManageData({
+    modelOptions,
+    selectedIndex: 0,
+    skills: skills.map((skill) => {
+      const modelProfileId = skill.modelProfileId && validProfileIds.has(skill.modelProfileId)
+        ? skill.modelProfileId
+        : undefined;
+      const modelLabel = modelOptions.find((option) => option.modelProfileId === modelProfileId)?.label || CURRENT_MODEL_LABEL;
+
+      return {...skill, modelProfileId, modelLabel};
+    })
+  });
+}
+
+function cycleSelectedSkillModel(data: SkillsManageData, direction: number): SkillsManageData {
+  const selectedSkill = data.skills[data.selectedIndex];
+
+  if (!selectedSkill || data.modelOptions.length <= 1) {
+    return data;
+  }
+
+  const currentIndex = Math.max(0, data.modelOptions.findIndex((option) => option.modelProfileId === selectedSkill.modelProfileId));
+  const nextIndex = (currentIndex + direction + data.modelOptions.length) % data.modelOptions.length;
+  const nextOption = data.modelOptions[nextIndex];
+
+  return normalizeSkillsManageData({
+    ...data,
+    skills: data.skills.map((skill, index) => index === data.selectedIndex
+      ? {...skill, modelProfileId: nextOption.modelProfileId, modelLabel: nextOption.label}
+      : skill)
+  });
 }
 
 export class SkillsCommandHandler implements CommandHandler<SkillsManageData> {
@@ -48,7 +115,7 @@ export class SkillsCommandHandler implements CommandHandler<SkillsManageData> {
   }
 
   start(_text: string, host: CommandHost): void {
-    const data = normalizeSkillsManageData({selectedIndex: 0, skills: host.skills.listSkills()});
+    const data = createSkillsManageData(host.skills.listSkills(), createModelOptions(host));
     host.composer.reset();
     host.session.open({
       commandName: 'skills',
@@ -78,6 +145,16 @@ export class SkillsCommandHandler implements CommandHandler<SkillsManageData> {
       return;
     }
 
+    if (event.type === INPUT_EVENTS.MOVE_LEFT || event.type === INPUT_EVENTS.MOVE_RIGHT) {
+      const direction = event.type === INPUT_EVENTS.MOVE_LEFT ? -1 : 1;
+      const nextData = cycleSelectedSkillModel(data, direction);
+
+      if (nextData !== data) {
+        host.session.update({surface: createSkillsSurface(nextData), data: nextData});
+      }
+      return;
+    }
+
     if (event.type === INPUT_EVENTS.TEXT && event.value === ' ') {
       const nextData = normalizeSkillsManageData({
         ...data,
@@ -88,7 +165,7 @@ export class SkillsCommandHandler implements CommandHandler<SkillsManageData> {
     }
 
     if (event.type === INPUT_EVENTS.SUBMIT) {
-      host.skills.saveSkillStates(data.skills);
+      host.skills.saveSkillStates(data.skills.map(({modelLabel: _modelLabel, ...skill}) => skill));
       host.session.close();
       host.composer.reset();
     }

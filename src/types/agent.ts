@@ -65,6 +65,7 @@ export type AgentSessionInput = {
   abortSignal?: AbortSignal;
   interactionMode?: InteractionMode;
   executionMode?: AgentExecutionMode;
+  modelProfileId?: string;
 };
 
 export type AgentInstructionSourceKind = 'global' | 'project';

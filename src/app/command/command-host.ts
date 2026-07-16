@@ -164,6 +164,7 @@ function createCommandHost(options: CommandHostOptions): CommandHostApp {
         return {
           ok: true as const,
           text: lines.join('\n'),
+          ...(result.modelProfileId ? {modelProfileId: result.modelProfileId} : {}),
           metadata: {
             skillInvocation: {
               source: 'slash',

@@ -141,6 +141,24 @@ class ModelContext {
   }
 
   /**
+   * 解析显式 skill 调用实际使用的 status line 模型；无效 profile 按运行时规则回退当前全局模型。
+   */
+  resolveSkillOverrideStatusLineModelState(modelProfileId: string): StatusLineModelState {
+    this.refreshModelState();
+    const profile = this.models.find((model) => model.id === modelProfileId);
+
+    if (!profile) {
+      return this.getStatusLineModelState();
+    }
+
+    return {
+      modelLabel: profile.model || profile.id,
+      ...(profile.reasoningEffort ? {reasoningEffort: profile.reasoningEffort} : {}),
+      skillOverride: true
+    };
+  }
+
+  /**
    * 读取 /model 命令需要展示的当前模型信息；失败时返回可直接展示的错误摘要。
    */
   createModelCommandInfo(): ModelCommandInfoResult {
