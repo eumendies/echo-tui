@@ -530,6 +530,28 @@ test('createAgentLoopRuntime uses one overridden config for provider, context, u
   ]);
 });
 
+test('createAgentLoopRuntime reports the model resolved for the current run', async () => {
+  const resolvedModels = [];
+  const agent = {
+    initialize() {},
+    async runTurn() {
+      return {draft: 'done', toolCalls: []};
+    }
+  };
+
+  await withPatchedAgentRuntime(agent, async () => {
+    const runtime = createAgentLoopRuntime(TEST_CWD);
+
+    await runtime({records: [{role: 'user', text: 'work'}]}, {
+      onModelResolved(model) {
+        resolvedModels.push(model);
+      }
+    });
+  }, () => ({...TEST_CONFIG, model: 'resolved-model', reasoningEffort: 'high'}));
+
+  assert.deepEqual(resolvedModels, [{model: 'resolved-model', reasoningEffort: 'high'}]);
+});
+
 test('autonomous use_skill keeps the model initialized for normal and slash override turns', async () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-skill-model-runtime-'));
   const skillDir = path.join(cwd, '.echo', 'skills', 'loaded-skill');

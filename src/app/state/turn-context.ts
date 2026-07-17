@@ -223,6 +223,18 @@ class TurnContext {
   }
 
   /**
+   * 用 agent runtime 实际解析出的模型更新当前 turn；旧 turn 回调不会覆盖新 turn。
+   */
+  setActiveStatusLineModelState(turn: AssistantTurnHandle, model: StatusLineModelState): boolean {
+    if (!this.isCurrentAssistantTurn(turn)) {
+      return false;
+    }
+
+    this.activeAssistantTurn!.statusLineModel = {...model};
+    return true;
+  }
+
+  /**
    * 判断回调是否仍属于当前 assistant turn，避免旧异步回调污染新 turn。
    */
   isCurrentAssistantTurn(turn: AssistantTurnHandle): boolean {

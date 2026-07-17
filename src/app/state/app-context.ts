@@ -273,6 +273,19 @@ class AppContext {
   }
 
   /**
+   * 配置文件发生外部变化时刷新模型缓存；模型语义变化会使旧 context usage 失效。
+   */
+  refreshModelStateFromConfig(): boolean {
+    const changed = this.modelContext.refreshModelState();
+
+    if (changed) {
+      this.clearContextUsage();
+    }
+
+    return changed;
+  }
+
+  /**
    * 读取当前选择模型的展示名；配置不可用时返回稳定占位，避免 footer 重绘打断主流程。
    */
   private createStatusLineModelState(): StatusLineModelState {
@@ -559,9 +572,16 @@ class AppContext {
   beginAssistantTurn(modelProfileId?: string): AssistantTurnHandle {
     const statusLineModel = modelProfileId
       ? this.modelContext.resolveSkillOverrideStatusLineModelState(modelProfileId)
-      : undefined;
+      : this.modelContext.getStatusLineModelState();
 
     return this.turnContext.beginAssistantTurn(statusLineModel);
+  }
+
+  /**
+   * 将 runtime 实际采用的模型绑定到当前 assistant turn，保证响应期间展示不受全局配置变化影响。
+   */
+  setAssistantTurnModel(turn: AssistantTurnHandle, model: StatusLineModelState): boolean {
+    return this.turnContext.setActiveStatusLineModelState(turn, model);
   }
 
   /**

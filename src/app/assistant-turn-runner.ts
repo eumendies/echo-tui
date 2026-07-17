@@ -82,6 +82,18 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
   try {
     await runAgent({...appContext.getAgentSession(), abortSignal: turn.abortSignal, modelProfileId}, {
       changeRecorder: appContext.createChangeRecorder(),
+      onModelResolved(model) {
+        if (!isCurrentTurn()) {
+          return;
+        }
+
+        appContext.setAssistantTurnModel(turn, {
+          modelLabel: model.model,
+          ...(model.reasoningEffort ? {reasoningEffort: model.reasoningEffort} : {}),
+          ...(skillOverrideModelLabel ? {skillOverride: true} : {})
+        });
+        renderFooter();
+      },
       onThinking() {
         if (!isCurrentTurn()) {
           return;
@@ -266,6 +278,7 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
     appContext.clearAssistantTurnIfCurrent(turn);
 
     if (wasCurrentTurn) {
+      appContext.refreshModelStateFromConfig();
       renderFooter();
     }
   }
