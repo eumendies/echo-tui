@@ -5,7 +5,7 @@ const {
   AGENT_MEMORY_EXPANSION_MAX_TOKENS,
   AGENT_MEMORY_EXPANSION_RATIO,
   createAgentMemoryPromptProjection
-} = require('../../src/agent/memory-prompt');
+} = require('../../src/agent/context/memory-prompt');
 
 function catalog(name, content, options = {}) {
   return {

@@ -22,5 +22,3 @@ export type ControlInputEvent = {
 };
 
 export type InputEvent = TextInputEvent | UnknownInputEvent | ControlInputEvent;
-
-export type ParseKeyChunk = (chunk: string | Buffer) => InputEvent[];

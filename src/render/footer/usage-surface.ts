@@ -48,7 +48,7 @@ function renderUsageSurface(surface: UsageCommandSurface, width: number, maxLine
   }
 
   lines.push(dividerLine(cardWidth, theme));
-  lines.push(rowLine(cardWidth, footerLine(maxOffset > 0, inner, theme), theme));
+  lines.push(rowLine(cardWidth, footerLine(maxOffset > 0, inner), theme));
   lines.push(bottomLine(cardWidth, theme));
 
   return constrainLayoutTail({
@@ -256,7 +256,7 @@ function trendBar(tokens: number, peak: number, width: number, theme: FooterThem
   return `${tokenText(theme, 'usageInput', FILL.repeat(filled))}${tokenText(theme, 'rail', TRACK.repeat(width - filled))}`;
 }
 
-function footerLine(pannable: boolean, inner: number, theme: FooterTheme): string {
+function footerLine(pannable: boolean, inner: number): string {
   const hint = ansi.dim(pannable ? '↑/↓ 滚动 · PgUp/PgDn 翻页 · Home/End 跳转 · Enter/Esc/q 关闭' : 'Enter/Esc/q 关闭');
   return clampStyledLine(hint, inner);
 }

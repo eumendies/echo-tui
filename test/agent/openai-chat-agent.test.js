@@ -7,7 +7,7 @@ const { createChatRequest, createOpenAiChatAgent } = require('../../src/agent/op
 const { createPromptCacheKey } = require('../../src/agent/prompt-cache');
 const { convertTranscriptToOpenAiChatMessages } = require('../../src/agent/openai-chat/transcript-converter');
 const { convertToolDefinitionsToOpenAiChatTools } = require('../../src/agent/openai-chat/tool-converter');
-const { createBuiltInSystemPrompt } = require('../../src/agent/system-prompt');
+const { createBuiltInSystemPrompt } = require('../../src/agent/context/system-prompt');
 
 const TEST_CWD = '/tmp/echo_tui';
 const TEST_SYSTEM_PROMPT = createBuiltInSystemPrompt({ cwd: TEST_CWD });

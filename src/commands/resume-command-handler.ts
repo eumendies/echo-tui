@@ -141,18 +141,6 @@ export function normalizeResumeData(data: Partial<ResumeData> | null | undefined
 }
 
 /**
- * 创建 /resume 的 select surface，只传入当前窗口内最多 5 条候选项。
- *
- * @param data resume data
- * @returns select surface
- */
-export function createResumeSurface(data: Partial<ResumeData>): ResumeCommandSurface {
-  const normalized = normalizeResumeData(data);
-
-  return createResumeSurfaceFromData(normalized);
-}
-
-/**
  * 将已归一化的 /resume data 投影成 renderer surface，避免事件热路径重复归一化。
  */
 function createResumeSurfaceFromData(normalized: ResumeData): ResumeCommandSurface {

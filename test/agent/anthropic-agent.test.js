@@ -11,7 +11,7 @@ const {
 } = require('../../src/agent/anthropic/agent');
 const { convertTranscriptToAnthropicMessages } = require('../../src/agent/anthropic/transcript-converter');
 const { convertToolDefinitionsToAnthropicTools } = require('../../src/agent/anthropic/tool-converter');
-const { createBuiltInSystemPrompt } = require('../../src/agent/system-prompt');
+const { createBuiltInSystemPrompt } = require('../../src/agent/context/system-prompt');
 const { ANTHROPIC_THINKING_TRANSCRIPT_ROLE } = require('../../src/types/transcript');
 
 const TEST_CWD = '/tmp/echo_tui';

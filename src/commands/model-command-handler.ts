@@ -4,7 +4,6 @@ import type {
   CommandHost,
   CommandModelInfo as HostModelInfo,
   CommandModelInfoResult as HostModelInfoResult,
-  CommandModelProfile as HostModelProfile,
   CommandSession,
   InfoCommandSurface,
   SelectCommandSurface
@@ -15,7 +14,6 @@ export const MODEL_CONFIG_PATH_HINT = '~/.echo/config.json';
 
 type ModelCommandInfo = HostModelInfo;
 type ModelCommandInfoResult = HostModelInfoResult;
-type ModelCommandProfile = HostModelProfile;
 
 /**
  * 为 /model 创建 info surface，展示配置错误。

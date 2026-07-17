@@ -261,18 +261,6 @@ function isStringDelimiter(char: string): boolean {
   return char === '\'' || char === '"' || char === '`';
 }
 
-function isSyntaxTokenKind(value: string): value is SyntaxTokenKind {
-  return value === 'plain'
-    || value === 'keyword'
-    || value === 'string'
-    || value === 'number'
-    || value === 'comment'
-    || value === 'function'
-    || value === 'variable'
-    || value === 'operator'
-    || value === 'punctuation';
-}
-
 export {
   highlightCodeBlock
 };

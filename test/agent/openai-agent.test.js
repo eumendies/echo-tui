@@ -6,7 +6,7 @@ const { createOpenAiAgent, createRequest } = require('../../src/agent/openai-res
 const { createPromptCacheKey } = require('../../src/agent/prompt-cache');
 const { convertToolDefinitionsToOpenAiTools, extractFunctionToolCall } = require('../../src/agent/openai-responses/tool-converter');
 const { convertTranscriptToOpenAiInput } = require('../../src/agent/openai-responses/transcript-converter');
-const { createBuiltInSystemPrompt } = require('../../src/agent/system-prompt');
+const { createBuiltInSystemPrompt } = require('../../src/agent/context/system-prompt');
 const { createDefaultToolRegistry } = require('../../src/tools/tool-registry');
 
 const TEST_CWD = '/tmp/echo_tui';

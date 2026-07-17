@@ -1,6 +1,6 @@
 import {OPENAI_CHAT_REASONING_TRANSCRIPT_ROLE, OPENAI_REASONING_TRANSCRIPT_ROLE, type ToolCallTranscriptRecord, type TranscriptRecord} from '../types/transcript';
 import {isSupportedToolResultImageMediaType} from '../types/tool';
-import type {SupportedToolResultImageMediaType, ToolResultImageAttachment} from '../types/tool';
+import type {ToolResultImageAttachment} from '../types/tool';
 
 type ToolResultWithCallId = TranscriptRecord & {toolCallId: string};
 type SendableImageAttachment = Pick<ToolResultImageAttachment, 'dataBase64' | 'mediaType'>;

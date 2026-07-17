@@ -1,7 +1,7 @@
-import {formatSkillCatalogPrompt} from '../skills/skill-catalog-prompt';
+import {formatSkillCatalogPrompt} from '../../skills/skill-catalog-prompt';
 
-import type {AgentInstruction} from '../types/agent';
-import type {SkillCatalogEntry} from '../types/skill';
+import type {AgentInstruction} from '../../types/agent';
+import type {SkillCatalogEntry} from '../../types/skill';
 
 const BUILT_IN_SYSTEM_PROMPT = `You are Echo TUI's built-in terminal development assistant.
 

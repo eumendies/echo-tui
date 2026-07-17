@@ -5,8 +5,8 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { buildProviderRecords, createAgentLoopRuntime } = require('../../src/agent/agent-loop-runtime');
-const {formatAgentMemoryCatalogPrompt, formatUserMemoriesPrompt} = require('../../src/agent/memory-prompt');
-const { createBuiltInSystemPrompt } = require('../../src/agent/system-prompt');
+const {formatAgentMemoryCatalogPrompt, formatUserMemoriesPrompt} = require('../../src/agent/context/memory-prompt');
+const { createBuiltInSystemPrompt } = require('../../src/agent/context/system-prompt');
 const llmConfigModule = require('../../src/config/llm-config');
 const agentSetupModule = require('../../src/agent/agent-setup');
 const {createUserMemory, updateUserMemory} = require('../../src/memory/memory-store');

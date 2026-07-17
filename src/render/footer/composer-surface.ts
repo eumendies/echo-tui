@@ -414,8 +414,6 @@ function renderSlashSuggestionLines(slashSuggestions: SlashSuggestionState, widt
 
     const option = row.item;
     const optionText = formatSelectOptionText(option.label, option.description);
-    const line = clampPlainText(optionText, width);
-
     if (row.index !== slashSuggestions.selectedIndex) {
       return `  ${clampPlainText(optionText, Math.max(1, width - 2))}`;
     }
