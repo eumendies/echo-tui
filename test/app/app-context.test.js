@@ -1094,6 +1094,65 @@ test('ModelContext refreshes cached status-line label after model selection succ
   });
 });
 
+test('AppContext refreshes externally changed model state and clears stale context usage', () => {
+  const config = {
+    llm: {
+      selectedModel: 'fast',
+      providers: {
+        default: {preset: 'openai-responses-api', apiKey: 'sk-test-key'}
+      },
+      models: [
+        {id: 'fast', provider: 'default', model: 'gpt-fast'},
+        {id: 'deep', provider: 'default', model: 'gpt-deep', reasoning: {effort: 'high'}}
+      ]
+    }
+  };
+
+  withTemporaryModelConfig(config, ({configPath}) => {
+    const context = createContext();
+    context.setContextUsage({usedTokens: 120, contextWindow: 1000, source: 'provider'});
+    config.llm.selectedModel = 'deep';
+    fs.writeFileSync(configPath, JSON.stringify(config), 'utf8');
+
+    assert.equal(context.refreshModelStateFromConfig(), true);
+    assert.equal(context.createRenderState().statusLine.modelLabel, 'gpt-deep');
+    assert.equal(context.createRenderState().statusLine.reasoningEffort, 'high');
+    assert.equal(context.contextUsage, null);
+    assert.equal(context.refreshModelStateFromConfig(), false);
+  });
+});
+
+test('AppContext pins the active turn model while the global selection changes', () => {
+  const config = {
+    llm: {
+      selectedModel: 'fast',
+      providers: {
+        default: {preset: 'openai-responses-api', apiKey: 'sk-test-key'}
+      },
+      models: [
+        {id: 'fast', provider: 'default', model: 'gpt-fast'},
+        {id: 'deep', provider: 'default', model: 'gpt-deep'}
+      ]
+    }
+  };
+
+  withTemporaryModelConfig(config, ({configPath}) => {
+    const context = createContext();
+    const turn = context.beginAssistantTurn();
+    config.llm.selectedModel = 'deep';
+    fs.writeFileSync(configPath, JSON.stringify(config), 'utf8');
+
+    assert.equal(context.refreshModelStateFromConfig(), true);
+    assert.equal(context.createRenderState().statusLine.modelLabel, 'gpt-fast');
+
+    assert.equal(context.setAssistantTurnModel(turn, {modelLabel: 'runtime-model'}), true);
+    assert.equal(context.createRenderState().statusLine.modelLabel, 'runtime-model');
+
+    context.clearAssistantTurnIfCurrent(turn);
+    assert.equal(context.createRenderState().statusLine.modelLabel, 'gpt-deep');
+  });
+});
+
 test('ModelContext persists selectedModel without rewriting provider-backed config', () => {
   const config = {
     llm: {

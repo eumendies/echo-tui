@@ -222,6 +222,7 @@ type AgentLoopRunState = {
   providerConfig: Record<string, unknown>;
   providerType: LlmConfig['agentType'];
   model: string;
+  reasoningEffort?: LlmConfig['reasoningEffort'];
   interactionMode: InteractionMode;
   executor: ToolExecutor;
   contextWindow: number;
@@ -297,6 +298,7 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
       providerConfig: redactProviderConfig(config),
       providerType: config.agentType,
       model: config.model,
+      reasoningEffort: config.reasoningEffort,
       interactionMode,
       executor: createToolExecutor(registry),
       contextWindow: resolveContextWindow(config),
@@ -318,9 +320,6 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
     const executionMode = session.executionMode || INTERACTIVE_EXECUTION_MODE;
 
     throwIfAborted(abortSignal);
-    callbacks.onThinking?.();
-    throwIfAborted(abortSignal);
-
     let state: AgentLoopRunState;
 
     try {
@@ -328,6 +327,13 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
     } catch (error: unknown) {
       throw normalizeError(error, '无法加载 LLM 配置');
     }
+
+    callbacks.onModelResolved?.({
+      model: state.model,
+      ...(state.reasoningEffort ? {reasoningEffort: state.reasoningEffort} : {})
+    });
+    callbacks.onThinking?.();
+    throwIfAborted(abortSignal);
 
     // recordRegion 与 app records[] 平行：append-only，activeStartIndex 指向其上的活跃区间起点。
     const recordRegion: TranscriptRecord[] = [...session.records];

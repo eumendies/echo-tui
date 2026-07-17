@@ -368,6 +368,9 @@ test('runAssistantTurn emits a local model-switch notice and restores the global
   const harness = createHarness();
   const renderedModels = [];
   harness.appContext.modelContext = {
+    refreshModelState() {
+      return false;
+    },
     getStatusLineModelState() {
       return {modelLabel: 'gpt-global'};
     },
@@ -401,6 +404,9 @@ test('runAssistantTurn emits a local model-switch notice and restores the global
 test('runAssistantTurn does not emit a model-switch notice when a stale override falls back', async () => {
   const harness = createHarness();
   harness.appContext.modelContext = {
+    refreshModelState() {
+      return false;
+    },
     getStatusLineModelState() {
       return {modelLabel: 'gpt-global'};
     },
