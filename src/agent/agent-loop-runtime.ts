@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 
-import {readLlmConfig, resolveContextWindow} from '../config/llm-config';
+import {resolveContextWindow} from '../config/llm-config';
 import {
   ASK_USER_QUESTIONS_TOOL_NAME,
   createAskUserQuestionsCancelledResult,
@@ -9,10 +9,8 @@ import {
 } from '../tools/ask-user-questions-tool-handler';
 import {classifyToolCallRisk} from '../tools/tool-risk-classifier';
 import {createToolExecutor} from '../tools/tool-executor';
-import {createDefaultToolRegistry} from '../tools/tool-registry';
 import {createToolCallTranscriptRecord, createToolResultTranscriptRecord} from '../tools/tool-transcript-record';
 import {executeTodoToolCall, isTodoToolName} from '../tools/todo-tool-handler';
-import {createMcpToolRegistry, mergeToolRegistries} from '../mcp/tool-adapter';
 import {getMcpToolApproval} from '../mcp/manager';
 import {formatSkillCatalogPrompt} from '../skills/skill-catalog-prompt';
 import {throwIfAborted} from '../types/agent';
@@ -22,7 +20,7 @@ import {calibrateContextUsageSegments, estimateContextUsageSegments} from './con
 import {estimateTextTokens} from './context/token-estimator';
 import {resolveMemoryPrompt} from './context/memory-prompt';
 import {createBuiltInSystemPrompt} from './context/system-prompt';
-import {createConfiguredAgent} from './agent-setup';
+import {prepareAgent} from './agent-setup';
 import {runCompaction} from './context/context-compaction';
 import {disabledDebugContext, hashValue, redactProviderConfig, summarizeText} from '../debug/debug-context';
 
@@ -33,7 +31,7 @@ import type {DebugContext} from '../debug/debug-context';
 import type {LifecycleHookDispatcher} from '../types/hooks';
 import type {UsageStore} from '../types/usage';
 import type {SkillCatalogEntry} from '../types/skill';
-import type {ToolApprovalRequest, ToolCall, ToolDefinition, ToolExecutionResult, ToolExecutor, ToolRegistry} from '../types/tool';
+import type {ToolApprovalRequest, ToolCall, ToolDefinition, ToolExecutionResult, ToolExecutor} from '../types/tool';
 import type {CompactionState, TodoState, TranscriptRecord} from '../types/transcript';
 import type {McpManager} from '../mcp/manager';
 
@@ -273,22 +271,11 @@ function isToolResultTruncated(result: ToolExecutionResult): boolean | undefined
 function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: LifecycleHookDispatcher, debug: DebugContext = disabledDebugContext, usageStore?: UsageStore): RunAgent {
   const cwdHash = createUsageCwdHash(cwd);
 
-  function createRegistry(config: LlmConfig): ToolRegistry {
-    const baseRegistry = createDefaultToolRegistry(config, cwd);
-
-    return mcpManager ? mergeToolRegistries(baseRegistry, createMcpToolRegistry(mcpManager)) : baseRegistry;
-  }
-
   /**
-   * 初始化单次 agent 调用需要的 provider、工具运行时和上下文窗口；三者来自同一份配置。
-   * agent 的配置装配（loadConfig + initialize）下沉到 prepareAgent，拉模式下每轮重读配置。
+   * 初始化单次调用的 loop 状态；provider、配置和 registry 由统一装配入口提供。
    */
   function initializeRunState(interactionMode: InteractionMode, abortSignal: AbortSignal | undefined, executionMode: AgentExecutionMode, modelProfileId?: string): AgentLoopRunState {
-    const config = readLlmConfig({modelProfileId});
-    const registry = createRegistry(config);
-    const agent = createConfiguredAgent(config);
-
-    agent.initialize(config, registry);
+    const {agent, config, registry} = prepareAgent({cwd, mcpManager, modelProfileId});
 
     const skillCatalog = registry.listSkillCatalog?.() || [];
 

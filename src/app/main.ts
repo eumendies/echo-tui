@@ -546,7 +546,7 @@ function createApp(runAgent: RunAgent, mcpManager?: McpManager, hooks?: Lifecycl
  * 启动整个 TUI 应用，串联终端初始化、输入事件、渲染和真实 LLM agent 生命周期。
  */
 function run(): void {
-  // main 作为装配根：agent loop 在每轮 prepareAgent 时按最新配置选择 provider。
+  // agent loop 每轮通过 prepareAgent 按最新配置装配 provider 与工具。
   const cwd = process.cwd();
   const mcpManager = new McpManager();
   const debug = createDebugContext({cwd});

@@ -441,7 +441,7 @@ function createCommandHost(options: CommandHostOptions): CommandHostApp {
         return true;
       },
       compactContext(options: {force: true}) {
-        const prepared = prepareAgent(() => appContext.getCurrentCwd());
+        const prepared = prepareAgent({cwd: () => appContext.getCurrentCwd()});
         const session = appContext.getAgentSession();
 
         return runCompaction({

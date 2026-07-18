@@ -7,10 +7,11 @@ const path = require('node:path');
 const { buildProviderRecords, createAgentLoopRuntime } = require('../../src/agent/agent-loop-runtime');
 const {formatAgentMemoryCatalogPrompt, formatUserMemoriesPrompt} = require('../../src/agent/context/memory-prompt');
 const { createBuiltInSystemPrompt } = require('../../src/agent/context/system-prompt');
-const llmConfigModule = require('../../src/config/llm-config');
 const agentSetupModule = require('../../src/agent/agent-setup');
 const {createUserMemory, updateUserMemory} = require('../../src/memory/memory-store');
 const {addAgentMemory, setAgentMemoryCatalogEnabled, updateAgentMemoryCatalog} = require('../../src/memory/agent-memory-store');
+const {createMcpToolRegistry, mergeToolRegistries} = require('../../src/mcp/tool-adapter');
+const {createDefaultToolRegistry} = require('../../src/tools/tool-registry');
 
 const TEST_CWD = '/tmp/echo_tui';
 const TEST_CONFIG = {
@@ -27,17 +28,23 @@ const TEST_CONFIG = {
 };
 
 async function withPatchedAgentRuntime(agent, callback, config = TEST_CONFIG) {
-  const originalReadLlmConfig = llmConfigModule.readLlmConfig;
-  const originalCreateConfiguredAgent = agentSetupModule.createConfiguredAgent;
+  const originalPrepareAgent = agentSetupModule.prepareAgent;
 
-  llmConfigModule.readLlmConfig = typeof config === 'function' ? config : () => config;
-  agentSetupModule.createConfiguredAgent = () => agent;
+  agentSetupModule.prepareAgent = (options = {}) => {
+    const resolvedConfig = typeof config === 'function' ? config({modelProfileId: options.modelProfileId}) : config;
+    const baseRegistry = createDefaultToolRegistry(resolvedConfig, options.cwd);
+    const registry = options.mcpManager
+      ? mergeToolRegistries(baseRegistry, createMcpToolRegistry(options.mcpManager))
+      : baseRegistry;
+
+    agent.initialize(resolvedConfig, registry);
+    return {agent, config: resolvedConfig, registry};
+  };
 
   try {
     return await callback();
   } finally {
-    llmConfigModule.readLlmConfig = originalReadLlmConfig;
-    agentSetupModule.createConfiguredAgent = originalCreateConfiguredAgent;
+    agentSetupModule.prepareAgent = originalPrepareAgent;
   }
 }
 
