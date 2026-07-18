@@ -5,11 +5,13 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { buildProviderRecords, createAgentLoopRuntime } = require('../../src/agent/agent-loop-runtime');
-const { createBuiltInSystemPrompt } = require('../../src/agent/system-prompt');
-const llmConfigModule = require('../../src/config/llm-config');
+const {formatAgentMemoryCatalogPrompt, formatUserMemoriesPrompt} = require('../../src/agent/context/memory-prompt');
+const { createBuiltInSystemPrompt } = require('../../src/agent/context/system-prompt');
 const agentSetupModule = require('../../src/agent/agent-setup');
 const {createUserMemory, updateUserMemory} = require('../../src/memory/memory-store');
 const {addAgentMemory, setAgentMemoryCatalogEnabled, updateAgentMemoryCatalog} = require('../../src/memory/agent-memory-store');
+const {createMcpToolRegistry, mergeToolRegistries} = require('../../src/mcp/tool-adapter');
+const {createDefaultToolRegistry} = require('../../src/tools/tool-registry');
 
 const TEST_CWD = '/tmp/echo_tui';
 const TEST_CONFIG = {
@@ -26,17 +28,23 @@ const TEST_CONFIG = {
 };
 
 async function withPatchedAgentRuntime(agent, callback, config = TEST_CONFIG) {
-  const originalReadLlmConfig = llmConfigModule.readLlmConfig;
-  const originalCreateConfiguredAgent = agentSetupModule.createConfiguredAgent;
+  const originalPrepareAgent = agentSetupModule.prepareAgent;
 
-  llmConfigModule.readLlmConfig = () => config;
-  agentSetupModule.createConfiguredAgent = () => agent;
+  agentSetupModule.prepareAgent = (options = {}) => {
+    const resolvedConfig = typeof config === 'function' ? config({modelProfileId: options.modelProfileId}) : config;
+    const baseRegistry = createDefaultToolRegistry(resolvedConfig, options.cwd);
+    const registry = options.mcpManager
+      ? mergeToolRegistries(baseRegistry, createMcpToolRegistry(options.mcpManager))
+      : baseRegistry;
+
+    agent.initialize(resolvedConfig, registry);
+    return {agent, config: resolvedConfig, registry};
+  };
 
   try {
     return await callback();
   } finally {
-    llmConfigModule.readLlmConfig = originalReadLlmConfig;
-    agentSetupModule.createConfiguredAgent = originalCreateConfiguredAgent;
+    agentSetupModule.prepareAgent = originalPrepareAgent;
   }
 }
 
@@ -130,13 +138,14 @@ test('buildProviderRecords includes AGENTS instructions with precedence text', (
 });
 
 test('buildProviderRecords injects user memories only into the transient system prompt', () => {
-  const records = buildProviderRecords([{role: 'user', text: '继续'}], TEST_CWD, undefined, [], [], undefined, [{
+  const memoryPrompt = formatUserMemoriesPrompt([{
     id: 'memory-1',
     content: '回复使用中文。',
     enabled: true,
     createdAt: '2026-07-12T07:00:00.000Z',
     updatedAt: '2026-07-12T07:00:00.000Z'
   }]);
+  const records = buildProviderRecords([{role: 'user', text: '继续'}], TEST_CWD, undefined, [], [], undefined, [memoryPrompt]);
 
   assert.match(records[0].text, /User-managed memories/);
   assert.match(records[0].text, /回复使用中文/);
@@ -145,25 +154,27 @@ test('buildProviderRecords injects user memories only into the transient system 
 });
 
 test('buildProviderRecords excludes disabled user memories', () => {
-  const records = buildProviderRecords([{role: 'user', text: '继续'}], TEST_CWD, undefined, [], [], undefined, [{
+  const memoryPrompt = formatUserMemoriesPrompt([{
     id: 'memory-1',
     content: '不应注入。',
     enabled: false,
     createdAt: '2026-07-12T07:00:00.000Z',
     updatedAt: '2026-07-12T07:00:00.000Z'
   }]);
+  const records = buildProviderRecords([{role: 'user', text: '继续'}], TEST_CWD, undefined, [], [], undefined, [memoryPrompt]);
 
   assert.doesNotMatch(records[0].text, /User-managed memories/);
   assert.doesNotMatch(records[0].text, /不应注入/);
 });
 
 test('buildProviderRecords injects only agent memory catalog names and descriptions', () => {
-  const records = buildProviderRecords([{role: 'user', text: '继续'}], TEST_CWD, undefined, [], [], undefined, [], [{
+  const memoryPrompt = formatAgentMemoryCatalogPrompt([{
     id: 'catalog-1',
     name: 'rendering',
     description: 'Terminal rendering rules',
     scope: {kind: 'project', projectRoot: TEST_CWD}
   }]);
+  const records = buildProviderRecords([{role: 'user', text: '继续'}], TEST_CWD, undefined, [], [], undefined, [memoryPrompt]);
 
   assert.match(records[0].text, /Agent memory catalogs/);
   assert.match(records[0].text, /rendering: Terminal rendering rules/);
@@ -196,7 +207,7 @@ test('createAgentLoopRuntime rereads saved memory before each provider request',
   });
 });
 
-test('createAgentLoopRuntime rereads the agent memory catalog index before each provider request', async () => {
+test('createAgentLoopRuntime rereads and expands small agent memory before each provider request', async () => {
   await withTemporaryMemoryHome(async () => {
     addAgentMemory(TEST_CWD, {catalog: 'rendering', description: 'First description', content: 'private item'});
     const requests = [];
@@ -208,8 +219,73 @@ test('createAgentLoopRuntime rereads the agent memory catalog index before each 
       await runtime({records: [{role: 'user', text: 'second'}]});
     });
     assert.match(requests[0][0].text, /First description/);
-    assert.doesNotMatch(requests[0][0].text, /private item|Second description/);
+    assert.match(requests[0][0].text, /private item/);
+    assert.doesNotMatch(requests[0][0].text, /Second description/);
     assert.match(requests[1][0].text, /Second description/);
+    assert.match(requests[1][0].text, /private item/);
+  });
+});
+
+test('createAgentLoopRuntime falls back to the complete catalog index when one item file is unreadable', async () => {
+  await withTemporaryMemoryHome(async () => {
+    const first = addAgentMemory(TEST_CWD, {catalog: 'first', description: 'First description', content: 'first item'});
+    const second = addAgentMemory(TEST_CWD, {catalog: 'second', description: 'Second description', content: 'second item'});
+    fs.writeFileSync(path.join(os.homedir(), '.echo', 'agent-memory', 'catalogs', `${second.catalog.id}.json`), '{bad', 'utf8');
+    const requests = [];
+    const agent = {initialize() {}, async runTurn(records) { requests.push(records); return {draft: 'done', toolCalls: []}; }};
+
+    await withPatchedAgentRuntime(agent, () => {
+      const runtime = createAgentLoopRuntime(TEST_CWD);
+      return runtime({records: [{role: 'user', text: 'first'}]});
+    });
+
+    assert.match(requests[0][0].text, /First description/);
+    assert.match(requests[0][0].text, /Second description/);
+    assert.doesNotMatch(requests[0][0].text, /first item|second item/);
+    assert.equal(first.ok, true);
+  });
+});
+
+test('createAgentLoopRuntime counts the selected expanded agent memory prompt as memory context', async () => {
+  await withTemporaryMemoryHome(async () => {
+    addAgentMemory(TEST_CWD, {catalog: 'rendering', description: 'Terminal rules', content: 'Use real cursors.'});
+    const providerRecords = [];
+    const contextUsages = [];
+    const agent = {
+      initialize() {},
+      async runTurn(records) {
+        providerRecords.push(records);
+        return {draft: 'done', toolCalls: [], usageInputTokens: 10_000};
+      }
+    };
+
+    await withPatchedAgentRuntime(agent, () => {
+      const runtime = createAgentLoopRuntime(TEST_CWD);
+      return runtime({records: [{role: 'user', text: 'first'}]}, {onContextUsage(usage) { contextUsages.push(usage); }});
+    });
+
+    assert.match(providerRecords[0][0].text, /Use real cursors/);
+    assert.ok(contextUsages[0].segments.find((segment) => segment.category === 'memory').tokens > 0);
+  });
+});
+
+test('createAgentLoopRuntime records a non-sensitive agent memory prompt summary in debug context', async () => {
+  await withTemporaryMemoryHome(async () => {
+    addAgentMemory(TEST_CWD, {catalog: 'rendering', description: 'Private description', content: 'private memory content'});
+    const debug = createDebugRecorder();
+    const agent = {initialize() {}, async runTurn() { return {draft: 'done', toolCalls: []}; }};
+
+    await withPatchedAgentRuntime(agent, () => {
+      const runtime = createAgentLoopRuntime(TEST_CWD, undefined, undefined, debug.context);
+      return runtime({records: [{role: 'user', text: 'first'}]});
+    });
+
+    const request = debug.events.find((event) => event.event === 'provider_request_built');
+    assert.equal(request.payload.agentMemoryMode, 'expanded');
+    assert.equal(request.payload.agentMemoryCatalogCount, 1);
+    assert.equal(request.payload.agentMemoryItemCount, 1);
+    assert.equal(request.payload.agentMemoryTokens > 0, true);
+    assert.doesNotMatch(JSON.stringify(request.payload), /Private description|private memory content/);
   });
 });
 
@@ -402,6 +478,134 @@ test('createAgentLoopRuntime emits provider records callback before visible comp
     ['summary', 'visible'],
     ['complete', 'done']
   ]);
+});
+
+test('createAgentLoopRuntime uses one overridden config for provider, context, usage, and continuation', async () => {
+  const initialized = [];
+  const contextUsages = [];
+  const usageEvents = [];
+  let turnCount = 0;
+  const agent = {
+    initialize(config) {
+      initialized.push(config);
+    },
+    async runTurn() {
+      turnCount += 1;
+
+      if (turnCount === 1) {
+        return {
+          draft: '',
+          toolCalls: [{callId: 'todo', toolName: 'create_todos', argumentsText: JSON.stringify({items: ['continue']})}],
+          usageInputTokens: 50,
+          usage: {outputTokens: 2}
+        };
+      }
+
+      return {draft: 'done', toolCalls: [], usageInputTokens: 60, usage: {outputTokens: 3}};
+    }
+  };
+  const overrideConfig = {
+    ...TEST_CONFIG,
+    model: 'override-model',
+    contextWindow: 777,
+    tools: {bash: {timeoutMs: 4321, maxOutputBytes: 2048}}
+  };
+
+  await withPatchedAgentRuntime(agent, async () => {
+    const runtime = createAgentLoopRuntime(TEST_CWD, undefined, undefined, undefined, {
+      appendEvent(event) {
+        usageEvents.push(event);
+      }
+    });
+    await runtime({records: [{role: 'user', text: 'work'}], modelProfileId: 'override-profile'}, {
+      onContextUsage(usage) {
+        contextUsages.push(usage);
+      }
+    });
+  }, (options) => {
+    assert.equal(options.modelProfileId, 'override-profile');
+    return overrideConfig;
+  });
+
+  assert.equal(initialized.length, 1);
+  assert.equal(initialized[0].model, 'override-model');
+  assert.equal(initialized[0].tools.bash.timeoutMs, 4321);
+  assert.deepEqual(contextUsages.map((usage) => usage.contextWindow), [777, 777]);
+  assert.deepEqual(usageEvents.map((event) => [event.model, event.contextWindow]), [
+    ['override-model', 777],
+    ['override-model', 777]
+  ]);
+});
+
+test('createAgentLoopRuntime reports the model resolved for the current run', async () => {
+  const resolvedModels = [];
+  const agent = {
+    initialize() {},
+    async runTurn() {
+      return {draft: 'done', toolCalls: []};
+    }
+  };
+
+  await withPatchedAgentRuntime(agent, async () => {
+    const runtime = createAgentLoopRuntime(TEST_CWD);
+
+    await runtime({records: [{role: 'user', text: 'work'}]}, {
+      onModelResolved(model) {
+        resolvedModels.push(model);
+      }
+    });
+  }, () => ({...TEST_CONFIG, model: 'resolved-model', reasoningEffort: 'high'}));
+
+  assert.deepEqual(resolvedModels, [{model: 'resolved-model', reasoningEffort: 'high'}]);
+});
+
+test('autonomous use_skill keeps the model initialized for normal and slash override turns', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-skill-model-runtime-'));
+  const skillDir = path.join(cwd, '.echo', 'skills', 'loaded-skill');
+  const initializedModels = [];
+  const configOptions = [];
+  const toolResults = [];
+  let turnCount = 0;
+
+  fs.mkdirSync(skillDir, {recursive: true});
+  fs.writeFileSync(path.join(skillDir, 'SKILL.md'), '---\nname: loaded-skill\ndescription: Loaded skill\n---\n# Loaded\n', 'utf8');
+  fs.writeFileSync(path.join(cwd, '.echo', 'skills', 'skills.json'), JSON.stringify({
+    schemaVersion: 2,
+    disabled: [],
+    modelOverrides: {'loaded-skill': 'different-profile'}
+  }), 'utf8');
+
+  const agent = {
+    initialize(config) {
+      initializedModels.push(config.model);
+    },
+    async runTurn() {
+      turnCount += 1;
+      return turnCount % 2 === 1
+        ? {draft: '', toolCalls: [{callId: `skill-${turnCount}`, toolName: 'use_skill', argumentsText: JSON.stringify({name: 'loaded-skill'})}]}
+        : {draft: 'done', toolCalls: []};
+    }
+  };
+
+  try {
+    await withPatchedAgentRuntime(agent, async () => {
+      const runtime = createAgentLoopRuntime(cwd);
+      const callbacks = {onToolResult(result) { toolResults.push(result); }};
+
+      await runtime({records: [{role: 'user', text: 'normal'}]}, callbacks);
+      await runtime({records: [{role: 'user', text: 'slash'}], modelProfileId: 'slash-profile'}, callbacks);
+    }, (options) => {
+      configOptions.push(options.modelProfileId);
+      return {...TEST_CONFIG, model: options.modelProfileId === 'slash-profile' ? 'slash-model' : 'current-model'};
+    });
+  } finally {
+    fs.rmSync(cwd, {recursive: true, force: true});
+  }
+
+  assert.deepEqual(configOptions, [undefined, 'slash-profile']);
+  assert.deepEqual(initializedModels, ['current-model', 'slash-model']);
+  assert.equal(toolResults.length, 2);
+  assert.equal(toolResults.every((result) => result.ok), true);
 });
 
 test('createAgentLoopRuntime keeps provider-visible tool definitions stable across normal and plan modes', async () => {

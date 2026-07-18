@@ -141,8 +141,10 @@ function createFakeHost(options = {}) {
       }
     },
     skills: {
-      createSkillInvocation() {
-        return { ok: false, reason: 'missing', message: 'missing' };
+      createSkillInvocation(skillName, argumentsText) {
+        return options.createSkillInvocation
+          ? options.createSkillInvocation(skillName, argumentsText)
+          : { ok: false, reason: 'missing', message: 'missing' };
       },
       listSkills() {
         return (options.skills || []).map((skill) => ({ ...skill }));
@@ -834,7 +836,6 @@ test('built-in /init workflow wins before direct skill invocation fallback', () 
   assert.deepEqual(plan.calls.modeSelections, ['normal']);
   assert.deepEqual(plan.calls.transcriptAppends, [{role: 'local_notice', text: '已从 plan mode 切换到 normal mode 以运行 /init 流程。'}]);
   assert.equal(result.kind, 'submit_user_message');
-  assert.equal(result.historyText, '/init');
   assert.equal(result.displayText, '/init');
   assert.deepEqual(result.metadata, {
     agentWorkflow: {
@@ -866,7 +867,6 @@ test('built-in /review workflow wins before direct skill invocation fallback', (
   assert.deepEqual(plan.calls.modeSelections, ['normal']);
   assert.deepEqual(plan.calls.transcriptAppends, [{role: 'local_notice', text: '已从 plan mode 切换到 normal mode 以运行 /review 流程。'}]);
   assert.equal(result.kind, 'submit_user_message');
-  assert.equal(result.historyText, '/review');
   assert.equal(result.displayText, '/review');
   assert.deepEqual(result.metadata, {
     agentWorkflow: {
@@ -891,6 +891,27 @@ test('built-in /review workflow wins before direct skill invocation fallback', (
   handler.start('/review', normal.host);
   assert.deepEqual(normal.calls.modeSelections, []);
   assert.deepEqual(normal.calls.transcriptAppends, []);
+});
+
+test('direct skill invocation returns a typed per-turn model profile override', () => {
+  const handler = new SkillInvocationCommandHandler();
+  const {host} = createFakeHost({
+    createSkillInvocation(skillName, argumentsText) {
+      return {
+        ok: true,
+        text: '[Skill Invocation]\nskill: review',
+        metadata: {skillInvocation: {source: 'slash', skillName, argumentsText}},
+        modelProfileId: 'review-profile'
+      };
+    }
+  });
+  const result = handler.start('/review src/foo.ts', host);
+
+  assert.equal(result.kind, 'submit_user_message');
+  assert.equal(result.modelProfileId, 'review-profile');
+  assert.deepEqual(result.metadata, {
+    skillInvocation: {source: 'slash', skillName: 'review', argumentsText: 'src/foo.ts'}
+  });
 });
 
 test('undoCommandHandler reports unavailable, invalid, cancel, success, and failure states', () => {
@@ -1610,9 +1631,16 @@ test('skillsCommandHandler opens skills surface, toggles drafts, saves, and canc
   const skillsCommandHandler = new SkillsCommandHandler();
   const skills = [
     { name: 'code-review', description: 'Review code', sourceKind: 'project', sourcePath: '/skills/code-review/SKILL.md', enabled: true },
-    { name: 'unit-test', description: 'Generate tests', sourceKind: 'user', sourcePath: '/skills/unit-test/SKILL.md', enabled: false }
+    { name: 'unit-test', description: 'Generate tests', sourceKind: 'user', sourcePath: '/skills/unit-test/SKILL.md', enabled: false, modelProfileId: 'current-profile' }
   ];
-  const { calls, host } = createFakeHost({ skills });
+  const modelCommandInfo = {
+    models: [
+      {id: 'fast-profile', model: 'fast-model', provider: 'fast-provider'},
+      {id: 'current-profile', model: 'current-model', provider: 'current-provider'}
+    ],
+    selectedIndex: 1
+  };
+  const { calls, host } = createFakeHost({ skills, modelCommandInfo });
 
   assert.equal(skillsCommandHandler.match('/skills'), true);
   assert.equal(skillsCommandHandler.match('/skills list'), false);
@@ -1626,16 +1654,25 @@ test('skillsCommandHandler opens skills surface, toggles drafts, saves, and canc
   assert.equal(session.surface.kind, 'skills');
   assert.equal(session.surface.title, 'SKILLS');
   assert.equal(session.surface.selectedIndex, 0);
-  assert.deepEqual(session.surface.skills, skills);
-  assert.equal(session.surface.dismissHint, 'Space 切换 · Enter 保存 · Esc 取消');
+  assert.deepEqual(session.surface.skills.map((skill) => [skill.name, skill.modelProfileId, skill.modelLabel]), [
+    ['code-review', undefined, '当前模型'],
+    ['unit-test', 'current-profile', 'current-profile']
+  ]);
+  assert.equal(session.surface.dismissHint, '←/→ 模型 (仅限slash调用) · Space 启停 · Enter 保存 · Esc 取消');
 
-  skillsCommandHandler.handleEvent(session, { type: INPUT_EVENTS.MOVE_DOWN }, host);
-  assert.equal(calls.sessionUpdates[0].surface.selectedIndex, 1);
-  assert.equal(calls.sessionUpdates[0].data.selectedIndex, 1);
+  skillsCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_RIGHT}, host);
+  assert.equal(host.session.getActive().data.skills[0].modelProfileId, 'fast-profile');
+  skillsCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_LEFT}, host);
+  assert.equal(host.session.getActive().data.skills[0].modelProfileId, undefined);
+
+  skillsCommandHandler.handleEvent(host.session.getActive(), { type: INPUT_EVENTS.MOVE_DOWN }, host);
+  assert.equal(host.session.getActive().data.selectedIndex, 1);
 
   skillsCommandHandler.handleEvent(host.session.getActive(), { type: INPUT_EVENTS.TEXT, value: ' ' }, host);
   assert.equal(host.session.getActive().data.skills[1].enabled, true);
   assert.equal(calls.savedSkills.length, 0);
+  skillsCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_RIGHT}, host);
+  assert.equal(host.session.getActive().data.skills[1].modelProfileId, undefined);
 
   skillsCommandHandler.handleEvent(host.session.getActive(), { type: INPUT_EVENTS.SUBMIT }, host);
   assert.equal(calls.sessionCloses, 1);
@@ -1644,13 +1681,41 @@ test('skillsCommandHandler opens skills surface, toggles drafts, saves, and canc
     ['code-review', true],
     ['unit-test', true]
   ]);
+  assert.deepEqual(calls.savedSkills[0].map((skill) => skill.modelProfileId), [undefined, undefined]);
+  assert.equal('modelLabel' in calls.savedSkills[0][0], false);
 
-  const cancel = createFakeHost({ skills });
+  const cancel = createFakeHost({ skills, modelCommandInfo });
   const cancelSession = startCommand(skillsCommandHandler, '/skills', cancel.host);
   skillsCommandHandler.handleEvent(cancelSession, { type: INPUT_EVENTS.TEXT, value: ' ' }, cancel.host);
+  skillsCommandHandler.handleEvent(cancel.host.session.getActive(), {type: INPUT_EVENTS.MOVE_RIGHT}, cancel.host);
   skillsCommandHandler.handleEvent(cancel.host.session.getActive(), { type: INPUT_EVENTS.ESCAPE }, cancel.host);
   assert.equal(cancel.calls.sessionCloses, 1);
   assert.equal(cancel.calls.savedSkills.length, 0);
+});
+
+test('skillsCommandHandler falls back to dynamic model policy when model config is unavailable', () => {
+  const skillsCommandHandler = new SkillsCommandHandler();
+  const {calls, host} = createFakeHost({
+    skills: [{
+      name: 'review',
+      description: 'Review code',
+      sourceKind: 'project',
+      sourcePath: '/skills/review/SKILL.md',
+      enabled: false,
+      modelProfileId: 'deleted-profile'
+    }]
+  });
+  const session = startCommand(skillsCommandHandler, '/skills', host);
+
+  assert.equal(session.surface.skills[0].modelProfileId, undefined);
+  assert.equal(session.surface.skills[0].modelLabel, '当前模型');
+  skillsCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_RIGHT}, host);
+  assert.equal(calls.sessionUpdates.length, 0);
+  skillsCommandHandler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: ' '}, host);
+  skillsCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
+  assert.deepEqual(calls.savedSkills[0].map(({enabled, modelProfileId}) => ({enabled, modelProfileId})), [
+    {enabled: true, modelProfileId: undefined}
+  ]);
 });
 
 test('skillsCommandHandler opens empty skills surface', () => {

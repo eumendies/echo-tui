@@ -26,6 +26,11 @@ export type ProviderUsage = {
   outputTokens?: number;
 };
 
+export type ResolvedAgentModel = {
+  model: string;
+  reasoningEffort?: ReasoningEffort;
+};
+
 export type ContextUsageSegmentCategory = 'system' | 'memory' | 'skills' | 'tools' | 'messages' | 'reasoning';
 
 export type ContextUsageSegment = {
@@ -43,6 +48,7 @@ export type ToolApprovalDecision =
 
 export type AgentCallbacks = {
   changeRecorder?: ChangeFileRecorder;
+  onModelResolved?: (model: ResolvedAgentModel) => void;
   onThinking?: () => void;
   onToken?: (token: string, draft: string) => void;
   onReasoningSummary?: (text: string) => void;
@@ -65,6 +71,7 @@ export type AgentSessionInput = {
   abortSignal?: AbortSignal;
   interactionMode?: InteractionMode;
   executionMode?: AgentExecutionMode;
+  modelProfileId?: string;
 };
 
 export type AgentInstructionSourceKind = 'global' | 'project';

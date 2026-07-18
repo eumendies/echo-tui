@@ -5,41 +5,46 @@ import {createSkillStateStore} from './skill-state';
 
 import type {SkillListItem, SkillLoadResult, SkillManager} from '../types/skill';
 import type {SkillRegistryOptions} from './skill-registry';
-import type {SkillStateStoreOptions} from './skill-state';
+import type {SkillStateFile, SkillStateStoreOptions} from './skill-state';
 
 type SkillManagerOptions = SkillRegistryOptions & SkillStateStoreOptions;
 
 /**
- * 组合原始 skill discovery 与启用状态，向 provider、tool 和 slash command 暴露一致的 enabled 视图。
+ * 组合原始 skill discovery 与 root 状态，向 provider、tool 和 slash command 暴露一致的生效视图。
  */
 function createSkillManager(options: SkillManagerOptions = {}): SkillManager {
   const registry = createSkillRegistry(options);
   const stateStore = createSkillStateStore(options);
-  const disabledByRoot = new Map<string, Set<string>>();
+  const stateByRoot = new Map<string, SkillStateFile>();
 
-  function getDisabled(rootDir: string): Set<string> {
-    const cached = disabledByRoot.get(rootDir);
+  function getState(rootDir: string): SkillStateFile {
+    const cached = stateByRoot.get(rootDir);
 
     if (cached) {
       return cached;
     }
 
-    const disabled = stateStore.readDisabled(rootDir);
-    disabledByRoot.set(rootDir, disabled);
-    return disabled;
+    const state = stateStore.readState(rootDir);
+    stateByRoot.set(rootDir, state);
+    return state;
   }
 
   function listSkills(): SkillListItem[] {
-    return registry.listCatalog().map((entry) => ({
-      ...entry,
-      enabled: !getDisabled(getSkillRootFromSourcePath(entry.sourcePath)).has(entry.name)
-    }));
+    return registry.listCatalog().map((entry) => {
+      const state = getState(getSkillRootFromSourcePath(entry.sourcePath));
+
+      return {
+        ...entry,
+        enabled: !state.disabled.includes(entry.name),
+        modelProfileId: state.modelOverrides[entry.name]
+      };
+    });
   }
 
   function listEnabledCatalog() {
     return listSkills()
       .filter((skill) => skill.enabled)
-      .map(({enabled: _enabled, ...entry}) => entry);
+      .map(({enabled: _enabled, modelProfileId: _modelProfileId, ...entry}) => entry);
   }
 
   function loadSkill(name: string): SkillLoadResult {
@@ -61,7 +66,7 @@ function createSkillManager(options: SkillManagerOptions = {}): SkillManager {
       return {...result, availableSkills: listEnabledCatalog()};
     }
 
-    return result;
+    return {...result, modelProfileId: skill?.modelProfileId};
   }
 
   return {
@@ -69,23 +74,33 @@ function createSkillManager(options: SkillManagerOptions = {}): SkillManager {
     listSkills,
     loadSkill,
     saveSkillStates(skills: SkillListItem[]): void {
-      const disabledNamesByRoot = new Map<string, string[]>();
+      const nextStateByRoot = new Map<string, Pick<SkillStateFile, 'disabled' | 'modelOverrides'>>();
 
       for (const skill of skills) {
         const rootDir = getSkillRootFromSourcePath(skill.sourcePath);
 
-        if (!disabledNamesByRoot.has(rootDir)) {
-          disabledNamesByRoot.set(rootDir, []);
+        if (!nextStateByRoot.has(rootDir)) {
+          nextStateByRoot.set(rootDir, {disabled: [], modelOverrides: {}});
         }
 
+        const state = nextStateByRoot.get(rootDir);
+
         if (!skill.enabled) {
-          disabledNamesByRoot.get(rootDir)?.push(skill.name);
+          state?.disabled.push(skill.name);
+        }
+
+        if (skill.modelProfileId) {
+          state!.modelOverrides[skill.name] = skill.modelProfileId;
         }
       }
 
-      for (const [rootDir, disabledNames] of disabledNamesByRoot) {
-        stateStore.writeDisabled(rootDir, disabledNames);
-        disabledByRoot.set(rootDir, new Set(disabledNames));
+      for (const [rootDir, state] of nextStateByRoot) {
+        stateStore.writeState(rootDir, state);
+        stateByRoot.set(rootDir, {
+          schemaVersion: 2,
+          disabled: [...state.disabled],
+          modelOverrides: {...state.modelOverrides}
+        });
       }
     }
   };

@@ -166,6 +166,27 @@ test('renderFooterLayout renders effort as separate colored segment', () => {
   assert.ok(layout.lines.at(-1).includes('\x1b[38;2;0;200;220m●'));
 });
 
+test('renderFooterLayout renders skill model override as part of the model label', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('hello'),
+    commandSurface: null,
+    pending: {kind: 'thinking', elapsedMs: 0},
+    statusLine: {
+      ...DEFAULT_STATUS_LINE,
+      modelLabel: 'claude-sonnet-4-6',
+      skillOverride: true,
+      mode: 'thinking'
+    },
+    width: 100
+  });
+
+  const plainStatusLine = stripAnsi(layout.lines.at(-1));
+
+  assert.ok(plainStatusLine.startsWith('claude-sonnet-4-6 (SKILL override)'));
+  assert.ok(plainStatusLine.includes('dir echo_tui'));
+  assert.ok(!plainStatusLine.includes('│ SKILL override'));
+});
+
 test('renderFooterLayout renders allow-all tools status as warning segment', () => {
   const layout = renderFooterLayout({
     composer: createComposer('hello'),
@@ -1775,11 +1796,11 @@ test('renderFooterLayout renders skills command surface as cyan card', () => {
       kind: 'skills',
       title: 'SKILLS',
       skills: [
-        { name: 'code-review', description: 'Review code changes', sourceKind: 'project', sourcePath: '/skills/code-review/SKILL.md', enabled: true },
-        { name: 'unit-test', description: 'Generate tests', sourceKind: 'user', sourcePath: '/skills/unit-test/SKILL.md', enabled: false }
+        { name: 'code-review', description: 'Review code changes', sourceKind: 'project', sourcePath: '/skills/code-review/SKILL.md', enabled: true, modelLabel: '当前模型' },
+        { name: 'unit-test', description: 'Generate tests', sourceKind: 'user', sourcePath: '/skills/unit-test/SKILL.md', enabled: false, modelProfileId: 'fast', modelLabel: 'fast' }
       ],
       selectedIndex: 1,
-      dismissHint: 'Space 切换 · Enter 保存 · Esc 取消'
+      dismissHint: '←/→ 模型 (仅限slash调用) · Space 启停 · Enter 保存 · Esc 取消'
     },
     pending: null,
     statusLine: DEFAULT_STATUS_LINE,
@@ -1790,9 +1811,17 @@ test('renderFooterLayout renders skills command surface as cyan card', () => {
 
   assert.equal(layout.showCursor, false);
   assert.ok(plainLines.some((line) => line.startsWith('╭') && line.includes('SKILLS') && line.includes('1/2 启用')));
-  assert.ok(plainLines.some((line) => line.includes('● 启用') && line.includes('code-review') && line.includes('project · Review code')));
-  assert.ok(plainLines.some((line) => line.includes('▌') && line.includes('○ 停用') && line.includes('unit-test')));
-  assert.ok(plainLines.some((line) => line.includes('Space 切换') && line.includes('Enter 保存') && line.includes('Esc 取消')));
+  const currentModelLine = plainLines.find((line) => line.includes('● 启用') && line.includes('code-review'));
+  const fixedModelLine = plainLines.find((line) => line.includes('▌') && line.includes('○ 停用') && line.includes('unit-test'));
+  assert.ok(currentModelLine.includes('当前模型') && currentModelLine.includes('project · Review code'));
+  assert.ok(currentModelLine.indexOf('● 启用') < currentModelLine.indexOf('当前模型'));
+  assert.ok(currentModelLine.indexOf('当前模型') < currentModelLine.indexOf('code-review'));
+  assert.ok(!currentModelLine.includes('模型:'));
+  assert.ok(fixedModelLine.includes('fast'));
+  assert.ok(fixedModelLine.indexOf('○ 停用') < fixedModelLine.indexOf('fast'));
+  assert.ok(fixedModelLine.indexOf('fast') < fixedModelLine.indexOf('unit-test'));
+  assert.ok(!fixedModelLine.includes('模型:'));
+  assert.ok(plainLines.some((line) => line.includes('←/→ 模型') && line.includes('Space 启停') && line.includes('Enter 保存')));
   assert.ok(!plainLines.some((line) => line.includes('/ search') || line.includes('search skills')));
   assert.ok(!plainLines.some((line) => line.includes('a all') || line.includes('n none') || line.includes('j/k')));
   assert.ok(layout.lines.some((line) => line.includes('\x1b[38;2;') && stripAnsi(line).includes('SKILLS')));
@@ -1805,7 +1834,8 @@ test('renderFooterLayout renders skills surface overflow and empty state', () =>
     description: `Description ${index + 1}`,
     sourceKind: index % 2 === 0 ? 'project' : 'user',
     sourcePath: `/skills/skill-${index + 1}/SKILL.md`,
-    enabled: index % 3 === 0
+    enabled: index % 3 === 0,
+    modelLabel: index % 2 === 0 ? '当前模型' : 'fast'
   }));
   const overflow = renderFooterLayout({
     composer: createComposer('ignored'),
@@ -1843,6 +1873,72 @@ test('renderFooterLayout renders skills surface overflow and empty state', () =>
 
   assert.ok(emptyLines.some((line) => line.includes('当前没有发现可用 skill')));
   assert.ok(emptyLines.some((line) => line.includes('Esc 关闭')));
+});
+
+test('renderFooterLayout keeps skill state, name, and model policy on narrow terminals', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('ignored'),
+    commandSurface: {
+      kind: 'skills',
+      title: 'SKILLS',
+      skills: [{
+        name: 'review',
+        description: 'A secondary description that should be truncated first',
+        sourceKind: 'project',
+        sourcePath: '/skills/review/SKILL.md',
+        enabled: false,
+        modelProfileId: 'fast',
+        modelLabel: 'fast'
+      }],
+      selectedIndex: 0,
+      dismissHint: '←/→ 模型 · Space 启停 · Enter 保存 · Esc 取消'
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    width: 44
+  });
+  const skillLine = layout.lines.map((line) => stripAnsi(line)).find((line) => line.includes('review'));
+
+  assert.ok(skillLine.includes('○ 停用'));
+  assert.ok(skillLine.includes('fast'));
+  assert.ok(skillLine.indexOf('○ 停用') < skillLine.indexOf('fast'));
+  assert.ok(skillLine.indexOf('fast') < skillLine.indexOf('review'));
+  assert.ok(!skillLine.includes('模型:'));
+  assert.ok(!skillLine.includes('secondary description'));
+});
+
+test('renderFooterLayout expands skills surface with the terminal width budget', () => {
+  const createLayout = (width) => renderFooterLayout({
+    composer: createComposer('ignored'),
+    commandSurface: {
+      kind: 'skills',
+      title: 'SKILLS',
+      skills: [{
+        name: 'review',
+        description: 'Review code changes with a description that benefits from a wide terminal',
+        sourceKind: 'project',
+        sourcePath: '/skills/review/SKILL.md',
+        enabled: true,
+        modelProfileId: 'anthropic-claude-sonnet-4-6',
+        modelLabel: 'anthropic-claude-sonnet-4-6'
+      }],
+      selectedIndex: 0,
+      dismissHint: '←/→ 模型 (仅限slash调用) · Space 启停 · Enter 保存 · Esc 取消'
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    width
+  });
+  const medium = createLayout(64);
+  const wide = createLayout(120);
+  const mediumTop = medium.lines.find((line) => stripAnsi(line).includes('SKILLS'));
+  const wideTop = wide.lines.find((line) => stripAnsi(line).includes('SKILLS'));
+
+  assert.equal(displayWidth(mediumTop), safeRenderWidth(64));
+  assert.equal(displayWidth(wideTop), safeRenderWidth(120) - 4);
+  assert.ok(displayWidth(wideTop) > 84);
+  assert.ok(wide.lines.map((line) => stripAnsi(line)).some((line) => line.includes('anthropic-claude-sonnet-4-6')));
+  assert.ok(wide.lines.map((line) => stripAnsi(line)).some((line) => line.includes('Review code changes with a description')));
 });
 
 test('renderFooterLayout renders /model info through the generic info surface', () => {

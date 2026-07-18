@@ -2,11 +2,12 @@ import * as fs from 'node:fs';
 import path from 'node:path';
 
 const SKILL_STATE_FILE_NAME = 'skills.json';
-const SKILL_STATE_SCHEMA_VERSION = 1;
+const SKILL_STATE_SCHEMA_VERSION = 2;
 
 type SkillStateFile = {
   schemaVersion: number;
   disabled: string[];
+  modelOverrides: Record<string, string>;
 };
 
 type SkillStateStoreOptions = {
@@ -18,8 +19,8 @@ type SkillStateStoreOptions = {
 };
 
 type SkillStateStore = {
-  readDisabled: (rootDir: string) => Set<string>;
-  writeDisabled: (rootDir: string, disabled: string[]) => void;
+  readState: (rootDir: string) => SkillStateFile;
+  writeState: (rootDir: string, state: Pick<SkillStateFile, 'disabled' | 'modelOverrides'>) => void;
 };
 
 /**
@@ -33,16 +34,18 @@ function createSkillStateStore(options: SkillStateStoreOptions = {}): SkillState
   const createTempPath = options.createTempPath || ((targetPath: string) => `${targetPath}.tmp-${process.pid}-${Date.now()}`);
 
   return {
-    readDisabled(rootDir: string): Set<string> {
-      const state = readSkillStateFile(path.join(rootDir, SKILL_STATE_FILE_NAME), readFile);
-      return new Set(state.disabled);
+    readState(rootDir: string): SkillStateFile {
+      return readSkillStateFile(path.join(rootDir, SKILL_STATE_FILE_NAME), readFile);
     },
-    writeDisabled(rootDir: string, disabled: string[]): void {
+    writeState(rootDir: string, input: Pick<SkillStateFile, 'disabled' | 'modelOverrides'>): void {
       const targetPath = path.join(rootDir, SKILL_STATE_FILE_NAME);
       const tempPath = createTempPath(targetPath);
       const state: SkillStateFile = {
         schemaVersion: SKILL_STATE_SCHEMA_VERSION,
-        disabled: [...new Set(disabled)].sort((left, right) => left.localeCompare(right))
+        disabled: [...new Set(input.disabled)].sort((left, right) => left.localeCompare(right)),
+        modelOverrides: Object.fromEntries(
+          Object.entries(input.modelOverrides).sort(([left], [right]) => left.localeCompare(right))
+        )
       };
 
       mkdir(rootDir, {recursive: true});
@@ -68,15 +71,14 @@ function readSkillStateFile(filePath: string, readFile: (filePath: string, encod
       return createEmptySkillState();
     }
 
-    const disabled = (parsed as Record<string, unknown>).disabled;
-
-    if (!Array.isArray(disabled) || !disabled.every((item) => typeof item === 'string')) {
-      return createEmptySkillState();
-    }
+    const record = parsed as Record<string, unknown>;
+    const disabled = normalizeDisabled(record.disabled);
+    const modelOverrides = normalizeModelOverrides(record.modelOverrides);
 
     return {
       schemaVersion: SKILL_STATE_SCHEMA_VERSION,
-      disabled: disabled.map((item) => item.trim()).filter((item) => item !== '')
+      disabled,
+      modelOverrides
     };
   } catch {
     return createEmptySkillState();
@@ -84,7 +86,38 @@ function readSkillStateFile(filePath: string, readFile: (filePath: string, encod
 }
 
 function createEmptySkillState(): SkillStateFile {
-  return {schemaVersion: SKILL_STATE_SCHEMA_VERSION, disabled: []};
+  return {schemaVersion: SKILL_STATE_SCHEMA_VERSION, disabled: [], modelOverrides: {}};
+}
+
+function normalizeDisabled(value: unknown): string[] {
+  if (!Array.isArray(value) || !value.every((item) => typeof item === 'string')) {
+    return [];
+  }
+
+  return value.map((item) => item.trim()).filter((item) => item !== '');
+}
+
+function normalizeModelOverrides(value: unknown): Record<string, string> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {};
+  }
+
+  const entries: Array<[string, string]> = [];
+
+  for (const [skillName, profileId] of Object.entries(value)) {
+    if (typeof profileId !== 'string') {
+      continue;
+    }
+
+    const normalizedSkillName = skillName.trim();
+    const normalizedProfileId = profileId.trim();
+
+    if (normalizedSkillName && normalizedProfileId) {
+      entries.push([normalizedSkillName, normalizedProfileId]);
+    }
+  }
+
+  return Object.fromEntries(entries);
 }
 
 export {

@@ -7,6 +7,7 @@ import {createUsageStore} from '../persistence/usage-store';
 import {readTuiTheme} from '../config/theme-config';
 import {createDebugContext, disabledDebugContext, summarizeText} from '../debug/debug-context';
 import {readLifecycleHookConfig} from '../hooks/config';
+import {watchUserConfig} from '../config/user-config';
 import {createLifecycleHookDispatcher} from '../hooks/dispatcher';
 import {McpManager, sanitizeMcpError} from '../mcp/manager';
 import {createAppRenderer} from '../render/app-renderer';
@@ -33,6 +34,7 @@ import type {ToolResultAttachment} from '../types/tool';
 import type {AppendRecordOptions, RenderState} from '../types/render';
 import type {TranscriptRecord} from '../types/transcript';
 import type {UsageStore} from '../types/usage';
+import type {UserConfigWatcher} from '../config/user-config';
 
 /**
  * 创建 app 编排控制器，串联真实 terminal、input、render 和 agent runtime。
@@ -52,6 +54,7 @@ function createApp(runAgent: RunAgent, mcpManager?: McpManager, hooks?: Lifecycl
   let started = false;
   let activeShellController: AbortController | null = null;
   let mcpDiagnosticSurface: CommandSurface | null = null;
+  let userConfigWatcher: UserConfigWatcher | null = null;
   // spinner 的 timer 完全下沉到 turnContext；main 仅注入 footer 重绘回调。
   appContext.configureSpinnerTimer({
     onTick: () => renderFooter()
@@ -78,6 +81,8 @@ function createApp(runAgent: RunAgent, mcpManager?: McpManager, hooks?: Lifecycl
       interactionMode: appContext.getInteractionMode()
     });
     activeShellController?.abort();
+    userConfigWatcher?.close();
+    userConfigWatcher = null;
     void mcpManager?.close();
     appContext.cancelStreamingRender();
     appContext.stopSpinner();
@@ -219,10 +224,10 @@ function createApp(runAgent: RunAgent, mcpManager?: McpManager, hooks?: Lifecycl
       return;
     }
 
-    let historyText: string | undefined;
     let displayText: string | undefined;
     let userMetadata: Record<string, unknown> | undefined;
     let userAttachments: ToolResultAttachment[] | undefined;
+    let modelProfileId: string | undefined;
 
     if (commandResult.kind === 'not_matched' && isShellInteractionMode(appContext.getInteractionMode())) {
       return submitShellCommand(userText);
@@ -230,9 +235,9 @@ function createApp(runAgent: RunAgent, mcpManager?: McpManager, hooks?: Lifecycl
 
     if (commandResult.kind === 'submit_user_message') {
       userText = commandResult.text;
-      historyText = commandResult.historyText;
       displayText = commandResult.displayText;
       userMetadata = commandResult.metadata;
+      modelProfileId = commandResult.modelProfileId;
     }
 
     const expanded = await expandFileMentionsForUserText(userText, appContext.getCurrentCwd());
@@ -256,9 +261,9 @@ function createApp(runAgent: RunAgent, mcpManager?: McpManager, hooks?: Lifecycl
       toolApproval,
       userQuestion,
       userText,
-      historyText,
       displayText,
       metadata: userMetadata,
+      modelProfileId,
       attachments: userAttachments,
       debug,
       appendRecord,
@@ -466,6 +471,20 @@ function createApp(runAgent: RunAgent, mcpManager?: McpManager, hooks?: Lifecycl
     }
 
     started = true;
+    try {
+      userConfigWatcher = watchUserConfig(
+        () => {
+          if (appContext.refreshModelStateFromConfig()) {
+            renderFooter();
+          }
+        },
+        (error) => debug.emit('user_config_watch_error', {error: {name: error.name, message: error.message}})
+      );
+    } catch (error: unknown) {
+      debug.emit('user_config_watch_error', {
+        error: error instanceof Error ? {name: error.name, message: error.message} : {message: String(error)}
+      });
+    }
     if (debug.enabled && debug.logPath) {
       output.write(`[debug] logging to ${debug.logPath}\n`);
     }
@@ -527,7 +546,7 @@ function createApp(runAgent: RunAgent, mcpManager?: McpManager, hooks?: Lifecycl
  * 启动整个 TUI 应用，串联终端初始化、输入事件、渲染和真实 LLM agent 生命周期。
  */
 function run(): void {
-  // main 作为装配根：agent loop 在每轮 prepareAgent 时按最新配置选择 provider。
+  // agent loop 每轮通过 prepareAgent 按最新配置装配 provider 与工具。
   const cwd = process.cwd();
   const mcpManager = new McpManager();
   const debug = createDebugContext({cwd});

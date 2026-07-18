@@ -68,13 +68,13 @@ test('estimateContextUsageSegments separates user memory from the rest of the sy
   assert.equal(byCategory.skills, 0);
 });
 
-test('estimateContextUsageSegments includes agent catalog prompt in memory tokens', () => {
+test('estimateContextUsageSegments includes the selected expanded agent memory prompt in memory tokens', () => {
   const memoryText = '## User-managed memories\n- 中文';
-  const catalogText = '## Agent memory catalogs\n- rendering: terminal rules';
+  const agentMemoryText = '## Agent memories\n### rendering\nterminal rules\n\n- catalog item content';
   const segments = estimateContextUsageSegments([
-    {role: 'system', text: `system prompt\n\n${memoryText}\n\n${catalogText}`},
+    {role: 'system', text: `system prompt\n\n${memoryText}\n\n${agentMemoryText}`},
     {role: 'tool_result', text: 'catalog item content', toolName: 'read_memory', toolCallId: 'call-1'}
-  ], [], 0, estimateTextTokens(`${memoryText}\n\n${catalogText}`));
+  ], [], 0, estimateTextTokens(`${memoryText}\n\n${agentMemoryText}`));
   const byCategory = Object.fromEntries(segments.map((segment) => [segment.category, segment.estimatedTokens]));
   assert.ok(byCategory.memory > 0);
   assert.ok(byCategory.tools > 0);

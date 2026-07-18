@@ -16,9 +16,9 @@ type AssistantTurnRunnerInput = {
   toolApproval: ToolApprovalContext;
   userQuestion: UserQuestionContext;
   userText: string;
-  historyText?: string;
   displayText?: string;
   metadata?: Record<string, unknown>;
+  modelProfileId?: string;
   attachments?: ToolResultAttachment[];
   debug?: DebugContext;
   appendRecord: (record: TranscriptRecord) => void;
@@ -38,9 +38,9 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
     toolApproval,
     userQuestion,
     userText,
-    historyText,
     displayText,
     metadata,
+    modelProfileId,
     attachments,
     debug,
     appendRecord,
@@ -52,16 +52,23 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
   appContext.beginChangeCheckpoint();
   const interactionMode = appContext.getInteractionMode();
   const userRecord = appContext.beginUserTurn(userText, {
-    historyText,
     displayText,
     metadata: {...(metadata || {}), interactionMode},
     attachments
   });
   // thinking 和 streaming 都只进入 pending preview，完成或 partial 失败后才正式追加 assistant block。
-  const turn = appContext.beginAssistantTurn();
+  const turn = appContext.beginAssistantTurn(modelProfileId);
   const isCurrentTurn = () => appContext.isCurrentAssistantTurn(turn);
   appContext.startSpinner('thinking');
   appendRecord(userRecord);
+  const skillOverrideModelLabel = appContext.getActiveSkillOverrideModelLabel();
+
+  if (skillOverrideModelLabel) {
+    appendRecord(appContext.appendTranscriptRecord({
+      role: 'local_notice',
+      text: `已切换到 ${skillOverrideModelLabel} 执行当前 skill。`
+    }));
+  }
   debug?.emit('assistant_turn_start', {
     interactionMode,
     recordCount: appContext.transcriptRecords.length,
@@ -73,8 +80,20 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
   });
 
   try {
-    await runAgent({...appContext.getAgentSession(), abortSignal: turn.abortSignal}, {
+    await runAgent({...appContext.getAgentSession(), abortSignal: turn.abortSignal, modelProfileId}, {
       changeRecorder: appContext.createChangeRecorder(),
+      onModelResolved(model) {
+        if (!isCurrentTurn()) {
+          return;
+        }
+
+        appContext.setAssistantTurnModel(turn, {
+          modelLabel: model.model,
+          ...(model.reasoningEffort ? {reasoningEffort: model.reasoningEffort} : {}),
+          ...(skillOverrideModelLabel ? {skillOverride: true} : {})
+        });
+        renderFooter();
+      },
       onThinking() {
         if (!isCurrentTurn()) {
           return;
@@ -251,10 +270,17 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
       });
     }
   } finally {
-    if (isCurrentTurn()) {
+    const wasCurrentTurn = isCurrentTurn();
+
+    if (wasCurrentTurn) {
       appContext.finalizeChangeCheckpoint();
     }
     appContext.clearAssistantTurnIfCurrent(turn);
+
+    if (wasCurrentTurn) {
+      appContext.refreshModelStateFromConfig();
+      renderFooter();
+    }
   }
 }
 

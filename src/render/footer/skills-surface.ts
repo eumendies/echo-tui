@@ -2,15 +2,15 @@ import * as ansi from '../../terminal/ansi';
 import { displayWidth, safeRenderWidth } from '../layout';
 import { activeBackground, renderFocusBar, resolveFooterTheme, tokenText, type FooterTheme } from '../colors';
 import { clampPlainText, padVisibleText } from './text';
-import type { CommandSkillInfo, SkillsCommandSurface } from '../../types/command';
+import type { CommandSkillSurfaceInfo, SkillsCommandSurface } from '../../types/command';
 import type { FooterLayout } from '../../types/render';
 
-const SKILLS_SURFACE_MIN_WIDTH = 44;
-const SKILLS_SURFACE_MAX_WIDTH = 84;
+const WIDE_BOX_HORIZONTAL_MARGIN = 4;
 const SKILLS_MAX_VISIBLE = 8;
+const MODEL_LABEL_MAX_WIDTH = 32;
 
 /**
- * 渲染 skills 管理面板；renderer 只投影 session 快照，启停保存由命令 handler 完成。
+ * 渲染 skills 管理面板；renderer 只投影 session 快照，启停和模型策略保存由命令 handler 完成。
  */
 export function renderSkillsSurface(commandSurface: SkillsCommandSurface, width: number, theme: FooterTheme = resolveFooterTheme(undefined)): FooterLayout {
   const skills = commandSurface.skills || [];
@@ -22,7 +22,7 @@ export function renderSkillsSurface(commandSurface: SkillsCommandSurface, width:
     renderLine('', contentWidth, theme),
     ...renderSkillContent(commandSurface, selectedIndex, contentWidth, theme),
     renderLine('', contentWidth, theme),
-    renderLine(ansi.dim(clampPlainText(commandSurface.dismissHint || 'Space 切换 · Enter 保存 · Esc 取消', contentWidth)), contentWidth, theme),
+    renderLine(ansi.dim(clampPlainText(commandSurface.dismissHint || '←/→ 模型 (仅限slash调用) · Space 启停 · Enter 保存 · Esc 取消', contentWidth)), contentWidth, theme),
     renderBottom(boxWidth, theme)
   ];
 
@@ -38,9 +38,13 @@ export function renderSkillsSurface(commandSurface: SkillsCommandSurface, width:
  * 根据当前终端宽度计算 card 宽度，保守避开终端最后一列自动换行。
  */
 function calculateSkillsBoxWidth(width: number): number {
-  const safeWidth = safeRenderWidth(width);
-  const targetWidth = Math.max(SKILLS_SURFACE_MIN_WIDTH, Math.min(SKILLS_SURFACE_MAX_WIDTH, safeWidth - 4));
-  return Math.max(1, Math.min(safeWidth, targetWidth));
+  const safeWidth = Math.max(1, safeRenderWidth(width));
+
+  if (safeWidth >= 64) {
+    return Math.max(4, safeWidth - WIDE_BOX_HORIZONTAL_MARGIN);
+  }
+
+  return safeWidth;
 }
 
 /**
@@ -78,17 +82,21 @@ function renderSkillContent(commandSurface: SkillsCommandSurface, selectedIndex:
 /**
  * 渲染单个 skill 行，选中态使用左侧 accent 和柔和背景强调。
  */
-function renderSkillRow(skill: CommandSkillInfo, active: boolean, contentWidth: number, theme: FooterTheme): string {
+function renderSkillRow(skill: CommandSkillSurfaceInfo, active: boolean, contentWidth: number, theme: FooterTheme): string {
   const rowContentWidth = Math.max(1, contentWidth - 1);
   const pill = renderPill(skill.enabled, theme);
   const nameToken = active ? 'accentStrong' : skill.enabled ? 'accent' : 'muted';
-  const nameBudget = Math.max(1, Math.min(24, rowContentWidth - displayWidth(` ${pill}    `) - 8));
+  const textBudget = Math.max(1, rowContentWidth - displayWidth(` ${pill}  `));
+  const modelText = skill.modelLabel;
+  const modelBudget = Math.max(1, Math.min(MODEL_LABEL_MAX_WIDTH, Math.floor(textBudget * 0.45)));
+  const nameBudget = Math.max(1, Math.min(24, textBudget - modelBudget - 2));
   const nameText = clampPlainText(skill.name, nameBudget);
   const name = `${tokenText(theme, nameToken, active ? ansi.bold(nameText) : nameText)}`;
+  const model = tokenText(theme, skill.modelProfileId ? 'accent' : 'muted', clampPlainText(modelText, modelBudget));
   const description = `${skill.sourceKind} · ${skill.description}`;
-  const prefix = `${pill}  ${name}  `;
-  const descriptionWidth = rowContentWidth - displayWidth(` ${prefix}`);
-  const renderedDescription = descriptionWidth > 0 ? ansi.dim(clampPlainText(description, descriptionWidth)) : '';
+  const prefix = `${pill}  ${model}  ${name}`;
+  const descriptionWidth = rowContentWidth - displayWidth(` ${prefix}  `);
+  const renderedDescription = descriptionWidth > 0 ? `  ${ansi.dim(clampPlainText(description, descriptionWidth))}` : '';
   const body = padVisibleText(` ${prefix}${renderedDescription}`, rowContentWidth);
 
   if (!active) {
@@ -114,7 +122,7 @@ function renderPill(enabled: boolean, theme: FooterTheme): string {
 /**
  * 渲染顶部边框，并在右侧显示 enabled 计数。
  */
-function renderTop(width: number, title: string, skills: CommandSkillInfo[], theme: FooterTheme): string {
+function renderTop(width: number, title: string, skills: CommandSkillSurfaceInfo[], theme: FooterTheme): string {
   const enabledCount = skills.filter((skill) => skill.enabled).length;
   const counter = skills.length > 0 ? ` ${tokenText(theme, 'success', ansi.bold(String(enabledCount)))}${ansi.dim(`/${skills.length} 启用`)} ` : '';
   const titleText = clampPlainText(title, Math.max(1, width - 2 - displayWidth(counter) - 2));

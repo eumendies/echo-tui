@@ -16,7 +16,7 @@ function createMemoryToolHandlers(cwd: string | (() => string) = process.cwd): T
   return [
     createHandler(
       READ_MEMORY_TOOL_NAME,
-      'Read one relevant agent memory catalog. The catalog index is already present in the system prompt; avoid rereading a catalog already loaded in this conversation.',
+      'Read one relevant agent memory catalog. The system prompt may contain either a catalog index or already-expanded memory content; avoid rereading content only needed for facts, but read a catalog to obtain item ids for precise updates or removal.',
       ['catalog'],
       {catalog: stringProperty(), scope: enumProperty(['global', 'project'])},
       (args, call) => executeRead(args, call, getCwd())

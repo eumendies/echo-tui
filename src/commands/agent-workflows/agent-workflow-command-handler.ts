@@ -75,7 +75,6 @@ export class AgentWorkflowCommandHandler implements CommandHandler {
     return {
       kind: 'submit_user_message',
       text: this.definition.createPrompt(parsed),
-      historyText: String(text),
       displayText: String(text),
       metadata: {
         agentWorkflow: {

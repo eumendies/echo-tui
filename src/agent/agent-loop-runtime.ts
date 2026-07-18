@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 
-import {readLlmConfig, resolveContextWindow} from '../config/llm-config';
+import {resolveContextWindow} from '../config/llm-config';
 import {
   ASK_USER_QUESTIONS_TOOL_NAME,
   createAskUserQuestionsCancelledResult,
@@ -9,21 +9,18 @@ import {
 } from '../tools/ask-user-questions-tool-handler';
 import {classifyToolCallRisk} from '../tools/tool-risk-classifier';
 import {createToolExecutor} from '../tools/tool-executor';
-import {createDefaultToolRegistry} from '../tools/tool-registry';
 import {createToolCallTranscriptRecord, createToolResultTranscriptRecord} from '../tools/tool-transcript-record';
 import {executeTodoToolCall, isTodoToolName} from '../tools/todo-tool-handler';
-import {createMcpToolRegistry, mergeToolRegistries} from '../mcp/tool-adapter';
 import {getMcpToolApproval} from '../mcp/manager';
 import {formatSkillCatalogPrompt} from '../skills/skill-catalog-prompt';
-import {readUserMemories} from '../memory/memory-store';
-import {listEffectiveAgentMemoryCatalogs} from '../memory/agent-memory-store';
 import {throwIfAborted} from '../types/agent';
 import {normalizeError} from './agent-errors';
 import {loadAgentInstructions} from './agent-instructions';
 import {calibrateContextUsageSegments, estimateContextUsageSegments} from './context/context-usage-breakdown';
 import {estimateTextTokens} from './context/token-estimator';
-import {createBuiltInSystemPrompt, formatAgentMemoryCatalogPrompt, formatUserMemoriesPrompt} from './system-prompt';
-import {createConfiguredAgent} from './agent-setup';
+import {resolveMemoryPrompt} from './context/memory-prompt';
+import {createBuiltInSystemPrompt} from './context/system-prompt';
+import {prepareAgent} from './agent-setup';
 import {runCompaction} from './context/context-compaction';
 import {disabledDebugContext, hashValue, redactProviderConfig, summarizeText} from '../debug/debug-context';
 
@@ -34,7 +31,7 @@ import type {DebugContext} from '../debug/debug-context';
 import type {LifecycleHookDispatcher} from '../types/hooks';
 import type {UsageStore} from '../types/usage';
 import type {SkillCatalogEntry} from '../types/skill';
-import type {ToolApprovalRequest, ToolCall, ToolDefinition, ToolExecutionResult, ToolExecutor, ToolRegistry} from '../types/tool';
+import type {ToolApprovalRequest, ToolCall, ToolDefinition, ToolExecutionResult, ToolExecutor} from '../types/tool';
 import type {CompactionState, TodoState, TranscriptRecord} from '../types/transcript';
 import type {McpManager} from '../mcp/manager';
 
@@ -160,11 +157,11 @@ async function resolveToolApprovalDecision(toolCall: ToolCall, approval: ToolApp
  * 构造 provider 请求上下文：稳定前缀 + 活跃区间记录 + 运行时 suffix。
  * system prompt、摘要和运行时状态只存在于 provider 上下文，不写回 app transcript。
  */
-function buildProviderRecords(activeRecords: TranscriptRecord[], cwd: string, compaction?: CompactionState, skillCatalog: SkillCatalogEntry[] = [], agentInstructions: AgentInstruction[] = [], todoState?: TodoState, userMemories: import('../types/memory').UserMemory[] = [], agentMemoryCatalogs: import('../types/memory').AgentMemoryCatalog[] = []): TranscriptRecord[] {
+function buildProviderRecords(activeRecords: TranscriptRecord[], cwd: string, compaction?: CompactionState, skillCatalog: SkillCatalogEntry[] = [], agentInstructions: AgentInstruction[] = [], todoState?: TodoState, memoryPrompts: string[] = []): TranscriptRecord[] {
   const prefix: TranscriptRecord[] = [
     {
       role: 'system',
-      text: createBuiltInSystemPrompt({agentInstructions, cwd, skillCatalog, userMemories, agentMemoryCatalogs})
+      text: createBuiltInSystemPrompt({agentInstructions, cwd, skillCatalog, memoryPrompts})
     }
   ];
 
@@ -223,6 +220,7 @@ type AgentLoopRunState = {
   providerConfig: Record<string, unknown>;
   providerType: LlmConfig['agentType'];
   model: string;
+  reasoningEffort?: LlmConfig['reasoningEffort'];
   interactionMode: InteractionMode;
   executor: ToolExecutor;
   contextWindow: number;
@@ -273,22 +271,11 @@ function isToolResultTruncated(result: ToolExecutionResult): boolean | undefined
 function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: LifecycleHookDispatcher, debug: DebugContext = disabledDebugContext, usageStore?: UsageStore): RunAgent {
   const cwdHash = createUsageCwdHash(cwd);
 
-  function createRegistry(config: LlmConfig): ToolRegistry {
-    const baseRegistry = createDefaultToolRegistry(config, cwd);
-
-    return mcpManager ? mergeToolRegistries(baseRegistry, createMcpToolRegistry(mcpManager)) : baseRegistry;
-  }
-
   /**
-   * 初始化单次 agent 调用需要的 provider、工具运行时和上下文窗口；三者来自同一份配置。
-   * agent 的配置装配（loadConfig + initialize）下沉到 prepareAgent，拉模式下每轮重读配置。
+   * 初始化单次调用的 loop 状态；provider、配置和 registry 由统一装配入口提供。
    */
-  function initializeRunState(interactionMode: InteractionMode, abortSignal: AbortSignal | undefined, executionMode: AgentExecutionMode): AgentLoopRunState {
-    const config = readLlmConfig();
-    const registry = createRegistry(config);
-    const agent = createConfiguredAgent(config);
-
-    agent.initialize(config, registry);
+  function initializeRunState(interactionMode: InteractionMode, abortSignal: AbortSignal | undefined, executionMode: AgentExecutionMode, modelProfileId?: string): AgentLoopRunState {
+    const {agent, config, registry} = prepareAgent({cwd, mcpManager, modelProfileId});
 
     const skillCatalog = registry.listSkillCatalog?.() || [];
 
@@ -298,6 +285,7 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
       providerConfig: redactProviderConfig(config),
       providerType: config.agentType,
       model: config.model,
+      reasoningEffort: config.reasoningEffort,
       interactionMode,
       executor: createToolExecutor(registry),
       contextWindow: resolveContextWindow(config),
@@ -319,16 +307,20 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
     const executionMode = session.executionMode || INTERACTIVE_EXECUTION_MODE;
 
     throwIfAborted(abortSignal);
-    callbacks.onThinking?.();
-    throwIfAborted(abortSignal);
-
     let state: AgentLoopRunState;
 
     try {
-      state = initializeRunState(interactionMode, abortSignal, executionMode);
+      state = initializeRunState(interactionMode, abortSignal, executionMode, session.modelProfileId);
     } catch (error: unknown) {
       throw normalizeError(error, '无法加载 LLM 配置');
     }
+
+    callbacks.onModelResolved?.({
+      model: state.model,
+      ...(state.reasoningEffort ? {reasoningEffort: state.reasoningEffort} : {})
+    });
+    callbacks.onThinking?.();
+    throwIfAborted(abortSignal);
 
     // recordRegion 与 app records[] 平行：append-only，activeStartIndex 指向其上的活跃区间起点。
     const recordRegion: TranscriptRecord[] = [...session.records];
@@ -416,23 +408,28 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
       }
     }
 
+    /**
+     * ----------------------------
+     *            主循环
+     * ----------------------------
+     */
     while (true) {
       await maybeCompact();
       throwIfAborted(abortSignal);
 
       const activeStartIndex = compactionState ? compactionState.activeStartIndex : 0;
       const activeRecords = recordRegion.slice(activeStartIndex);
-      const memoryResult = readUserMemories();
-      const userMemories = memoryResult.ok ? memoryResult.memories : [];
-      const agentMemoryResult = listEffectiveAgentMemoryCatalogs(cwd);
-      const agentMemoryCatalogs = agentMemoryResult.ok ? agentMemoryResult.catalogs : [];
-      const providerRecords = buildProviderRecords(activeRecords, cwd, compactionState, state.skillCatalog, state.agentInstructions, state.todoState, userMemories, agentMemoryCatalogs);
+      const memoryPrompt = resolveMemoryPrompt(cwd, state.contextWindow);
+      const providerRecords = buildProviderRecords(activeRecords, cwd, compactionState, state.skillCatalog, state.agentInstructions, state.todoState, memoryPrompt.sections);
       state.debug.emit('provider_request_built', {
         activeRecordCount: activeRecords.length,
         activeStartIndex,
         agentInstructionsCount: state.agentInstructions.length,
-        userMemoryCount: userMemories.length,
-        agentMemoryCatalogCount: agentMemoryCatalogs.length,
+        userMemoryCount: memoryPrompt.userMemoryCount,
+        agentMemoryCatalogCount: memoryPrompt.agentMemory.catalogCount,
+        agentMemoryItemCount: memoryPrompt.agentMemory.itemCount,
+        agentMemoryMode: memoryPrompt.agentMemory.mode,
+        agentMemoryTokens: memoryPrompt.agentMemory.estimatedTokens,
         compaction: compactionState ? {
           activeStartIndex: compactionState.activeStartIndex,
           createdAt: compactionState.createdAt,
@@ -452,8 +449,7 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
       throwIfAborted(abortSignal);
 
       if (typeof usageInputTokens === 'number') {
-        const memoryTokens = estimateTextTokens([formatUserMemoriesPrompt(userMemories), formatAgentMemoryCatalogPrompt(agentMemoryCatalogs)].filter(Boolean).join('\n\n'));
-        const estimatedUsageSegments = estimateContextUsageSegments(providerRecords, state.toolDefinitions, state.skillCatalogTokens, memoryTokens);
+        const estimatedUsageSegments = estimateContextUsageSegments(providerRecords, state.toolDefinitions, state.skillCatalogTokens, memoryPrompt.estimatedTokens);
 
         // 以本次真实 prompt token 为锚点，记下当时活跃记录数，供下一轮叠加字符增量。
         usageAnchor = {usageInputTokens, measuredAtRecordCount: recordRegion.length - activeStartIndex};

@@ -84,7 +84,7 @@ export type CheckboxCommandSurface = {
 export type SkillsCommandSurface = {
   kind: 'skills';
   title?: string;
-  skills?: CommandSkillInfo[];
+  skills?: CommandSkillSurfaceInfo[];
   selectedIndex?: number;
   emptyLines?: string[];
   dismissHint?: string;
@@ -472,6 +472,11 @@ export type CommandSkillInfo = {
   sourceKind: 'project' | 'user';
   sourcePath: string;
   enabled: boolean;
+  modelProfileId?: string;
+};
+
+export type CommandSkillSurfaceInfo = CommandSkillInfo & {
+  modelLabel: string;
 };
 
 export type CommandMcpServerInfo = {
@@ -511,6 +516,7 @@ export type CommandSkillInvocationResult =
       ok: true;
       text: string;
       metadata: Record<string, unknown>;
+      modelProfileId?: string;
     }
   | {
       ok: false;
@@ -643,7 +649,7 @@ export type CommandHandler<TData extends object = Record<string, unknown>> = {
 export type CommandStartResult =
   | {kind: 'not_matched'}
   | {kind: 'handled'}
-  | {kind: 'submit_user_message'; text: string; historyText: string; displayText?: string; metadata?: Record<string, unknown>};
+  | {kind: 'submit_user_message'; text: string; displayText?: string; metadata?: Record<string, unknown>; modelProfileId?: string};
 
 export type MatchableCommandHandler<TData extends object = Record<string, unknown>> =
   CommandHandler<TData> & {

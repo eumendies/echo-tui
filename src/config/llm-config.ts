@@ -378,13 +378,16 @@ function readConfiguredSelectedModelId(llmConfig: ConfigSource): string | undefi
   return selectedModel;
 }
 
-function resolveSelectedProfile(llmConfig: ConfigSource, models: LlmModelProfile[]): LlmModelProfile {
+function resolveSelectedProfile(llmConfig: ConfigSource, models: LlmModelProfile[], modelProfileId?: string): LlmModelProfile {
+  const overrideProfile = modelProfileId
+    ? models.find((profile) => profile.id === modelProfileId)
+    : undefined;
   const selectedModelId = readConfiguredSelectedModelId(llmConfig);
   const selectedProfile = selectedModelId
     ? models.find((profile) => profile.id === selectedModelId)
     : undefined;
 
-  return selectedProfile || models[0];
+  return overrideProfile || selectedProfile || models[0];
 }
 
 function parseProviderProfiles(llmConfig: ConfigSource): Map<string, LlmProviderProfile> {
@@ -571,11 +574,12 @@ function readLlmModelConfigInfo(options: ReadLlmConfigOptions = {}): LlmModelCon
 
 type ReadLlmConfigOptions = {
   configPath?: string;
+  modelProfileId?: string;
   readFile?: (filePath: string, encoding: BufferEncoding) => string;
 };
 
 /**
- * 从用户级配置文件读取真实 LLM adapter 配置。
+ * 从用户级配置文件读取真实 LLM adapter 配置；可为当前运行指定 profile，失效时回退全局选择。
  */
 function readLlmConfig(options: ReadLlmConfigOptions = {}): LlmConfig {
   const rootConfig = readParsedConfig(options);
@@ -590,7 +594,7 @@ function readLlmConfig(options: ReadLlmConfigOptions = {}): LlmConfig {
     throw new LlmConfigError('LLM 配置缺少 models');
   }
 
-  const selectedProfile = resolveSelectedProfile(llmConfig, models);
+  const selectedProfile = resolveSelectedProfile(llmConfig, models, options.modelProfileId);
   const providerConfig = resolveSelectedProviderConfig(selectedProfile, providers);
 
   return {

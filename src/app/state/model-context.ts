@@ -18,6 +18,10 @@ type ModelCommandProfile = {
   reasoningEffort?: ReasoningEffort;
 };
 
+type ModelStateFingerprintProfile = ModelCommandProfile & {
+  contextWindow?: number;
+};
+
 type ModelCommandInfo = {
   models: ModelCommandProfile[];
   selectedIndex: number;
@@ -86,12 +90,14 @@ function sanitizeModelConfigError(error: unknown, fallback: string): string {
  */
 class ModelContext {
   private modelConfigError?: string;
+  private modelStateFingerprint: string;
   private modelLabel: string;
   private models: ModelCommandProfile[];
   private reasoningEffort?: ReasoningEffort;
   private selectedIndex: number;
 
   constructor() {
+    this.modelStateFingerprint = 'uninitialized';
     this.modelLabel = 'model unavailable';
     this.models = [];
     this.selectedIndex = -1;
@@ -110,24 +116,38 @@ class ModelContext {
   /**
    * 从用户配置刷新模型状态缓存；只保存模型命令和 status line 需要的非敏感字段。
    */
-  refreshModelState(): void {
+  refreshModelState(): boolean {
+    const previousFingerprint = this.modelStateFingerprint;
+
     try {
-      const modelInfo = normalizeModelInfo(readLlmModelConfigInfo());
+      const rawModelInfo = readLlmModelConfigInfo();
+      const modelInfo = normalizeModelInfo(rawModelInfo);
       const selectedModel = modelInfo.models[modelInfo.selectedIndex] || modelInfo.models[0];
 
       if (!selectedModel) {
         this.applyUnavailableModelState('LLM 配置缺少 models');
-        return;
+        return previousFingerprint !== this.modelStateFingerprint;
       }
+
+      const selectedRawModel = rawModelInfo.models.find((model) => model.id === selectedModel.id) as ModelStateFingerprintProfile | undefined;
 
       this.modelConfigError = undefined;
       this.modelLabel = selectedModel.model || selectedModel.id || 'model unavailable';
       this.models = modelInfo.models;
       this.reasoningEffort = selectedModel.reasoningEffort;
       this.selectedIndex = modelInfo.selectedIndex;
+      this.modelStateFingerprint = JSON.stringify({
+        id: selectedModel.id,
+        model: selectedModel.model,
+        provider: selectedModel.provider,
+        reasoningEffort: selectedModel.reasoningEffort,
+        contextWindow: selectedRawModel?.contextWindow
+      });
     } catch (error: unknown) {
       this.applyUnavailableModelState(sanitizeModelConfigError(error, '无法读取当前模型配置'));
     }
+
+    return previousFingerprint !== this.modelStateFingerprint;
   }
 
   /**
@@ -137,6 +157,24 @@ class ModelContext {
     return {
       modelLabel: this.modelLabel,
       ...(this.reasoningEffort ? {reasoningEffort: this.reasoningEffort} : {})
+    };
+  }
+
+  /**
+   * 解析显式 skill 调用实际使用的 status line 模型；无效 profile 按运行时规则回退当前全局模型。
+   */
+  resolveSkillOverrideStatusLineModelState(modelProfileId: string): StatusLineModelState {
+    this.refreshModelState();
+    const profile = this.models.find((model) => model.id === modelProfileId);
+
+    if (!profile) {
+      return this.getStatusLineModelState();
+    }
+
+    return {
+      modelLabel: profile.model || profile.id,
+      ...(profile.reasoningEffort ? {reasoningEffort: profile.reasoningEffort} : {}),
+      skillOverride: true
     };
   }
 
@@ -299,6 +337,7 @@ class ModelContext {
    */
   private applyUnavailableModelState(error?: string): void {
     this.modelConfigError = error;
+    this.modelStateFingerprint = `unavailable:${error || ''}`;
     this.modelLabel = 'model unavailable';
     this.models = [];
     this.reasoningEffort = undefined;

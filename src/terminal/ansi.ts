@@ -1,26 +1,5 @@
 const ESC = '\x1b[';
 
-type NamedColor = 'black' | 'red' | 'green' | 'yellow' | 'blue' | 'magenta' | 'cyan' | 'white' | 'gray' | 'orange';
-
-type TextStyleOptions = {
-  foreground?: NamedColor;
-  bold?: boolean;
-  dim?: boolean;
-};
-
-const FOREGROUND_CODES: Record<NamedColor, number | string> = {
-  black: 30,
-  red: 31,
-  green: 32,
-  yellow: 33,
-  blue: 34,
-  magenta: 35,
-  cyan: 36,
-  white: 37,
-  gray: 90,
-  orange: '38;5;208'
-};
-
 // 这里集中放 ANSI 控制序列，避免业务代码里散落裸 escape code。
 /**
  * 生成光标上移控制序列。
@@ -50,16 +29,6 @@ export function cursorDown(count = 1): string {
  */
 export function cursorForward(count = 1): string {
   return count > 0 ? `${ESC}${count}C` : '';
-}
-
-/**
- * 生成光标左移控制序列。
- *
- * @param {number} [count=1]
- * @returns {string}
- */
-export function cursorBack(count = 1): string {
-  return count > 0 ? `${ESC}${count}D` : '';
 }
 
 /**
@@ -209,38 +178,6 @@ export function rgb(r: number, g: number, b: number, text: string): string {
 }
 
 /**
- * 根据命名 ANSI 色和强调选项生成闭合的文本样式。
- */
-export function styleText(text: string, options: TextStyleOptions = {}): string {
-  let rendered = text;
-
-  if (options.foreground) {
-    rendered = foreground(FOREGROUND_CODES[options.foreground], rendered);
-  }
-
-  if (options.dim) {
-    rendered = dim(rendered);
-  }
-
-  if (options.bold) {
-    rendered = bold(rendered);
-  }
-
-  return rendered;
-}
-
-/**
- * 用指定背景色代码包裹文本。
- *
- * @param {number} code
- * @param {string} text
- * @returns {string}
- */
-export function background(code: number, text: string): string {
-  return `${ESC}${code}m${text}${ESC}49m`;
-}
-
-/**
  * 用 256 色背景包裹文本，用于比标准 ANSI 背景更柔和的局部高亮。
  */
 export function background256(code: number, text: string): string {
@@ -261,60 +198,14 @@ export function background256WithForeground(backgroundCode: number, foregroundCo
   return `${ESC}${foregroundCode}m${background256(backgroundCode, text)}${ESC}39m`;
 }
 
-// 常用前景色 helper，渲染层只关心语义，不直接写颜色编号。
-/** @param {string} text @returns {string} */
-export function black(text: string): string {
-  return foreground(30, text);
-}
-
-/** @param {string} text @returns {string} */
-export function red(text: string): string {
-  return foreground(31, text);
-}
-
-/** @param {string} text @returns {string} */
-export function green(text: string): string {
-  return foreground(32, text);
-}
-
-/** @param {string} text @returns {string} */
-export function yellow(text: string): string {
-  return foreground(33, text);
-}
-
-/** @param {string} text @returns {string} */
-export function blue(text: string): string {
-  return foreground(34, text);
-}
-
-/** @param {string} text @returns {string} */
-export function magenta(text: string): string {
-  return foreground(35, text);
-}
-
 /** @param {string} text @returns {string} */
 export function cyan(text: string): string {
   return foreground(36, text);
 }
 
 /** @param {string} text @returns {string} */
-export function gray(text: string): string {
-  return foreground(90, text);
-}
-
-/** @param {string} text @returns {string} */
 export function white(text: string): string {
   return foreground(37, text);
-}
-
-/**
- * 给文本加灰底背景，用于用户消息整行高亮。
- *
- * @param {string} text
- * @returns {string}
- */
-export function bgGray(text: string): string {
-  return background(100, text);
 }
 
 /**
@@ -345,8 +236,3 @@ export function bgGreen(text: string): string {
 export function reset(): string {
   return `${ESC}0m`;
 }
-
-export type {
-  NamedColor,
-  TextStyleOptions
-};

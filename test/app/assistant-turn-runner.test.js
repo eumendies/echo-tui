@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {runAssistantTurn} = require('../../src/app/assistant-turn-runner');
+const {AgentAbortError} = require('../../src/types/agent');
 const {AppContext} = require('../../src/app/state/app-context');
 const {ToolApprovalContext} = require('../../src/app/state/tool-approval-context');
 const {UserQuestionContext} = require('../../src/app/state/user-question-context');
@@ -160,7 +161,6 @@ test('runAssistantTurn stores plan transition prompt while preserving display, h
     ...harness.input,
     userText: 'expanded request',
     displayText: '@request.png',
-    historyText: '@request.png',
     attachments,
     metadata: {
       skillInvocation: {
@@ -322,4 +322,107 @@ test('runAssistantTurn emits error hook while preserving error transcript behavi
   assert.equal(harness.debugEvents[1].payload.errorMessage, 'upstream failed');
   assert.match(harness.appended.at(-1).text, /upstream failed/);
   assert.equal(harness.appContext.responding, false);
+});
+
+test('runAssistantTurn passes model override only to its current agent session across completion, failure, and interruption', async () => {
+  const harness = createHarness();
+  const captured = [];
+
+  async function run(modelProfileId, outcome) {
+    await runAssistantTurn({
+      ...harness.input,
+      userText: `${outcome}-${modelProfileId || 'current'}`,
+      modelProfileId,
+      async runAgent(session, callbacks) {
+        captured.push(session.modelProfileId);
+
+        if (outcome === 'error') {
+          throw new Error('failed');
+        }
+
+        if (outcome === 'abort') {
+          throw new AgentAbortError();
+        }
+
+        callbacks.onComplete('done');
+        return 'done';
+      }
+    });
+  }
+
+  await run('fixed-complete', 'complete');
+  await run(undefined, 'complete');
+  await run('fixed-error', 'error');
+  await run(undefined, 'complete');
+  await run('fixed-abort', 'abort');
+  await run(undefined, 'complete');
+
+  assert.deepEqual(captured, [
+    'fixed-complete', undefined,
+    'fixed-error', undefined,
+    'fixed-abort', undefined
+  ]);
+});
+
+test('runAssistantTurn emits a local model-switch notice and restores the global status model', async () => {
+  const harness = createHarness();
+  const renderedModels = [];
+  harness.appContext.modelContext = {
+    refreshModelState() {
+      return false;
+    },
+    getStatusLineModelState() {
+      return {modelLabel: 'gpt-global'};
+    },
+    resolveSkillOverrideStatusLineModelState() {
+      return {modelLabel: 'claude-sonnet-4-6', skillOverride: true};
+    }
+  };
+
+  await runAssistantTurn({
+    ...harness.input,
+    modelProfileId: 'skill-model',
+    renderFooter() {
+      renderedModels.push(harness.appContext.createRenderState().statusLine);
+    },
+    async runAgent(_session, callbacks) {
+      callbacks.onThinking();
+      callbacks.onComplete('done');
+      return 'done';
+    }
+  });
+
+  assert.equal(renderedModels[0].modelLabel, 'claude-sonnet-4-6');
+  assert.equal(renderedModels[0].skillOverride, true);
+  assert.equal(renderedModels.at(-1).modelLabel, 'gpt-global');
+  assert.equal(renderedModels.at(-1).skillOverride, undefined);
+  assert.deepEqual(harness.appended.map((record) => record.role), ['user', 'local_notice', 'assistant']);
+  assert.equal(harness.appended[1].text, '已切换到 claude-sonnet-4-6 执行当前 skill。');
+  assert.equal(harness.appContext.transcriptRecords[1].role, 'local_notice');
+});
+
+test('runAssistantTurn does not emit a model-switch notice when a stale override falls back', async () => {
+  const harness = createHarness();
+  harness.appContext.modelContext = {
+    refreshModelState() {
+      return false;
+    },
+    getStatusLineModelState() {
+      return {modelLabel: 'gpt-global'};
+    },
+    resolveSkillOverrideStatusLineModelState() {
+      return {modelLabel: 'gpt-global'};
+    }
+  };
+
+  await runAssistantTurn({
+    ...harness.input,
+    modelProfileId: 'deleted-profile',
+    async runAgent(_session, callbacks) {
+      callbacks.onComplete('done');
+      return 'done';
+    }
+  });
+
+  assert.deepEqual(harness.appended.map((record) => record.role), ['user', 'assistant']);
 });

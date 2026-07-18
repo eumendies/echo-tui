@@ -2,7 +2,7 @@ import {redactSensitiveText} from '../agent/agent-errors';
 import {JsonConfigFile, JsonConfigFileError, type JsonConfigFileOptions} from './json-config-file';
 import {getDefaultConfigPath} from './llm-config';
 import {getProviderPreset, providerRequiresApiKey} from './provider-presets';
-import type {ConfigModelDraft, ConfigProviderDraft, LlmConfigDraft} from '../types/command';
+import type {LlmConfigDraft} from '../types/command';
 
 type JsonObject = Record<string, unknown>;
 

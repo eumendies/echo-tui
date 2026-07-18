@@ -273,10 +273,23 @@ class AppContext {
   }
 
   /**
+   * 配置文件发生外部变化时刷新模型缓存；模型语义变化会使旧 context usage 失效。
+   */
+  refreshModelStateFromConfig(): boolean {
+    const changed = this.modelContext.refreshModelState();
+
+    if (changed) {
+      this.clearContextUsage();
+    }
+
+    return changed;
+  }
+
+  /**
    * 读取当前选择模型的展示名；配置不可用时返回稳定占位，避免 footer 重绘打断主流程。
    */
   private createStatusLineModelState(): StatusLineModelState {
-    return this.modelContext.getStatusLineModelState();
+    return this.turnContext.getActiveStatusLineModelState() ?? this.modelContext.getStatusLineModelState();
   }
 
   /**
@@ -518,7 +531,7 @@ class AppContext {
   /**
    * 提交用户消息并进入响应中状态；mode 改变时把一次性切换说明写入 provider-facing text。
    */
-  beginUserTurn(userText: string, options: {historyText?: string; displayText?: string; metadata?: Record<string, unknown>; attachments?: ToolExecutionResult['attachments']} = {}): TranscriptRecord {
+  beginUserTurn(userText: string, options: {displayText?: string; metadata?: Record<string, unknown>; attachments?: ToolExecutionResult['attachments']} = {}): TranscriptRecord {
     const currentAgentMode = toAgentInteractionMode(this.interactionMode);
     const transition = createModeTransitionUserMessage(userText, this.lastSubmittedAgentMode, currentAgentMode);
     const record = this.turnContext.beginUserTurn(transition?.text || userText, {
@@ -556,8 +569,27 @@ class AppContext {
   /**
    * 创建当前 assistant turn 句柄，主流程只使用句柄绑定回调和 agent signal。
    */
-  beginAssistantTurn(): AssistantTurnHandle {
-    return this.turnContext.beginAssistantTurn();
+  beginAssistantTurn(modelProfileId?: string): AssistantTurnHandle {
+    const statusLineModel = modelProfileId
+      ? this.modelContext.resolveSkillOverrideStatusLineModelState(modelProfileId)
+      : this.modelContext.getStatusLineModelState();
+
+    return this.turnContext.beginAssistantTurn(statusLineModel);
+  }
+
+  /**
+   * 将 runtime 实际采用的模型绑定到当前 assistant turn，保证响应期间展示不受全局配置变化影响。
+   */
+  setAssistantTurnModel(turn: AssistantTurnHandle, model: StatusLineModelState): boolean {
+    return this.turnContext.setActiveStatusLineModelState(turn, model);
+  }
+
+  /**
+   * 返回当前 assistant turn 已生效的 skill override 模型名，供主流程生成本地提示。
+   */
+  getActiveSkillOverrideModelLabel(): string | undefined {
+    const statusLineModel = this.turnContext.getActiveStatusLineModelState();
+    return statusLineModel?.skillOverride ? statusLineModel.modelLabel : undefined;
   }
 
   /**

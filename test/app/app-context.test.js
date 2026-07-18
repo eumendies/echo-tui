@@ -489,6 +489,63 @@ test('AppContext status line omits effort when profile has no explicit effort', 
   assert.equal(context.createRenderState().statusLine.reasoningEffort, undefined);
 });
 
+test('AppContext uses a fixed skill model only for the active assistant turn', () => {
+  const config = {
+    llm: {
+      selectedModel: 'fast',
+      providers: {
+        openai: {preset: 'openai-responses-api', apiKey: 'sk-test-key'}
+      },
+      models: [
+        {id: 'fast', provider: 'openai', model: 'gpt-fast'},
+        {id: 'skill-deep', provider: 'openai', model: 'claude-sonnet-4-6', reasoning: {effort: 'high'}}
+      ]
+    }
+  };
+
+  withTemporaryModelConfig(config, () => {
+    const context = createContext();
+    const turn = context.beginAssistantTurn('skill-deep');
+    const activeStatus = context.createRenderState().statusLine;
+
+    assert.equal(activeStatus.modelLabel, 'claude-sonnet-4-6');
+    assert.equal(activeStatus.reasoningEffort, 'high');
+    assert.equal(activeStatus.skillOverride, true);
+
+    context.clearAssistantTurnIfCurrent(turn);
+
+    const restoredStatus = context.createRenderState().statusLine;
+    assert.equal(restoredStatus.modelLabel, 'gpt-fast');
+    assert.equal(restoredStatus.reasoningEffort, undefined);
+    assert.equal(restoredStatus.skillOverride, undefined);
+  });
+});
+
+test('AppContext falls back to the global status model for a missing skill profile', () => {
+  const config = {
+    llm: {
+      selectedModel: 'fast',
+      providers: {
+        openai: {preset: 'openai-responses-api', apiKey: 'sk-test-key'}
+      },
+      models: [
+        {id: 'fast', provider: 'openai', model: 'gpt-fast'}
+      ]
+    }
+  };
+
+  withTemporaryModelConfig(config, () => {
+    const context = createContext();
+    const turn = context.beginAssistantTurn('deleted-profile');
+    const status = context.createRenderState().statusLine;
+
+    assert.equal(status.modelLabel, 'gpt-fast');
+    assert.equal(status.skillOverride, undefined);
+
+    context.clearAssistantTurnIfCurrent(turn);
+  });
+});
+
 test('AppContext status line reads cached model state without rereading user config', () => {
   const config = {
     llm: {
@@ -688,8 +745,7 @@ test('AppContext preserves display text and composer history for mode transition
   context.setInteractionMode('plan');
 
   const record = context.beginUserTurn('expanded image request', {
-    displayText: '@image.png',
-    historyText: '@image.png'
+    displayText: '@image.png'
   });
 
   assert.match(record.text, /\[User Request\]\nexpanded image request$/);
@@ -1035,6 +1091,65 @@ test('ModelContext refreshes cached status-line label after model selection succ
 
     assert.equal(appContext.createRenderState().statusLine.modelLabel, 'gpt-deep');
     assert.equal(appContext.createRenderState().statusLine.reasoningEffort, 'high');
+  });
+});
+
+test('AppContext refreshes externally changed model state and clears stale context usage', () => {
+  const config = {
+    llm: {
+      selectedModel: 'fast',
+      providers: {
+        default: {preset: 'openai-responses-api', apiKey: 'sk-test-key'}
+      },
+      models: [
+        {id: 'fast', provider: 'default', model: 'gpt-fast'},
+        {id: 'deep', provider: 'default', model: 'gpt-deep', reasoning: {effort: 'high'}}
+      ]
+    }
+  };
+
+  withTemporaryModelConfig(config, ({configPath}) => {
+    const context = createContext();
+    context.setContextUsage({usedTokens: 120, contextWindow: 1000, source: 'provider'});
+    config.llm.selectedModel = 'deep';
+    fs.writeFileSync(configPath, JSON.stringify(config), 'utf8');
+
+    assert.equal(context.refreshModelStateFromConfig(), true);
+    assert.equal(context.createRenderState().statusLine.modelLabel, 'gpt-deep');
+    assert.equal(context.createRenderState().statusLine.reasoningEffort, 'high');
+    assert.equal(context.contextUsage, null);
+    assert.equal(context.refreshModelStateFromConfig(), false);
+  });
+});
+
+test('AppContext pins the active turn model while the global selection changes', () => {
+  const config = {
+    llm: {
+      selectedModel: 'fast',
+      providers: {
+        default: {preset: 'openai-responses-api', apiKey: 'sk-test-key'}
+      },
+      models: [
+        {id: 'fast', provider: 'default', model: 'gpt-fast'},
+        {id: 'deep', provider: 'default', model: 'gpt-deep'}
+      ]
+    }
+  };
+
+  withTemporaryModelConfig(config, ({configPath}) => {
+    const context = createContext();
+    const turn = context.beginAssistantTurn();
+    config.llm.selectedModel = 'deep';
+    fs.writeFileSync(configPath, JSON.stringify(config), 'utf8');
+
+    assert.equal(context.refreshModelStateFromConfig(), true);
+    assert.equal(context.createRenderState().statusLine.modelLabel, 'gpt-fast');
+
+    assert.equal(context.setAssistantTurnModel(turn, {modelLabel: 'runtime-model'}), true);
+    assert.equal(context.createRenderState().statusLine.modelLabel, 'runtime-model');
+
+    context.clearAssistantTurnIfCurrent(turn);
+    assert.equal(context.createRenderState().statusLine.modelLabel, 'gpt-deep');
   });
 });
 

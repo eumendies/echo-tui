@@ -98,32 +98,6 @@ export function safeRenderWidth(width: number): number {
 }
 
 /**
- * 规范化终端列宽输入，给物理行数估算提供稳定值。
- *
- * @param {number} width
- * @returns {number}
- */
-export function terminalColumnWidth(width: number): number {
-  const value = Number.isFinite(width) && width > 0 ? width : 80;
-  return Math.max(1, value);
-}
-
-/**
- * 估算单行文本在当前终端列宽下会占用多少物理行。
- *
- * @param {string} text
- * @param {number} width
- * @returns {number}
- */
-export function visualLineCount(text: string, width: number): number {
-  // 已输出的旧行在 resize 后会被终端按当前列宽重新折行，清理前要估算物理行数。
-  const columns = terminalColumnWidth(width);
-  const lineWidth = displayWidth(text);
-
-  return Math.max(1, Math.ceil(lineWidth / columns));
-}
-
-/**
  * 去掉字符串中的 ANSI 控制序列，避免颜色或光标控制干扰宽度计算。
  *
  * @param {string} text
