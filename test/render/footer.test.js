@@ -5,9 +5,9 @@ const { createComposer } = require('../../src/input/composer');
 const { createTuiTheme } = require('../../src/config/theme-config');
 const { ECHO_SPINNER_ACTIVE_FRAME_COUNT, ECHO_SPINNER_FRAME_INTERVAL_MS, getEchoSpinnerFrameIndex } = require('../../src/render/echo-spinner');
 const { renderDiffSurface } = require('../../src/render/footer/diff-surface');
-const { renderFooterLayout } = require('../../src/render/footer');
+const { renderFooterLayout: renderRuntimeFooterLayout } = require('../../src/render/footer');
 const { humanizeTokens } = require('../../src/render/footer/usage-surface');
-const { renderStatusSurface } = require('../../src/render/footer/status-surface');
+const { renderStatusSurface: renderRuntimeStatusSurface } = require('../../src/render/footer/status-surface');
 const { displayWidth, safeRenderWidth, stripAnsi } = require('../../src/render/layout');
 
 const DEFAULT_STATUS_LINE = {
@@ -15,6 +15,66 @@ const DEFAULT_STATUS_LINE = {
   modelLabel: 'GPT-4o',
   mode: 'idle'
 };
+
+function completeCommandSurfaceFixture(surface) {
+  if (!surface) {
+    return surface;
+  }
+
+  switch (surface.kind) {
+    case 'info':
+      return {title: 'Info', lines: [], dismissHint: 'Esc 关闭', ...surface};
+    case 'select':
+      return {title: 'Select', options: [], selectedIndex: 0, dismissHint: 'Enter 确认 · Esc 关闭', ...surface};
+    case 'resume':
+      return {focus: 'list', title: '/resume', sessions: [], selectedIndex: 0, previewScroll: 0, previewRecords: [], emptyPreviewHint: '没有可预览消息', dismissHint: 'Esc 关闭', ...surface};
+    case 'skills':
+      return {title: 'SKILLS', skills: [], selectedIndex: 0, emptyLines: [], dismissHint: 'Esc 关闭', ...surface};
+    case 'mcp':
+      return {title: 'MCP', servers: [], selectedIndex: 0, emptyLines: [], dismissHint: 'Esc 关闭', ...surface};
+    case 'memory':
+      return {title: 'MEMORY', dismissHint: 'Esc 关闭', ...surface};
+    case 'hooks':
+      return {title: 'HOOKS', dismissHint: 'Esc 关闭', ...surface};
+    case 'scale':
+      return {title: '刻度', leftLabel: '', rightLabel: '', options: [], selectedIndex: 0, dismissHint: 'Esc 关闭', ...surface};
+    case 'choice':
+      return {title: '选择', optionsTitle: '操作', options: [], focusedIndex: 0, dismissHint: 'Enter 确认 · Esc 关闭', ...surface};
+    case 'confirm':
+      return {title: '确认', bodyLines: [], confirmLabel: '确认', cancelLabel: '取消', ...surface};
+    case 'config':
+      return surface.view ? surface : surface.result
+        ? {...surface, view: 'result'}
+        : surface.state
+          ? {...surface, view: 'editor', rows: surface.rows || []}
+          : {...surface, view: 'loading'};
+    case 'context':
+      return {title: '上下文', dismissHint: '上下文占用详情 · 按任意键关闭', ...surface};
+    case 'usage':
+      return {title: 'Token 用量', offset: 0, dismissHint: 'Esc 关闭', ...surface};
+    case 'status':
+      return {title: 'Status', dismissHint: 'Esc 关闭', ...surface};
+    case 'copy':
+      return {title: '/copy', focus: 'list', previewScroll: 0, dismissHint: 'Esc 关闭', ...surface};
+    case 'file_picker':
+      return {title: '文件', dismissHint: 'Esc 关闭', ...surface};
+    case 'diff':
+      return {title: '/diff', selectedIndex: 0, detailScroll: 0, ...surface};
+    default:
+      return surface;
+  }
+}
+
+function renderFooterLayout(options) {
+  return renderRuntimeFooterLayout({
+    ...options,
+    commandSurface: completeCommandSurfaceFixture(options.commandSurface)
+  });
+}
+
+function renderStatusSurface(surface, ...args) {
+  return renderRuntimeStatusSurface(completeCommandSurfaceFixture(surface), ...args);
+}
 
 const CUSTOM_THEME = createTuiTheme({
   footer: {
@@ -1760,35 +1820,6 @@ test('renderFooterLayout renders scale command surfaces', () => {
   assert.ok(layout.lines.some((line) => line.includes('\x1b[38;2;') && stripAnsi(line).includes('MED')));
 });
 
-test('renderFooterLayout renders checkbox command surfaces', () => {
-  const layout = renderFooterLayout({
-    composer: createComposer('ignored'),
-    commandSurface: {
-      kind: 'checkbox',
-      title: '/flags (2)',
-      options: [
-        { label: 'code-review', description: 'project · Review code', checked: true },
-        { label: 'unit-test', description: 'user · Generate tests', checked: false }
-      ],
-      selectedIndex: 1,
-      dismissHint: 'Space 切换 · Enter 保存 · Esc 取消'
-    },
-    pending: null,
-    statusLine: DEFAULT_STATUS_LINE,
-    width: 80
-  });
-
-  const plainLines = layout.lines.map((line) => stripAnsi(line));
-
-  assert.equal(layout.showCursor, false);
-  assert.ok(plainLines.some((line) => line.includes('/flags (2)')));
-  assert.ok(plainLines.some((line) => line === '  ● code-review — project · Review code'));
-  assert.ok(plainLines.some((line) => line.trimEnd() === '▌ ○ unit-test — user · Generate tests'));
-  assert.ok(!plainLines.some((line) => line.includes('[x]') || line.includes('[ ]') || line.includes('›')));
-  assert.ok(plainLines.some((line) => line.includes('Space 切换')));
-  assert.ok(layout.lines.some((line) => line.includes('\x1b[48;5;23m') && stripAnsi(line).includes('unit-test')));
-});
-
 test('renderFooterLayout renders skills command surface as cyan card', () => {
   const layout = renderFooterLayout({
     composer: createComposer('ignored'),
@@ -1800,6 +1831,7 @@ test('renderFooterLayout renders skills command surface as cyan card', () => {
         { name: 'unit-test', description: 'Generate tests', sourceKind: 'user', sourcePath: '/skills/unit-test/SKILL.md', enabled: false, modelProfileId: 'fast', modelLabel: 'fast' }
       ],
       selectedIndex: 1,
+      emptyLines: [],
       dismissHint: '←/→ 模型 (仅限slash调用) · Space 启停 · Enter 保存 · Esc 取消'
     },
     pending: null,
@@ -2032,14 +2064,18 @@ test('renderFooterLayout applies custom theme to choice active row', () => {
   assert.ok(rendered.includes('\x1b[38;2;1;2;3m'));
 });
 
-test('renderFooterLayout uses Chinese defaults for choice sections', () => {
+test('renderFooterLayout renders configured Chinese choice sections', () => {
   const layout = renderFooterLayout({
     composer: createComposer('ignored'),
     commandSurface: {
       kind: 'choice',
+      title: '选择',
       message: '请选择下一步',
+      messageTitle: '消息',
+      optionsTitle: '操作',
       options: [{label: '继续'}],
-      focusedIndex: 0
+      focusedIndex: 0,
+      dismissHint: 'Enter 确认 · Esc 关闭'
     },
     pending: null,
     statusLine: DEFAULT_STATUS_LINE,

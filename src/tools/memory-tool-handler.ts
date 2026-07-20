@@ -1,7 +1,7 @@
 import {addAgentMemory, readEffectiveAgentMemoryCatalog, removeAgentMemoryCatalog, removeAgentMemoryItem, updateAgentMemoryCatalog, updateAgentMemoryItem} from '../memory/agent-memory-store';
 
 import type {AgentMemoryScope} from '../types/memory';
-import type {BaseToolExecutionResult, ToolCall, ToolHandler} from '../types/tool';
+import type {GenericToolExecutionResult, ToolCall, ToolHandler} from '../types/tool';
 
 const READ_MEMORY_TOOL_NAME = 'read_memory';
 const ADD_MEMORY_TOOL_NAME = 'add_memory';
@@ -45,7 +45,7 @@ function createMemoryToolHandlers(cwd: string | (() => string) = process.cwd): T
   ];
 }
 
-function createHandler(name: string, description: string, required: string[], properties: Record<string, unknown>, execute: (args: Record<string, unknown>, call: ToolCall) => BaseToolExecutionResult): ToolHandler {
+function createHandler(name: string, description: string, required: string[], properties: Record<string, unknown>, execute: (args: Record<string, unknown>, call: ToolCall) => GenericToolExecutionResult): ToolHandler {
   return {
     definition: {
       name,
@@ -56,7 +56,7 @@ function createHandler(name: string, description: string, required: string[], pr
   };
 }
 
-function executeRead(args: Record<string, unknown>, call: ToolCall, cwd: string): BaseToolExecutionResult {
+function executeRead(args: Record<string, unknown>, call: ToolCall, cwd: string): GenericToolExecutionResult {
   const catalog = requiredString(args.catalog, 'catalog must be a non-empty string');
   const scope = parseScope(args.scope);
 
@@ -77,7 +77,7 @@ function executeRead(args: Record<string, unknown>, call: ToolCall, cwd: string)
     : failure(call, result.error);
 }
 
-function executeAdd(args: Record<string, unknown>, call: ToolCall, cwd: string): BaseToolExecutionResult {
+function executeAdd(args: Record<string, unknown>, call: ToolCall, cwd: string): GenericToolExecutionResult {
   const content = requiredString(args.content, 'content must be a non-empty string');
   const catalog = requiredString(args.catalog, 'catalog must be a non-empty string');
   const description = optionalString(args.catalogDescription, 'catalogDescription must be a string');
@@ -110,7 +110,7 @@ function executeAdd(args: Record<string, unknown>, call: ToolCall, cwd: string):
     : failure(call, result.error);
 }
 
-function executeUpdate(args: Record<string, unknown>, call: ToolCall, cwd: string): BaseToolExecutionResult {
+function executeUpdate(args: Record<string, unknown>, call: ToolCall, cwd: string): GenericToolExecutionResult {
   const target = parseTarget(args.target);
   if (!target.ok) {
     return failure(call, target.error);
@@ -120,7 +120,7 @@ function executeUpdate(args: Record<string, unknown>, call: ToolCall, cwd: strin
 }
 
 /** agent catalog 与 item 的更新共享 catalog/scope 解析，目标字段决定后续存储调用。 */
-function updateAgentMemoryFromTool(args: Record<string, unknown>, call: ToolCall, cwd: string, target: 'catalog' | 'item'): BaseToolExecutionResult {
+function updateAgentMemoryFromTool(args: Record<string, unknown>, call: ToolCall, cwd: string, target: 'catalog' | 'item'): GenericToolExecutionResult {
   const catalog = requiredString(args.catalog, 'catalog must be a non-empty string');
   const scope = parseScope(args.scope);
 
@@ -153,7 +153,7 @@ function updateAgentMemoryFromTool(args: Record<string, unknown>, call: ToolCall
     : failure(call, result.error);
 }
 
-function updateAgentCatalogFromTool(args: Record<string, unknown>, call: ToolCall, cwd: string, catalog: string, scope?: AgentMemoryScope['kind']): BaseToolExecutionResult {
+function updateAgentCatalogFromTool(args: Record<string, unknown>, call: ToolCall, cwd: string, catalog: string, scope?: AgentMemoryScope['kind']): GenericToolExecutionResult {
   const name = optionalString(args.name, 'name must be a string');
   const description = optionalString(args.description, 'description must be a string');
 
@@ -178,7 +178,7 @@ function updateAgentCatalogFromTool(args: Record<string, unknown>, call: ToolCal
     : failure(call, result.error);
 }
 
-function executeRemove(args: Record<string, unknown>, call: ToolCall, cwd: string): BaseToolExecutionResult {
+function executeRemove(args: Record<string, unknown>, call: ToolCall, cwd: string): GenericToolExecutionResult {
   const target = parseTarget(args.target);
   if (!target.ok) {
     return failure(call, target.error);
@@ -253,12 +253,12 @@ function stringProperty(): Record<string, unknown> {
   return {type: 'string'};
 }
 
-function success(call: ToolCall, text: string): BaseToolExecutionResult {
-  return {callId: call.callId, toolName: call.toolName, ok: true, text};
+function success(call: ToolCall, text: string): GenericToolExecutionResult {
+  return {callId: call.callId, toolName: call.toolName, ok: true, text, details: {kind: 'generic'}};
 }
 
-function failure(call: ToolCall, text: string): BaseToolExecutionResult {
-  return {callId: call.callId, toolName: call.toolName, ok: false, text};
+function failure(call: ToolCall, text: string): GenericToolExecutionResult {
+  return {callId: call.callId, toolName: call.toolName, ok: false, text, details: {kind: 'generic'}};
 }
 
 function isMemoryMutationToolName(name: string): boolean {

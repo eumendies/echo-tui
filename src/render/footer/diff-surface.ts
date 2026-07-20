@@ -98,7 +98,7 @@ function calculateListWidth(files: DiffFile[], splitWidth: number): number {
 }
 
 function renderTop(width: number, surface: DiffCommandSurface, theme: FooterTheme): string {
-  const title = ` ${surface.title || '/diff'} `;
+  const title = ` ${surface.title} `;
   const stats = ` ${surface.source.kind === 'git' ? 'Git' : 'History'} ${surface.files.length} files +${totalAdded(surface.files)} -${totalRemoved(surface.files)} `;
   const titleText = tokenText(theme, 'accentStrong', ansi.bold(clampPlainText(title, Math.max(1, width - 2))));
   const statsText = tokenText(theme, surface.source.kind === 'git' ? 'success' : 'warning', clampPlainText(stats, Math.max(1, width - 2 - displayWidth(title))));

@@ -24,7 +24,6 @@ import { UsageCommandHandler } from './usage-command-handler';
 /**
  * 装配默认 slash command handlers；具体 app 能力由 CommandHost 在运行时提供。
  *
- * @returns 默认 slash command handlers
  */
 export function createDefaultSlashCommandHandlers(): MatchableCommandHandler[] {
   return [
@@ -55,10 +54,8 @@ export function createDefaultSlashCommandHandlers(): MatchableCommandHandler[] {
 /**
  * 从 slash command handlers 派生命令提示元数据，避免维护第二份命令清单。
  *
- * @param handlers slash command handlers
- * @returns 可展示的 slash command descriptors
  */
-export function createSlashCommandDescriptors(handlers: MatchableCommandHandler[] = []): SlashCommandDescriptor[] {
+export function createSlashCommandDescriptors(handlers: MatchableCommandHandler[]): SlashCommandDescriptor[] {
   return handlers
     .filter((handler): handler is MatchableCommandHandler & SlashCommandDescriptor => Boolean(handler.name && handler.description))
     .map((handler) => ({
@@ -70,13 +67,10 @@ export function createSlashCommandDescriptors(handlers: MatchableCommandHandler[
 /**
  * 依次询问 handler 是否命中当前提交文本；命中则直接返回该 handler。
  *
- * @param text 提交文本
- * @param handlers slash command handlers
- * @returns 命中的 handler
  */
 export function resolveSlashCommand(
   text: string,
-  handlers: MatchableCommandHandler[] = []
+  handlers: MatchableCommandHandler[]
 ): MatchableCommandHandler | null {
   for (const handler of handlers) {
     if (handler.match(text)) {

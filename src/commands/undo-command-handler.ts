@@ -68,7 +68,7 @@ class UndoCommandHandler implements CommandHandler<UndoCommandData> {
   description = '回退上一轮文件修改和会话记录';
 
   match(text: string): boolean {
-    return String(text).trim() === '/undo';
+    return text.trim() === '/undo';
   }
 
   start(_text: string, host: CommandHost): void {

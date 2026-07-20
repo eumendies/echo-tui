@@ -13,16 +13,16 @@ const MODEL_LABEL_MAX_WIDTH = 32;
  * 渲染 skills 管理面板；renderer 只投影 session 快照，启停和模型策略保存由命令 handler 完成。
  */
 export function renderSkillsSurface(commandSurface: SkillsCommandSurface, width: number, theme: FooterTheme = resolveFooterTheme(undefined)): FooterLayout {
-  const skills = commandSurface.skills || [];
+  const skills = commandSurface.skills;
   const selectedIndex = clampIndex(commandSurface.selectedIndex, skills.length);
   const boxWidth = calculateSkillsBoxWidth(width);
   const contentWidth = Math.max(1, boxWidth - 4);
   const lines = [
-    renderTop(boxWidth, commandSurface.title || 'SKILLS', skills, theme),
+    renderTop(boxWidth, commandSurface.title, skills, theme),
     renderLine('', contentWidth, theme),
     ...renderSkillContent(commandSurface, selectedIndex, contentWidth, theme),
     renderLine('', contentWidth, theme),
-    renderLine(ansi.dim(clampPlainText(commandSurface.dismissHint || '←/→ 模型 (仅限slash调用) · Space 启停 · Enter 保存 · Esc 取消', contentWidth)), contentWidth, theme),
+    renderLine(ansi.dim(clampPlainText(commandSurface.dismissHint, contentWidth)), contentWidth, theme),
     renderBottom(boxWidth, theme)
   ];
 
@@ -51,7 +51,7 @@ function calculateSkillsBoxWidth(width: number): number {
  * 渲染空状态或包含当前选中项的 skill 窗口。
  */
 function renderSkillContent(commandSurface: SkillsCommandSurface, selectedIndex: number, contentWidth: number, theme: FooterTheme): string[] {
-  const skills = commandSurface.skills || [];
+  const skills = commandSurface.skills;
 
   if (skills.length === 0) {
     const lines = commandSurface.emptyLines && commandSurface.emptyLines.length > 0

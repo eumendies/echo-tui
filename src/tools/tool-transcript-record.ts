@@ -1,14 +1,4 @@
-import type {
-  ApplyPatchToolExecutionResult,
-  BashToolExecutionResult,
-  GlobToolExecutionResult,
-  GrepToolExecutionResult,
-  ReadFilesToolExecutionResult,
-  ToolCall,
-  ToolExecutionResult,
-  WebFetchToolExecutionResult,
-  WebSearchToolExecutionResult
-} from '../types/tool';
+import type {ToolCall, ToolExecutionResult} from '../types/tool';
 import type {ToolCallTranscriptRecord, ToolResultTranscriptRecord} from '../types/transcript';
 
 /**
@@ -34,75 +24,9 @@ function createToolResultTranscriptRecord(result: ToolExecutionResult): ToolResu
     toolCallId: result.callId,
     toolName: result.toolName,
     ok: result.ok,
+    details: result.details,
     ...(result.attachments ? {attachments: result.attachments} : {})
   };
-
-  switch (result.toolName) {
-    case 'run_bash_command': {
-      const bashResult = result as BashToolExecutionResult;
-
-      return {
-        ...baseRecord,
-        exitCode: bashResult.exitCode,
-        timedOut: bashResult.timedOut,
-        truncated: bashResult.truncated,
-        durationMs: bashResult.durationMs
-      };
-    }
-    case 'glob': {
-      const globResult = result as GlobToolExecutionResult;
-
-      return {
-        ...baseRecord,
-        exitCode: globResult.exitCode,
-        truncated: globResult.truncated
-      };
-    }
-    case 'grep': {
-      const grepResult = result as GrepToolExecutionResult;
-
-      return {
-        ...baseRecord,
-        exitCode: grepResult.exitCode,
-        truncated: grepResult.truncated
-      };
-    }
-    case 'read_files': {
-      const readFilesResult = result as ReadFilesToolExecutionResult;
-
-      return {
-        ...baseRecord,
-        truncated: readFilesResult.truncated
-      };
-    }
-    case 'web_fetch': {
-      const webFetchResult = result as WebFetchToolExecutionResult;
-
-      return {
-        ...baseRecord,
-        timedOut: webFetchResult.timedOut,
-        truncated: webFetchResult.truncated
-      };
-    }
-    case 'web_search': {
-      const webSearchResult = result as WebSearchToolExecutionResult;
-
-      return {
-        ...baseRecord,
-        timedOut: webSearchResult.timedOut,
-        truncated: webSearchResult.truncated
-      };
-    }
-    case 'apply_patch': {
-      const applyPatchResult = result as ApplyPatchToolExecutionResult;
-
-      return {
-        ...baseRecord,
-        ...(applyPatchResult.display ? {display: applyPatchResult.display} : {})
-      };
-    }
-  }
-
   return baseRecord;
 }
 

@@ -40,8 +40,7 @@ test('createToolResultTranscriptRecord preserves attachments and web search meta
     toolName: 'web_search',
     ok: true,
     text: 'search result',
-    timedOut: false,
-    truncated: true,
+    details: {kind: 'web_search', timedOut: false, truncated: true},
     attachments
   }), {
     role: 'tool_result',
@@ -49,8 +48,7 @@ test('createToolResultTranscriptRecord preserves attachments and web search meta
     toolCallId: 'call_search',
     toolName: 'web_search',
     ok: true,
-    timedOut: false,
-    truncated: true,
+    details: {kind: 'web_search', timedOut: false, truncated: true},
     attachments
   });
 });
@@ -66,13 +64,13 @@ test('createToolResultTranscriptRecord preserves apply patch display metadata', 
     toolName: 'apply_patch',
     ok: true,
     text: 'Done!',
-    display
+    details: {kind: 'apply_patch', display}
   }), {
     role: 'tool_result',
     text: 'Done!',
     toolCallId: 'call_patch',
     toolName: 'apply_patch',
     ok: true,
-    display
+    details: {kind: 'apply_patch', display}
   });
 });

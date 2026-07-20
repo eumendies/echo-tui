@@ -6,6 +6,7 @@ import {
   createSetTodoStateOperation,
   createTruncateRecordsOperation
 } from '../../persistence/transcript-journal';
+import {createCompactionNoticeRecord} from '../../agent/context/context-compaction';
 import {cloneChangeHistory} from './change-history-context';
 
 import type {ChangeCheckpoint} from '../../types/change-history';
@@ -165,6 +166,22 @@ class TranscriptContext {
   setTodoState(todoState: TodoState | null | undefined): void {
     this.todoState = cloneTodoState(todoState);
     this.pendingTodoState = cloneTodoState(this.todoState);
+  }
+
+  /**
+   * 更新 todo 状态并立即持久化独立 journal 操作，避免调用方拆开状态与落盘步骤。
+   */
+  updateTodoState(todoState: TodoState): void {
+    this.setTodoState(todoState);
+    this.persistCurrentSession();
+  }
+
+  /**
+   * 应用压缩边界并将可见提示与状态写入同一个 journal batch。
+   */
+  applyCompaction(compaction: CompactionState): TranscriptRecord {
+    this.setCompaction(compaction);
+    return this.appendRecord(createCompactionNoticeRecord(compaction));
   }
 
   /**

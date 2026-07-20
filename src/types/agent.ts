@@ -1,5 +1,5 @@
 import type {CompactionState, TodoState, TranscriptRecord} from './transcript';
-import type {AskUserQuestionsRequest, ToolApprovalRequest, ToolCall, ToolExecutionResult, ToolRegistry} from './tool';
+import type {AskUserQuestionsRequest, ToolApprovalRequest, ToolCall, ToolExecutionResult} from './tool';
 import type {ChangeFileRecorder} from './change-history';
 
 export type InteractionMode = 'normal' | 'plan' | 'shell' | 'shell-local';
@@ -89,6 +89,7 @@ export type AgentTurnCallbacks = Pick<AgentCallbacks, 'onToken'>;
 
 export type AgentTurnOptions = {
   abortSignal?: AbortSignal;
+  isCompaction?: boolean;
 };
 
 export type AgentTurnResult = {
@@ -101,7 +102,6 @@ export type AgentTurnResult = {
 };
 
 export type ProviderAgent = {
-  initialize: (config: LlmConfig, registry: ToolRegistry) => void;
   runTurn: (records: TranscriptRecord[], callbacks?: AgentTurnCallbacks, options?: AgentTurnOptions) => Promise<AgentTurnResult>;
 };
 

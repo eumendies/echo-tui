@@ -153,6 +153,44 @@ test('createTranscriptStore tolerates a torn final write and rejects corrupt ear
   assert.equal(store.loadSession(cwd, reference.sessionId), null);
 });
 
+test('createTranscriptStore preserves unknown transcript fields while validating required record identity', () => {
+  const rootDir = createTempRoot();
+  const store = createTranscriptStore({rootDir});
+  const cwd = '/tmp/example/project';
+  const records = [
+    {
+      role: 'user',
+      text: 'future user',
+      futureRecordField: {enabled: true},
+      metadata: {
+        interactionMode: 'normal',
+        futureMetadataField: 'preserved'
+      }
+    },
+    {
+      role: 'tool_result',
+      text: 'done',
+      toolCallId: 'call-1',
+      toolName: 'future_tool',
+      ok: true,
+      details: {kind: 'generic', futureDetailField: 1}
+    }
+  ];
+  const reference = store.createSession(cwd, createAppendRecordsOperation(records), '2026-07-01T00:00:00.000Z');
+
+  assert.deepEqual(store.loadSession(cwd, reference.sessionId).session.records, records);
+
+  store.appendSession(cwd, reference, createAppendRecordsOperation([{role: 'assistant', text: 'continued'}]), '2026-07-01T00:00:01.000Z');
+  const filePath = store.getSessionFilePath(cwd, reference.sessionId);
+  const lines = fs.readFileSync(filePath, 'utf8').trimEnd().split('\n');
+  const firstEntry = JSON.parse(lines[1]);
+  firstEntry.records[1].toolCallId = '';
+  lines[1] = JSON.stringify(firstEntry);
+  fs.writeFileSync(filePath, `${lines.join('\n')}\n`, 'utf8');
+
+  assert.equal(store.loadSession(cwd, reference.sessionId), null);
+});
+
 test('createTranscriptStore repairs a valid final line without newline before continuing', () => {
   const rootDir = createTempRoot();
   const store = createTranscriptStore({rootDir});
@@ -206,8 +244,10 @@ test('createTranscriptStore hides provider-facing mode prompts from session prev
     role: 'user',
     text: '[Interaction Mode Transition]\n[Mode Instructions]\ninternal\n[User Request]\ninspect',
     displayText: 'inspect',
-    interactionMode: 'plan',
-    modeTransition: {from: 'normal', to: 'plan'}
+    metadata: {
+      interactionMode: 'plan',
+      modeTransition: {from: 'normal', to: 'plan'}
+    }
   }]), '2026-07-01T00:00:00.000Z');
 
   const [session] = store.listSessions(cwd);

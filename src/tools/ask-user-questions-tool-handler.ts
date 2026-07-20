@@ -180,6 +180,7 @@ function createAskUserQuestionsSuccessResult(call: ToolCall, answers: AskUserQue
     callId: call.callId,
     toolName: ASK_USER_QUESTIONS_TOOL_NAME,
     ok: true,
+    details: {kind: 'generic'},
     text: JSON.stringify({
       answers: answers.map((answer, index) => {
         if (answer.multiSelect) {
@@ -209,6 +210,7 @@ function createAskUserQuestionsCancelledResult(call: ToolCall, reason = 'User ca
     callId: call.callId,
     toolName: ASK_USER_QUESTIONS_TOOL_NAME,
     ok: false,
+    details: {kind: 'generic'},
     text: JSON.stringify({cancelled: true, reason})
   };
 }
@@ -218,6 +220,7 @@ function createAskUserQuestionsFailureResult(call: ToolCall, message: string): A
     callId: call.callId,
     toolName: ASK_USER_QUESTIONS_TOOL_NAME,
     ok: false,
+    details: {kind: 'generic'},
     text: message
   };
 }

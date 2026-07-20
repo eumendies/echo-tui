@@ -19,8 +19,6 @@ type InlineMatch = {
 /**
  * 解析普通文本中的 inline Markdown span；不支持时保留原文。
  *
- * @param {string} text
- * @returns {StyledSpan[]}
  */
 export function parseInlineSpans(text: string, theme: TuiTheme = DEFAULT_TUI_THEME): StyledSpan[] {
   const spans: StyledSpan[] = [];
@@ -51,8 +49,6 @@ export function parseInlineSpans(text: string, theme: TuiTheme = DEFAULT_TUI_THE
 /**
  * 合并同样式的相邻 span，避免重复打开/关闭 ANSI 样式。
  *
- * @param {StyledSpan[]} spans
- * @returns {StyledSpan[]}
  */
 export function mergeAdjacentSpans(spans: StyledSpan[]): StyledSpan[] {
   const merged: StyledSpan[] = [];
@@ -73,9 +69,6 @@ export function mergeAdjacentSpans(spans: StyledSpan[]): StyledSpan[] {
 /**
  * 查找下一个保守可识别 inline Markdown 片段。
  *
- * @param {string} text
- * @param {number} from
- * @returns {InlineMatch | null}
  */
 function findNextInline(text: string, from: number, theme: TuiTheme): InlineMatch | null {
   const candidates = [findInlineCode(text, from, theme), findInlineLink(text, from, theme), findInlineStrikethrough(text, from), findInlineBold(text, from, theme), findInlineItalic(text, from, theme)].filter(
@@ -86,7 +79,6 @@ function findNextInline(text: string, from: number, theme: TuiTheme): InlineMatc
   return candidates[0] ?? null;
 }
 
-/** @param {string} text @param {number} from @returns {InlineMatch | null} */
 function findInlineCode(text: string, from: number, theme: TuiTheme): InlineMatch | null {
   const start = text.indexOf('`', from);
   if (start < 0) {
@@ -101,7 +93,6 @@ function findInlineCode(text: string, from: number, theme: TuiTheme): InlineMatc
   return { start, end: end + 1, text: text.slice(start + 1, end), style: (value) => markdownStyle(theme, 'inlineCode', value) };
 }
 
-/** @param {string} text @param {number} from @returns {InlineMatch | null} */
 function findInlineStrikethrough(text: string, from: number): InlineMatch | null {
   const start = text.indexOf('~~', from);
   if (start < 0) {
@@ -116,7 +107,6 @@ function findInlineStrikethrough(text: string, from: number): InlineMatch | null
   return { start, end: end + 2, text: text.slice(start + 2, end), style: ansi.strikethrough };
 }
 
-/** @param {string} text @param {number} from @returns {InlineMatch | null} */
 function findInlineBold(text: string, from: number, theme: TuiTheme): InlineMatch | null {
   const start = text.indexOf('**', from);
   if (start < 0) {
@@ -131,7 +121,6 @@ function findInlineBold(text: string, from: number, theme: TuiTheme): InlineMatc
   return { start, end: end + 2, text: text.slice(start + 2, end), style: (value) => markdownStyle(theme, 'bold', value) };
 }
 
-/** @param {string} text @param {number} from @returns {InlineMatch | null} */
 function findInlineItalic(text: string, from: number, theme: TuiTheme): InlineMatch | null {
   const start = findSingleAsterisk(text, from);
   if (start < 0) {
@@ -146,7 +135,6 @@ function findInlineItalic(text: string, from: number, theme: TuiTheme): InlineMa
   return { start, end: end + 1, text: text.slice(start + 1, end), style: (value) => markdownStyle(theme, 'italic', value) };
 }
 
-/** @param {string} text @param {number} from @returns {InlineMatch | null} */
 function findInlineLink(text: string, from: number, theme: TuiTheme): InlineMatch | null {
   const pattern = /\[([^\]\n]+)]\(([^)\n]+)\)/g;
   pattern.lastIndex = from;
@@ -164,7 +152,6 @@ function findInlineLink(text: string, from: number, theme: TuiTheme): InlineMatc
   };
 }
 
-/** @param {string} text @param {number} from @returns {number} */
 function findSingleAsterisk(text: string, from: number): number {
   for (let index = from; index < text.length; index += 1) {
     if (text[index] !== '*') {

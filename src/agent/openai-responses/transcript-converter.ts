@@ -1,7 +1,7 @@
-import {formatImageDataUrl, formatShellRecordForProvider, formatToolResultImageIntro, getValidImageAttachments, hasToolCallId, hasToolCallMetadata} from '../transcript-converter-common';
-import {OPENAI_REASONING_TRANSCRIPT_ROLE} from '../../types/transcript';
+import {formatImageDataUrl, formatShellRecordForProvider, formatToolResultImageIntro, getValidImageAttachments} from '../transcript-converter-common';
+import {OPENAI_REASONING_EXTENSION_KIND} from '../../types/transcript';
 
-import type {TranscriptRecord} from '../../types/transcript';
+import type {ToolCallTranscriptRecord, ToolResultTranscriptRecord, TranscriptExtensionRecord, TranscriptRecord, UserTranscriptRecord} from '../../types/transcript';
 
 export type OpenAiInputMessage = {
   role: 'user' | 'assistant' | 'system';
@@ -35,6 +35,7 @@ export type OpenAiFunctionCallOutputInputItem = {
 
 export type OpenAiReasoningInputItem = {
   type: 'reasoning';
+  encrypted_content: string;
   [key: string]: unknown;
 };
 
@@ -42,7 +43,7 @@ export type OpenAiInputItem = OpenAiInputMessage | OpenAiFunctionCallInputItem |
 
 type OpenAiInputRole = OpenAiInputMessage['role'];
 
-const OPENAI_REASONING_RECORD_ROLE = OPENAI_REASONING_TRANSCRIPT_ROLE;
+const OPENAI_REASONING_RECORD_KIND = OPENAI_REASONING_EXTENSION_KIND;
 
 /**
  * 把本地 transcript 投影为 OpenAI Responses API 可接收的 input。
@@ -61,21 +62,13 @@ function convertTranscriptToOpenAiInput(records: TranscriptRecord[]): OpenAiInpu
     }
 
     if (record.role === 'tool_call') {
-      const item = convertToolCallRecord(record);
-
-      if (item) {
-        messages.push(item);
-      }
+      messages.push(convertToolCallRecord(record));
 
       continue;
     }
 
     if (record.role === 'tool_result') {
-      const item = convertToolResultRecord(record);
-
-      if (item) {
-        messages.push(item);
-      }
+      messages.push(convertToolResultRecord(record));
 
       const imageMessage = createToolResultImageMessage(record);
 
@@ -97,12 +90,9 @@ function convertTranscriptToOpenAiInput(records: TranscriptRecord[]): OpenAiInpu
       continue;
     }
 
-    if (record.role === OPENAI_REASONING_RECORD_ROLE) {
+    if (record.role === 'extension' && record.extension.kind === OPENAI_REASONING_RECORD_KIND) {
       const item = convertOpenAiReasoningRecord(record);
-
-      if (item) {
-        messages.push(item);
-      }
+      messages.push(item);
 
       continue;
     }
@@ -113,7 +103,7 @@ function convertTranscriptToOpenAiInput(records: TranscriptRecord[]): OpenAiInpu
   return messages;
 }
 
-function createUserContent(record: TranscriptRecord): string | OpenAiInputContentBlock[] {
+function createUserContent(record: UserTranscriptRecord): string | OpenAiInputContentBlock[] {
   const attachments = getValidImageAttachments(record);
 
   if (attachments.length === 0) {
@@ -129,12 +119,7 @@ function createUserContent(record: TranscriptRecord): string | OpenAiInputConten
   ];
 }
 
-function convertToolCallRecord(record: TranscriptRecord): OpenAiFunctionCallInputItem | null {
-  if (!hasToolCallMetadata(record)) {
-    // 兼容旧 session：缺少 metadata 的历史 tool_call 文本不能安全回注给 OpenAI。
-    return null;
-  }
-
+function convertToolCallRecord(record: ToolCallTranscriptRecord): OpenAiFunctionCallInputItem {
   return {
     type: 'function_call',
     call_id: record.toolCallId,
@@ -146,12 +131,7 @@ function convertToolCallRecord(record: TranscriptRecord): OpenAiFunctionCallInpu
 /**
  * 把本地 tool_result 回注为 OpenAI function_call_output。
  */
-function convertToolResultRecord(record: TranscriptRecord): OpenAiFunctionCallOutputInputItem | null {
-  if (!hasToolCallId(record)) {
-    // 没有 call_id 就无法和前序 function_call 配对，必须跳过。
-    return null;
-  }
-
+function convertToolResultRecord(record: ToolResultTranscriptRecord): OpenAiFunctionCallOutputInputItem {
   return {
     type: 'function_call_output',
     call_id: record.toolCallId,
@@ -159,11 +139,7 @@ function convertToolResultRecord(record: TranscriptRecord): OpenAiFunctionCallOu
   };
 }
 
-function createToolResultImageMessage(record: TranscriptRecord): OpenAiInputMessage | null {
-  if (!hasToolCallId(record)) {
-    return null;
-  }
-
+function createToolResultImageMessage(record: ToolResultTranscriptRecord): OpenAiInputMessage | null {
   const attachments = getValidImageAttachments(record);
 
   if (attachments.length === 0) {
@@ -189,33 +165,29 @@ function isOpenAiInputRole(role: TranscriptRecord['role']): role is OpenAiInputR
   return role === 'user' || role === 'assistant' || role === 'system';
 }
 
-function createOpenAiReasoningRecord(item: OpenAiReasoningInputItem): TranscriptRecord {
+function createOpenAiReasoningRecord(item: OpenAiReasoningInputItem): TranscriptExtensionRecord {
   return {
-    role: OPENAI_REASONING_RECORD_ROLE,
+    role: 'extension',
     text: '',
-    item,
-    provider: 'openai'
+    extension: {
+      kind: OPENAI_REASONING_RECORD_KIND,
+      item
+    }
   };
 }
 
-function convertOpenAiReasoningRecord(record: TranscriptRecord): OpenAiReasoningInputItem | null {
-  const item = record.item;
+function convertOpenAiReasoningRecord(record: TranscriptExtensionRecord): OpenAiReasoningInputItem {
+  const extension = record.extension;
 
-  if (!item || typeof item !== 'object' || Array.isArray(item)) {
-    return null;
+  if (extension.kind !== OPENAI_REASONING_RECORD_KIND) {
+    throw new Error('OpenAI reasoning record kind mismatch');
   }
 
-  const candidate = item as {encrypted_content?: unknown; type?: unknown};
-
-  if (candidate.type !== 'reasoning' || typeof candidate.encrypted_content !== 'string' || candidate.encrypted_content.trim() === '') {
-    return null;
-  }
-
-  return item as OpenAiReasoningInputItem;
+  return extension.item;
 }
 
 export {
-  OPENAI_REASONING_RECORD_ROLE,
+  OPENAI_REASONING_RECORD_KIND,
   createOpenAiReasoningRecord,
   convertTranscriptToOpenAiInput
 };

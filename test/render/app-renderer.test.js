@@ -11,11 +11,79 @@ const DEFAULT_STATUS_LINE = {
   mode: 'idle'
 };
 const ASK_USER_QUESTIONS_TOOL_NAME = 'ask_user_questions';
-const {
-  createAppRenderer,
-  renderTranscriptLines
-} = require('../../src/render/app-renderer');
+const appRenderer = require('../../src/render/app-renderer');
 const { renderToolCallPreviewLines } = require('../../src/render/tool-message-renderer');
+
+function normalizeTranscriptRecord(record, index = 0) {
+  if (record.role === 'user') {
+    const {interactionMode, modeTransition, skillInvocation, agentWorkflow, ...rest} = record;
+    const metadata = {
+      ...(rest.metadata || {}),
+      ...(interactionMode ? {interactionMode} : {}),
+      ...(modeTransition ? {modeTransition} : {}),
+      ...(skillInvocation ? {skillInvocation} : {}),
+      ...(agentWorkflow ? {agentWorkflow} : {})
+    };
+    return {...rest, ...(Object.keys(metadata).length > 0 ? {metadata} : {})};
+  }
+
+  if (record.role === 'tool_call') {
+    return {
+      ...record,
+      toolCallId: record.toolCallId || `fixture-call-${index}`,
+      toolName: record.toolName || 'unknown_tool',
+      argumentsText: record.argumentsText ?? '{}'
+    };
+  }
+
+  if (record.role === 'tool_result') {
+    const {exitCode, timedOut, truncated, durationMs, display, ...rest} = record;
+    let details = record.details;
+
+    if (!details && record.toolName === 'run_bash_command') {
+      details = {kind: 'bash', exitCode, timedOut, truncated, durationMs};
+    } else if (!details && record.toolName === 'apply_patch') {
+      details = {kind: 'apply_patch', ...(display ? {display} : {})};
+    }
+
+    return {
+      ...rest,
+      toolCallId: record.toolCallId || `fixture-result-${index}`,
+      toolName: record.toolName || 'unknown_tool',
+      ok: record.ok ?? false,
+      details: details || {kind: 'generic'}
+    };
+  }
+
+  return record;
+}
+
+function normalizeTranscriptRecords(records) {
+  return records.map(normalizeTranscriptRecord);
+}
+
+function renderTranscriptLines(records, ...args) {
+  return appRenderer.renderTranscriptLines(normalizeTranscriptRecords(records), ...args);
+}
+
+function createAppRenderer(output) {
+  const renderer = appRenderer.createAppRenderer(output);
+  return {
+    ...renderer,
+    appendRecord(options) {
+      return renderer.appendRecord({...options, record: normalizeTranscriptRecord(options.record)});
+    },
+    appendRecords(options) {
+      return renderer.appendRecords({...options, records: normalizeTranscriptRecords(options.records)});
+    },
+    renderDestructive(options) {
+      return renderer.renderDestructive({...options, records: normalizeTranscriptRecords(options.records)});
+    },
+    renderFinal(options) {
+      return renderer.renderFinal({...options, records: normalizeTranscriptRecords(options.records)});
+    }
+  };
+}
 
 function assertSafeRenderLines(lines, width) {
   for (const line of lines) {
@@ -43,7 +111,8 @@ function createAskUserQuestionsResult(callId, payload, ok = true) {
     text: typeof payload === 'string' ? payload : JSON.stringify(payload),
     toolCallId: callId,
     toolName: ASK_USER_QUESTIONS_TOOL_NAME,
-    ok
+    ok,
+    details: {kind: 'generic'}
   };
 }
 
@@ -63,7 +132,8 @@ function createMemoryToolResult(callId, toolName, payload, ok = true) {
     text: typeof payload === 'string' ? payload : JSON.stringify(payload),
     toolCallId: callId,
     toolName,
-    ok
+    ok,
+    details: {kind: 'generic'}
   };
 }
 
@@ -624,8 +694,8 @@ test('renderTranscriptLines displays stderr, no output, timeout, truncation, and
         ok: true,
         truncated: true
       },
-      { role: 'tool_call', text: 'legacy call' },
-      { role: 'tool_result', text: 'legacy result' }
+      { role: 'tool_call', text: '', toolCallId: 'generic', toolName: 'generic_tool', argumentsText: 'legacy call' },
+      { role: 'tool_result', text: 'legacy result', toolCallId: 'generic', toolName: 'generic_tool', ok: true, details: {kind: 'generic'} }
     ],
     80
   ).map((line) => stripAnsi(line));
@@ -636,7 +706,7 @@ test('renderTranscriptLines displays stderr, no output, timeout, truncation, and
   assert.ok(lines.includes('  ⎿ (no output)'));
   assert.ok(lines.includes('  ⎿ Command timed out.'));
   assert.ok(lines.includes('    [tool output truncated for display]'));
-  assert.ok(lines.includes('◆ Tool(legacy call)'));
+  assert.ok(lines.includes('◆ generic_tool(legacy call)'));
   assert.ok(lines.includes('  ⎿ legacy result'));
 });
 

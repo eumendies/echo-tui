@@ -48,8 +48,6 @@ const USER_MESSAGE_PREFIX = '▌ ';
  * 2. 中等终端：回退到带边框的紧凑 banner，保留 cwd 和 Node 版本。
  * 3. 极窄终端：只保留最小可读标题和 cwd，优先避免横向撑爆。
  *
- * @param {{cwd?: string, nodeVersion?: string, terminalSize?: {columns: number, rows: number}}} [context={}]
- * @returns {string}
  */
 export function renderBanner(context: BannerRenderContext = {}, theme: TuiTheme = DEFAULT_TUI_THEME): string {
   const cwd = shortenPath(context.cwd || process.cwd(), 56);
@@ -101,10 +99,6 @@ export function renderBanner(context: BannerRenderContext = {}, theme: TuiTheme 
 /**
  * 渲染 banner 的单行盒子内容，左右保留强调边框。
  *
- * @param {string} content
- * @param {number} innerWidth
- * @param {(text: string) => string} styleContent
- * @returns {string}
  */
 function renderBannerBoxLine(content: string, innerWidth: number, styleContent: TextStyle, theme: TuiTheme): string {
   const fitted = padToDisplayWidth(clampToDisplayWidth(content, innerWidth), innerWidth);
@@ -114,9 +108,6 @@ function renderBannerBoxLine(content: string, innerWidth: number, styleContent: 
 /**
  * 把文本居中到目标显示宽度，给启动 banner 的标题和元信息建立更稳定的视觉中心。
  *
- * @param {string} text
- * @param {number} width
- * @returns {string}
  */
 function centerToDisplayWidth(text: string, width: number): string {
   const normalizedWidth = Math.max(0, width);
@@ -135,9 +126,6 @@ function centerToDisplayWidth(text: string, width: number): string {
 /**
  * 在超长 cwd 场景下截断路径，优先保留尾部信息。
  *
- * @param {string} value
- * @param {number} maxWidth
- * @returns {string}
  */
 function shortenPath(value: string, maxWidth: number): string {
   if (value.length <= maxWidth) {
@@ -150,9 +138,6 @@ function shortenPath(value: string, maxWidth: number): string {
 /**
  * 按显示宽度截断文本，并在需要时追加省略号。
  *
- * @param {string} text
- * @param {number} width
- * @returns {string}
  */
 function clampToDisplayWidth(text: string, width: number): string {
   const normalizedWidth = Math.max(0, width);
@@ -186,9 +171,6 @@ function clampToDisplayWidth(text: string, width: number): string {
  * 渲染完整的用户消息块，并在灰底内外附加呼吸空间。
  * interactionMode 来自消息提交时的 transcript metadata，确保历史 plan 消息重绘时颜色稳定。
  *
- * @param {string} text
- * @param {number} [width=80]
- * @returns {string}
  */
 export function renderUserBlock(text: string, width = 80, theme: TuiTheme = DEFAULT_TUI_THEME, interactionMode?: string): string {
   // 用户提交后保留块级呼吸空间，并在灰底内部增加上下留白，让消息块更饱满。
@@ -199,9 +181,6 @@ export function renderUserBlock(text: string, width = 80, theme: TuiTheme = DEFA
 /**
  * 渲染完整的 assistant 消息块。
  *
- * @param {string} text
- * @param {number} [width=80]
- * @returns {string}
  */
 export function renderAssistantBlock(text: string, width = 80, theme: TuiTheme = DEFAULT_TUI_THEME): string {
   return [...renderAssistantMessageLines(text, width, theme), '', ''].join('\n');
@@ -210,9 +189,6 @@ export function renderAssistantBlock(text: string, width = 80, theme: TuiTheme =
 /**
  * 渲染完整的本地错误消息块。
  *
- * @param {string} text
- * @param {number} [width=80]
- * @returns {string}
  */
 export function renderErrorBlock(text: string, width = 80, theme: TuiTheme = DEFAULT_TUI_THEME): string {
   return [...renderErrorMessageLines(text, width, theme), '', ''].join('\n');
@@ -221,9 +197,6 @@ export function renderErrorBlock(text: string, width = 80, theme: TuiTheme = DEF
 /**
  * 渲染上下文压缩提示块，使用克制的灰色样式区别于 user/assistant/error。
  *
- * @param {string} text
- * @param {number} [width=80]
- * @returns {string}
  */
 export function renderCompactionNoticeBlock(text: string, width = 80, theme: TuiTheme = DEFAULT_TUI_THEME): string {
   return [...renderCompactionNoticeLines(text, width, theme), '', ''].join('\n');
@@ -232,9 +205,6 @@ export function renderCompactionNoticeBlock(text: string, width = 80, theme: Tui
 /**
  * 渲染本地中断提示块，复用低强调层级但保留独立语义入口。
  *
- * @param {string} text
- * @param {number} [width=80]
- * @returns {string}
  */
 export function renderLocalNoticeBlock(text: string, width = 80, theme: TuiTheme = DEFAULT_TUI_THEME): string {
   return [...renderLocalNoticeLines(text, width, theme), '', ''].join('\n');
@@ -250,9 +220,6 @@ export function renderShellBlock(text: string, width = 80, theme: TuiTheme = DEF
 /**
  * 渲染 reasoning summary 消息块；它是模型摘要而非最终 assistant 回复，视觉上保持低强调。
  *
- * @param {string} text
- * @param {number} [width=80]
- * @returns {string}
  */
 export function renderReasoningSummaryBlock(text: string, width = 80, theme: TuiTheme = DEFAULT_TUI_THEME): string {
   return [...renderReasoningSummaryLines(text, width, theme), '', ''].join('\n');
@@ -262,9 +229,6 @@ export function renderReasoningSummaryBlock(text: string, width = 80, theme: Tui
  * 把用户消息投影为逐行字符串，并对整行应用灰底背景。
  * plan mode 历史消息只覆盖竖条前缀，正文和背景继续使用 user block 主题 token。
  *
- * @param {string} text
- * @param {number} [width=80]
- * @returns {string[]}
  */
 export function renderUserMessageLines(text: string, width = 80, theme: TuiTheme = DEFAULT_TUI_THEME, interactionMode?: string): string[] {
   return renderSymbolMessage({
@@ -291,9 +255,6 @@ function renderUserMessageLine(line: string, theme: TuiTheme, interactionMode: s
 /**
  * 把 assistant 正式消息投影为逐行字符串。
  *
- * @param {string} text
- * @param {number} [width=80]
- * @returns {string[]}
  */
 export function renderAssistantMessageLines(text: string, width = 80, theme: TuiTheme = DEFAULT_TUI_THEME): string[] {
   return renderMarkdownLinesWithOptions(text, { width, prefix: '◆ ', theme: withMarkdownRoleColor(theme, theme.blocks.colors.assistantPrefix) });
@@ -302,9 +263,6 @@ export function renderAssistantMessageLines(text: string, width = 80, theme: Tui
 /**
  * 把本地错误消息投影为逐行字符串。
  *
- * @param {string} text
- * @param {number} [width=80]
- * @returns {string[]}
  */
 export function renderErrorMessageLines(text: string, width = 80, theme: TuiTheme = DEFAULT_TUI_THEME): string[] {
   return renderSymbolMessage({
@@ -318,9 +276,6 @@ export function renderErrorMessageLines(text: string, width = 80, theme: TuiThem
 /**
  * 把上下文压缩提示投影为逐行字符串；整体使用 dim 灰色，弱化为系统提示。
  *
- * @param {string} text
- * @param {number} [width=80]
- * @returns {string[]}
  */
 export function renderCompactionNoticeLines(text: string, width = 80, theme: TuiTheme = DEFAULT_TUI_THEME): string[] {
   return renderSymbolMessage({
@@ -334,9 +289,6 @@ export function renderCompactionNoticeLines(text: string, width = 80, theme: Tui
 /**
  * 把本地中断提示投影为逐行字符串；视觉上弱化，避免被误认为 assistant 或 error。
  *
- * @param {string} text
- * @param {number} [width=80]
- * @returns {string[]}
  */
 export function renderLocalNoticeLines(text: string, width = 80, theme: TuiTheme = DEFAULT_TUI_THEME): string[] {
   return renderSymbolMessage({
@@ -350,9 +302,6 @@ export function renderLocalNoticeLines(text: string, width = 80, theme: TuiTheme
 /**
  * 把 reasoning summary 投影为弱化文本；避免和 assistant final answer 混淆。
  *
- * @param {string} text
- * @param {number} [width=80]
- * @returns {string[]}
  */
 export function renderReasoningSummaryLines(text: string, width = 80, theme: TuiTheme = DEFAULT_TUI_THEME): string[] {
   return renderSymbolMessage({
@@ -379,9 +328,6 @@ function renderShellMessageLines(text: string, width = 80, theme: TuiTheme): str
  * streaming状态：展示模型流式输出内容
  * tool_call状态：展示模型调用的工具
  *
- * @param {{kind: 'thinking', frame: number}|{kind: 'streaming', text: string}} pending
- * @param {number} [width=80]
- * @returns {string[]}
  */
 export function renderPendingAssistantLines(
   pending: PendingState,
@@ -440,9 +386,6 @@ function renderShellOutputPendingLines(command: string, output: string, width: n
 /**
  * 渲染 streaming pending preview；长文本只保留尾部，避免 footer 高度无限增长。
  *
- * @param {string} text
- * @param {number} width
- * @returns {string[]}
  */
 function renderStreamingPendingLines(text: string, width: number, maxLines: number, theme: TuiTheme): string[] {
   const lines = renderMarkdownLinesWithOptions(text, { width, prefix: '◇ ', theme: withMarkdownRoleColor(theme, theme.blocks.colors.pendingPrefix) });
@@ -521,8 +464,6 @@ function truncatePendingPreviewLines(lines: string[], width: number, maxLines: n
 /**
  * 通用符号消息 renderer：负责首行前缀、多行缩进和按当前宽度换行。
  *
- * @param {{text: string, width: number, prefix: string, colorizePrefix?: (text: string) => string, colorizeLine?: (text: string) => string, repeatPrefixEveryLine?: boolean}} options
- * @returns {string[]}
  */
 function renderSymbolMessage({ text, width, prefix, colorizePrefix, colorizeLine, repeatPrefixEveryLine = false }: SymbolMessageOptions): string[] {
   // 布局计算只使用未上色 prefix，避免 ANSI escape sequence 干扰显示宽度。
@@ -555,12 +496,6 @@ function renderSymbolMessage({ text, width, prefix, colorizePrefix, colorizeLine
 /**
  * 对单行消息应用前缀着色或整行背景着色。
  *
- * @param {string} rawLine
- * @param {number} width
- * @param {string} renderedPrefix
- * @param {string} rawPrefix
- * @param {(text: string) => string} [colorizeLine]
- * @returns {string}
  */
 function renderMessageLine(rawLine: string, width: number, renderedPrefix: string, rawPrefix: string, colorizeLine?: TextStyle): string {
   if (colorizeLine) {
@@ -578,9 +513,6 @@ function renderMessageLine(rawLine: string, width: number, renderedPrefix: strin
 /**
  * 把文本补齐到目标显示宽度，避免背景色在行尾提前结束。
  *
- * @param {string} text
- * @param {number} width
- * @returns {string}
  */
 function padToDisplayWidth(text: string, width: number): string {
   const currentWidth = displayWidth(text);
@@ -595,10 +527,6 @@ function padToDisplayWidth(text: string, width: number): string {
 /**
  * 在扣除前缀宽度后对单个逻辑行做自动换行。
  *
- * @param {string} text
- * @param {number} width
- * @param {number} prefixWidth
- * @returns {string[]}
  */
 function wrapContentLine(text: string, width: number, prefixWidth: number): string[] {
   const lines = [''];

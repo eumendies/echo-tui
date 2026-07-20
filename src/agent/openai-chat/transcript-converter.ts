@@ -6,13 +6,11 @@ import {
   formatToolResultImageIntro,
   getValidImageAttachments,
   hasKnownToolCallId,
-  hasToolCallId,
-  hasToolCallMetadata,
   parseJsonObjectText
 } from '../transcript-converter-common';
-import {ANTHROPIC_THINKING_TRANSCRIPT_ROLE, OPENAI_CHAT_REASONING_TRANSCRIPT_ROLE, OPENAI_REASONING_TRANSCRIPT_ROLE} from '../../types/transcript';
+import {OPENAI_CHAT_REASONING_EXTENSION_KIND} from '../../types/transcript';
 
-import type {TranscriptRecord} from '../../types/transcript';
+import type {ToolCallTranscriptRecord, ToolResultTranscriptRecord, TranscriptExtensionRecord, TranscriptRecord, UserTranscriptRecord} from '../../types/transcript';
 
 export type OpenAiChatMessage =
   | OpenAiChatTextMessage
@@ -64,7 +62,7 @@ type ToolCallProjection =
   | {kind: 'valid'; toolCall: OpenAiChatToolCall}
   | {kind: 'invalid'; feedback: string; id: string};
 
-const FILTERED_ROLES = new Set(['error', 'local_notice', 'reasoning_summary', OPENAI_REASONING_TRANSCRIPT_ROLE, ANTHROPIC_THINKING_TRANSCRIPT_ROLE]);
+const FILTERED_ROLES = new Set(['error', 'compaction_notice', 'local_notice', 'reasoning_summary']);
 
 /**
  * 把本地 transcript 投影为 Chat Completions messages，并把平铺工具记录重组成 Chat 工具历史。
@@ -112,8 +110,12 @@ function convertTranscriptToOpenAiChatMessages(records: TranscriptRecord[]): Ope
       continue;
     }
 
-    if (record.role === OPENAI_CHAT_REASONING_TRANSCRIPT_ROLE) {
+    if (record.role === 'extension' && record.extension.kind === OPENAI_CHAT_REASONING_EXTENSION_KIND) {
       pendingReasoningContent = readChatReasoningContent(record);
+      continue;
+    }
+
+    if (record.role === 'extension') {
       continue;
     }
 
@@ -178,7 +180,7 @@ function convertTranscriptToOpenAiChatMessages(records: TranscriptRecord[]): Ope
   return messages;
 }
 
-function createUserContent(record: TranscriptRecord): string | OpenAiChatContentBlock[] {
+function createUserContent(record: UserTranscriptRecord): string | OpenAiChatContentBlock[] {
   const attachments = getValidImageAttachments(record);
 
   if (attachments.length === 0) {
@@ -219,23 +221,28 @@ function createToolAssistantMessage(messages: OpenAiChatMessage[], reasoningCont
   return assistant;
 }
 
-function readChatReasoningContent(record: TranscriptRecord): string | null {
-  return typeof record.reasoningContent === 'string' && record.reasoningContent.trim() !== '' ? record.reasoningContent : null;
+function readChatReasoningContent(record: TranscriptExtensionRecord): string {
+  const extension = record.extension;
+
+  if (extension.kind !== OPENAI_CHAT_REASONING_EXTENSION_KIND) {
+    throw new Error('OpenAI Chat reasoning record kind mismatch');
+  }
+
+  return extension.reasoningContent;
 }
 
-function createOpenAiChatReasoningRecord(reasoningContent: string): TranscriptRecord {
+function createOpenAiChatReasoningRecord(reasoningContent: string): TranscriptExtensionRecord {
   return {
-    role: OPENAI_CHAT_REASONING_TRANSCRIPT_ROLE,
+    role: 'extension',
     text: '',
-    reasoningContent
+    extension: {
+      kind: OPENAI_CHAT_REASONING_EXTENSION_KIND,
+      reasoningContent
+    }
   };
 }
 
-function convertToolCallRecord(record: TranscriptRecord): ToolCallProjection | null {
-  if (!hasToolCallMetadata(record)) {
-    return null;
-  }
-
+function convertToolCallRecord(record: ToolCallTranscriptRecord): ToolCallProjection {
   if (!parseJsonObjectText(record.argumentsText)) {
     return {
       kind: 'invalid',
@@ -257,7 +264,7 @@ function convertToolCallRecord(record: TranscriptRecord): ToolCallProjection | n
   };
 }
 
-function convertToolResultRecord(record: TranscriptRecord, knownToolCallIds: Set<string>): OpenAiChatToolMessage | null {
+function convertToolResultRecord(record: ToolResultTranscriptRecord, knownToolCallIds: Set<string>): OpenAiChatToolMessage | null {
   if (!hasKnownToolCallId(record, knownToolCallIds)) {
     return null;
   }
@@ -269,11 +276,7 @@ function convertToolResultRecord(record: TranscriptRecord, knownToolCallIds: Set
   };
 }
 
-function createToolResultImageMessage(record: TranscriptRecord): OpenAiChatTextMessage | null {
-  if (!hasToolCallId(record)) {
-    return null;
-  }
-
+function createToolResultImageMessage(record: ToolResultTranscriptRecord): OpenAiChatTextMessage | null {
   const attachments = getValidImageAttachments(record);
 
   if (attachments.length === 0) {
@@ -297,7 +300,7 @@ function createToolResultImageMessage(record: TranscriptRecord): OpenAiChatTextM
   };
 }
 
-function convertInvalidToolResultRecord(record: TranscriptRecord, invalidToolCallFeedback: Map<string, string>): OpenAiChatTextMessage | null {
+function convertInvalidToolResultRecord(record: ToolResultTranscriptRecord, invalidToolCallFeedback: Map<string, string>): OpenAiChatTextMessage | null {
   const feedback = consumeInvalidToolResultFeedback(record, invalidToolCallFeedback);
 
   if (!feedback) {

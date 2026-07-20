@@ -160,7 +160,7 @@ export class MemoryCommandHandler implements CommandHandler<MemoryData> {
   description = '查看和管理持久 memory';
 
   match(text: string): boolean {
-    return String(text).trim() === '/memory';
+    return text.trim() === '/memory';
   }
 
   start(_text: string, host: CommandHost): void {

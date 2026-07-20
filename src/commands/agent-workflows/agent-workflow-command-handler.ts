@@ -18,7 +18,7 @@ function parseAgentWorkflowText(
   text: string,
   definition: AgentWorkflowDefinition
 ): {argumentsText?: string} | null {
-  const match = /^\/([^/\s]+)(?:\s+([\s\S]*))?$/u.exec(String(text));
+  const match = /^\/([^/\s]+)(?:\s+([\s\S]*))?$/u.exec(text);
 
   if (!match || match[1] !== definition.name) {
     return null;
@@ -75,7 +75,7 @@ export class AgentWorkflowCommandHandler implements CommandHandler {
     return {
       kind: 'submit_user_message',
       text: this.definition.createPrompt(parsed),
-      displayText: String(text),
+      displayText: text,
       metadata: {
         agentWorkflow: {
           source: 'builtin',

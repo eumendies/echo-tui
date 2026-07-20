@@ -61,28 +61,31 @@ function createToolRegistry() {
 test('createCodexAgent resolves OAuth credential for each provider turn', async () => {
   const clientConfigs = [];
   const requests = [];
-  const agent = createCodexAgent({
-    createClient(config) {
-      clientConfigs.push(config);
-      return {
-        responses: {
-          async create(request) {
-            requests.push(request);
-            return streamFrom([
-              {type: 'response.output_text.delta', delta: 'ok'},
-              {type: 'response.completed'}
-            ]);
+  const agent = createCodexAgent(
+    {...TEST_CONFIG, headers: {'x-source': 'echo-tui'}},
+    createEmptyToolRegistry(),
+    {
+      createClient(config) {
+        clientConfigs.push(config);
+        return {
+          responses: {
+            async create(request) {
+              requests.push(request);
+              return streamFrom([
+                {type: 'response.output_text.delta', delta: 'ok'},
+                {type: 'response.completed'}
+              ]);
+            }
           }
-        }
-      };
-    },
-    async resolveCodexOAuthCredential(config) {
-      assert.deepEqual(config, {authFilePath: '/tmp/codex-auth.json'});
-      return {accessToken: 'access-token', accountId: 'acct-123'};
+        };
+      },
+      async resolveCodexOAuthCredential(config) {
+        assert.deepEqual(config, {authFilePath: '/tmp/codex-auth.json'});
+        return {accessToken: 'access-token', accountId: 'acct-123'};
+      }
     }
-  });
+  );
 
-  agent.initialize({...TEST_CONFIG, headers: {'x-source': 'echo-tui'}}, createEmptyToolRegistry());
   assert.equal(clientConfigs.length, 0);
 
   const result = await agent.runTurn([{role: 'user', text: 'hello'}], {});
@@ -152,4 +155,25 @@ test('createCodexRequest sends reasoning effort when configured', () => {
       reasoning: {effort: 'high'}
     }
   );
+});
+
+test('createCodexRequest omits tools and reasoning for compaction requests', () => {
+  const records = [{role: 'system', text: 'compress'}, {role: 'user', text: 'summarize'}];
+  const config = {...TEST_CONFIG, reasoningEffort: 'high'};
+  const request = createCodexRequest(records, config, createToolRegistry(), {isCompaction: true});
+
+  assert.deepEqual(request, {
+    input: [{role: 'user', content: 'summarize'}],
+    model: 'test-model',
+    prompt_cache_key: createPromptCacheKey(records, config),
+    stream: true,
+    store: false,
+    instructions: 'compress',
+    text: {verbosity: 'low'}
+  });
+  assert.equal('include' in request, false);
+  assert.equal('reasoning' in request, false);
+  assert.equal('tools' in request, false);
+  assert.equal('tool_choice' in request, false);
+  assert.equal('parallel_tool_calls' in request, false);
 });

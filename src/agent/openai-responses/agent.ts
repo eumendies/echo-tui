@@ -60,10 +60,10 @@ function createClient(config: LlmConfig, OpenAIClient: new (options: {apiKey: st
 }
 
 /**
- * 根据当前 transcript 快照创建 Responses API 请求；registry 非空时暴露本地工具定义。
+ * 根据当前 transcript 快照创建 Responses API 请求；压缩用途不暴露工具或 reasoning 配置。
  */
-function createRequest(records: TranscriptRecord[], config: LlmConfig, registry?: ToolRegistry): ResponseCreateRequest {
-  const toolDefinitions = registry && !registry.isEmpty() ? registry.listDefinitions() : [];
+function createRequest(records: TranscriptRecord[], config: LlmConfig, registry?: ToolRegistry, options: AgentTurnOptions = {}): ResponseCreateRequest {
+  const toolDefinitions = !options.isCompaction && registry && !registry.isEmpty() ? registry.listDefinitions() : [];
   const request: ResponseCreateRequest = {
     input: convertTranscriptToOpenAiInput(records),
     model: config.model,
@@ -71,7 +71,7 @@ function createRequest(records: TranscriptRecord[], config: LlmConfig, registry?
     stream: true
   };
 
-  if (config.reasoningEffort || config.reasoningSummary) {
+  if (!options.isCompaction && (config.reasoningEffort || config.reasoningSummary)) {
     request.reasoning = {
       ...(config.reasoningEffort ? {effort: config.reasoningEffort} : {}),
       ...(config.reasoningSummary ? {summary: config.reasoningSummary} : {})
@@ -173,7 +173,7 @@ function extractReasoningOutputItem(event: unknown): TranscriptRecord | null {
   }
 
   // 只有带 encrypted_content 的 reasoning item 才能跨请求安全回传；仅有 id 的 item 可能触发服务端 not found。
-  return createOpenAiReasoningRecord(item as {type: 'reasoning'; [key: string]: unknown});
+  return createOpenAiReasoningRecord(item as {type: 'reasoning'; encrypted_content: string; [key: string]: unknown});
 }
 
 function isCompletedEvent(event: unknown): boolean {
@@ -358,21 +358,14 @@ async function readResponseStream(stream: ResponseStream, callbacks: AgentTurnCa
  * 创建基于 OpenAI SDK 的单次 provider turn agent；tool loop 由 agent-loop-runtime 编排。
  */
 class OpenAiAgent implements ProviderAgent {
-  private client: ResponseClient | null = null;
-  private config: LlmConfig | null = null;
-  private makeClient: (config: LlmConfig) => unknown;
-  private registry: ToolRegistry | null = null;
+  private readonly client: ResponseClient;
+  private readonly config: LlmConfig;
+  private readonly registry: ToolRegistry;
 
-  constructor(dependencies: OpenAiAgentDependencies = {}) {
+  constructor(config: LlmConfig, registry: ToolRegistry, dependencies: OpenAiAgentDependencies = {}) {
     const OpenAIClient = dependencies.OpenAIClient || OpenAI;
-    this.makeClient = dependencies.createClient || ((config: LlmConfig) => createClient(config, OpenAIClient));
-  }
-
-  /**
-   * 使用当前配置初始化 OpenAI client 和本轮可用工具定义。
-   */
-  initialize(config: LlmConfig, registry: ToolRegistry): void {
-    const client = this.makeClient(config);
+    const makeClient = dependencies.createClient || ((clientConfig: LlmConfig) => createClient(clientConfig, OpenAIClient));
+    const client = makeClient(config);
     assertResponseClient(client);
 
     this.client = client;
@@ -384,14 +377,10 @@ class OpenAiAgent implements ProviderAgent {
    * 执行一次 OpenAI provider turn；工具循环由外层 runtime 继续编排。
    */
   async runTurn(records: TranscriptRecord[], callbacks: AgentTurnCallbacks = {}, options: AgentTurnOptions = {}): Promise<AgentTurnResult> {
-    if (!this.client || !this.config || !this.registry) {
-      throw new LlmAgentError('模型运行时尚未初始化');
-    }
-
     let stream: ResponseStream;
 
     try {
-      stream = await this.client.responses.create(createRequest(records, this.config, this.registry), {signal: options.abortSignal});
+      stream = await this.client.responses.create(createRequest(records, this.config, this.registry, options), {signal: options.abortSignal});
     } catch (error: unknown) {
       if (isAbortError(error) || options.abortSignal?.aborted) {
         throwIfAborted(options.abortSignal);
@@ -404,8 +393,8 @@ class OpenAiAgent implements ProviderAgent {
   }
 }
 
-function createOpenAiAgent(dependencies: OpenAiAgentDependencies = {}): ProviderAgent {
-  return new OpenAiAgent(dependencies);
+function createOpenAiAgent(config: LlmConfig, registry: ToolRegistry, dependencies: OpenAiAgentDependencies = {}): ProviderAgent {
+  return new OpenAiAgent(config, registry, dependencies);
 }
 
 export {

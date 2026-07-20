@@ -12,6 +12,10 @@ const { createDefaultToolRegistry } = require('../../src/tools/tool-registry');
 const TEST_CWD = '/tmp/echo_tui';
 const TEST_SYSTEM_PROMPT = createBuiltInSystemPrompt({ cwd: TEST_CWD });
 
+function createOpenAiReasoningTranscriptRecord(item) {
+  return {role: 'extension', text: '', extension: {kind: 'openai_reasoning', item}};
+}
+
 const TEST_CONFIG = {
   agentType: 'openai',
   apiKey: 'test-api-key',
@@ -49,13 +53,12 @@ function createHarness(eventsOrFactory) {
       }
     }
   };
-  const agent = createOpenAiAgent({
+  const agent = createOpenAiAgent(TEST_CONFIG, createEmptyToolRegistry(), {
     createClient(config) {
       assert.deepEqual(config, TEST_CONFIG);
       return client;
     }
   });
-  agent.initialize(TEST_CONFIG, createEmptyToolRegistry());
   async function runTurn(records, callbacks, options) {
     return agent.runTurn(records, callbacks, options);
   }
@@ -154,9 +157,8 @@ test('createOpenAiAgent configures SDK retry count', async () => {
       };
     }
   }
-  const agent = createOpenAiAgent({ OpenAIClient: FakeOpenAI });
+  const agent = createOpenAiAgent(TEST_CONFIG, createEmptyToolRegistry(), { OpenAIClient: FakeOpenAI });
 
-  agent.initialize(TEST_CONFIG, createEmptyToolRegistry());
   await agent.runTurn([{ role: 'user', text: 'hello' }], {});
 
   assert.equal(clientOptions[0].maxRetries, 3);
@@ -174,9 +176,12 @@ test('createOpenAiAgent passes configured default headers to SDK client', async 
       };
     }
   }
-  const agent = createOpenAiAgent({ OpenAIClient: FakeOpenAI });
+  const agent = createOpenAiAgent(
+    { ...TEST_CONFIG, headers: { 'x-source': 'test-source' } },
+    createEmptyToolRegistry(),
+    { OpenAIClient: FakeOpenAI }
+  );
 
-  agent.initialize({ ...TEST_CONFIG, headers: { 'x-source': 'test-source' } }, createEmptyToolRegistry());
   await agent.runTurn([{ role: 'user', text: 'hello' }], {});
 
   assert.deepEqual(clientOptions[0].defaultHeaders, { 'x-source': 'test-source' });
@@ -184,7 +189,7 @@ test('createOpenAiAgent passes configured default headers to SDK client', async 
 
 test('createOpenAiAgent treats abort as user interruption instead of service failure', async () => {
   const controller = new AbortController();
-  const agent = createOpenAiAgent({
+  const agent = createOpenAiAgent(TEST_CONFIG, createEmptyToolRegistry(), {
     createClient() {
       return {
         responses: {
@@ -199,8 +204,6 @@ test('createOpenAiAgent treats abort as user interruption instead of service fai
       };
     }
   });
-
-  agent.initialize(TEST_CONFIG, createEmptyToolRegistry());
 
   await assert.rejects(
     () => agent.runTurn([{ role: 'user', text: 'hello' }], {}, { abortSignal: controller.signal }),
@@ -283,6 +286,21 @@ test('createRequest sends reasoning summary with optional effort', () => {
       stream: true
     }
   );
+});
+
+test('createRequest omits tools and reasoning for compaction requests', () => {
+  const records = [{ role: 'user', text: 'summarize' }];
+  const config = { ...TEST_CONFIG, reasoningEffort: 'high', reasoningSummary: 'detailed' };
+  const request = createRequest(records, config, createToolRegistry(), {isCompaction: true});
+
+  assert.deepEqual(request, {
+    input: [{ role: 'user', content: 'summarize' }],
+    model: 'test-model',
+    prompt_cache_key: createPromptCacheKey(records, config),
+    stream: true
+  });
+  assert.equal('tools' in request, false);
+  assert.equal('reasoning' in request, false);
 });
 
 test('createDefaultToolRegistry enables the developed tools by default', () => {
@@ -370,7 +388,7 @@ test('createOpenAiAgent rejects incomplete events with clear service-side reason
 test('createOpenAiAgent rejects SDK create and stream errors', async () => {
   const fakeAuthText = ['Bear', 'er secret-value'].join('');
   const fakeStreamKey = `sk-${'stream-secret'}`;
-  const createErrorAgent = createOpenAiAgent({
+  const createErrorAgent = createOpenAiAgent(TEST_CONFIG, createEmptyToolRegistry(), {
     createClient() {
       return {
         responses: {
@@ -381,8 +399,6 @@ test('createOpenAiAgent rejects SDK create and stream errors', async () => {
       };
     }
   });
-  createErrorAgent.initialize(TEST_CONFIG, createEmptyToolRegistry());
-
   await assert.rejects(
     () => createErrorAgent.runTurn([{ role: 'user', text: 'hello' }], {}),
     (error) => {
@@ -480,8 +496,8 @@ test('convertTranscriptToOpenAiInput maps OpenAI private reasoning records', () 
   assert.deepEqual(
     convertTranscriptToOpenAiInput([
       { role: 'user', text: 'run' },
-      { role: 'openai_reasoning', text: '', provider: 'openai', item: reasoningItem },
-      { role: 'tool_result', text: 'ok', toolCallId: 'call_1', toolName: 'run_bash_command', ok: true }
+      createOpenAiReasoningTranscriptRecord(reasoningItem),
+      { role: 'tool_result', text: 'ok', toolCallId: 'call_1', toolName: 'run_bash_command', ok: true, details: {kind: 'bash'} }
     ]),
     [
       { role: 'user', content: 'run' },
@@ -491,7 +507,7 @@ test('convertTranscriptToOpenAiInput maps OpenAI private reasoning records', () 
   );
 });
 
-test('convertTranscriptToOpenAiInput maps tool records and skips incomplete tool metadata', () => {
+test('convertTranscriptToOpenAiInput maps complete tool records', () => {
   assert.deepEqual(
     convertTranscriptToOpenAiInput([
       { role: 'user', text: 'run ls' },
@@ -508,13 +524,8 @@ test('convertTranscriptToOpenAiInput maps tool records and skips incomplete tool
         toolCallId: 'call_1',
         toolName: 'run_bash_command',
         ok: true,
-        display: {
-          kind: 'apply_patch',
-          files: [{path: 'ignored.txt', kind: 'updated', lines: [{kind: 'added', text: 'ignored', postLine: 1}]}]
-        }
-      },
-      { role: 'tool_call', text: 'missing metadata' },
-      { role: 'tool_result', text: 'missing metadata' }
+        details: {kind: 'bash'}
+      }
     ]),
     [
       { role: 'user', content: 'run ls' },
@@ -542,6 +553,7 @@ test('convertTranscriptToOpenAiInput maps image attachments from tool results', 
         toolCallId: 'call_img',
         toolName: 'read_files',
         ok: true,
+        details: {kind: 'read_files', truncated: false},
         attachments: [
           { kind: 'image', mediaType: 'image/png', dataBase64: 'aW1nMQ==', path: 'a.png', sizeBytes: 4 },
           { kind: 'image', mediaType: 'image/jpeg', dataBase64: 'aW1nMg==', path: 'b.jpg', sizeBytes: 4 },
@@ -554,7 +566,8 @@ test('convertTranscriptToOpenAiInput maps image attachments from tool results', 
         text: 'plain',
         toolCallId: 'call_plain',
         toolName: 'read_files',
-        ok: true
+        ok: true,
+        details: {kind: 'read_files', truncated: false}
       }
     ]),
     [
@@ -716,13 +729,12 @@ test('OpenAI provider agent reports function tool calls without executing tools'
       }
     }
   };
-  const agent = createOpenAiAgent({
+  const toolRegistry = createToolRegistry();
+  const agent = createOpenAiAgent(TEST_CONFIG, toolRegistry, {
     createClient() {
       return client;
     }
   });
-  const toolRegistry = createToolRegistry();
-  agent.initialize(TEST_CONFIG, toolRegistry);
   const result = await agent.runTurn([{ role: 'user', text: 'where am I?' }], {});
 
   assert.deepEqual(result, {
@@ -776,7 +788,7 @@ test('OpenAI provider agent returns reasoning summary and private reasoning reco
 
   assert.deepEqual(result, {
     draft: '',
-    providerRecords: [{ role: 'openai_reasoning', text: '', provider: 'openai', item: reasoningItem }],
+    providerRecords: [createOpenAiReasoningTranscriptRecord(reasoningItem)],
     reasoningSummary: 'first\n\nsecond',
     toolCalls: [{ callId: 'call_1', toolName: 'run_bash_command', argumentsText: '{"command":"pwd"}' }],
     usageInputTokens: undefined

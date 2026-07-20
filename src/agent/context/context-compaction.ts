@@ -1,7 +1,6 @@
 import {COMPACTION_RECENT_KEEP_COUNT, COMPACTION_THRESHOLD_RATIO} from '../../config/llm-config';
 import {estimateTextTokens} from './token-estimator';
-import {NON_PROVIDER_ROLES, shouldIncludeRecordInProviderContext} from '../transcript-converter-common';
-import {ANTHROPIC_THINKING_TRANSCRIPT_ROLE} from '../../types/transcript';
+import {shouldIncludeRecordInProviderContext} from '../transcript-converter-common';
 import {throwIfAborted} from '../../types/agent';
 
 import type {AgentTurnResult, ProviderAgent} from '../../types/agent';
@@ -30,7 +29,7 @@ function estimateRecordsTokens(records: TranscriptRecord[], summaryText = ''): n
       continue;
     }
 
-    total += estimateTextTokens(record.role === ANTHROPIC_THINKING_TRANSCRIPT_ROLE ? JSON.stringify(record.block || '') : record.text);
+    total += estimateTextTokens(record.role === 'extension' ? JSON.stringify(record.extension) : record.text);
   }
 
   return total;
@@ -143,10 +142,20 @@ async function generateCompactionSummary(options: {
   ];
 
   throwIfAborted(abortSignal);
-  const result: AgentTurnResult = await agent.runTurn(summaryRecords, {}, {abortSignal});
+  const result: AgentTurnResult = await agent.runTurn(summaryRecords, {}, {abortSignal, isCompaction: true});
   throwIfAborted(abortSignal);
 
   return result.draft.trim();
+}
+
+/**
+ * 构造可见压缩提示；runtime 与持久化 transcript 复用同一记录语义以保持索引平行。
+ */
+function createCompactionNoticeRecord(compaction: CompactionState): TranscriptRecord {
+  return {
+    role: 'compaction_notice',
+    text: `已将较早的 ${compaction.activeStartIndex} 条历史压缩为摘要`
+  };
 }
 
 /**
@@ -214,13 +223,13 @@ async function runCompaction(options: {
 
 export {
   computeCompactionBoundary,
+  createCompactionNoticeRecord,
   estimateContextTokens,
   estimateRecordsTokens,
   estimateTextTokens,
   exceedsCompactionThreshold,
   generateCompactionSummary,
-  runCompaction,
-  NON_PROVIDER_ROLES
+  runCompaction
 };
 
 export type {RunCompactionResult, TokenUsageAnchor};

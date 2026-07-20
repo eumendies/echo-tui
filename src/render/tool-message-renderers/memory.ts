@@ -9,7 +9,7 @@ import {
   truncateDisplayText
 } from './shared';
 
-import type {TranscriptRecord} from '../../types/transcript';
+import type {ToolCallTranscriptRecord, ToolResultTranscriptRecord} from '../../types/transcript';
 
 const MEMORY_TOOL_NAMES = ['read_memory', 'add_memory', 'update_memory', 'remove_memory'] as const;
 const MEMORY_TOOL_NAME_SET = new Set<string>(MEMORY_TOOL_NAMES);
@@ -23,7 +23,7 @@ function isMemoryRenderToolName(toolName: unknown): toolName is MemoryToolName {
 }
 
 /** 渲染 memory call 的动作摘要，供 pending、孤立 call 和 pair 共享。 */
-function renderMemoryToolCallLines(record: TranscriptRecord, width: number, callStatus: unknown, theme: TuiTheme): string[] {
+function renderMemoryToolCallLines(record: ToolCallTranscriptRecord, width: number, callStatus: unknown, theme: TuiTheme): string[] {
   return renderPrefixedLines({
     text: createMemoryCallSummary(record.toolName as MemoryToolName, parseJsonObject(record.argumentsText)),
     width,
@@ -34,7 +34,7 @@ function renderMemoryToolCallLines(record: TranscriptRecord, width: number, call
 }
 
 /** 按 memory tool 的成功/失败语义组合相邻 call 与 result。 */
-function renderMemoryToolPairLines(call: TranscriptRecord, result: TranscriptRecord, width: number, theme: TuiTheme): string[] {
+function renderMemoryToolPairLines(call: ToolCallTranscriptRecord, result: ToolResultTranscriptRecord, width: number, theme: TuiTheme): string[] {
   const lines = renderMemoryToolCallLines(call, width, result.ok, theme);
 
   if (result.ok === false) {
@@ -50,7 +50,7 @@ function renderMemoryToolPairLines(call: TranscriptRecord, result: TranscriptRec
 }
 
 /** 渲染未与 call 聚合的 result，避免恢复到 raw JSON 展示。 */
-function renderMemoryToolResultLines(record: TranscriptRecord, width: number, theme: TuiTheme): string[] {
+function renderMemoryToolResultLines(record: ToolResultTranscriptRecord, width: number, theme: TuiTheme): string[] {
   if (record.ok === false) {
     return renderMemoryFailureLines(record, width, theme);
   }
@@ -152,7 +152,7 @@ function createRemoveSummary(args: Record<string, unknown>): string {
 }
 
 /** 将 read_memory 成功 payload 投影为不带 enabled 和 id 的统一分点列表。 */
-function renderMemoryReadResultLines(record: TranscriptRecord, width: number, theme: TuiTheme): string[] {
+function renderMemoryReadResultLines(record: ToolResultTranscriptRecord, width: number, theme: TuiTheme): string[] {
   const contents = parseMemoryContents(record.text);
 
   if (!contents) {
@@ -175,7 +175,7 @@ function renderMemoryReadResultLines(record: TranscriptRecord, width: number, th
 }
 
 /** 失败结果保留短诊断，同时沿用通用结果行数预算。 */
-function renderMemoryFailureLines(record: TranscriptRecord, width: number, theme: TuiTheme): string[] {
+function renderMemoryFailureLines(record: ToolResultTranscriptRecord, width: number, theme: TuiTheme): string[] {
   const text = typeof record.text === 'string' && record.text.trim() !== '' ? record.text : '(no output)';
   return renderMemoryOutputLines(truncateDisplayText(text, TOOL_RESULT_MAX_DISPLAY_LINES), width, theme);
 }

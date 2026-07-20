@@ -15,7 +15,7 @@ import type {OpenAiFunctionTool} from '../openai-responses/tool-converter';
 import type {OpenAiInputItem} from '../openai-responses/transcript-converter';
 
 type CodexCreateRequest = {
-  include: string[];
+  include?: string[];
   input: OpenAiInputItem[];
   instructions: string;
   model: string;
@@ -63,10 +63,10 @@ function assertCodexResponseClient(value: unknown): asserts value is CodexRespon
 }
 
 /**
- * 创建 ChatGPT Codex 后端接受的 Responses 请求形态。
+ * 创建 ChatGPT Codex 后端接受的 Responses 请求形态；压缩用途不暴露工具或 reasoning 配置。
  */
-function createCodexRequest(records: TranscriptRecord[], config: LlmConfig, registry?: ToolRegistry): CodexCreateRequest {
-  const toolDefinitions = registry && !registry.isEmpty() ? registry.listDefinitions() : [];
+function createCodexRequest(records: TranscriptRecord[], config: LlmConfig, registry?: ToolRegistry, options: AgentTurnOptions = {}): CodexCreateRequest {
+  const toolDefinitions = !options.isCompaction && registry && !registry.isEmpty() ? registry.listDefinitions() : [];
   const input = convertTranscriptToOpenAiInput(records).filter((item) => !('role' in item) || item.role !== 'system');
   const instructions = records.find((record) => record.role === 'system')?.text.trim();
   const request: CodexCreateRequest = {
@@ -77,10 +77,10 @@ function createCodexRequest(records: TranscriptRecord[], config: LlmConfig, regi
     store: false,
     instructions: instructions || 'You are a helpful assistant.',
     text: {verbosity: 'low'},
-    include: ['reasoning.encrypted_content']
+    ...(options.isCompaction ? {} : {include: ['reasoning.encrypted_content']})
   };
 
-  if (config.reasoningEffort) {
+  if (!options.isCompaction && config.reasoningEffort) {
     request.reasoning = {effort: config.reasoningEffort};
   }
 
@@ -97,38 +97,28 @@ function createCodexRequest(records: TranscriptRecord[], config: LlmConfig, regi
  * 基于本机 Codex OAuth auth.json 创建 ChatGPT Codex provider turn。
  */
 class CodexAgent implements ProviderAgent {
-  private config: LlmConfig | null = null;
-  private makeClient: (config: LlmConfig) => unknown;
-  private registry: ToolRegistry | null = null;
-  private resolveCredential: (config: CodexOAuthRuntimeConfig) => Promise<CodexOAuthCredential>;
+  private readonly config: LlmConfig;
+  private readonly makeClient: (config: LlmConfig) => unknown;
+  private readonly registry: ToolRegistry;
+  private readonly resolveCredential: (config: CodexOAuthRuntimeConfig) => Promise<CodexOAuthCredential>;
 
-  constructor(dependencies: CodexAgentDependencies = {}) {
+  constructor(config: LlmConfig, registry: ToolRegistry, dependencies: CodexAgentDependencies = {}) {
     const OpenAIClient = dependencies.OpenAIClient || OpenAI;
-    this.makeClient = dependencies.createClient || ((config: LlmConfig) => createClient(config, OpenAIClient));
-    this.resolveCredential = dependencies.resolveCodexOAuthCredential || resolveCodexOAuthCredential;
-  }
-
-  /**
-   * 保存当前 Codex 运行配置；access token 每轮动态读取，避免缓存过期凭据。
-   */
-  initialize(config: LlmConfig, registry: ToolRegistry): void {
     this.config = config;
+    this.makeClient = dependencies.createClient || ((config: LlmConfig) => createClient(config, OpenAIClient));
     this.registry = registry;
+    this.resolveCredential = dependencies.resolveCodexOAuthCredential || resolveCodexOAuthCredential;
   }
 
   /**
    * 执行一次 Codex provider turn，并复用 Responses stream 事件读取逻辑。
    */
   async runTurn(records: TranscriptRecord[], callbacks: AgentTurnCallbacks = {}, options: AgentTurnOptions = {}): Promise<AgentTurnResult> {
-    if (!this.config || !this.registry) {
-      throw new LlmAgentError('模型运行时尚未初始化');
-    }
-
     let stream: CodexStream;
 
     try {
       const {client, config} = await this.resolveRuntimeClient();
-      stream = await client.responses.create(createCodexRequest(records, config, this.registry), {signal: options.abortSignal});
+      stream = await client.responses.create(createCodexRequest(records, config, this.registry, options), {signal: options.abortSignal});
     } catch (error: unknown) {
       if (isAbortError(error) || options.abortSignal?.aborted) {
         throwIfAborted(options.abortSignal);
@@ -141,10 +131,6 @@ class CodexAgent implements ProviderAgent {
   }
 
   private async resolveRuntimeClient(): Promise<{client: CodexResponseClient; config: LlmConfig}> {
-    if (!this.config) {
-      throw new LlmAgentError('模型运行时尚未初始化');
-    }
-
     if (!this.config.codexOAuth) {
       throw new LlmAgentError('Codex OAuth 配置缺失');
     }
@@ -167,8 +153,8 @@ class CodexAgent implements ProviderAgent {
   }
 }
 
-function createCodexAgent(dependencies: CodexAgentDependencies = {}): ProviderAgent {
-  return new CodexAgent(dependencies);
+function createCodexAgent(config: LlmConfig, registry: ToolRegistry, dependencies: CodexAgentDependencies = {}): ProviderAgent {
+  return new CodexAgent(config, registry, dependencies);
 }
 
 export {

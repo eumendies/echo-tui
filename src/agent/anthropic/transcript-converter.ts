@@ -4,12 +4,11 @@ import {
   formatShellRecordForProvider,
   getValidImageAttachments,
   hasKnownToolCallId,
-  hasToolCallMetadata,
   parseJsonObjectText
 } from '../transcript-converter-common';
-import {ANTHROPIC_THINKING_TRANSCRIPT_ROLE, OPENAI_CHAT_REASONING_TRANSCRIPT_ROLE, OPENAI_REASONING_TRANSCRIPT_ROLE} from '../../types/transcript';
+import {ANTHROPIC_THINKING_EXTENSION_KIND} from '../../types/transcript';
 
-import type {TranscriptRecord} from '../../types/transcript';
+import type {ToolCallTranscriptRecord, ToolResultTranscriptRecord, TranscriptExtensionRecord, TranscriptRecord, UserTranscriptRecord} from '../../types/transcript';
 
 export type AnthropicTextBlock = {
   type: 'text';
@@ -70,7 +69,7 @@ type ToolCallProjection =
   | {kind: 'valid'; toolUse: AnthropicToolUseBlock}
   | {kind: 'invalid'; feedback: string; id: string};
 
-const FILTERED_ROLES = new Set(['error', 'local_notice', 'reasoning_summary', OPENAI_REASONING_TRANSCRIPT_ROLE, OPENAI_CHAT_REASONING_TRANSCRIPT_ROLE]);
+const FILTERED_ROLES = new Set(['error', 'compaction_notice', 'local_notice', 'reasoning_summary']);
 
 /**
  * 把本地 transcript 投影为 Anthropic Messages API 请求上下文，并重组工具历史 content blocks。
@@ -131,15 +130,16 @@ function convertTranscriptToAnthropicMessages(records: TranscriptRecord[]): Anth
       continue;
     }
 
-    if (record.role === ANTHROPIC_THINKING_TRANSCRIPT_ROLE) {
+    if (record.role === 'extension' && record.extension.kind === ANTHROPIC_THINKING_EXTENSION_KIND) {
       const block = convertAnthropicThinkingRecord(record);
+      const assistant = currentToolAssistant || createToolAssistantMessage(messages);
+      assistant.content.push(block);
+      currentToolAssistant = assistant;
 
-      if (block) {
-        const assistant = currentToolAssistant || createToolAssistantMessage(messages);
-        assistant.content.push(block);
-        currentToolAssistant = assistant;
-      }
+      continue;
+    }
 
+    if (record.role === 'extension') {
       continue;
     }
 
@@ -175,7 +175,7 @@ function convertTranscriptToAnthropicMessages(records: TranscriptRecord[]): Anth
   };
 }
 
-function createUserContent(record: TranscriptRecord): Array<AnthropicTextBlock | AnthropicImageBlock> {
+function createUserContent(record: UserTranscriptRecord): Array<AnthropicTextBlock | AnthropicImageBlock> {
   const attachments = getValidImageAttachments(record);
 
   if (attachments.length === 0) {
@@ -201,11 +201,7 @@ function createToolAssistantMessage(messages: AnthropicMessage[]): AnthropicMess
   return assistant;
 }
 
-function convertToolCallRecord(record: TranscriptRecord): ToolCallProjection | null {
-  if (!hasToolCallMetadata(record)) {
-    return null;
-  }
-
+function convertToolCallRecord(record: ToolCallTranscriptRecord): ToolCallProjection {
   const input = parseJsonObjectText(record.argumentsText);
 
   if (!input) {
@@ -227,43 +223,28 @@ function convertToolCallRecord(record: TranscriptRecord): ToolCallProjection | n
   };
 }
 
-function createAnthropicThinkingRecord(block: AnthropicProviderThinkingBlock): TranscriptRecord {
+function createAnthropicThinkingRecord(block: AnthropicProviderThinkingBlock): TranscriptExtensionRecord {
   return {
-    role: ANTHROPIC_THINKING_TRANSCRIPT_ROLE,
+    role: 'extension',
     text: '',
-    block,
-    provider: 'anthropic'
+    extension: {
+      kind: ANTHROPIC_THINKING_EXTENSION_KIND,
+      block
+    }
   };
 }
 
-function convertAnthropicThinkingRecord(record: TranscriptRecord): AnthropicProviderThinkingBlock | null {
-  const block = record.block;
+function convertAnthropicThinkingRecord(record: TranscriptExtensionRecord): AnthropicProviderThinkingBlock {
+  const extension = record.extension;
 
-  if (!block || typeof block !== 'object' || Array.isArray(block)) {
-    return null;
+  if (extension.kind !== ANTHROPIC_THINKING_EXTENSION_KIND) {
+    throw new Error('Anthropic thinking record kind mismatch');
   }
 
-  const candidate = block as Record<string, unknown>;
-
-  if (candidate.type === 'thinking' && typeof candidate.thinking === 'string' && typeof candidate.signature === 'string') {
-    return {
-      type: 'thinking',
-      thinking: candidate.thinking,
-      signature: candidate.signature
-    };
-  }
-
-  if (candidate.type === 'redacted_thinking' && typeof candidate.data === 'string') {
-    return {
-      type: 'redacted_thinking',
-      data: candidate.data
-    };
-  }
-
-  return null;
+  return extension.block;
 }
 
-function convertToolResultRecord(record: TranscriptRecord, knownToolCallIds: Set<string>): AnthropicMessage | null {
+function convertToolResultRecord(record: ToolResultTranscriptRecord, knownToolCallIds: Set<string>): AnthropicMessage | null {
   if (!hasKnownToolCallId(record, knownToolCallIds)) {
     return null;
   }
@@ -288,7 +269,7 @@ function convertToolResultRecord(record: TranscriptRecord, knownToolCallIds: Set
   };
 }
 
-function convertInvalidToolResultRecord(record: TranscriptRecord, invalidToolCallFeedback: Map<string, string>): AnthropicMessage | null {
+function convertInvalidToolResultRecord(record: ToolResultTranscriptRecord, invalidToolCallFeedback: Map<string, string>): AnthropicMessage | null {
   const feedback = consumeInvalidToolResultFeedback(record, invalidToolCallFeedback);
 
   if (!feedback) {

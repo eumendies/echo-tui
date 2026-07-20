@@ -1,15 +1,15 @@
-import {OPENAI_CHAT_REASONING_TRANSCRIPT_ROLE, OPENAI_REASONING_TRANSCRIPT_ROLE, type ToolCallTranscriptRecord, type TranscriptRecord} from '../types/transcript';
 import {isSupportedToolResultImageMediaType} from '../types/tool';
 import type {ToolResultImageAttachment} from '../types/tool';
+import type {ShellTranscriptRecord, ToolCallTranscriptRecord, ToolResultTranscriptRecord, TranscriptRecord, UserTranscriptRecord} from '../types/transcript';
 
-type ToolResultWithCallId = TranscriptRecord & {toolCallId: string};
 type SendableImageAttachment = Pick<ToolResultImageAttachment, 'dataBase64' | 'mediaType'>;
+type TranscriptRecordWithAttachments = UserTranscriptRecord | ToolResultTranscriptRecord;
 
 // 这些 role 只描述本地 UI / 内部状态，不应进入 provider 请求或压缩摘要。
-const NON_PROVIDER_ROLES = new Set(['error', 'compaction_notice', 'local_notice', 'reasoning_summary', OPENAI_REASONING_TRANSCRIPT_ROLE, OPENAI_CHAT_REASONING_TRANSCRIPT_ROLE]);
+const NON_PROVIDER_ROLES = new Set<TranscriptRecord['role']>(['error', 'compaction_notice', 'local_notice', 'reasoning_summary']);
 
 function shouldIncludeRecordInProviderContext(record: TranscriptRecord): boolean {
-  if (NON_PROVIDER_ROLES.has(String(record.role))) {
+  if (NON_PROVIDER_ROLES.has(record.role)) {
     return false;
   }
 
@@ -17,12 +17,16 @@ function shouldIncludeRecordInProviderContext(record: TranscriptRecord): boolean
     return false;
   }
 
+  if (record.role === 'extension' && record.extension.kind === 'unknown') {
+    return false;
+  }
+
   return true;
 }
 
-function formatShellRecordForProvider(record: TranscriptRecord): string {
-  const command = typeof record.command === 'string' && record.command.trim() !== '' ? record.command : '(unknown)';
-  const output = typeof record.output === 'string' ? record.output : record.text;
+function formatShellRecordForProvider(record: ShellTranscriptRecord): string {
+  const command = record.command.trim() !== '' ? record.command : '(unknown)';
+  const output = record.output;
   const lines = [
     'The user ran a local bash command.',
     `command: ${command}`,
@@ -46,16 +50,8 @@ function formatOptionalValue(value: unknown): string {
   return value === undefined ? 'unknown' : String(value);
 }
 
-function hasToolCallMetadata(record: TranscriptRecord): record is ToolCallTranscriptRecord {
-  return typeof record.toolCallId === 'string' && typeof record.toolName === 'string' && typeof record.argumentsText === 'string';
-}
-
-function hasToolCallId(record: TranscriptRecord): record is ToolResultWithCallId {
-  return typeof record.toolCallId === 'string';
-}
-
-function hasKnownToolCallId(record: TranscriptRecord, knownToolCallIds: Set<string>): record is ToolResultWithCallId {
-  return hasToolCallId(record) && knownToolCallIds.has(record.toolCallId);
+function hasKnownToolCallId(record: ToolResultTranscriptRecord, knownToolCallIds: Set<string>): boolean {
+  return knownToolCallIds.has(record.toolCallId);
 }
 
 function parseJsonObjectText(text: string): Record<string, unknown> | null {
@@ -83,11 +79,7 @@ function formatToolArgumentsForFeedback(argumentsText: string): string {
   return capped === '' ? '<empty>' : capped;
 }
 
-function consumeInvalidToolResultFeedback(record: TranscriptRecord, invalidToolCallFeedback: Map<string, string>): string | null {
-  if (!hasToolCallId(record)) {
-    return null;
-  }
-
+function consumeInvalidToolResultFeedback(record: ToolResultTranscriptRecord, invalidToolCallFeedback: Map<string, string>): string | null {
   const feedback = invalidToolCallFeedback.get(record.toolCallId);
 
   if (!feedback) {
@@ -104,7 +96,7 @@ function consumeInvalidToolResultFeedback(record: TranscriptRecord, invalidToolC
   return `${feedback}${resultLine}\nFix the arguments and call the tool again.`;
 }
 
-function getValidImageAttachments(record: TranscriptRecord): SendableImageAttachment[] {
+function getValidImageAttachments(record: TranscriptRecordWithAttachments): SendableImageAttachment[] {
   if (!Array.isArray(record.attachments)) {
     return [];
   }
@@ -128,8 +120,8 @@ function formatImageDataUrl(attachment: SendableImageAttachment): string {
   return `data:${attachment.mediaType};base64,${attachment.dataBase64}`;
 }
 
-function formatToolResultImageIntro(record: TranscriptRecord & {toolCallId: string}): string {
-  const toolName = typeof record.toolName === 'string' && record.toolName !== '' ? record.toolName : 'tool';
+function formatToolResultImageIntro(record: ToolResultTranscriptRecord): string {
+  const toolName = record.toolName !== '' ? record.toolName : 'tool';
 
   return `Images attached from tool result ${toolName} (${record.toolCallId}).`;
 }
@@ -142,8 +134,6 @@ export {
   formatToolResultImageIntro,
   getValidImageAttachments,
   hasKnownToolCallId,
-  hasToolCallId,
-  hasToolCallMetadata,
   NON_PROVIDER_ROLES,
   parseJsonObjectText,
   shouldIncludeRecordInProviderContext
