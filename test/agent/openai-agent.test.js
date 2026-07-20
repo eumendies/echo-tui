@@ -288,6 +288,21 @@ test('createRequest sends reasoning summary with optional effort', () => {
   );
 });
 
+test('createRequest omits tools and reasoning for compaction requests', () => {
+  const records = [{ role: 'user', text: 'summarize' }];
+  const config = { ...TEST_CONFIG, reasoningEffort: 'high', reasoningSummary: 'detailed' };
+  const request = createRequest(records, config, createToolRegistry(), {isCompaction: true});
+
+  assert.deepEqual(request, {
+    input: [{ role: 'user', content: 'summarize' }],
+    model: 'test-model',
+    prompt_cache_key: createPromptCacheKey(records, config),
+    stream: true
+  });
+  assert.equal('tools' in request, false);
+  assert.equal('reasoning' in request, false);
+});
+
 test('createDefaultToolRegistry enables the developed tools by default', () => {
   const request = createRequest([{ role: 'user', text: 'hello' }], TEST_CONFIG, createDefaultToolRegistry(TEST_CONFIG));
 

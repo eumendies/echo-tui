@@ -156,3 +156,24 @@ test('createCodexRequest sends reasoning effort when configured', () => {
     }
   );
 });
+
+test('createCodexRequest omits tools and reasoning for compaction requests', () => {
+  const records = [{role: 'system', text: 'compress'}, {role: 'user', text: 'summarize'}];
+  const config = {...TEST_CONFIG, reasoningEffort: 'high'};
+  const request = createCodexRequest(records, config, createToolRegistry(), {isCompaction: true});
+
+  assert.deepEqual(request, {
+    input: [{role: 'user', content: 'summarize'}],
+    model: 'test-model',
+    prompt_cache_key: createPromptCacheKey(records, config),
+    stream: true,
+    store: false,
+    instructions: 'compress',
+    text: {verbosity: 'low'}
+  });
+  assert.equal('include' in request, false);
+  assert.equal('reasoning' in request, false);
+  assert.equal('tools' in request, false);
+  assert.equal('tool_choice' in request, false);
+  assert.equal('parallel_tool_calls' in request, false);
+});

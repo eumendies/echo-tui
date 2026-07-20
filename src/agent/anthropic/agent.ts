@@ -123,11 +123,11 @@ function createClient(config: LlmConfig, AnthropicClient: new (options: {apiKey:
 }
 
 /**
- * 根据当前 transcript 快照创建 Anthropic Messages API 请求；registry 非空时暴露本地工具定义。
+ * 根据当前 transcript 快照创建 Anthropic Messages API 请求；压缩用途不暴露工具或 reasoning 配置。
  */
-function createAnthropicRequest(records: TranscriptRecord[], config: LlmConfig, registry?: ToolRegistry): AnthropicCreateRequest {
+function createAnthropicRequest(records: TranscriptRecord[], config: LlmConfig, registry?: ToolRegistry, options: AgentTurnOptions = {}): AnthropicCreateRequest {
   const projection = convertTranscriptToAnthropicMessages(records);
-  const effort = mapReasoningEffortToAnthropicEffort(config.reasoningEffort);
+  const effort = options.isCompaction ? undefined : mapReasoningEffortToAnthropicEffort(config.reasoningEffort);
   const request: AnthropicCreateRequest = {
     cache_control: {type: 'ephemeral'},
     max_tokens: ANTHROPIC_DEFAULT_MAX_TOKENS,
@@ -142,7 +142,7 @@ function createAnthropicRequest(records: TranscriptRecord[], config: LlmConfig, 
     request.output_config = {effort};
   }
 
-  if (registry && !registry.isEmpty()) {
+  if (!options.isCompaction && registry && !registry.isEmpty()) {
     request.tools = convertToolDefinitionsToAnthropicTools(registry.listDefinitions());
   }
 
@@ -484,7 +484,7 @@ class AnthropicAgent implements ProviderAgent {
     let stream: AnthropicStream;
 
     try {
-      stream = await this.client.messages.create(createAnthropicRequest(records, this.config, this.registry), {signal: options.abortSignal});
+      stream = await this.client.messages.create(createAnthropicRequest(records, this.config, this.registry, options), {signal: options.abortSignal});
     } catch (error: unknown) {
       if (isAbortError(error) || options.abortSignal?.aborted) {
         throwIfAborted(options.abortSignal);

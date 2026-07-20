@@ -60,10 +60,10 @@ function createClient(config: LlmConfig, OpenAIClient: new (options: {apiKey: st
 }
 
 /**
- * 根据当前 transcript 快照创建 Responses API 请求；registry 非空时暴露本地工具定义。
+ * 根据当前 transcript 快照创建 Responses API 请求；压缩用途不暴露工具或 reasoning 配置。
  */
-function createRequest(records: TranscriptRecord[], config: LlmConfig, registry?: ToolRegistry): ResponseCreateRequest {
-  const toolDefinitions = registry && !registry.isEmpty() ? registry.listDefinitions() : [];
+function createRequest(records: TranscriptRecord[], config: LlmConfig, registry?: ToolRegistry, options: AgentTurnOptions = {}): ResponseCreateRequest {
+  const toolDefinitions = !options.isCompaction && registry && !registry.isEmpty() ? registry.listDefinitions() : [];
   const request: ResponseCreateRequest = {
     input: convertTranscriptToOpenAiInput(records),
     model: config.model,
@@ -71,7 +71,7 @@ function createRequest(records: TranscriptRecord[], config: LlmConfig, registry?
     stream: true
   };
 
-  if (config.reasoningEffort || config.reasoningSummary) {
+  if (!options.isCompaction && (config.reasoningEffort || config.reasoningSummary)) {
     request.reasoning = {
       ...(config.reasoningEffort ? {effort: config.reasoningEffort} : {}),
       ...(config.reasoningSummary ? {summary: config.reasoningSummary} : {})
@@ -380,7 +380,7 @@ class OpenAiAgent implements ProviderAgent {
     let stream: ResponseStream;
 
     try {
-      stream = await this.client.responses.create(createRequest(records, this.config, this.registry), {signal: options.abortSignal});
+      stream = await this.client.responses.create(createRequest(records, this.config, this.registry, options), {signal: options.abortSignal});
     } catch (error: unknown) {
       if (isAbortError(error) || options.abortSignal?.aborted) {
         throwIfAborted(options.abortSignal);

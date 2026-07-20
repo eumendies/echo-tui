@@ -89,6 +89,7 @@ export type AgentTurnCallbacks = Pick<AgentCallbacks, 'onToken'>;
 
 export type AgentTurnOptions = {
   abortSignal?: AbortSignal;
+  isCompaction?: boolean;
 };
 
 export type AgentTurnResult = {

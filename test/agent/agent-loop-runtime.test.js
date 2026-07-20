@@ -5,6 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { buildProviderRecords, createAgentLoopRuntime } = require('../../src/agent/agent-loop-runtime');
+const {createCompactionNoticeRecord} = require('../../src/agent/context/context-compaction');
 const {formatAgentMemoryCatalogPrompt, formatUserMemoriesPrompt} = require('../../src/agent/context/memory-prompt');
 const { createBuiltInSystemPrompt } = require('../../src/agent/context/system-prompt');
 const agentSetupModule = require('../../src/agent/agent-setup');
@@ -12,6 +13,7 @@ const {createUserMemory, updateUserMemory} = require('../../src/memory/memory-st
 const {addAgentMemory, setAgentMemoryCatalogEnabled, updateAgentMemoryCatalog} = require('../../src/memory/agent-memory-store');
 const {createMcpToolRegistry, mergeToolRegistries} = require('../../src/mcp/tool-adapter');
 const {createDefaultToolRegistry} = require('../../src/tools/tool-registry');
+const {createToolCallTranscriptRecord, createToolResultTranscriptRecord} = require('../../src/tools/tool-transcript-record');
 
 const TEST_CWD = '/tmp/echo_tui';
 const TEST_CONFIG = {
@@ -1053,6 +1055,70 @@ test('createAgentLoopRuntime emits compaction hook and no token hook', async () 
   assert.equal(hooks.events[0].payload.interactionMode, 'normal');
   assert.equal(typeof hooks.events[0].payload.activeStartIndex, 'number');
   assert.equal(typeof hooks.events[0].payload.createdAt, 'string');
+});
+
+test('createAgentLoopRuntime keeps persisted indexes aligned across two compactions in one run', async () => {
+  const persistedRecords = Array.from({length: 30}, (_, index) => ({
+    role: index % 2 === 0 ? 'user' : 'assistant',
+    text: `initial-${index} `.repeat(10)
+  }));
+  const compactions = [];
+  const pendingCalls = new Map();
+  const summaryInputs = [];
+  const normalRequests = [];
+  let normalTurnCount = 0;
+  const agent = {
+    async runTurn(records, _callbacks, options = {}) {
+      if (options.isCompaction) {
+        summaryInputs.push(records[1].text);
+        return {draft: `summary-${summaryInputs.length}`, toolCalls: []};
+      }
+
+      normalRequests.push(records);
+      normalTurnCount += 1;
+
+      if (normalTurnCount === 1) {
+        return {
+          draft: '',
+          toolCalls: Array.from({length: 25}, (_, index) => ({
+            callId: `call-${index}`,
+            toolName: 'missing_tool',
+            argumentsText: JSON.stringify({index})
+          }))
+        };
+      }
+
+      return {draft: 'done', toolCalls: []};
+    }
+  };
+
+  const result = await withPatchedAgentRuntime(agent, () => {
+    const runAgent = createAgentLoopRuntime(TEST_CWD);
+    return runAgent({records: persistedRecords}, {
+      onCompacted(compaction) {
+        compactions.push(compaction);
+        persistedRecords.push(createCompactionNoticeRecord(compaction));
+      },
+      onToolCall(call) {
+        pendingCalls.set(call.callId, call);
+      },
+      onToolResult(toolResult) {
+        const call = pendingCalls.get(toolResult.callId);
+        assert.ok(call);
+        persistedRecords.push(createToolCallTranscriptRecord(call), createToolResultTranscriptRecord(toolResult));
+        pendingCalls.delete(toolResult.callId);
+      }
+    });
+  }, {...TEST_CONFIG, contextWindow: 20});
+
+  assert.equal(result, 'done');
+  assert.equal(compactions.length, 2);
+  assert.equal(summaryInputs.length, 2);
+  assert.equal(normalRequests.length, 2);
+  assert.equal(persistedRecords[compactions[1].activeStartIndex].role, 'tool_call');
+  assert.equal(persistedRecords[compactions[1].activeStartIndex].toolCallId, 'call-15');
+  assert.doesNotMatch(summaryInputs[1], /missing_tool\(\{"index":15\}\)/);
+  assert.equal(normalRequests[1].some((record) => record.role === 'tool_call' && record.toolCallId === 'call-15'), true);
 });
 
 test('createAgentLoopRuntime emits debug provider and tool summaries without changing provider records', async () => {

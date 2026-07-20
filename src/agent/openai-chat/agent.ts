@@ -82,10 +82,10 @@ function createClient(config: LlmConfig, OpenAIClient: new (options: {apiKey: st
 }
 
 /**
- * 根据当前 transcript 快照创建 Chat Completions 请求；registry 非空时暴露本地工具定义。
+ * 根据当前 transcript 快照创建 Chat Completions 请求；压缩用途不暴露工具或 reasoning 配置。
  */
-function createChatRequest(records: TranscriptRecord[], config: LlmConfig, registry?: ToolRegistry): ChatCreateRequest {
-  const toolDefinitions = registry && !registry.isEmpty() ? registry.listDefinitions() : [];
+function createChatRequest(records: TranscriptRecord[], config: LlmConfig, registry?: ToolRegistry, options: AgentTurnOptions = {}): ChatCreateRequest {
+  const toolDefinitions = !options.isCompaction && registry && !registry.isEmpty() ? registry.listDefinitions() : [];
   const request: ChatCreateRequest = {
     messages: convertTranscriptToOpenAiChatMessages(records),
     model: config.model,
@@ -94,7 +94,7 @@ function createChatRequest(records: TranscriptRecord[], config: LlmConfig, regis
     stream_options: {include_usage: true}
   };
 
-  if (config.reasoningEffort && config.reasoningEffort !== 'none') {
+  if (!options.isCompaction && config.reasoningEffort && config.reasoningEffort !== 'none') {
     request.reasoning_effort = config.reasoningEffort;
   }
 
@@ -286,7 +286,7 @@ class OpenAiChatAgent implements ProviderAgent {
     let stream: ChatStream;
 
     try {
-      stream = await this.client.chat.completions.create(createChatRequest(records, this.config, this.registry), {signal: options.abortSignal});
+      stream = await this.client.chat.completions.create(createChatRequest(records, this.config, this.registry, options), {signal: options.abortSignal});
     } catch (error: unknown) {
       if (isAbortError(error) || options.abortSignal?.aborted) {
         throwIfAborted(options.abortSignal);

@@ -272,6 +272,7 @@ test('runCompaction passes abort signal to summary request', async () => {
 
   assert.equal(result.didCompact, true);
   assert.equal(agent.calls[0].options.abortSignal, controller.signal);
+  assert.equal(agent.calls[0].options.isCompaction, true);
 });
 
 test('runCompaction does not return compaction when summary returns after abort', async () => {

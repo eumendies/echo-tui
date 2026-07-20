@@ -21,7 +21,7 @@ import {estimateTextTokens} from './context/token-estimator';
 import {resolveMemoryPrompt} from './context/memory-prompt';
 import {createBuiltInSystemPrompt} from './context/system-prompt';
 import {prepareAgent} from './agent-setup';
-import {runCompaction} from './context/context-compaction';
+import {createCompactionNoticeRecord, runCompaction} from './context/context-compaction';
 import {disabledDebugContext, hashValue, redactProviderConfig, summarizeText} from '../debug/debug-context';
 
 import type {TokenUsageAnchor} from './context/context-compaction';
@@ -364,6 +364,8 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
       compactionState = result.compaction;
       // 压缩后活跃区间已变，旧 usage 锚点失效，回退到纯字符估算直到下一次真值到达。
       usageAnchor = null;
+      // app 会持久化同一 notice；runtime 同步追加以保持后续压缩索引与 session records 对齐。
+      recordRegion.push(createCompactionNoticeRecord(compactionState));
       callbacks.onCompacted?.(compactionState);
       state.debug.emit('compaction_end', {
         activeStartIndex: compactionState.activeStartIndex,

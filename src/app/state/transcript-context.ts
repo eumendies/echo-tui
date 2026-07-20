@@ -6,6 +6,7 @@ import {
   createSetTodoStateOperation,
   createTruncateRecordsOperation
 } from '../../persistence/transcript-journal';
+import {createCompactionNoticeRecord} from '../../agent/context/context-compaction';
 import {cloneChangeHistory} from './change-history-context';
 
 import type {ChangeCheckpoint} from '../../types/change-history';
@@ -180,10 +181,7 @@ class TranscriptContext {
    */
   applyCompaction(compaction: CompactionState): TranscriptRecord {
     this.setCompaction(compaction);
-    return this.appendRecord({
-      role: 'compaction_notice',
-      text: `已将较早的 ${compaction.activeStartIndex} 条历史压缩为摘要`
-    });
+    return this.appendRecord(createCompactionNoticeRecord(compaction));
   }
 
   /**

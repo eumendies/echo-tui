@@ -142,10 +142,20 @@ async function generateCompactionSummary(options: {
   ];
 
   throwIfAborted(abortSignal);
-  const result: AgentTurnResult = await agent.runTurn(summaryRecords, {}, {abortSignal});
+  const result: AgentTurnResult = await agent.runTurn(summaryRecords, {}, {abortSignal, isCompaction: true});
   throwIfAborted(abortSignal);
 
   return result.draft.trim();
+}
+
+/**
+ * 构造可见压缩提示；runtime 与持久化 transcript 复用同一记录语义以保持索引平行。
+ */
+function createCompactionNoticeRecord(compaction: CompactionState): TranscriptRecord {
+  return {
+    role: 'compaction_notice',
+    text: `已将较早的 ${compaction.activeStartIndex} 条历史压缩为摘要`
+  };
 }
 
 /**
@@ -213,6 +223,7 @@ async function runCompaction(options: {
 
 export {
   computeCompactionBoundary,
+  createCompactionNoticeRecord,
   estimateContextTokens,
   estimateRecordsTokens,
   estimateTextTokens,

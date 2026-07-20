@@ -15,7 +15,7 @@ import type {OpenAiFunctionTool} from '../openai-responses/tool-converter';
 import type {OpenAiInputItem} from '../openai-responses/transcript-converter';
 
 type CodexCreateRequest = {
-  include: string[];
+  include?: string[];
   input: OpenAiInputItem[];
   instructions: string;
   model: string;
@@ -63,10 +63,10 @@ function assertCodexResponseClient(value: unknown): asserts value is CodexRespon
 }
 
 /**
- * 创建 ChatGPT Codex 后端接受的 Responses 请求形态。
+ * 创建 ChatGPT Codex 后端接受的 Responses 请求形态；压缩用途不暴露工具或 reasoning 配置。
  */
-function createCodexRequest(records: TranscriptRecord[], config: LlmConfig, registry?: ToolRegistry): CodexCreateRequest {
-  const toolDefinitions = registry && !registry.isEmpty() ? registry.listDefinitions() : [];
+function createCodexRequest(records: TranscriptRecord[], config: LlmConfig, registry?: ToolRegistry, options: AgentTurnOptions = {}): CodexCreateRequest {
+  const toolDefinitions = !options.isCompaction && registry && !registry.isEmpty() ? registry.listDefinitions() : [];
   const input = convertTranscriptToOpenAiInput(records).filter((item) => !('role' in item) || item.role !== 'system');
   const instructions = records.find((record) => record.role === 'system')?.text.trim();
   const request: CodexCreateRequest = {
@@ -77,10 +77,10 @@ function createCodexRequest(records: TranscriptRecord[], config: LlmConfig, regi
     store: false,
     instructions: instructions || 'You are a helpful assistant.',
     text: {verbosity: 'low'},
-    include: ['reasoning.encrypted_content']
+    ...(options.isCompaction ? {} : {include: ['reasoning.encrypted_content']})
   };
 
-  if (config.reasoningEffort) {
+  if (!options.isCompaction && config.reasoningEffort) {
     request.reasoning = {effort: config.reasoningEffort};
   }
 
@@ -118,7 +118,7 @@ class CodexAgent implements ProviderAgent {
 
     try {
       const {client, config} = await this.resolveRuntimeClient();
-      stream = await client.responses.create(createCodexRequest(records, config, this.registry), {signal: options.abortSignal});
+      stream = await client.responses.create(createCodexRequest(records, config, this.registry, options), {signal: options.abortSignal});
     } catch (error: unknown) {
       if (isAbortError(error) || options.abortSignal?.aborted) {
         throwIfAborted(options.abortSignal);

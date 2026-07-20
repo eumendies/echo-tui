@@ -415,6 +415,19 @@ test('createAnthropicRequest maps reasoning effort to adaptive thinking config',
   assert.equal('output_config' in noneRequest, false);
 });
 
+test('createAnthropicRequest omits tools and reasoning for compaction requests', () => {
+  const request = createAnthropicRequest(
+    [{ role: 'user', text: 'summarize' }],
+    { ...TEST_CONFIG, reasoningEffort: 'high' },
+    createToolRegistry(),
+    {isCompaction: true}
+  );
+
+  assert.equal('tools' in request, false);
+  assert.equal('thinking' in request, false);
+  assert.equal('output_config' in request, false);
+});
+
 test('createAnthropicAgent configures SDK client and passes abort signal', async () => {
   const clientOptions = [];
   const controller = new AbortController();

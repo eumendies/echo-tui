@@ -451,6 +451,23 @@ test('createChatRequest sends reasoning_effort when configured', () => {
   assert.equal('max_output_tokens' in noneRequest, false);
 });
 
+test('createChatRequest omits tools and reasoning for compaction requests', () => {
+  const records = [{ role: 'user', text: 'summarize' }];
+  const config = { ...TEST_CONFIG, reasoningEffort: 'xhigh' };
+  const request = createChatRequest(records, config, createToolRegistry(), {isCompaction: true});
+
+  assert.deepEqual(request, {
+    messages: [{ role: 'user', content: 'summarize' }],
+    model: 'test-chat-model',
+    prompt_cache_key: createPromptCacheKey(records, config),
+    stream: true,
+    stream_options: {include_usage: true}
+  });
+  assert.equal('tools' in request, false);
+  assert.equal('parallel_tool_calls' in request, false);
+  assert.equal('reasoning_effort' in request, false);
+});
+
 test('createOpenAiChatAgent streams text chunks and returns prompt usage', async () => {
   const harness = createHarness([
     { choices: [{ delta: { content: '你' } }] },
