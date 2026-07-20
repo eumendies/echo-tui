@@ -133,6 +133,31 @@ function writeProjectSkill(cwd, name, description = 'Test skill') {
   return rootDir;
 }
 
+test('createCommandHost composes the complete command protocol from domain ports', () => {
+  const {host} = createHostHarness();
+
+  assert.deepEqual(Object.keys(host), [
+    'composer',
+    'transcript',
+    'clipboard',
+    'model',
+    'config',
+    'skills',
+    'mcp',
+    'memory',
+    'hooks',
+    'mode',
+    'theme',
+    'context',
+    'status',
+    'usage',
+    'diff',
+    'undo',
+    'assistant',
+    'ui'
+  ]);
+});
+
 test('CommandHost theme facade lists selected builtin theme and applies selection', () => {
   withTemporaryThemeConfig(JSON.stringify({
     theme: 'amber',

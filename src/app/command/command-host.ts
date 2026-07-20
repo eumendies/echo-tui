@@ -1,26 +1,19 @@
-import {prepareAgent} from '../../agent/agent-setup';
-import {runCompaction} from '../../agent/context/context-compaction';
-import {loadAgentInstructions} from '../../agent/agent-instructions';
-import {redactSensitiveText} from '../../agent/agent-errors';
-import {readLlmConfig} from '../../config/llm-config';
-import {readLlmConfigDraft, saveLlmConfigDraft} from '../../config/llm-config-editor';
 import {queryCodexUsage} from '../../config/codex-oauth';
-import {readMcpConfigDraft, saveMcpEnabledStateDraft} from '../../config/mcp-config';
-import {createLifecycleHookRuntimeConfigFromDraft, readLifecycleHookConfigDraft, saveLifecycleHookConfigDraft} from '../../hooks/config';
-import {createLifecycleHookSyntheticPayload, executeLifecycleHookSyntheticTest} from '../../hooks/synthetic-test';
-import {listProviderModels} from '../../config/provider-model-list';
-import {listBuiltinThemes, readTuiTheme, readTuiThemeBaseId, selectBuiltinTheme} from '../../config/theme-config';
-import {createUserMemory, deleteUserMemory, readUserMemories, setUserMemoryEnabled, updateUserMemory} from '../../memory/memory-store';
-import {addAgentMemory, listAgentMemoryCatalogs, listEffectiveAgentMemoryCatalogs, readAgentMemoryCatalog, removeAgentMemoryCatalog, removeAgentMemoryItem, setAgentMemoryCatalogEnabled, setAgentMemoryItemEnabled, updateAgentMemoryCatalog, updateAgentMemoryItem} from '../../memory/agent-memory-store';
-import {calculateCommandSurfaceMaxLines} from '../../render/footer';
-import {sanitizeMcpError} from '../../mcp/manager';
-import {createSkillManager} from '../../skills/skill-manager';
-import {writeClipboardText} from '../clipboard';
+import {createAssistantCommandPort} from './assistant-command-port';
+import {createCoreCommandPorts} from './core-command-ports';
+import {createHistoryCommandPorts} from './history-command-ports';
+import {createHooksCommandPort} from './hooks-command-port';
+import {createMcpCommandPort} from './mcp-command-port';
+import {createMemoryCommandPort} from './memory-command-port';
+import {createModelCommandPorts} from './model-command-ports';
+import {createSettingsCommandPorts} from './settings-command-ports';
+import {createSkillsCommandPort} from './skills-command-port';
+import {createStatusCommandPorts, createStatusSnapshot} from './status-command-ports';
+import {createCopyableRecords, createTranscriptCommandPort} from './transcript-command-ports';
 
-import type {CommandCompactionResult, CommandHostApp, CommandMcpServerInfo, CommandStatusSnapshot, CopyableMessageRecord} from '../../types/command';
-import type {CodexUsage} from '../../config/codex-oauth';
-import type {TranscriptRecord} from '../../types/transcript';
+import type {CommandHostApp} from '../../types/command';
 import type {LifecycleHookDispatcher} from '../../types/hooks';
+import type {TranscriptRecord} from '../../types/transcript';
 import type {UsageStore} from '../../types/usage';
 import type {McpManager} from '../../mcp/manager';
 import type {AppContext} from '../state/app-context';
@@ -38,509 +31,50 @@ type CommandHostOptions = {
 };
 
 /**
- * 创建 command handler 可用的受控 app facade；handler 只能通过这些领域能力触达 app 状态。
- *
- * @param options app context 与渲染回调
- * @returns command host 的 app 能力部分
+ * 在 app 组合根装配 command handler 可用的受控领域端口。
  */
 function createCommandHost(options: CommandHostOptions): CommandHostApp {
   const {appContext, appendRecord, exit, hooks, mcpManager, renderFooter, renderResizeRecovery, usageStore} = options;
-  const queryUsage = options.queryCodexUsage || queryCodexUsage;
-  const skillManager = createSkillManager({cwd: () => appContext.getCurrentCwd()});
+  const corePorts = createCoreCommandPorts({
+    composerContext: appContext.composerContext,
+    exit,
+    renderFooter,
+    renderResizeRecovery
+  });
+  const modelPorts = createModelCommandPorts(appContext);
+  const settingsPorts = createSettingsCommandPorts({appContext, renderFooter, renderResizeRecovery});
+  const statusPorts = createStatusCommandPorts({
+    appContext,
+    queryCodexUsage: options.queryCodexUsage,
+    usageStore
+  });
+  const historyPorts = createHistoryCommandPorts(appContext);
+  const cwd = () => appContext.getCurrentCwd();
 
   return {
-    composer: {
-      reset() {
-        appContext.composerContext.reset();
-        appContext.composerContext.leaveHistoryBrowsing();
-      },
-      leaveHistoryBrowsing() {
-        appContext.composerContext.leaveHistoryBrowsing();
-      }
-    },
-    transcript: {
-      clear() {
-        appContext.clearTranscriptRecords();
-        appContext.clearContextUsage();
-        renderResizeRecovery();
-      },
-      loadSession(sessionId: string): boolean {
-        const didLoad = Boolean(appContext.loadTranscriptSession(sessionId));
-
-        if (didLoad) {
-          appContext.clearContextUsage();
-          renderResizeRecovery();
-        }
-
-        return didLoad;
-      },
-      append(record: TranscriptRecord) {
-        appendRecord(appContext.transcriptContext.appendRecord(record));
-      },
-      listCopyableRecords() {
-        return createCopyableRecords(appContext.transcriptContext.records);
-      },
-      listResumeSessions() {
-        return appContext.transcriptContext.listResumeSessions();
-      }
-    },
-    clipboard: {
-      writeText(text: string) {
-        return writeClipboardText(text);
-      }
-    },
-    model: {
-      createModelCommandInfo() {
-        return appContext.modelContext.createModelCommandInfo();
-      },
-      createEffortCommandInfo() {
-        return appContext.modelContext.createEffortCommandInfo();
-      },
-      selectModel(modelId: string) {
-        const result = appContext.modelContext.selectModel(modelId);
-
-        if (result.ok) {
-          appContext.clearContextUsage();
-        }
-
-        return result;
-      },
-      selectEffort(effort) {
-        return appContext.modelContext.selectEffort(effort);
-      }
-    },
-    config: {
-      readDraft() {
-        return readLlmConfigDraft();
-      },
-      listModels(provider) {
-        return listProviderModels(provider);
-      },
-      saveDraft(draft) {
-        try {
-          saveLlmConfigDraft(draft);
-          appContext.modelContext.refreshModelState();
-          appContext.clearContextUsage();
-          return {ok: true};
-        } catch (error: unknown) {
-          return {
-            ok: false,
-            error: error instanceof Error ? error.message : String(error)
-          };
-        }
-      }
-    },
-    skills: {
-      createSkillInvocation(skillName: string, argumentsText?: string) {
-        const result = skillManager.loadSkill(skillName);
-
-        if (!result.ok) {
-          return {
-            ok: false as const,
-            reason: result.reason === 'disabled' ? 'disabled' as const : 'missing' as const,
-            message: result.message
-          };
-        }
-
-        const userRequestText = argumentsText && argumentsText.trim() !== '' ? argumentsText.trim() : undefined;
-        const lines = [
-          '[Skill Invocation]',
-          `skill: ${result.skill.name}`,
-          `source: ${result.skill.sourceKind}`,
-          `source_path: ${result.skill.sourcePath}`,
-          '',
-          '[Skill Instructions]',
-          result.skill.content
-        ];
-
-        if (result.skill.resources.length > 0) {
-          lines.push('', '[Skill Resources]', ...result.skill.resources.map((resourcePath) => `- ${resourcePath}`));
-        }
-
-        if (userRequestText) {
-          lines.push('', '[User Request]', userRequestText);
-        }
-
-        return {
-          ok: true as const,
-          text: lines.join('\n'),
-          ...(result.modelProfileId ? {modelProfileId: result.modelProfileId} : {}),
-          metadata: {
-            skillInvocation: {
-              source: 'slash',
-              skillName: result.skill.name,
-              argumentsText: userRequestText,
-              userRequestText,
-              sourceKind: result.skill.sourceKind,
-              sourcePath: result.skill.sourcePath
-            }
-          }
-        };
-      },
-      listSkills() {
-        return skillManager.listSkills();
-      },
-      listEnabledSkillDescriptors() {
-        return skillManager.listCatalog().map((skill) => ({
-          name: skill.name,
-          description: `Skill: ${skill.description}`
-        }));
-      },
-      saveSkillStates(skills) {
-        skillManager.saveSkillStates(skills);
-        appContext.clearContextUsage();
-      }
-    },
-    mcp: {
-      listServers() {
-        const draft = readMcpConfigDraft();
-        const toolCountByServer = new Map<string, number>();
-        const diagnosticsByServer = new Map<string, string>();
-
-        if (draft.servers.length === 0) {
-          return [];
-        }
-
-        for (const tool of mcpManager?.listTools() || []) {
-          toolCountByServer.set(tool.serverName, (toolCountByServer.get(tool.serverName) || 0) + 1);
-        }
-
-        for (const diagnostic of mcpManager?.getDiagnostics() || []) {
-          diagnosticsByServer.set(diagnostic.serverName, diagnostic.message);
-        }
-
-        return [
-          {
-            kind: 'global' as const,
-            name: 'MCP global',
-            enabled: draft.enabled,
-            valid: true,
-            summary: draft.enabled ? 'enabled' : 'disabled'
-          },
-          ...draft.servers.map((server): CommandMcpServerInfo => ({
-            kind: 'server' as const,
-            name: server.name,
-            enabled: server.enabled,
-            valid: server.valid,
-            summary: server.summary,
-            ...(server.transport ? {transport: server.transport} : {}),
-            ...(server.diagnostic || diagnosticsByServer.get(server.name) ? {diagnostic: server.diagnostic || diagnosticsByServer.get(server.name)} : {}),
-            ...(toolCountByServer.has(server.name) ? {toolCount: toolCountByServer.get(server.name)} : {})
-          }))
-        ];
-      },
-      async saveServerStates(servers) {
-        appContext.setMcpBootstrapStatus('initializing');
-        appContext.turnContext.startSpinner('working');
-        renderFooter();
-
-        try {
-          const globalState = servers.find((server) => server.kind === 'global');
-          saveMcpEnabledStateDraft({
-            enabled: globalState ? globalState.enabled : true,
-            servers: servers
-              .filter((server) => server.kind === 'server')
-              .map((server) => ({name: server.name, enabled: server.enabled}))
-          });
-          await mcpManager?.reload();
-          appContext.clearContextUsage();
-          const diagnostics = (mcpManager?.getDiagnostics() || []).map((diagnostic) => `${diagnostic.serverName}: ${diagnostic.message}`);
-          return {ok: true, diagnostics};
-        } catch (error: unknown) {
-          return {ok: false, error: sanitizeMcpError(error)};
-        } finally {
-          appContext.turnContext.stopSpinner();
-          appContext.turnContext.clearWorking();
-          appContext.setMcpBootstrapStatus('ready');
-          renderFooter();
-        }
-      }
-    },
-    memory: {
-      list() {
-        return readUserMemories();
-      },
-      create(content) {
-        return createUserMemory(content);
-      },
-      update(id, content) {
-        return updateUserMemory(id, content);
-      },
-      setEnabled(id, enabled) {
-        return setUserMemoryEnabled(id, enabled);
-      },
-      delete(id) {
-        return deleteUserMemory(id);
-      },
-      listAgentCatalogs() {
-        return listAgentMemoryCatalogs(appContext.getCurrentCwd());
-      },
-      readAgentCatalog(name, scope) {
-        return readAgentMemoryCatalog(appContext.getCurrentCwd(), name, scope);
-      },
-      addAgentMemory(input) {
-        return addAgentMemory(appContext.getCurrentCwd(), input);
-      },
-      updateAgentCatalog(name, updates, scope) {
-        return updateAgentMemoryCatalog(appContext.getCurrentCwd(), name, updates, scope);
-      },
-      setAgentCatalogEnabled(name, enabled, scope) {
-        return setAgentMemoryCatalogEnabled(appContext.getCurrentCwd(), name, enabled, scope);
-      },
-      updateAgentItem(catalog, itemId, content, scope) {
-        return updateAgentMemoryItem(appContext.getCurrentCwd(), catalog, itemId, content, scope);
-      },
-      setAgentItemEnabled(catalog, itemId, enabled, scope) {
-        return setAgentMemoryItemEnabled(appContext.getCurrentCwd(), catalog, itemId, enabled, scope);
-      },
-      removeAgentCatalog(name, scope) {
-        return removeAgentMemoryCatalog(appContext.getCurrentCwd(), name, scope);
-      },
-      removeAgentItem(catalog, itemId, scope) {
-        return removeAgentMemoryItem(appContext.getCurrentCwd(), catalog, itemId, scope);
-      }
-    },
-    hooks: {
-      readDraft() {
-        return readLifecycleHookConfigDraft();
-      },
-      saveDraft(draft) {
-        try {
-          const nextConfig = createLifecycleHookRuntimeConfigFromDraft(draft);
-          saveLifecycleHookConfigDraft(draft);
-          hooks?.updateConfig(nextConfig);
-          return {ok: true};
-        } catch (error: unknown) {
-          return {
-            ok: false,
-            error: error instanceof Error ? error.message : String(error)
-          };
-        }
-      },
-      testEntry(event, entry) {
-        const payload = createLifecycleHookSyntheticPayload({
-          cwd: appContext.getCurrentCwd(),
-          event,
-          interactionMode: appContext.getInteractionMode()
-        });
-        return executeLifecycleHookSyntheticTest({
-          cwd: appContext.getCurrentCwd(),
-          entry,
-          payload
-        });
-      }
-    },
-    mode: {
-      getInteractionMode() {
-        return appContext.getInteractionMode();
-      },
-      setInteractionMode(mode) {
-        appContext.setInteractionMode(mode);
-        appContext.clearContextUsage();
-        renderFooter();
-      }
-    },
-    theme: {
-      listThemes() {
-        const currentThemeId = readTuiThemeBaseId();
-        return listBuiltinThemes().map((theme) => ({
-          description: theme.description,
-          id: theme.id,
-          label: theme.label,
-          selected: theme.id === currentThemeId
-        }));
-      },
-      selectTheme(themeId: string) {
-        const result = selectBuiltinTheme(themeId);
-
-        if (!result.ok) {
-          return result;
-        }
-
-        appContext.setTheme(readTuiTheme());
-        renderResizeRecovery();
-        return {ok: true};
-      }
-    },
-    context: {
-      getUsage() {
-        return appContext.getContextUsage();
-      }
-    },
-    status: {
-      createSnapshot() {
-        return createStatusSnapshot(appContext);
-      },
-      async queryCodexUsage() {
-        let config;
-
-        try {
-          config = readLlmConfig();
-        } catch (error: unknown) {
-          return {status: 'unavailable' as const, error: formatStatusError(error, '无法读取当前模型配置')};
-        }
-
-        if (config.agentType !== 'codex') {
-          return {status: 'not_applicable' as const};
-        }
-
-        try {
-          return createAvailableCodexUsage(await queryUsage(config.codexOAuth || {}));
-        } catch (error: unknown) {
-          return {status: 'unavailable' as const, error: formatStatusError(error, 'Codex 用量不可用')};
-        }
-      }
-    },
-    usage: {
-      listDailyUsage(query) {
-        return usageStore ? usageStore.listDailyUsage(query) : [];
-      },
-      getViewport() {
-        const state = appContext.createRenderState();
-        return {
-          maxLines: calculateCommandSurfaceMaxLines(state.rows),
-          width: state.width
-        };
-      }
-    },
-    diff: {
-      getSource() {
-        return appContext.createDiffSourceResult();
-      },
-      /**
-       * 返回当前 command surface 的渲染预算，供滚动状态按真实视口截断。
-       */
-      getViewport() {
-        const state = appContext.createRenderState();
-        return {
-          maxLines: calculateCommandSurfaceMaxLines(state.rows),
-          width: state.width
-        };
-      }
-    },
-    undo: {
-      getSummary() {
-        return appContext.changeHistoryContext.getSummary();
-      },
-      execute() {
-        return appContext.executeUndo();
-      }
-    },
-    assistant: {
-      beginManualCompaction(): boolean {
-        if (appContext.turnContext.responding) {
-          renderFooter();
-          return false;
-        }
-
-        appContext.turnContext.beginManualCompaction();
-        appContext.turnContext.startSpinner('working');
-        renderFooter();
-        return true;
-      },
-      compactContext(options: {force: true}) {
-        const prepared = prepareAgent({cwd: () => appContext.getCurrentCwd()});
-        const session = appContext.getAgentSession();
-
-        return runCompaction({
-          records: session.records,
-          compaction: session.compaction,
-          force: options.force,
-          agent: prepared.agent
-        });
-      },
-      finishManualCompaction(result: CommandCompactionResult) {
-        appContext.turnContext.stopSpinner();
-
-        if (result.didCompact && result.compaction) {
-          const noticeRecord = appContext.transcriptContext.applyCompaction(result.compaction);
-          appContext.turnContext.finishAssistantTurn('');
-          appendRecord(noticeRecord);
-          return;
-        }
-
-        appContext.turnContext.finishAssistantTurn('');
-        appendRecord(appContext.transcriptContext.appendRecord({
-          role: 'compaction_notice',
-          text: '当前无需压缩'
-        }));
-      },
-      fail(error: unknown) {
-        appContext.turnContext.stopSpinner();
-        appendRecord(appContext.turnContext.failAssistantTurn(error));
-      }
-    },
-    ui: {
-      renderFooter,
-      renderResizeRecovery,
-      exit
-    }
+    composer: corePorts.composer,
+    transcript: createTranscriptCommandPort({appContext, appendRecord, renderResizeRecovery}),
+    clipboard: corePorts.clipboard,
+    model: modelPorts.model,
+    config: modelPorts.config,
+    skills: createSkillsCommandPort({cwd, clearContextUsage: () => appContext.clearContextUsage()}),
+    mcp: createMcpCommandPort({appContext, mcpManager, renderFooter}),
+    memory: createMemoryCommandPort(cwd),
+    hooks: createHooksCommandPort({
+      cwd,
+      getInteractionMode: () => appContext.getInteractionMode(),
+      hooks
+    }),
+    mode: settingsPorts.mode,
+    theme: settingsPorts.theme,
+    context: statusPorts.context,
+    status: statusPorts.status,
+    usage: statusPorts.usage,
+    diff: historyPorts.diff,
+    undo: historyPorts.undo,
+    assistant: createAssistantCommandPort({appContext, appendRecord, renderFooter}),
+    ui: corePorts.ui
   };
-}
-
-function createCopyableRecords(records: TranscriptRecord[]): CopyableMessageRecord[] {
-  return records
-    .map((record, index) => ({record, index}))
-    .filter(({record}) => record.role === 'user' || record.role === 'assistant')
-    .map(({record, index}) => ({
-      createdAt: record.createdAt,
-      id: `message-${index}`,
-      role: record.role as CopyableMessageRecord['role'],
-      text: record.text
-    }));
-}
-
-/**
- * 聚合 `/status` 所需的本地只读信息；各来源失败时保留其余可用字段。
- */
-function createStatusSnapshot(appContext: AppContext): CommandStatusSnapshot {
-  const cwd = appContext.getCurrentCwd();
-  const userMemoryResult = readUserMemories();
-  const agentMemoryResult = listEffectiveAgentMemoryCatalogs(cwd);
-  const modelResult = appContext.modelContext.createStatusInfo();
-  const diagnostics: string[] = [];
-
-  if (!userMemoryResult.ok) {
-    diagnostics.push(userMemoryResult.error);
-  }
-
-  if (!agentMemoryResult.ok) {
-    diagnostics.push(agentMemoryResult.error);
-  }
-
-  if ('error' in modelResult) {
-    diagnostics.push(modelResult.error);
-  }
-
-  return {
-    cwd,
-    sessionId: appContext.transcriptContext.getCurrentSessionId(),
-    model: 'error' in modelResult ? null : {...modelResult},
-    agentInstructions: loadAgentInstructions({cwd}).map((instruction) => ({
-      filePath: instruction.filePath,
-      label: instruction.label,
-      sourceKind: instruction.sourceKind
-    })),
-    userMemoryCount: userMemoryResult.ok
-      ? userMemoryResult.memories.filter((memory) => memory.enabled).length
-      : 0,
-    agentMemoryCatalogs: agentMemoryResult.ok
-      ? agentMemoryResult.catalogs.map((catalog) => ({name: catalog.name, scope: catalog.scope.kind}))
-      : [],
-    diagnostics: diagnostics.map((diagnostic) => redactSensitiveText(diagnostic))
-  };
-}
-
-function createAvailableCodexUsage(usage: CodexUsage) {
-  return {
-    status: 'available' as const,
-    primary: {...usage.primary},
-    ...(usage.secondary ? {secondary: {...usage.secondary}} : {})
-  };
-}
-
-function formatStatusError(error: unknown, fallback: string): string {
-  return redactSensitiveText(error instanceof Error && error.message.trim() !== '' ? error.message : fallback);
 }
 
 export {
