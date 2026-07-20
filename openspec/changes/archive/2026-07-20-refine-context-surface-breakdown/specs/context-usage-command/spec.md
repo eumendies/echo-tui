@@ -1,8 +1,5 @@
-# context-usage-command Specification
+## MODIFIED Requirements
 
-## Purpose
-定义 `/context` 本地 slash command、provider context usage 分类估算，以及只读 context usage 详情 surface 的行为。
-## Requirements
 ### Requirement: `/context` command 展示详细 context usage
 系统 SHALL 提供 `/context` slash command，用于展示最近一次真实 provider request 的 context usage 详情。详情 SHALL 包含 used tokens、context window、窗口占用百分比，以及按 System prompt、Tools、Messages、Reasoning 顶层分类组织的 token breakdown；Memory 与 Skills SHALL 作为 System prompt 的子项展示。
 
@@ -28,39 +25,6 @@
 - **THEN** command runtime SHALL 将该输入视为本地命令消费
 - **AND** app SHALL NOT 将 `/context` 作为 user message 提交给 agent
 - **AND** app SHALL NOT 因该命令启动 provider request
-
-### Requirement: context usage 分类计算
-系统 SHALL 基于最近一次 provider request 快照估算 context usage 分类占用，并 SHALL 将分类 token 校准到 provider 返回的真实 `usageInputTokens` 总量。分类 token 总和 SHALL 等于该次 usage 的 used tokens。
-
-#### Scenario: 分类总和等于 provider used tokens
-- **WHEN** provider 返回 `usageInputTokens`
-- **AND** 系统生成 context usage breakdown
-- **THEN** 所有分类 segment 的 tokens 总和 SHALL 等于 `usageInputTokens`
-- **AND** context usage 的 used tokens SHALL 等于 `usageInputTokens`
-
-#### Scenario: system prompt、memory 和 skill catalog 分别计入对应分类
-- **WHEN** agent loop 为 provider request 注入内置 system prompt、用户 memory、实际选中的展开或折叠 agent memory prompt 和 skill catalog
-- **THEN** 系统 SHALL 将用户 memory 与该轮 agent memory prompt 以外的内置 system prompt 估算 tokens 归入 System prompt 分类
-- **AND** 系统 SHALL 将用户 memory 与该轮实际注入的完整 agent memory prompt 估算 tokens 归入 Memory 分类
-- **AND** 系统 SHALL 将 skill catalog 的估算 tokens 归入 Skills 分类
-
-#### Scenario: 工具定义和工具历史计入 Tools
-- **WHEN** provider request 包含可用工具定义
-- **THEN** 系统 SHALL 将工具定义估算 tokens 归入 Tools 分类
-- **AND** provider-visible `tool_call` 与 `tool_result` 历史 SHALL 归入 Tools 分类
-- **AND** `read_memory` 返回的 catalog 内容 SHALL 作为普通 tool result 归入 Tools 分类
-
-#### Scenario: 用户、assistant 消息和 shell 上下文计入 Messages
-- **WHEN** provider request 包含 user records、压缩摘要注入消息或进入上下文的 shell records
-- **OR** provider request 包含 assistant text records
-- **THEN** 系统 SHALL 将这些内容归入 Messages 分类
-- **AND** `includeInContext: false` 的 shell records SHALL NOT 计入 Messages 分类
-- **AND** tool call records SHALL NOT 归入 Messages 分类
-
-#### Scenario: provider reasoning carry-over 计入 Reasoning
-- **WHEN** provider request 包含 provider-visible reasoning carry-over records
-- **THEN** 系统 SHALL 将这些 records 归入 Reasoning 分类
-- **AND** 本地 `reasoning_summary` records SHALL NOT 计入 Reasoning 分类
 
 ### Requirement: context usage 详情 surface
 系统 SHALL 使用只读 command surface 展示 context usage 详情。该 surface SHALL 采用 demo 风格的终端卡片、窗口占用 gauge、顶层分类 composition bar、颜色 swatch 和层级分类明细，并 SHALL 可通过用户按键关闭。
@@ -88,4 +52,3 @@
 - **AND** surface SHALL NOT 因写满最后一列触发额外自动换行
 - **AND** surface SHALL 在需要裁剪分类明细时先省略 Memory 与 Skills 子项，再省略 usage 总览或顶层分类信息
 - **AND** surface MAY 继续裁剪次要留白或明细行以保持布局稳定
-

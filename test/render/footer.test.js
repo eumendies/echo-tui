@@ -90,6 +90,7 @@ const CUSTOM_THEME = createTuiTheme({
       diffRemovedBackground: {ansi256: 41},
       diffText: {ansi256: 250},
       frame: [30, 31, 32],
+      plan: [40, 41, 42],
       selectionBackground: {ansi256: 99},
       success: [7, 8, 9],
       warning: [13, 14, 15]
@@ -406,13 +407,14 @@ test('renderFooterLayout keeps context card columns stable with styled usage det
       kind: 'context',
       title: 'Context',
       usage: {
-        usedTokens: 54300,
+        usedTokens: 56800,
         contextWindow: 270000,
         source: 'provider',
         segments: [
           {category: 'tools', tokens: 21000},
           {category: 'reasoning', tokens: 6000},
           {category: 'system', tokens: 9800},
+          {category: 'memory', tokens: 2500},
           {category: 'messages', tokens: 14500},
           {category: 'skills', tokens: 3000}
         ]
@@ -430,13 +432,59 @@ test('renderFooterLayout keeps context card columns stable with styled usage det
   assert.ok(cardLines.length > 0);
   assert.ok(cardLines.every((line) => displayWidth(line) === cardWidth));
   assert.ok(layout.lines.every((line) => displayWidth(line) <= safeRenderWidth(120)));
-  assert.ok(plainLines.some((line) => line.includes('54.3K / 270K tokens') && line.includes('20% 已用')));
-  assert.ok(plainLines.some((line) => line.includes('工具') && line.includes('21K') && line.includes('39%')));
-  assert.ok(plainLines.some((line) => line.includes('消息') && line.includes('14.5K') && line.includes('27%')));
-  assert.ok(plainLines.some((line) => line.includes('系统提示词') && line.includes('9.8K') && line.includes('18%')));
+  const systemIndex = plainLines.findIndex((line) => line.includes('系统提示词'));
+  const memoryIndex = plainLines.findIndex((line) => line.includes('Memory'));
+  const skillsIndex = plainLines.findIndex((line) => line.includes('Skills'));
+  const toolsIndex = plainLines.findIndex((line) => line.includes('工具'));
+
+  assert.ok(plainLines.some((line) => line.includes('56.8K / 270K tokens') && line.includes('21% 已用')));
+  assert.ok(plainLines.some((line) => line.includes('工具') && line.includes('21K') && line.includes('37%')));
+  assert.ok(plainLines.some((line) => line.includes('消息') && line.includes('14.5K') && line.includes('26%')));
+  assert.ok(plainLines.some((line) => line.includes('系统提示词') && line.includes('15.3K') && line.includes('27%')));
   assert.ok(plainLines.some((line) => line.includes('推理') && line.includes('6K') && line.includes('11%')));
-  assert.ok(plainLines.some((line) => line.includes('Skills') && line.includes('3K') && line.includes('6%')));
+  assert.ok(plainLines[memoryIndex].includes('├─') && plainLines[memoryIndex].includes('2.5K'));
+  assert.ok(plainLines[skillsIndex].includes('└─') && plainLines[skillsIndex].includes('3K'));
+  assert.equal(plainLines[memoryIndex].includes('%'), false);
+  assert.equal(plainLines[skillsIndex].includes('%'), false);
+  assert.ok(systemIndex < memoryIndex && memoryIndex < skillsIndex && skillsIndex < toolsIndex);
   assert.equal(plainLines.some((line) => line.includes('…')), false);
+});
+
+test('renderFooterLayout groups Memory and Skills into the System prompt composition segment', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: {
+      kind: 'context',
+      usage: {
+        usedTokens: 1000,
+        contextWindow: 2000,
+        source: 'provider',
+        segments: [
+          {category: 'system', tokens: 200},
+          {category: 'memory', tokens: 200},
+          {category: 'skills', tokens: 100},
+          {category: 'tools', tokens: 200},
+          {category: 'messages', tokens: 200},
+          {category: 'reasoning', tokens: 100}
+        ]
+      }
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    theme: CUSTOM_THEME,
+    rows: 24,
+    width: 90
+  });
+  const compositionLine = layout.lines.find((line) => {
+    const plain = stripAnsi(line);
+    return plain.includes('█') && !plain.includes('░');
+  });
+
+  assert.ok(compositionLine);
+  assert.ok(compositionLine.includes('\x1b[38;2;4;5;6m'));
+  assert.ok(compositionLine.includes('\x1b[38;2;7;8;9m'));
+  assert.ok(compositionLine.includes('\x1b[38;2;1;2;3m'));
+  assert.equal(compositionLine.includes('\x1b[38;2;40;41;42m'), false);
 });
 
 test('renderFooterLayout applies custom theme to scale and context surfaces', () => {
@@ -760,7 +808,7 @@ test('humanizeTokens formats usage tokens compactly', () => {
 });
 
 test('renderFooterLayout constrains context surface in small terminals', () => {
-  const layout = renderFooterLayout({
+  const compact = renderFooterLayout({
     composer: createComposer(''),
     commandSurface: {
       kind: 'context',
@@ -769,20 +817,29 @@ test('renderFooterLayout constrains context surface in small terminals', () => {
         contextWindow: 4000,
         source: 'provider',
         segments: [
-          {category: 'system', tokens: 200},
+          {category: 'system', tokens: 100},
+          {category: 'memory', tokens: 100},
+          {category: 'skills', tokens: 100},
           {category: 'tools', tokens: 300},
-          {category: 'messages', tokens: 500}
+          {category: 'messages', tokens: 300},
+          {category: 'reasoning', tokens: 100}
         ]
       }
     },
     pending: null,
     statusLine: DEFAULT_STATUS_LINE,
-    rows: 8,
+    rows: 12,
     width: 40
   });
+  const compactPlainLines = compact.lines.map((line) => stripAnsi(line));
 
-  assert.ok(layout.lines.length <= 6);
-  assert.ok(layout.lines.every((line) => displayWidth(line) <= safeRenderWidth(40)));
+  assert.ok(compact.lines.length <= 10);
+  assert.ok(compact.lines.every((line) => displayWidth(line) <= safeRenderWidth(40)));
+  assert.ok(compactPlainLines.some((line) => line.includes('系统提示词')));
+  assert.ok(compactPlainLines.some((line) => line.includes('工具')));
+  assert.ok(compactPlainLines.some((line) => line.includes('消息')));
+  assert.ok(compactPlainLines.some((line) => line.includes('推理')));
+  assert.equal(compactPlainLines.some((line) => line.includes('Memory') || line.includes('Skills')), false);
 
   const narrow = renderFooterLayout({
     composer: createComposer(''),
