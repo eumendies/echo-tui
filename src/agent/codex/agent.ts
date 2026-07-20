@@ -2,7 +2,7 @@ import OpenAI from 'openai';
 
 import {LlmAgentError, normalizeError} from '../agent-errors';
 import {createPromptCacheKey} from '../prompt-cache';
-import {readResponseStream} from '../openai-responses/agent';
+import {runResponseStreamWithRetry} from '../openai-responses/agent';
 import {convertToolDefinitionsToOpenAiTools} from '../openai-responses/tool-converter';
 import {convertTranscriptToOpenAiInput} from '../openai-responses/transcript-converter';
 
@@ -111,14 +111,18 @@ class CodexAgent implements ProviderAgent {
   }
 
   /**
-   * 执行一次 Codex provider turn，并复用 Responses stream 事件读取逻辑。
+   * 执行一次 Codex provider turn，并复用 Responses stream 的有界临时错误重试逻辑。
    */
   async runTurn(records: TranscriptRecord[], callbacks: AgentTurnCallbacks = {}, options: AgentTurnOptions = {}): Promise<AgentTurnResult> {
-    let stream: CodexStream;
-
     try {
       const {client, config} = await this.resolveRuntimeClient();
-      stream = await client.responses.create(createCodexRequest(records, config, this.registry, options), {signal: options.abortSignal});
+      const request = createCodexRequest(records, config, this.registry, options);
+
+      return await runResponseStreamWithRetry(
+        () => client.responses.create(request, {signal: options.abortSignal}),
+        callbacks,
+        options
+      );
     } catch (error: unknown) {
       if (isAbortError(error) || options.abortSignal?.aborted) {
         throwIfAborted(options.abortSignal);
@@ -126,8 +130,6 @@ class CodexAgent implements ProviderAgent {
 
       throw normalizeError(error, '无法启动模型响应');
     }
-
-    return readResponseStream(stream, callbacks, options);
   }
 
   private async resolveRuntimeClient(): Promise<{client: CodexResponseClient; config: LlmConfig}> {

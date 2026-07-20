@@ -5,7 +5,7 @@ import {createPromptCacheKey} from '../prompt-cache';
 import {convertTranscriptToOpenAiInput, createOpenAiReasoningRecord} from './transcript-converter';
 import {convertToolDefinitionsToOpenAiTools, extractFunctionToolCall} from './tool-converter';
 
-import {isAbortError, throwIfAborted} from '../../types/agent';
+import {AgentAbortError, isAbortError, throwIfAborted} from '../../types/agent';
 import type {AgentTurnCallbacks, AgentTurnOptions, AgentTurnResult, LlmConfig, OpenAiAgentDependencies, ProviderAgent, ProviderUsage} from '../../types/agent';
 import type {ToolCall, ToolRegistry} from '../../types/tool';
 import type {TranscriptRecord} from '../../types/transcript';
@@ -13,9 +13,12 @@ import type {OpenAiFunctionTool} from './tool-converter';
 import type {OpenAiInputItem} from './transcript-converter';
 
 type ResponseEventDetails = {
-  error?: {message?: unknown};
+  code?: unknown;
+  error?: {code?: unknown; message?: unknown};
   incomplete_details?: {reason?: unknown};
-  response?: {incomplete_details?: {reason?: unknown}; error?: {message?: unknown}};
+  message?: unknown;
+  requestID?: unknown;
+  response?: {incomplete_details?: {reason?: unknown}; error?: {code?: unknown; message?: unknown}};
 };
 
 type ResponseCreateRequest = {
@@ -41,6 +44,7 @@ type ReasoningSummaryEvent = {
 };
 
 type ResponseStream = AsyncIterable<unknown>;
+type ResponseStreamFactory = () => Promise<ResponseStream>;
 
 type ResponseClient = {
   responses: {
@@ -49,6 +53,10 @@ type ResponseClient = {
 };
 
 const OPENAI_MAX_RETRIES = 3;
+const RESPONSE_STREAM_RETRY_DELAY_MS = 100;
+const RETRYABLE_PROCESSING_ERROR_TEXT = 'An error occurred while processing your request. You can retry your request';
+
+class RetryableResponseStreamError extends LlmAgentError {}
 
 function createClient(config: LlmConfig, OpenAIClient: new (options: {apiKey: string; baseURL?: string; defaultHeaders?: Record<string, string>; maxRetries?: number}) => unknown): unknown {
   return new OpenAIClient({
@@ -188,22 +196,34 @@ function isFailureEvent(event: unknown): boolean {
   return isStreamEvent(event) && (event.type === 'response.failed' || event.type === 'error');
 }
 
+function readResponseErrorCode(value: unknown): string | null {
+  if (!isStreamEvent(value)) {
+    return null;
+  }
+
+  const candidate = value as ResponseEventDetails;
+  const code = candidate.code ?? candidate.error?.code ?? candidate.response?.error?.code;
+  return typeof code === 'string' && code !== '' ? code : null;
+}
+
+function readResponseErrorMessage(value: unknown): string | null {
+  if (!isStreamEvent(value)) {
+    return null;
+  }
+
+  const candidate = value as ResponseEventDetails;
+  const message = candidate.message ?? candidate.error?.message ?? candidate.response?.error?.message;
+  return typeof message === 'string' && message.trim() !== '' ? message : null;
+}
+
+function isRetryableResponseStreamError(error: unknown): boolean {
+  return error instanceof RetryableResponseStreamError ||
+    readResponseErrorCode(error) === 'server_error' ||
+    readResponseErrorMessage(error)?.includes(RETRYABLE_PROCESSING_ERROR_TEXT) === true;
+}
+
 function summarizeFailureEvent(event: unknown): string {
-  if (!isStreamEvent(event)) {
-    return '模型服务返回失败事件';
-  }
-
-  const candidate = event as ResponseEventDetails;
-
-  if (typeof candidate.error?.message === 'string') {
-    return candidate.error.message;
-  }
-
-  if (typeof candidate.response?.error?.message === 'string') {
-    return candidate.response.error.message;
-  }
-
-  return '模型服务返回失败事件';
+  return readResponseErrorMessage(event) || '模型服务返回失败事件';
 }
 
 function summarizeIncompleteEvent(event: unknown): string {
@@ -219,6 +239,36 @@ function summarizeIncompleteEvent(event: unknown): string {
   }
 
   return '服务端未完整结束响应';
+}
+
+function readResponseRequestId(error: unknown): string | null {
+  if (!isStreamEvent(error)) {
+    return null;
+  }
+
+  const requestId = (error as ResponseEventDetails).requestID;
+  return typeof requestId === 'string' && requestId.trim() !== '' ? requestId : null;
+}
+
+function normalizeResponseStreamError(error: unknown): LlmAgentError {
+  const normalized = normalizeError(error, '模型响应流异常');
+  const requestId = readResponseRequestId(error);
+  const message = requestId && !normalized.message.includes(requestId)
+    ? `${normalized.message}（request ID: ${redactSensitiveText(requestId)}）`
+    : normalized.message;
+
+  if (isRetryableResponseStreamError(error)) {
+    return new RetryableResponseStreamError(message);
+  }
+
+  return message === normalized.message ? normalized : new LlmAgentError(message);
+}
+
+function createFailureEventError(event: unknown): LlmAgentError {
+  const message = `模型服务响应失败：${redactSensitiveText(summarizeFailureEvent(event))}`;
+  return isRetryableResponseStreamError(event)
+    ? new RetryableResponseStreamError(message)
+    : new LlmAgentError(message);
 }
 
 function assertResponseClient(value: unknown): asserts value is ResponseClient {
@@ -276,7 +326,7 @@ async function readResponseStream(stream: ResponseStream, callbacks: AgentTurnCa
       throwIfAborted(options.abortSignal);
 
       if (isFailureEvent(event)) {
-        throw new LlmAgentError(`模型服务响应失败：${redactSensitiveText(summarizeFailureEvent(event))}`);
+        throw createFailureEventError(event);
       }
 
       if (isIncompleteEvent(event)) {
@@ -335,7 +385,7 @@ async function readResponseStream(stream: ResponseStream, callbacks: AgentTurnCa
       throwIfAborted(options.abortSignal);
     }
 
-    throw normalizeError(error, '模型响应流异常');
+    throw normalizeResponseStreamError(error);
   }
 
   if (!completed) {
@@ -352,6 +402,66 @@ async function readResponseStream(stream: ResponseStream, callbacks: AgentTurnCa
     ...(usage ? {usage} : {}),
     usageInputTokens
   };
+}
+
+/**
+ * 等待一次短暂重试退避，并让 turn 级取消信号立即中断等待。
+ */
+function waitForResponseStreamRetry(signal?: AbortSignal): Promise<void> {
+  throwIfAborted(signal);
+
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timeout);
+      signal?.removeEventListener('abort', onAbort);
+      reject(new AgentAbortError());
+    };
+    const timeout = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, RESPONSE_STREAM_RETRY_DELAY_MS);
+
+    signal?.addEventListener('abort', onAbort, {once: true});
+  });
+}
+
+/**
+ * 创建并消费 Responses stream，在无文本输出的指定服务端临时错误后最多重新创建一次 stream。
+ */
+async function runResponseStreamWithRetry(createStream: ResponseStreamFactory, callbacks: AgentTurnCallbacks = {}, options: AgentTurnOptions = {}): Promise<AgentTurnResult> {
+  let retried = false;
+
+  while (true) {
+    throwIfAborted(options.abortSignal);
+    const stream = await createStream();
+    let emittedText = false;
+    const attemptCallbacks: AgentTurnCallbacks = {
+      onToken(delta, draft) {
+        if (delta !== '') {
+          emittedText = true;
+        }
+
+        callbacks.onToken?.(delta, draft);
+      }
+    };
+
+    try {
+      return await readResponseStream(stream, attemptCallbacks, options);
+    } catch (error: unknown) {
+      const canRetry = !retried &&
+        !emittedText &&
+        !options.isCompaction &&
+        !options.abortSignal?.aborted &&
+        isRetryableResponseStreamError(error);
+
+      if (!canRetry) {
+        throw error;
+      }
+
+      retried = true;
+      await waitForResponseStreamRetry(options.abortSignal);
+    }
+  }
 }
 
 /**
@@ -377,10 +487,14 @@ class OpenAiAgent implements ProviderAgent {
    * 执行一次 OpenAI provider turn；工具循环由外层 runtime 继续编排。
    */
   async runTurn(records: TranscriptRecord[], callbacks: AgentTurnCallbacks = {}, options: AgentTurnOptions = {}): Promise<AgentTurnResult> {
-    let stream: ResponseStream;
+    const request = createRequest(records, this.config, this.registry, options);
 
     try {
-      stream = await this.client.responses.create(createRequest(records, this.config, this.registry, options), {signal: options.abortSignal});
+      return await runResponseStreamWithRetry(
+        () => this.client.responses.create(request, {signal: options.abortSignal}),
+        callbacks,
+        options
+      );
     } catch (error: unknown) {
       if (isAbortError(error) || options.abortSignal?.aborted) {
         throwIfAborted(options.abortSignal);
@@ -388,8 +502,6 @@ class OpenAiAgent implements ProviderAgent {
 
       throw normalizeError(error, '无法启动模型响应');
     }
-
-    return readResponseStream(stream, callbacks, options);
   }
 }
 
@@ -402,5 +514,6 @@ export {
   createRequest,
   extractTextDelta,
   isCompletedEvent,
-  readResponseStream
+  readResponseStream,
+  runResponseStreamWithRetry
 };

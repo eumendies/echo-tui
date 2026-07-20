@@ -28,6 +28,7 @@ const TEST_CONFIG = {
     }
   }
 };
+const RETRYABLE_PROCESSING_ERROR = 'An error occurred while processing your request. You can retry your request';
 
 async function* streamFrom(events) {
   for (const event of events) {
@@ -64,6 +65,10 @@ function createHarness(eventsOrFactory) {
   }
 
   return { callbacks, requestOptions, requests, runTurn };
+}
+
+function createRetryableStreamError(requestId) {
+  return new Error(`${RETRYABLE_PROCESSING_ERROR}, or contact support with request ID ${requestId}.`);
 }
 
 function createEmptyToolRegistry() {
@@ -346,6 +351,100 @@ test('createOpenAiAgent rejects service failure events without completing', asyn
     }
   );
   assert.equal(completed, false);
+});
+
+test('createOpenAiAgent retries a transient stream processing error before output', async () => {
+  let attempts = 0;
+  const harness = createHarness(() => {
+    attempts += 1;
+    return attempts === 1
+      ? [createRetryableStreamError('first-request')]
+      : [{type: 'response.output_text.delta', delta: 'recovered'}, {type: 'response.completed'}];
+  });
+
+  const result = await harness.runTurn([{role: 'user', text: 'hello'}], {});
+
+  assert.deepEqual(result, {draft: 'recovered', toolCalls: [], usageInputTokens: undefined});
+  assert.equal(harness.requests.length, 2);
+  assert.deepEqual(harness.requests[0], harness.requests[1]);
+});
+
+test('createOpenAiAgent retries response.failed server_error events before output', async () => {
+  let attempts = 0;
+  const harness = createHarness(() => {
+    attempts += 1;
+    return attempts === 1
+      ? [{type: 'response.failed', response: {error: {code: 'server_error', message: 'temporary provider failure'}}}]
+      : [{type: 'response.completed'}];
+  });
+
+  await harness.runTurn([{role: 'user', text: 'hello'}], {});
+
+  assert.equal(harness.requests.length, 2);
+});
+
+test('createOpenAiAgent stops after one transient stream retry and keeps the final request ID', async () => {
+  let attempts = 0;
+  const harness = createHarness(() => {
+    attempts += 1;
+    if (attempts === 1) {
+      return [createRetryableStreamError('first-request')];
+    }
+
+    const finalError = new Error(RETRYABLE_PROCESSING_ERROR);
+    finalError.requestID = 'final-request';
+    return [finalError];
+  });
+
+  await assert.rejects(
+    () => harness.runTurn([{role: 'user', text: 'hello'}], {}),
+    (error) => {
+      assert.match(error.message, /final-request/);
+      assert.doesNotMatch(error.message, /first-request/);
+      return true;
+    }
+  );
+  assert.equal(harness.requests.length, 2);
+});
+
+test('createOpenAiAgent does not retry non-target, partial, or compaction stream failures', async () => {
+  const nonTarget = createHarness([new Error('stream disconnected')]);
+  await assert.rejects(() => nonTarget.runTurn([{role: 'user', text: 'hello'}], {}), /模型响应流异常/);
+  assert.equal(nonTarget.requests.length, 1);
+
+  const partial = createHarness([
+    {type: 'response.output_text.delta', delta: 'partial'},
+    createRetryableStreamError('partial-request')
+  ]);
+  const partialCallbacks = [];
+  await assert.rejects(
+    () => partial.runTurn([{role: 'user', text: 'hello'}], {
+      onToken(delta, draft) {
+        partialCallbacks.push([delta, draft]);
+      }
+    }),
+    /partial-request/
+  );
+  assert.equal(partial.requests.length, 1);
+  assert.deepEqual(partialCallbacks, [['partial', 'partial']]);
+
+  const compaction = createHarness([createRetryableStreamError('compaction-request')]);
+  await assert.rejects(
+    () => compaction.runTurn([{role: 'user', text: 'summarize'}], {}, {isCompaction: true}),
+    /compaction-request/
+  );
+  assert.equal(compaction.requests.length, 1);
+});
+
+test('createOpenAiAgent aborts retry backoff without creating another stream', async () => {
+  const controller = new AbortController();
+  const harness = createHarness([createRetryableStreamError('abort-request')]);
+  const result = harness.runTurn([{role: 'user', text: 'hello'}], {}, {abortSignal: controller.signal});
+
+  setTimeout(() => controller.abort(), 10);
+
+  await assert.rejects(result, (error) => error.name === 'AgentAbortError');
+  assert.equal(harness.requests.length, 1);
 });
 
 test('createOpenAiAgent rejects streams that end before completion', async () => {
