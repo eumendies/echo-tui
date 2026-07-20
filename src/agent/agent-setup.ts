@@ -23,18 +23,18 @@ type PreparedAgent = {
   registry: ToolRegistry;
 };
 
-function createConfiguredAgent(config: LlmConfig): ProviderAgent {
+function createConfiguredAgent(config: LlmConfig, registry: ToolRegistry): ProviderAgent {
   switch (config.agentType) {
     case 'fake':
       return createFakeAgent();
     case 'openai':
-      return createOpenAiAgent();
+      return createOpenAiAgent(config, registry);
     case 'openai-chat':
-      return createOpenAiChatAgent();
+      return createOpenAiChatAgent(config, registry);
     case 'anthropic':
-      return createAnthropicAgent();
+      return createAnthropicAgent(config, registry);
     case 'codex':
-      return createCodexAgent();
+      return createCodexAgent(config, registry);
   }
 }
 
@@ -49,9 +49,7 @@ function prepareAgent(options: PrepareAgentOptions = {}): PreparedAgent {
   const registry = options.mcpManager
     ? mergeToolRegistries(baseRegistry, createMcpToolRegistry(options.mcpManager))
     : baseRegistry;
-  const agent = createConfiguredAgent(config);
-
-  agent.initialize(config, registry);
+  const agent = createConfiguredAgent(config, registry);
 
   return {agent, config, registry};
 }

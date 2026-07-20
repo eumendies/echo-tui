@@ -462,21 +462,14 @@ async function readAnthropicStream(stream: AnthropicStream, callbacks: AgentTurn
  * 创建基于 Anthropic SDK Messages API 的单次 provider turn agent；tool loop 由外层编排。
  */
 class AnthropicAgent implements ProviderAgent {
-  private client: AnthropicClient | null = null;
-  private config: LlmConfig | null = null;
-  private makeClient: (config: LlmConfig) => unknown;
-  private registry: ToolRegistry | null = null;
+  private readonly client: AnthropicClient;
+  private readonly config: LlmConfig;
+  private readonly registry: ToolRegistry;
 
-  constructor(dependencies: AnthropicAgentDependencies = {}) {
+  constructor(config: LlmConfig, registry: ToolRegistry, dependencies: AnthropicAgentDependencies = {}) {
     const AnthropicClient = dependencies.AnthropicClient || Anthropic;
-    this.makeClient = dependencies.createClient || ((config: LlmConfig) => createClient(config, AnthropicClient));
-  }
-
-  /**
-   * 使用当前配置初始化 Anthropic client 和本轮可用工具定义。
-   */
-  initialize(config: LlmConfig, registry: ToolRegistry): void {
-    const client = this.makeClient(config);
+    const makeClient = dependencies.createClient || ((clientConfig: LlmConfig) => createClient(clientConfig, AnthropicClient));
+    const client = makeClient(config);
     assertAnthropicClient(client);
 
     this.client = client;
@@ -488,10 +481,6 @@ class AnthropicAgent implements ProviderAgent {
    * 执行一次 Anthropic provider turn；工具循环由外层 runtime 继续编排。
    */
   async runTurn(records: TranscriptRecord[], callbacks: AgentTurnCallbacks = {}, options: AgentTurnOptions = {}): Promise<AgentTurnResult> {
-    if (!this.client || !this.config || !this.registry) {
-      throw new LlmAgentError('模型运行时尚未初始化');
-    }
-
     let stream: AnthropicStream;
 
     try {
@@ -508,8 +497,8 @@ class AnthropicAgent implements ProviderAgent {
   }
 }
 
-function createAnthropicAgent(dependencies: AnthropicAgentDependencies = {}): ProviderAgent {
-  return new AnthropicAgent(dependencies);
+function createAnthropicAgent(config: LlmConfig, registry: ToolRegistry, dependencies: AnthropicAgentDependencies = {}): ProviderAgent {
+  return new AnthropicAgent(config, registry, dependencies);
 }
 
 export {

@@ -97,33 +97,23 @@ function createCodexRequest(records: TranscriptRecord[], config: LlmConfig, regi
  * 基于本机 Codex OAuth auth.json 创建 ChatGPT Codex provider turn。
  */
 class CodexAgent implements ProviderAgent {
-  private config: LlmConfig | null = null;
-  private makeClient: (config: LlmConfig) => unknown;
-  private registry: ToolRegistry | null = null;
-  private resolveCredential: (config: CodexOAuthRuntimeConfig) => Promise<CodexOAuthCredential>;
+  private readonly config: LlmConfig;
+  private readonly makeClient: (config: LlmConfig) => unknown;
+  private readonly registry: ToolRegistry;
+  private readonly resolveCredential: (config: CodexOAuthRuntimeConfig) => Promise<CodexOAuthCredential>;
 
-  constructor(dependencies: CodexAgentDependencies = {}) {
+  constructor(config: LlmConfig, registry: ToolRegistry, dependencies: CodexAgentDependencies = {}) {
     const OpenAIClient = dependencies.OpenAIClient || OpenAI;
-    this.makeClient = dependencies.createClient || ((config: LlmConfig) => createClient(config, OpenAIClient));
-    this.resolveCredential = dependencies.resolveCodexOAuthCredential || resolveCodexOAuthCredential;
-  }
-
-  /**
-   * 保存当前 Codex 运行配置；access token 每轮动态读取，避免缓存过期凭据。
-   */
-  initialize(config: LlmConfig, registry: ToolRegistry): void {
     this.config = config;
+    this.makeClient = dependencies.createClient || ((config: LlmConfig) => createClient(config, OpenAIClient));
     this.registry = registry;
+    this.resolveCredential = dependencies.resolveCodexOAuthCredential || resolveCodexOAuthCredential;
   }
 
   /**
    * 执行一次 Codex provider turn，并复用 Responses stream 事件读取逻辑。
    */
   async runTurn(records: TranscriptRecord[], callbacks: AgentTurnCallbacks = {}, options: AgentTurnOptions = {}): Promise<AgentTurnResult> {
-    if (!this.config || !this.registry) {
-      throw new LlmAgentError('模型运行时尚未初始化');
-    }
-
     let stream: CodexStream;
 
     try {
@@ -141,10 +131,6 @@ class CodexAgent implements ProviderAgent {
   }
 
   private async resolveRuntimeClient(): Promise<{client: CodexResponseClient; config: LlmConfig}> {
-    if (!this.config) {
-      throw new LlmAgentError('模型运行时尚未初始化');
-    }
-
     if (!this.config.codexOAuth) {
       throw new LlmAgentError('Codex OAuth 配置缺失');
     }
@@ -167,8 +153,8 @@ class CodexAgent implements ProviderAgent {
   }
 }
 
-function createCodexAgent(dependencies: CodexAgentDependencies = {}): ProviderAgent {
-  return new CodexAgent(dependencies);
+function createCodexAgent(config: LlmConfig, registry: ToolRegistry, dependencies: CodexAgentDependencies = {}): ProviderAgent {
+  return new CodexAgent(config, registry, dependencies);
 }
 
 export {

@@ -88,14 +88,12 @@ function createHarness(eventsOrFactory, registry = createEmptyToolRegistry()) {
       }
     }
   };
-  const agent = createAnthropicAgent({
+  const agent = createAnthropicAgent(TEST_CONFIG, registry, {
     createClient(config) {
       assert.deepEqual(config, TEST_CONFIG);
       return client;
     }
   });
-  agent.initialize(TEST_CONFIG, registry);
-
   return {
     callbacks,
     requestOptions,
@@ -448,9 +446,12 @@ test('createAnthropicAgent configures SDK client and passes abort signal', async
       };
     }
   }
-  const agent = createAnthropicAgent({ AnthropicClient: FakeAnthropic });
+  const agent = createAnthropicAgent(
+    { ...TEST_CONFIG, headers: { 'x-source': 'test-source' } },
+    createEmptyToolRegistry(),
+    { AnthropicClient: FakeAnthropic }
+  );
 
-  agent.initialize({ ...TEST_CONFIG, headers: { 'x-source': 'test-source' } }, createEmptyToolRegistry());
   await agent.runTurn([{ role: 'user', text: 'hello' }], {}, { abortSignal: controller.signal });
 
   assert.deepEqual(clientOptions[0], {
@@ -618,7 +619,7 @@ test('createAnthropicAgent preserves partial tool input for runtime validation',
 
 test('createAnthropicAgent rejects create errors, stream errors, service errors, and incomplete streams', async () => {
   const fakeAuthText = ['Bear', 'er secret-value'].join('');
-  const createErrorAgent = createAnthropicAgent({
+  const createErrorAgent = createAnthropicAgent(TEST_CONFIG, createEmptyToolRegistry(), {
     createClient() {
       return {
         messages: {
@@ -629,8 +630,6 @@ test('createAnthropicAgent rejects create errors, stream errors, service errors,
       };
     }
   });
-  createErrorAgent.initialize(TEST_CONFIG, createEmptyToolRegistry());
-
   await assert.rejects(
     () => createErrorAgent.runTurn([{ role: 'user', text: 'hello' }], {}),
     (error) => {
@@ -725,13 +724,11 @@ test('Anthropic agent can generate compaction summaries without provider usage',
       }
     }
   };
-  const agent = createAnthropicAgent({
+  const agent = createAnthropicAgent(TEST_CONFIG, createEmptyToolRegistry(), {
     createClient() {
       return client;
     }
   });
-  agent.initialize(TEST_CONFIG, createEmptyToolRegistry());
-
   const summary = await generateCompactionSummary({
     agent,
     compactedRecords: [

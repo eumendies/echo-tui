@@ -1,8 +1,5 @@
-import {LlmAgentError} from '../agent-errors';
-
 import {AgentAbortError} from '../../types/agent';
-import type {AgentCallbacks, AgentSessionInput, AgentTurnCallbacks, AgentTurnOptions, AgentTurnResult, LlmConfig, ProviderAgent, RunAgent} from '../../types/agent';
-import type {ToolRegistry} from '../../types/tool';
+import type {AgentCallbacks, AgentSessionInput, AgentTurnCallbacks, AgentTurnOptions, AgentTurnResult, ProviderAgent, RunAgent} from '../../types/agent';
 import type {TranscriptRecord} from '../../types/transcript';
 
 function delay(ms: number, signal?: AbortSignal): Promise<void> {
@@ -68,24 +65,11 @@ const runFakeAgent: RunAgent = async (
 };
 
 function createFakeAgent(): ProviderAgent {
-  let initialized = false;
-
   return {
-    /**
-     * fake agent 只遵守 ProviderAgent 生命周期，不读取真实模型凭据或工具定义。
-     */
-    initialize(_config: LlmConfig, _registry: ToolRegistry): void {
-      initialized = true;
-    },
-
     /**
      * 执行一次 fake provider turn：回放最新用户输入并且永不产生 tool call。
      */
     async runTurn(records: TranscriptRecord[], callbacks: AgentTurnCallbacks = {}, options: AgentTurnOptions = {}): Promise<AgentTurnResult> {
-      if (!initialized) {
-        throw new LlmAgentError('模型运行时尚未初始化');
-      }
-
       return {
         draft: await streamFakeDraft(records, callbacks, options),
         toolCalls: []

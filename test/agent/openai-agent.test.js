@@ -49,13 +49,12 @@ function createHarness(eventsOrFactory) {
       }
     }
   };
-  const agent = createOpenAiAgent({
+  const agent = createOpenAiAgent(TEST_CONFIG, createEmptyToolRegistry(), {
     createClient(config) {
       assert.deepEqual(config, TEST_CONFIG);
       return client;
     }
   });
-  agent.initialize(TEST_CONFIG, createEmptyToolRegistry());
   async function runTurn(records, callbacks, options) {
     return agent.runTurn(records, callbacks, options);
   }
@@ -154,9 +153,8 @@ test('createOpenAiAgent configures SDK retry count', async () => {
       };
     }
   }
-  const agent = createOpenAiAgent({ OpenAIClient: FakeOpenAI });
+  const agent = createOpenAiAgent(TEST_CONFIG, createEmptyToolRegistry(), { OpenAIClient: FakeOpenAI });
 
-  agent.initialize(TEST_CONFIG, createEmptyToolRegistry());
   await agent.runTurn([{ role: 'user', text: 'hello' }], {});
 
   assert.equal(clientOptions[0].maxRetries, 3);
@@ -174,9 +172,12 @@ test('createOpenAiAgent passes configured default headers to SDK client', async 
       };
     }
   }
-  const agent = createOpenAiAgent({ OpenAIClient: FakeOpenAI });
+  const agent = createOpenAiAgent(
+    { ...TEST_CONFIG, headers: { 'x-source': 'test-source' } },
+    createEmptyToolRegistry(),
+    { OpenAIClient: FakeOpenAI }
+  );
 
-  agent.initialize({ ...TEST_CONFIG, headers: { 'x-source': 'test-source' } }, createEmptyToolRegistry());
   await agent.runTurn([{ role: 'user', text: 'hello' }], {});
 
   assert.deepEqual(clientOptions[0].defaultHeaders, { 'x-source': 'test-source' });
@@ -184,7 +185,7 @@ test('createOpenAiAgent passes configured default headers to SDK client', async 
 
 test('createOpenAiAgent treats abort as user interruption instead of service failure', async () => {
   const controller = new AbortController();
-  const agent = createOpenAiAgent({
+  const agent = createOpenAiAgent(TEST_CONFIG, createEmptyToolRegistry(), {
     createClient() {
       return {
         responses: {
@@ -199,8 +200,6 @@ test('createOpenAiAgent treats abort as user interruption instead of service fai
       };
     }
   });
-
-  agent.initialize(TEST_CONFIG, createEmptyToolRegistry());
 
   await assert.rejects(
     () => agent.runTurn([{ role: 'user', text: 'hello' }], {}, { abortSignal: controller.signal }),
@@ -370,7 +369,7 @@ test('createOpenAiAgent rejects incomplete events with clear service-side reason
 test('createOpenAiAgent rejects SDK create and stream errors', async () => {
   const fakeAuthText = ['Bear', 'er secret-value'].join('');
   const fakeStreamKey = `sk-${'stream-secret'}`;
-  const createErrorAgent = createOpenAiAgent({
+  const createErrorAgent = createOpenAiAgent(TEST_CONFIG, createEmptyToolRegistry(), {
     createClient() {
       return {
         responses: {
@@ -381,8 +380,6 @@ test('createOpenAiAgent rejects SDK create and stream errors', async () => {
       };
     }
   });
-  createErrorAgent.initialize(TEST_CONFIG, createEmptyToolRegistry());
-
   await assert.rejects(
     () => createErrorAgent.runTurn([{ role: 'user', text: 'hello' }], {}),
     (error) => {
@@ -716,13 +713,12 @@ test('OpenAI provider agent reports function tool calls without executing tools'
       }
     }
   };
-  const agent = createOpenAiAgent({
+  const toolRegistry = createToolRegistry();
+  const agent = createOpenAiAgent(TEST_CONFIG, toolRegistry, {
     createClient() {
       return client;
     }
   });
-  const toolRegistry = createToolRegistry();
-  agent.initialize(TEST_CONFIG, toolRegistry);
   const result = await agent.runTurn([{ role: 'user', text: 'where am I?' }], {});
 
   assert.deepEqual(result, {

@@ -27,7 +27,7 @@ const TEST_CONFIG = {
   }
 };
 
-async function withPatchedAgentRuntime(agent, callback, config = TEST_CONFIG) {
+async function withPatchedAgentRuntime(agentOrFactory, callback, config = TEST_CONFIG) {
   const originalPrepareAgent = agentSetupModule.prepareAgent;
 
   agentSetupModule.prepareAgent = (options = {}) => {
@@ -36,8 +36,10 @@ async function withPatchedAgentRuntime(agent, callback, config = TEST_CONFIG) {
     const registry = options.mcpManager
       ? mergeToolRegistries(baseRegistry, createMcpToolRegistry(options.mcpManager))
       : baseRegistry;
+    const agent = typeof agentOrFactory === 'function'
+      ? agentOrFactory(resolvedConfig, registry)
+      : agentOrFactory;
 
-    agent.initialize(resolvedConfig, registry);
     return {agent, config: resolvedConfig, registry};
   };
 
@@ -186,7 +188,6 @@ test('createAgentLoopRuntime rereads saved memory before each provider request',
     const created = createUserMemory('第一次偏好');
     const requests = [];
     const agent = {
-      initialize() {},
       async runTurn(records) {
         requests.push(records);
         return {draft: 'done', toolCalls: []};
@@ -211,7 +212,7 @@ test('createAgentLoopRuntime rereads and expands small agent memory before each 
   await withTemporaryMemoryHome(async () => {
     addAgentMemory(TEST_CWD, {catalog: 'rendering', description: 'First description', content: 'private item'});
     const requests = [];
-    const agent = {initialize() {}, async runTurn(records) { requests.push(records); return {draft: 'done', toolCalls: []}; }};
+    const agent = {async runTurn(records) { requests.push(records); return {draft: 'done', toolCalls: []}; }};
     await withPatchedAgentRuntime(agent, async () => {
       const runtime = createAgentLoopRuntime(TEST_CWD);
       await runtime({records: [{role: 'user', text: 'first'}]});
@@ -232,7 +233,7 @@ test('createAgentLoopRuntime falls back to the complete catalog index when one i
     const second = addAgentMemory(TEST_CWD, {catalog: 'second', description: 'Second description', content: 'second item'});
     fs.writeFileSync(path.join(os.homedir(), '.echo', 'agent-memory', 'catalogs', `${second.catalog.id}.json`), '{bad', 'utf8');
     const requests = [];
-    const agent = {initialize() {}, async runTurn(records) { requests.push(records); return {draft: 'done', toolCalls: []}; }};
+    const agent = {async runTurn(records) { requests.push(records); return {draft: 'done', toolCalls: []}; }};
 
     await withPatchedAgentRuntime(agent, () => {
       const runtime = createAgentLoopRuntime(TEST_CWD);
@@ -252,7 +253,6 @@ test('createAgentLoopRuntime counts the selected expanded agent memory prompt as
     const providerRecords = [];
     const contextUsages = [];
     const agent = {
-      initialize() {},
       async runTurn(records) {
         providerRecords.push(records);
         return {draft: 'done', toolCalls: [], usageInputTokens: 10_000};
@@ -273,7 +273,7 @@ test('createAgentLoopRuntime records a non-sensitive agent memory prompt summary
   await withTemporaryMemoryHome(async () => {
     addAgentMemory(TEST_CWD, {catalog: 'rendering', description: 'Private description', content: 'private memory content'});
     const debug = createDebugRecorder();
-    const agent = {initialize() {}, async runTurn() { return {draft: 'done', toolCalls: []}; }};
+    const agent = {async runTurn() { return {draft: 'done', toolCalls: []}; }};
 
     await withPatchedAgentRuntime(agent, () => {
       const runtime = createAgentLoopRuntime(TEST_CWD, undefined, undefined, debug.context);
@@ -294,7 +294,7 @@ test('createAgentLoopRuntime excludes disabled catalogs and falls back to enable
     addAgentMemory(TEST_CWD, {catalog: 'shared', description: 'Global description', content: 'global item', scope: 'global'});
     addAgentMemory(TEST_CWD, {catalog: 'shared', description: 'Project description', content: 'project item'});
     const requests = [];
-    const agent = {initialize() {}, async runTurn(records) { requests.push(records); return {draft: 'done', toolCalls: []}; }};
+    const agent = {async runTurn(records) { requests.push(records); return {draft: 'done', toolCalls: []}; }};
     await withPatchedAgentRuntime(agent, async () => {
       const runtime = createAgentLoopRuntime(TEST_CWD);
       await runtime({records: [{role: 'user', text: 'first'}]});
@@ -447,7 +447,6 @@ test('createAgentLoopRuntime emits provider records callback before visible comp
     reasoningContent: 'hidden'
   };
   const agent = {
-    initialize() {},
     async runTurn() {
       return {
         draft: 'done',
@@ -485,24 +484,25 @@ test('createAgentLoopRuntime uses one overridden config for provider, context, u
   const contextUsages = [];
   const usageEvents = [];
   let turnCount = 0;
-  const agent = {
-    initialize(config) {
-      initialized.push(config);
-    },
-    async runTurn() {
-      turnCount += 1;
+  const createAgent = (config) => {
+    initialized.push(config);
 
-      if (turnCount === 1) {
-        return {
-          draft: '',
-          toolCalls: [{callId: 'todo', toolName: 'create_todos', argumentsText: JSON.stringify({items: ['continue']})}],
-          usageInputTokens: 50,
-          usage: {outputTokens: 2}
-        };
+    return {
+      async runTurn() {
+        turnCount += 1;
+
+        if (turnCount === 1) {
+          return {
+            draft: '',
+            toolCalls: [{callId: 'todo', toolName: 'create_todos', argumentsText: JSON.stringify({items: ['continue']})}],
+            usageInputTokens: 50,
+            usage: {outputTokens: 2}
+          };
+        }
+
+        return {draft: 'done', toolCalls: [], usageInputTokens: 60, usage: {outputTokens: 3}};
       }
-
-      return {draft: 'done', toolCalls: [], usageInputTokens: 60, usage: {outputTokens: 3}};
-    }
+    };
   };
   const overrideConfig = {
     ...TEST_CONFIG,
@@ -511,7 +511,7 @@ test('createAgentLoopRuntime uses one overridden config for provider, context, u
     tools: {bash: {timeoutMs: 4321, maxOutputBytes: 2048}}
   };
 
-  await withPatchedAgentRuntime(agent, async () => {
+  await withPatchedAgentRuntime(createAgent, async () => {
     const runtime = createAgentLoopRuntime(TEST_CWD, undefined, undefined, undefined, {
       appendEvent(event) {
         usageEvents.push(event);
@@ -540,7 +540,6 @@ test('createAgentLoopRuntime uses one overridden config for provider, context, u
 test('createAgentLoopRuntime reports the model resolved for the current run', async () => {
   const resolvedModels = [];
   const agent = {
-    initialize() {},
     async runTurn() {
       return {draft: 'done', toolCalls: []};
     }
@@ -575,20 +574,21 @@ test('autonomous use_skill keeps the model initialized for normal and slash over
     modelOverrides: {'loaded-skill': 'different-profile'}
   }), 'utf8');
 
-  const agent = {
-    initialize(config) {
-      initializedModels.push(config.model);
-    },
-    async runTurn() {
-      turnCount += 1;
-      return turnCount % 2 === 1
-        ? {draft: '', toolCalls: [{callId: `skill-${turnCount}`, toolName: 'use_skill', argumentsText: JSON.stringify({name: 'loaded-skill'})}]}
-        : {draft: 'done', toolCalls: []};
-    }
+  const createAgent = (config) => {
+    initializedModels.push(config.model);
+
+    return {
+      async runTurn() {
+        turnCount += 1;
+        return turnCount % 2 === 1
+          ? {draft: '', toolCalls: [{callId: `skill-${turnCount}`, toolName: 'use_skill', argumentsText: JSON.stringify({name: 'loaded-skill'})}]}
+          : {draft: 'done', toolCalls: []};
+      }
+    };
   };
 
   try {
-    await withPatchedAgentRuntime(agent, async () => {
+    await withPatchedAgentRuntime(createAgent, async () => {
       const runtime = createAgentLoopRuntime(cwd);
       const callbacks = {onToolResult(result) { toolResults.push(result); }};
 
@@ -610,13 +610,14 @@ test('autonomous use_skill keeps the model initialized for normal and slash over
 
 test('createAgentLoopRuntime keeps provider-visible tool definitions stable across normal and plan modes', async () => {
   const captured = [];
-  const agent = {
-    initialize(_config, registry) {
-      captured.push(registry.listDefinitions().map((definition) => definition.name));
-    },
-    async runTurn() {
-      return {draft: 'done', toolCalls: []};
-    }
+  const createAgent = (_config, registry) => {
+    captured.push(registry.listDefinitions().map((definition) => definition.name));
+
+    return {
+      async runTurn() {
+        return {draft: 'done', toolCalls: []};
+      }
+    };
   };
   const mcpManager = {
     listTools() {
@@ -634,7 +635,7 @@ test('createAgentLoopRuntime keeps provider-visible tool definitions stable acro
     }
   };
 
-  await withPatchedAgentRuntime(agent, async () => {
+  await withPatchedAgentRuntime(createAgent, async () => {
     const runAgent = createAgentLoopRuntime(TEST_CWD, mcpManager);
     await runAgent({records: [{role: 'user', text: 'normal'}], interactionMode: 'normal'});
     await runAgent({records: [{role: 'user', text: 'plan'}], interactionMode: 'plan'});
@@ -653,7 +654,6 @@ test('createAgentLoopRuntime rejects write tools in plan mode without approval',
   const approvals = [];
   const results = [];
   const agent = {
-    initialize() {},
     async runTurn() {
       turnCount += 1;
 
@@ -696,7 +696,6 @@ test('createAgentLoopRuntime immediately denies approval-required tools in headl
   let approvalCount = 0;
   const results = [];
   const agent = {
-    initialize() {},
     async runTurn() {
       turnCount += 1;
 
@@ -742,7 +741,6 @@ test('createAgentLoopRuntime full-access executes registered patch tools without
   let turnCount = 0;
   const results = [];
   const agent = {
-    initialize() {},
     async runTurn() {
       turnCount += 1;
 
@@ -789,7 +787,6 @@ test('createAgentLoopRuntime cancels ask_user_questions when no interactive call
   let turnCount = 0;
   const results = [];
   const agent = {
-    initialize() {},
     async runTurn() {
       turnCount += 1;
 
@@ -830,7 +827,6 @@ test('createAgentLoopRuntime creates todos, persists state, and injects suffix o
   const toolResults = [];
   let turnCount = 0;
   const agent = {
-    initialize() {},
     async runTurn(records) {
       providerRecords.push(records);
       turnCount += 1;
@@ -887,7 +883,6 @@ test('createAgentLoopRuntime completes todos with partial not-found result and o
   const toolResults = [];
   let turnCount = 0;
   const agent = {
-    initialize() {},
     async runTurn(records) {
       providerRecords.push(records);
       turnCount += 1;
@@ -935,7 +930,6 @@ test('createAgentLoopRuntime keeps active todo suffix after compaction removes o
   const providerRecords = [];
   let turnCount = 0;
   const agent = {
-    initialize() {},
     async runTurn(records) {
       providerRecords.push(records);
       turnCount += 1;
@@ -972,7 +966,6 @@ test('createAgentLoopRuntime emits tool lifecycle hooks without changing continu
   const callbacks = [];
   let turnCount = 0;
   const agent = {
-    initialize() {},
     async runTurn(_records, providerCallbacks) {
       turnCount += 1;
 
@@ -1033,7 +1026,6 @@ test('createAgentLoopRuntime emits compaction hook and no token hook', async () 
   const hooks = createHookRecorder();
   let turnCount = 0;
   const agent = {
-    initialize() {},
     async runTurn(_records, providerCallbacks) {
       turnCount += 1;
 
@@ -1068,7 +1060,6 @@ test('createAgentLoopRuntime emits debug provider and tool summaries without cha
   const providerRecordSnapshots = [];
   let turnCount = 0;
   const agent = {
-    initialize() {},
     async runTurn(records) {
       providerRecordSnapshots.push(records);
       turnCount += 1;
@@ -1124,7 +1115,6 @@ test('createAgentLoopRuntime records provider usage events without changing cont
   const contextUsages = [];
   let turnCount = 0;
   const agent = {
-    initialize() {},
     async runTurn() {
       turnCount += 1;
 
@@ -1216,7 +1206,6 @@ test('createAgentLoopRuntime records provider usage events without changing cont
 test('createAgentLoopRuntime skips absent usage and isolates usage store failures', async () => {
   const debug = createDebugRecorder();
   const agent = {
-    initialize() {},
     async runTurn() {
       return {draft: 'done', toolCalls: [], usage: {outputTokens: 5}};
     }
@@ -1240,7 +1229,6 @@ test('createAgentLoopRuntime skips absent usage and isolates usage store failure
 
   const skippedEvents = [];
   const noUsageAgent = {
-    initialize() {},
     async runTurn() {
       return {draft: 'done', toolCalls: []};
     }

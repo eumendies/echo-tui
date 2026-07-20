@@ -61,28 +61,31 @@ function createToolRegistry() {
 test('createCodexAgent resolves OAuth credential for each provider turn', async () => {
   const clientConfigs = [];
   const requests = [];
-  const agent = createCodexAgent({
-    createClient(config) {
-      clientConfigs.push(config);
-      return {
-        responses: {
-          async create(request) {
-            requests.push(request);
-            return streamFrom([
-              {type: 'response.output_text.delta', delta: 'ok'},
-              {type: 'response.completed'}
-            ]);
+  const agent = createCodexAgent(
+    {...TEST_CONFIG, headers: {'x-source': 'echo-tui'}},
+    createEmptyToolRegistry(),
+    {
+      createClient(config) {
+        clientConfigs.push(config);
+        return {
+          responses: {
+            async create(request) {
+              requests.push(request);
+              return streamFrom([
+                {type: 'response.output_text.delta', delta: 'ok'},
+                {type: 'response.completed'}
+              ]);
+            }
           }
-        }
-      };
-    },
-    async resolveCodexOAuthCredential(config) {
-      assert.deepEqual(config, {authFilePath: '/tmp/codex-auth.json'});
-      return {accessToken: 'access-token', accountId: 'acct-123'};
+        };
+      },
+      async resolveCodexOAuthCredential(config) {
+        assert.deepEqual(config, {authFilePath: '/tmp/codex-auth.json'});
+        return {accessToken: 'access-token', accountId: 'acct-123'};
+      }
     }
-  });
+  );
 
-  agent.initialize({...TEST_CONFIG, headers: {'x-source': 'echo-tui'}}, createEmptyToolRegistry());
   assert.equal(clientConfigs.length, 0);
 
   const result = await agent.runTurn([{role: 'user', text: 'hello'}], {});

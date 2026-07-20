@@ -13,7 +13,6 @@ function createSummaryAgent(summaryDraft = '结构化摘要内容') {
   const calls = [];
   return {
     calls,
-    initialize() {},
     async runTurn(records, callbacks, options) {
       calls.push({options, records});
       return { draft: summaryDraft, toolCalls: [] };
@@ -279,7 +278,6 @@ test('runCompaction does not return compaction when summary returns after abort'
   const controller = new AbortController();
   const agent = {
     calls: [],
-    initialize() {},
     async runTurn(records, callbacks, options) {
       this.calls.push({options, records});
       controller.abort();

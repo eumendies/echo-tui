@@ -85,14 +85,12 @@ function createHarness(eventsOrFactory, registry = createEmptyToolRegistry(), ll
       }
     }
   };
-  const agent = createOpenAiChatAgent({
+  const agent = createOpenAiChatAgent(llmConfig, registry, {
     createClient(config) {
       assert.deepEqual(config, llmConfig);
       return client;
     }
   });
-  agent.initialize(llmConfig, registry);
-
   return {
     callbacks,
     requestOptions,
@@ -527,9 +525,12 @@ test('createOpenAiChatAgent configures SDK client and passes abort signal', asyn
       };
     }
   }
-  const agent = createOpenAiChatAgent({ OpenAIClient: FakeOpenAI });
+  const agent = createOpenAiChatAgent(
+    { ...TEST_CONFIG, headers: { 'x-source': 'test-source' } },
+    createEmptyToolRegistry(),
+    { OpenAIClient: FakeOpenAI }
+  );
 
-  agent.initialize({ ...TEST_CONFIG, headers: { 'x-source': 'test-source' } }, createEmptyToolRegistry());
   await agent.runTurn([{ role: 'user', text: 'hello' }], {}, { abortSignal: controller.signal });
 
   assert.deepEqual(clientOptions[0], {
@@ -672,7 +673,7 @@ test('createOpenAiChatAgent preserves streamed tool arguments for runtime valida
 
 test('createOpenAiChatAgent rejects create errors, stream errors, service errors, and incomplete streams', async () => {
   const fakeAuthText = ['Bear', 'er secret-value'].join('');
-  const createErrorAgent = createOpenAiChatAgent({
+  const createErrorAgent = createOpenAiChatAgent(TEST_CONFIG, createEmptyToolRegistry(), {
     createClient() {
       return {
         chat: {
@@ -685,8 +686,6 @@ test('createOpenAiChatAgent rejects create errors, stream errors, service errors
       };
     }
   });
-  createErrorAgent.initialize(TEST_CONFIG, createEmptyToolRegistry());
-
   await assert.rejects(
     () => createErrorAgent.runTurn([{ role: 'user', text: 'hello' }], {}),
     (error) => {
@@ -728,7 +727,7 @@ test('createOpenAiChatAgent rejects create errors, stream errors, service errors
 
 test('createOpenAiChatAgent treats abort as user interruption instead of service failure', async () => {
   const controller = new AbortController();
-  const agent = createOpenAiChatAgent({
+  const agent = createOpenAiChatAgent(TEST_CONFIG, createEmptyToolRegistry(), {
     createClient() {
       return {
         chat: {
@@ -745,8 +744,6 @@ test('createOpenAiChatAgent treats abort as user interruption instead of service
       };
     }
   });
-
-  agent.initialize(TEST_CONFIG, createEmptyToolRegistry());
 
   await assert.rejects(
     () => agent.runTurn([{ role: 'user', text: 'hello' }], {}, { abortSignal: controller.signal }),
@@ -773,13 +770,11 @@ test('Chat agent can generate compaction summaries without provider usage', asyn
       }
     }
   };
-  const agent = createOpenAiChatAgent({
+  const agent = createOpenAiChatAgent(TEST_CONFIG, createEmptyToolRegistry(), {
     createClient() {
       return client;
     }
   });
-  agent.initialize(TEST_CONFIG, createEmptyToolRegistry());
-
   const summary = await generateCompactionSummary({
     agent,
     compactedRecords: [
