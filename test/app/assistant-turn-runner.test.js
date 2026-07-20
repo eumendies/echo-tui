@@ -148,7 +148,7 @@ test('runAssistantTurn emits start and end hooks without adding hook records', a
     'assistant_turn_end'
   ]);
   assert.equal(harness.debugEvents[0].payload.userText.length, 5);
-  assert.equal(harness.appContext.responding, false);
+  assert.equal(harness.appContext.turnContext.responding, false);
 });
 
 test('runAssistantTurn stores plan transition prompt while preserving display, history, metadata, and attachments', async () => {
@@ -222,7 +222,7 @@ test('runAssistantTurn injects only effective mode transitions across turns', as
     }
   });
 
-  const userRecords = harness.appContext.transcriptRecords.filter((record) => record.role === 'user');
+  const userRecords = harness.appContext.transcriptContext.records.filter((record) => record.role === 'user');
   assert.deepEqual(userRecords.map((record) => record.modeTransition), [
     {from: 'normal', to: 'plan'},
     undefined,
@@ -251,7 +251,7 @@ test('runAssistantTurn persists provider records without visible assistant text'
   });
 
   assert.deepEqual(harness.appended.map((record) => record.role), ['user', 'openai_chat_reasoning', 'assistant']);
-  assert.deepEqual(harness.appContext.transcriptRecords.map((record) => record.role), ['user', 'openai_chat_reasoning', 'assistant']);
+  assert.deepEqual(harness.appContext.transcriptContext.records.map((record) => record.role), ['user', 'openai_chat_reasoning', 'assistant']);
 });
 
 test('runAssistantTurn persists shared tool records with result metadata', async () => {
@@ -286,8 +286,8 @@ test('runAssistantTurn persists shared tool records with result metadata', async
     }
   });
 
-  const [toolCall, toolResult] = harness.appContext.transcriptRecords.slice(1, 3);
-  assert.deepEqual(harness.appContext.transcriptRecords.map((record) => record.role), [
+  const [toolCall, toolResult] = harness.appContext.transcriptContext.records.slice(1, 3);
+  assert.deepEqual(harness.appContext.transcriptContext.records.map((record) => record.role), [
     'user',
     'tool_call',
     'tool_result',
@@ -321,7 +321,7 @@ test('runAssistantTurn emits error hook while preserving error transcript behavi
   ]);
   assert.equal(harness.debugEvents[1].payload.errorMessage, 'upstream failed');
   assert.match(harness.appended.at(-1).text, /upstream failed/);
-  assert.equal(harness.appContext.responding, false);
+  assert.equal(harness.appContext.turnContext.responding, false);
 });
 
 test('runAssistantTurn passes model override only to its current agent session across completion, failure, and interruption', async () => {
@@ -398,7 +398,7 @@ test('runAssistantTurn emits a local model-switch notice and restores the global
   assert.equal(renderedModels.at(-1).skillOverride, undefined);
   assert.deepEqual(harness.appended.map((record) => record.role), ['user', 'local_notice', 'assistant']);
   assert.equal(harness.appended[1].text, '已切换到 claude-sonnet-4-6 执行当前 skill。');
-  assert.equal(harness.appContext.transcriptRecords[1].role, 'local_notice');
+  assert.equal(harness.appContext.transcriptContext.records[1].role, 'local_notice');
 });
 
 test('runAssistantTurn does not emit a model-switch notice when a stale override falls back', async () => {

@@ -51,11 +51,11 @@ function createCommandHost(options: CommandHostOptions): CommandHostApp {
   return {
     composer: {
       reset() {
-        appContext.resetComposer();
-        appContext.leaveHistoryBrowsing();
+        appContext.composerContext.reset();
+        appContext.composerContext.leaveHistoryBrowsing();
       },
       leaveHistoryBrowsing() {
-        appContext.leaveHistoryBrowsing();
+        appContext.composerContext.leaveHistoryBrowsing();
       }
     },
     transcript: {
@@ -75,10 +75,10 @@ function createCommandHost(options: CommandHostOptions): CommandHostApp {
         return didLoad;
       },
       append(record: TranscriptRecord) {
-        appendRecord(appContext.appendTranscriptRecord(record));
+        appendRecord(appContext.transcriptContext.appendRecord(record));
       },
       listCopyableRecords() {
-        return createCopyableRecords(appContext.transcriptRecords);
+        return createCopyableRecords(appContext.transcriptContext.records);
       },
       listResumeSessions() {
         return appContext.transcriptContext.listResumeSessions();
@@ -231,7 +231,7 @@ function createCommandHost(options: CommandHostOptions): CommandHostApp {
       },
       async saveServerStates(servers) {
         appContext.setMcpBootstrapStatus('initializing');
-        appContext.startSpinner('working');
+        appContext.turnContext.startSpinner('working');
         renderFooter();
 
         try {
@@ -249,8 +249,8 @@ function createCommandHost(options: CommandHostOptions): CommandHostApp {
         } catch (error: unknown) {
           return {ok: false, error: sanitizeMcpError(error)};
         } finally {
-          appContext.stopSpinner();
-          appContext.clearWorking();
+          appContext.turnContext.stopSpinner();
+          appContext.turnContext.clearWorking();
           appContext.setMcpBootstrapStatus('ready');
           renderFooter();
         }
@@ -364,9 +364,7 @@ function createCommandHost(options: CommandHostOptions): CommandHostApp {
     },
     context: {
       getUsage() {
-        return appContext.contextUsage
-          ? {...appContext.contextUsage, segments: appContext.contextUsage.segments ? [...appContext.contextUsage.segments] : undefined}
-          : null;
+        return appContext.getContextUsage();
       }
     },
     status: {
@@ -422,7 +420,7 @@ function createCommandHost(options: CommandHostOptions): CommandHostApp {
     },
     undo: {
       getSummary() {
-        return appContext.getUndoSummary();
+        return appContext.changeHistoryContext.getSummary();
       },
       execute() {
         return appContext.executeUndo();
@@ -430,13 +428,13 @@ function createCommandHost(options: CommandHostOptions): CommandHostApp {
     },
     assistant: {
       beginManualCompaction(): boolean {
-        if (appContext.responding) {
+        if (appContext.turnContext.responding) {
           renderFooter();
           return false;
         }
 
-        appContext.beginManualCompaction();
-        appContext.startSpinner('working');
+        appContext.turnContext.beginManualCompaction();
+        appContext.turnContext.startSpinner('working');
         renderFooter();
         return true;
       },
@@ -452,24 +450,24 @@ function createCommandHost(options: CommandHostOptions): CommandHostApp {
         });
       },
       finishManualCompaction(result: CommandCompactionResult) {
-        appContext.stopSpinner();
+        appContext.turnContext.stopSpinner();
 
         if (result.didCompact && result.compaction) {
-          const noticeRecord = appContext.applyCompaction(result.compaction);
-          appContext.finishAssistantTurn('');
+          const noticeRecord = appContext.transcriptContext.applyCompaction(result.compaction);
+          appContext.turnContext.finishAssistantTurn('');
           appendRecord(noticeRecord);
           return;
         }
 
-        appContext.finishAssistantTurn('');
-        appendRecord(appContext.appendTranscriptRecord({
+        appContext.turnContext.finishAssistantTurn('');
+        appendRecord(appContext.transcriptContext.appendRecord({
           role: 'compaction_notice',
           text: '当前无需压缩'
         }));
       },
       fail(error: unknown) {
-        appContext.stopSpinner();
-        appendRecord(appContext.failAssistantTurn(error));
+        appContext.turnContext.stopSpinner();
+        appendRecord(appContext.turnContext.failAssistantTurn(error));
       }
     },
     ui: {

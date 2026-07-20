@@ -168,6 +168,25 @@ class TranscriptContext {
   }
 
   /**
+   * 更新 todo 状态并立即持久化独立 journal 操作，避免调用方拆开状态与落盘步骤。
+   */
+  updateTodoState(todoState: TodoState): void {
+    this.setTodoState(todoState);
+    this.persistCurrentSession();
+  }
+
+  /**
+   * 应用压缩边界并将可见提示与状态写入同一个 journal batch。
+   */
+  applyCompaction(compaction: CompactionState): TranscriptRecord {
+    this.setCompaction(compaction);
+    return this.appendRecord({
+      role: 'compaction_notice',
+      text: `已将较早的 ${compaction.activeStartIndex} 条历史压缩为摘要`
+    });
+  }
+
+  /**
    * 向当前 transcript 追加单条记录并立即同步当前 session journal。
    */
   appendRecord(record: TranscriptRecord): TranscriptRecord {

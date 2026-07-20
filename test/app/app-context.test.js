@@ -227,20 +227,20 @@ test('AppContext creates isolated runtime state per app instance', () => {
   assert.equal(Object.hasOwn(firstContext, 'historyIndex'), false);
 
   firstContext.beginUserTurn('hello');
-  firstContext.enterSpinnerState('thinking');
+  firstContext.turnContext.enterSpinnerState('thinking');
 
-  assert.deepEqual(firstContext.transcriptRecords, [{ role: 'user', text: 'hello' }]);
+  assert.deepEqual(firstContext.transcriptContext.records, [{ role: 'user', text: 'hello' }]);
   assert.deepEqual(firstContext.composerContext.inputHistory, ['hello']);
-  assert.equal(firstContext.responding, true);
+  assert.equal(firstContext.turnContext.responding, true);
   const firstPending = firstContext.turnContext.getPending();
   assert.equal(firstPending.kind, 'thinking');
   assert.equal(typeof firstPending.elapsedMs, 'number');
 
-  assert.deepEqual(secondContext.transcriptRecords, []);
+  assert.deepEqual(secondContext.transcriptContext.records, []);
   assert.deepEqual(secondContext.composerContext.inputHistory, []);
-  assert.equal(secondContext.responding, false);
+  assert.equal(secondContext.turnContext.responding, false);
   assert.equal(secondContext.turnContext.getPending(), null);
-  assert.equal(composerOps.getText(secondContext.composer), '');
+  assert.equal(composerOps.getText(secondContext.composerContext.composer), '');
 });
 
 test('AppContext undo restores transcript records and compaction state', () => {
@@ -248,20 +248,20 @@ test('AppContext undo restores transcript records and compaction state', () => {
   const context = createContext({transcriptStore});
   const compaction = {summaryText: 'old summary', activeStartIndex: 1, createdAt: '2026-05-19T00:00:00.000Z'};
 
-  context.appendTranscriptRecord({role: 'user', text: 'before'});
+  context.transcriptContext.appendRecord({role: 'user', text: 'before'});
   context.transcriptContext.setCompaction(compaction);
   context.beginChangeCheckpoint();
-  context.appendTranscriptRecord({role: 'user', text: 'change'});
-  context.appendTranscriptRecord({role: 'reasoning_summary', text: 'thinking'});
-  context.appendTranscriptRecord({role: 'tool_call', text: '', toolCallId: 'call-1', toolName: 'apply_patch', argumentsText: '{}'});
-  context.appendTranscriptRecord({role: 'tool_result', text: 'ok', toolCallId: 'call-1', toolName: 'apply_patch', ok: true});
-  context.appendTranscriptRecord({role: 'assistant', text: 'done'});
+  context.transcriptContext.appendRecord({role: 'user', text: 'change'});
+  context.transcriptContext.appendRecord({role: 'reasoning_summary', text: 'thinking'});
+  context.transcriptContext.appendRecord({role: 'tool_call', text: '', toolCallId: 'call-1', toolName: 'apply_patch', argumentsText: '{}'});
+  context.transcriptContext.appendRecord({role: 'tool_result', text: 'ok', toolCallId: 'call-1', toolName: 'apply_patch', ok: true});
+  context.transcriptContext.appendRecord({role: 'assistant', text: 'done'});
   context.finalizeChangeCheckpoint();
 
   const result = context.executeUndo();
 
   assert.equal(result.ok, true);
-  assert.deepEqual(context.transcriptRecords, [{role: 'user', text: 'before'}]);
+  assert.deepEqual(context.transcriptContext.records, [{role: 'user', text: 'before'}]);
   assert.deepEqual(context.transcriptContext.compaction, compaction);
   assert.equal(transcriptStore.saveCalls.at(-1).records.length, 1);
   assert.deepEqual(transcriptStore.saveCalls.at(-1).compaction, compaction);
@@ -277,8 +277,8 @@ test('AppContext appends compaction notice and state in one journal batch', () =
   const context = createContext({transcriptStore});
   const compaction = {summaryText: 'summary', activeStartIndex: 1, createdAt: '2026-05-19T00:00:00.000Z'};
 
-  context.appendTranscriptRecord({role: 'user', text: 'before'});
-  context.applyCompaction(compaction);
+  context.transcriptContext.appendRecord({role: 'user', text: 'before'});
+  context.transcriptContext.applyCompaction(compaction);
 
   const operation = transcriptStore.operations.at(-1);
   assert.equal(operation.op, 'batch');
@@ -295,16 +295,16 @@ test('AppContext does not retain records whose journal append fails', () => {
   const context = createContext({transcriptStore});
   const appendSession = transcriptStore.appendSession;
 
-  context.appendTranscriptRecord({role: 'user', text: 'saved'});
+  context.transcriptContext.appendRecord({role: 'user', text: 'saved'});
   transcriptStore.appendSession = () => {
     throw new Error('append failed');
   };
 
-  assert.throws(() => context.appendTranscriptRecord({role: 'assistant', text: 'not saved'}), /append failed/);
-  assert.deepEqual(context.transcriptRecords, [{role: 'user', text: 'saved'}]);
+  assert.throws(() => context.transcriptContext.appendRecord({role: 'assistant', text: 'not saved'}), /append failed/);
+  assert.deepEqual(context.transcriptContext.records, [{role: 'user', text: 'saved'}]);
 
   transcriptStore.appendSession = appendSession;
-  context.appendTranscriptRecord({role: 'assistant', text: 'continued'});
+  context.transcriptContext.appendRecord({role: 'assistant', text: 'continued'});
   assert.deepEqual(transcriptStore.saveCalls.at(-1).records, [
     {role: 'user', text: 'saved'},
     {role: 'assistant', text: 'continued'}
@@ -316,9 +316,9 @@ test('AppContext keeps the undo checkpoint when journal truncation fails', () =>
   const context = createContext({transcriptStore});
   const appendSession = transcriptStore.appendSession;
 
-  context.appendTranscriptRecord({role: 'user', text: 'before'});
+  context.transcriptContext.appendRecord({role: 'user', text: 'before'});
   context.beginChangeCheckpoint();
-  context.appendTranscriptRecord({role: 'user', text: 'change'});
+  context.transcriptContext.appendRecord({role: 'user', text: 'change'});
   context.finalizeChangeCheckpoint();
   transcriptStore.appendSession = (_cwd, _reference, operation) => {
     if (operation.op === 'batch' && operation.operations.some((item) => item.op === 'truncate_records')) {
@@ -332,8 +332,8 @@ test('AppContext keeps the undo checkpoint when journal truncation fails', () =>
 
   assert.equal(result.ok, false);
   assert.equal(result.reason, 'restore_failed');
-  assert.equal(context.getUndoSummary().status, 'ready');
-  assert.deepEqual(context.transcriptRecords, [
+  assert.equal(context.changeHistoryContext.getSummary().status, 'ready');
+  assert.deepEqual(context.transcriptContext.records, [
     {role: 'user', text: 'before'},
     {role: 'user', text: 'change'}
   ]);
@@ -343,34 +343,34 @@ test('AppContext undo can remove interrupted turn records without appending a su
   const context = createContext();
 
   context.beginChangeCheckpoint();
-  context.appendTranscriptRecord({role: 'user', text: 'change'});
-  context.appendTranscriptRecord({role: 'assistant', text: 'partial'});
-  context.appendTranscriptRecord({role: 'local_notice', text: '已中断模型回答'});
+  context.transcriptContext.appendRecord({role: 'user', text: 'change'});
+  context.transcriptContext.appendRecord({role: 'assistant', text: 'partial'});
+  context.transcriptContext.appendRecord({role: 'local_notice', text: '已中断模型回答'});
   context.finalizeChangeCheckpoint();
 
   const result = context.executeUndo();
 
   assert.equal(result.ok, true);
-  assert.deepEqual(context.transcriptRecords, []);
+  assert.deepEqual(context.transcriptContext.records, []);
 });
 
 test('AppContext undo can step through multiple ready checkpoints', () => {
   const context = createContext();
 
   context.beginChangeCheckpoint();
-  context.appendTranscriptRecord({role: 'user', text: 'first'});
-  context.appendTranscriptRecord({role: 'assistant', text: 'first done'});
+  context.transcriptContext.appendRecord({role: 'user', text: 'first'});
+  context.transcriptContext.appendRecord({role: 'assistant', text: 'first done'});
   context.finalizeChangeCheckpoint();
 
   context.beginChangeCheckpoint();
-  context.appendTranscriptRecord({role: 'user', text: 'second'});
-  context.appendTranscriptRecord({role: 'assistant', text: 'second done'});
+  context.transcriptContext.appendRecord({role: 'user', text: 'second'});
+  context.transcriptContext.appendRecord({role: 'assistant', text: 'second done'});
   context.finalizeChangeCheckpoint();
 
   let result = context.executeUndo();
 
   assert.equal(result.ok, true);
-  assert.deepEqual(context.transcriptRecords, [
+  assert.deepEqual(context.transcriptContext.records, [
     {role: 'user', text: 'first'},
     {role: 'assistant', text: 'first done'}
   ]);
@@ -378,29 +378,29 @@ test('AppContext undo can step through multiple ready checkpoints', () => {
   result = context.executeUndo();
 
   assert.equal(result.ok, true);
-  assert.deepEqual(context.transcriptRecords, []);
-  assert.deepEqual(context.getUndoSummary(), {status: 'none'});
+  assert.deepEqual(context.transcriptContext.records, []);
+  assert.deepEqual(context.changeHistoryContext.getSummary(), {status: 'none'});
 });
 
 test('AppContext invalid change checkpoint blocks older history', () => {
   const context = createContext();
 
   context.beginChangeCheckpoint();
-  context.appendTranscriptRecord({role: 'user', text: 'first'});
-  context.appendTranscriptRecord({role: 'assistant', text: 'first done'});
+  context.transcriptContext.appendRecord({role: 'user', text: 'first'});
+  context.transcriptContext.appendRecord({role: 'assistant', text: 'first done'});
   context.finalizeChangeCheckpoint();
 
   context.beginChangeCheckpoint();
-  context.appendTranscriptRecord({role: 'user', text: 'second'});
-  context.invalidateChangeCheckpoint('写入型 bash 不可追踪');
+  context.transcriptContext.appendRecord({role: 'user', text: 'second'});
+  context.changeHistoryContext.invalidate('写入型 bash 不可追踪');
   context.finalizeChangeCheckpoint();
 
   const result = context.executeUndo();
 
   assert.equal(result.ok, false);
   assert.equal(result.reason, 'invalid');
-  assert.deepEqual(context.getUndoSummary(), {status: 'invalid', reason: '写入型 bash 不可追踪'});
-  assert.deepEqual(context.transcriptRecords, [
+  assert.deepEqual(context.changeHistoryContext.getSummary(), {status: 'invalid', reason: '写入型 bash 不可追踪'});
+  assert.deepEqual(context.transcriptContext.records, [
     {role: 'user', text: 'first'},
     {role: 'assistant', text: 'first done'},
     {role: 'user', text: 'second'}
@@ -416,7 +416,7 @@ test('AppContext owns slash suggestion state and exposes it through render state
     { name: 'model', description: '切换模型' }
   ], () => activeCommandSession);
 
-  composerOps.setText(context.composer, '/');
+  composerOps.setText(context.composerContext.composer, '/');
   assert.deepEqual(context.createRenderState().slashSuggestions, {
     selectedIndex: 0,
     options: [
@@ -430,9 +430,9 @@ test('AppContext owns slash suggestion state and exposes it through render state
 
   assert.equal(context.handleSlashSuggestionEvent({ type: INPUT_EVENTS.ESCAPE }), false);
   assert.equal(context.createRenderState().slashSuggestions.selectedIndex, 1);
-  composerOps.setText(context.composer, '');
+  composerOps.setText(context.composerContext.composer, '');
   assert.equal(context.createRenderState().slashSuggestions, null);
-  composerOps.setText(context.composer, '/');
+  composerOps.setText(context.composerContext.composer, '/');
   assert.deepEqual(context.createRenderState().slashSuggestions, {
     selectedIndex: 0,
     options: [
@@ -444,7 +444,7 @@ test('AppContext owns slash suggestion state and exposes it through render state
   assert.equal(context.handleSlashSuggestionEvent({ type: INPUT_EVENTS.MOVE_UP }), true);
 
   assert.equal(context.handleSlashSuggestionEvent({ type: INPUT_EVENTS.TAB }), true);
-  assert.equal(composerOps.getText(context.composer), '/model');
+  assert.equal(composerOps.getText(context.composerContext.composer), '/model');
 
   activeCommandSession = true;
   assert.equal(context.createRenderState().slashSuggestions, null);
@@ -458,11 +458,11 @@ test('AppContext completes selected slash suggestion before submit', () => {
     { name: 'model', description: '切换模型' }
   ], () => false);
 
-  composerOps.setText(context.composer, '/');
+  composerOps.setText(context.composerContext.composer, '/');
   assert.equal(context.handleSlashSuggestionEvent({ type: INPUT_EVENTS.MOVE_UP }), true);
 
   assert.equal(context.handleSlashSuggestionEvent({ type: INPUT_EVENTS.SUBMIT }), false);
-  assert.equal(composerOps.getText(context.composer), '/model');
+  assert.equal(composerOps.getText(context.composerContext.composer), '/model');
 });
 
 test('AppContext status line includes explicit reasoning effort', () => {
@@ -512,7 +512,7 @@ test('AppContext uses a fixed skill model only for the active assistant turn', (
     assert.equal(activeStatus.reasoningEffort, 'high');
     assert.equal(activeStatus.skillOverride, true);
 
-    context.clearAssistantTurnIfCurrent(turn);
+    context.turnContext.clearAssistantTurnIfCurrent(turn);
 
     const restoredStatus = context.createRenderState().statusLine;
     assert.equal(restoredStatus.modelLabel, 'gpt-fast');
@@ -542,7 +542,7 @@ test('AppContext falls back to the global status model for a missing skill profi
     assert.equal(status.modelLabel, 'gpt-fast');
     assert.equal(status.skillOverride, undefined);
 
-    context.clearAssistantTurnIfCurrent(turn);
+    context.turnContext.clearAssistantTurnIfCurrent(turn);
   });
 });
 
@@ -625,7 +625,7 @@ test('AppContext keeps plan status line mode while assistant output streams', ()
   const context = createContext();
 
   context.setInteractionMode('plan');
-  context.setStreamingPending('draft');
+  context.turnContext.setStreamingPending('draft');
 
   const renderState = context.createRenderState();
 
@@ -639,7 +639,7 @@ test('AppContext keeps plan status line mode while waiting for first assistant t
   context.setInteractionMode('plan');
   context.beginUserTurn('plan');
   context.beginAssistantTurn();
-  context.enterSpinnerState('thinking');
+  context.turnContext.enterSpinnerState('thinking');
 
   const renderState = context.createRenderState();
 
@@ -657,24 +657,24 @@ test('AppContext status line shows Esc interrupt throughout an active assistant 
 
   assert.equal(context.createRenderState().statusLine.keyHint, 'Esc 中断');
 
-  context.enterSpinnerState('thinking');
+  context.turnContext.enterSpinnerState('thinking');
   assert.equal(context.createRenderState().statusLine.keyHint, 'Esc 中断');
 
-  context.setStreamingPending('draft');
+  context.turnContext.setStreamingPending('draft');
   assert.equal(context.createRenderState().statusLine.keyHint, 'Esc 中断');
 
-  context.setToolCallPending({id: 'call-1', toolName: 'run_bash_command', argumentsText: '{"command":"pwd"}'});
+  context.turnContext.setToolCallPending({id: 'call-1', toolName: 'run_bash_command', argumentsText: '{"command":"pwd"}'});
   assert.equal(context.createRenderState().statusLine.keyHint, 'Esc 中断');
 
-  context.finishAssistantTurn('done');
+  context.turnContext.finishAssistantTurn('done');
   assert.equal(context.createRenderState().statusLine.keyHint, undefined);
 });
 
 test('AppContext does not advertise Esc interrupt for manual compaction without an active assistant turn', () => {
   const context = createContext();
 
-  context.beginManualCompaction();
-  context.enterSpinnerState('working');
+  context.turnContext.beginManualCompaction();
+  context.turnContext.enterSpinnerState('working');
 
   assert.equal(context.createRenderState().statusLine.keyHint, undefined);
 });
@@ -683,7 +683,7 @@ test('AppContext status line shows Esc interrupt while a shell command is runnin
   const context = createContext();
 
   context.setInteractionMode('shell');
-  context.beginShellCommand('npm test');
+  context.turnContext.beginShellCommand('npm test');
 
   assert.equal(context.createRenderState().statusLine.keyHint, 'Esc 中断');
 });
@@ -710,20 +710,20 @@ test('AppContext injects only effective model-visible mode transitions and ignor
   context.setInteractionMode('shell');
   context.setInteractionMode('normal');
   const unchanged = context.beginUserTurn('normal request');
-  context.finishAssistantTurn('done');
+  context.turnContext.finishAssistantTurn('done');
 
   assert.equal(unchanged.text, 'normal request');
   assert.equal(unchanged.modeTransition, undefined);
 
   context.setInteractionMode('plan');
   const enteringPlan = context.beginUserTurn('inspect only');
-  context.finishAssistantTurn('planned');
+  context.turnContext.finishAssistantTurn('planned');
 
   assert.deepEqual(enteringPlan.modeTransition, {from: 'normal', to: 'plan'});
 
   context.setInteractionMode('shell');
-  context.beginShellCommand('pwd');
-  context.finishShellCommand({
+  context.turnContext.beginShellCommand('pwd');
+  context.turnContext.finishShellCommand({
     command: 'pwd',
     durationMs: 1,
     exitCode: 0,
@@ -769,7 +769,7 @@ test('AppContext rebuilds model-visible mode after resume and clear', () => {
   assert.ok(context.loadTranscriptSession('plan-session'));
   context.setInteractionMode('normal');
   const afterResume = context.beginUserTurn('implement after resume');
-  context.finishAssistantTurn('done');
+  context.turnContext.finishAssistantTurn('done');
 
   assert.deepEqual(afterResume.modeTransition, {from: 'plan', to: 'normal'});
 
@@ -825,7 +825,7 @@ test('AppContext stores transient context usage in render state without persiste
     source: 'provider'
   });
 
-  context.appendTranscriptRecord({ role: 'user', text: 'hello' });
+  context.transcriptContext.appendRecord({ role: 'user', text: 'hello' });
   assert.equal(transcriptStore.saveCalls[0].contextUsage, undefined);
   assert.equal(transcriptStore.saveCalls[0].records[0].contextUsage, undefined);
 
@@ -878,7 +878,7 @@ test('AppContext persists, resumes, clears, and snapshots todo state', () => {
     items: [{id: 'todo_1', text: 'resume todo', status: 'open'}]
   });
 
-  context.updateTodoState({
+  context.transcriptContext.updateTodoState({
     updatedAt: '2026-05-19T00:00:02.000Z',
     items: [{id: 'todo_2', text: 'new todo', status: 'open'}]
   });
@@ -1145,10 +1145,10 @@ test('AppContext pins the active turn model while the global selection changes',
     assert.equal(context.refreshModelStateFromConfig(), true);
     assert.equal(context.createRenderState().statusLine.modelLabel, 'gpt-fast');
 
-    assert.equal(context.setAssistantTurnModel(turn, {modelLabel: 'runtime-model'}), true);
+    assert.equal(context.turnContext.setActiveStatusLineModelState(turn, {modelLabel: 'runtime-model'}), true);
     assert.equal(context.createRenderState().statusLine.modelLabel, 'runtime-model');
 
-    context.clearAssistantTurnIfCurrent(turn);
+    context.turnContext.clearAssistantTurnIfCurrent(turn);
     assert.equal(context.createRenderState().statusLine.modelLabel, 'gpt-deep');
   });
 });
@@ -1402,24 +1402,24 @@ test('AppContext persists, clears, and reloads transcript sessions through one i
   const context = createContext({ transcriptStore });
 
   context.beginUserTurn('persist me');
-  context.finishAssistantTurn('persisted reply');
+  context.turnContext.finishAssistantTurn('persisted reply');
 
   assert.equal(transcriptStore.saveCalls.length, 2);
   const sessionId = transcriptStore.saveCalls.at(-1).sessionId;
   assert.equal(context.transcriptContext.currentSessionId, sessionId);
-  assert.deepEqual(context.transcriptRecords, [
+  assert.deepEqual(context.transcriptContext.records, [
     { role: 'user', text: 'persist me' },
     { role: 'assistant', text: 'persisted reply' }
   ]);
 
   context.clearTranscriptRecords();
   assert.equal(context.transcriptContext.currentSessionId, null);
-  assert.deepEqual(context.transcriptRecords, []);
+  assert.deepEqual(context.transcriptContext.records, []);
 
   const loadedSession = context.loadTranscriptSession(sessionId);
   assert.equal(loadedSession.sessionId, sessionId);
   assert.equal(context.transcriptContext.currentSessionId, sessionId);
-  assert.deepEqual(context.transcriptRecords, [
+  assert.deepEqual(context.transcriptContext.records, [
     { role: 'user', text: 'persist me' },
     { role: 'assistant', text: 'persisted reply' }
   ]);
@@ -1451,7 +1451,7 @@ test('AppContext restores persisted change history for diff and undo', () => {
   const context = createContext({cwd, transcriptStore});
 
   assert.ok(context.loadTranscriptSession('session-with-history'));
-  assert.equal(context.getUndoSummary().status, 'ready');
+  assert.equal(context.changeHistoryContext.getSummary().status, 'ready');
 
   const diff = context.createDiffSourceResult();
   assert.equal(diff.status, 'ready');
@@ -1476,7 +1476,7 @@ test('AppContext exposes semantic subcontexts for resume sessions and composer s
   ]);
   const context = createContext({ transcriptStore });
 
-  composerOps.setText(context.composer, 'draft question');
+  composerOps.setText(context.composerContext.composer, 'draft question');
   context.composerContext.inputHistory.push('previous input');
   context.turnContext.responding = true;
 
@@ -1490,30 +1490,30 @@ test('AppContext browseHistory only enters history mode from an empty idle compo
   const context = createContext();
 
   context.composerContext.inputHistory.push('first', 'second');
-  assert.equal(context.browseHistory(1), false);
+  assert.equal(context.composerContext.browseHistory(1), false);
 
-  composerOps.setText(context.composer, 'draft');
-  assert.equal(context.browseHistory(-1), false);
+  composerOps.setText(context.composerContext.composer, 'draft');
+  assert.equal(context.composerContext.browseHistory(-1), false);
 
-  context.resetComposer();
-  assert.equal(context.browseHistory(-1), true);
-  assert.equal(composerOps.getText(context.composer), 'second');
+  context.composerContext.reset();
+  assert.equal(context.composerContext.browseHistory(-1), true);
+  assert.equal(composerOps.getText(context.composerContext.composer), 'second');
   assert.equal(context.composerContext.historyIndex, 1);
 
-  assert.equal(context.browseHistory(-1), true);
-  assert.equal(composerOps.getText(context.composer), 'first');
+  assert.equal(context.composerContext.browseHistory(-1), true);
+  assert.equal(composerOps.getText(context.composerContext.composer), 'first');
   assert.equal(context.composerContext.historyIndex, 0);
 
   context.turnContext.responding = true;
-  assert.equal(context.browseHistory(-1), false);
+  assert.equal(context.composerContext.browseHistory(-1), false);
   context.turnContext.responding = false;
 
-  assert.equal(context.browseHistory(1), true);
-  assert.equal(composerOps.getText(context.composer), 'second');
+  assert.equal(context.composerContext.browseHistory(1), true);
+  assert.equal(composerOps.getText(context.composerContext.composer), 'second');
   assert.equal(context.composerContext.historyIndex, 1);
 
-  assert.equal(context.browseHistory(1), true);
-  assert.equal(composerOps.getText(context.composer), '');
+  assert.equal(context.composerContext.browseHistory(1), true);
+  assert.equal(composerOps.getText(context.composerContext.composer), '');
   assert.equal(context.composerContext.historyIndex, null);
 });
 
@@ -1521,17 +1521,17 @@ test('AppContext failAssistantTurn clears pending state and redacts local error 
   const context = createContext();
 
   context.beginUserTurn('fail please');
-  context.setStreamingPending('partial');
+  context.turnContext.setStreamingPending('partial');
 
-  const errorRecord = context.failAssistantTurn(new Error('upstream failed Bearer secret-value sk-test-secret'));
+  const errorRecord = context.turnContext.failAssistantTurn(new Error('upstream failed Bearer secret-value sk-test-secret'));
 
-  assert.equal(context.responding, false);
+  assert.equal(context.turnContext.responding, false);
   assert.equal(context.turnContext.getPending(), null);
   assert.deepEqual(errorRecord, {
     role: 'error',
     text: '模型响应失败：upstream failed Bearer <redacted> <redacted>'
   });
-  assert.deepEqual(context.transcriptRecords, [
+  assert.deepEqual(context.transcriptContext.records, [
     { role: 'user', text: 'fail please' },
     errorRecord
   ]);
@@ -1542,18 +1542,18 @@ test('AppContext owns assistant turn identity, abort signal, and pending draft i
 
   context.beginUserTurn('stop please');
   const firstTurn = context.beginAssistantTurn();
-  context.setStreamingPending('partial');
+  context.turnContext.setStreamingPending('partial');
 
-  assert.equal(context.isCurrentAssistantTurn(firstTurn), true);
+  assert.equal(context.turnContext.isCurrentAssistantTurn(firstTurn), true);
 
   const result = context.interruptActiveAssistantTurn();
 
   assert.equal(result.interrupted, true);
   assert.equal(firstTurn.abortSignal.aborted, true);
-  assert.equal(context.responding, false);
+  assert.equal(context.turnContext.responding, false);
   assert.deepEqual(result.partialRecord, { role: 'assistant', text: 'partial' });
   assert.deepEqual(result.noticeRecord, { role: 'local_notice', text: '已中断模型回答' });
-  assert.equal(context.isCurrentAssistantTurn(firstTurn), false);
+  assert.equal(context.turnContext.isCurrentAssistantTurn(firstTurn), false);
 });
 
 test('AppContext interrupts active assistant turn while thinking', () => {
@@ -1561,13 +1561,13 @@ test('AppContext interrupts active assistant turn while thinking', () => {
 
   context.beginUserTurn('think');
   const turn = context.beginAssistantTurn();
-  context.enterSpinnerState('thinking');
+  context.turnContext.enterSpinnerState('thinking');
 
   const result = context.interruptActiveAssistantTurn();
 
   assert.equal(result.interrupted, true);
   assert.equal(turn.abortSignal.aborted, true);
-  assert.equal(context.responding, false);
+  assert.equal(context.turnContext.responding, false);
   assert.equal(context.turnContext.getPending(), null);
   assert.equal(context.turnContext.getWorking(), null);
   assert.equal(result.partialRecord, undefined);
@@ -1584,17 +1584,17 @@ test('AppContext interrupts active assistant turn while tool call is pending wit
 
   context.beginUserTurn('use tool');
   const turn = context.beginAssistantTurn();
-  context.setToolCallPending(toolCall);
+  context.turnContext.setToolCallPending(toolCall);
 
   const result = context.interruptActiveAssistantTurn();
 
   assert.equal(result.interrupted, true);
   assert.equal(turn.abortSignal.aborted, true);
-  assert.equal(context.responding, false);
+  assert.equal(context.turnContext.responding, false);
   assert.equal(context.turnContext.getPending(), null);
   assert.equal(result.partialRecord, undefined);
   assert.deepEqual(result.noticeRecord, { role: 'local_notice', text: '已中断模型回答' });
-  assert.deepEqual(context.transcriptRecords, [
+  assert.deepEqual(context.transcriptContext.records, [
     { role: 'user', text: 'use tool' },
     { role: 'local_notice', text: '已中断模型回答' }
   ]);
@@ -1610,7 +1610,7 @@ test('AppContext interrupts active assistant turn while waiting for provider wit
 
   assert.equal(result.interrupted, true);
   assert.equal(turn.abortSignal.aborted, true);
-  assert.equal(context.responding, false);
+  assert.equal(context.turnContext.responding, false);
   assert.equal(context.turnContext.getPending(), null);
   assert.equal(result.partialRecord, undefined);
   assert.deepEqual(result.noticeRecord, { role: 'local_notice', text: '已中断模型回答' });
@@ -1640,14 +1640,14 @@ test('UserQuestionContext Esc closes surface without interrupting assistant turn
   assert.deepEqual(JSON.parse(cancelled.text), { cancelled: true, reason: 'User cancelled ask_user_questions' });
   assert.equal(userQuestion.hasActiveRequest(), false);
   assert.equal(turn.abortSignal.aborted, false);
-  assert.equal(context.responding, true);
-  assert.equal(context.isCurrentAssistantTurn(turn), true);
+  assert.equal(context.turnContext.responding, true);
+  assert.equal(context.turnContext.isCurrentAssistantTurn(turn), true);
 
   const interrupted = context.interruptActiveAssistantTurn();
 
   assert.equal(interrupted.interrupted, true);
   assert.equal(turn.abortSignal.aborted, true);
-  assert.equal(context.responding, false);
+  assert.equal(context.turnContext.responding, false);
   assert.deepEqual(interrupted.noticeRecord, { role: 'local_notice', text: '已中断模型回答' });
 });
 
@@ -1830,7 +1830,7 @@ test('ToolApprovalContext Esc denies request without interrupting assistant turn
   assert.deepEqual(decision, { kind: 'deny' });
   assert.equal(toolApproval.hasActiveRequest(), false);
   assert.equal(turn.abortSignal.aborted, false);
-  assert.equal(context.responding, true);
+  assert.equal(context.turnContext.responding, true);
 
   const interrupted = context.interruptActiveAssistantTurn();
 
@@ -1870,8 +1870,8 @@ test('AppContext keeps stale assistant turn cleanup from clearing a newer turn',
   const firstTurn = context.beginAssistantTurn();
   const secondTurn = context.beginAssistantTurn();
 
-  context.clearAssistantTurnIfCurrent(firstTurn);
+  context.turnContext.clearAssistantTurnIfCurrent(firstTurn);
 
-  assert.equal(context.isCurrentAssistantTurn(firstTurn), false);
-  assert.equal(context.isCurrentAssistantTurn(secondTurn), true);
+  assert.equal(context.turnContext.isCurrentAssistantTurn(firstTurn), false);
+  assert.equal(context.turnContext.isCurrentAssistantTurn(secondTurn), true);
 });

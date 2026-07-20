@@ -56,10 +56,10 @@ function createApp(runAgent: RunAgent, mcpManager?: McpManager, hooks?: Lifecycl
   let mcpDiagnosticSurface: CommandSurface | null = null;
   let userConfigWatcher: UserConfigWatcher | null = null;
   // spinner 的 timer 完全下沉到 turnContext；main 仅注入 footer 重绘回调。
-  appContext.configureSpinnerTimer({
+  appContext.turnContext.configureSpinnerTimer({
     onTick: () => renderFooter()
   });
-  appContext.configureStreamingRenderTimer({
+  appContext.turnContext.configureStreamingRenderTimer({
     onRender: () => renderFooter()
   });
 
@@ -84,8 +84,8 @@ function createApp(runAgent: RunAgent, mcpManager?: McpManager, hooks?: Lifecycl
     userConfigWatcher?.close();
     userConfigWatcher = null;
     void mcpManager?.close();
-    appContext.cancelStreamingRender();
-    appContext.stopSpinner();
+    appContext.turnContext.cancelStreamingRender();
+    appContext.turnContext.stopSpinner();
     renderer.clearFooter();
     terminal.cleanup();
     output.write('\n');
@@ -135,14 +135,14 @@ function createApp(runAgent: RunAgent, mcpManager?: McpManager, hooks?: Lifecycl
    * 当列宽变化时执行 destructive full replay，并把 footer renderer 与当前可见 footer 同步。
    */
   function renderResizeRecovery(): void {
-    appContext.cancelStreamingRender();
+    appContext.turnContext.cancelStreamingRender();
     debug.emit('resize_recovery', {
-      recordCount: appContext.transcriptRecords.length,
+      recordCount: appContext.transcriptContext.records.length,
       terminalSize: terminal.getSize()
     });
     renderer.renderDestructive({
-      bannerContext: appContext.createBannerContext(),
-      records: appContext.transcriptRecords,
+      bannerContext: appContext.renderContext.createBannerContext(),
+      records: appContext.transcriptContext.records,
       ...createRenderState()
     });
     rememberTerminalSize();
@@ -153,8 +153,8 @@ function createApp(runAgent: RunAgent, mcpManager?: McpManager, hooks?: Lifecycl
    */
   function rememberTerminalSize(): void {
     const terminalSize = terminal.getSize();
-    appContext.previousColumns = terminalSize.columns;
-    appContext.previousRows = terminalSize.rows;
+    appContext.renderContext.previousColumns = terminalSize.columns;
+    appContext.renderContext.previousRows = terminalSize.rows;
   }
 
   /**
@@ -163,7 +163,7 @@ function createApp(runAgent: RunAgent, mcpManager?: McpManager, hooks?: Lifecycl
   function handleResize(): void {
     const terminalSize = terminal.getSize();
 
-    if (terminalSize.columns !== appContext.previousColumns || terminalSize.rows < appContext.previousRows) {
+    if (terminalSize.columns !== appContext.renderContext.previousColumns || terminalSize.rows < appContext.renderContext.previousRows) {
       renderResizeRecovery();
       return;
     }
@@ -183,7 +183,7 @@ function createApp(runAgent: RunAgent, mcpManager?: McpManager, hooks?: Lifecycl
   });
   const toolApproval = new ToolApprovalContext(() => renderFooter());
   const userQuestion = new UserQuestionContext(() => renderFooter());
-  const filePicker = new FilePickerContext(appContext.composer, {
+  const filePicker = new FilePickerContext(appContext.composerContext.composer, {
     cwd: () => appContext.getCurrentCwd(),
     onChange: () => renderFooter(),
     rows: () => terminal.getSize().rows
@@ -204,7 +204,7 @@ function createApp(runAgent: RunAgent, mcpManager?: McpManager, hooks?: Lifecycl
    * 按方向浏览 session 输入历史；返回是否消费了本次 Up/Down。
    */
   function browseHistory(direction: number): boolean {
-    return appContext.browseHistory(direction);
+    return appContext.composerContext.browseHistory(direction);
   }
 
   /**
@@ -212,12 +212,12 @@ function createApp(runAgent: RunAgent, mcpManager?: McpManager, hooks?: Lifecycl
    */
   async function submitComposer(): Promise<void> {
     // response lock 阻止重复提交；空输入也不写 transcript。
-    if (commandRuntime.hasActiveSession() || appContext.responding || appContext.getMcpBootstrapStatus() === 'initializing' || composerOps.isEmpty(appContext.composer)) {
+    if (commandRuntime.hasActiveSession() || appContext.turnContext.responding || appContext.getMcpBootstrapStatus() === 'initializing' || composerOps.isEmpty(appContext.composerContext.composer)) {
       renderFooter();
       return;
     }
 
-    let userText = composerOps.getText(appContext.composer);
+    let userText = composerOps.getText(appContext.composerContext.composer);
     const commandResult = commandRuntime.startFromText(userText);
 
     if (commandResult.kind === 'handled') {
@@ -252,7 +252,7 @@ function createApp(runAgent: RunAgent, mcpManager?: McpManager, hooks?: Lifecycl
       text: summarizeText(userText, 0),
       displayText: displayText ? summarizeText(displayText, 0) : undefined,
       attachmentCount: userAttachments?.length || 0,
-      recordCount: appContext.transcriptRecords.length
+      recordCount: appContext.transcriptContext.records.length
     });
 
     return runAssistantTurn({
@@ -279,8 +279,8 @@ function createApp(runAgent: RunAgent, mcpManager?: McpManager, hooks?: Lifecycl
   async function submitShellCommand(command: string): Promise<void> {
     const shellController = new AbortController();
     activeShellController = shellController;
-    appContext.beginShellCommand(command);
-    appContext.startSpinner('working');
+    appContext.turnContext.beginShellCommand(command);
+    appContext.turnContext.startSpinner('working');
     renderFooter();
 
     try {
@@ -289,14 +289,14 @@ function createApp(runAgent: RunAgent, mcpManager?: McpManager, hooks?: Lifecycl
         command,
         cwd: appContext.getCurrentCwd(),
         onOutput(event) {
-          appContext.appendShellOutputPending(event);
-          appContext.scheduleStreamingRender();
+          appContext.turnContext.appendShellOutputPending(event);
+          appContext.turnContext.scheduleStreamingRender();
         },
         timeoutMs: null
       });
-      appendRecord(appContext.finishShellCommand(result, appContext.getInteractionMode() === 'shell'));
+      appendRecord(appContext.turnContext.finishShellCommand(result, appContext.getInteractionMode() === 'shell'));
     } catch (error: unknown) {
-      appendRecord(appContext.failShellCommand(error));
+      appendRecord(appContext.turnContext.failShellCommand(error));
     } finally {
       if (activeShellController === shellController) {
         activeShellController = null;
@@ -320,7 +320,7 @@ function createApp(runAgent: RunAgent, mcpManager?: McpManager, hooks?: Lifecycl
    * 中断当前普通 assistant turn；modal/command surface 的 Esc 消费在调用前已完成。
    */
   function interruptActiveTurn(): boolean {
-    appContext.cancelStreamingRender();
+    appContext.turnContext.cancelStreamingRender();
     const result = appContext.interruptActiveAssistantTurn();
 
     if (!result.interrupted) {
@@ -385,9 +385,9 @@ function createApp(runAgent: RunAgent, mcpManager?: McpManager, hooks?: Lifecycl
     }
 
     if (event.type === INPUT_EVENTS.TEXT && event.value === '@' && !isShellInteractionMode(appContext.getInteractionMode())) {
-      appContext.leaveHistoryBrowsing();
-      composerOps.insertText(appContext.composer, '@');
-      filePicker.open(appContext.composer.cursor - 1);
+      appContext.composerContext.leaveHistoryBrowsing();
+      composerOps.insertText(appContext.composerContext.composer, '@');
+      filePicker.open(appContext.composerContext.composer.cursor - 1);
       return undefined;
     }
 
@@ -397,15 +397,15 @@ function createApp(runAgent: RunAgent, mcpManager?: McpManager, hooks?: Lifecycl
     }
 
     if (event.type === INPUT_EVENTS.TAB) {
-      if (!appContext.responding && appContext.getMcpBootstrapStatus() !== 'initializing') {
+      if (!appContext.turnContext.responding && appContext.getMcpBootstrapStatus() !== 'initializing') {
         appContext.cycleInteractionMode();
       }
       renderFooter();
       return undefined;
     }
 
-    if (composerOps.applyComposerEditEvent(appContext.composer, event)) {
-      appContext.leaveHistoryBrowsing();
+    if (composerOps.applyComposerEditEvent(appContext.composerContext.composer, event)) {
+      appContext.composerContext.leaveHistoryBrowsing();
       renderFooter();
       return undefined;
     }
@@ -413,19 +413,19 @@ function createApp(runAgent: RunAgent, mcpManager?: McpManager, hooks?: Lifecycl
     switch (event.type) {
       case INPUT_EVENTS.MOVE_UP:
         if (!browseHistory(-1)) {
-          composerOps.moveUp(appContext.composer);
+          composerOps.moveUp(appContext.composerContext.composer);
         }
         renderFooter();
         return undefined;
       case INPUT_EVENTS.MOVE_DOWN:
         if (!browseHistory(1)) {
-          composerOps.moveDown(appContext.composer);
+          composerOps.moveDown(appContext.composerContext.composer);
         }
         renderFooter();
         return undefined;
       case INPUT_EVENTS.INSERT_NEWLINE:
-        appContext.leaveHistoryBrowsing();
-        composerOps.insertNewline(appContext.composer);
+        appContext.composerContext.leaveHistoryBrowsing();
+        composerOps.insertNewline(appContext.composerContext.composer);
         renderFooter();
         return undefined;
       case INPUT_EVENTS.ESCAPE:
@@ -496,20 +496,20 @@ function createApp(runAgent: RunAgent, mcpManager?: McpManager, hooks?: Lifecycl
       terminalSize: terminal.getSize()
     });
     renderer.renderInitial({
-      bannerContext: appContext.createBannerContext(),
+      bannerContext: appContext.renderContext.createBannerContext(),
       ...createRenderState()
     });
     rememberTerminalSize();
 
     if (mcpManager) {
       appContext.setMcpBootstrapStatus('initializing');
-      appContext.startSpinner('working');
+      appContext.turnContext.startSpinner('working');
       renderFooter();
       void mcpManager.bootstrap().catch((error: unknown) => {
         mcpDiagnosticSurface = {kind: 'info', title: 'MCP initialization', lines: [`bootstrap: ${sanitizeMcpError(error)}`], dismissHint: 'Enter/Esc close'};
       }).then(() => {
-        appContext.stopSpinner();
-        appContext.clearWorking();
+        appContext.turnContext.stopSpinner();
+        appContext.turnContext.clearWorking();
         appContext.setMcpBootstrapStatus('ready');
         const diagnostics = mcpManager.getDiagnostics();
 

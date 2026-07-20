@@ -58,20 +58,21 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
   });
   // thinking 和 streaming 都只进入 pending preview，完成或 partial 失败后才正式追加 assistant block。
   const turn = appContext.beginAssistantTurn(modelProfileId);
-  const isCurrentTurn = () => appContext.isCurrentAssistantTurn(turn);
-  appContext.startSpinner('thinking');
+  const isCurrentTurn = () => appContext.turnContext.isCurrentAssistantTurn(turn);
+  appContext.turnContext.startSpinner('thinking');
   appendRecord(userRecord);
-  const skillOverrideModelLabel = appContext.getActiveSkillOverrideModelLabel();
+  const activeStatusLineModel = appContext.turnContext.getActiveStatusLineModelState();
+  const skillOverrideModelLabel = activeStatusLineModel?.skillOverride ? activeStatusLineModel.modelLabel : undefined;
 
   if (skillOverrideModelLabel) {
-    appendRecord(appContext.appendTranscriptRecord({
+    appendRecord(appContext.transcriptContext.appendRecord({
       role: 'local_notice',
       text: `已切换到 ${skillOverrideModelLabel} 执行当前 skill。`
     }));
   }
   debug?.emit('assistant_turn_start', {
     interactionMode,
-    recordCount: appContext.transcriptRecords.length,
+    recordCount: appContext.transcriptContext.records.length,
     userText: summarizeText(userText, 0)
   });
   hooks?.emit('assistant_turn_start', {
@@ -81,13 +82,13 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
 
   try {
     await runAgent({...appContext.getAgentSession(), abortSignal: turn.abortSignal, modelProfileId}, {
-      changeRecorder: appContext.createChangeRecorder(),
+      changeRecorder: appContext.changeHistoryContext.createRecorder(),
       onModelResolved(model) {
         if (!isCurrentTurn()) {
           return;
         }
 
-        appContext.setAssistantTurnModel(turn, {
+        appContext.turnContext.setActiveStatusLineModelState(turn, {
           modelLabel: model.model,
           ...(model.reasoningEffort ? {reasoningEffort: model.reasoningEffort} : {}),
           ...(skillOverrideModelLabel ? {skillOverride: true} : {})
@@ -99,8 +100,8 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
           return;
         }
 
-        if (!appContext.getWorking()) {
-          appContext.startSpinner('thinking');
+        if (!appContext.turnContext.getWorking()) {
+          appContext.turnContext.startSpinner('thinking');
         }
         renderFooter();
       },
@@ -109,8 +110,8 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
           return;
         }
 
-        appContext.cancelStreamingRender();
-        appendRecord(appContext.applyCompaction(compaction));
+        appContext.turnContext.cancelStreamingRender();
+        appendRecord(appContext.transcriptContext.applyCompaction(compaction));
       },
       onContextUsage(usage) {
         if (!isCurrentTurn()) {
@@ -125,34 +126,34 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
           return;
         }
 
-        if (!appContext.getWorking()) {
-          appContext.startSpinner('working');
+        if (!appContext.turnContext.getWorking()) {
+          appContext.turnContext.startSpinner('working');
         }
-        appContext.setStreamingPending(draft);
-        appContext.scheduleStreamingRender();
+        appContext.turnContext.setStreamingPending(draft);
+        appContext.turnContext.scheduleStreamingRender();
       },
       onReasoningSummary(text: string) {
         if (!isCurrentTurn()) {
           return;
         }
 
-        appContext.cancelStreamingRender();
-        appendRecord(appContext.appendReasoningSummary(text));
+        appContext.turnContext.cancelStreamingRender();
+        appendRecord(appContext.turnContext.appendReasoningSummary(text));
       },
       onProviderRecords(records: TranscriptRecord[]) {
         if (!isCurrentTurn() || records.length === 0) {
           return;
         }
 
-        appendRecords(appContext.appendTranscriptRecords(records));
+        appendRecords(appContext.transcriptContext.appendRecords(records));
       },
       onAssistantSegment(segmentText: string) {
         if (!isCurrentTurn()) {
           return;
         }
 
-        appContext.cancelStreamingRender();
-        const segmentRecord = appContext.commitPartialAssistantTurn(segmentText);
+        appContext.turnContext.cancelStreamingRender();
+        const segmentRecord = appContext.turnContext.commitPartialAssistantTurn(segmentText);
 
         if (segmentRecord) {
           appendRecord(segmentRecord);
@@ -163,11 +164,11 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
           return;
         }
 
-        if (!appContext.getWorking()) {
-          appContext.startSpinner('working');
+        if (!appContext.turnContext.getWorking()) {
+          appContext.turnContext.startSpinner('working');
         }
-        appContext.cancelStreamingRender();
-        appContext.setToolCallPending(call);
+        appContext.turnContext.cancelStreamingRender();
+        appContext.turnContext.setToolCallPending(call);
         renderFooter();
       },
       onToolApprovalRequest(call, request) {
@@ -175,7 +176,7 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
           return {kind: 'deny', message: 'Tool execution was interrupted.'};
         }
 
-        appContext.cancelStreamingRender();
+        appContext.turnContext.cancelStreamingRender();
         return toolApproval.request(call, request);
       },
       onUserQuestionRequest(call, request) {
@@ -188,7 +189,7 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
           };
         }
 
-        appContext.cancelStreamingRender();
+        appContext.turnContext.cancelStreamingRender();
         return userQuestion.request(call, request);
       },
       onToolResult(result) {
@@ -196,24 +197,24 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
           return;
         }
 
-        appContext.cancelStreamingRender();
-        appendRecords(appContext.appendTranscriptRecords(appContext.appendPendingToolResult(result)));
+        appContext.turnContext.cancelStreamingRender();
+        appendRecords(appContext.transcriptContext.appendRecords(appContext.turnContext.appendPendingToolResult(result)));
       },
       onTodoStateChange(todoState) {
         if (!isCurrentTurn()) {
           return;
         }
 
-        appContext.updateTodoState(todoState);
+        appContext.transcriptContext.updateTodoState(todoState);
       },
       onComplete(finalText: string) {
         if (!isCurrentTurn()) {
           return;
         }
 
-        appContext.cancelStreamingRender();
-        appContext.stopSpinner();
-        const assistantRecord = appContext.finishAssistantTurn(finalText);
+        appContext.turnContext.cancelStreamingRender();
+        appContext.turnContext.stopSpinner();
+        const assistantRecord = appContext.turnContext.finishAssistantTurn(finalText);
 
         if (assistantRecord) {
           appendRecord(assistantRecord);
@@ -236,16 +237,16 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
       return;
     }
 
-    appContext.cancelStreamingRender();
-    appContext.stopSpinner();
-    const partialRecord = appContext.commitPendingAssistantDraft();
+    appContext.turnContext.cancelStreamingRender();
+    appContext.turnContext.stopSpinner();
+    const partialRecord = appContext.turnContext.commitPendingAssistantDraft();
 
     if (partialRecord) {
       appendRecord(partialRecord);
     }
 
     if (isAbortError(error) || turn.abortSignal.aborted) {
-      appendRecord(appContext.cancelAssistantTurn());
+      appendRecord(appContext.turnContext.cancelAssistantTurn());
       hooks?.emit('assistant_turn_cancelled', {
         interactionMode: appContext.getInteractionMode(),
         status: 'cancelled'
@@ -255,7 +256,7 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
         status: 'cancelled'
       });
     } else {
-      appendRecord(appContext.failAssistantTurn(error));
+      appendRecord(appContext.turnContext.failAssistantTurn(error));
       hooks?.emit('assistant_turn_error', {
         interactionMode: appContext.getInteractionMode(),
         status: 'error',
@@ -275,7 +276,7 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
     if (wasCurrentTurn) {
       appContext.finalizeChangeCheckpoint();
     }
-    appContext.clearAssistantTurnIfCurrent(turn);
+    appContext.turnContext.clearAssistantTurnIfCurrent(turn);
 
     if (wasCurrentTurn) {
       appContext.refreshModelStateFromConfig();

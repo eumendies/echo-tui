@@ -12,13 +12,12 @@ import {DEFAULT_TUI_THEME, type TuiTheme} from '../../config/theme-config';
 import type {TerminalController} from '../../types/app';
 import type {AgentSessionInput, ContextUsage, InteractionMode} from '../../types/agent';
 import type {DiffSourceResult} from '../../types/diff';
-import type {BashCommandRunResult, BashCommandOutputEvent} from '../../tools/bash-command-runner';
 import type {CommandSurface, SlashCommandDescriptor} from '../../types/command';
 import type {InputEvent} from '../../types/input';
-import type {BannerContext, PendingState, RenderState, SlashSuggestionState, StatusLineModelState, WorkingState} from '../../types/render';
-import type {ToolCall, ToolExecutionResult} from '../../types/tool';
-import type {CompactionState, TodoState, TranscriptRecord, TranscriptSession, TranscriptStore} from '../../types/transcript';
-import type {ChangeFileRecorder, UndoExecuteResult, UndoSummary} from '../../types/change-history';
+import type {RenderState, SlashSuggestionState, StatusLineModelState} from '../../types/render';
+import type {ToolExecutionResult} from '../../types/tool';
+import type {TranscriptRecord, TranscriptSession, TranscriptStore} from '../../types/transcript';
+import type {UndoExecuteResult} from '../../types/change-history';
 import type {ToolApprovalContext} from './tool-approval-context';
 import type {AssistantTurnHandle, InterruptAssistantTurnResult} from './turn-context';
 
@@ -66,20 +65,20 @@ function createModeTransitionUserMessage(userText: string, from: AgentInteractio
  * 组合单个 createApp 实例需要的语义 context；状态由各子 context 自己持有。
  */
 class AppContext {
-  getCurrentCwdValue: string | (() => string);
-  getNodeVersionValue: string | (() => string);
-  composerContext: ComposerContext;
-  transcriptContext: TranscriptContext;
-  modelContext: ModelContext;
-  turnContext: TurnContext;
-  changeHistoryContext: ChangeHistoryContext;
-  theme: TuiTheme;
-  renderContext: RenderContext;
-  slashSuggestionContext: SlashSuggestionContext;
-  interactionMode: InteractionMode;
-  lastSubmittedAgentMode: AgentInteractionMode;
-  contextUsage: ContextUsage | null;
-  mcpBootstrapStatus: 'idle' | 'initializing' | 'ready';
+  private readonly getCurrentCwdValue: string | (() => string);
+  private readonly getNodeVersionValue: string | (() => string);
+  readonly composerContext: ComposerContext;
+  readonly transcriptContext: TranscriptContext;
+  readonly modelContext: ModelContext;
+  readonly turnContext: TurnContext;
+  readonly changeHistoryContext: ChangeHistoryContext;
+  readonly renderContext: RenderContext;
+  private theme: TuiTheme;
+  private slashSuggestionContext: SlashSuggestionContext;
+  private interactionMode: InteractionMode;
+  private lastSubmittedAgentMode: AgentInteractionMode;
+  private contextUsage: ContextUsage | null;
+  private mcpBootstrapStatus: 'idle' | 'initializing' | 'ready';
 
   constructor(
     terminal: TerminalController,
@@ -103,7 +102,7 @@ class AppContext {
     this.mcpBootstrapStatus = 'idle';
     this.slashSuggestionContext = new SlashSuggestionContext([], {
       hasActiveCommandSession: () => false,
-      isResponding: () => this.responding
+      isResponding: () => this.turnContext.responding
     });
     this.renderContext = new RenderContext(
       terminal,
@@ -115,55 +114,6 @@ class AppContext {
       () => this.interactionMode,
       this.theme
     );
-  }
-
-  /**
-   * 返回当前 composer 状态。
-   */
-  get composer(): RenderState['composer'] {
-    return this.composerContext.composer;
-  }
-
-  /**
-   * 返回当前 transcript records。
-   */
-  get transcriptRecords(): TranscriptRecord[] {
-    return this.transcriptContext.records;
-  }
-
-  /**
-   * 返回上一次渲染宽度。
-   */
-  get previousColumns(): number {
-    return this.renderContext.previousColumns;
-  }
-
-  /**
-   * 更新上一次渲染宽度。
-   */
-  set previousColumns(columns: number) {
-    this.renderContext.previousColumns = columns;
-  }
-
-  /**
-   * 返回上一次渲染高度。
-   */
-  get previousRows(): number {
-    return this.renderContext.previousRows;
-  }
-
-  /**
-   * 更新上一次渲染高度。
-   */
-  set previousRows(rows: number) {
-    this.renderContext.previousRows = rows;
-  }
-
-  /**
-   * 返回当前是否在响应中。
-   */
-  get responding(): boolean {
-    return this.turnContext.responding;
   }
 
   getMcpBootstrapStatus(): 'idle' | 'initializing' | 'ready' {
@@ -235,13 +185,6 @@ class AppContext {
   }
 
   /**
-   * 生成 banner 所需的运行时上下文，避免渲染层直接依赖 process 全局状态。
-   */
-  createBannerContext(): BannerContext {
-    return this.renderContext.createBannerContext();
-  }
-
-  /**
    * 组合渲染层需要的瞬时状态，避免 main.ts 反复散落访问实例字段。
    */
   createRenderState(options: {commandSurface?: CommandSurface | null; toolApproval?: Pick<ToolApprovalContext, 'isAllowAllForSession'> | null} = {}): RenderState {
@@ -273,6 +216,15 @@ class AppContext {
   }
 
   /**
+   * 返回当前 provider context usage 快照，避免命令层修改 AppContext 持有的瞬时状态。
+   */
+  getContextUsage(): ContextUsage | null {
+    return this.contextUsage
+      ? {...this.contextUsage, segments: this.contextUsage.segments ? [...this.contextUsage.segments] : undefined}
+      : null;
+  }
+
+  /**
    * 配置文件发生外部变化时刷新模型缓存；模型语义变化会使旧 context usage 失效。
    */
   refreshModelStateFromConfig(): boolean {
@@ -298,7 +250,7 @@ class AppContext {
   configureSlashSuggestions(commands: SlashCommandDescriptor[] | (() => SlashCommandDescriptor[]), hasActiveCommandSession: () => boolean): void {
     this.slashSuggestionContext = new SlashSuggestionContext(commands, {
       hasActiveCommandSession,
-      isResponding: () => this.responding
+      isResponding: () => this.turnContext.responding
     });
   }
 
@@ -333,7 +285,7 @@ class AppContext {
       const completedText = this.slashSuggestionContext.completeSelection(composerText);
 
       if (completedText) {
-        this.leaveHistoryBrowsing();
+        this.composerContext.leaveHistoryBrowsing();
         this.composerContext.setText(completedText);
         this.slashSuggestionContext.resetSelection();
       }
@@ -359,48 +311,12 @@ class AppContext {
   }
 
   /**
-   * 退出历史浏览模式；后续 Up/Down 将重新按当前 composer 内容决定语义。
-   */
-  leaveHistoryBrowsing(): void {
-    this.composerContext.leaveHistoryBrowsing();
-  }
-
-  /**
    * 清空当前 transcript records，并把当前持久化 session 指针从实例上解绑。
    */
   clearTranscriptRecords(): void {
     this.transcriptContext.clearRecords();
     this.changeHistoryContext.restoreHistory(this.transcriptContext.changeHistory);
     this.lastSubmittedAgentMode = 'normal';
-  }
-
-  /**
-   * 更新当前 session 的结构化 todo 状态并立即持久化；todo 状态不进入 transcript records。
-   */
-  updateTodoState(todoState: TodoState): void {
-    this.transcriptContext.setTodoState(todoState);
-    this.transcriptContext.persistCurrentSession();
-  }
-
-  /**
-   * 重置当前 composer 内容和光标。
-   */
-  resetComposer(): void {
-    this.composerContext.reset();
-  }
-
-  /**
-   * 向当前 transcript 追加记录并立即同步当前 session。
-   */
-  appendTranscriptRecord(record: TranscriptRecord): TranscriptRecord {
-    return this.transcriptContext.appendRecord(record);
-  }
-
-  /**
-   * 成组追加紧邻 records 并仅写入一个 journal 操作，供 provider 与 tool 成对结果使用。
-   */
-  appendTranscriptRecords(records: TranscriptRecord[]): TranscriptRecord[] {
-    return this.transcriptContext.appendRecords(records);
   }
 
   /**
@@ -420,27 +336,6 @@ class AppContext {
   finalizeChangeCheckpoint(): void {
     this.changeHistoryContext.finalizeCheckpoint();
     this.syncChangeHistory(true);
-  }
-
-  /**
-   * 将当前文件变更 checkpoint 标记为不可安全回退。
-   */
-  invalidateChangeCheckpoint(reason: string): void {
-    this.changeHistoryContext.invalidate(reason);
-  }
-
-  /**
-   * 创建给受控工具使用的文件变更记录器。
-   */
-  createChangeRecorder(): ChangeFileRecorder {
-    return this.changeHistoryContext.createRecorder();
-  }
-
-  /**
-   * 返回 `/undo` 命令展示所需的当前 checkpoint 摘要。
-   */
-  getUndoSummary(): UndoSummary {
-    return this.changeHistoryContext.getSummary();
   }
 
   /**
@@ -509,26 +404,6 @@ class AppContext {
   }
 
   /**
-   * 应用一次压缩结果：先更新内存压缩状态，再追加可见提示块记录；
-   * 由 appendRecord 一次性追加 compaction 与 notice journal batch。提示块不发送给 provider。
-   */
-  applyCompaction(compaction: CompactionState): TranscriptRecord {
-    this.transcriptContext.setCompaction(compaction);
-
-    return this.transcriptContext.appendRecord({
-      role: 'compaction_notice',
-      text: `已将较早的 ${compaction.activeStartIndex} 条历史压缩为摘要`
-    });
-  }
-
-  /**
-   * 按方向浏览 session 输入历史；返回是否消费了本次 Up/Down。
-   */
-  browseHistory(direction: number): boolean {
-    return this.composerContext.browseHistory(direction);
-  }
-
-  /**
    * 提交用户消息并进入响应中状态；mode 改变时把一次性切换说明写入 provider-facing text。
    */
   beginUserTurn(userText: string, options: {displayText?: string; metadata?: Record<string, unknown>; attachments?: ToolExecutionResult['attachments']} = {}): TranscriptRecord {
@@ -554,8 +429,8 @@ class AppContext {
    * 从当前 transcript 尾部重建上一条模型可见 mode；旧记录缺少 metadata 时回退 normal。
    */
   private rebuildLastSubmittedAgentMode(): void {
-    for (let index = this.transcriptRecords.length - 1; index >= 0; index -= 1) {
-      const record = this.transcriptRecords[index];
+    for (let index = this.transcriptContext.records.length - 1; index >= 0; index -= 1) {
+      const record = this.transcriptContext.records[index];
 
       if (record.role === 'user' && isInteractionMode(record.interactionMode)) {
         this.lastSubmittedAgentMode = toAgentInteractionMode(record.interactionMode);
@@ -575,224 +450,6 @@ class AppContext {
       : this.modelContext.getStatusLineModelState();
 
     return this.turnContext.beginAssistantTurn(statusLineModel);
-  }
-
-  /**
-   * 将 runtime 实际采用的模型绑定到当前 assistant turn，保证响应期间展示不受全局配置变化影响。
-   */
-  setAssistantTurnModel(turn: AssistantTurnHandle, model: StatusLineModelState): boolean {
-    return this.turnContext.setActiveStatusLineModelState(turn, model);
-  }
-
-  /**
-   * 返回当前 assistant turn 已生效的 skill override 模型名，供主流程生成本地提示。
-   */
-  getActiveSkillOverrideModelLabel(): string | undefined {
-    const statusLineModel = this.turnContext.getActiveStatusLineModelState();
-    return statusLineModel?.skillOverride ? statusLineModel.modelLabel : undefined;
-  }
-
-  /**
-   * 返回当前 assistant turn 是否可由用户通过 Esc 中断。
-   */
-  canInterruptAssistantTurn(): boolean {
-    return this.turnContext.canInterruptAssistantTurn();
-  }
-
-  /**
-   * 判断给定句柄是否仍是当前 assistant turn。
-   */
-  isCurrentAssistantTurn(turn: AssistantTurnHandle): boolean {
-    return this.turnContext.isCurrentAssistantTurn(turn);
-  }
-
-  /**
-   * 当前 assistant turn 收尾后清理句柄，旧 turn 不会清掉新 turn。
-   */
-  clearAssistantTurnIfCurrent(turn: AssistantTurnHandle): void {
-    this.turnContext.clearAssistantTurnIfCurrent(turn);
-  }
-
-  /**
-   * 进入手动压缩响应态（不追加 user record，仅占用响应锁）。
-   */
-  beginManualCompaction(): void {
-    this.turnContext.beginManualCompaction();
-  }
-
-  /**
-   * 进入用户 shell 命令执行态。
-   */
-  beginShellCommand(command: string): void {
-    this.turnContext.beginShellCommand(command);
-  }
-
-  /**
-   * 记录 shell 命令执行结果并释放响应锁。
-   */
-  finishShellCommand(result: BashCommandRunResult, includeInContext: boolean): TranscriptRecord {
-    return this.turnContext.finishShellCommand(result, includeInContext);
-  }
-
-  /**
-   * 进入指定 spinner 状态。spinner 帧由渲染层根据 elapsedMs 推算，无需逐帧推进。
-   */
-  enterSpinnerState(kind: 'thinking' | 'working'): void {
-    this.turnContext.enterSpinnerState(kind);
-  }
-
-  /**
-   * 注入 spinner 重绘 timer 的 footer 回调；main 层在初始化时调用一次。
-   */
-  configureSpinnerTimer(config: {onTick: () => void}): void {
-    this.turnContext.configureSpinnerTimer(config);
-  }
-
-  /**
-   * 注入 streaming token footer 重绘回调；节流窗口由 turn context 自己管理。
-   */
-  configureStreamingRenderTimer(config: {onRender: () => void}): void {
-    this.turnContext.configureStreamingRenderTimer(config);
-  }
-
-  /**
-   * 调度一次 onToken 引发的 footer 重绘，首帧即时、后续短窗口合并。
-   */
-  scheduleStreamingRender(): void {
-    this.turnContext.scheduleStreamingRender();
-  }
-
-  /**
-   * 取消尚未执行的 onToken footer 重绘，供结构性状态变化前调用。
-   */
-  cancelStreamingRender(): void {
-    this.turnContext.cancelStreamingRender();
-  }
-
-  /**
-   * 启动指定类型的 spinner，并注册周期重绘 timer。
-   */
-  startSpinner(kind: 'thinking' | 'working'): void {
-    this.turnContext.startSpinner(kind);
-  }
-
-  /**
-   * 停止 spinner 重绘 timer。
-   */
-  stopSpinner(): void {
-    this.turnContext.stopSpinner();
-  }
-
-  /**
-   * 清理本地 working 状态；用于不属于 assistant/shell turn 的启动期后台任务收尾。
-   */
-  clearWorking(): void {
-    this.turnContext.clearWorking();
-  }
-
-  /**
-   * 更新 streaming pending 文本草稿。
-   */
-  setStreamingPending(draft: string): void {
-    this.turnContext.setStreamingPending(draft);
-  }
-
-  /**
-   * 追加 shell mode 运行中的本地输出 preview。
-   */
-  appendShellOutputPending(event: BashCommandOutputEvent): void {
-    this.turnContext.appendShellOutputPending(event);
-  }
-
-  /**
-   * 更新 tool call pending 预览，暂不追加 transcript record。
-   */
-  setToolCallPending(call: ToolCall): void {
-    this.turnContext.setToolCallPending(call);
-  }
-
-  /**
-   * 返回当前 working 状态。
-   */
-  getWorking(): WorkingState | null {
-    return this.turnContext.getWorking();
-  }
-
-  /**
-   * 返回当前 pending 预览状态，供输入层判断当前响应阶段。
-   */
-  getPending(): PendingState | null {
-    return this.turnContext.getPending();
-  }
-
-  /**
-   * 完成 assistant 响应，提交 assistant record 并释放 response lock。
-   */
-  finishAssistantTurn(finalText: string): TranscriptRecord | null {
-    return this.turnContext.finishAssistantTurn(finalText);
-  }
-
-  /**
-   * 提交已经流出的 partial assistant 内容，但不释放 response lock。
-   */
-  commitPartialAssistantTurn(partialText: string): TranscriptRecord | null {
-    return this.turnContext.commitPartialAssistantTurn(partialText);
-  }
-
-  /**
-   * 提交当前 pending assistant 草稿，由 turn context 作为唯一 draft 来源。
-   */
-  commitPendingAssistantDraft(): TranscriptRecord | null {
-    return this.turnContext.commitPendingAssistantDraft();
-  }
-
-  /**
-   * 追加 reasoning summary record，但不释放 response lock。
-   */
-  appendReasoningSummary(text: string): TranscriptRecord {
-    return this.turnContext.appendReasoningSummary(text);
-  }
-
-  /**
-   * 追加 tool_call record，但不释放 response lock。
-   */
-  appendToolCall(call: ToolCall): TranscriptRecord {
-    return this.turnContext.appendToolCall(call);
-  }
-
-  /**
-   * 追加 tool_result record，但不释放 response lock。
-   */
-  appendToolResult(result: ToolExecutionResult): TranscriptRecord {
-    return this.turnContext.appendToolResult(result);
-  }
-
-  /**
-   * 追加暂存 tool_call 与当前 tool_result record，但不释放 response lock。
-   */
-  appendPendingToolResult(result: ToolExecutionResult): TranscriptRecord[] {
-    return this.turnContext.appendPendingToolResult(result);
-  }
-
-  /**
-   * 记录本地 assistant 错误消息，并释放 response lock。
-   */
-  failAssistantTurn(error: unknown): TranscriptRecord {
-    return this.turnContext.failAssistantTurn(error);
-  }
-
-  /**
-   * 记录本地 shell 错误消息，并释放 response lock。
-   */
-  failShellCommand(error: unknown): TranscriptRecord {
-    return this.turnContext.failShellCommand(error);
-  }
-
-  /**
-   * 记录本地中断提示，并释放 response lock。
-   */
-  cancelAssistantTurn(): TranscriptRecord {
-    return this.turnContext.cancelAssistantTurn();
   }
 
   /**
