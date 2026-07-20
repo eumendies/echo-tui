@@ -66,7 +66,7 @@ export class HooksCommandHandler implements CommandHandler<HooksManageData> {
   description = '查看、管理和测试 lifecycle hooks';
 
   match(text: string): boolean {
-    return String(text).trim() === '/hooks';
+    return text.trim() === '/hooks';
   }
 
   start(_text: string, host: CommandHost): void {

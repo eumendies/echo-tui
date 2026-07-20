@@ -35,7 +35,7 @@ export class StatusCommandHandler implements CommandHandler<StatusCommandData> {
    * 只匹配纯 `/status`，带参数输入继续走普通 slash fallback。
    */
   match(text: string): boolean {
-    return String(text) === '/status';
+    return text === '/status';
   }
 
   /**

@@ -40,7 +40,7 @@ export class HelpCommandHandler implements CommandHandler {
    * @returns 是否命中 /help
    */
   match(text: string): boolean {
-    return String(text) === '/help';
+    return text === '/help';
   }
 
   /**

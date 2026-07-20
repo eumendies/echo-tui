@@ -52,7 +52,7 @@ export class McpCommandHandler implements CommandHandler<McpManageData> {
   description = '查看和管理 MCP servers';
 
   match(text: string): boolean {
-    return String(text).trim() === '/mcp';
+    return text.trim() === '/mcp';
   }
 
   start(_text: string, host: CommandHost): void {

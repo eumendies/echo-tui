@@ -41,7 +41,7 @@ class ConfigCommandHandler implements CommandHandler<ConfigCommandData> {
   description = '配置 LLM providers 和 models';
 
   match(text: string): boolean {
-    return String(text).trim() === '/config';
+    return text.trim() === '/config';
   }
 
   start(_text: string, host: CommandHost): void {

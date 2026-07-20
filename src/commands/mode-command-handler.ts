@@ -36,7 +36,7 @@ const MODE_USAGE_LINES = [
 ];
 
 function parseModeArgument(text: string): InteractionMode | 'select' | 'invalid' {
-  const parts = String(text).trim().split(/\s+/);
+  const parts = text.trim().split(/\s+/);
 
   if (parts.length === 1 && parts[0] === '/mode') {
     return 'select';
@@ -120,7 +120,7 @@ export class ModeCommandHandler implements CommandHandler<ModeCommandData> {
    * 只接管 /mode 及其空格分隔参数，避免误吞 /model。
    */
   match(text: string): boolean {
-    return /^\/mode(?:\s+.*)?$/.test(String(text));
+    return /^\/mode(?:\s+.*)?$/.test(text);
   }
 
   /**

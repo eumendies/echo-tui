@@ -58,7 +58,7 @@ export class CompactCommandHandler implements CommandHandler {
    * @returns 是否命中 /compact
    */
   match(text: string): boolean {
-    return String(text) === '/compact';
+    return text === '/compact';
   }
 
   /**

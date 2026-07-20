@@ -106,7 +106,7 @@ export class ThemesCommandHandler implements CommandHandler<ThemesCommandData> {
   description = '切换主题';
 
   match(text: string): boolean {
-    return String(text) === '/themes';
+    return text === '/themes';
   }
 
   start(_text: string, host: CommandHost): void {

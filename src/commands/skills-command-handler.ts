@@ -111,7 +111,7 @@ export class SkillsCommandHandler implements CommandHandler<SkillsManageData> {
   description = '查看和管理 skills';
 
   match(text: string): boolean {
-    return String(text).trim() === '/skills';
+    return text.trim() === '/skills';
   }
 
   start(_text: string, host: CommandHost): void {

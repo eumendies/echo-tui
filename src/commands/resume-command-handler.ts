@@ -278,7 +278,7 @@ export class ResumeCommandHandler implements CommandHandler<ResumeData> {
    * @returns 是否命中 /resume
    */
   match(text: string): boolean {
-    return String(text) === '/resume';
+    return text === '/resume';
   }
 
   /**

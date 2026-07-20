@@ -40,7 +40,7 @@ export class ClearCommandHandler implements CommandHandler {
    * @returns 是否命中 /clear
    */
   match(text: string): boolean {
-    return String(text) === '/clear';
+    return text === '/clear';
   }
 
   /**

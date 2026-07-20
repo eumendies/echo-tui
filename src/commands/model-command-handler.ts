@@ -133,7 +133,7 @@ export class ModelCommandHandler implements CommandHandler<ModelCommandInfo> {
    * @returns 是否命中 /model
    */
   match(text: string): boolean {
-    return String(text) === '/model';
+    return text === '/model';
   }
 
   /**
