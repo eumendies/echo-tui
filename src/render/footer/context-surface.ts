@@ -2,9 +2,8 @@ import * as ansi from '../../terminal/ansi';
 import {displayWidth, safeRenderWidth, splitGraphemes} from '../layout';
 import {colorText, tokenText, type FooterTheme} from '../colors';
 import {clampPlainText, padVisibleText} from './text';
-import {constrainLayoutTail} from './window';
 
-import type {ContextUsage, ContextUsageSegmentCategory} from '../../types/agent';
+import type {ContextUsage, ContextUsageSegment, ContextUsageSegmentCategory} from '../../types/agent';
 import type {ContextUsageCommandSurface} from '../../types/command';
 import type {FooterLayout} from '../../types/render';
 
@@ -21,39 +20,153 @@ const FILL = '█';
 const TRACK = '░';
 const DOT = '●';
 const ANSI_SEQUENCE_PATTERN = /^\x1b\[[0-9;?]*[A-Za-z]/;
+const TOP_LEVEL_CATEGORIES: ContextUsageSegmentCategory[] = ['system', 'tools', 'messages', 'reasoning'];
+const SYSTEM_PROMPT_CHILD_CATEGORIES: ContextUsageSegmentCategory[] = ['memory', 'skills'];
+
+type ContextSurfaceProjection = {
+  topLevelSegments: ContextUsageSegment[];
+  systemPromptChildren: ContextUsageSegment[];
+};
+
+type ContextBreakdownRow =
+  | {kind: 'topLevel'; segment: ContextUsageSegment}
+  | {kind: 'systemPromptChild'; isLast: boolean; segment: ContextUsageSegment};
 
 /**
- * 渲染 /context 详情卡片，展示最近一次 provider usage 的窗口占用与分类构成。
+ * 渲染 /context 详情卡片，将内部互斥 segment 投影为 system prompt 包含 memory、skills 的层级结构。
+ * 在终端行数不足时优先保留 usage 总览和顶层分类，再省略 system prompt 子项。
  */
 function renderContextSurface(surface: ContextUsageCommandSurface, width: number, maxLines: number | undefined, theme: FooterTheme): FooterLayout {
   const safeWidth = safeRenderWidth(width);
   const cardWidth = Math.min(clamp(safeWidth - 2, 50, 78), Math.max(1, safeWidth - 1));
   const contentWidth = rowContentWidth(cardWidth);
   const usage = surface.usage;
-  const segments = (usage.segments || []).filter((segment) => segment.tokens > 0);
-  const lines = [
-    topLine(cardWidth, surface.title || '上下文', theme),
+  const projection = createContextSurfaceProjection(usage);
+  const breakdownRows = createContextBreakdownRows(projection);
+  const overviewLines = [
+    topLine(cardWidth, surface.title, theme),
     rowLine(cardWidth, headerLine(usage, contentWidth, theme), theme),
     rowLine(cardWidth, windowGaugeLine(usage, contentWidth, theme), theme),
     rowLine(cardWidth, '', theme),
-    rowLine(cardWidth, compositionBarLine(segments, usage.usedTokens, contentWidth, theme), theme),
+    rowLine(cardWidth, compositionBarLine(projection.topLevelSegments, usage.usedTokens, contentWidth, theme), theme),
     rowLine(cardWidth, '', theme)
   ];
+  const renderedBreakdownRows = breakdownRows.map((row) => rowLine(cardWidth, row.kind === 'topLevel'
+    ? breakdownLine(row.segment.category, row.segment.tokens, usage.usedTokens, contentWidth, theme)
+    : childBreakdownLine(row.segment.category, row.segment.tokens, contentWidth, row.isLast, theme), theme));
+  const fullLines = [
+    ...overviewLines,
+    ...renderedBreakdownRows,
+    dividerLine(cardWidth, theme),
+    rowLine(cardWidth, ansi.dim(clampPlainText(surface.dismissHint, contentWidth)), theme),
+    bottomLine(cardWidth, theme)
+  ];
+  const lines = selectVisibleContextLines({
+    fullLines,
+    compactOverviewLines: [overviewLines[0], overviewLines[1], overviewLines[2], overviewLines[4]],
+    renderedBreakdownRows,
+    breakdownRows,
+    divider: dividerLine(cardWidth, theme),
+    dismiss: rowLine(cardWidth, ansi.dim(clampPlainText(surface.dismissHint, contentWidth)), theme),
+    maxLines,
+    bottom: bottomLine(cardWidth, theme)
+  });
 
-  for (const segment of [...segments].sort((left, right) => right.tokens - left.tokens)) {
-    lines.push(rowLine(cardWidth, breakdownLine(segment.category, segment.tokens, usage.usedTokens, contentWidth, theme), theme));
-  }
-
-  lines.push(dividerLine(cardWidth, theme));
-  lines.push(rowLine(cardWidth, ansi.dim(clampPlainText(surface.dismissHint || '上下文占用详情 · 按任意键关闭', contentWidth)), theme));
-  lines.push(bottomLine(cardWidth, theme));
-
-  return constrainLayoutTail({
+  return {
     lines,
     cursorRow: lines.length - 1,
     cursorColumn: 0,
     showCursor: false
-  }, maxLines);
+  };
+}
+
+/**
+ * 将校准后的互斥 segment 转为 surface 使用的层级数据；聚合值只存在于渲染投影中，不回写 usage。
+ */
+function createContextSurfaceProjection(usage: ContextUsage): ContextSurfaceProjection {
+  const tokensByCategory = new Map<ContextUsageSegmentCategory, number>();
+
+  for (const segment of usage.segments || []) {
+    tokensByCategory.set(segment.category, (tokensByCategory.get(segment.category) || 0) + Math.max(0, segment.tokens));
+  }
+
+  const tokenCount = (category: ContextUsageSegmentCategory): number => tokensByCategory.get(category) || 0;
+  const systemPromptTokens = tokenCount('system') + tokenCount('memory') + tokenCount('skills');
+  const systemPromptSegment: ContextUsageSegment = {category: 'system', tokens: systemPromptTokens};
+  const topLevelSegments = [
+    systemPromptSegment,
+    ...TOP_LEVEL_CATEGORIES.slice(1).map((category): ContextUsageSegment => ({category, tokens: tokenCount(category)}))
+  ].filter((segment) => segment.tokens > 0);
+  const systemPromptChildren = SYSTEM_PROMPT_CHILD_CATEGORIES
+    .map((category): ContextUsageSegment => ({category, tokens: tokenCount(category)}))
+    .filter((segment) => segment.tokens > 0);
+
+  return {topLevelSegments, systemPromptChildren};
+}
+
+/**
+ * 按固定语义顺序组织分类行，使 system prompt 子项紧随父项且不会作为独立顶层分类出现。
+ */
+function createContextBreakdownRows(projection: ContextSurfaceProjection): ContextBreakdownRow[] {
+  const rows: ContextBreakdownRow[] = [];
+
+  for (const segment of projection.topLevelSegments) {
+    rows.push({kind: 'topLevel', segment});
+
+    if (segment.category !== 'system') {
+      continue;
+    }
+
+    projection.systemPromptChildren.forEach((child, index) => {
+      rows.push({
+        kind: 'systemPromptChild',
+        segment: child,
+        isLast: index === projection.systemPromptChildren.length - 1
+      });
+    });
+  }
+
+  return rows;
+}
+
+/**
+ * 根据 footer 行预算裁剪 context card：子项最先省略，随后才减少顶层明细；极小终端保留 card 总览。
+ */
+function selectVisibleContextLines(options: {
+  fullLines: string[];
+  compactOverviewLines: string[];
+  renderedBreakdownRows: string[];
+  breakdownRows: ContextBreakdownRow[];
+  divider: string;
+  dismiss: string;
+  maxLines: number | undefined;
+  bottom: string;
+}): string[] {
+  if (!Number.isFinite(options.maxLines) || options.fullLines.length <= Number(options.maxLines)) {
+    return options.fullLines;
+  }
+
+  const lineBudget = Math.max(1, Math.floor(Number(options.maxLines)));
+  const coreLines = options.compactOverviewLines;
+
+  if (lineBudget < coreLines.length + 1) {
+    return coreLines.slice(0, lineBudget);
+  }
+
+  const detailBudget = lineBudget - coreLines.length - 1;
+  const topLevelIndexes = options.breakdownRows
+    .map((row, index) => row.kind === 'topLevel' ? index : -1)
+    .filter((index) => index >= 0);
+  const visibleDetailIndexes = detailBudget >= options.renderedBreakdownRows.length
+    ? options.renderedBreakdownRows.map((_line, index) => index)
+    : topLevelIndexes.slice(0, detailBudget);
+  const detailLines = visibleDetailIndexes.map((index) => options.renderedBreakdownRows[index]);
+  const trailingBudget = lineBudget - coreLines.length - detailLines.length - 1;
+  const trailingLines = trailingBudget >= 2
+    ? [options.divider, options.dismiss]
+    : trailingBudget === 1 ? [options.dismiss] : [];
+
+  return [...coreLines, ...detailLines, ...trailingLines, options.bottom];
 }
 
 function headerLine(usage: ContextUsage, inner: number, theme: FooterTheme): string {
@@ -106,6 +219,20 @@ function breakdownLine(category: ContextUsageSegmentCategory, tokens: number, us
   const gap = Math.max(1, inner - 2 - displayWidth(name) - displayWidth(stat));
 
   return `${swatch} ${name}${' '.repeat(gap)}${stat}`;
+}
+
+/**
+ * 渲染 system prompt 的子项明细；子项只标示自身 token，避免与父项全局占比产生可相加的错觉。
+ */
+function childBreakdownLine(category: ContextUsageSegmentCategory, tokens: number, inner: number, isLast: boolean, theme: FooterTheme): string {
+  const color = segmentColor(category, theme);
+  const branch = ansi.dim(`  ${isLast ? '└─' : '├─'} `);
+  const swatch = colorText(color, DOT);
+  const name = tokenText(theme, 'text', SEGMENT_LABELS[category]);
+  const stat = colorText(color, humanizeTokens(tokens));
+  const gap = Math.max(1, inner - displayWidth(branch) - 2 - displayWidth(name) - displayWidth(stat));
+
+  return `${branch}${swatch} ${name}${' '.repeat(gap)}${stat}`;
 }
 
 function topLine(width: number, title: string, theme: FooterTheme): string {

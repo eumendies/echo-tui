@@ -137,8 +137,6 @@ class StatefulKeyParser {
 /**
  * 将 raw stdin chunk 解析为语义输入事件列表。
  *
- * @param chunk stdin chunk
- * @returns 输入事件列表
  */
 export function parseKeyChunk(chunk: string | Buffer): InputEvent[] {
   // raw stdin 一个 chunk 里可能混有 escape sequence 和普通字符，所以必须流式扫描。
@@ -231,9 +229,6 @@ function splitTrailingPrefix(text: string, target: string, minLength: number): {
 /**
  * 在指定位置查找是否命中已知控制键序列。
  *
- * @param text 输入文本
- * @param index 当前扫描位置
- * @returns 命中的序列和事件类型
  */
 function findSequenceAt(text: string, index: number): SequenceMatch | null {
   // 先匹配长序列，避免 "\x1b[3~" 被短前缀提前吞掉。
@@ -249,8 +244,6 @@ function findSequenceAt(text: string, index: number): SequenceMatch | null {
 /**
  * 将单个字符解析为 printable text 或 unknown 事件。
  *
- * @param char 单个 Unicode code point 字符
- * @returns 输入事件
  */
 function parseCharacter(char: string): InputEvent {
   const sequenceType = KEY_SEQUENCES.get(char);
@@ -272,8 +265,6 @@ function parseCharacter(char: string): InputEvent {
 /**
  * 判断字符是否可打印。
  *
- * @param char 单个字符
- * @returns 是否可打印
  */
 function isPrintable(char: string): boolean {
   // raw mode 下控制字符也会进来；这里只把可打印字符交给 composer。

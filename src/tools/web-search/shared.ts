@@ -167,19 +167,6 @@ export function getResultHostname(url: string): string {
   }
 }
 
-export function capUtf8Text(text: string, maxBytes: number): {text: string; truncated: boolean} {
-  const buffer = Buffer.from(text, 'utf8');
-
-  if (buffer.length <= maxBytes) {
-    return {text, truncated: false};
-  }
-
-  return {
-    text: buffer.subarray(0, maxBytes).toString('utf8').replace(/\uFFFD$/, ''),
-    truncated: true
-  };
-}
-
 export function cleanErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message.trim() !== '' ? error.message : fallback;
 }

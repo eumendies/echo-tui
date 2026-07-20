@@ -6,7 +6,24 @@ const { displayWidth, stripAnsi } = require('../../src/render/layout');
 const { createInitialConfigState, getConfigRows } = require('../../src/commands/config/state');
 const { handleConfigPanelEvent } = require('../../src/commands/config/panel-state');
 const { listProviderPresets } = require('../../src/config/provider-presets');
-const { renderConfigPanel, renderConfigResult, renderConfigSurface } = require('../../src/render/footer/config-surface');
+const { renderConfigSurface } = require('../../src/render/footer/config-surface');
+
+function renderConfigPanel(state, width, options = {}) {
+  return renderConfigSurface({
+    kind: 'config',
+    view: 'editor',
+    state,
+    rows: options.rows || getConfigRows(state)
+  }, width, options).lines;
+}
+
+function renderConfigResult(width, providersCount, modelsCount) {
+  return renderConfigSurface({
+    kind: 'config',
+    view: 'result',
+    result: {providersCount, modelsCount}
+  }, width).lines;
+}
 
 function createDraft() {
   return {
@@ -203,7 +220,7 @@ test('config surface windows long form and model lists within max lines', () => 
   }));
   state = {...state, mode: 'form', formIndex: 13};
 
-  const formLines = renderConfigSurface({kind: 'config', state, rows: getConfigRows(state)}, 100, {maxLines: 10}).lines;
+  const formLines = renderConfigSurface({kind: 'config', view: 'editor', state, rows: getConfigRows(state)}, 100, {maxLines: 10}).lines;
   const formText = stripAnsi(formLines.join('\n'));
   assert.ok(formLines.length <= 10);
   assert.match(formText, /↑ \d+ 更多/);
@@ -224,7 +241,7 @@ test('config surface windows long form and model lists within max lines', () => 
     }
   };
 
-  const modelListLines = renderConfigSurface({kind: 'config', state, rows: getConfigRows(state)}, 100, {maxLines: 10}).lines;
+  const modelListLines = renderConfigSurface({kind: 'config', view: 'editor', state, rows: getConfigRows(state)}, 100, {maxLines: 10}).lines;
   const modelListText = stripAnsi(modelListLines.join('\n'));
   assert.ok(modelListLines.length <= 10);
   assert.match(modelListText, /↑ \d+ 更多/);

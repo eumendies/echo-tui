@@ -145,6 +145,6 @@ export type AppRenderer = {
 
 export type FooterRenderer = {
   clear: () => void;
-  rememberLayout?: (layout: FooterLayout) => void;
+  rememberLayout: (layout: FooterLayout) => void;
   render: (options: RenderState) => void;
 };

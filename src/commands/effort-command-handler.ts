@@ -114,7 +114,7 @@ export class EffortCommandHandler implements CommandHandler<EffortCommandInfo> {
   description = '调整推理等级';
 
   match(text: string): boolean {
-    return String(text) === '/effort';
+    return text === '/effort';
   }
 
   start(_text: string, host: CommandHost): void {

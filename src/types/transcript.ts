@@ -1,30 +1,62 @@
 import type {ToolResultAttachment, ToolResultDisplayMetadata} from './tool';
 import type {ChangeCheckpoint} from './change-history';
+import type {InteractionMode} from './agent';
 
-export const OPENAI_REASONING_TRANSCRIPT_ROLE = 'openai_reasoning';
-export const OPENAI_CHAT_REASONING_TRANSCRIPT_ROLE = 'openai_chat_reasoning';
-export const ANTHROPIC_THINKING_TRANSCRIPT_ROLE = 'anthropic_thinking';
+export const OPENAI_REASONING_EXTENSION_KIND = 'openai_reasoning';
+export const OPENAI_CHAT_REASONING_EXTENSION_KIND = 'openai_chat_reasoning';
+export const ANTHROPIC_THINKING_EXTENSION_KIND = 'anthropic_thinking';
 
-export type KnownTranscriptRole = 'user' | 'assistant' | 'system' | 'error' | 'local_notice' | 'reasoning_summary' | 'shell' | 'tool_call' | 'tool_result' | typeof OPENAI_REASONING_TRANSCRIPT_ROLE | typeof OPENAI_CHAT_REASONING_TRANSCRIPT_ROLE | typeof ANTHROPIC_THINKING_TRANSCRIPT_ROLE;
+export type KnownTranscriptRole = 'user' | 'assistant' | 'system' | 'error' | 'compaction_notice' | 'local_notice' | 'reasoning_summary' | 'shell' | 'tool_call' | 'tool_result';
 
-export type TranscriptRole = KnownTranscriptRole | (string & {});
+export type TranscriptRole = KnownTranscriptRole | 'extension';
 
-export type TranscriptRecord = {
-  role: TranscriptRole;
+type TranscriptRecordBase = {
   text: string;
   createdAt?: string;
-  interactionMode?: string;
-  [key: string]: unknown;
 };
 
-export type ToolCallTranscriptRecord = TranscriptRecord & {
+export type UserTranscriptMetadata = {
+  agentWorkflow?: {
+    source: 'builtin';
+    name: string;
+    argumentsText?: string;
+  };
+  interactionMode?: InteractionMode;
+  modeTransition?: {
+    from: 'normal' | 'plan';
+    to: 'normal' | 'plan';
+  };
+  skillInvocation?: {
+    source: 'slash';
+    skillName: string;
+    argumentsText?: string;
+    userRequestText?: string;
+    sourceKind: 'project' | 'user';
+    sourcePath: string;
+  };
+};
+
+export type UserTranscriptRecord = TranscriptRecordBase & {
+  role: 'user';
+  displayText?: string;
+  attachments?: ToolResultAttachment[];
+  metadata?: UserTranscriptMetadata;
+};
+
+type PlainTextTranscriptRole = 'assistant' | 'system' | 'error' | 'compaction_notice' | 'local_notice' | 'reasoning_summary';
+
+export type PlainTextTranscriptRecord = {
+  [Role in PlainTextTranscriptRole]: TranscriptRecordBase & {role: Role};
+}[PlainTextTranscriptRole];
+
+export type ToolCallTranscriptRecord = TranscriptRecordBase & {
   role: 'tool_call';
   toolCallId: string;
   toolName: string;
   argumentsText: string;
 };
 
-export type BaseToolResultTranscriptRecord = TranscriptRecord & {
+type ToolResultTranscriptRecordBase = TranscriptRecordBase & {
   role: 'tool_result';
   toolCallId: string;
   toolName: string;
@@ -32,15 +64,39 @@ export type BaseToolResultTranscriptRecord = TranscriptRecord & {
   attachments?: ToolResultAttachment[];
 };
 
-export type BashToolResultTranscriptRecord = BaseToolResultTranscriptRecord & {
-  toolName: 'run_bash_command';
-  exitCode?: number | null;
-  timedOut?: boolean;
-  truncated?: boolean;
-  durationMs?: number;
+export type ToolResultTranscriptDetails =
+  | {kind: 'generic'}
+  | {
+      kind: 'bash';
+      exitCode?: number | null;
+      timedOut?: boolean;
+      truncated?: boolean;
+      durationMs?: number;
+    }
+  | {
+      kind: 'glob' | 'grep';
+      exitCode?: number | null;
+      truncated: boolean;
+    }
+  | {
+      kind: 'read_files';
+      truncated: boolean;
+    }
+  | {
+      kind: 'web_fetch' | 'web_search';
+      timedOut: boolean;
+      truncated: boolean;
+    }
+  | {
+      kind: 'apply_patch';
+      display?: ToolResultDisplayMetadata;
+    };
+
+export type ToolResultTranscriptRecord = ToolResultTranscriptRecordBase & {
+  details: ToolResultTranscriptDetails;
 };
 
-export type ShellTranscriptRecord = TranscriptRecord & {
+export type ShellTranscriptRecord = TranscriptRecordBase & {
   role: 'shell';
   command: string;
   durationMs?: number;
@@ -52,49 +108,43 @@ export type ShellTranscriptRecord = TranscriptRecord & {
   truncated?: boolean;
 };
 
-export type GlobToolResultTranscriptRecord = BaseToolResultTranscriptRecord & {
-  toolName: 'glob';
-  exitCode?: number | null;
-  truncated: boolean;
+export type TranscriptExtension =
+  | {
+      kind: typeof OPENAI_REASONING_EXTENSION_KIND;
+      item: {
+        type: 'reasoning';
+        encrypted_content: string;
+        [key: string]: unknown;
+      };
+    }
+  | {
+      kind: typeof OPENAI_CHAT_REASONING_EXTENSION_KIND;
+      reasoningContent: string;
+    }
+  | {
+      kind: typeof ANTHROPIC_THINKING_EXTENSION_KIND;
+      block:
+        | {type: 'thinking'; thinking: string; signature: string}
+        | {type: 'redacted_thinking'; data: string};
+    }
+  | {
+      kind: 'unknown';
+      name: string;
+      payload: Record<string, unknown>;
+    };
+
+export type TranscriptExtensionRecord = TranscriptRecordBase & {
+  role: 'extension';
+  extension: TranscriptExtension;
 };
 
-export type GrepToolResultTranscriptRecord = BaseToolResultTranscriptRecord & {
-  toolName: 'grep';
-  exitCode?: number | null;
-  truncated: boolean;
-};
-
-export type ReadFilesToolResultTranscriptRecord = BaseToolResultTranscriptRecord & {
-  toolName: 'read_files';
-  truncated: boolean;
-};
-
-export type WebFetchToolResultTranscriptRecord = BaseToolResultTranscriptRecord & {
-  toolName: 'web_fetch';
-  timedOut: boolean;
-  truncated: boolean;
-};
-
-export type WebSearchToolResultTranscriptRecord = BaseToolResultTranscriptRecord & {
-  toolName: 'web_search';
-  timedOut: boolean;
-  truncated: boolean;
-};
-
-export type ApplyPatchToolResultTranscriptRecord = BaseToolResultTranscriptRecord & {
-  toolName: 'apply_patch';
-  display?: ToolResultDisplayMetadata;
-};
-
-export type ToolResultTranscriptRecord =
-  | BaseToolResultTranscriptRecord
-  | BashToolResultTranscriptRecord
-  | GlobToolResultTranscriptRecord
-  | GrepToolResultTranscriptRecord
-  | ReadFilesToolResultTranscriptRecord
-  | WebFetchToolResultTranscriptRecord
-  | WebSearchToolResultTranscriptRecord
-  | ApplyPatchToolResultTranscriptRecord;
+export type TranscriptRecord =
+  | UserTranscriptRecord
+  | PlainTextTranscriptRecord
+  | ShellTranscriptRecord
+  | ToolCallTranscriptRecord
+  | ToolResultTranscriptRecord
+  | TranscriptExtensionRecord;
 
 export type CompactionState = {
   summaryText: string;

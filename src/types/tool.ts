@@ -58,7 +58,7 @@ export type ToolResultImageAttachment = {
 
 export type ToolResultAttachment = ToolResultImageAttachment;
 
-export type BaseToolExecutionResult = {
+type ToolExecutionResultBase = {
   callId: string;
   toolName: string;
   ok: boolean;
@@ -66,46 +66,71 @@ export type BaseToolExecutionResult = {
   attachments?: ToolResultAttachment[];
 };
 
-export type BashToolExecutionResult = BaseToolExecutionResult & {
+export type GenericToolExecutionResult = ToolExecutionResultBase & {
+  details: {kind: 'generic'};
+};
+
+export type BashToolExecutionResult = ToolExecutionResultBase & {
   toolName: 'run_bash_command';
-  exitCode?: number | null;
-  timedOut?: boolean;
-  truncated?: boolean;
-  durationMs?: number;
+  details: {
+    kind: 'bash';
+    exitCode?: number | null;
+    timedOut?: boolean;
+    truncated?: boolean;
+    durationMs?: number;
+  };
 };
 
-export type GlobToolExecutionResult = BaseToolExecutionResult & {
+export type GlobToolExecutionResult = ToolExecutionResultBase & {
   toolName: 'glob';
-  exitCode?: number | null;
-  truncated: boolean;
+  details: {
+    kind: 'glob';
+    exitCode?: number | null;
+    truncated: boolean;
+  };
 };
 
-export type GrepToolExecutionResult = BaseToolExecutionResult & {
+export type GrepToolExecutionResult = ToolExecutionResultBase & {
   toolName: 'grep';
-  exitCode?: number | null;
-  truncated: boolean;
+  details: {
+    kind: 'grep';
+    exitCode?: number | null;
+    truncated: boolean;
+  };
 };
 
-export type ReadFilesToolExecutionResult = BaseToolExecutionResult & {
+export type ReadFilesToolExecutionResult = ToolExecutionResultBase & {
   toolName: 'read_files';
-  truncated: boolean;
+  details: {
+    kind: 'read_files';
+    truncated: boolean;
+  };
 };
 
-export type WebFetchToolExecutionResult = BaseToolExecutionResult & {
+export type WebFetchToolExecutionResult = ToolExecutionResultBase & {
   toolName: 'web_fetch';
-  timedOut: boolean;
-  truncated: boolean;
+  details: {
+    kind: 'web_fetch';
+    timedOut: boolean;
+    truncated: boolean;
+  };
 };
 
-export type WebSearchToolExecutionResult = BaseToolExecutionResult & {
+export type WebSearchToolExecutionResult = ToolExecutionResultBase & {
   toolName: 'web_search';
-  timedOut: boolean;
-  truncated: boolean;
+  details: {
+    kind: 'web_search';
+    timedOut: boolean;
+    truncated: boolean;
+  };
 };
 
-export type ApplyPatchToolExecutionResult = BaseToolExecutionResult & {
+export type ApplyPatchToolExecutionResult = ToolExecutionResultBase & {
   toolName: 'apply_patch';
-  display?: ToolResultDisplayMetadata;
+  details: {
+    kind: 'apply_patch';
+    display?: ToolResultDisplayMetadata;
+  };
 };
 
 export type AskUserQuestionsOption = {
@@ -139,16 +164,16 @@ export type AskUserQuestionsMultiAnswer = {
 
 export type AskUserQuestionsAnswer = AskUserQuestionsSingleAnswer | AskUserQuestionsMultiAnswer;
 
-export type AskUserQuestionsToolExecutionResult = BaseToolExecutionResult & {
+export type AskUserQuestionsToolExecutionResult = GenericToolExecutionResult & {
   toolName: 'ask_user_questions';
 };
 
-export type UseSkillToolExecutionResult = BaseToolExecutionResult & {
+export type UseSkillToolExecutionResult = GenericToolExecutionResult & {
   toolName: 'use_skill';
 };
 
 export type ToolExecutionResult =
-  | BaseToolExecutionResult
+  | GenericToolExecutionResult
   | BashToolExecutionResult
   | GlobToolExecutionResult
   | GrepToolExecutionResult

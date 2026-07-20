@@ -72,7 +72,7 @@ function createReadFilesToolHandler(options: ReadFilesToolHandlerOptions = {}): 
         ok: result.ok,
         text: result.text,
         ...(result.attachments ? {attachments: result.attachments} : {}),
-        truncated: result.truncated
+        details: {kind: 'read_files', truncated: result.truncated}
       };
     }
   };

@@ -37,7 +37,7 @@ export class ContextCommandHandler implements CommandHandler {
    * 只匹配纯 /context，避免带参数内容被误消费。
    */
   match(text: string): boolean {
-    return String(text) === '/context';
+    return text === '/context';
   }
 
   /**

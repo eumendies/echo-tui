@@ -210,7 +210,7 @@ function createApplyPatchToolHandler(options: ApplyPatchToolHandlerOptions = {})
         toolName: APPLY_PATCH_TOOL_NAME,
         ok: result.ok,
         text: result.ok ? formatSuccess(result.value.changedFiles) : formatFailure(result.reason, result.hint),
-        ...(display ? {display} : {})
+        details: {kind: 'apply_patch', ...(display ? {display} : {})}
       };
     }
   };

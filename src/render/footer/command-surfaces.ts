@@ -18,7 +18,6 @@ import { activeBackground, renderFocusBar, resolveFooterTheme, tokenText, type T
 import { clampPlainText, formatSelectOptionText, padVisibleText } from './text';
 import { constrainLayoutTail, createSelectedWindowRows } from './window';
 import type {
-  CheckboxCommandSurface,
   CommandSurface,
   ConfirmCommandSurface,
   InfoCommandSurface,
@@ -47,10 +46,6 @@ export function renderCommandSurface(commandSurface: CommandSurface, width: numb
 
   if (commandSurface.kind === 'resume') {
     return constrainLayoutTail(renderResumeSurface(commandSurface, width, theme), options.maxLines);
-  }
-
-  if (commandSurface.kind === 'checkbox') {
-    return renderCheckboxSurface(commandSurface, width, options.maxLines, theme);
   }
 
   if (commandSurface.kind === 'skills') {
@@ -117,9 +112,9 @@ export function renderCommandSurface(commandSurface: CommandSurface, width: numb
  * 渲染只读信息面板，用于命令错误、安全提示和纯说明内容。
  */
 function renderInfoSurface(commandSurface: InfoCommandSurface, width: number, maxLines: number | undefined, theme: FooterTheme): FooterLayout {
-  const titleLines = wrapText(commandSurface.title || '', width).map((line) => ansi.bold(tokenText(theme, 'accentStrong', line)));
-  const bodyLines = (commandSurface.lines || []).flatMap((line) => wrapText(line, width, '  '));
-  const dismissLine = ansi.dim(commandSurface.dismissHint || 'Esc 关闭');
+  const titleLines = wrapText(commandSurface.title, width).map((line) => ansi.bold(tokenText(theme, 'accentStrong', line)));
+  const bodyLines = commandSurface.lines.flatMap((line) => wrapText(line, width, '  '));
+  const dismissLine = ansi.dim(commandSurface.dismissHint);
   const bodyBudget = calculateBodyBudget(maxLines, titleLines.length, 1);
   const lines = [...titleLines, ...bodyLines, dismissLine];
   const visibleLines = bodyBudget === null ? lines : [...titleLines, ...bodyLines.slice(0, bodyBudget), dismissLine];
@@ -136,10 +131,10 @@ function renderInfoSurface(commandSurface: InfoCommandSurface, width: number, ma
  * 渲染单选列表面板；选中项只影响可见高亮，不在渲染层产生业务副作用。
  */
 function renderSelectSurface(commandSurface: SelectCommandSurface, width: number, maxLines: number | undefined, theme: FooterTheme): FooterLayout {
-  const titleLines = wrapText(commandSurface.title || '', width).map((line) => ansi.bold(tokenText(theme, 'accentStrong', line)));
+  const titleLines = wrapText(commandSurface.title, width).map((line) => ansi.bold(tokenText(theme, 'accentStrong', line)));
   const optionLines: string[] = [];
-  const options = commandSurface.options || [];
-  const selectedIndex = Number.isInteger(commandSurface.selectedIndex) ? Number(commandSurface.selectedIndex) : 0;
+  const options = commandSurface.options;
+  const selectedIndex = commandSurface.selectedIndex;
   const optionBudget = calculateBodyBudget(maxLines, titleLines.length, 1);
   const visibleRows = optionBudget === null
     ? options.map((option, index) => ({kind: 'item' as const, item: option, index}))
@@ -162,49 +157,7 @@ function renderSelectSurface(commandSurface: SelectCommandSurface, width: number
     }
   }
 
-  const dismissLine = ansi.dim(commandSurface.dismissHint || 'Enter 确认 · Esc 关闭');
-  const lines = [...titleLines, ...optionLines, dismissLine];
-
-  return {
-    lines,
-    cursorRow: lines.length - 1,
-    cursorColumn: 0,
-    showCursor: false
-  };
-}
-
-/**
- * 渲染复选列表面板；checkbox 状态由 command runtime 提供，renderer 只投影当前快照。
- */
-function renderCheckboxSurface(commandSurface: CheckboxCommandSurface, width: number, maxLines: number | undefined, theme: FooterTheme): FooterLayout {
-  const titleLines = wrapText(commandSurface.title || '', width).map((line) => ansi.bold(tokenText(theme, 'accentStrong', line)));
-  const optionLines: string[] = [];
-  const options = commandSurface.options || [];
-  const selectedIndex = Number.isInteger(commandSurface.selectedIndex) ? Number(commandSurface.selectedIndex) : 0;
-  const optionBudget = calculateBodyBudget(maxLines, titleLines.length, 1);
-  const visibleRows = optionBudget === null
-    ? options.map((option, index) => ({kind: 'item' as const, item: option, index}))
-    : createSelectedWindowRows(options, selectedIndex, optionBudget);
-
-  for (const row of visibleRows) {
-    if (row.kind === 'more') {
-      optionLines.push(ansi.dim(`  ${row.direction === 'up' ? '↑' : '↓'} ${row.count} 更多`));
-      continue;
-    }
-
-    const option = row.item;
-    const originalIndex = row.index;
-    const marker = option.checked ? '●' : '○';
-    const optionText = formatSelectOptionText(`${marker} ${option.label || ''}`, option.description);
-
-    if (originalIndex === selectedIndex) {
-      optionLines.push(renderFocusedPlainOption(optionText, width, theme));
-    } else {
-      optionLines.push(`  ${clampPlainText(optionText, Math.max(1, width - 2))}`);
-    }
-  }
-
-  const dismissLine = ansi.dim(commandSurface.dismissHint || 'Space 切换 · Enter 确认 · Esc 关闭');
+  const dismissLine = ansi.dim(commandSurface.dismissHint);
   const lines = [...titleLines, ...optionLines, dismissLine];
 
   return {
@@ -219,10 +172,10 @@ function renderCheckboxSurface(commandSurface: CheckboxCommandSurface, width: nu
  * 渲染确认面板；Enter/Esc 的语义由 command runtime 处理。
  */
 function renderConfirmSurface(commandSurface: ConfirmCommandSurface, width: number, maxLines: number | undefined, theme: FooterTheme): FooterLayout {
-  const titleLines = wrapText(commandSurface.title || '', width).map((line) => ansi.bold(tokenText(theme, 'accentStrong', line)));
-  const bodyLines = (commandSurface.bodyLines || []).flatMap((line) => wrapText(line, width, '  '));
-  const confirmLabel = commandSurface.confirmLabel || '确认';
-  const cancelLabel = commandSurface.cancelLabel || '取消';
+  const titleLines = wrapText(commandSurface.title, width).map((line) => ansi.bold(tokenText(theme, 'accentStrong', line)));
+  const bodyLines = commandSurface.bodyLines.flatMap((line) => wrapText(line, width, '  '));
+  const confirmLabel = commandSurface.confirmLabel;
+  const cancelLabel = commandSurface.cancelLabel;
   const actionText = tokenText(theme, 'accentStrong', ansi.bold(` Enter ${confirmLabel} `));
   const actionLine = `${activeBackground(theme, actionText)}  ${ansi.dim(`Esc ${cancelLabel}`)}`;
   const bodyBudget = calculateBodyBudget(maxLines, titleLines.length, 1);

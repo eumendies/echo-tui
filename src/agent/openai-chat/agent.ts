@@ -82,10 +82,10 @@ function createClient(config: LlmConfig, OpenAIClient: new (options: {apiKey: st
 }
 
 /**
- * 根据当前 transcript 快照创建 Chat Completions 请求；registry 非空时暴露本地工具定义。
+ * 根据当前 transcript 快照创建 Chat Completions 请求；压缩用途不暴露工具或 reasoning 配置。
  */
-function createChatRequest(records: TranscriptRecord[], config: LlmConfig, registry?: ToolRegistry): ChatCreateRequest {
-  const toolDefinitions = registry && !registry.isEmpty() ? registry.listDefinitions() : [];
+function createChatRequest(records: TranscriptRecord[], config: LlmConfig, registry?: ToolRegistry, options: AgentTurnOptions = {}): ChatCreateRequest {
+  const toolDefinitions = !options.isCompaction && registry && !registry.isEmpty() ? registry.listDefinitions() : [];
   const request: ChatCreateRequest = {
     messages: convertTranscriptToOpenAiChatMessages(records),
     model: config.model,
@@ -94,7 +94,7 @@ function createChatRequest(records: TranscriptRecord[], config: LlmConfig, regis
     stream_options: {include_usage: true}
   };
 
-  if (config.reasoningEffort && config.reasoningEffort !== 'none') {
+  if (!options.isCompaction && config.reasoningEffort && config.reasoningEffort !== 'none') {
     request.reasoning_effort = config.reasoningEffort;
   }
 
@@ -264,21 +264,14 @@ async function readChatCompletionStream(stream: ChatStream, callbacks: AgentTurn
  * 创建基于 OpenAI SDK Chat Completions 的单次 provider turn agent；tool loop 由外层编排。
  */
 class OpenAiChatAgent implements ProviderAgent {
-  private client: ChatClient | null = null;
-  private config: LlmConfig | null = null;
-  private makeClient: (config: LlmConfig) => unknown;
-  private registry: ToolRegistry | null = null;
+  private readonly client: ChatClient;
+  private readonly config: LlmConfig;
+  private readonly registry: ToolRegistry;
 
-  constructor(dependencies: OpenAiChatAgentDependencies = {}) {
+  constructor(config: LlmConfig, registry: ToolRegistry, dependencies: OpenAiChatAgentDependencies = {}) {
     const OpenAIClient = dependencies.OpenAIClient || OpenAI;
-    this.makeClient = dependencies.createClient || ((config: LlmConfig) => createClient(config, OpenAIClient));
-  }
-
-  /**
-   * 使用当前配置初始化 Chat client 和本轮可用工具定义。
-   */
-  initialize(config: LlmConfig, registry: ToolRegistry): void {
-    const client = this.makeClient(config);
+    const makeClient = dependencies.createClient || ((clientConfig: LlmConfig) => createClient(clientConfig, OpenAIClient));
+    const client = makeClient(config);
     assertChatClient(client);
 
     this.client = client;
@@ -290,14 +283,10 @@ class OpenAiChatAgent implements ProviderAgent {
    * 执行一次 Chat Completions provider turn；工具循环由外层 runtime 继续编排。
    */
   async runTurn(records: TranscriptRecord[], callbacks: AgentTurnCallbacks = {}, options: AgentTurnOptions = {}): Promise<AgentTurnResult> {
-    if (!this.client || !this.config || !this.registry) {
-      throw new LlmAgentError('模型运行时尚未初始化');
-    }
-
     let stream: ChatStream;
 
     try {
-      stream = await this.client.chat.completions.create(createChatRequest(records, this.config, this.registry), {signal: options.abortSignal});
+      stream = await this.client.chat.completions.create(createChatRequest(records, this.config, this.registry, options), {signal: options.abortSignal});
     } catch (error: unknown) {
       if (isAbortError(error) || options.abortSignal?.aborted) {
         throwIfAborted(options.abortSignal);
@@ -310,8 +299,8 @@ class OpenAiChatAgent implements ProviderAgent {
   }
 }
 
-function createOpenAiChatAgent(dependencies: OpenAiChatAgentDependencies = {}): ProviderAgent {
-  return new OpenAiChatAgent(dependencies);
+function createOpenAiChatAgent(config: LlmConfig, registry: ToolRegistry, dependencies: OpenAiChatAgentDependencies = {}): ProviderAgent {
+  return new OpenAiChatAgent(config, registry, dependencies);
 }
 
 export {

@@ -31,12 +31,12 @@ function renderMemorySurface(surface: MemoryCommandSurface, width: number, theme
   const contentWidth = Math.max(1, boxWidth - 4);
   const body = renderBody(surface, contentWidth, theme);
   const lines = [
-    topLine(boxWidth, surface.title || 'MEMORY', theme),
+    topLine(boxWidth, surface.title, theme),
     line('', contentWidth, theme),
     ...body.rows,
     ...(surface.error ? [line(tokenText(theme, 'danger', clampPlainText(surface.error, contentWidth)), contentWidth, theme)] : []),
     line('', contentWidth, theme),
-    line(ansi.dim(clampPlainText(surface.dismissHint || 'Esc 关闭', contentWidth)), contentWidth, theme),
+    line(ansi.dim(clampPlainText(surface.dismissHint, contentWidth)), contentWidth, theme),
     bottomLine(boxWidth, theme)
   ];
 

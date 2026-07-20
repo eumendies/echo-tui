@@ -4,6 +4,20 @@ const assert = require('node:assert/strict');
 const { INPUT_EVENTS } = require('../../src/input/event-types');
 const { createCommandRuntime } = require('../../src/app/command/command-runtime');
 
+function createConfirmSurface(title) {
+  return {
+    kind: 'confirm',
+    title,
+    bodyLines: [],
+    confirmLabel: '确认',
+    cancelLabel: '取消'
+  };
+}
+
+function createInfoSurface(title) {
+  return {kind: 'info', title, lines: [], dismissHint: 'Esc 关闭'};
+}
+
 function createHostAppHarness() {
   const calls = {
     exits: 0,
@@ -136,9 +150,7 @@ test('createCommandRuntime returns not_matched when no slash handler matches', (
   assert.deepEqual(harness.runtime.startFromText('/unknown'), { kind: 'not_matched' });
   assert.equal(harness.runtime.hasActiveSession(), false);
   assert.equal(harness.calls.renders, 0);
-  assert.deepEqual(harness.runtime.getSnapshot(), {
-    activeCommandSession: null
-  });
+  assert.equal(harness.runtime.getSurface(), null);
 });
 
 test('createCommandRuntime starts matched command through CommandHost session', () => {
@@ -148,10 +160,7 @@ test('createCommandRuntime starts matched command through CommandHost session', 
       host.session.open({
         commandName: 'local',
         handler: localHandler,
-        surface: {
-          kind: 'confirm',
-          title: '/local'
-        },
+        surface: createConfirmSurface('/local'),
         data: { step: 1 }
       });
     }
@@ -166,7 +175,6 @@ test('createCommandRuntime starts matched command through CommandHost session', 
   assert.equal(harness.runtime.hasActiveSession(), true);
   assert.equal(harness.calls.leavesHistory, 1);
   assert.equal(harness.calls.renders, 1);
-  assert.deepEqual(harness.runtime.getSnapshot().activeCommandSession.data, { step: 1 });
   assert.equal(harness.runtime.getSurface().kind, 'confirm');
 });
 
@@ -204,14 +212,20 @@ test('createCommandRuntime routes events to active session and can update or clo
       host.session.open({
         commandName: 'local',
         handler: localHandler,
-        surface: { kind: 'confirm', title: '/local' },
+        surface: createConfirmSurface('/local'),
         data: { step: 1 }
       });
     },
     handleEvent(session, event, host) {
       if (event.type === INPUT_EVENTS.MOVE_RIGHT) {
         host.session.update({
-          surface: { kind: 'select', title: '/local options', selectedIndex: 1 },
+          surface: {
+            kind: 'select',
+            title: '/local options',
+            options: [{label: 'first'}, {label: 'second'}],
+            selectedIndex: 1,
+            dismissHint: 'Esc 关闭'
+          },
           data: { step: session.data.step + 1 }
         });
         return;
@@ -233,9 +247,7 @@ test('createCommandRuntime routes events to active session and can update or clo
 
   assert.equal(harness.calls.renders, 2);
   assert.equal(harness.runtime.getSurface().kind, 'select');
-  assert.deepEqual(harness.runtime.getSnapshot().activeCommandSession.data, {
-    step: 2
-  });
+  assert.equal(harness.runtime.getSurface().selectedIndex, 1);
 
   harness.runtime.handleEvent({ type: INPUT_EVENTS.ESCAPE });
   assert.equal(harness.runtime.hasActiveSession(), false);
@@ -250,20 +262,20 @@ test('createCommandRuntime rerenders after async command handlers settle', async
       host.session.open({
         commandName: 'async-local',
         handler: localHandler,
-        surface: { kind: 'confirm', title: '/async' },
+        surface: createConfirmSurface('/async'),
         data: { step: 'ready' }
       });
     },
     async handleEvent(_session, _event, host) {
       host.session.update({
-        surface: { kind: 'confirm', title: '/async loading' },
+        surface: createConfirmSurface('/async loading'),
         data: { step: 'loading' }
       });
       await new Promise((resolve) => {
         resolveWork = resolve;
       });
       host.session.update({
-        surface: { kind: 'confirm', title: '/async done' },
+        surface: createConfirmSurface('/async done'),
         data: { step: 'done' }
       });
     }
@@ -278,13 +290,13 @@ test('createCommandRuntime rerenders after async command handlers settle', async
   const pending = harness.runtime.handleEvent({ type: INPUT_EVENTS.SUBMIT });
 
   assert.equal(harness.calls.renders, 2);
-  assert.equal(harness.runtime.getSnapshot().activeCommandSession.data.step, 'loading');
+  assert.equal(harness.runtime.getSurface().title, '/async loading');
 
   resolveWork();
   await pending;
 
   assert.equal(harness.calls.renders, 3);
-  assert.equal(harness.runtime.getSnapshot().activeCommandSession.data.step, 'done');
+  assert.equal(harness.runtime.getSurface().title, '/async done');
 });
 
 test('createCommandRuntime exits from an active command session', () => {
@@ -294,7 +306,7 @@ test('createCommandRuntime exits from an active command session', () => {
       host.session.open({
         commandName: 'local',
         handler: localHandler,
-        surface: { kind: 'info', title: '/local' },
+        surface: createInfoSurface('/local'),
         data: null
       });
     }

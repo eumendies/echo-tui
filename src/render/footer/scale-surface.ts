@@ -13,21 +13,21 @@ const SCALE_METER_WIDTH = 10;
  * 渲染 scale 面板；用于有序强度选择，视觉上呈现为 rounded cyan slider。
  */
 export function renderScaleSurface(commandSurface: ScaleCommandSurface, width: number, theme: FooterTheme = resolveFooterTheme(undefined)): FooterLayout {
-  const options = commandSurface.options || [];
-  const selectedIndex = Math.min(Math.max(Number.isInteger(commandSurface.selectedIndex) ? commandSurface.selectedIndex || 0 : 0, 0), Math.max(0, options.length - 1));
+  const options = commandSurface.options;
+  const selectedIndex = Math.min(Math.max(commandSurface.selectedIndex, 0), Math.max(0, options.length - 1));
   const boxWidth = calculateScaleBoxWidth(commandSurface, width);
   const contentWidth = Math.max(1, boxWidth - 4);
   const trackWidth = Math.max(22, Math.min(60, contentWidth - 8));
   const positions = calculateScalePositions(options.length, trackWidth);
   const lines = [
     renderScaleBoxTop(boxWidth, theme),
-    renderScaleBoxLine(renderScaleTitle(commandSurface.title || '刻度', contentWidth, theme), contentWidth, theme),
+    renderScaleBoxLine(renderScaleTitle(commandSurface.title, contentWidth, theme), contentWidth, theme),
     renderScaleBoxLine('', contentWidth, theme),
     renderScaleBoxLine(renderScaleTrack(positions, selectedIndex, trackWidth, theme), contentWidth, theme),
     renderScaleBoxLine(renderScaleLabels(options, positions, selectedIndex, trackWidth, theme), contentWidth, theme),
     renderScaleBoxLine('', contentWidth, theme),
     renderScaleBoxLine(renderScaleMeter(options[selectedIndex]?.label || '', selectedIndex, options.length, theme), contentWidth, theme),
-    renderScaleBoxLine(ansi.dim(clampPlainText(commandSurface.dismissHint || 'Enter 确认 · Esc 关闭', contentWidth)), contentWidth, theme),
+    renderScaleBoxLine(ansi.dim(clampPlainText(commandSurface.dismissHint, contentWidth)), contentWidth, theme),
     renderScaleBoxBottom(boxWidth, theme)
   ];
 
@@ -44,11 +44,11 @@ export function renderScaleSurface(commandSurface: ScaleCommandSurface, width: n
  */
 function calculateScaleBoxWidth(commandSurface: ScaleCommandSurface, width: number): number {
   const safeWidth = safeRenderWidth(width);
-  const labelWidth = (commandSurface.options || []).reduce((sum, option) => sum + displayWidth(option.description || option.label || '') + 2, 0);
+  const labelWidth = commandSurface.options.reduce((sum, option) => sum + displayWidth(option.description || option.label) + 2, 0);
   const minContentWidth = Math.max(
-    displayWidth(`${commandSurface.title || '刻度'} [实时]`),
+    displayWidth(`${commandSurface.title} [实时]`),
     labelWidth,
-    displayWidth(commandSurface.dismissHint || 'Enter 确认 · ←/→ 移动 · Esc 取消'),
+    displayWidth(commandSurface.dismissHint),
     34
   ) + 6;
   const availableWidth = Math.max(SCALE_SURFACE_MIN_WIDTH, safeWidth - 8);
@@ -99,7 +99,7 @@ function renderScaleLabels(options: CommandSurfaceOption[], positions: number[],
   const activeCells = new Set<number>();
 
   options.forEach((option, index) => {
-    const label = (option.description || option.label || '').slice(0, 8);
+    const label = (option.description || option.label).slice(0, 8);
     const start = Math.min(Math.max(0, (positions[index] || 0) - Math.floor(displayWidth(label) / 2)), Math.max(0, trackWidth - displayWidth(label)));
     const active = index === selectedIndex;
 

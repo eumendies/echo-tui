@@ -1,7 +1,8 @@
 import {formatWebSearchFailure, formatWebSearchResponse, WEB_SEARCH_TOOL_NAME} from './shared';
 import {assessSearchQuality, compareScoredResults, extractQueryTerms, mergeScoredResults, scoreSearchResults} from './relevance';
 import {normalizeLimits, normalizeRequest, runSearchAttempt} from './request';
-import {capUtf8Text, dedupeStrings} from './shared';
+import {dedupeStrings} from './shared';
+import {capUtf8Text} from '../tool-handler-utils';
 
 import type {ToolCall, ToolExecutionOptions, ToolHandler, WebSearchToolExecutionResult} from '../../types/tool';
 import type {FetchLike, ScoredSearchResult, SearchProviderName, SearchQualityAssessment, WebSearchLimits, WebSearchToolHandlerOptions} from './shared';
@@ -53,8 +54,11 @@ function createWebSearchToolHandler(options: WebSearchToolHandlerOptions = {}): 
         toolName: WEB_SEARCH_TOOL_NAME,
         ok: result.ok,
         text: result.text,
-        timedOut: result.timedOut,
-        truncated: result.truncated
+        details: {
+          kind: 'web_search',
+          timedOut: result.timedOut,
+          truncated: result.truncated
+        }
       };
     }
   };

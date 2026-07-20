@@ -46,12 +46,12 @@ function renderCopySurface(
   }
 
   const lines = [
-    renderTop(boxWidth, surface.title || '/copy 复制消息', theme),
+    renderTop(boxWidth, surface.title, theme),
     renderLine(renderSummaryLine(surface, innerWidth, theme), boxWidth, theme),
     renderDivider(leftWidth, rightWidth, theme),
     ...bodyRows.slice(0, bodyHeight).map((row, visualIndex) => renderBodyLine(surface, row.entry, row.index, row.more, previewRows[visualIndex] || '', leftWidth, rightWidth, focus, visualIndex === 0, theme)),
     renderDivider(leftWidth, rightWidth, theme),
-    renderLine(ansi.dim(clampPlainText(surface.notice || surface.dismissHint || '', innerWidth)), boxWidth, theme),
+    renderLine(ansi.dim(clampPlainText(surface.notice || surface.dismissHint, innerWidth)), boxWidth, theme),
     renderBottom(boxWidth, theme)
   ];
 

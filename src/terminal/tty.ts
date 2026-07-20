@@ -5,8 +5,6 @@ import { disableBracketedPaste, enableBracketedPaste, reset, showCursor } from '
 /**
  * 读取当前终端尺寸；在非 TTY 场景下提供稳定 fallback。
  *
- * @param {NodeJS.WriteStream} [output=process.stdout]
- * @returns {{columns: number, rows: number}}
  */
 export function getSize(output: NodeJS.WriteStream = process.stdout): {columns: number; rows: number} {
   return {
@@ -18,8 +16,6 @@ export function getSize(output: NodeJS.WriteStream = process.stdout): {columns: 
 /**
  * 配置 raw mode、输入编码和退出清理逻辑，并返回供 app 层使用的终端能力封装。
  *
- * @param {NodeJS.ReadStream} [input=process.stdin]
- * @param {NodeJS.WriteStream} [output=process.stdout]
  */
 export function setupTerminal(
   input: NodeJS.ReadStream = process.stdin,

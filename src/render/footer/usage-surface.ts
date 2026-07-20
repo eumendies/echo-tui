@@ -29,11 +29,11 @@ type UsageColumn = {
  */
 function renderUsageSurface(surface: UsageCommandSurface, width: number, maxLines: number | undefined, theme: FooterTheme): FooterLayout {
   const safeWidth = safeRenderWidth(width);
-  const days = surface.dailyUsage || [];
+  const days = surface.dailyUsage;
   const layout = resolveUsageLayout(surface, days, safeWidth, maxLines);
   const {cardWidth, inner, maxOffset, offset, visibleDays} = layout;
   const lines = [
-    topLine(cardWidth, surface.title || 'Token 用量', theme),
+    topLine(cardWidth, surface.title, theme),
     rowLine(cardWidth, headerLine(days, inner, theme), theme),
     rowLine(cardWidth, spanLine(days, visibleDays, offset, inner, theme), theme),
     dividerLine(cardWidth, theme)
@@ -76,9 +76,9 @@ function resolveUsageLayout(surface: UsageCommandSurface, days: UsageDailyAggreg
   for (let index = 0; index < 2; index += 1) {
     const windowSize = resolveWindowSize(days.length, safeWidth, maxLines);
     maxOffset = Math.max(0, days.length - windowSize);
-    offset = clamp(Number.isInteger(surface.offset) ? Number(surface.offset) : maxOffset, 0, maxOffset);
+    offset = clamp(surface.offset, 0, maxOffset);
     visibleDays = days.slice(offset, offset + windowSize);
-    const preferredInner = preferredUsageInner(days, visibleDays, offset, maxOffset > 0, surface.title || 'Token 用量');
+    const preferredInner = preferredUsageInner(days, visibleDays, offset, maxOffset > 0, surface.title);
     const nextCardWidth = Math.min(maxCardWidth, Math.max(Math.min(MIN_CARD_WIDTH, maxCardWidth), preferredInner + 4));
 
     if (nextCardWidth === cardWidth) {

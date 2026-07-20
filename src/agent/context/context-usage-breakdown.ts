@@ -3,7 +3,7 @@ import {formatShellRecordForProvider, shouldIncludeRecordInProviderContext} from
 
 import type {ContextUsageSegment, ContextUsageSegmentCategory} from '../../types/agent';
 import type {ToolDefinition} from '../../types/tool';
-import {ANTHROPIC_THINKING_TRANSCRIPT_ROLE, OPENAI_CHAT_REASONING_TRANSCRIPT_ROLE, OPENAI_REASONING_TRANSCRIPT_ROLE, type TranscriptRecord} from '../../types/transcript';
+import type {TranscriptRecord} from '../../types/transcript';
 
 type EstimatedContextUsageSegment = {
   category: ContextUsageSegmentCategory;
@@ -93,16 +93,8 @@ function addTokens(totals: Map<ContextUsageSegmentCategory, number>, category: C
 }
 
 function getRecordContextUsageCategory(record: TranscriptRecord): ContextUsageSegmentCategory | null {
-  if (record.role === OPENAI_REASONING_TRANSCRIPT_ROLE) {
-    return 'reasoning';
-  }
-
-  if (record.role === OPENAI_CHAT_REASONING_TRANSCRIPT_ROLE) {
-    return 'reasoning';
-  }
-
-  if (record.role === ANTHROPIC_THINKING_TRANSCRIPT_ROLE) {
-    return 'reasoning';
+  if (record.role === 'extension') {
+    return record.extension.kind === 'unknown' ? null : 'reasoning';
   }
 
   if (!shouldIncludeRecordInProviderContext(record)) {
@@ -133,16 +125,17 @@ function estimateRecordContextTokens(record: TranscriptRecord, category: Context
     return estimateTextTokens(formatShellRecordForProvider(record));
   }
 
-  if (record.role === OPENAI_REASONING_TRANSCRIPT_ROLE) {
-    return estimateJsonTokens(record.item || record.text);
-  }
-
-  if (record.role === OPENAI_CHAT_REASONING_TRANSCRIPT_ROLE) {
-    return estimateTextTokens(typeof record.reasoningContent === 'string' ? record.reasoningContent : record.text);
-  }
-
-  if (record.role === ANTHROPIC_THINKING_TRANSCRIPT_ROLE) {
-    return estimateJsonTokens(record.block || record.text);
+  if (record.role === 'extension') {
+    switch (record.extension.kind) {
+      case 'openai_reasoning':
+        return estimateJsonTokens(record.extension.item);
+      case 'openai_chat_reasoning':
+        return estimateTextTokens(record.extension.reasoningContent);
+      case 'anthropic_thinking':
+        return estimateJsonTokens(record.extension.block);
+      case 'unknown':
+        return 0;
+    }
   }
 
   return estimateTextTokens(record.text);

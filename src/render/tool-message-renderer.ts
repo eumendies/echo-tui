@@ -32,15 +32,16 @@ import {
   truncateDisplayText
 } from './tool-message-renderers/shared';
 
-import type {TranscriptRecord} from '../types/transcript';
+import type {ToolCallTranscriptRecord, ToolResultTranscriptRecord} from '../types/transcript';
 import type {ToolRecordRenderOptions} from './tool-message-renderers/shared';
 
 const BASH_TOOL_NAME = 'run_bash_command';
+type ToolTranscriptRecord = ToolCallTranscriptRecord | ToolResultTranscriptRecord;
 
 /**
  * 渲染 tool transcript record 的可见投影，保留 transcript/provider 事实内容不变。
  */
-export function renderToolRecordBlock(record: TranscriptRecord, width = 80, theme: TuiTheme = DEFAULT_TUI_THEME): string {
+export function renderToolRecordBlock(record: ToolTranscriptRecord, width = 80, theme: TuiTheme = DEFAULT_TUI_THEME): string {
   const lines = renderToolRecordLines(record, width, {}, theme);
   const trailingBlankLines = record.role === 'tool_call' ? [''] : ['', ''];
 
@@ -50,7 +51,7 @@ export function renderToolRecordBlock(record: TranscriptRecord, width = 80, them
 /**
  * 渲染完整 tool call/result 对；call 的状态样式直接来自 result，不向普通 record renderer 泄漏。
  */
-export function renderToolPairBlock(call: TranscriptRecord, result: TranscriptRecord, width = 80, theme: TuiTheme = DEFAULT_TUI_THEME): string {
+export function renderToolPairBlock(call: ToolCallTranscriptRecord, result: ToolResultTranscriptRecord, width = 80, theme: TuiTheme = DEFAULT_TUI_THEME): string {
   const pairAwareLines = renderPairAwareToolPairLines(call, result, width, theme);
 
   if (pairAwareLines) {
@@ -63,7 +64,7 @@ export function renderToolPairBlock(call: TranscriptRecord, result: TranscriptRe
 /**
  * 尝试使用同时依赖 call/result 的专属 renderer；解析失败时返回 null 交给分开渲染路径。
  */
-function renderPairAwareToolPairLines(call: TranscriptRecord, result: TranscriptRecord, width: number, theme: TuiTheme): string[] | null {
+function renderPairAwareToolPairLines(call: ToolCallTranscriptRecord, result: ToolResultTranscriptRecord, width: number, theme: TuiTheme): string[] | null {
   if (call.toolName === BASH_TOOL_NAME && result.toolName === BASH_TOOL_NAME) {
     return renderBashToolPairLines(call, result, width, theme);
   }
@@ -86,11 +87,9 @@ function renderPairAwareToolPairLines(call: TranscriptRecord, result: Transcript
 /**
  * 使用单条 tool record renderer 分别渲染 call 和 result，适合两边不需要互读的工具。
  */
-function renderSplitToolPairLines(call: TranscriptRecord, result: TranscriptRecord, width: number, theme: TuiTheme): string[] {
-  const callStatus = typeof result.ok === 'boolean' ? result.ok : undefined;
-
+function renderSplitToolPairLines(call: ToolCallTranscriptRecord, result: ToolResultTranscriptRecord, width: number, theme: TuiTheme): string[] {
   return [
-    ...renderToolRecordLines(call, width, {callStatus}, theme),
+    ...renderToolRecordLines(call, width, {callStatus: result.ok}, theme),
     ...renderToolRecordLines(result, width, {}, theme)
   ];
 }
@@ -112,6 +111,7 @@ function renderToolPairLinesBlock(lines: string[]): string {
 export function renderToolCallPreviewLines(toolName: string, argumentsText: string, width = 80, theme: TuiTheme = DEFAULT_TUI_THEME): string[] {
   return renderToolRecordLines({
     role: 'tool_call',
+    toolCallId: 'pending',
     text: `${toolName}(${argumentsText})`,
     toolName,
     argumentsText
@@ -121,7 +121,7 @@ export function renderToolCallPreviewLines(toolName: string, argumentsText: stri
 /**
  * 根据 toolName 选择工具专属投影；未知工具降级为通用工具消息。
  */
-function renderToolRecordLines(record: TranscriptRecord, width: number, options: ToolRecordRenderOptions = {}, theme: TuiTheme): string[] {
+function renderToolRecordLines(record: ToolTranscriptRecord, width: number, options: ToolRecordRenderOptions = {}, theme: TuiTheme): string[] {
   if (record.toolName === ASK_USER_QUESTIONS_TOOL_NAME && record.role === 'tool_call') {
     return renderAskUserQuestionsToolCallLines(record, options.callStatus, width, theme);
   }
@@ -131,8 +131,8 @@ function renderToolRecordLines(record: TranscriptRecord, width: number, options:
       return renderApplyPatchToolCallLines(record, width, options.callStatus, theme);
     }
 
-    if (record.role === 'tool_result' && record.ok !== false && isApplyPatchDisplayMetadata(record.display)) {
-      return renderApplyPatchToolResultLines(record, record.display, width, theme);
+    if (record.role === 'tool_result' && record.ok && record.details.kind === 'apply_patch' && isApplyPatchDisplayMetadata(record.details.display)) {
+      return renderApplyPatchToolResultLines(record, record.details.display, width, theme);
     }
   }
 
@@ -195,14 +195,14 @@ function renderToolRecordLines(record: TranscriptRecord, width: number, options:
  * 未知工具或缺少工具专属 metadata 的记录走通用 fallback。
  */
 function renderGenericToolRecordLines(
-  record: TranscriptRecord,
+  record: ToolTranscriptRecord,
   width: number,
   options: ToolRecordRenderOptions = {},
   theme: TuiTheme
 ): string[] {
   if (record.role === 'tool_call') {
-    const toolName = typeof record.toolName === 'string' && record.toolName ? record.toolName : 'Tool';
-    const text = `${toolName}(${typeof record.argumentsText === 'string' ? record.argumentsText : record.text})`;
+    const toolName = record.toolName || 'Tool';
+    const text = `${toolName}(${record.argumentsText})`;
 
     return renderPrefixedLines({
       text,

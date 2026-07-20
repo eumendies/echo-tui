@@ -225,7 +225,118 @@ function isTranscriptJournalSubOperation(value: unknown): value is TranscriptJou
 }
 
 function isTranscriptRecord(value: unknown): value is TranscriptRecord {
-  return isRecord(value) && typeof value.role === 'string' && typeof value.text === 'string';
+  if (!isRecord(value) || typeof value.text !== 'string' || (value.createdAt !== undefined && typeof value.createdAt !== 'string')) {
+    return false;
+  }
+
+  switch (value.role) {
+    case 'user':
+      return (value.displayText === undefined || typeof value.displayText === 'string') &&
+        (value.attachments === undefined || Array.isArray(value.attachments)) &&
+        (value.metadata === undefined || isUserTranscriptMetadata(value.metadata));
+    case 'assistant':
+    case 'system':
+    case 'error':
+    case 'compaction_notice':
+    case 'local_notice':
+    case 'reasoning_summary':
+      return true;
+    case 'shell':
+      return typeof value.command === 'string' &&
+        typeof value.output === 'string' &&
+        (value.includeInContext === undefined || typeof value.includeInContext === 'boolean');
+    case 'tool_call':
+      return isNonEmptyString(value.toolCallId) &&
+        isNonEmptyString(value.toolName) &&
+        typeof value.argumentsText === 'string';
+    case 'tool_result':
+      return isNonEmptyString(value.toolCallId) &&
+        isNonEmptyString(value.toolName) &&
+        typeof value.ok === 'boolean' &&
+        (value.attachments === undefined || Array.isArray(value.attachments)) &&
+        isToolResultDetails(value.details);
+    case 'extension':
+      return isTranscriptExtension(value.extension);
+    default:
+      return false;
+  }
+}
+
+function isUserTranscriptMetadata(value: unknown): boolean {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return (value.interactionMode === undefined || isInteractionMode(value.interactionMode)) &&
+    (value.modeTransition === undefined || isModeTransition(value.modeTransition)) &&
+    (value.agentWorkflow === undefined || (isRecord(value.agentWorkflow) && value.agentWorkflow.source === 'builtin' && isNonEmptyString(value.agentWorkflow.name))) &&
+    (value.skillInvocation === undefined || (isRecord(value.skillInvocation) && value.skillInvocation.source === 'slash' && isNonEmptyString(value.skillInvocation.skillName)));
+}
+
+function isModeTransition(value: unknown): boolean {
+  return isRecord(value) &&
+    (value.from === 'normal' || value.from === 'plan') &&
+    (value.to === 'normal' || value.to === 'plan');
+}
+
+function isInteractionMode(value: unknown): boolean {
+  return value === 'normal' || value === 'plan' || value === 'shell' || value === 'shell-local';
+}
+
+function isToolResultDetails(value: unknown): boolean {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  switch (value.kind) {
+    case 'generic':
+    case 'apply_patch':
+      return true;
+    case 'bash':
+      return true;
+    case 'glob':
+    case 'grep':
+      return typeof value.truncated === 'boolean';
+    case 'read_files':
+      return typeof value.truncated === 'boolean';
+    case 'web_fetch':
+    case 'web_search':
+      return typeof value.timedOut === 'boolean' &&
+        typeof value.truncated === 'boolean';
+    default:
+      return false;
+  }
+}
+
+function isTranscriptExtension(value: unknown): boolean {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  switch (value.kind) {
+    case 'openai_reasoning':
+      return isRecord(value.item) && value.item.type === 'reasoning' && isNonEmptyString(value.item.encrypted_content);
+    case 'openai_chat_reasoning':
+      return typeof value.reasoningContent === 'string';
+    case 'anthropic_thinking':
+      return isAnthropicThinkingBlock(value.block);
+    case 'unknown':
+      return isNonEmptyString(value.name) && isRecord(value.payload);
+    default:
+      return false;
+  }
+}
+
+function isAnthropicThinkingBlock(value: unknown): boolean {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  if (value.type === 'thinking') {
+    return typeof value.thinking === 'string' && typeof value.signature === 'string';
+  }
+
+  return value.type === 'redacted_thinking' && typeof value.data === 'string';
 }
 
 function isChangeCheckpoint(value: unknown): value is ChangeCheckpoint {

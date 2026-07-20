@@ -90,8 +90,11 @@ function createGrepToolHandler(options: GrepToolHandlerOptions = {}): ToolHandle
         toolName: GREP_TOOL_NAME,
         ok: result.ok,
         text: result.text,
-        exitCode: result.exitCode,
-        truncated: result.truncated
+        details: {
+          kind: 'grep',
+          exitCode: result.exitCode,
+          truncated: result.truncated
+        }
       };
     }
   };

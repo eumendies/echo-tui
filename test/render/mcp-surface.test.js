@@ -31,7 +31,14 @@ test('renderMcpSurface renders global row, servers, diagnostics, and hints', () 
 });
 
 test('renderMcpSurface renders empty state', () => {
-  const layout = renderMcpSurface({kind: 'mcp', servers: [], emptyLines: ['当前没有配置 MCP server。']}, 80);
+  const layout = renderMcpSurface({
+    kind: 'mcp',
+    title: 'MCP',
+    servers: [],
+    selectedIndex: 0,
+    emptyLines: ['当前没有配置 MCP server。'],
+    dismissHint: 'Esc 关闭'
+  }, 80);
   const text = stripAnsi(layout.lines.join('\n'));
 
   assert.match(text, /当前没有配置 MCP server/);

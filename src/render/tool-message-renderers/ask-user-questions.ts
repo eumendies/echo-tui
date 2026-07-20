@@ -7,7 +7,7 @@ import {
   truncateDisplayText
 } from './shared';
 
-import type {TranscriptRecord} from '../../types/transcript';
+import type {ToolCallTranscriptRecord, ToolResultTranscriptRecord} from '../../types/transcript';
 
 const ASK_USER_QUESTIONS_TOOL_NAME = 'ask_user_questions';
 const OTHER_OPTION_LABEL = 'Other';
@@ -40,8 +40,8 @@ type AskUserQuestionsResultPayload =
  * 渲染 ask_user_questions 相邻 call/result 对；解析失败返回 null，让通用工具消息保留原始事实。
  */
 function renderAskUserQuestionsToolPairLines(
-  call: TranscriptRecord,
-  result: TranscriptRecord,
+  call: ToolCallTranscriptRecord,
+  result: ToolResultTranscriptRecord,
   width: number,
   theme: TuiTheme
 ): string[] | null {
@@ -62,7 +62,7 @@ function renderAskUserQuestionsToolPairLines(
  * 渲染 ask_user_questions 调用；参数无效时省略数量，错误细节由对应 tool result 表达。
  */
 function renderAskUserQuestionsToolCallLines(
-  call: TranscriptRecord,
+  call: ToolCallTranscriptRecord,
   resultStatus: unknown,
   width: number,
   theme: TuiTheme

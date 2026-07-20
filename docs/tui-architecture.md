@@ -40,7 +40,7 @@ flowchart LR
     agent_loop -.lifecycle events.-> hooks
     agent_loop --> mcp_adapter["src/mcp/tool-adapter.ts"]
     mcp_adapter --> mcp_manager
-    app_context --> file_picker["src/app/state/file-picker-context.ts"]
+    app_main --> file_picker["src/app/state/file-picker-context.ts"]
     app_context --> slash_suggestion["src/app/state/slash-suggestion-context.ts"]
     app_context --> change_history["src/app/state/change-history-context.ts"]
     app_main --> tool_approval["src/app/state/tool-approval-context.ts"]
@@ -53,12 +53,14 @@ flowchart LR
     one_shot --> usage_store
     one_shot --> agent_loop
     app_main --> command_runtime["src/app/command/command-runtime.ts"]
+    app_main --> command_host["src/app/command/command-host.ts"]
     command_runtime --> slash_resolver["src/commands/resolve-slash-command.ts"]
-    command_runtime --> command_host["src/app/command/command-host.ts"]
+    command_host --> command_ports["src/app/command/*-command-port*.ts"]
+    command_ports --> app_context
     slash_resolver --> handlers["src/commands/*-command-handler.ts"]
     slash_resolver --> workflow_handlers["src/commands/agent-workflows/*"]
     handlers --> command_host
-    command_host --> skill_manager["src/skills/skill-manager.ts"]
+    command_ports --> skill_manager["src/skills/skill-manager.ts"]
     tool_runtime --> risk_classifier["src/tools/tool-risk-classifier.ts"]
     tool_runtime --> ask_questions_tool["src/tools/ask-user-questions-tool-handler.ts"]
     tool_runtime --> use_skill_tool["src/tools/use-skill-tool-handler.ts"]
@@ -83,7 +85,7 @@ flowchart LR
 
 `npm start` 通过 `tsc` 生成 `dist/`，再运行 `dist/bin/echo-tui.js`；编译产物使用 CommonJS。`package.json#bin` 指向 `bin/echo-tui.ts`，对应编译产物解析并加载 `dist/src/cli/main.js`；未生成 `dist/` 时给出明确 build 提示并退出。`src/cli/main.ts` 是普通命令行入口：解析 `--help` / `--version` / `--once`，有效启动前执行用户目录初始化（`bootstrapEchoUserSetup`）；无参数时调用 `src/app/main.ts` 的 `run()` 进入 TUI raw mode，`--once` 则交给不创建 terminal、renderer 或 stdin listener 的 `src/cli/one-shot.ts`。`src/types/` 中的纯 TypeScript 文件描述 input、composer、transcript、command、render、app、agent、tool、diff、change-history、mcp 和 skill 的跨层协议。
 
-`src/app/main.ts` 是顶层编排层，面向一个 `AppContext` 组合根；`AppContext` 负责组合 `ComposerContext`、`TranscriptContext`、`ModelContext`、`TurnContext`、`RenderContext`、`SlashSuggestionContext` 和 `ChangeHistoryContext`，并提供顶层编排需要的门面。`ToolApprovalContext`、`UserQuestionContext` 和 `FilePickerContext` 由 `main.ts` 直接持有。composer、transcript records、session 指针、response lock、pending、working spinner、输入历史、slash suggestion、change history、context usage、interaction mode、MCP bootstrap 状态、status line 和 previous terminal size 由对应子 context、AppContext transient state 或 render state 持有；boxed composer 的 placeholder 只在 render 层生成。`main.ts` 负责依赖装配、通过 `createKeyParser()` 保持跨 stdin chunk 的输入解析状态、输入事件分发、LLM agent lifecycle、shell 命令执行、工具授权/用户问题/文件选择 callback 接入、MCP 初始化和 destructive replay 等顶层编排；普通 assistant turn 的回调到状态翻译下沉到 `src/app/assistant-turn-runner.ts`。具体走 footer-only redraw、transcript append 还是 destructive replay，由 `app-renderer` 门面统一编排。slash command session 和会话内事件分发由 `src/app/command/command-runtime.ts` 承载；handler 通过 `src/app/command/command-host.ts` 暴露的受控 app 能力触达 composer、transcript、model、config、skills、mcp、memory、mode、theme、context、usage、diff、undo、assistant 和 ui 语义操作。
+`src/app/main.ts` 是顶层编排层，面向一个 `AppContext` 组合根；`AppContext` 创建并以只读引用公开 `ComposerContext`、`TranscriptContext`、`ModelContext`、`TurnContext`、`RenderContext` 和 `ChangeHistoryContext`，内部持有 `SlashSuggestionContext` 以及 interaction mode、context usage、MCP bootstrap 状态等进程级标量状态。调用方直接使用状态所属的子 context；`AppContext` 负责派生 render/agent 组合状态，并协调 session 加载与清空、change checkpoint、undo、user/assistant turn 等跨 context 事务。`ToolApprovalContext`、`UserQuestionContext` 和 `FilePickerContext` 由 `main.ts` 直接持有。composer、transcript records、session 指针、response lock、pending、working spinner、输入历史、slash suggestion、change history、status line 和 previous terminal size 由对应 context 或 render state 持有；boxed composer 的 placeholder 只在 render 层生成。`main.ts` 负责依赖装配、通过 `createKeyParser()` 保持跨 stdin chunk 的输入解析状态、输入事件分发、LLM agent lifecycle、shell 命令执行、工具授权/用户问题/文件选择 callback 接入、MCP 初始化和 destructive replay 等顶层编排；普通 assistant turn 的回调到状态翻译由 `src/app/assistant-turn-runner.ts` 承载。具体走 footer-only redraw、transcript append 还是 destructive replay，由 `app-renderer` 门面统一编排。slash command session 和会话内事件分发由 `src/app/command/command-runtime.ts` 承载；`src/app/command/command-host.ts` 在组合根装配领域 command ports，handler 通过统一的 `CommandHost` 协议触达 composer、transcript、clipboard、model、config、skills、mcp、memory、hooks、mode、theme、context、status、usage、diff、undo、assistant 和 ui 语义操作。
 
 slash runtime 通过三类稳定边界协调本地命令：
 
@@ -103,13 +105,13 @@ slash runtime 通过三类稳定边界协调本地命令：
 | agent workflow | `/init` 和 `/review` 内置工作流。handler 把固定 prompt 通过 `submit_user_message` 交回普通用户消息流程，plan 模式下提交时自动切回 normal；后续走正常 agent lifecycle | `src/commands/agent-workflows/*` |
 | slash suggestion context | 普通 composer 输入态的 slash 命令提示状态。基于 handler 元数据和 enabled skill 派生候选项，处理 Up/Down 循环选择和 Tab 补全，不启动 command session | `src/app/state/slash-suggestion-context.ts` |
 | active command session | command runtime 显式持有的当前活跃命令会话。表达“某个交互式命令正在接管 footer，并优先消费后续事件” | `src/app/command/command-runtime.ts` |
-| command surface | 渲染层可见的统一面板视图模型。renderer 只识别 `info` / `select` / `resume` / `checkbox` / `skills` / `mcp` / `memory` / `scale` / `choice` / `confirm` / `config` / `context` / `usage` / `file_picker` / `diff` 等 surface kind，不识别具体命令、工具授权、用户问题或文件选择来源 | `src/types/command.ts`、`src/render/footer/*` |
-| command host | command handler 可用的受控 app facade。按 composer、transcript、model、config、skills、mcp、memory、mode、theme、context、usage、diff、undo、assistant、ui 分组暴露能力；runtime 额外把 session open/update/close/getActive 组合进同一个 host | `src/app/command/command-host.ts`、`src/app/command/command-runtime.ts` |
+| command surface | 渲染层可见的统一面板视图模型。renderer 只识别 `info` / `select` / `resume` / `skills` / `mcp` / `memory` / `hooks` / `scale` / `choice` / `confirm` / `config` / `context` / `usage` / `status` / `copy` / `file_picker` / `diff` 等 surface kind，不识别具体命令、工具授权、用户问题或文件选择来源 | `src/types/command.ts`、`src/render/footer/*` |
+| command host | command handler 可用的受控 app 协议。app 组合根通过领域 command port factory 装配 composer、transcript、clipboard、model、config、skills、mcp、memory、hooks、mode、theme、context、status、usage、diff、undo、assistant、ui；runtime 把 session open/update/close/getActive 组合进同一个 host | `src/app/command/command-host.ts`、`src/app/command/*-command-port*.ts`、`src/app/command/command-runtime.ts` |
 | tool approval context | agent 请求写文件、高风险 shell 或需授权 MCP 工具前的阻塞式授权状态。把授权请求投影为 `choice` surface，支持 Allow once、Allow tool/session、Allow command/session、Allow all/session、Deny 和 Tell model what to do；会话授权缓存由它持有，bash 只按完全相同 command 文本复用授权 | `src/app/state/tool-approval-context.ts`、`src/tools/tool-risk-classifier.ts` |
 | user question context | `ask_user_questions` tool 的阻塞式用户问题状态。逐题投影为 `choice` surface，支持预设选项、Other inline 输入和 Esc 取消，最终构造 tool result 交回 agent continuation | `src/app/state/user-question-context.ts`、`src/tools/ask-user-questions-tool-handler.ts` |
 | file picker context | composer 内 `@` 文件选择器的 transient 状态。展示当前目录直接子项、查询过滤、文本/代码预览，支持方向键移动、进入/返回目录、Space 多选、Enter 插入 mention，复用 read_files 的资源分类 | `src/app/state/file-picker-context.ts`、`src/input/file-mentions.ts` |
 | status line | 普通输入 footer 底部的一行 segmented 状态。左侧展示当前模型、显式配置的推理等级和项目名，右侧展示最近一次真实 provider context usage 与输入/工作模式；模型 label 与 reasoning effort 默认来自 `ModelContext` 的实例级缓存，普通 redraw/render path 只读内存，不同步读取 `~/.echo/config.json`；`/model`、`/effort` 和 `/config` 保存成功后刷新该缓存。显式 slash skill 使用固定 profile 时，`TurnContext` 在 active assistant turn 内临时覆盖展示为 `<model> (SKILL override)`，完成、失败或中断后恢复全局缓存；无效 profile 回退全局展示且不标记 override。command/approval/user-question/file-picker surface 会替换普通输入区域 | `src/render/footer.ts`、`src/types/render.ts`、`src/app/state/model-context.ts`、`src/app/state/turn-context.ts` |
-| transcript store | 按 cwd hash 分区的本地 append-only JSONL session journal。默认根目录是 `~/.echo/echo_tui/`；每个 session 以 `session_start` 首行建立身份，随后逐行追加 records、compaction、todo 和 `/undo` / `/diff` 共用的 change history 操作。重放忽略末尾未完成写入，真正恢复 session 时会原子移除无效尾部后再允许续写，但拒绝中间损坏；不保存 composer、pending、command session 或输入历史 | `src/persistence/transcript-store.ts`、`src/persistence/transcript-journal.ts` |
+| transcript store | 按 cwd hash 分区的本地 append-only JSONL session journal。默认根目录是 `~/.echo/echo_tui/`；每个 session 以 `session_start` 首行建立身份，随后逐行追加 records、compaction、todo 和 `/undo` / `/diff` 共用的 change history 操作。journal 重放校验 envelope、record role 和下游依赖的关键身份字段，但保留未知扩展字段；display metadata 等可选 payload 由消费端自行校验。重放忽略末尾未完成写入，真正恢复 session 时会原子移除无效尾部后再允许续写，但拒绝中间损坏；不保存 composer、pending、command session 或输入历史 | `src/persistence/transcript-store.ts`、`src/persistence/transcript-journal.ts` |
 | usage store | 独立于 transcript 的 append-only JSONL token 用量账本，默认位于用户级 `usage/` 分区，按月份写入并按本地日期聚合；只保存 provider/model/mode/cwd hash 和 token 统计，不保存 prompt、响应文本、工具参数或凭据 | `src/persistence/usage-store.ts`、`src/types/usage.ts` |
 | change history context | assistant loop 的 change checkpoint 栈，记录受控文件 snapshot 快照和 `pending` / `created` / `updated` 写入状态；同一份 history 同时服务 `/undo` 回退和 `/diff` fallback | `src/app/state/change-history-context.ts` |
 | LLM config | 从 `~/.echo/config.json` 读取必填 `llm.providers`、`llm.models`、可选 `llm.selectedModel` / `contextWindow` / `reasoning` 配置；model profile 通过 `provider` 引用 provider profile，provider profile 通过 `preset` 引用内置 provider preset catalog，解析层把当前选择归一化为单个运行时 `{agentType, apiKey, baseURL, codexOAuth, headers, model, reasoningEffort, reasoningSummary, contextWindow, tools}` 配置；单次运行可传入可选 model profile ID override，有效时选择该完整 profile，失效时回退全局当前 profile，不写回 `llm.selectedModel`；用户配置不暴露 `agentType`，协议类型由 preset 后台解析；`openai-codex-oauth` preset 不要求 `apiKey`，只记录可选 `codexAuthFile`，运行时按 `codexAuthFile` → `CODEX_HOME/auth.json` → `~/.codex/auth.json` 读取既有 Codex OAuth cache；`headers` 是 preset 固定 headers 与 provider profile 手写 headers 的合并结果；context window 按用户配置 → 内置模型映射 → 默认窗口三级回退 | `src/config/llm-config.ts`、`src/config/provider-presets.ts`、`src/config/codex-oauth.ts` |
@@ -120,7 +122,7 @@ slash runtime 通过三类稳定边界协调本地命令：
 | headless 单轮 runner | `--once` 的非交互生命周期。复用 MCP、hooks、debug、usage 和 agent loop，但不创建 raw mode、renderer、stdin listener 或 transcript session；以 `{kind: 'headless', approvalPolicy: 'deny'}` 默认拒绝审批工具，`full-access` 只在当前调用内允许已注册工具，用户问题直接返回取消结果；派发 assistant 生命周期 hook，成功只写最终纯文本，结束时关闭 MCP/debug 而不等待 hook 队列 | `src/cli/one-shot.ts`、`src/types/agent.ts` |
 | lifecycle hooks | 用户级可选旁路事件机制。`~/.echo/config.json#hooks` 可为 assistant turn、tool call 和 compaction 事件配置本地命令；hook stdin 接收 JSON payload，环境变量包含事件名和 cwd；hook 执行结果不显示、不写 transcript、不持久化、不回传模型，也不改变主流程；`/hooks` 通过配置草稿保留 disabled entries 与诊断，保存后只替换 root `hooks` 节点并 live reload dispatcher，synthetic test 只验证本地命令契约且输出只留在当前 command surface | `src/hooks/*`、`src/types/hooks.ts` |
 | provider agent setup | 按当前配置的 `agentType` 选择 provider adapter（openai / openai-chat / anthropic / codex / fake），并用配置和 tool registry 初始化；Codex OAuth provider 路由到独立 Codex adapter，每次请求前把本机 auth cache 解析为 access token，过期时用 refresh token 刷新到内存，不回写 Codex auth 文件；`prepareAgent` 供 `/compact` 等本地动作复用 | `src/agent/agent-setup.ts`、`src/agent/codex/agent.ts`、`src/config/codex-oauth.ts` |
-| tool message rendering | app 可见层把未完成 tool call 显示为 footer pending preview；需要用户参与的工具先进入 approval 或 user-question surface；tool result 到达后再按既有 schema 追加 `tool_call` 与 `tool_result` records。顶层 renderer 负责路由和通用 fallback，子目录分别承载 bash、apply_patch、use_skill、memory 及共享宽度/前缀逻辑；`use_skill` 成功结果只投影为简洁使用摘要。Memory tools 使用 Remembering/Recalling/Revising/Forgetting 动作摘要，成功 mutation 隐藏 result，read result 只显示无状态 content 列表；完整原始结果仍供 provider/session/compaction 使用 | `src/app/state/turn-context.ts`、`src/render/tool-message-renderer.ts`、`src/render/tool-message-renderers/` |
+| tool message rendering | app 可见层把未完成 tool call 显示为 footer pending preview；需要用户参与的工具先进入 approval 或 user-question surface；tool result 到达后再追加具备必填 call id/name/status 和 discriminated `details.kind` 的 `tool_call` / `tool_result` records。顶层 renderer 负责路由和通用 fallback，子目录分别承载 bash、apply_patch、use_skill、memory 及共享宽度/前缀逻辑；`use_skill` 成功结果只投影为简洁使用摘要。Memory tools 使用 Remembering/Recalling/Revising/Forgetting 动作摘要，成功 mutation 隐藏 result，read result 只显示无状态 content 列表；完整原始结果仍供 provider/session/compaction 使用 | `src/app/state/turn-context.ts`、`src/render/tool-message-renderer.ts`、`src/render/tool-message-renderers/` |
 | glob tool | 默认本地文件发现工具。接收 `pattern` 和可选 `paths`，底层用 `spawn` 参数数组调用 `rg --files`，不经 shell 拼接；相对路径按 cwd 解析，绝对路径和 `..` 允许，NUL 和 `.git` 路径拒绝；结果含 hidden 文件但过滤 `.git`，超额时标记 `truncated` | `src/tools/glob-tool-handler.ts` |
 | grep tool | 默认本地文本搜索工具。接收 `pattern` 及可选 `paths` / `glob` / `literal` / `case_sensitive`；底层用 `spawn` 参数数组调用 `rg --json`，默认 fixed-string，`literal: false` 才用 regex；结果只返回 path、line、column 和命中行，超额时标记 `truncated` | `src/tools/grep-tool-handler.ts` |
 | read_files tool | 默认本地路径读取工具。接收 `files[]`，每项含 `path` 和可选 `offset` / `limit`。文本读取返回真实文件行号；目录读取只列稳定排序后的直接子项，不递归；图片作为 provider-neutral 附件返回，PDF 只返回可提取文本，其他非文本资源返回 metadata 与 unsupported 错误。composer `@` mention 与 file picker 复用同一 reader | `src/tools/read-files/`、`src/app/utils.ts`、`src/app/state/file-picker-context.ts` |
@@ -157,17 +159,18 @@ handler 协议保持最小：
 
 direct skill invocation 的模型策略通过独立 typed 字段沿 `CommandStartResult` → `AssistantTurnRunnerInput` → `AgentSessionInput` 传递，不从 transcript metadata 反推。缺少字段表示动态跟随全局当前模型；固定 profile 只作用于当前显式 slash turn。
 
-`AppContext` 作为组合根和门面：构造期创建 `ComposerContext`、`TranscriptContext`、`ModelContext`、`TurnContext`、`RenderContext`、`SlashSuggestionContext` 和 `ChangeHistoryContext`，并保存当前进程内 interaction mode、context usage 和 MCP bootstrap 状态；`ToolApprovalContext`、`UserQuestionContext` 和 `FilePickerContext` 由 `main.ts` 持有。AppContext 为 `main.ts` 顶层编排保留稳定转发入口。
+`AppContext` 是实例级组合根和跨 context 事务协调器。构造期创建 `ComposerContext`、`TranscriptContext`、`ModelContext`、`TurnContext`、`RenderContext`、`SlashSuggestionContext` 和 `ChangeHistoryContext`；其中主要子 context 以只读引用提供给 app 编排层，interaction mode、context usage、MCP bootstrap 状态和 mode transition 跟踪由 `AppContext` 私有持有。render state、agent session、session 恢复、transcript 清理、change checkpoint、undo 和 turn 边界由 `AppContext` 组合或协调。`ToolApprovalContext`、`UserQuestionContext` 和 `FilePickerContext` 由 `main.ts` 持有。
 
 ### CommandHost 能力
 
-`CommandHost` 是 handler 和 app 内部状态之间的边界。`createCommandHost()` 只创建 app 能力部分，`createCommandRuntime()` 在此基础上组合 session controller，保证 active command session 仍由 runtime 持有。
+`CommandHost` 是 handler 和 app 内部状态之间的协议边界。`createCommandHost()` 在 app 组合根调用 core、transcript、model、skills、memory、MCP、hooks、settings、status、history 和 assistant 等领域 port factory，显式组装 `CommandHostApp`。各 factory 持有自身领域的配置、manager、store、context 或渲染回调依赖，并封装该领域需要的跨状态协调。`createCommandRuntime()` 在 app 能力上组合 session controller，active command session 由 runtime 持有。
 
 | domain | 用途 |
 | --- | --- |
 | `session` | 打开、更新、关闭当前 command session，并提供 active session 读取 |
 | `composer` | 重置 composer、退出输入历史浏览态 |
-| `transcript` | 清空当前 transcript、加载历史 session、追加本地 record、列出可恢复 session metadata |
+| `transcript` | 清空当前 transcript、加载历史 session、追加本地 record、列出可复制 records 和可恢复 session metadata |
+| `clipboard` | 把格式化后的命令结果写入系统剪贴板，并返回结构化成功或失败结果 |
 | `model` | 为 `/model` 读取模型命令信息并持久化选择；为 `/effort` 读取当前推理等级并覆盖当前模型 profile 的 `reasoning.effort` |
 | `config` | 为 `/config` 读取 provider/model 草稿、基于 provider 草稿调用 models API 列出远端模型，并原子保存有效草稿；保存成功后清空 context usage |
 | `skills` | 为 `/skills` 和 direct skill invocation 提供 skill 列表、enabled descriptors、启停/model override 状态保存和注入文本创建 |
@@ -232,7 +235,7 @@ flowchart TB
     user_turn --> redraw
 ```
 
-流程的关键约束是 transcript content records append-only。应用只追加 user/assistant/error/local_notice/compaction_notice/reasoning_summary/shell/tool_call/tool_result record，不修改已提交 record 内容；普通 user record commit 后立即保存 session，assistant 完成、本地 notice/error、reasoning summary、shell 或 tool result commit 后再次保存同一个 session。普通 agent 请求不在 `main.ts` 维护另一份 history，而是读取当前 `TranscriptRecord[]` 快照传入 agent。具体渲染路径由 `app-renderer` 统一选择：普通更新只重绘 footer，transcript 新增时执行“clear footer → append block → redraw footer”，列宽变化或行数压缩则切到 destructive recovery。
+流程的关键约束是 transcript content records append-only。`TranscriptRecord` 是按 `role` 区分的封闭 union：user 的 mode、workflow 与 skill 信息收敛在 `metadata`；tool result 的通用身份和状态字段位于顶层，工具专属结果放入按 `kind` 区分的 `details`；provider-private reasoning/thinking 统一使用 `extension` role 和 extension kind，未知 extension 不进入 provider 上下文。应用只追加 user/assistant/error/local_notice/compaction_notice/reasoning_summary/shell/tool_call/tool_result/extension record，不修改已提交 record 内容；普通 user record commit 后立即保存 session，assistant 完成、本地 notice/error、reasoning summary、shell、tool result 或 provider-private extension commit 后再次保存同一个 session。普通 agent 请求不在 `main.ts` 维护另一份 history，而是读取当前 `TranscriptRecord[]` 快照传入 agent。具体渲染路径由 `app-renderer` 统一选择：普通更新只重绘 footer，transcript 新增时执行“clear footer → append block → redraw footer”，列宽变化或行数压缩则切到 destructive recovery。
 
 输入分发的优先级是：user question → tool approval → file picker → active command session → MCP 诊断面板 → `@` 触发 file picker → slash suggestion → Tab 模式循环 → composer 编辑 → 历史浏览 / 换行 / Esc 中断 / 提交 / 退出。运行时使用 `createKeyParser()` 创建的 stateful parser 解析 stdin chunk：普通按键仍复用 `parseKeyChunk()` 的无状态解析，bracketed paste 则跨 chunk 缓存起止标记和 payload，把 CR/CRLF 归一为 LF 后作为单个 `TEXT` 事件交给 composer，避免粘贴中的换行被误判为提交。提交时若未命中命令且处于 shell/shell-local 模式，则按本地 bash 命令执行而不是发给模型。
 
@@ -341,7 +344,7 @@ flowchart TB
     footer_surface -->|普通输入态| composer["boxed composer 3 到 N 行"]
     composer --> slash_suggestions["slash suggestions 可选"]
     slash_suggestions --> status_line["status line 固定 1 行"]
-    footer_surface -->|命令/授权/问题/选择器态| command_surface["command surface: info / select / resume / checkbox / skills / mcp / scale / choice / confirm / config / context / usage / file_picker / diff"]
+    footer_surface -->|命令/授权/问题/选择器态| command_surface["command surface: info / select / resume / skills / mcp / memory / hooks / scale / choice / confirm / config / context / usage / status / copy / file_picker / diff"]
 ```
 
 区域含义：
@@ -351,7 +354,7 @@ flowchart TB
 | terminal scrollback | 应用启动前已有内容默认不清空；但列宽变化或行数压缩的 destructive recovery 会清理它 |
 | app-owned region | 应用启动后自己绘制的可见区域，可按当前宽度重绘；列宽变化或行数压缩时整体重建 |
 | banner | 启动文本，不自带底部分割线 |
-| transcript records | user、assistant、本地 error/local_notice/compaction_notice、reasoning_summary、shell、tool_call 和 tool_result 等已提交消息，只追加不改写 |
+| transcript records | user、assistant、本地 error/local_notice/compaction_notice、reasoning_summary、shell、tool_call/tool_result 和 provider-private extension 等已提交消息，只追加不改写 |
 | pending preview | assistant thinking/streaming 或 shell 输出进行中时显示，可重绘；长 streaming draft 按 terminal rows 动态预算高度，折叠头部并显示尾部行 |
 | working 行 | 首个 token 后固定渲染在 pending 下方、divider 上方，显示本轮已耗时，覆盖 streaming、工具执行、授权、用户问题和 continuation 等待 |
 | footer divider | composer 或 command surface 上方固定 1 行弱强调分割线 |
@@ -371,7 +374,7 @@ flowchart TB
 | local notice / compaction notice | `◇` | 本地状态提示，例如 response 被中断或上下文已压缩；可持久化和恢复，但不发送给模型 |
 | reasoning summary transcript | `◇` | provider reasoning summary 的低强调可见摘要；可持久化和恢复，但不发送给模型，也不参与压缩摘要输入 |
 | shell transcript | 无前缀 | shell/shell-local 模式的本地命令与输出，整体使用 shell 强调色；`shell` 模式带 `includeInContext` 会进入 provider 上下文 |
-| tool transcript | `◆` / `⎿` | tool_call/tool_result 成对投影；bash、apply_patch 等有专用显示，原始 metadata 仍保存在 transcript |
+| tool transcript | `◆` / `⎿` | tool_call/tool_result 成对投影；bash、apply_patch 等按 `tool_result.details.kind` 专用显示，原始结果仍保存在 transcript |
 | command surface | 无 transcript 前缀 | 属于 footer 临时区域，不进入 transcript；是否显示光标由 surface kind 决定 |
 
 ### command surface kinds
@@ -381,9 +384,10 @@ flowchart TB
 | `info` | 静态说明，例如 `/help`、用法和空状态 | 渲染标题、正文和关闭提示，隐藏光标 |
 | `select` | 通用单选命令，例如 `/model`、`/mode`、`/themes` | 将候选项 label 和说明压成单行渲染，展示选中态，隐藏光标 |
 | `resume` | `/resume` 历史恢复面板 | 左侧渲染最多 5 条 session 窗口，右侧渲染当前选中 session 的最近消息预览，隐藏光标 |
-| `checkbox` | 通用多项开关面板 | 渲染勾选状态和当前选中态，隐藏光标 |
 | `skills` | `/skills` skill 管理面板 | 渲染 card、enabled 计数、on/off pill、行内模型策略、当前行 accent 和滚动提示；Left/Right 循环模型草稿，窄终端优先保留启停、名称和模型策略，隐藏光标 |
 | `mcp` | `/mcp` server 管理面板 | 渲染全局开关、各 server 启用状态、传输类型、工具数量和诊断，隐藏光标 |
+| `memory` | `/memory` 记忆管理面板 | 渲染用户记忆和 agent catalog/item 的列表、编辑与删除确认状态；编辑态显示光标 |
+| `hooks` | `/hooks` 生命周期 hook 管理面板 | 渲染事件、hook 条目、详情、编辑和测试状态；编辑态显示光标 |
 | `scale` | 有序强度选择，例如 `/effort` | 用 rounded slider 轨道展示档位与当前 knob，隐藏光标 |
 | `choice` | 阻塞式单选交互，例如 tool approval 和 `ask_user_questions` | 渲染问题、选项、可选 inline input 和 dismiss hint；选中 inline input 时显示光标 |
 | `confirm` | 确认型命令，例如 `/clear`、`/compact`、`/undo` | 渲染标题、正文和确认/取消提示，Enter 确认操作高亮，隐藏光标 |
@@ -391,6 +395,7 @@ flowchart TB
 | `context` | `/context` 上下文占用详情 | 渲染最近一次真实 provider usage 与分类占用，隐藏光标 |
 | `usage` | `/usage` 每日 token 用量面板 | 渲染累计输入/输出/缓存命中、日期窗口、每日堆叠柱状图、图例和导航提示，隐藏光标 |
 | `status` | `/status` 运行状态与 Codex 配额面板 | 渲染本地运行状态；以进度条展示 Codex OAuth 5 小时/每周配额、百分比和重置时间，隐藏光标 |
+| `copy` | `/copy` 消息复制面板 | 渲染消息列表、多选状态与预览，隐藏光标 |
 | `file_picker` | composer `@` 文件选择器 | 左侧渲染当前目录条目与多选状态，右侧渲染文本/代码预览，隐藏光标 |
 | `diff` | `/diff` 差异查看面板 | 左侧文件列表，右侧宽屏 side-by-side、窄屏 unified 和 fallback 提示，隐藏光标 |
 
@@ -429,14 +434,16 @@ renderer 只理解这些 surface kind，不理解具体命令、tool approval、
 | `src/commands/skill-invocation-command-handler.ts` | `SkillInvocationCommandHandler` | `/<skill-name> [arguments...]`，注入 enabled skill 指令为普通用户消息，并传递可选单 turn model profile ID |
 | `src/app/main.ts` | `createApp`、`submitComposer`、`submitShellCommand`、`handleEvent`、`renderResizeRecovery`、`run` | 应用入口编排：依赖装配、输入分发、agent/shell 生命周期、MCP 初始化、resize recovery |
 | `src/app/assistant-turn-runner.ts` | `runAssistantTurn` | 把普通 turn 的 agent 回调翻译为 app 状态变化和 transcript 追加 |
-| `src/app/command/command-host.ts` | `createCommandHost` | 创建 command handler 可用的受控 app facade，按领域暴露能力 |
+| `src/app/command/command-host.ts` | `createCommandHost` | 在 app 组合根装配完整 `CommandHostApp`，并导出共享的 status/copy projection helper |
+| `src/app/command/*-command-port*.ts` | `createCoreCommandPorts`、`createTranscriptCommandPort`、`createModelCommandPorts`、`createMcpCommandPort`、`createAssistantCommandPort` 等 | 按领域实现 composer/clipboard/ui、transcript、model/config、skills、memory、MCP、hooks、settings、status/usage、diff/undo 和 compaction command ports |
+| `src/app/command/command-viewport.ts` | `createCommandViewport` | 基于当前 render state 计算 diff 和 usage command surface 共用的视口预算 |
 | `src/app/command/command-runtime.ts` | `createCommandRuntime`、`startFromText`、`handleEvent`、`hasActiveSession`、`getSurface` | 承载 slash command session、surface 快照和事件分发，并组合 session controller 进 host |
-| `src/app/state/app-context.ts` | `AppContext`、`createRenderState`、`getAgentSession`、`cycleInteractionMode`、`executeUndo`、`createDiffSourceResult` | 实例级组合根，创建并持有各子 context，保存 interaction mode / context usage / MCP 状态 |
+| `src/app/state/app-context.ts` | `AppContext`、`createRenderState`、`getAgentSession`、`cycleInteractionMode`、`executeUndo`、`createDiffSourceResult` | 实例级组合根和跨 context 事务协调器；公开只读子 context，私有持有 interaction mode、context usage、MCP 状态和 mode transition 状态 |
 | `src/app/state/composer-context.ts` | `ComposerContext` | 持有 composer 草稿、输入历史和历史浏览态 |
-| `src/app/state/transcript-context.ts` | `TranscriptContext` | 持有 transcript records、change history、session 指针、持久化/恢复和 resume metadata |
+| `src/app/state/transcript-context.ts` | `TranscriptContext` | 持有 transcript records、compaction、todo、持久化 change history 和 session 指针；负责 journal 持久化/恢复、compaction 应用和 resume metadata |
 | `src/app/state/turn-context.ts` | `TurnContext` | 持有 responding lock、pending/working、spinner 状态和 user/assistant/shell/error turn 生命周期 |
 | `src/app/state/model-context.ts` | `ModelContext` | `/model`、`/effort` 的配置读取、归一化、原子写回与脱敏 |
-| `src/app/state/render-context.ts` | `RenderContext` | 持有 terminal/previous size，管理 banner context、context usage、reasoning effort 和 footer render state 派生 |
+| `src/app/state/render-context.ts` | `RenderContext` | 持有 terminal、previous size 和当前 theme，结合 composer、turn、mode、model 与 context usage 输入派生 banner/footer render state |
 | `src/app/state/slash-suggestion-context.ts` | `SlashSuggestionContext` | 普通输入态 slash 提示的可见性、前缀过滤、循环选中和 Tab 补全 |
 | `src/app/state/change-history-context.ts` | `ChangeHistoryContext` | assistant loop change checkpoint 栈，服务 `/undo` 与 `/diff` fallback |
 | `src/app/state/tool-approval-context.ts` | `ToolApprovalContext`、`request`、`getSurface`、`handleEvent` | 工具执行前授权，投影 apply_patch / 高风险 bash / MCP 审批为 choice surface，持有会话授权缓存 |

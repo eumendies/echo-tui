@@ -22,7 +22,7 @@ function renderStatusSurface(surface: StatusCommandSurface, width: number, maxLi
   const instructionLabels = snapshot.agentInstructions.map((source) => `${source.sourceKind}:${source.label}`);
   const catalogLabels = snapshot.agentMemoryCatalogs.map((catalog) => `${catalog.scope}:${catalog.name}`);
   const lines = [
-    topLine(cardWidth, surface.title || 'Status', theme),
+    topLine(cardWidth, surface.title, theme),
     plainRow(cardWidth, `目录  ${snapshot.cwd}`, theme),
     plainRow(cardWidth, `模型  ${model?.model || '不可用'}`, theme),
     plainRow(cardWidth, `Provider  ${model ? `${model.provider} (${model.agentType})` : '不可用'}`, theme),
@@ -54,7 +54,7 @@ function renderStatusSurface(surface: StatusCommandSurface, width: number, maxLi
   }
 
   lines.push(dividerLine(cardWidth, theme));
-  lines.push(plainRow(cardWidth, surface.dismissHint || 'Esc / Enter / q 关闭', theme, 'muted'));
+  lines.push(plainRow(cardWidth, surface.dismissHint, theme, 'muted'));
   lines.push(bottomLine(cardWidth, theme));
 
   return constrainLayoutTail({

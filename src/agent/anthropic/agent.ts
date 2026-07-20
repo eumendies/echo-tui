@@ -123,11 +123,11 @@ function createClient(config: LlmConfig, AnthropicClient: new (options: {apiKey:
 }
 
 /**
- * 根据当前 transcript 快照创建 Anthropic Messages API 请求；registry 非空时暴露本地工具定义。
+ * 根据当前 transcript 快照创建 Anthropic Messages API 请求；压缩用途不暴露工具或 reasoning 配置。
  */
-function createAnthropicRequest(records: TranscriptRecord[], config: LlmConfig, registry?: ToolRegistry): AnthropicCreateRequest {
+function createAnthropicRequest(records: TranscriptRecord[], config: LlmConfig, registry?: ToolRegistry, options: AgentTurnOptions = {}): AnthropicCreateRequest {
   const projection = convertTranscriptToAnthropicMessages(records);
-  const effort = mapReasoningEffortToAnthropicEffort(config.reasoningEffort);
+  const effort = options.isCompaction ? undefined : mapReasoningEffortToAnthropicEffort(config.reasoningEffort);
   const request: AnthropicCreateRequest = {
     cache_control: {type: 'ephemeral'},
     max_tokens: ANTHROPIC_DEFAULT_MAX_TOKENS,
@@ -142,7 +142,7 @@ function createAnthropicRequest(records: TranscriptRecord[], config: LlmConfig, 
     request.output_config = {effort};
   }
 
-  if (registry && !registry.isEmpty()) {
+  if (!options.isCompaction && registry && !registry.isEmpty()) {
     request.tools = convertToolDefinitionsToAnthropicTools(registry.listDefinitions());
   }
 
@@ -462,21 +462,14 @@ async function readAnthropicStream(stream: AnthropicStream, callbacks: AgentTurn
  * 创建基于 Anthropic SDK Messages API 的单次 provider turn agent；tool loop 由外层编排。
  */
 class AnthropicAgent implements ProviderAgent {
-  private client: AnthropicClient | null = null;
-  private config: LlmConfig | null = null;
-  private makeClient: (config: LlmConfig) => unknown;
-  private registry: ToolRegistry | null = null;
+  private readonly client: AnthropicClient;
+  private readonly config: LlmConfig;
+  private readonly registry: ToolRegistry;
 
-  constructor(dependencies: AnthropicAgentDependencies = {}) {
+  constructor(config: LlmConfig, registry: ToolRegistry, dependencies: AnthropicAgentDependencies = {}) {
     const AnthropicClient = dependencies.AnthropicClient || Anthropic;
-    this.makeClient = dependencies.createClient || ((config: LlmConfig) => createClient(config, AnthropicClient));
-  }
-
-  /**
-   * 使用当前配置初始化 Anthropic client 和本轮可用工具定义。
-   */
-  initialize(config: LlmConfig, registry: ToolRegistry): void {
-    const client = this.makeClient(config);
+    const makeClient = dependencies.createClient || ((clientConfig: LlmConfig) => createClient(clientConfig, AnthropicClient));
+    const client = makeClient(config);
     assertAnthropicClient(client);
 
     this.client = client;
@@ -488,14 +481,10 @@ class AnthropicAgent implements ProviderAgent {
    * 执行一次 Anthropic provider turn；工具循环由外层 runtime 继续编排。
    */
   async runTurn(records: TranscriptRecord[], callbacks: AgentTurnCallbacks = {}, options: AgentTurnOptions = {}): Promise<AgentTurnResult> {
-    if (!this.client || !this.config || !this.registry) {
-      throw new LlmAgentError('模型运行时尚未初始化');
-    }
-
     let stream: AnthropicStream;
 
     try {
-      stream = await this.client.messages.create(createAnthropicRequest(records, this.config, this.registry), {signal: options.abortSignal});
+      stream = await this.client.messages.create(createAnthropicRequest(records, this.config, this.registry, options), {signal: options.abortSignal});
     } catch (error: unknown) {
       if (isAbortError(error) || options.abortSignal?.aborted) {
         throwIfAborted(options.abortSignal);
@@ -508,8 +497,8 @@ class AnthropicAgent implements ProviderAgent {
   }
 }
 
-function createAnthropicAgent(dependencies: AnthropicAgentDependencies = {}): ProviderAgent {
-  return new AnthropicAgent(dependencies);
+function createAnthropicAgent(config: LlmConfig, registry: ToolRegistry, dependencies: AnthropicAgentDependencies = {}): ProviderAgent {
+  return new AnthropicAgent(config, registry, dependencies);
 }
 
 export {

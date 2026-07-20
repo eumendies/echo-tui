@@ -13,7 +13,6 @@ function createSummaryAgent(summaryDraft = '结构化摘要内容') {
   const calls = [];
   return {
     calls,
-    initialize() {},
     async runTurn(records, callbacks, options) {
       calls.push({options, records});
       return { draft: summaryDraft, toolCalls: [] };
@@ -76,13 +75,13 @@ test('estimateContextTokens skips non-provider roles', () => {
     { role: 'compaction_notice', text: 'nnnn' },
     { role: 'local_notice', text: 'llll' },
     { role: 'reasoning_summary', text: 'rrrr' },
-    { role: 'anthropic_thinking', text: '', block: anthropicThinkingBlock },
+    { role: 'extension', text: '', extension: {kind: 'anthropic_thinking', block: anthropicThinkingBlock} },
     { role: 'assistant', text: 'bbbb' }
   ];
   const estimated = estimateContextTokens({ activeRecords });
 
   // Anthropic thinking 会回放给 provider，需要计入；本地提示不发给模型不计入。
-  assert.equal(estimated, 2 + estimateTextTokens(JSON.stringify(anthropicThinkingBlock)));
+  assert.equal(estimated, 2 + estimateTextTokens(JSON.stringify({kind: 'anthropic_thinking', block: anthropicThinkingBlock})));
 });
 
 test('estimateContextTokens skips local shell records', () => {
@@ -273,13 +272,13 @@ test('runCompaction passes abort signal to summary request', async () => {
 
   assert.equal(result.didCompact, true);
   assert.equal(agent.calls[0].options.abortSignal, controller.signal);
+  assert.equal(agent.calls[0].options.isCompaction, true);
 });
 
 test('runCompaction does not return compaction when summary returns after abort', async () => {
   const controller = new AbortController();
   const agent = {
     calls: [],
-    initialize() {},
     async runTurn(records, callbacks, options) {
       this.calls.push({options, records});
       controller.abort();

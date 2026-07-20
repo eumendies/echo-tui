@@ -23,19 +23,19 @@ export function renderResumeSurface(commandSurface: ResumeCommandSurface, width:
   const splitWidth = Math.max(2, boxWidth - 7);
   const leftWidth = calculateLeftWidth(splitWidth);
   const rightWidth = Math.max(1, splitWidth - leftWidth);
-  const sessions = commandSurface.sessions || [];
+  const sessions = commandSurface.sessions;
   const selectedIndex = clampIndex(commandSurface.selectedIndex, sessions.length);
   const bodyHeight = RESUME_BODY_HEIGHT;
   const previewRows = createPreviewRows(
-    commandSurface.previewRecords || [],
-    commandSurface.emptyPreviewHint || '没有可预览消息',
+    commandSurface.previewRecords,
+    commandSurface.emptyPreviewHint,
     {width: rightWidth, height: bodyHeight, scroll: commandSurface.previewScroll},
     theme
   );
   const focus = commandSurface.focus === 'preview' ? 'preview' : 'list';
   const lines = [
     renderBoxTop(boxWidth, theme),
-    renderFullLine(renderTitle(commandSurface.title || '/resume', boxWidth - 4, theme), boxWidth, theme),
+    renderFullLine(renderTitle(commandSurface.title, boxWidth - 4, theme), boxWidth, theme),
     renderSplitLine(
       renderPanelHeader('会话', focus === 'list', theme),
       renderPanelHeader('预览', focus === 'preview', theme),
@@ -62,7 +62,7 @@ export function renderResumeSurface(commandSurface: ResumeCommandSurface, width:
     ));
   }
 
-  lines.push(renderFullLine(ansi.dim(clampPlainText(commandSurface.dismissHint || 'Enter 恢复 · Up/Down 选择 · Esc 取消', boxWidth - 4)), boxWidth, theme));
+  lines.push(renderFullLine(ansi.dim(clampPlainText(commandSurface.dismissHint, boxWidth - 4)), boxWidth, theme));
   lines.push(renderBoxBottom(boxWidth, theme));
 
   return {

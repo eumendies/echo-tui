@@ -1,16 +1,14 @@
 import { charWidth, displayWidth, safeRenderWidth, splitGraphemes } from '../layout';
 
 /**
- * 将 select/checkbox/slash suggestion 的 label 和 description 压成单行展示文本。
+ * 将 select 或 slash suggestion 的 label 和 description 压成单行展示文本。
  */
-export function formatSelectOptionText(label: string | undefined, description: string | undefined): string {
-  const normalizedLabel = label || '';
-
+export function formatSelectOptionText(label: string, description: string | undefined): string {
   if (!description) {
-    return normalizedLabel;
+    return label;
   }
 
-  return `${normalizedLabel} — ${description}`;
+  return `${label} — ${description}`;
 }
 
 /**

@@ -18,15 +18,16 @@ type ConfigCommandData = {
 
 function createConfigSurface(data: ConfigCommandData): ConfigCommandSurface {
   if (data.result) {
-    return {kind: 'config', result: data.result};
+    return {kind: 'config', view: 'result', result: data.result};
   }
 
   if (!data.state) {
-    return {kind: 'config'};
+    return {kind: 'config', view: 'loading'};
   }
 
   return {
     kind: 'config',
+    view: 'editor',
     state: cloneConfigState(data.state),
     rows: getConfigRows(data.state)
   };

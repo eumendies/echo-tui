@@ -4,7 +4,7 @@ import type {PendingState, StatusLineModelState, WorkingState} from '../../types
 import {createToolCallTranscriptRecord, createToolResultTranscriptRecord} from '../../tools/tool-transcript-record';
 
 import type {ToolCall, ToolExecutionResult} from '../../types/tool';
-import type {ShellTranscriptRecord, TranscriptRecord} from '../../types/transcript';
+import type {ShellTranscriptRecord, TranscriptRecord, UserTranscriptMetadata} from '../../types/transcript';
 import type {BashCommandOutputEvent, BashCommandRunResult} from '../../tools/bash-command-runner';
 
 type ComposerTurnBridge = {
@@ -312,7 +312,7 @@ class TurnContext {
   /**
    * 提交用户消息并进入响应中状态。
    */
-  beginUserTurn(userText: string, options: {displayText?: string; metadata?: Record<string, unknown>; attachments?: ToolExecutionResult['attachments']} = {}): TranscriptRecord {
+  beginUserTurn(userText: string, options: {displayText?: string; metadata?: UserTranscriptMetadata; attachments?: ToolExecutionResult['attachments']} = {}): TranscriptRecord {
     this.composerContext.leaveHistoryBrowsing();
     this.composerContext.recordInput(options.displayText || userText);
     this.composerContext.reset();
@@ -327,7 +327,7 @@ class TurnContext {
       text: userText,
       ...(options.displayText ? {displayText: options.displayText} : {}),
       ...(options.attachments && options.attachments.length > 0 ? {attachments: options.attachments} : {}),
-      ...(options.metadata || {})
+      ...(options.metadata ? {metadata: options.metadata} : {})
     });
   }
 

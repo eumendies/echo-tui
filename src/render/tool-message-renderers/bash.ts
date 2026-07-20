@@ -3,7 +3,7 @@ import {safeRenderWidth} from '../layout';
 import {TOOL_RESULT_MAX_DISPLAY_LINES, renderPrefixedLines, truncateDisplayText, wrapContentLine} from './shared';
 
 import type {TuiTheme} from '../../config/theme-config';
-import type {TranscriptRecord} from '../../types/transcript';
+import type {ToolCallTranscriptRecord, ToolResultTranscriptRecord} from '../../types/transcript';
 
 const BASH_SCRIPT_MAX_DISPLAY_LINES = 12;
 const HEREDOC_PATTERN = /(<<-?)\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2/u;
@@ -34,7 +34,7 @@ type BashStatusStyle = 'toolError' | 'toolOutput' | 'toolSuccess';
 /**
  * 渲染尚未获得结果的 bash 调用；命令使用 rail 保留原有多行结构。
  */
-function renderBashToolCallLines(record: TranscriptRecord, width: number, callStatus: boolean | undefined, theme: TuiTheme): string[] | null {
+function renderBashToolCallLines(record: ToolCallTranscriptRecord, width: number, callStatus: boolean | undefined, theme: TuiTheme): string[] | null {
   const command = extractCommandArgument(record.argumentsText);
 
   if (!command) {
@@ -49,7 +49,7 @@ function renderBashToolCallLines(record: TranscriptRecord, width: number, callSt
 /**
  * 将相邻 bash call/result 合并为同一段双 rail；参数不可靠时交给通用 renderer。
  */
-function renderBashToolPairLines(call: TranscriptRecord, result: TranscriptRecord, width: number, theme: TuiTheme): string[] | null {
+function renderBashToolPairLines(call: ToolCallTranscriptRecord, result: ToolResultTranscriptRecord, width: number, theme: TuiTheme): string[] | null {
   const command = extractCommandArgument(call.argumentsText);
 
   if (!command) {
@@ -62,7 +62,7 @@ function renderBashToolPairLines(call: TranscriptRecord, result: TranscriptRecor
 /**
  * 单独出现的 bash result 仍使用紧凑输出投影，避免缺少命令时构造不完整 rail 块。
  */
-function renderBashToolResultLines(record: TranscriptRecord, width: number, theme: TuiTheme): string[] {
+function renderBashToolResultLines(record: ToolResultTranscriptRecord, width: number, theme: TuiTheme): string[] {
   const displayText = resolveBashDisplayText(record);
 
   return renderPrefixedLines({
@@ -80,7 +80,7 @@ function renderBashToolResultLines(record: TranscriptRecord, width: number, them
 function renderBashRailLines(
   command: string,
   title: string,
-  result: TranscriptRecord | null,
+  result: ToolResultTranscriptRecord | null,
   width: number,
   theme: TuiTheme,
   markerStyle: BashStatusStyle
@@ -274,7 +274,7 @@ function findClosingQuote(text: string, quote: string, start: number): number {
   return -1;
 }
 
-function createBashResultRows(record: TranscriptRecord): BashRailRow[] {
+function createBashResultRows(record: ToolResultTranscriptRecord): BashRailRow[] {
   const parsed = parseBashResult(record);
   const rows = limitRailRows(createBashOutputRows(parsed), TOOL_RESULT_MAX_DISPLAY_LINES);
 
@@ -328,12 +328,13 @@ function limitLogicalLines(lines: string[], maxLines: number): string[] {
   return [...lines.slice(0, Math.max(1, maxLines - 1)), `… ${lines.length - maxLines + 1} more lines`];
 }
 
-function createBashResultTitle(record: TranscriptRecord): string {
-  const exitCode = typeof record.exitCode === 'number' ? record.exitCode : undefined;
-  const durationMs = typeof record.durationMs === 'number' && Number.isFinite(record.durationMs) && record.durationMs >= 0 ? Math.floor(record.durationMs) : undefined;
-  const timedOut = record.timedOut === true;
-  const truncated = record.truncated === true;
-  const status = timedOut ? 'timed out' : record.ok === false ? 'failed' : 'complete';
+function createBashResultTitle(record: ToolResultTranscriptRecord): string {
+  const details = record.details.kind === 'bash' ? record.details : null;
+  const exitCode = typeof details?.exitCode === 'number' ? details.exitCode : undefined;
+  const durationMs = typeof details?.durationMs === 'number' && Number.isFinite(details.durationMs) && details.durationMs >= 0 ? Math.floor(details.durationMs) : undefined;
+  const timedOut = details?.timedOut === true;
+  const truncated = details?.truncated === true;
+  const status = timedOut ? 'timed out' : !record.ok ? 'failed' : 'complete';
   const parts = ['Bash', status];
 
   if (exitCode !== undefined) {
@@ -348,19 +349,19 @@ function createBashResultTitle(record: TranscriptRecord): string {
   return parts.join(' · ');
 }
 
-function resolveBashMarkerStyle(record: TranscriptRecord): BashStatusStyle {
-  if (record.ok === false) {
+function resolveBashMarkerStyle(record: ToolResultTranscriptRecord): BashStatusStyle {
+  if (!record.ok) {
     return 'toolError';
   }
 
-  return record.ok === true ? 'toolSuccess' : 'toolOutput';
+  return 'toolSuccess';
 }
 
 function formatDuration(durationMs: number): string {
   return durationMs >= 1000 ? `${(durationMs / 1000).toFixed(durationMs % 1000 === 0 ? 0 : 1)}s` : `${durationMs}ms`;
 }
 
-function resolveBashDisplayText(record: TranscriptRecord): string {
+function resolveBashDisplayText(record: ToolResultTranscriptRecord): string {
   const parsed = parseBashResult(record);
   if (parsed.stdout.trim()) {
     return parsed.stdout;
@@ -374,17 +375,14 @@ function resolveBashDisplayText(record: TranscriptRecord): string {
   return parsed.hasBashShape ? '(no output)' : record.text || '(no output)';
 }
 
-function parseBashResult(record: TranscriptRecord): BashResultDisplay {
-  if (typeof record.displayText === 'string') {
-    return {hasBashShape: true, stdout: record.displayText, stderr: '', timedOut: record.timedOut === true, truncated: record.truncated === true};
-  }
-
+function parseBashResult(record: ToolResultTranscriptRecord): BashResultDisplay {
+  const details = record.details.kind === 'bash' ? record.details : null;
   const lines = normalizeLineBreaks(record.text).split('\n');
   const stdoutIndex = lines.indexOf('stdout:');
   const stderrIndex = lines.indexOf('stderr:');
   const hasBashShape = stdoutIndex >= 0 || stderrIndex >= 0;
-  const timedOut = record.timedOut === true;
-  const truncated = record.truncated === true;
+  const timedOut = details?.timedOut === true;
+  const truncated = details?.truncated === true;
 
   if (!hasBashShape) {
     return {hasBashShape, stdout: record.text, stderr: '', timedOut, truncated};

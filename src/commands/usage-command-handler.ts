@@ -60,7 +60,7 @@ export class UsageCommandHandler implements CommandHandler {
    * 只匹配纯 /usage，避免带参数输入被误消费。
    */
   match(text: string): boolean {
-    return String(text) === '/usage';
+    return text === '/usage';
   }
 
   /**

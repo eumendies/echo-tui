@@ -1,7 +1,7 @@
 import type {CommandHandler, CommandHost, CommandStartResult} from '../types/command';
 
 function parseSkillSlashText(text: string): {argumentsText?: string; name: string} | null {
-  const match = /^\/([^/\s]+)(?:\s+([\s\S]*))?$/u.exec(String(text));
+  const match = /^\/([^/\s]+)(?:\s+([\s\S]*))?$/u.exec(text);
 
   if (!match) {
     return null;
@@ -35,7 +35,7 @@ export class SkillInvocationCommandHandler implements CommandHandler {
       return {
         kind: 'submit_user_message',
         text: result.text,
-        displayText: String(text),
+        displayText: text,
         metadata: result.metadata,
         ...(result.modelProfileId ? {modelProfileId: result.modelProfileId} : {})
       };

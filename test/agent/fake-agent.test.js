@@ -3,38 +3,10 @@ const assert = require('node:assert/strict');
 
 const { createFakeAgent, runFakeAgent } = require('../../src/agent/fake/agent');
 
-const TEST_CONFIG = {
-  agentType: 'fake',
-  apiKey: 'anything',
-  baseURL: 'https://unused.example/v1',
-  model: 'fake-model',
-  tools: {
-    bash: {
-      timeoutMs: null,
-      maxOutputBytes: 65536
-    }
-  }
-};
-
-function createRegistry() {
-  return {
-    isEmpty() {
-      return true;
-    },
-    listDefinitions() {
-      return [];
-    },
-    getHandler() {
-      return undefined;
-    }
-  };
-}
-
 test('createFakeAgent streams latest user text as provider turn', async () => {
   const agent = createFakeAgent();
   const callbacks = [];
 
-  agent.initialize(TEST_CONFIG, createRegistry());
   const result = await agent.runTurn([
     { role: 'user', text: '旧输入' },
     { role: 'assistant', text: 'ok' },
@@ -81,7 +53,6 @@ test('createFakeAgent aborts during thinking before token output', async () => {
   const controller = new AbortController();
   const callbacks = [];
 
-  agent.initialize(TEST_CONFIG, createRegistry());
   const turnPromise = agent.runTurn([{ role: 'user', text: 'hello' }], {
     onToken(delta, draft) {
       callbacks.push([delta, draft]);
@@ -98,8 +69,6 @@ test('createFakeAgent aborts during streaming and stops later tokens', async () 
   const agent = createFakeAgent();
   const controller = new AbortController();
   const callbacks = [];
-
-  agent.initialize(TEST_CONFIG, createRegistry());
 
   await assert.rejects(
     agent.runTurn([{ role: 'user', text: 'hello' }], {

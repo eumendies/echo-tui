@@ -52,7 +52,7 @@ export class McpCommandHandler implements CommandHandler<McpManageData> {
   description = '查看和管理 MCP servers';
 
   match(text: string): boolean {
-    return String(text).trim() === '/mcp';
+    return text.trim() === '/mcp';
   }
 
   start(_text: string, host: CommandHost): void {
@@ -127,7 +127,8 @@ export class McpCommandHandler implements CommandHandler<McpManageData> {
               title: 'MCP reload',
               lines: ['已保存 MCP 配置，但 reload 产生诊断：', ...result.diagnostics],
               dismissHint: 'Enter/Esc close'
-            }
+            },
+            data: null
           });
           return;
         }
@@ -140,7 +141,8 @@ export class McpCommandHandler implements CommandHandler<McpManageData> {
             title: 'MCP reload',
             lines: [`保存 MCP 配置失败：${result.error || 'unknown error'}`],
             dismissHint: 'Enter/Esc close'
-          }
+          },
+          data: null
         });
       });
     }

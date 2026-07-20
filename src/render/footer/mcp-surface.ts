@@ -15,16 +15,16 @@ const MCP_MAX_VISIBLE = 8;
  * 渲染 MCP 管理面板；保存和 reload 由 command handler 通过 CommandHost 完成。
  */
 export function renderMcpSurface(commandSurface: McpCommandSurface, width: number, theme: FooterTheme = resolveFooterTheme(undefined)): FooterLayout {
-  const servers = commandSurface.servers || [];
+  const servers = commandSurface.servers;
   const selectedIndex = clampIndex(commandSurface.selectedIndex, servers.length);
   const boxWidth = calculateMcpBoxWidth(width);
   const contentWidth = Math.max(1, boxWidth - 4);
   const lines = [
-    renderTop(boxWidth, commandSurface.title || 'MCP', servers, theme),
+    renderTop(boxWidth, commandSurface.title, servers, theme),
     renderLine('', contentWidth, theme),
     ...renderMcpContent(commandSurface, selectedIndex, contentWidth, theme),
     renderLine('', contentWidth, theme),
-    renderLine(ansi.dim(clampPlainText(commandSurface.dismissHint || 'Space 切换 · Enter 保存并重载 · Esc 取消', contentWidth)), contentWidth, theme),
+    renderLine(ansi.dim(clampPlainText(commandSurface.dismissHint, contentWidth)), contentWidth, theme),
     renderBottom(boxWidth, theme)
   ];
 
@@ -43,7 +43,7 @@ function calculateMcpBoxWidth(width: number): number {
 }
 
 function renderMcpContent(commandSurface: McpCommandSurface, selectedIndex: number, contentWidth: number, theme: FooterTheme): string[] {
-  const servers = commandSurface.servers || [];
+  const servers = commandSurface.servers;
 
   if (servers.length === 0) {
     const lines = commandSurface.emptyLines && commandSurface.emptyLines.length > 0

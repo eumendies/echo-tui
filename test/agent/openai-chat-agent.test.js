@@ -12,6 +12,10 @@ const { createBuiltInSystemPrompt } = require('../../src/agent/context/system-pr
 const TEST_CWD = '/tmp/echo_tui';
 const TEST_SYSTEM_PROMPT = createBuiltInSystemPrompt({ cwd: TEST_CWD });
 
+function createOpenAiChatReasoningTranscriptRecord(reasoningContent) {
+  return {role: 'extension', text: '', extension: {kind: 'openai_chat_reasoning', reasoningContent}};
+}
+
 const TEST_CONFIG = {
   agentType: 'openai-chat',
   apiKey: 'test-api-key',
@@ -85,14 +89,12 @@ function createHarness(eventsOrFactory, registry = createEmptyToolRegistry(), ll
       }
     }
   };
-  const agent = createOpenAiChatAgent({
+  const agent = createOpenAiChatAgent(llmConfig, registry, {
     createClient(config) {
       assert.deepEqual(config, llmConfig);
       return client;
     }
   });
-  agent.initialize(llmConfig, registry);
-
   return {
     callbacks,
     requestOptions,
@@ -139,8 +141,8 @@ test('convertTranscriptToOpenAiChatMessages maps chat roles and filters local re
       { role: 'error', text: 'timeout' },
       { role: 'local_notice', text: '已中断' },
       { role: 'reasoning_summary', text: 'thinking' },
-      { role: 'openai_reasoning', text: '', item: { type: 'reasoning' } },
-      { role: 'openai_chat_reasoning', text: '', reasoningContent: 'hidden' },
+      { role: 'extension', text: '', extension: {kind: 'openai_reasoning', item: {type: 'reasoning', encrypted_content: 'hidden'}} },
+      createOpenAiChatReasoningTranscriptRecord('hidden'),
       { role: 'user', text: '继续' }
     ]),
     [
@@ -156,10 +158,10 @@ test('convertTranscriptToOpenAiChatMessages replays chat reasoning content by de
   assert.deepEqual(
     convertTranscriptToOpenAiChatMessages([
       { role: 'user', text: 'inspect' },
-      { role: 'openai_chat_reasoning', text: '', reasoningContent: 'Need a tool.' },
+      createOpenAiChatReasoningTranscriptRecord('Need a tool.'),
       { role: 'tool_call', text: '', toolCallId: 'call_1', toolName: 'run_bash_command', argumentsText: '{"command":"pwd"}' },
       { role: 'tool_result', text: 'ok', toolCallId: 'call_1', toolName: 'run_bash_command', ok: true },
-      { role: 'openai_chat_reasoning', text: '', reasoningContent: 'Now answer.' },
+      createOpenAiChatReasoningTranscriptRecord('Now answer.'),
       { role: 'assistant', text: 'done' }
     ]),
     [
@@ -178,10 +180,10 @@ test('convertTranscriptToOpenAiChatMessages replays chat reasoning content by de
   );
 });
 
-test('convertTranscriptToOpenAiChatMessages ignores malformed chat reasoning records', () => {
+test('convertTranscriptToOpenAiChatMessages ignores unknown extension records', () => {
   assert.deepEqual(
     convertTranscriptToOpenAiChatMessages([
-      { role: 'openai_chat_reasoning', text: '' },
+      { role: 'extension', text: '', extension: {kind: 'unknown', name: 'private_reasoning', payload: {}} },
       { role: 'assistant', text: 'done' }
     ]),
     [
@@ -255,7 +257,7 @@ test('convertTranscriptToOpenAiChatMessages keeps reasoning content on grouped t
   assert.deepEqual(
     convertTranscriptToOpenAiChatMessages([
       { role: 'user', text: 'review' },
-      { role: 'openai_chat_reasoning', text: '', reasoningContent: 'Need git status and branch.' },
+      createOpenAiChatReasoningTranscriptRecord('Need git status and branch.'),
       { role: 'tool_call', text: '', toolCallId: 'call_1', toolName: 'run_bash_command', argumentsText: '{"command":"git status --short"}' },
       { role: 'tool_result', text: ' M file.ts', toolCallId: 'call_1', toolName: 'run_bash_command', ok: true },
       { role: 'tool_call', text: '', toolCallId: 'call_2', toolName: 'run_bash_command', argumentsText: '{"command":"git branch --show-current"}' },
@@ -369,14 +371,13 @@ test('convertTranscriptToOpenAiChatMessages creates assistant tool message when 
   );
 });
 
-test('convertTranscriptToOpenAiChatMessages skips incomplete tool metadata', () => {
+test('convertTranscriptToOpenAiChatMessages reports invalid tool arguments', () => {
   assert.deepEqual(
     convertTranscriptToOpenAiChatMessages([
       { role: 'user', text: 'run' },
-      { role: 'tool_call', text: 'missing metadata' },
       { role: 'tool_call', text: '', toolCallId: 'call_bad', toolName: 'glob', argumentsText: '{"pattern":"*.ts", "paths": ' },
-      { role: 'tool_result', text: 'orphan', toolCallId: 'call_missing', toolName: 'run_bash_command', ok: true },
-      { role: 'tool_result', text: 'bad args', toolCallId: 'call_bad', toolName: 'glob', ok: false },
+      { role: 'tool_result', text: 'orphan', toolCallId: 'call_missing', toolName: 'run_bash_command', ok: true, details: {kind: 'bash'} },
+      { role: 'tool_result', text: 'bad args', toolCallId: 'call_bad', toolName: 'glob', ok: false, details: {kind: 'glob', truncated: false} },
       { role: 'assistant', text: 'next' }
     ]),
     [
@@ -450,6 +451,23 @@ test('createChatRequest sends reasoning_effort when configured', () => {
   assert.equal('max_output_tokens' in noneRequest, false);
 });
 
+test('createChatRequest omits tools and reasoning for compaction requests', () => {
+  const records = [{ role: 'user', text: 'summarize' }];
+  const config = { ...TEST_CONFIG, reasoningEffort: 'xhigh' };
+  const request = createChatRequest(records, config, createToolRegistry(), {isCompaction: true});
+
+  assert.deepEqual(request, {
+    messages: [{ role: 'user', content: 'summarize' }],
+    model: 'test-chat-model',
+    prompt_cache_key: createPromptCacheKey(records, config),
+    stream: true,
+    stream_options: {include_usage: true}
+  });
+  assert.equal('tools' in request, false);
+  assert.equal('parallel_tool_calls' in request, false);
+  assert.equal('reasoning_effort' in request, false);
+});
+
 test('createOpenAiChatAgent streams text chunks and returns prompt usage', async () => {
   const harness = createHarness([
     { choices: [{ delta: { content: '你' } }] },
@@ -499,11 +517,7 @@ test('createOpenAiChatAgent returns reasoning summary without mixing it into dra
 
   assert.deepEqual(result, {
     draft: 'Done.',
-    providerRecords: [{
-      role: 'openai_chat_reasoning',
-      text: '',
-      reasoningContent: 'I should think.'
-    }],
+    providerRecords: [createOpenAiChatReasoningTranscriptRecord('I should think.')],
     reasoningSummary: 'I should think.',
     toolCalls: [],
     usageInputTokens: undefined
@@ -527,9 +541,12 @@ test('createOpenAiChatAgent configures SDK client and passes abort signal', asyn
       };
     }
   }
-  const agent = createOpenAiChatAgent({ OpenAIClient: FakeOpenAI });
+  const agent = createOpenAiChatAgent(
+    { ...TEST_CONFIG, headers: { 'x-source': 'test-source' } },
+    createEmptyToolRegistry(),
+    { OpenAIClient: FakeOpenAI }
+  );
 
-  agent.initialize({ ...TEST_CONFIG, headers: { 'x-source': 'test-source' } }, createEmptyToolRegistry());
   await agent.runTurn([{ role: 'user', text: 'hello' }], {}, { abortSignal: controller.signal });
 
   assert.deepEqual(clientOptions[0], {
@@ -608,11 +625,7 @@ test('createOpenAiChatAgent preserves reasoning summary with tool calls', async 
 
   assert.deepEqual(result, {
     draft: '',
-    providerRecords: [{
-      role: 'openai_chat_reasoning',
-      text: '',
-      reasoningContent: 'Need a tool.'
-    }],
+    providerRecords: [createOpenAiChatReasoningTranscriptRecord('Need a tool.')],
     reasoningSummary: 'Need a tool.',
     toolCalls: [{ callId: 'call_1', toolName: 'run_bash_command', argumentsText: '{"command":"pwd"}' }],
     usageInputTokens: undefined
@@ -636,11 +649,7 @@ test('createOpenAiChatAgent returns chat reasoning content record by default', a
 
   const result = await harness.runTurn([{ role: 'user', text: 'inspect' }]);
 
-  assert.deepEqual(result.providerRecords, [{
-    role: 'openai_chat_reasoning',
-    text: '',
-    reasoningContent: 'Need a tool.'
-  }]);
+  assert.deepEqual(result.providerRecords, [createOpenAiChatReasoningTranscriptRecord('Need a tool.')]);
   assert.equal(result.reasoningSummary, 'Need a tool.');
   assert.deepEqual(result.toolCalls, [{ callId: 'call_1', toolName: 'run_bash_command', argumentsText: '{"command":"pwd"}' }]);
 });
@@ -672,7 +681,7 @@ test('createOpenAiChatAgent preserves streamed tool arguments for runtime valida
 
 test('createOpenAiChatAgent rejects create errors, stream errors, service errors, and incomplete streams', async () => {
   const fakeAuthText = ['Bear', 'er secret-value'].join('');
-  const createErrorAgent = createOpenAiChatAgent({
+  const createErrorAgent = createOpenAiChatAgent(TEST_CONFIG, createEmptyToolRegistry(), {
     createClient() {
       return {
         chat: {
@@ -685,8 +694,6 @@ test('createOpenAiChatAgent rejects create errors, stream errors, service errors
       };
     }
   });
-  createErrorAgent.initialize(TEST_CONFIG, createEmptyToolRegistry());
-
   await assert.rejects(
     () => createErrorAgent.runTurn([{ role: 'user', text: 'hello' }], {}),
     (error) => {
@@ -728,7 +735,7 @@ test('createOpenAiChatAgent rejects create errors, stream errors, service errors
 
 test('createOpenAiChatAgent treats abort as user interruption instead of service failure', async () => {
   const controller = new AbortController();
-  const agent = createOpenAiChatAgent({
+  const agent = createOpenAiChatAgent(TEST_CONFIG, createEmptyToolRegistry(), {
     createClient() {
       return {
         chat: {
@@ -745,8 +752,6 @@ test('createOpenAiChatAgent treats abort as user interruption instead of service
       };
     }
   });
-
-  agent.initialize(TEST_CONFIG, createEmptyToolRegistry());
 
   await assert.rejects(
     () => agent.runTurn([{ role: 'user', text: 'hello' }], {}, { abortSignal: controller.signal }),
@@ -773,13 +778,11 @@ test('Chat agent can generate compaction summaries without provider usage', asyn
       }
     }
   };
-  const agent = createOpenAiChatAgent({
+  const agent = createOpenAiChatAgent(TEST_CONFIG, createEmptyToolRegistry(), {
     createClient() {
       return client;
     }
   });
-  agent.initialize(TEST_CONFIG, createEmptyToolRegistry());
-
   const summary = await generateCompactionSummary({
     agent,
     compactedRecords: [

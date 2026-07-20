@@ -177,7 +177,7 @@ export class CopyCommandHandler implements CommandHandler<CopyCommandData> {
    * 只匹配纯 /copy，避免带参数时误消费普通消息。
    */
   match(text: string): boolean {
-    return String(text) === '/copy';
+    return text === '/copy';
   }
 
   /**

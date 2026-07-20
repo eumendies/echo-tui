@@ -1,6 +1,6 @@
 import * as net from 'node:net';
 
-import {normalizePositiveInteger} from './tool-handler-utils';
+import {capUtf8Text, normalizePositiveInteger} from './tool-handler-utils';
 
 import type {ToolCall, ToolExecutionOptions, ToolHandler, WebFetchToolExecutionResult} from '../types/tool';
 import type {Result} from './tool-handler-utils';
@@ -100,8 +100,11 @@ function createWebFetchToolHandler(options: WebFetchToolHandlerOptions = {}): To
         toolName: WEB_FETCH_TOOL_NAME,
         ok: result.ok,
         text: result.text,
-        timedOut: result.timedOut,
-        truncated: result.truncated
+        details: {
+          kind: 'web_fetch',
+          timedOut: result.timedOut,
+          truncated: result.truncated
+        }
       };
     }
   };
@@ -555,19 +558,6 @@ function formatWebFetchFailure(reason: string): string {
     'web_fetch failed.',
     `Reason: ${reason}`
   ].join('\n');
-}
-
-function capUtf8Text(text: string, maxBytes: number): {text: string; truncated: boolean} {
-  const buffer = Buffer.from(text, 'utf8');
-
-  if (buffer.length <= maxBytes) {
-    return {text, truncated: false};
-  }
-
-  return {
-    text: buffer.subarray(0, maxBytes).toString('utf8').replace(/\uFFFD$/, ''),
-    truncated: true
-  };
 }
 
 function cleanErrorMessage(error: unknown, fallback: string): string {

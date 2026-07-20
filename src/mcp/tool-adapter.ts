@@ -23,6 +23,7 @@ function createMcpToolRegistry(manager: McpManager): ToolRegistry {
           callId: call.callId,
           toolName: call.toolName,
           ok: false,
+          details: {kind: 'generic'},
           text: `MCP tool failed: ${sanitizeMcpError(error)}`
         };
       }
@@ -48,6 +49,7 @@ function createMcpToolExecutionResult(callId: string, toolName: string, result: 
     callId,
     toolName,
     ok: !result.isError,
+    details: {kind: 'generic'},
     text: formatMcpToolResult(result)
   };
 }

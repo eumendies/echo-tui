@@ -9,7 +9,7 @@ import type {FooterLayout} from '../../types/render';
 
 type RenderConfigPanelOptions = {
   maxLines?: number;
-  rows?: ConfigFormRow[];
+  rows: ConfigFormRow[];
   theme?: TuiTheme;
 };
 
@@ -28,10 +28,10 @@ type ConfigListItem =
  */
 function renderConfigSurface(commandSurface: ConfigCommandSurface, width: number, options: RenderConfigSurfaceOptions = {}): FooterLayout {
   const theme = resolveFooterTheme(options.theme);
-  const lines = commandSurface.result
+  const lines = commandSurface.view === 'result'
     ? renderConfigResult(width, commandSurface.result.providersCount, commandSurface.result.modelsCount, theme)
-    : commandSurface.state
-      ? renderConfigPanel(commandSurface.state, width, {maxLines: options.maxLines, rows: commandSurface.rows || [], theme: options.theme})
+    : commandSurface.view === 'editor'
+      ? renderConfigPanel(commandSurface.state, width, {maxLines: options.maxLines, rows: commandSurface.rows, theme: options.theme})
       : [];
 
   return constrainLayoutTail({
@@ -42,7 +42,7 @@ function renderConfigSurface(commandSurface: ConfigCommandSurface, width: number
   }, options.maxLines);
 }
 
-function renderConfigPanel(state: ConfigCommandState, columns: number, options: RenderConfigPanelOptions = {}): string[] {
+function renderConfigPanel(state: ConfigCommandState, columns: number, options: RenderConfigPanelOptions): string[] {
   const theme = resolveFooterTheme(options.theme);
   const width = calculateBoxWidth(columns);
 
@@ -53,7 +53,7 @@ function renderConfigPanel(state: ConfigCommandState, columns: number, options: 
     return renderModelListView(state, width, options.maxLines, theme);
   }
   if (state.mode === 'form') {
-    return renderFormView(state, width, options.rows || [], options.maxLines, theme);
+    return renderFormView(state, width, options.rows, options.maxLines, theme);
   }
   if (state.mode === 'headerList') {
     return renderHeaderListView(state, width, options.maxLines, theme);
@@ -581,7 +581,5 @@ function formatInteger(value: number): string {
 }
 
 export {
-  renderConfigPanel,
-  renderConfigResult,
   renderConfigSurface
 };

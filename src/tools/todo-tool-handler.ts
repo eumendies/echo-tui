@@ -1,11 +1,11 @@
 import type {TodoItem, TodoState} from '../types/transcript';
-import type {BaseToolExecutionResult, ToolCall, ToolHandler} from '../types/tool';
+import type {GenericToolExecutionResult, ToolCall, ToolHandler} from '../types/tool';
 
 const CREATE_TODOS_TOOL_NAME = 'create_todos';
 const COMPLETE_TODO_TOOL_NAME = 'complete_todo';
 const MAX_TODO_ITEMS = 20;
 
-type TodoToolExecutionResult = BaseToolExecutionResult & {
+type TodoToolExecutionResult = GenericToolExecutionResult & {
   toolName: typeof CREATE_TODOS_TOOL_NAME | typeof COMPLETE_TODO_TOOL_NAME;
 };
 
@@ -234,6 +234,7 @@ function createTodoSuccessResult(call: ToolCall, payload: Record<string, unknown
     callId: call.callId,
     toolName: call.toolName as typeof CREATE_TODOS_TOOL_NAME | typeof COMPLETE_TODO_TOOL_NAME,
     ok: true,
+    details: {kind: 'generic'},
     text: JSON.stringify(payload)
   };
 }
@@ -243,6 +244,7 @@ function createTodoFailureResult(call: ToolCall, message: string): TodoToolExecu
     callId: call.callId,
     toolName: call.toolName as typeof CREATE_TODOS_TOOL_NAME | typeof COMPLETE_TODO_TOOL_NAME,
     ok: false,
+    details: {kind: 'generic'},
     text: message
   };
 }

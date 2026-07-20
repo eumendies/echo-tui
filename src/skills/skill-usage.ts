@@ -38,25 +38,17 @@ function listSkillUseRecords(records: TranscriptRecord[]): SkillUseRecord[] {
       continue;
     }
 
-    const invocation = record.skillInvocation;
+    const invocation = record.metadata?.skillInvocation;
 
-    if (!invocation || typeof invocation !== 'object' || Array.isArray(invocation)) {
+    if (!invocation || invocation.skillName.trim() === '') {
       continue;
     }
 
-    const args = invocation as Record<string, unknown>;
-    const source = args.source;
-    const skillName = args.skillName;
-    const userRequestText = args.userRequestText;
-    const argumentsText = userRequestText || args.argumentsText;
-
-    if (source !== 'slash' || typeof skillName !== 'string' || skillName.trim() === '') {
-      continue;
-    }
+    const argumentsText = invocation.userRequestText || invocation.argumentsText;
 
     uses.push({
       source: 'slash',
-      skillName: skillName.trim(),
+      skillName: invocation.skillName.trim(),
       argumentsText: typeof argumentsText === 'string' && argumentsText.trim() !== '' ? argumentsText.trim() : undefined,
       createdAt: typeof record.createdAt === 'string' ? record.createdAt : undefined
     });

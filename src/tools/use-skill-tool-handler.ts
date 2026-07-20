@@ -42,6 +42,7 @@ function createUseSkillToolHandler(registry: SkillRegistry): ToolHandler {
         callId: call.callId,
         toolName: USE_SKILL_TOOL_NAME,
         ok: true,
+        details: {kind: 'generic'},
         text: formatSkillResult({
           name: result.skill.name,
           sourcePath: result.skill.sourcePath,
@@ -106,6 +107,7 @@ function createUseSkillFailureResult(call: ToolCall, message: string): UseSkillT
     callId: call.callId,
     toolName: USE_SKILL_TOOL_NAME,
     ok: false,
+    details: {kind: 'generic'},
     text: message
   };
 }
