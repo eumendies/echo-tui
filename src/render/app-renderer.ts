@@ -3,7 +3,7 @@ import {DEFAULT_TUI_THEME} from '../config/theme-config';
 import { renderAssistantBlock, renderBanner, renderCompactionNoticeBlock, renderErrorBlock, renderLocalNoticeBlock, renderReasoningSummaryBlock, renderShellBlock, renderUserBlock } from './blocks';
 import { createFooterRenderer, renderFooterLayout } from './footer';
 import { renderToolPairBlock, renderToolRecordBlock } from './tool-message-renderer';
-import type { TranscriptRecord } from '../types/transcript';
+import type { ToolCallTranscriptRecord, ToolResultTranscriptRecord, TranscriptRecord, UserTranscriptRecord } from '../types/transcript';
 import type {
   AppendRecordOptions,
   AppendRecordsOptions,
@@ -17,7 +17,7 @@ import type {
 
 type TranscriptBlock =
   | { kind: 'record'; record: TranscriptRecord }
-  | { kind: 'tool_pair'; call: TranscriptRecord; result: TranscriptRecord };
+  | { kind: 'tool_pair'; call: ToolCallTranscriptRecord; result: ToolResultTranscriptRecord };
 
 /**
  * 创建应用级 renderer 门面，统一编排 footer-only redraw、transcript append 和 destructive replay。
@@ -172,7 +172,12 @@ function groupTranscriptRecords(records: TranscriptRecord[]): TranscriptBlock[] 
     const record = records[index];
     const nextRecord = records[index + 1];
 
-    if (isMatchingToolPair(record, nextRecord)) {
+    if (
+      record.role === 'tool_call' &&
+      nextRecord?.role === 'tool_result' &&
+      record.toolCallId !== '' &&
+      record.toolCallId === nextRecord.toolCallId
+    ) {
       blocks.push({ kind: 'tool_pair', call: record, result: nextRecord });
       index += 1;
       continue;
@@ -182,15 +187,6 @@ function groupTranscriptRecords(records: TranscriptRecord[]): TranscriptBlock[] 
   }
 
   return blocks;
-}
-
-function isMatchingToolPair(record: TranscriptRecord, nextRecord: TranscriptRecord | undefined): nextRecord is TranscriptRecord {
-  return record.role === 'tool_call'
-    && nextRecord !== undefined
-    && nextRecord.role === 'tool_result'
-    && typeof record.toolCallId === 'string'
-    && record.toolCallId !== ''
-    && record.toolCallId === nextRecord.toolCallId;
 }
 
 /**
@@ -211,7 +207,7 @@ function renderTranscriptBlock(block: TranscriptBlock, width: number, theme: Ren
  */
 function renderRecordBlock(record: TranscriptRecord, width: number, theme: RenderState['theme']): string {
   if (record.role === 'user') {
-    return renderUserBlock(getUserDisplayText(record), width, theme, record.interactionMode);
+    return renderUserBlock(getUserDisplayText(record), width, theme, record.metadata?.interactionMode);
   }
 
   if (record.role === 'assistant') {
@@ -245,8 +241,8 @@ function renderRecordBlock(record: TranscriptRecord, width: number, theme: Rende
   return '';
 }
 
-function getUserDisplayText(record: TranscriptRecord): string {
-  return typeof record.displayText === 'string' && record.displayText.trim() !== '' ? record.displayText : record.text;
+function getUserDisplayText(record: UserTranscriptRecord): string {
+  return record.displayText && record.displayText.trim() !== '' ? record.displayText : record.text;
 }
 
 /**

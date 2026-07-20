@@ -75,13 +75,13 @@ test('estimateContextTokens skips non-provider roles', () => {
     { role: 'compaction_notice', text: 'nnnn' },
     { role: 'local_notice', text: 'llll' },
     { role: 'reasoning_summary', text: 'rrrr' },
-    { role: 'anthropic_thinking', text: '', block: anthropicThinkingBlock },
+    { role: 'extension', text: '', extension: {kind: 'anthropic_thinking', block: anthropicThinkingBlock} },
     { role: 'assistant', text: 'bbbb' }
   ];
   const estimated = estimateContextTokens({ activeRecords });
 
   // Anthropic thinking 会回放给 provider，需要计入；本地提示不发给模型不计入。
-  assert.equal(estimated, 2 + estimateTextTokens(JSON.stringify(anthropicThinkingBlock)));
+  assert.equal(estimated, 2 + estimateTextTokens(JSON.stringify({kind: 'anthropic_thinking', block: anthropicThinkingBlock})));
 });
 
 test('estimateContextTokens skips local shell records', () => {

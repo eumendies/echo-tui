@@ -12,6 +12,10 @@ const { createDefaultToolRegistry } = require('../../src/tools/tool-registry');
 const TEST_CWD = '/tmp/echo_tui';
 const TEST_SYSTEM_PROMPT = createBuiltInSystemPrompt({ cwd: TEST_CWD });
 
+function createOpenAiReasoningTranscriptRecord(item) {
+  return {role: 'extension', text: '', extension: {kind: 'openai_reasoning', item}};
+}
+
 const TEST_CONFIG = {
   agentType: 'openai',
   apiKey: 'test-api-key',
@@ -477,8 +481,8 @@ test('convertTranscriptToOpenAiInput maps OpenAI private reasoning records', () 
   assert.deepEqual(
     convertTranscriptToOpenAiInput([
       { role: 'user', text: 'run' },
-      { role: 'openai_reasoning', text: '', provider: 'openai', item: reasoningItem },
-      { role: 'tool_result', text: 'ok', toolCallId: 'call_1', toolName: 'run_bash_command', ok: true }
+      createOpenAiReasoningTranscriptRecord(reasoningItem),
+      { role: 'tool_result', text: 'ok', toolCallId: 'call_1', toolName: 'run_bash_command', ok: true, details: {kind: 'bash'} }
     ]),
     [
       { role: 'user', content: 'run' },
@@ -488,7 +492,7 @@ test('convertTranscriptToOpenAiInput maps OpenAI private reasoning records', () 
   );
 });
 
-test('convertTranscriptToOpenAiInput maps tool records and skips incomplete tool metadata', () => {
+test('convertTranscriptToOpenAiInput maps complete tool records', () => {
   assert.deepEqual(
     convertTranscriptToOpenAiInput([
       { role: 'user', text: 'run ls' },
@@ -505,13 +509,8 @@ test('convertTranscriptToOpenAiInput maps tool records and skips incomplete tool
         toolCallId: 'call_1',
         toolName: 'run_bash_command',
         ok: true,
-        display: {
-          kind: 'apply_patch',
-          files: [{path: 'ignored.txt', kind: 'updated', lines: [{kind: 'added', text: 'ignored', postLine: 1}]}]
-        }
-      },
-      { role: 'tool_call', text: 'missing metadata' },
-      { role: 'tool_result', text: 'missing metadata' }
+        details: {kind: 'bash'}
+      }
     ]),
     [
       { role: 'user', content: 'run ls' },
@@ -539,6 +538,7 @@ test('convertTranscriptToOpenAiInput maps image attachments from tool results', 
         toolCallId: 'call_img',
         toolName: 'read_files',
         ok: true,
+        details: {kind: 'read_files', truncated: false},
         attachments: [
           { kind: 'image', mediaType: 'image/png', dataBase64: 'aW1nMQ==', path: 'a.png', sizeBytes: 4 },
           { kind: 'image', mediaType: 'image/jpeg', dataBase64: 'aW1nMg==', path: 'b.jpg', sizeBytes: 4 },
@@ -551,7 +551,8 @@ test('convertTranscriptToOpenAiInput maps image attachments from tool results', 
         text: 'plain',
         toolCallId: 'call_plain',
         toolName: 'read_files',
-        ok: true
+        ok: true,
+        details: {kind: 'read_files', truncated: false}
       }
     ]),
     [
@@ -772,7 +773,7 @@ test('OpenAI provider agent returns reasoning summary and private reasoning reco
 
   assert.deepEqual(result, {
     draft: '',
-    providerRecords: [{ role: 'openai_reasoning', text: '', provider: 'openai', item: reasoningItem }],
+    providerRecords: [createOpenAiReasoningTranscriptRecord(reasoningItem)],
     reasoningSummary: 'first\n\nsecond',
     toolCalls: [{ callId: 'call_1', toolName: 'run_bash_command', argumentsText: '{"command":"pwd"}' }],
     usageInputTokens: undefined

@@ -7,7 +7,7 @@ import {
   truncateDisplayText
 } from './shared';
 
-import type {TranscriptRecord} from '../../types/transcript';
+import type {ToolCallTranscriptRecord, ToolResultTranscriptRecord} from '../../types/transcript';
 
 /**
  * read_files 的专属终端投影层只消费现有文本 envelope，不改写 transcript、tool result 或附件。
@@ -42,7 +42,7 @@ type ReadFilesParseResult = {
  * 渲染 read_files 调用行，用路径摘要替代完整 arguments JSON。
  */
 function renderReadFilesToolCallLines(
-  record: TranscriptRecord,
+  record: ToolCallTranscriptRecord,
   width: number,
   callStatus: boolean | undefined,
   theme: TuiTheme
@@ -65,7 +65,7 @@ function renderReadFilesToolCallLines(
 /**
  * 渲染 read_files 结果 envelope；解析失败返回 null 交给通用 renderer。
  */
-function renderReadFilesToolResultLines(record: TranscriptRecord, width: number, theme: TuiTheme): string[] | null {
+function renderReadFilesToolResultLines(record: ToolResultTranscriptRecord, width: number, theme: TuiTheme): string[] | null {
   const parsed = parseReadFilesResult(record.text);
 
   if (!parsed) {

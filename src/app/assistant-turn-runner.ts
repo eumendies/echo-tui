@@ -5,7 +5,7 @@ import type {AgentCallbacks, RunAgent} from '../types/agent';
 import type {DebugContext} from '../debug/debug-context';
 import type {LifecycleHookDispatcher} from '../types/hooks';
 import type {ToolResultAttachment} from '../types/tool';
-import type {TranscriptRecord} from '../types/transcript';
+import type {TranscriptRecord, UserTranscriptMetadata} from '../types/transcript';
 import type {AppContext} from './state/app-context';
 import type {ToolApprovalContext} from './state/tool-approval-context';
 import type {UserQuestionContext} from './state/user-question-context';
@@ -17,7 +17,7 @@ type AssistantTurnRunnerInput = {
   userQuestion: UserQuestionContext;
   userText: string;
   displayText?: string;
-  metadata?: Record<string, unknown>;
+  metadata?: UserTranscriptMetadata;
   modelProfileId?: string;
   attachments?: ToolResultAttachment[];
   debug: DebugContext;
@@ -53,7 +53,7 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
   const interactionMode = appContext.getInteractionMode();
   const userRecord = appContext.beginUserTurn(userText, {
     displayText,
-    metadata: {...(metadata || {}), interactionMode},
+    metadata: {...metadata, interactionMode},
     attachments
   });
   // thinking 和 streaming 都只进入 pending preview，完成或 partial 失败后才正式追加 assistant block。

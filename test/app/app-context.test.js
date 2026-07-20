@@ -229,7 +229,7 @@ test('AppContext creates isolated runtime state per app instance', () => {
   firstContext.beginUserTurn('hello');
   firstContext.turnContext.enterSpinnerState('thinking');
 
-  assert.deepEqual(firstContext.transcriptContext.records, [{ role: 'user', text: 'hello' }]);
+  assert.deepEqual(firstContext.transcriptContext.records, [{ role: 'user', text: 'hello', metadata: {} }]);
   assert.deepEqual(firstContext.composerContext.inputHistory, ['hello']);
   assert.equal(firstContext.turnContext.responding, true);
   const firstPending = firstContext.turnContext.getPending();
@@ -713,13 +713,13 @@ test('AppContext injects only effective model-visible mode transitions and ignor
   context.turnContext.finishAssistantTurn('done');
 
   assert.equal(unchanged.text, 'normal request');
-  assert.equal(unchanged.modeTransition, undefined);
+  assert.equal(unchanged.metadata?.modeTransition, undefined);
 
   context.setInteractionMode('plan');
   const enteringPlan = context.beginUserTurn('inspect only');
   context.turnContext.finishAssistantTurn('planned');
 
-  assert.deepEqual(enteringPlan.modeTransition, {from: 'normal', to: 'plan'});
+  assert.deepEqual(enteringPlan.metadata?.modeTransition, {from: 'normal', to: 'plan'});
 
   context.setInteractionMode('shell');
   context.turnContext.beginShellCommand('pwd');
@@ -736,7 +736,7 @@ test('AppContext injects only effective model-visible mode transitions and ignor
   context.setInteractionMode('normal');
   const leavingPlan = context.beginUserTurn('implement now');
 
-  assert.deepEqual(leavingPlan.modeTransition, {from: 'plan', to: 'normal'});
+  assert.deepEqual(leavingPlan.metadata?.modeTransition, {from: 'plan', to: 'normal'});
   assert.match(leavingPlan.text, /Previous Plan Mode restrictions no longer apply/);
 });
 
@@ -760,7 +760,7 @@ test('AppContext rebuilds model-visible mode after resume and clear', () => {
     createdAt: '2026-05-19T00:00:00.000Z',
     updatedAt: '2026-05-19T00:00:00.000Z',
     records: [
-      {role: 'user', text: 'plan request', interactionMode: 'plan'},
+      {role: 'user', text: 'plan request', metadata: {interactionMode: 'plan'}},
       {role: 'assistant', text: 'plan response'}
     ]
   }]);
@@ -771,13 +771,13 @@ test('AppContext rebuilds model-visible mode after resume and clear', () => {
   const afterResume = context.beginUserTurn('implement after resume');
   context.turnContext.finishAssistantTurn('done');
 
-  assert.deepEqual(afterResume.modeTransition, {from: 'plan', to: 'normal'});
+  assert.deepEqual(afterResume.metadata?.modeTransition, {from: 'plan', to: 'normal'});
 
   context.setInteractionMode('plan');
   context.clearTranscriptRecords();
   const afterClear = context.beginUserTurn('new plan context');
 
-  assert.deepEqual(afterClear.modeTransition, {from: 'normal', to: 'plan'});
+  assert.deepEqual(afterClear.metadata?.modeTransition, {from: 'normal', to: 'plan'});
 });
 
 test('AppContext rebuilds model-visible mode after undo truncates a transition', () => {
@@ -787,9 +787,9 @@ test('AppContext rebuilds model-visible mode after undo truncates a transition',
     createdAt: '2026-05-19T00:00:00.000Z',
     updatedAt: '2026-05-19T00:00:00.000Z',
     records: [
-      {role: 'user', text: 'normal request', interactionMode: 'normal'},
+      {role: 'user', text: 'normal request', metadata: {interactionMode: 'normal'}},
       {role: 'assistant', text: 'normal response'},
-      {role: 'user', text: 'plan request', interactionMode: 'plan', modeTransition: {from: 'normal', to: 'plan'}},
+      {role: 'user', text: 'plan request', metadata: {interactionMode: 'plan', modeTransition: {from: 'normal', to: 'plan'}}},
       {role: 'assistant', text: 'plan response'}
     ],
     changeHistory: [{
@@ -808,7 +808,7 @@ test('AppContext rebuilds model-visible mode after undo truncates a transition',
   assert.equal(context.executeUndo().ok, true);
   const afterUndo = context.beginUserTurn('plan again');
 
-  assert.deepEqual(afterUndo.modeTransition, {from: 'normal', to: 'plan'});
+  assert.deepEqual(afterUndo.metadata?.modeTransition, {from: 'normal', to: 'plan'});
 });
 
 test('AppContext stores transient context usage in render state without persistence', () => {
@@ -1408,7 +1408,7 @@ test('AppContext persists, clears, and reloads transcript sessions through one i
   const sessionId = transcriptStore.saveCalls.at(-1).sessionId;
   assert.equal(context.transcriptContext.currentSessionId, sessionId);
   assert.deepEqual(context.transcriptContext.records, [
-    { role: 'user', text: 'persist me' },
+    { role: 'user', text: 'persist me', metadata: {} },
     { role: 'assistant', text: 'persisted reply' }
   ]);
 
@@ -1420,7 +1420,7 @@ test('AppContext persists, clears, and reloads transcript sessions through one i
   assert.equal(loadedSession.sessionId, sessionId);
   assert.equal(context.transcriptContext.currentSessionId, sessionId);
   assert.deepEqual(context.transcriptContext.records, [
-    { role: 'user', text: 'persist me' },
+    { role: 'user', text: 'persist me', metadata: {} },
     { role: 'assistant', text: 'persisted reply' }
   ]);
 });
@@ -1532,7 +1532,7 @@ test('AppContext failAssistantTurn clears pending state and redacts local error 
     text: '模型响应失败：upstream failed Bearer <redacted> <redacted>'
   });
   assert.deepEqual(context.transcriptContext.records, [
-    { role: 'user', text: 'fail please' },
+    { role: 'user', text: 'fail please', metadata: {} },
     errorRecord
   ]);
 });
@@ -1595,7 +1595,7 @@ test('AppContext interrupts active assistant turn while tool call is pending wit
   assert.equal(result.partialRecord, undefined);
   assert.deepEqual(result.noticeRecord, { role: 'local_notice', text: '已中断模型回答' });
   assert.deepEqual(context.transcriptContext.records, [
-    { role: 'user', text: 'use tool' },
+    { role: 'user', text: 'use tool', metadata: {} },
     { role: 'local_notice', text: '已中断模型回答' }
   ]);
 });

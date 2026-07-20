@@ -64,6 +64,7 @@ function createFailureResult(call: ToolCall, message: string): ToolExecutionResu
     callId: call.callId,
     toolName: call.toolName,
     ok: false,
+    details: {kind: 'generic'},
     text: message
   };
 }

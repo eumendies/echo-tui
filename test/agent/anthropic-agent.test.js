@@ -12,7 +12,6 @@ const {
 const { convertTranscriptToAnthropicMessages } = require('../../src/agent/anthropic/transcript-converter');
 const { convertToolDefinitionsToAnthropicTools } = require('../../src/agent/anthropic/tool-converter');
 const { createBuiltInSystemPrompt } = require('../../src/agent/context/system-prompt');
-const { ANTHROPIC_THINKING_TRANSCRIPT_ROLE } = require('../../src/types/transcript');
 
 const TEST_CWD = '/tmp/echo_tui';
 const TEST_SYSTEM_PROMPT = createBuiltInSystemPrompt({ cwd: TEST_CWD });
@@ -106,10 +105,9 @@ function createHarness(eventsOrFactory, registry = createEmptyToolRegistry()) {
 
 function createAnthropicThinkingProviderRecord(block) {
   return {
-    role: ANTHROPIC_THINKING_TRANSCRIPT_ROLE,
+    role: 'extension',
     text: '',
-    block,
-    provider: 'anthropic'
+    extension: {kind: 'anthropic_thinking', block}
   };
 }
 
@@ -151,12 +149,12 @@ test('convertTranscriptToAnthropicMessages maps records and filters local state'
       { role: 'user', text: 'inspect' },
       { role: 'assistant', text: 'I will inspect.' },
       { role: 'tool_call', text: '', toolCallId: 'call_1', toolName: 'run_bash_command', argumentsText: '{"command":"pwd"}' },
-      { role: 'tool_result', text: 'exit_code: 0', toolCallId: 'call_1', toolName: 'run_bash_command', ok: true },
+      { role: 'tool_result', text: 'exit_code: 0', toolCallId: 'call_1', toolName: 'run_bash_command', ok: true, details: {kind: 'bash'} },
       { role: 'system', text: '系统二' },
       { role: 'error', text: 'timeout' },
       { role: 'local_notice', text: '已中断' },
       { role: 'reasoning_summary', text: 'thinking' },
-      { role: 'openai_reasoning', text: '', item: { type: 'reasoning' } },
+      { role: 'extension', text: '', extension: {kind: 'openai_reasoning', item: {type: 'reasoning', encrypted_content: 'hidden'}} },
       { role: 'user', text: 'continue' }
     ]),
     {
@@ -180,20 +178,10 @@ test('convertTranscriptToAnthropicMessages maps records and filters local state'
 test('convertTranscriptToAnthropicMessages replays Anthropic thinking blocks before tool use', () => {
   assert.deepEqual(
     convertTranscriptToAnthropicMessages([
-      {
-        role: ANTHROPIC_THINKING_TRANSCRIPT_ROLE,
-        text: '',
-        block: { type: 'thinking', thinking: 'I should inspect.', signature: 'sig-1' },
-        provider: 'anthropic'
-      },
+      createAnthropicThinkingProviderRecord({ type: 'thinking', thinking: 'I should inspect.', signature: 'sig-1' }),
       { role: 'tool_call', text: '', toolCallId: 'call_1', toolName: 'run_bash_command', argumentsText: '{"command":"pwd"}' },
-      { role: 'tool_result', text: 'exit_code: 0', toolCallId: 'call_1', toolName: 'run_bash_command', ok: true },
-      {
-        role: ANTHROPIC_THINKING_TRANSCRIPT_ROLE,
-        text: '',
-        block: { type: 'redacted_thinking', data: 'redacted-data' },
-        provider: 'anthropic'
-      },
+      { role: 'tool_result', text: 'exit_code: 0', toolCallId: 'call_1', toolName: 'run_bash_command', ok: true, details: {kind: 'bash'} },
+      createAnthropicThinkingProviderRecord({ type: 'redacted_thinking', data: 'redacted-data' }),
       { role: 'tool_call', text: '', toolCallId: 'call_2', toolName: 'glob', argumentsText: '{"pattern":"*.ts"}' }
     ]),
     {
@@ -218,11 +206,10 @@ test('convertTranscriptToAnthropicMessages replays Anthropic thinking blocks bef
   );
 });
 
-test('convertTranscriptToAnthropicMessages skips invalid Anthropic thinking records', () => {
+test('convertTranscriptToAnthropicMessages skips unknown extension records', () => {
   assert.deepEqual(
     convertTranscriptToAnthropicMessages([
-      { role: ANTHROPIC_THINKING_TRANSCRIPT_ROLE, text: '', block: { type: 'thinking', thinking: 'missing signature' } },
-      { role: ANTHROPIC_THINKING_TRANSCRIPT_ROLE, text: '', block: { type: 'redacted_thinking' } },
+      { role: 'extension', text: '', extension: {kind: 'unknown', name: 'invalid-thinking', payload: {}} },
       { role: 'user', text: 'continue' }
     ]),
     {
@@ -337,14 +324,13 @@ test('convertTranscriptToAnthropicMessages maps shell records as user messages',
   );
 });
 
-test('convertTranscriptToAnthropicMessages skips incomplete tool records and returns invalid argument feedback', () => {
+test('convertTranscriptToAnthropicMessages returns invalid argument feedback', () => {
   assert.deepEqual(
     convertTranscriptToAnthropicMessages([
       { role: 'user', text: 'run' },
-      { role: 'tool_call', text: 'missing metadata' },
       { role: 'tool_call', text: '', toolCallId: 'call_bad', toolName: 'glob', argumentsText: '{"pattern":"*.ts", "paths": ' },
-      { role: 'tool_result', text: 'orphan', toolCallId: 'call_missing', toolName: 'run_bash_command', ok: true },
-      { role: 'tool_result', text: 'bad args', toolCallId: 'call_bad', toolName: 'glob', ok: false },
+      { role: 'tool_result', text: 'orphan', toolCallId: 'call_missing', toolName: 'run_bash_command', ok: true, details: {kind: 'bash'} },
+      { role: 'tool_result', text: 'bad args', toolCallId: 'call_bad', toolName: 'glob', ok: false, details: {kind: 'glob', truncated: false} },
       { role: 'assistant', text: 'next' }
     ]),
     {

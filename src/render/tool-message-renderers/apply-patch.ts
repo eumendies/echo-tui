@@ -6,7 +6,7 @@ import {displayWidth, safeRenderWidth} from '../layout';
 import {renderPrefixedLines, resolveToolCallPrefixStyle, wrapContentLine} from './shared';
 
 import type {ApplyPatchDisplayFile, ApplyPatchDisplayLine, ToolResultDisplayMetadata} from '../../types/tool';
-import type {TranscriptRecord} from '../../types/transcript';
+import type {ToolCallTranscriptRecord, ToolResultTranscriptRecord} from '../../types/transcript';
 
 const APPLY_PATCH_TOOL_NAME = 'apply_patch';
 const APPLY_PATCH_RESULT_MAX_DISPLAY_LINES = 120;
@@ -32,7 +32,7 @@ type ApplyPatchRenderFile = {
  * apply_patch 调用行只做轻量路径摘要，不展示完整 JSON patch。
  */
 function renderApplyPatchToolCallLines(
-  record: TranscriptRecord,
+  record: ToolCallTranscriptRecord,
   width: number,
   callStatus: boolean | undefined,
   theme: TuiTheme
@@ -50,7 +50,7 @@ function renderApplyPatchToolCallLines(
  * apply_patch result 按文件和修改区块投影当前 metadata schema。
  */
 function renderApplyPatchToolResultLines(
-  result: TranscriptRecord,
+  result: ToolResultTranscriptRecord,
   display: ToolResultDisplayMetadata,
   width: number,
   theme: TuiTheme

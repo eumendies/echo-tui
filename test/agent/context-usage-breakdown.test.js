@@ -39,12 +39,12 @@ test('estimateContextUsageSegments classifies provider-visible records', () => {
     {role: 'system', text: `system prompt\n\n${skillCatalogText}`},
     {role: 'user', text: 'user message'},
     {role: 'assistant', text: 'assistant message'},
-    {role: 'tool_call', text: '', toolName: 'grep', argumentsText: '{"pattern":"x"}'},
-    {role: 'tool_result', text: 'tool output'},
+    {role: 'tool_call', text: '', toolCallId: 'grep-1', toolName: 'grep', argumentsText: '{"pattern":"x"}'},
+    {role: 'tool_result', text: 'tool output', toolCallId: 'grep-1', toolName: 'grep', ok: true, details: {kind: 'grep', truncated: false}},
     {role: 'shell', text: '$ pwd', command: 'pwd', output: '/workspace', includeInContext: true},
     {role: 'shell', text: '$ env', command: 'env', output: 'SECRET=1', includeInContext: false},
     {role: 'reasoning_summary', text: 'visible local summary'},
-    {role: 'openai_reasoning', text: '', item: {type: 'reasoning', encrypted_content: 'abc'}}
+    {role: 'extension', text: '', extension: {kind: 'openai_reasoning', item: {type: 'reasoning', encrypted_content: 'abc'}}}
   ], [{name: 'grep', description: 'Search files', parameters: {type: 'object'}}], estimateTextTokens(skillCatalogText));
   const byCategory = Object.fromEntries(segments.map((segment) => [segment.category, segment.estimatedTokens]));
 
@@ -73,7 +73,7 @@ test('estimateContextUsageSegments includes the selected expanded agent memory p
   const agentMemoryText = '## Agent memories\n### rendering\nterminal rules\n\n- catalog item content';
   const segments = estimateContextUsageSegments([
     {role: 'system', text: `system prompt\n\n${memoryText}\n\n${agentMemoryText}`},
-    {role: 'tool_result', text: 'catalog item content', toolName: 'read_memory', toolCallId: 'call-1'}
+    {role: 'tool_result', text: 'catalog item content', toolName: 'read_memory', toolCallId: 'call-1', ok: true, details: {kind: 'generic'}}
   ], [], 0, estimateTextTokens(`${memoryText}\n\n${agentMemoryText}`));
   const byCategory = Object.fromEntries(segments.map((segment) => [segment.category, segment.estimatedTokens]));
   assert.ok(byCategory.memory > 0);
@@ -84,7 +84,7 @@ test('estimateContextUsageSegments classifies persisted mode transition as messa
   const transitionText = '[Interaction Mode Transition]\nfrom: normal\nto: plan\n\n[Mode Instructions]\nPlan mode is active.\n\n[User Request]\nactual task';
   const segments = estimateContextUsageSegments([
     {role: 'system', text: 'stable system prompt'},
-    {role: 'user', text: transitionText, modeTransition: {from: 'normal', to: 'plan'}}
+    {role: 'user', text: transitionText, metadata: {modeTransition: {from: 'normal', to: 'plan'}}}
   ]);
   const byCategory = Object.fromEntries(segments.map((segment) => [segment.category, segment.estimatedTokens]));
 
@@ -95,7 +95,7 @@ test('estimateContextUsageSegments classifies persisted mode transition as messa
 
 test('estimateContextUsageSegments counts Anthropic thinking as reasoning context', () => {
   const segments = estimateContextUsageSegments([
-    {role: 'anthropic_thinking', text: '', block: {type: 'thinking', thinking: 'inspect', signature: 'sig'}}
+    {role: 'extension', text: '', extension: {kind: 'anthropic_thinking', block: {type: 'thinking', thinking: 'inspect', signature: 'sig'}}}
   ]);
   const byCategory = Object.fromEntries(segments.map((segment) => [segment.category, segment.estimatedTokens]));
 

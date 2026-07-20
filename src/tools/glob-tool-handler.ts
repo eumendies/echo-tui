@@ -70,8 +70,11 @@ function createGlobToolHandler(options: GlobToolHandlerOptions = {}): ToolHandle
         toolName: GLOB_TOOL_NAME,
         ok: result.ok,
         text: result.text,
-        exitCode: result.exitCode,
-        truncated: result.truncated
+        details: {
+          kind: 'glob',
+          exitCode: result.exitCode,
+          truncated: result.truncated
+        }
       };
     }
   };

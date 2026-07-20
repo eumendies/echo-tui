@@ -173,7 +173,7 @@ function extractReasoningOutputItem(event: unknown): TranscriptRecord | null {
   }
 
   // 只有带 encrypted_content 的 reasoning item 才能跨请求安全回传；仅有 id 的 item 可能触发服务端 not found。
-  return createOpenAiReasoningRecord(item as {type: 'reasoning'; [key: string]: unknown});
+  return createOpenAiReasoningRecord(item as {type: 'reasoning'; encrypted_content: string; [key: string]: unknown});
 }
 
 function isCompletedEvent(event: unknown): boolean {

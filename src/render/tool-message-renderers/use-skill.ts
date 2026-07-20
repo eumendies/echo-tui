@@ -7,14 +7,14 @@ import {
   truncateDisplayText
 } from './shared';
 
-import type {TranscriptRecord} from '../../types/transcript';
+import type {ToolCallTranscriptRecord, ToolResultTranscriptRecord} from '../../types/transcript';
 
 const USE_SKILL_TOOL_NAME = 'use_skill';
 
 /**
  * 将 use_skill 相邻 call/result 投影成面向用户的摘要；成功结果正文继续只留在原始 transcript 中。
  */
-function renderUseSkillToolPairLines(call: TranscriptRecord, result: TranscriptRecord, width: number, theme: TuiTheme): string[] {
+function renderUseSkillToolPairLines(call: ToolCallTranscriptRecord, result: ToolResultTranscriptRecord, width: number, theme: TuiTheme): string[] {
   const lines = renderUseSkillToolCallLines(call, width, result.ok, theme);
 
   if (result.ok === false) {
@@ -27,14 +27,14 @@ function renderUseSkillToolPairLines(call: TranscriptRecord, result: TranscriptR
 /**
  * 渲染 use_skill 调用摘要；只暴露 skill 名称，不展示 arguments JSON 或附加参数。
  */
-function renderUseSkillToolCallLines(record: TranscriptRecord, width: number, callStatus: unknown, theme: TuiTheme): string[] {
+function renderUseSkillToolCallLines(record: ToolCallTranscriptRecord, width: number, callStatus: unknown, theme: TuiTheme): string[] {
   return renderUseSkillSummaryLines(resolveSkillNameFromArguments(record.argumentsText), width, callStatus, theme);
 }
 
 /**
  * 渲染孤立 use_skill result；成功结果隐藏正文，失败结果保留短诊断。
  */
-function renderUseSkillToolResultLines(record: TranscriptRecord, width: number, theme: TuiTheme): string[] {
+function renderUseSkillToolResultLines(record: ToolResultTranscriptRecord, width: number, theme: TuiTheme): string[] {
   const lines = renderUseSkillSummaryLines(resolveSkillNameFromResultText(record.text), width, record.ok, theme);
 
   if (record.ok === false) {
@@ -60,8 +60,8 @@ function renderUseSkillSummaryLines(skillName: string | null, width: number, cal
 /**
  * 失败结果保留原始短诊断的可见投影，但仍套用既有工具输出截断预算。
  */
-function renderUseSkillFailureResultLines(record: TranscriptRecord, width: number, theme: TuiTheme): string[] {
-  const resultText = typeof record.text === 'string' && record.text.trim() !== '' ? record.text : '(no output)';
+function renderUseSkillFailureResultLines(record: ToolResultTranscriptRecord, width: number, theme: TuiTheme): string[] {
+  const resultText = record.text.trim() !== '' ? record.text : '(no output)';
 
   return renderPrefixedLines({
     text: truncateDisplayText(resultText, TOOL_RESULT_MAX_DISPLAY_LINES),

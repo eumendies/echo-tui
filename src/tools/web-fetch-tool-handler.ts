@@ -100,8 +100,11 @@ function createWebFetchToolHandler(options: WebFetchToolHandlerOptions = {}): To
         toolName: WEB_FETCH_TOOL_NAME,
         ok: result.ok,
         text: result.text,
-        timedOut: result.timedOut,
-        truncated: result.truncated
+        details: {
+          kind: 'web_fetch',
+          timedOut: result.timedOut,
+          truncated: result.truncated
+        }
       };
     }
   };

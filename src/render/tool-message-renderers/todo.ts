@@ -9,7 +9,7 @@ import {
 } from './shared';
 
 import type {TodoItem} from '../../types/transcript';
-import type {TranscriptRecord} from '../../types/transcript';
+import type {ToolCallTranscriptRecord, ToolResultTranscriptRecord} from '../../types/transcript';
 
 const TODO_TOOL_NAMES = new Set(['create_todos', 'complete_todo']);
 
@@ -28,7 +28,7 @@ function isTodoRenderToolName(toolName: unknown): boolean {
  * 渲染 todo 工具调用行，避免高频 todo 操作落到冗长 JSON 展示。
  */
 function renderTodoToolCallLines(
-  record: TranscriptRecord,
+  record: ToolCallTranscriptRecord,
   width: number,
   callStatus: boolean | undefined,
   theme: TuiTheme
@@ -45,7 +45,7 @@ function renderTodoToolCallLines(
 /**
  * 渲染 todo 工具结果；解析失败返回 null 交给通用 renderer。
  */
-function renderTodoToolResultLines(record: TranscriptRecord, width: number, theme: TuiTheme): string[] | null {
+function renderTodoToolResultLines(record: ToolResultTranscriptRecord, width: number, theme: TuiTheme): string[] | null {
   const payload = parseTodoToolDisplayPayload(record.text);
 
   if (!payload) {

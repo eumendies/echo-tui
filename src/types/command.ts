@@ -1,7 +1,7 @@
 import type { InputEvent } from './input';
 import type { AgentType, ContextUsage, InteractionMode, ReasoningEffort } from './agent';
 import type {DiffFile, DiffSourceInfo, DiffSourceResult} from './diff';
-import type { CompactionState, TranscriptRecord, TranscriptSessionMetadata } from './transcript';
+import type { CompactionState, TranscriptRecord, TranscriptSessionMetadata, UserTranscriptMetadata } from './transcript';
 import type {UndoExecuteResult, UndoSummary} from './change-history';
 import type {UsageDailyAggregate, UsageQueryOptions} from './usage';
 import type {LifecycleHookConfigDraft, LifecycleHookDraftEntry, LifecycleHookEventName, LifecycleHookTestResult} from './hooks';
@@ -505,7 +505,7 @@ export type CommandSkillInvocationResult =
   | {
       ok: true;
       text: string;
-      metadata: Record<string, unknown>;
+      metadata: UserTranscriptMetadata;
       modelProfileId?: string;
     }
   | {
@@ -639,7 +639,7 @@ export type CommandHandler<TData extends object = Record<string, unknown>> = {
 export type CommandStartResult =
   | {kind: 'not_matched'}
   | {kind: 'handled'}
-  | {kind: 'submit_user_message'; text: string; displayText?: string; metadata?: Record<string, unknown>; modelProfileId?: string};
+  | {kind: 'submit_user_message'; text: string; displayText?: string; metadata?: UserTranscriptMetadata; modelProfileId?: string};
 
 export type MatchableCommandHandler<TData extends object = Record<string, unknown>> =
   CommandHandler<TData> & {

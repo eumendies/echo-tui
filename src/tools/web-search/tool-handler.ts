@@ -54,8 +54,11 @@ function createWebSearchToolHandler(options: WebSearchToolHandlerOptions = {}): 
         toolName: WEB_SEARCH_TOOL_NAME,
         ok: result.ok,
         text: result.text,
-        timedOut: result.timedOut,
-        truncated: result.truncated
+        details: {
+          kind: 'web_search',
+          timedOut: result.timedOut,
+          truncated: result.truncated
+        }
       };
     }
   };

@@ -16,7 +16,7 @@ import type {CommandSurface, SlashCommandDescriptor} from '../../types/command';
 import type {InputEvent} from '../../types/input';
 import type {RenderState, SlashSuggestionState, StatusLineModelState} from '../../types/render';
 import type {ToolExecutionResult} from '../../types/tool';
-import type {TranscriptRecord, TranscriptSession, TranscriptStore} from '../../types/transcript';
+import type {TranscriptRecord, TranscriptSession, TranscriptStore, UserTranscriptMetadata} from '../../types/transcript';
 import type {UndoExecuteResult} from '../../types/change-history';
 import type {ToolApprovalContext} from './tool-approval-context';
 import type {AssistantTurnHandle, InterruptAssistantTurnResult} from './turn-context';
@@ -406,7 +406,7 @@ class AppContext {
   /**
    * 提交用户消息并进入响应中状态；mode 改变时把一次性切换说明写入 provider-facing text。
    */
-  beginUserTurn(userText: string, options: {displayText?: string; metadata?: Record<string, unknown>; attachments?: ToolExecutionResult['attachments']} = {}): TranscriptRecord {
+  beginUserTurn(userText: string, options: {displayText?: string; metadata?: UserTranscriptMetadata; attachments?: ToolExecutionResult['attachments']} = {}): TranscriptRecord {
     const currentAgentMode = toAgentInteractionMode(this.interactionMode);
     const transition = createModeTransitionUserMessage(userText, this.lastSubmittedAgentMode, currentAgentMode);
     const record = this.turnContext.beginUserTurn(transition?.text || userText, {
@@ -432,8 +432,8 @@ class AppContext {
     for (let index = this.transcriptContext.records.length - 1; index >= 0; index -= 1) {
       const record = this.transcriptContext.records[index];
 
-      if (record.role === 'user' && isInteractionMode(record.interactionMode)) {
-        this.lastSubmittedAgentMode = toAgentInteractionMode(record.interactionMode);
+      if (record.role === 'user' && isInteractionMode(record.metadata?.interactionMode)) {
+        this.lastSubmittedAgentMode = toAgentInteractionMode(record.metadata.interactionMode);
         return;
       }
     }

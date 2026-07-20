@@ -547,7 +547,7 @@ test('listSkillUseRecords extracts tool and slash skill uses only', () => {
     { role: 'tool_result', text: '# Review', toolCallId: 'call_skill', toolName: USE_SKILL_TOOL_NAME, ok: true },
     { role: 'tool_call', text: '', toolCallId: 'call_bash', toolName: RUN_BASH_COMMAND_TOOL_NAME, argumentsText: JSON.stringify({ command: 'pwd' }) },
     { role: 'tool_call', text: '', toolCallId: 'call_bad', toolName: USE_SKILL_TOOL_NAME, argumentsText: '{not-json' },
-    { role: 'user', text: '[Skill Invocation]', skillInvocation: { source: 'slash', skillName: 'unit-test', argumentsText: 'legacy args', userRequestText: 'src/foo.ts' }, createdAt: '2026-06-09T00:01:00.000Z' },
+    { role: 'user', text: '[Skill Invocation]', metadata: {skillInvocation: { source: 'slash', skillName: 'unit-test', argumentsText: 'legacy args', userRequestText: 'src/foo.ts', sourceKind: 'project', sourcePath: '/workspace/.echo/skills/unit-test/SKILL.md' }}, createdAt: '2026-06-09T00:01:00.000Z' },
     { role: 'user', text: 'plain user' }
   ];
 
@@ -748,6 +748,7 @@ test('tool executor returns failure results for unknown tools and invalid argume
       callId: 'call_1',
       toolName: 'missing_tool',
       ok: false,
+      details: {kind: 'generic'},
       text: 'Unknown tool: missing_tool'
     }
   );
@@ -760,6 +761,7 @@ test('tool executor returns failure results for unknown tools and invalid argume
       callId: 'call_1',
       toolName: RUN_BASH_COMMAND_TOOL_NAME,
       ok: false,
+      details: {kind: 'generic'},
       text: 'Tool arguments are not valid JSON'
     }
   );
@@ -769,6 +771,7 @@ test('tool executor returns failure results for unknown tools and invalid argume
       callId: 'call_1',
       toolName: RUN_BASH_COMMAND_TOOL_NAME,
       ok: false,
+      details: {kind: 'generic'},
       text: 'Tool arguments must be a JSON object'
     }
   );
@@ -790,6 +793,7 @@ test('tool executor passes execution options to handlers', async () => {
         callId: call.callId,
         toolName: call.toolName,
         ok: true,
+        details: {kind: 'generic'},
         text: 'ok'
       };
     }
@@ -814,9 +818,9 @@ test('bash tool executes successful non-interactive commands', async () => {
   assert.equal(result.callId, 'call_1');
   assert.equal(result.toolName, RUN_BASH_COMMAND_TOOL_NAME);
   assert.equal(result.ok, true);
-  assert.equal(result.exitCode, 0);
-  assert.equal(result.timedOut, false);
-  assert.equal(result.truncated, false);
+  assert.equal(result.details.exitCode, 0);
+  assert.equal(result.details.timedOut, false);
+  assert.equal(result.details.truncated, false);
   assert.equal(result.text, 'hello');
 });
 
@@ -975,8 +979,8 @@ test('bash tool reports non-zero exit code as tool failure result', async () => 
   }));
 
   assert.equal(result.ok, false);
-  assert.equal(result.exitCode, 7);
-  assert.equal(result.timedOut, false);
+  assert.equal(result.details.exitCode, 7);
+  assert.equal(result.details.timedOut, false);
   assert.match(result.text, /command: printf err >&2; exit 7/);
   assert.match(result.text, /exit_code: 7/);
   assert.match(result.text, /stderr:\nerr/);
@@ -990,7 +994,7 @@ test('bash tool times out long-running commands', async () => {
   const result = await executor.execute(createCall({ argumentsText: JSON.stringify({ command: 'sleep 1' }) }));
 
   assert.equal(result.ok, false);
-  assert.equal(result.timedOut, true);
+  assert.equal(result.details.timedOut, true);
   assert.match(result.text, /command: sleep 1/);
   assert.match(result.text, /timed_out: true/);
   assert.match(result.text, /Command timed out/);
@@ -1010,7 +1014,7 @@ test('bash tool defaults to no timeout and responds to executor abort signal', a
   const result = await pending;
 
   assert.equal(result.ok, false);
-  assert.equal(result.timedOut, false);
+  assert.equal(result.details.timedOut, false);
   assert.match(result.text, /command: /);
   assert.match(result.text, /error: Command interrupted/);
 });
@@ -1023,7 +1027,7 @@ test('bash tool truncates oversized output', async () => {
   const result = await executor.execute(createCall({ argumentsText: JSON.stringify({ command: 'printf 123456789' }) }));
 
   assert.equal(result.ok, true);
-  assert.equal(result.truncated, true);
+  assert.equal(result.details.truncated, true);
   assert.match(result.text, /command: printf 123456789/);
   assert.match(result.text, /truncated: true/);
   assert.match(result.text, /stdout:\n12345/);
@@ -1041,7 +1045,7 @@ test('read_files reads a text file with line pagination metadata', async () => {
   assert.equal(result.callId, 'call_read');
   assert.equal(result.toolName, READ_FILES_TOOL_NAME);
   assert.equal(result.ok, true);
-  assert.equal(result.truncated, false);
+  assert.equal(result.details.truncated, false);
   assert.match(result.text, /--- text: src\.txt/);
   assert.match(result.text, /has_more: true/);
   assert.match(result.text, /content:/);
@@ -1122,7 +1126,7 @@ test('read_files reports unsupported media, content limits, and total output tru
   const limitedExecutor = createToolExecutor(createToolRegistry([createReadFilesToolHandler({ cwd, maxFileContentBytes: 5 })]));
   const limitedResult = await limitedExecutor.execute(createReadFilesCall([{ path: 'large.txt' }]));
   assert.equal(limitedResult.ok, true);
-  assert.equal(limitedResult.truncated, true);
+  assert.equal(limitedResult.details.truncated, true);
   assert.match(limitedResult.text, /content_truncated: true/);
   assert.match(limitedResult.text, /12345/);
   assert.doesNotMatch(limitedResult.text, /123456/);
@@ -1136,7 +1140,7 @@ test('read_files reports unsupported media, content limits, and total output tru
   assert.match(imageResult.text, /--- image: image\.bmp/);
   assert.match(imageResult.text, /error: unsupported media type/);
   assert.doesNotMatch(imageResult.text, /content:\nBM/);
-  assert.equal(truncatedResult.truncated, true);
+  assert.equal(truncatedResult.details.truncated, true);
   assert.match(truncatedResult.text, /Output was truncated/);
 });
 
@@ -1153,7 +1157,7 @@ test('read_files lists direct directory entries with reusable paths, types, size
   const result = await executor.execute(createReadFilesCall([{ path: 'dir' }]));
 
   assert.equal(result.ok, true);
-  assert.equal(result.truncated, false);
+  assert.equal(result.details.truncated, false);
   assert.match(result.text, /--- directory: dir/);
   assert.doesNotMatch(result.text, /returned_entries:/);
   assert.doesNotMatch(result.text, /has_more: false/);
@@ -1182,7 +1186,7 @@ test('read_files paginates directories within the directory entry safety limit',
 
   const defaultPage = await executor.execute(createReadFilesCall([{ path: 'dir' }]));
   assert.equal(defaultPage.ok, true);
-  assert.equal(defaultPage.truncated, true);
+  assert.equal(defaultPage.details.truncated, true);
   assert.match(defaultPage.text, /has_more: true/);
   assert.match(defaultPage.text, /dir\/a\.txt/);
   assert.match(defaultPage.text, /dir\/b\.txt/);
@@ -1190,7 +1194,7 @@ test('read_files paginates directories within the directory entry safety limit',
 
   const explicitPage = await executor.execute(createReadFilesCall([{ path: 'dir', offset: 1, limit: 1 }]));
   assert.equal(explicitPage.ok, true);
-  assert.equal(explicitPage.truncated, false);
+  assert.equal(explicitPage.details.truncated, false);
   assert.match(explicitPage.text, /has_more: true/);
   assert.doesNotMatch(explicitPage.text, /dir\/a\.txt/);
   assert.match(explicitPage.text, /dir\/b\.txt/);
@@ -1198,7 +1202,7 @@ test('read_files paginates directories within the directory entry safety limit',
 
   const cappedPage = await executor.execute(createReadFilesCall([{ path: 'dir', limit: 100_000 }]));
   assert.equal(cappedPage.ok, true);
-  assert.equal(cappedPage.truncated, true);
+  assert.equal(cappedPage.details.truncated, true);
   assert.match(cappedPage.text, /has_more: true/);
 });
 
@@ -1209,7 +1213,7 @@ test('read_files returns an explicit successful result for empty directories', a
   const result = await executor.execute(createReadFilesCall([{ path: 'empty' }]));
 
   assert.equal(result.ok, true);
-  assert.equal(result.truncated, false);
+  assert.equal(result.details.truncated, false);
   assert.doesNotMatch(result.text, new RegExp(`effective_limit: ${DEFAULT_MAX_DIRECTORY_ENTRIES}`));
   assert.doesNotMatch(result.text, /has_more: false/);
   assert.match(result.text, /entries:\n\(empty\)/);
@@ -1247,7 +1251,7 @@ test('read_files applies the total output cap to directory results', async () =>
   const result = await executor.execute(createReadFilesCall([{ path: 'dir' }]));
 
   assert.equal(result.ok, true);
-  assert.equal(result.truncated, true);
+  assert.equal(result.details.truncated, true);
   assert.match(result.text, /Output was truncated/);
 });
 
@@ -1264,7 +1268,7 @@ test('read_files attaches supported images without exposing base64 in text', asy
   ]));
 
   assert.equal(result.ok, false);
-  assert.equal(result.truncated, false);
+  assert.equal(result.details.truncated, false);
   assert.deepEqual(result.attachments, [{
     kind: 'image',
     mediaType: 'image/png',
@@ -1299,7 +1303,7 @@ test('read_files extracts PDF text without exposing binary or attachments', asyn
   const result = await executor.execute(createReadFilesCall([{ path: 'doc.pdf' }]));
 
   assert.equal(result.ok, true);
-  assert.equal(result.truncated, false);
+  assert.equal(result.details.truncated, false);
   assert.equal(result.attachments, undefined);
   assert.match(result.text, /--- pdf: doc\.pdf/);
   assert.match(result.text, /pages: 1/);
@@ -1390,7 +1394,7 @@ test('read_files can read a limited slice from a large text file', async () => {
   ]));
 
   assert.equal(result.ok, true);
-  assert.equal(result.truncated, false);
+  assert.equal(result.details.truncated, false);
   assert.match(result.text, /has_more: true/);
   assert.match(result.text, /1501 │ line-1500\n1502 │ line-1501/);
   assert.doesNotMatch(result.text, /line-1499/);
@@ -1464,7 +1468,7 @@ test('web_fetch fetches text, JSON, and HTML with pagination metadata', async ()
   assert.equal(textResult.callId, 'call_web');
   assert.equal(textResult.toolName, WEB_FETCH_TOOL_NAME);
   assert.equal(textResult.ok, true);
-  assert.equal(textResult.truncated, false);
+  assert.equal(textResult.details.truncated, false);
   assert.match(textResult.text, /^https:\/\/example\.com\/text/m);
   assert.match(textResult.text, /status: 200 OK/);
   assert.match(textResult.text, /has_more: true/);
@@ -1568,10 +1572,10 @@ test('web_fetch reports HTTP errors, timeout, body caps, output caps, and unsupp
   assert.match(missingResult.text, /status: 404 Not Found/);
   assert.match(missingResult.text, /not f/);
   assert.equal(timeoutResult.ok, false);
-  assert.equal(timeoutResult.timedOut, true);
+  assert.equal(timeoutResult.details.timedOut, true);
   assert.match(timeoutResult.text, /request timed out after 10ms/);
   assert.equal(largeResult.ok, true);
-  assert.equal(largeResult.truncated, true);
+  assert.equal(largeResult.details.truncated, true);
   assert.match(largeResult.text, /body_truncated: true/);
   assert.match(largeResult.text, /12345/);
   assert.doesNotMatch(largeResult.text, /123456/);
@@ -1579,7 +1583,7 @@ test('web_fetch reports HTTP errors, timeout, body caps, output caps, and unsupp
   assert.match(imageResult.text, /unsupported media type/);
   assert.match(imageResult.text, /content_type: image\/png/);
   assert.doesNotMatch(imageResult.text, /PNG/);
-  assert.equal(verboseResult.truncated, true);
+  assert.equal(verboseResult.details.truncated, true);
   assert.match(verboseResult.text, /Output was truncated/);
 });
 
@@ -1613,7 +1617,7 @@ test('web_fetch reports parent abort as cancellation without timeout', async () 
   const result = await pending;
 
   assert.equal(result.ok, false);
-  assert.equal(result.timedOut, false);
+  assert.equal(result.details.timedOut, false);
   assert.match(result.text, /request cancelled/);
 });
 
@@ -1637,8 +1641,8 @@ test('web_search rejects invalid arguments without fetching', async () => {
     const result = await executor.execute(createWebSearchCall(args));
 
     assert.equal(result.ok, false, JSON.stringify(args));
-    assert.equal(result.timedOut, false);
-    assert.equal(result.truncated, false);
+    assert.equal(result.details.timedOut, false);
+    assert.equal(result.details.truncated, false);
     assert.match(result.text, expected, JSON.stringify(args));
   }
 
@@ -1676,8 +1680,8 @@ test('web_search fetches Bing HTML and returns filtered natural results', async 
   assert.equal(result.callId, 'call_search');
   assert.equal(result.toolName, WEB_SEARCH_TOOL_NAME);
   assert.equal(result.ok, true);
-  assert.equal(result.timedOut, false);
-  assert.equal(result.truncated, false);
+  assert.equal(result.details.timedOut, false);
+  assert.equal(result.details.truncated, false);
   assert.doesNotMatch(result.text, /^query: /m);
   assert.doesNotMatch(result.text, /^count: /m);
   assert.doesNotMatch(result.text, /^offset: /m);
@@ -2034,20 +2038,20 @@ test('web_search reports blocked pages, no results, HTTP errors, timeout, body c
   assert.equal(blockedResult.ok, false);
   assert.match(blockedResult.text, /blocked or requires verification/);
   assert.equal(noneResult.ok, true);
-  assert.equal(noneResult.truncated, false);
+  assert.equal(noneResult.details.truncated, false);
   assert.match(noneResult.text, /no search results/);
   assert.equal(weirdResult.ok, false);
   assert.match(weirdResult.text, /did not contain parseable natural results/);
   assert.equal(missingResult.ok, false);
   assert.match(missingResult.text, /HTTP 503 Unavailable/);
   assert.equal(timeoutResult.ok, false);
-  assert.equal(timeoutResult.timedOut, true);
+  assert.equal(timeoutResult.details.timedOut, true);
   assert.match(timeoutResult.text, /request timed out after 10ms/);
   assert.equal(largeResult.ok, false);
-  assert.equal(largeResult.truncated, true);
+  assert.equal(largeResult.details.truncated, true);
   assert.match(largeResult.text, /did not contain parseable natural results/);
   assert.equal(verboseResult.ok, true);
-  assert.equal(verboseResult.truncated, true);
+  assert.equal(verboseResult.details.truncated, true);
   assert.match(verboseResult.text, /Output was truncated/);
 });
 
@@ -2081,7 +2085,7 @@ test('web_search reports parent abort as cancellation without timeout', async ()
   const result = await pending;
 
   assert.equal(result.ok, false);
-  assert.equal(result.timedOut, false);
+  assert.equal(result.details.timedOut, false);
   assert.match(result.text, /search request cancelled/);
 });
 
@@ -2101,7 +2105,7 @@ test('web_search stops fallback attempts after parent abort even when fetch igno
   }), { abortSignal: controller.signal });
 
   assert.equal(result.ok, false);
-  assert.equal(result.timedOut, false);
+  assert.equal(result.details.timedOut, false);
   assert.match(result.text, /search request cancelled/);
   assert.equal(fetchCalls, 1);
 });
@@ -2142,8 +2146,8 @@ process.exit(0);
   assert.equal(result.callId, 'call_glob');
   assert.equal(result.toolName, GLOB_TOOL_NAME);
   assert.equal(result.ok, true);
-  assert.equal(result.exitCode, 0);
-  assert.equal(result.truncated, false);
+  assert.equal(result.details.exitCode, 0);
+  assert.equal(result.details.truncated, false);
   assert.deepEqual(args, ['--files', '--hidden', '--sort', 'path', '--null', '--glob', '*.ts', '--glob', '!.git', '--glob', '!.git/**', '--', '.']);
   assert.doesNotMatch(result.text, /pattern: \*\.ts/);
   assert.doesNotMatch(result.text, /returned_paths:/);
@@ -2171,8 +2175,8 @@ test('glob limits search roots, discovers hidden files, and treats no matches as
 
   const missingResult = await executor.execute(createGlobCall({ pattern: '*.missing', paths: null }));
   assert.equal(missingResult.ok, true);
-  assert.equal(missingResult.exitCode, 1);
-  assert.equal(missingResult.truncated, false);
+  assert.equal(missingResult.details.exitCode, 1);
+  assert.equal(missingResult.details.truncated, false);
   assert.match(missingResult.text, /no files matched/);
 });
 
@@ -2211,7 +2215,7 @@ process.exit(2);
   const errorResult = await errorExecutor.execute(createGlobCall({ pattern: '**/*', paths: null }));
 
   assert.equal(errorResult.ok, false);
-  assert.equal(errorResult.exitCode, 2);
+  assert.equal(errorResult.details.exitCode, 2);
   assert.match(errorResult.text, /file listing failed/);
 
   const missingExecutor = createToolExecutor(createToolRegistry([createGlobToolHandler({
@@ -2221,7 +2225,7 @@ process.exit(2);
   const missingResult = await missingExecutor.execute(createGlobCall({ pattern: '**/*', paths: null }));
 
   assert.equal(missingResult.ok, false);
-  assert.equal(missingResult.exitCode, null);
+  assert.equal(missingResult.details.exitCode, null);
   assert.match(missingResult.text, /ripgrep executable not found/);
 });
 
@@ -2236,7 +2240,7 @@ process.exit(0);
 
   assert.equal(DEFAULT_MAX_PATHS > 2, true);
   assert.equal(result.ok, true);
-  assert.equal(result.truncated, true);
+  assert.equal(result.details.truncated, true);
   assert.match(result.text, /has_more: true/);
   assert.match(result.text, /More than 2 paths found/);
   assert.match(result.text, /one\.ts/);
@@ -2273,8 +2277,8 @@ process.exit(0);
   assert.equal(result.callId, 'call_grep');
   assert.equal(result.toolName, GREP_TOOL_NAME);
   assert.equal(result.ok, true);
-  assert.equal(result.exitCode, 0);
-  assert.equal(result.truncated, false);
+  assert.equal(result.details.exitCode, 0);
+  assert.equal(result.details.truncated, false);
   assert.deepEqual(args, ['--json', '--line-number', '--column', '--fixed-strings', '--ignore-case', '--glob', '*.ts', '--', 'needle', 'src', 'test']);
   assert.doesNotMatch(result.text, /pattern: needle/);
   assert.doesNotMatch(result.text, /returned_matches:/);
@@ -2324,8 +2328,8 @@ process.exit(0);
   }));
 
   assert.equal(noMatchResult.ok, true);
-  assert.equal(noMatchResult.exitCode, 1);
-  assert.equal(noMatchResult.truncated, false);
+  assert.equal(noMatchResult.details.exitCode, 1);
+  assert.equal(noMatchResult.details.truncated, false);
   assert.match(noMatchResult.text, /no matches found/);
 });
 
@@ -2360,7 +2364,7 @@ process.exit(2);
   }));
 
   assert.equal(errorResult.ok, false);
-  assert.equal(errorResult.exitCode, 2);
+  assert.equal(errorResult.details.exitCode, 2);
   assert.match(errorResult.text, /regex parse error/);
 
   const missingExecutor = createToolExecutor(createToolRegistry([createGrepToolHandler({
@@ -2376,7 +2380,7 @@ process.exit(2);
   }));
 
   assert.equal(missingResult.ok, false);
-  assert.equal(missingResult.exitCode, null);
+  assert.equal(missingResult.details.exitCode, null);
   assert.match(missingResult.text, /ripgrep executable not found/);
 });
 
@@ -2407,7 +2411,7 @@ process.exit(0);
 
   assert.equal(DEFAULT_MAX_MATCHES > 2, true);
   assert.equal(result.ok, true);
-  assert.equal(result.truncated, true);
+  assert.equal(result.details.truncated, true);
   assert.match(result.text, /has_more: true/);
   assert.match(result.text, /More than 2 matches found/);
   assert.match(result.text, /hit-0/);
@@ -2777,7 +2781,7 @@ test('apply_patch supports Begin Patch context-only chunks as sequential anchors
     ''
   ].join('\n'));
   assert.deepEqual(
-    result.display.files[0].lines.filter((line) => line.kind !== 'context'),
+    result.details.display.files[0].lines.filter((line) => line.kind !== 'context'),
     [
       {kind: 'removed', text: "const {createCommandHost} = require('../../src/app/command/command-host');", postLine: null},
       {kind: 'added', text: "const {createCommandHost, createCopyableRecords} = require('../../src/app/command/command-host');", postLine: 1},
@@ -2965,7 +2969,7 @@ test('apply_patch deletes files from Begin Patch and restores through change his
   assert.equal(result.ok, true);
   assert.equal(result.text, 'Applied patch.\nChanged files:\n- old.txt (deleted)');
   assert.equal(fs.existsSync(target), false);
-  assert.deepEqual(result.display, {
+  assert.deepEqual(result.details.display, {
     kind: 'apply_patch',
     files: [{
       path: 'old.txt',
@@ -3014,7 +3018,7 @@ test('apply_patch deletes files from unified diff with content verification', as
   assert.equal(result.ok, true);
   assert.match(result.text, /remove\.txt \(deleted\)/);
   assert.equal(fs.existsSync(path.join(cwd, 'remove.txt')), false);
-  assert.deepEqual(result.display.files[0], {
+  assert.deepEqual(result.details.display.files[0], {
     path: 'remove.txt',
     kind: 'deleted',
     lines: [
@@ -3206,7 +3210,7 @@ test('apply_patch replaces the same file through repeated Begin Patch operations
   assert.equal(result.ok, true);
   assert.equal(result.text, 'Applied patch.\nChanged files:\n- replace.txt (updated)');
   assert.equal(fs.readFileSync(target, 'utf8'), 'new\nvalue\n');
-  assert.deepEqual(result.display.files, [
+  assert.deepEqual(result.details.display.files, [
     {
       path: 'replace.txt',
       kind: 'deleted',
@@ -3244,7 +3248,7 @@ test('apply_patch replaces the same file through repeated unified diff operation
   assert.equal(result.ok, true);
   assert.equal(result.text, 'Applied patch.\nChanged files:\n- replace.txt (updated)');
   assert.equal(readWorkspaceFile(cwd, 'replace.txt'), 'new\n');
-  assert.deepEqual(result.display.files.map((file) => file.kind), ['deleted', 'added']);
+  assert.deepEqual(result.details.display.files.map((file) => file.kind), ['deleted', 'added']);
 });
 
 test('apply_patch sequences repeated updates across relative and absolute paths', async () => {
@@ -3285,7 +3289,7 @@ test('apply_patch sequences repeated updates across relative and absolute paths'
   assert.equal(readWorkspaceFile(cwd, 'created.txt'), 'second\n');
   assert.equal((result.text.match(/same\.txt \(updated\)/g) || []).length, 1);
   assert.equal((result.text.match(/created\.txt \(added\)/g) || []).length, 1);
-  assert.equal(result.display.files.length, 4);
+  assert.equal(result.details.display.files.length, 4);
 });
 
 test('apply_patch rejects invalid repeated state transitions without writing virtual changes', async () => {
@@ -3536,7 +3540,7 @@ test('apply_patch returns display metadata for successful and failed parsed patc
 
   assert.equal(updateResult.ok, true);
   assert.equal(updateResult.text, 'Applied patch.\nChanged files:\n- src.txt (updated)');
-  assert.deepEqual(updateResult.display, {
+  assert.deepEqual(updateResult.details.display, {
     kind: 'apply_patch',
     files: [{
       path: 'src.txt',
@@ -3560,7 +3564,7 @@ test('apply_patch returns display metadata for successful and failed parsed patc
 
   assert.equal(addResult.ok, true);
   assert.equal(addResult.text, 'Applied patch.\nChanged files:\n- hello.txt (added)');
-  assert.deepEqual(addResult.display, {
+  assert.deepEqual(addResult.details.display, {
     kind: 'apply_patch',
     files: [{
       path: 'hello.txt',
@@ -3583,7 +3587,7 @@ test('apply_patch returns display metadata for successful and failed parsed patc
 
   assert.equal(failedResult.ok, false);
   assert.match(failedResult.text, /matched 0 locations/);
-  assert.equal(failedResult.display, undefined);
+  assert.equal(failedResult.details.display, undefined);
   assert.equal(readWorkspaceFile(cwd, 'missing.txt'), 'actual\n');
 });
 
@@ -3630,7 +3634,7 @@ test('apply_patch display metadata returns complete post-image lines across hunk
     ''
   ].join('\n'));
   assert.deepEqual(
-    result.display.files[0].lines.filter((line) => line.kind !== 'context'),
+    result.details.display.files[0].lines.filter((line) => line.kind !== 'context'),
     [
       {kind: 'removed', text: 'five', postLine: null},
       {kind: 'added', text: 'FIVE', postLine: 5},
@@ -3639,10 +3643,10 @@ test('apply_patch display metadata returns complete post-image lines across hunk
     ]
   );
   assert.deepEqual(
-    result.display.files[0].lines.filter((line) => line.kind !== 'removed').map((line) => line.postLine),
+    result.details.display.files[0].lines.filter((line) => line.kind !== 'removed').map((line) => line.postLine),
     [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
   );
-  assert.equal(result.display.files[0].lines.find((line) => line.postLine === 10).text, 'ten');
+  assert.equal(result.details.display.files[0].lines.find((line) => line.postLine === 10).text, 'ten');
 });
 
 test('apply_patch display metadata clears added status when a later hunk deletes that line', async () => {
@@ -3662,7 +3666,7 @@ test('apply_patch display metadata clears added status when a later hunk deletes
 
   assert.equal(result.ok, true);
   assert.equal(readWorkspaceFile(cwd, 'src.txt'), 'C\n');
-  assert.deepEqual(result.display.files[0].lines, [
+  assert.deepEqual(result.details.display.files[0].lines, [
     {kind: 'removed', text: 'A', postLine: null},
     {kind: 'removed', text: 'B', postLine: null},
     {kind: 'context', text: 'C', postLine: 1}

@@ -181,9 +181,9 @@ test('runAssistantTurn stores plan transition prompt while preserving display, h
   assert.match(userRecord.text, /to: plan/);
   assert.match(userRecord.text, /\[User Request\]\nexpanded request$/);
   assert.equal(userRecord.displayText, '@request.png');
-  assert.equal(userRecord.interactionMode, 'plan');
-  assert.deepEqual(userRecord.modeTransition, {from: 'normal', to: 'plan'});
-  assert.deepEqual(userRecord.skillInvocation, {skillName: 'example'});
+  assert.equal(userRecord.metadata.interactionMode, 'plan');
+  assert.deepEqual(userRecord.metadata.modeTransition, {from: 'normal', to: 'plan'});
+  assert.deepEqual(userRecord.metadata.skillInvocation, {skillName: 'example'});
   assert.deepEqual(userRecord.attachments, attachments);
   assert.equal(capturedSession.interactionMode, 'plan');
   assert.equal(capturedSession.records[0].text, userRecord.text);
@@ -223,7 +223,7 @@ test('runAssistantTurn injects only effective mode transitions across turns', as
   });
 
   const userRecords = harness.appContext.transcriptContext.records.filter((record) => record.role === 'user');
-  assert.deepEqual(userRecords.map((record) => record.modeTransition), [
+  assert.deepEqual(userRecords.map((record) => record.metadata?.modeTransition), [
     {from: 'normal', to: 'plan'},
     undefined,
     {from: 'plan', to: 'normal'}
@@ -236,9 +236,9 @@ test('runAssistantTurn injects only effective mode transitions across turns', as
 test('runAssistantTurn persists provider records without visible assistant text', async () => {
   const harness = createHarness();
   const reasoningContentRecord = {
-    role: 'openai_chat_reasoning',
+    role: 'extension',
     text: '',
-    reasoningContent: 'hidden'
+    extension: {kind: 'openai_chat_reasoning', reasoningContent: 'hidden'}
   };
 
   await runAssistantTurn({
@@ -250,8 +250,8 @@ test('runAssistantTurn persists provider records without visible assistant text'
     }
   });
 
-  assert.deepEqual(harness.appended.map((record) => record.role), ['user', 'openai_chat_reasoning', 'assistant']);
-  assert.deepEqual(harness.appContext.transcriptContext.records.map((record) => record.role), ['user', 'openai_chat_reasoning', 'assistant']);
+  assert.deepEqual(harness.appended.map((record) => record.role), ['user', 'extension', 'assistant']);
+  assert.deepEqual(harness.appContext.transcriptContext.records.map((record) => record.role), ['user', 'extension', 'assistant']);
 });
 
 test('runAssistantTurn persists shared tool records with result metadata', async () => {
@@ -277,8 +277,7 @@ test('runAssistantTurn persists shared tool records with result metadata', async
         toolName: 'web_search',
         ok: true,
         text: 'search result',
-        timedOut: false,
-        truncated: true,
+        details: {kind: 'web_search', timedOut: false, truncated: true},
         attachments
       });
       callbacks.onComplete('done');
@@ -294,8 +293,8 @@ test('runAssistantTurn persists shared tool records with result metadata', async
     'assistant'
   ]);
   assert.equal(toolCall.text, 'web_search({"query":"Echo TUI"})');
-  assert.equal(toolResult.timedOut, false);
-  assert.equal(toolResult.truncated, true);
+  assert.equal(toolResult.details.timedOut, false);
+  assert.equal(toolResult.details.truncated, true);
   assert.deepEqual(toolResult.attachments, attachments);
 });
 

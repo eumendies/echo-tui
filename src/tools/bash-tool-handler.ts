@@ -70,7 +70,8 @@ function executeBashCommand(
       callId: call.callId,
       toolName: RUN_BASH_COMMAND_TOOL_NAME,
       ok: false,
-      text: 'command must be a non-empty string'
+      text: 'command must be a non-empty string',
+      details: {kind: 'bash'}
     });
   }
 
@@ -90,11 +91,14 @@ function executeBashCommand(
       callId: call.callId,
       toolName: RUN_BASH_COMMAND_TOOL_NAME,
       ok: !result.timedOut && result.exitCode === 0,
-      exitCode: result.exitCode,
-      timedOut: result.timedOut,
-      truncated: result.truncated,
-      durationMs: result.durationMs,
-      text: formatBashResult(result)
+      text: formatBashResult(result),
+      details: {
+        kind: 'bash',
+        exitCode: result.exitCode,
+        timedOut: result.timedOut,
+        truncated: result.truncated,
+        durationMs: result.durationMs
+      }
     };
   });
 }

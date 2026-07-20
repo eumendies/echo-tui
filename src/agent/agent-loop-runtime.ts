@@ -49,6 +49,7 @@ function createRejectedToolResult(call: ToolCall, message?: string): ToolExecuti
     callId: call.callId,
     toolName: call.toolName,
     ok: false,
+    details: {kind: 'generic'},
     text: normalizedMessage
   };
 }
@@ -262,7 +263,19 @@ function hasRecordableProviderUsage(usage: ProviderUsage | undefined, usageInput
 }
 
 function isToolResultTruncated(result: ToolExecutionResult): boolean | undefined {
-  return typeof (result as {truncated?: unknown}).truncated === 'boolean' ? (result as {truncated: boolean}).truncated : undefined;
+  switch (result.details.kind) {
+    case 'glob':
+    case 'grep':
+    case 'read_files':
+    case 'web_fetch':
+    case 'web_search':
+      return result.details.truncated;
+    case 'bash':
+      return result.details.truncated;
+    case 'apply_patch':
+    case 'generic':
+      return undefined;
+  }
 }
 
 /**

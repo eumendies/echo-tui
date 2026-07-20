@@ -422,9 +422,9 @@ test('buildProviderRecords filters visible reasoning summary records', () => {
 
 test('buildProviderRecords keeps chat reasoning content records', () => {
   const reasoningRecord = {
-    role: 'openai_chat_reasoning',
+    role: 'extension',
     text: '',
-    reasoningContent: 'hidden'
+    extension: {kind: 'openai_chat_reasoning', reasoningContent: 'hidden'}
   };
   const records = buildProviderRecords([
     { role: 'user', text: 'inspect' },
@@ -442,9 +442,9 @@ test('buildProviderRecords keeps chat reasoning content records', () => {
 test('createAgentLoopRuntime emits provider records callback before visible completion', async () => {
   const callbackEvents = [];
   const reasoningContentRecord = {
-    role: 'openai_chat_reasoning',
+    role: 'extension',
     text: '',
-    reasoningContent: 'hidden'
+    extension: {kind: 'openai_chat_reasoning', reasoningContent: 'hidden'}
   };
   const agent = {
     async runTurn() {

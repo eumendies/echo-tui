@@ -22,7 +22,7 @@ test('createMcpToolRegistry converts MCP tools and proxies calls', async () => {
 
   assert.deepEqual(registry.listDefinitions(), [{name: 'mcp__docs__search', description: 'Search docs', parameters: {type: 'object'}}]);
   assert.deepEqual(calls, [{serverName: 'docs', toolName: 'search', args: {query: 'mcp'}}]);
-  assert.deepEqual(result, {callId: 'call_1', toolName: 'mcp__docs__search', ok: true, text: 'result text'});
+  assert.deepEqual(result, {callId: 'call_1', toolName: 'mcp__docs__search', ok: true, details: {kind: 'generic'}, text: 'result text'});
 });
 
 test('MCP result formatter handles rich content and errors', () => {
@@ -38,8 +38,8 @@ test('MCP result formatter truncates oversized output', () => {
 });
 
 test('mergeToolRegistries keeps built-in skill catalog and appends MCP tools', () => {
-  const localHandler = {definition: {name: 'local', description: 'Local', parameters: {type: 'object'}}, execute() { return {callId: 'c', toolName: 'local', ok: true, text: 'ok'}; }};
-  const mcpHandler = {definition: {name: 'mcp__docs__search', description: 'Search', parameters: {type: 'object'}}, execute() { return {callId: 'c', toolName: 'mcp__docs__search', ok: true, text: 'ok'}; }};
+  const localHandler = {definition: {name: 'local', description: 'Local', parameters: {type: 'object'}}, execute() { return {callId: 'c', toolName: 'local', ok: true, details: {kind: 'generic'}, text: 'ok'}; }};
+  const mcpHandler = {definition: {name: 'mcp__docs__search', description: 'Search', parameters: {type: 'object'}}, execute() { return {callId: 'c', toolName: 'mcp__docs__search', ok: true, details: {kind: 'generic'}, text: 'ok'}; }};
   const primary = {...createToolRegistry([localHandler]), listSkillCatalog: () => [{name: 'skill', description: 'desc'}]};
   const merged = mergeToolRegistries(primary, createToolRegistry([mcpHandler]));
 
