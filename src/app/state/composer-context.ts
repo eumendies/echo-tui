@@ -18,44 +18,26 @@ class ComposerContext {
     this.isResponding = isResponding;
   }
 
-  /**
-   * 返回当前 composer 文本。
-   */
   getText(): string {
     return composerOps.getText(this.composer);
   }
 
-  /**
-   * 用指定文本替换当前 composer 内容，并把光标移动到文本末尾。
-   */
   setText(text: string): void {
     composerOps.setText(this.composer, text);
   }
 
-  /**
-   * 返回输入历史快照，避免调用方直接修改内部数组。
-   */
   getInputHistory(): string[] {
     return [...this.inputHistory];
   }
 
-  /**
-   * 记录一次成功提交的用户输入。
-   */
   recordInput(text: string): void {
     this.inputHistory.push(text);
   }
 
-  /**
-   * 退出历史浏览模式。
-   */
   leaveHistoryBrowsing(): void {
     this.historyIndex = null;
   }
 
-  /**
-   * 重置 composer 内容和光标。
-   */
   reset(): void {
     composerOps.reset(this.composer);
   }

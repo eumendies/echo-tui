@@ -6,8 +6,6 @@ import type { InputEvent } from '../types/input';
 /**
  * 创建一个新的 composer 状态，内部使用字符数组而不是原始字符串管理光标。
  *
- * @param initialValue 初始文本
- * @returns 新的 composer 状态
  */
 export function createComposer(initialValue = ''): ComposerState {
   // composer 用字符数组作为编辑模型，不用 string.length 管理光标。
@@ -22,8 +20,6 @@ export function createComposer(initialValue = ''): ComposerState {
 /**
  * 读取 composer 当前完整文本。
  *
- * @param composer composer 状态
- * @returns 当前完整文本
  */
 export function getText(composer: Pick<ComposerState, 'chars'>): string {
   return composer.chars.join('');
@@ -32,8 +28,6 @@ export function getText(composer: Pick<ComposerState, 'chars'>): string {
 /**
  * 判断 composer 是否为空。
  *
- * @param composer composer 状态
- * @returns 是否为空
  */
 export function isEmpty(composer: Pick<ComposerState, 'chars'>): boolean {
   return composer.chars.length === 0;
@@ -42,9 +36,6 @@ export function isEmpty(composer: Pick<ComposerState, 'chars'>): boolean {
 /**
  * 将输入事件应用到 composer 编辑状态；返回 false 表示该事件不是文本编辑事件。
  *
- * @param composer composer 状态
- * @param event 输入事件
- * @returns 是否消费了该编辑事件
  */
 export function applyComposerEditEvent(composer: ComposerState, event: InputEvent): boolean {
   switch (event.type) {
@@ -86,8 +77,6 @@ export function applyComposerEditEvent(composer: ComposerState, event: InputEven
 /**
  * 在当前光标位置插入文本，并让光标移动到插入内容之后。
  *
- * @param composer composer 状态
- * @param text 要插入的文本
  */
 export function insertText(composer: ComposerState, text: string): void {
   // Array.from 让中文字符按一个编辑单元插入和移动。
@@ -99,10 +88,6 @@ export function insertText(composer: ComposerState, text: string): void {
 /**
  * 替换 composer 中的一段编辑单元，并把光标移动到替换内容之后。
  *
- * @param composer composer 状态
- * @param start 起始编辑单元下标，包含
- * @param end 结束编辑单元下标，不包含
- * @param text 替换文本
  */
 export function replaceRange(composer: ComposerState, start: number, end: number, text: string): void {
   const normalizedStart = Math.min(Math.max(0, Math.floor(start)), composer.chars.length);
@@ -115,7 +100,6 @@ export function replaceRange(composer: ComposerState, start: number, end: number
 /**
  * 在当前光标位置插入逻辑换行。
  *
- * @param composer composer 状态
  */
 export function insertNewline(composer: ComposerState): void {
   insertText(composer, '\n');
@@ -124,7 +108,6 @@ export function insertNewline(composer: ComposerState): void {
 /**
  * 删除光标前一个编辑单元，并把光标左移一位。
  *
- * @param composer composer 状态
  */
 export function backspace(composer: ComposerState): void {
   if (composer.cursor === 0) {
@@ -138,7 +121,6 @@ export function backspace(composer: ComposerState): void {
 /**
  * 删除光标后的一个编辑单元，不移动当前光标。
  *
- * @param composer composer 状态
  */
 export function deleteForward(composer: ComposerState): void {
   if (composer.cursor >= composer.chars.length) {
@@ -151,7 +133,6 @@ export function deleteForward(composer: ComposerState): void {
 /**
  * 删除从当前逻辑行开头到光标前的内容。
  *
- * @param composer composer 状态
  */
 export function deleteToLineStart(composer: ComposerState): void {
   const lineStart = findLineStart(composer.chars, composer.cursor);
@@ -167,7 +148,6 @@ export function deleteToLineStart(composer: ComposerState): void {
 /**
  * 删除从当前光标到逻辑行结尾的内容。
  *
- * @param composer composer 状态
  */
 export function deleteToLineEnd(composer: ComposerState): void {
   const lineEnd = findLineEnd(composer.chars, composer.cursor);
@@ -182,7 +162,6 @@ export function deleteToLineEnd(composer: ComposerState): void {
 /**
  * 删除光标前的前一个词；先跳过连续空白，再删除前一个连续非空白片段。
  *
- * @param composer composer 状态
  */
 export function deletePreviousWord(composer: ComposerState): void {
   let start = composer.cursor;
@@ -206,7 +185,6 @@ export function deletePreviousWord(composer: ComposerState): void {
 /**
  * 把光标向左移动一个编辑单元，并限制在内容开头以内。
  *
- * @param composer composer 状态
  */
 export function moveLeft(composer: Pick<ComposerState, 'cursor'>): void {
   composer.cursor = Math.max(0, composer.cursor - 1);
@@ -215,7 +193,6 @@ export function moveLeft(composer: Pick<ComposerState, 'cursor'>): void {
 /**
  * 把光标向右移动一个编辑单元，并限制在内容末尾以内。
  *
- * @param composer composer 状态
  */
 export function moveRight(composer: ComposerState): void {
   composer.cursor = Math.min(composer.chars.length, composer.cursor + 1);
@@ -224,7 +201,6 @@ export function moveRight(composer: ComposerState): void {
 /**
  * 把光标向上移动到上一逻辑行，并尽量保持当前逻辑列。
  *
- * @param composer composer 状态
  */
 export function moveUp(composer: ComposerState): void {
   const currentLineStart = findLineStart(composer.chars, composer.cursor);
@@ -242,7 +218,6 @@ export function moveUp(composer: ComposerState): void {
 /**
  * 把光标向下移动到下一逻辑行，并尽量保持当前逻辑列。
  *
- * @param composer composer 状态
  */
 export function moveDown(composer: ComposerState): void {
   const currentLineStart = findLineStart(composer.chars, composer.cursor);
@@ -261,7 +236,6 @@ export function moveDown(composer: ComposerState): void {
 /**
  * 把光标移动到当前逻辑行开头。
  *
- * @param composer composer 状态
  */
 export function moveHome(composer: ComposerState): void {
   composer.cursor = findLineStart(composer.chars, composer.cursor);
@@ -270,7 +244,6 @@ export function moveHome(composer: ComposerState): void {
 /**
  * 把光标移动到当前逻辑行末尾；如果没有后续换行则移动到全文末尾。
  *
- * @param composer composer 状态
  */
 export function moveEnd(composer: ComposerState): void {
   composer.cursor = findLineEnd(composer.chars, composer.cursor);
@@ -279,8 +252,6 @@ export function moveEnd(composer: ComposerState): void {
 /**
  * 用整段文本替换 composer 内容，并把光标放到末尾。
  *
- * @param composer composer 状态
- * @param text 新文本
  */
 export function setText(composer: ComposerState, text: string): void {
   composer.chars = Array.from(text);
@@ -290,7 +261,6 @@ export function setText(composer: ComposerState, text: string): void {
 /**
  * 清空 composer 内容并把光标归零。
  *
- * @param composer composer 状态
  */
 export function reset(composer: ComposerState): void {
   composer.chars = [];
@@ -300,9 +270,6 @@ export function reset(composer: ComposerState): void {
 /**
  * 找到给定 cursor 所在逻辑行的开头。
  *
- * @param chars 字符数组
- * @param cursor 光标位置
- * @returns 逻辑行开头下标
  */
 function findLineStart(chars: string[], cursor: number): number {
   for (let index = cursor - 1; index >= 0; index -= 1) {
@@ -317,9 +284,6 @@ function findLineStart(chars: string[], cursor: number): number {
 /**
  * 找到给定 cursor 所在逻辑行的结尾；返回的是行尾光标位置，不含换行符本身。
  *
- * @param chars 字符数组
- * @param cursor 光标位置
- * @returns 逻辑行结尾下标
  */
 function findLineEnd(chars: string[], cursor: number): number {
   for (let index = cursor; index < chars.length; index += 1) {
@@ -334,8 +298,6 @@ function findLineEnd(chars: string[], cursor: number): number {
 /**
  * 判断字符是否为空白，用于词级删除。
  *
- * @param char 待判断字符
- * @returns 是否为空白
  */
 function isWhitespace(char: string): boolean {
   return /\s/u.test(char);

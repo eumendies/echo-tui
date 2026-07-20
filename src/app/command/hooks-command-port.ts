@@ -8,7 +8,7 @@ import type {CommandHostApp} from '../../types/command';
 type HooksCommandPortOptions = {
   cwd: () => string;
   getInteractionMode: () => InteractionMode;
-  hooks?: LifecycleHookDispatcher;
+  hooks: LifecycleHookDispatcher;
 };
 
 /**
@@ -23,7 +23,7 @@ function createHooksCommandPort(options: HooksCommandPortOptions): CommandHostAp
       try {
         const nextConfig = createLifecycleHookRuntimeConfigFromDraft(draft);
         saveLifecycleHookConfigDraft(draft);
-        options.hooks?.updateConfig(nextConfig);
+        options.hooks.updateConfig(nextConfig);
         return {ok: true};
       } catch (error: unknown) {
         return {

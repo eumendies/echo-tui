@@ -8,17 +8,13 @@ import type {LifecycleHookConfigDraft, LifecycleHookDraftEntry, LifecycleHookEve
 import type {AgentMemoryCatalog, AgentMemoryCatalogListResult, AgentMemoryCatalogReadResult, AgentMemoryItem, AgentMemoryMutationResult, AgentMemoryScope, UserMemory, UserMemoryMutationResult, UserMemoryReadResult} from './memory';
 
 export type CommandSurfaceOption = {
-  label?: string;
+  label: string;
   description?: string;
   inlineInput?: {
-    placeholder?: string;
-    text?: string;
-    cursor?: number;
+    placeholder: string;
+    text: string;
+    cursor: number;
   };
-};
-
-export type CheckboxCommandSurfaceOption = CommandSurfaceOption & {
-  checked?: boolean;
 };
 
 export type ChoiceCommandSurfaceOption = CommandSurfaceOption & {
@@ -38,17 +34,17 @@ export type SlashCommandDescriptor = {
 
 export type InfoCommandSurface = {
   kind: 'info';
-  title?: string;
-  lines?: string[];
-  dismissHint?: string;
+  title: string;
+  lines: string[];
+  dismissHint: string;
 };
 
 export type SelectCommandSurface = {
   kind: 'select';
-  title?: string;
-  options?: CommandSurfaceOption[];
-  selectedIndex?: number;
-  dismissHint?: string;
+  title: string;
+  options: CommandSurfaceOption[];
+  selectedIndex: number;
+  dismissHint: string;
 };
 
 export type ResumeCommandSurfaceSession = {
@@ -63,40 +59,32 @@ export type ResumeCommandSurfacePreviewRecord = {
 
 export type ResumeCommandSurface = {
   kind: 'resume';
-  focus?: 'list' | 'preview';
-  title?: string;
-  sessions?: ResumeCommandSurfaceSession[];
-  selectedIndex?: number;
-  previewScroll?: number;
-  previewRecords?: ResumeCommandSurfacePreviewRecord[];
-  emptyPreviewHint?: string;
-  dismissHint?: string;
-};
-
-export type CheckboxCommandSurface = {
-  kind: 'checkbox';
-  title?: string;
-  options?: CheckboxCommandSurfaceOption[];
-  selectedIndex?: number;
-  dismissHint?: string;
+  focus: 'list' | 'preview';
+  title: string;
+  sessions: ResumeCommandSurfaceSession[];
+  selectedIndex: number;
+  previewScroll: number;
+  previewRecords: ResumeCommandSurfacePreviewRecord[];
+  emptyPreviewHint: string;
+  dismissHint: string;
 };
 
 export type SkillsCommandSurface = {
   kind: 'skills';
-  title?: string;
-  skills?: CommandSkillSurfaceInfo[];
-  selectedIndex?: number;
-  emptyLines?: string[];
-  dismissHint?: string;
+  title: string;
+  skills: CommandSkillSurfaceInfo[];
+  selectedIndex: number;
+  emptyLines: string[];
+  dismissHint: string;
 };
 
 export type McpCommandSurface = {
   kind: 'mcp';
-  title?: string;
-  servers?: CommandMcpServerInfo[];
-  selectedIndex?: number;
-  emptyLines?: string[];
-  dismissHint?: string;
+  title: string;
+  servers: CommandMcpServerInfo[];
+  selectedIndex: number;
+  emptyLines: string[];
+  dismissHint: string;
 };
 
 export type MemoryCommandSurfaceMode = 'list' | 'edit' | 'deleteConfirm';
@@ -114,7 +102,7 @@ export type MemoryCatalogForm = {
 
 export type MemoryCommandSurface = {
   kind: 'memory';
-  title?: string;
+  title: string;
   mode: MemoryCommandSurfaceMode;
   section?: MemoryCommandSection;
   scope?: AgentMemoryScope['kind'];
@@ -128,7 +116,7 @@ export type MemoryCommandSurface = {
   editText?: string;
   editCursor?: number;
   error?: string;
-  dismissHint?: string;
+  dismissHint: string;
 };
 
 export type HooksCommandSurfaceMode = 'events' | 'entries' | 'entryDetail';
@@ -145,7 +133,7 @@ export type HooksCommandSurfaceTest = {
 
 export type HooksCommandSurface = {
   diagnostics?: string[];
-  dismissHint?: string;
+  dismissHint: string;
   editBuffer?: string;
   editTarget?: HooksCommandEditTarget;
   detailIndex?: number;
@@ -161,40 +149,40 @@ export type HooksCommandSurface = {
   mode: HooksCommandSurfaceMode;
   selectedEvent: LifecycleHookEventName;
   test?: HooksCommandSurfaceTest;
-  title?: string;
+  title: string;
 };
 
 export type ScaleCommandSurface = {
   kind: 'scale';
-  title?: string;
-  leftLabel?: string;
-  rightLabel?: string;
-  options?: CommandSurfaceOption[];
-  selectedIndex?: number;
-  dismissHint?: string;
+  title: string;
+  leftLabel: string;
+  rightLabel: string;
+  options: CommandSurfaceOption[];
+  selectedIndex: number;
+  dismissHint: string;
 };
 
 export type ChoiceCommandSurface = {
   kind: 'choice';
-  title?: string;
+  title: string;
   message?: string;
   messageTitle?: string;
   messageStyle?: 'text' | 'code';
-  optionsTitle?: string;
-  options?: ChoiceCommandSurfaceOption[];
-  focusedIndex?: number;
+  optionsTitle: string;
+  options: ChoiceCommandSurfaceOption[];
+  focusedIndex: number;
   selectionMode?: 'single' | 'multiple';
   tabs?: ChoiceCommandSurfaceTab[];
   activeTabIndex?: number;
-  dismissHint?: string;
+  dismissHint: string;
 };
 
 export type ConfirmCommandSurface = {
   kind: 'confirm';
-  title?: string;
-  bodyLines?: string[];
-  confirmLabel?: string;
-  cancelLabel?: string;
+  title: string;
+  bodyLines: string[];
+  confirmLabel: string;
+  cancelLabel: string;
 };
 
 export type ConfigPanelMode =
@@ -286,29 +274,31 @@ export type ConfigCommandState = {
   providerIndex: number;
 };
 
-export type ConfigCommandSurface = {
-  kind: 'config';
-  state?: ConfigCommandState;
-  rows?: ConfigFormRow[];
-  result?: {
-    providersCount: number;
-    modelsCount: number;
-  };
-};
+export type ConfigCommandSurface =
+  | {kind: 'config'; view: 'loading'}
+  | {kind: 'config'; view: 'editor'; state: ConfigCommandState; rows: ConfigFormRow[]}
+  | {
+      kind: 'config';
+      view: 'result';
+      result: {
+        providersCount: number;
+        modelsCount: number;
+      };
+    };
 
 export type ContextUsageCommandSurface = {
   kind: 'context';
-  title?: string;
+  title: string;
   usage: ContextUsage;
-  dismissHint?: string;
+  dismissHint: string;
 };
 
 export type UsageCommandSurface = {
   dailyUsage: UsageDailyAggregate[];
-  dismissHint?: string;
+  dismissHint: string;
   kind: 'usage';
-  offset?: number;
-  title?: string;
+  offset: number;
+  title: string;
 };
 
 export type CommandStatusSnapshot = {
@@ -349,10 +339,10 @@ export type CommandCodexUsageResult =
 export type StatusCommandUsageState = CommandCodexUsageResult | {status: 'loading'};
 
 export type StatusCommandSurface = {
-  dismissHint?: string;
+  dismissHint: string;
   kind: 'status';
   snapshot: CommandStatusSnapshot;
-  title?: string;
+  title: string;
   usage: StatusCommandUsageState;
 };
 
@@ -374,15 +364,15 @@ export type CopySurfaceMessage = CopyableMessageRecord & {
 };
 
 export type CopyCommandSurface = {
-  dismissHint?: string;
-  focus?: 'list' | 'preview';
+  dismissHint: string;
+  focus: 'list' | 'preview';
   kind: 'copy';
   messages: CopySurfaceMessage[];
   notice?: string;
-  previewScroll?: number;
+  previewScroll: number;
   selectedIds: string[];
   selectedIndex: number;
-  title?: string;
+  title: string;
 };
 
 export type FilePickerSurfaceEntry = {
@@ -396,7 +386,7 @@ export type FilePickerSurfaceEntry = {
 export type FilePickerCommandSurface = {
   kind: 'file_picker';
   currentDir: string;
-  dismissHint?: string;
+  dismissHint: string;
   entries: FilePickerSurfaceEntry[];
   focus: 'list' | 'preview';
   notice?: string;
@@ -405,21 +395,21 @@ export type FilePickerCommandSurface = {
   query: string;
   selectedIndex: number;
   selectedPaths: string[];
-  title?: string;
+  title: string;
 };
 
 export type DiffCommandSurface = {
-  detailScroll?: number;
+  detailScroll: number;
   files: DiffFile[];
   focus: 'list' | 'detail';
   kind: 'diff';
   notices?: string[];
-  selectedIndex?: number;
+  selectedIndex: number;
   source: DiffSourceInfo;
-  title?: string;
+  title: string;
 };
 
-export type CommandSurface = InfoCommandSurface | SelectCommandSurface | ResumeCommandSurface | CheckboxCommandSurface | SkillsCommandSurface | McpCommandSurface | MemoryCommandSurface | HooksCommandSurface | ScaleCommandSurface | ChoiceCommandSurface | ConfirmCommandSurface | ConfigCommandSurface | ContextUsageCommandSurface | UsageCommandSurface | StatusCommandSurface | CopyCommandSurface | FilePickerCommandSurface | DiffCommandSurface;
+export type CommandSurface = InfoCommandSurface | SelectCommandSurface | ResumeCommandSurface | SkillsCommandSurface | McpCommandSurface | MemoryCommandSurface | HooksCommandSurface | ScaleCommandSurface | ChoiceCommandSurface | ConfirmCommandSurface | ConfigCommandSurface | ContextUsageCommandSurface | UsageCommandSurface | StatusCommandSurface | CopyCommandSurface | FilePickerCommandSurface | DiffCommandSurface;
 
 export type CommandModelProfile = {
   id: string;
@@ -642,7 +632,7 @@ export type CommandHandler<TData extends object = Record<string, unknown>> = {
   name?: string;
   description?: string;
   match?(text: string): boolean;
-  start(text: string, host: CommandHost): void | CommandStartResult | Promise<void | CommandStartResult>;
+  start(text: string, host: CommandHost): void | CommandStartResult;
   handleEvent?(session: CommandSession<TData>, event: InputEvent, host: CommandHost): void | Promise<void>;
 };
 
@@ -660,7 +650,7 @@ export type CommandSession<TData extends object = Record<string, unknown>> = {
   commandName: string;
   handler: CommandHandler<TData>;
   surface: CommandSurface;
-  data?: TData | null;
+  data: TData | null;
 };
 
 export type CommandSessionPatch<TData extends object = Record<string, unknown>> = {
@@ -671,6 +661,6 @@ export type CommandSessionPatch<TData extends object = Record<string, unknown>> 
 export type ResolveSlashCommand = (text: string) => CommandHandler | null;
 
 export type CommandRuntimeDependencies = {
-  resolveSlashCommand?: ResolveSlashCommand;
+  resolveSlashCommand: ResolveSlashCommand;
   host: CommandHostApp;
 };

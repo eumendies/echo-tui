@@ -21,8 +21,7 @@ type StatusCommandContext = Pick<AppContext,
 
 type StatusCommandPortOptions = {
   appContext: StatusCommandContext;
-  queryCodexUsage?: typeof queryCodexUsage;
-  usageStore?: UsageStore;
+  usageStore: UsageStore;
 };
 
 /**
@@ -30,7 +29,6 @@ type StatusCommandPortOptions = {
  */
 function createStatusCommandPorts(options: StatusCommandPortOptions): Pick<CommandHostApp, 'context' | 'status' | 'usage'> {
   const {appContext, usageStore} = options;
-  const queryUsage = options.queryCodexUsage || queryCodexUsage;
 
   return {
     context: {
@@ -56,7 +54,7 @@ function createStatusCommandPorts(options: StatusCommandPortOptions): Pick<Comma
         }
 
         try {
-          return createAvailableCodexUsage(await queryUsage(config.codexOAuth || {}));
+          return createAvailableCodexUsage(await queryCodexUsage(config.codexOAuth || {}));
         } catch (error: unknown) {
           return {status: 'unavailable' as const, error: formatStatusError(error, 'Codex 用量不可用')};
         }
@@ -64,7 +62,7 @@ function createStatusCommandPorts(options: StatusCommandPortOptions): Pick<Comma
     },
     usage: {
       listDailyUsage(query) {
-        return usageStore ? usageStore.listDailyUsage(query) : [];
+        return usageStore.listDailyUsage(query);
       },
       getViewport() {
         return createCommandViewport(appContext);

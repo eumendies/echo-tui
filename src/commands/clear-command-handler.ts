@@ -20,7 +20,6 @@ const CLEAR_SURFACE: ConfirmCommandSurface & {
 /**
  * 为 /clear 创建独立的 confirm surface，避免共享可变数组引用。
  *
- * @returns confirm surface
  */
 export function createClearSurface(): ConfirmCommandSurface {
   return {
@@ -36,8 +35,6 @@ export class ClearCommandHandler implements CommandHandler {
   /**
    * 只匹配纯 /clear，带参数或后缀的输入继续走普通消息路径。
    *
-   * @param text 提交文本
-   * @returns 是否命中 /clear
    */
   match(text: string): boolean {
     return text === '/clear';
@@ -46,7 +43,6 @@ export class ClearCommandHandler implements CommandHandler {
   /**
    * 启动 /clear，打开确认型 command surface。
    *
-   * @param _text 提交文本
    */
   start(_text: string, host: CommandHost): void {
     host.composer.reset();
@@ -61,8 +57,6 @@ export class ClearCommandHandler implements CommandHandler {
   /**
    * /clear 活跃时消费 Enter/Esc；确认后只清空 transcript，不清空输入历史。
    *
-   * @param _session command session
-   * @param event 输入事件
    */
   handleEvent(_session: CommandSession, event: InputEvent, host: CommandHost): void {
     if (event.type === INPUT_EVENTS.SUBMIT) {

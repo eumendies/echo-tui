@@ -105,7 +105,7 @@ slash runtime 通过三类稳定边界协调本地命令：
 | agent workflow | `/init` 和 `/review` 内置工作流。handler 把固定 prompt 通过 `submit_user_message` 交回普通用户消息流程，plan 模式下提交时自动切回 normal；后续走正常 agent lifecycle | `src/commands/agent-workflows/*` |
 | slash suggestion context | 普通 composer 输入态的 slash 命令提示状态。基于 handler 元数据和 enabled skill 派生候选项，处理 Up/Down 循环选择和 Tab 补全，不启动 command session | `src/app/state/slash-suggestion-context.ts` |
 | active command session | command runtime 显式持有的当前活跃命令会话。表达“某个交互式命令正在接管 footer，并优先消费后续事件” | `src/app/command/command-runtime.ts` |
-| command surface | 渲染层可见的统一面板视图模型。renderer 只识别 `info` / `select` / `resume` / `checkbox` / `skills` / `mcp` / `memory` / `scale` / `choice` / `confirm` / `config` / `context` / `usage` / `file_picker` / `diff` 等 surface kind，不识别具体命令、工具授权、用户问题或文件选择来源 | `src/types/command.ts`、`src/render/footer/*` |
+| command surface | 渲染层可见的统一面板视图模型。renderer 只识别 `info` / `select` / `resume` / `skills` / `mcp` / `memory` / `hooks` / `scale` / `choice` / `confirm` / `config` / `context` / `usage` / `status` / `copy` / `file_picker` / `diff` 等 surface kind，不识别具体命令、工具授权、用户问题或文件选择来源 | `src/types/command.ts`、`src/render/footer/*` |
 | command host | command handler 可用的受控 app 协议。app 组合根通过领域 command port factory 装配 composer、transcript、clipboard、model、config、skills、mcp、memory、hooks、mode、theme、context、status、usage、diff、undo、assistant、ui；runtime 把 session open/update/close/getActive 组合进同一个 host | `src/app/command/command-host.ts`、`src/app/command/*-command-port*.ts`、`src/app/command/command-runtime.ts` |
 | tool approval context | agent 请求写文件、高风险 shell 或需授权 MCP 工具前的阻塞式授权状态。把授权请求投影为 `choice` surface，支持 Allow once、Allow tool/session、Allow command/session、Allow all/session、Deny 和 Tell model what to do；会话授权缓存由它持有，bash 只按完全相同 command 文本复用授权 | `src/app/state/tool-approval-context.ts`、`src/tools/tool-risk-classifier.ts` |
 | user question context | `ask_user_questions` tool 的阻塞式用户问题状态。逐题投影为 `choice` surface，支持预设选项、Other inline 输入和 Esc 取消，最终构造 tool result 交回 agent continuation | `src/app/state/user-question-context.ts`、`src/tools/ask-user-questions-tool-handler.ts` |
@@ -344,7 +344,7 @@ flowchart TB
     footer_surface -->|普通输入态| composer["boxed composer 3 到 N 行"]
     composer --> slash_suggestions["slash suggestions 可选"]
     slash_suggestions --> status_line["status line 固定 1 行"]
-    footer_surface -->|命令/授权/问题/选择器态| command_surface["command surface: info / select / resume / checkbox / skills / mcp / scale / choice / confirm / config / context / usage / file_picker / diff"]
+    footer_surface -->|命令/授权/问题/选择器态| command_surface["command surface: info / select / resume / skills / mcp / memory / hooks / scale / choice / confirm / config / context / usage / status / copy / file_picker / diff"]
 ```
 
 区域含义：
@@ -384,9 +384,10 @@ flowchart TB
 | `info` | 静态说明，例如 `/help`、用法和空状态 | 渲染标题、正文和关闭提示，隐藏光标 |
 | `select` | 通用单选命令，例如 `/model`、`/mode`、`/themes` | 将候选项 label 和说明压成单行渲染，展示选中态，隐藏光标 |
 | `resume` | `/resume` 历史恢复面板 | 左侧渲染最多 5 条 session 窗口，右侧渲染当前选中 session 的最近消息预览，隐藏光标 |
-| `checkbox` | 通用多项开关面板 | 渲染勾选状态和当前选中态，隐藏光标 |
 | `skills` | `/skills` skill 管理面板 | 渲染 card、enabled 计数、on/off pill、行内模型策略、当前行 accent 和滚动提示；Left/Right 循环模型草稿，窄终端优先保留启停、名称和模型策略，隐藏光标 |
 | `mcp` | `/mcp` server 管理面板 | 渲染全局开关、各 server 启用状态、传输类型、工具数量和诊断，隐藏光标 |
+| `memory` | `/memory` 记忆管理面板 | 渲染用户记忆和 agent catalog/item 的列表、编辑与删除确认状态；编辑态显示光标 |
+| `hooks` | `/hooks` 生命周期 hook 管理面板 | 渲染事件、hook 条目、详情、编辑和测试状态；编辑态显示光标 |
 | `scale` | 有序强度选择，例如 `/effort` | 用 rounded slider 轨道展示档位与当前 knob，隐藏光标 |
 | `choice` | 阻塞式单选交互，例如 tool approval 和 `ask_user_questions` | 渲染问题、选项、可选 inline input 和 dismiss hint；选中 inline input 时显示光标 |
 | `confirm` | 确认型命令，例如 `/clear`、`/compact`、`/undo` | 渲染标题、正文和确认/取消提示，Enter 确认操作高亮，隐藏光标 |
@@ -394,6 +395,7 @@ flowchart TB
 | `context` | `/context` 上下文占用详情 | 渲染最近一次真实 provider usage 与分类占用，隐藏光标 |
 | `usage` | `/usage` 每日 token 用量面板 | 渲染累计输入/输出/缓存命中、日期窗口、每日堆叠柱状图、图例和导航提示，隐藏光标 |
 | `status` | `/status` 运行状态与 Codex 配额面板 | 渲染本地运行状态；以进度条展示 Codex OAuth 5 小时/每周配额、百分比和重置时间，隐藏光标 |
+| `copy` | `/copy` 消息复制面板 | 渲染消息列表、多选状态与预览，隐藏光标 |
 | `file_picker` | composer `@` 文件选择器 | 左侧渲染当前目录条目与多选状态，右侧渲染文本/代码预览，隐藏光标 |
 | `diff` | `/diff` 差异查看面板 | 左侧文件列表，右侧宽屏 side-by-side、窄屏 unified 和 fallback 提示，隐藏光标 |
 

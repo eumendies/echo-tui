@@ -1,4 +1,3 @@
-import {queryCodexUsage} from '../../config/codex-oauth';
 import {createAssistantCommandPort} from './assistant-command-port';
 import {createCoreCommandPorts} from './core-command-ports';
 import {createHistoryCommandPorts} from './history-command-ports';
@@ -22,12 +21,11 @@ type CommandHostOptions = {
   appContext: AppContext;
   appendRecord: (record: TranscriptRecord) => void;
   exit: () => void;
-  hooks?: LifecycleHookDispatcher;
-  mcpManager?: McpManager;
+  hooks: LifecycleHookDispatcher;
+  mcpManager: McpManager;
   renderFooter: () => void;
   renderResizeRecovery: () => void;
-  queryCodexUsage?: typeof queryCodexUsage;
-  usageStore?: UsageStore;
+  usageStore: UsageStore;
 };
 
 /**
@@ -45,7 +43,6 @@ function createCommandHost(options: CommandHostOptions): CommandHostApp {
   const settingsPorts = createSettingsCommandPorts({appContext, renderFooter, renderResizeRecovery});
   const statusPorts = createStatusCommandPorts({
     appContext,
-    queryCodexUsage: options.queryCodexUsage,
     usageStore
   });
   const historyPorts = createHistoryCommandPorts(appContext);

@@ -27,10 +27,6 @@ const RULE_PATTERN = /^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/;
 /**
  * 把 assistant Markdown-ish 文本投影为终端可见行；只支持高价值子集并安全降级。
  *
- * @param {string} text
- * @param {number} [width=80]
- * @param {string} [prefix='◆ ']
- * @returns {string[]}
  */
 export function renderMarkdownLines(text: string, width = 80, prefix = '◆ ', theme: TuiTheme = DEFAULT_TUI_THEME): string[] {
   return renderMarkdownLinesWithOptions(text, { width, prefix, theme });
@@ -64,8 +60,6 @@ export function renderMarkdownLinesWithOptions(
 /**
  * 容错解析 Markdown block；streaming 的未闭合 fence 会自然延续到文本末尾。
  *
- * @param {string} text
- * @returns {MarkdownBlock[]}
  */
 function parseMarkdownBlocks(text: string): MarkdownBlock[] {
   const sourceLines = text.split('\n');
@@ -155,8 +149,6 @@ function parseMarkdownBlocks(text: string): MarkdownBlock[] {
 /**
  * 关闭 fenced code block；markdown fence 中的有效 table 会保守 unwrap。
  *
- * @param {{language: string, lines: string[]}} codeFence
- * @returns {MarkdownBlock[]}
  */
 function closeCodeFence(codeFence: { language: string; lines: string[] }): MarkdownBlock[] {
   if (isMarkdownFenceLanguage(codeFence.language) && containsMarkdownTable(codeFence.lines)) {
@@ -166,13 +158,11 @@ function closeCodeFence(codeFence: { language: string; lines: string[] }): Markd
   return [{ kind: 'codeFence', language: codeFence.language, lines: codeFence.lines }];
 }
 
-/** @param {string} language @returns {boolean} */
 function isMarkdownFenceLanguage(language: string): boolean {
   const firstToken = language.trim().split(/\s+/)[0] ?? '';
   return firstToken.toLowerCase() === 'md' || firstToken.toLowerCase() === 'markdown';
 }
 
-/** @param {string} line @returns {string} */
 function stripBlockquotePrefix(line: string): string {
   return line.replace(/^\s*>\s?/, '');
 }
@@ -180,10 +170,6 @@ function stripBlockquotePrefix(line: string): string {
 /**
  * 把单个 Markdown block 渲染为带 role 前缀或缩进的终端行。
  *
- * @param {MarkdownBlock} block
- * @param {number} width
- * @param {string} prefix
- * @returns {string[]}
  */
 function renderMarkdownBlock(block: MarkdownBlock, width: number, prefix: string, theme: TuiTheme): string[] {
   switch (block.kind) {
@@ -235,10 +221,6 @@ function renderMarkdownBlock(block: MarkdownBlock, width: number, prefix: string
 /**
  * 渲染 heading，去掉 Markdown marker 并使用强调样式。
  *
- * @param {{level: number, text: string}} block
- * @param {number} width
- * @param {string} prefix
- * @returns {string[]}
  */
 function renderHeading(block: Extract<MarkdownBlock, { kind: 'heading' }>, width: number, prefix: string, theme: TuiTheme): string[] {
   const style = block.level <= 2 ? (text: string): string => markdownStyle(theme, 'heading', text) : (text: string): string => markdownStyle(theme, 'bold', text);
@@ -248,10 +230,6 @@ function renderHeading(block: Extract<MarkdownBlock, { kind: 'heading' }>, width
 /**
  * 渲染 fenced code block：不画边框，只保留缩进并直接高亮代码内容。
  *
- * @param {{language: string, lines: string[]}} block
- * @param {number} width
- * @param {string} prefix
- * @returns {string[]}
  */
 function renderCodeFence(block: Extract<MarkdownBlock, { kind: 'codeFence' }>, width: number, prefix: string, theme: TuiTheme): string[] {
   const lines: string[] = [];

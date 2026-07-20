@@ -20,10 +20,10 @@ type AssistantTurnRunnerInput = {
   metadata?: Record<string, unknown>;
   modelProfileId?: string;
   attachments?: ToolResultAttachment[];
-  debug?: DebugContext;
+  debug: DebugContext;
   appendRecord: (record: TranscriptRecord) => void;
   appendRecords: (records: TranscriptRecord[]) => void;
-  hooks?: LifecycleHookDispatcher;
+  hooks: LifecycleHookDispatcher;
   renderFooter: () => void;
 };
 
@@ -70,12 +70,12 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
       text: `已切换到 ${skillOverrideModelLabel} 执行当前 skill。`
     }));
   }
-  debug?.emit('assistant_turn_start', {
+  debug.emit('assistant_turn_start', {
     interactionMode,
     recordCount: appContext.transcriptContext.records.length,
     userText: summarizeText(userText, 0)
   });
-  hooks?.emit('assistant_turn_start', {
+  hooks.emit('assistant_turn_start', {
     interactionMode,
     status: 'started'
   });
@@ -221,11 +221,11 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
         } else {
           renderFooter();
         }
-        hooks?.emit('assistant_turn_end', {
+        hooks.emit('assistant_turn_end', {
           interactionMode: appContext.getInteractionMode(),
           status: 'completed'
         });
-        debug?.emit('assistant_turn_end', {
+        debug.emit('assistant_turn_end', {
           interactionMode: appContext.getInteractionMode(),
           finalText: summarizeText(finalText, 0),
           status: 'completed'
@@ -247,23 +247,23 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
 
     if (isAbortError(error) || turn.abortSignal.aborted) {
       appendRecord(appContext.turnContext.cancelAssistantTurn());
-      hooks?.emit('assistant_turn_cancelled', {
+      hooks.emit('assistant_turn_cancelled', {
         interactionMode: appContext.getInteractionMode(),
         status: 'cancelled'
       });
-      debug?.emit('assistant_turn_cancelled', {
+      debug.emit('assistant_turn_cancelled', {
         interactionMode: appContext.getInteractionMode(),
         status: 'cancelled'
       });
     } else {
       appendRecord(appContext.turnContext.failAssistantTurn(error));
-      hooks?.emit('assistant_turn_error', {
+      hooks.emit('assistant_turn_error', {
         interactionMode: appContext.getInteractionMode(),
         status: 'error',
         errorName: error instanceof Error ? error.name : undefined,
         errorMessage: error instanceof Error ? error.message : undefined
       });
-      debug?.emit('assistant_turn_error', {
+      debug.emit('assistant_turn_error', {
         interactionMode: appContext.getInteractionMode(),
         status: 'error',
         errorName: error instanceof Error ? error.name : undefined,

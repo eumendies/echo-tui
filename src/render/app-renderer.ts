@@ -22,7 +22,6 @@ type TranscriptBlock =
 /**
  * 创建应用级 renderer 门面，统一编排 footer-only redraw、transcript append 和 destructive replay。
  *
- * @param {NodeJS.WriteStream} [output=process.stdout]
  */
 export function createAppRenderer(output: NodeJS.WriteStream = process.stdout): AppRenderer {
   const footer = createFooterRenderer(output);
@@ -30,7 +29,6 @@ export function createAppRenderer(output: NodeJS.WriteStream = process.stdout): 
   /**
    * 启动时先追加 banner，再绘制 footer；main 不需要自己拼接多种 renderer。
    *
-   * @param {{bannerContext: object, composer: object, commandSurface?: object|null, pending: ({kind: 'thinking', frame: number}|{kind: 'streaming', text: string})|null, statusLine: object, width: number}} options
    */
   function renderInitial({ bannerContext, composer, commandSurface, slashSuggestions, pending, working, theme, statusLine, rows, width }: RenderInitialOptions): void {
     output.write(renderBanner(bannerContext, theme));
@@ -40,7 +38,6 @@ export function createAppRenderer(output: NodeJS.WriteStream = process.stdout): 
   /**
    * 普通输入、spinner 和 pending 更新只重绘 footer 临时区域。
    *
-   * @param {{composer: object, commandSurface?: object|null, pending: ({kind: 'thinking', frame: number}|{kind: 'streaming', text: string})|null, statusLine: object, width: number}} options
    */
   function renderFooter(options: RenderState): void {
     footer.render(options);
@@ -56,7 +53,6 @@ export function createAppRenderer(output: NodeJS.WriteStream = process.stdout): 
   /**
    * transcript 新增事实内容时，统一执行“清 footer → append block → 重绘 footer”。
    *
-   * @param {{record: {role: string, text: string}, composer: object, commandSurface?: object|null, pending: ({kind: 'thinking', frame: number}|{kind: 'streaming', text: string})|null, statusLine: object, width: number}} options
    */
   function appendRecord({ record, composer, commandSurface, slashSuggestions, pending, working, theme, statusLine, rows, width }: AppendRecordOptions): void {
     appendRecords({ records: [record], composer, commandSurface, slashSuggestions, pending, working, theme, statusLine, rows, width });
@@ -78,7 +74,6 @@ export function createAppRenderer(output: NodeJS.WriteStream = process.stdout): 
   /**
    * 在 destructive recovery 中清屏并从左上角重放 banner、transcript 和 footer 的完整快照。
    *
-   * @param {{bannerContext: object, records: Array<{role: string, text: string}>, composer: object, commandSurface?: object|null, pending: ({kind: 'thinking', frame: number}|{kind: 'streaming', text: string})|null, statusLine: object, width: number}} options
    */
   function renderDestructive({ bannerContext, records, composer, commandSurface, slashSuggestions, pending, working, theme, statusLine, rows, width }: RenderDestructiveOptions): void {
     const footerLayout = renderFooterLayout({ composer, commandSurface, slashSuggestions, pending, working, theme, statusLine, rows, width });
@@ -105,15 +100,12 @@ export function createAppRenderer(output: NodeJS.WriteStream = process.stdout): 
 
     output.write(sequence);
 
-    if (footer.rememberLayout) {
-      footer.rememberLayout(footerLayout);
-    }
+    footer.rememberLayout(footerLayout);
   }
 
   /**
    * 输出退出时使用的最终静态内容；调用方应先移除临时 footer。
    *
-   * @param {{bannerContext: object, records: Array<{role: string, text: string}>, width: number}} options
    */
   function renderFinal({ bannerContext, records, theme, width }: RenderFinalOptions): void {
     const lines = [...renderBannerLines(bannerContext, theme), ...renderTranscriptLines(records, width, theme)];
@@ -134,8 +126,6 @@ export function createAppRenderer(output: NodeJS.WriteStream = process.stdout): 
 /**
  * 把 banner block 拆成逐行数组，供完整快照统一拼接。
  *
- * @param {object} context
- * @returns {string[]}
  */
   function renderBannerLines(context: BannerContext, theme: RenderState['theme']): string[] {
     return splitRenderedBlock(renderBanner(context, theme));
@@ -144,9 +134,6 @@ export function createAppRenderer(output: NodeJS.WriteStream = process.stdout): 
 /**
  * 把 transcript records 投影成当前宽度下的可见行。
  *
- * @param {Array<{role: string, text: string}>} [records=[]]
- * @param {number} width
- * @returns {string[]}
  */
 export function renderTranscriptLines(
   records: TranscriptRecord[] = [],
@@ -221,9 +208,6 @@ function renderTranscriptBlock(block: TranscriptBlock, width: number, theme: Ren
  * 按 record role 选择对应的 transcript block renderer。
  * user record 的 plan mode 颜色依赖提交时写入的 metadata，避免重绘时受当前 mode 影响。
  *
- * @param {{role: string, text: string}} record
- * @param {number} width
- * @returns {string}
  */
 function renderRecordBlock(record: TranscriptRecord, width: number, theme: RenderState['theme']): string {
   if (record.role === 'user') {
@@ -268,8 +252,6 @@ function getUserDisplayText(record: TranscriptRecord): string {
 /**
  * 把 block 字符串拆成逐行数组，并去掉仅用于 block 拼接的末尾空行。
  *
- * @param {string} block
- * @returns {string[]}
  */
 function splitRenderedBlock(block: string): string[] {
   const lines = String(block).split('\n');

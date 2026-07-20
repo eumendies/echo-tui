@@ -39,17 +39,17 @@ type ChoiceOptionRenderUnit = {
 export function renderChoiceSurface(commandSurface: ChoiceCommandSurface, width: number, maxLines = Number.POSITIVE_INFINITY, theme: FooterTheme = resolveFooterTheme(undefined)): FooterLayout {
   const boxWidth = calculateChoiceCardBoxWidth(commandSurface, width);
   const innerWidth = Math.max(1, boxWidth - 2);
-  const options = commandSurface.options || [];
-  const focusedIndex = Number.isInteger(commandSurface.focusedIndex) ? Number(commandSurface.focusedIndex) : 0;
+  const options = commandSurface.options;
+  const focusedIndex = commandSurface.focusedIndex;
   const selectionMode = commandSurface.selectionMode || 'single';
-  const topLine = renderChoiceCardBorderTop(commandSurface.title || '选择', innerWidth, theme);
+  const topLine = renderChoiceCardBorderTop(commandSurface.title, innerWidth, theme);
   const tabLines = renderChoiceCardTabs(commandSurface.tabs, commandSurface.activeTabIndex, innerWidth, theme);
   const messageLines = commandSurface.message
     ? renderChoiceCardMessageSection(commandSurface.message, commandSurface.messageTitle || '消息', commandSurface.messageStyle || 'text', innerWidth, theme)
     : [];
-  const optionsLine = renderChoiceCardBoxLine(renderChoiceCardSectionRule(commandSurface.optionsTitle || '操作', Math.max(1, innerWidth - 2), theme), innerWidth, theme);
+  const optionsLine = renderChoiceCardBoxLine(renderChoiceCardSectionRule(commandSurface.optionsTitle, Math.max(1, innerWidth - 2), theme), innerWidth, theme);
   const optionUnits = options.map((option, index) => renderChoiceCardOptionUnit(option, index, focusedIndex, selectionMode, innerWidth, theme));
-  const dismissHint = commandSurface.dismissHint || 'Enter 确认 · Esc 关闭';
+  const dismissHint = commandSurface.dismissHint;
   const dismissLine = renderChoiceCardBoxLine(ansi.dim(clampPlainText(dismissHint, Math.max(1, innerWidth - 2))), innerWidth, theme);
   const bottomLine = renderChoiceCardBorderBottom(innerWidth, theme);
   const fullLayout = createChoiceCardLayout({
@@ -363,7 +363,7 @@ function getChoiceTabMarker(status: ChoiceCommandSurfaceTab['status']): string {
  * 格式化 option 的纯文本模型；该模型同时服务 ANSI 渲染和光标宽度计算。
  */
 function formatChoiceCardOptionLine(option: {label?: string; inlineInput?: {placeholder?: string; text?: string; cursor?: number}}, marker: string, width: number): ChoiceOptionLine {
-  const labelText = `${marker} ${option.label || ''}`;
+  const labelText = `${marker} ${option.label}`;
 
   if (!option.inlineInput) {
     const plain = clampPlainText(labelText, width);
@@ -591,17 +591,17 @@ function cropOptionUnit(unit: ChoiceOptionRenderUnit, maxLines: number): ChoiceO
  */
 function calculateChoiceCardBoxWidth(commandSurface: ChoiceCommandSurface, width: number): number {
   const safeWidth = safeRenderWidth(width);
-  const hint = commandSurface.dismissHint || 'Enter 确认 · Esc 关闭';
+  const hint = commandSurface.dismissHint;
   const contentWidths = [
-    displayWidth(` ${commandSurface.title || '选择'} `),
+    displayWidth(` ${commandSurface.title} `),
     ...(commandSurface.tabs || []).map((tab) => displayWidth(`[${getChoiceTabMarker(tab.status)} ${tab.label}]`)),
     commandSurface.message && commandSurface.messageTitle ? displayWidth(`── ${commandSurface.messageTitle} `) : 0,
     displayWidth(`── ${commandSurface.optionsTitle || '操作'} `),
     commandSurface.message ? displayWidth(commandSurface.message) + 4 : 0,
     displayWidth(hint),
-    ...(commandSurface.options || []).flatMap((option) => [
-      displayWidth(`● ${option.label || ''}`),
-      option.inlineInput ? displayWidth(`● ${option.label || ''} ${option.inlineInput.text || option.inlineInput.placeholder || ''}`) : 0,
+    ...commandSurface.options.flatMap((option) => [
+      displayWidth(`● ${option.label}`),
+      option.inlineInput ? displayWidth(`● ${option.label} ${option.inlineInput.text || option.inlineInput.placeholder}`) : 0,
       option.description ? displayWidth(`    ${option.description}`) : 0
     ])
   ];

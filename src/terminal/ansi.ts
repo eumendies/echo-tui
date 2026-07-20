@@ -4,8 +4,6 @@ const ESC = '\x1b[';
 /**
  * 生成光标上移控制序列。
  *
- * @param {number} [count=1]
- * @returns {string}
  */
 export function cursorUp(count = 1): string {
   return count > 0 ? `${ESC}${count}A` : '';
@@ -14,8 +12,6 @@ export function cursorUp(count = 1): string {
 /**
  * 生成光标下移控制序列。
  *
- * @param {number} [count=1]
- * @returns {string}
  */
 export function cursorDown(count = 1): string {
   return count > 0 ? `${ESC}${count}B` : '';
@@ -24,8 +20,6 @@ export function cursorDown(count = 1): string {
 /**
  * 生成光标右移控制序列。
  *
- * @param {number} [count=1]
- * @returns {string}
  */
 export function cursorForward(count = 1): string {
   return count > 0 ? `${ESC}${count}C` : '';
@@ -34,7 +28,6 @@ export function cursorForward(count = 1): string {
 /**
  * 返回回车符，把光标移到当前行开头。
  *
- * @returns {string}
  */
 export function carriageReturn(): string {
   return '\r';
@@ -43,7 +36,6 @@ export function carriageReturn(): string {
 /**
  * 把光标移动到屏幕左上角。
  *
- * @returns {string}
  */
 export function cursorHome(): string {
   return `${ESC}H`;
@@ -52,7 +44,6 @@ export function cursorHome(): string {
 /**
  * 清理当前整行内容，不影响其他行或 scrollback。
  *
- * @returns {string}
  */
 export function clearLine(): string {
   // 2K 只清理当前行，不会清空整个屏幕或 scrollback。
@@ -62,7 +53,6 @@ export function clearLine(): string {
 /**
  * 清理当前可见屏幕内容。
  *
- * @returns {string}
  */
 export function clearVisibleScreen(): string {
   return `${ESC}2J`;
@@ -71,7 +61,6 @@ export function clearVisibleScreen(): string {
 /**
  * 清理终端 scrollback 历史；兼容性依赖具体终端实现。
  *
- * @returns {string}
  */
 export function clearScrollback(): string {
   return `${ESC}3J`;
@@ -80,7 +69,6 @@ export function clearScrollback(): string {
 /**
  * 重置滚动区域到整屏，避免 destructive repaint 受先前滚动边界影响。
  *
- * @returns {string}
  */
 export function resetScrollRegion(): string {
   return `${ESC}r`;
@@ -89,7 +77,6 @@ export function resetScrollRegion(): string {
 /**
  * 启用 bracketed paste，让粘贴内容带边界序列，避免多行粘贴中的换行被误判为 Enter。
  *
- * @returns {string}
  */
 export function enableBracketedPaste(): string {
   return `${ESC}?2004h`;
@@ -98,7 +85,6 @@ export function enableBracketedPaste(): string {
 /**
  * 关闭 bracketed paste，避免应用退出后影响用户 shell。
  *
- * @returns {string}
  */
 export function disableBracketedPaste(): string {
   return `${ESC}?2004l`;
@@ -107,7 +93,6 @@ export function disableBracketedPaste(): string {
 /**
  * 隐藏终端光标。
  *
- * @returns {string}
  */
 export function hideCursor(): string {
   return `${ESC}?25l`;
@@ -116,7 +101,6 @@ export function hideCursor(): string {
 /**
  * 显示终端光标。
  *
- * @returns {string}
  */
 export function showCursor(): string {
   return `${ESC}?25h`;
@@ -125,8 +109,6 @@ export function showCursor(): string {
 /**
  * 给文本加粗显示。
  *
- * @param {string} text
- * @returns {string}
  */
 export function bold(text: string): string {
   return `${ESC}1m${text}${ESC}22m`;
@@ -135,8 +117,6 @@ export function bold(text: string): string {
 /**
  * 给文本应用 dim 样式。
  *
- * @param {string} text
- * @returns {string}
  */
 export function dim(text: string): string {
   return `${ESC}2m${text}${ESC}22m`;
@@ -145,8 +125,6 @@ export function dim(text: string): string {
 /**
  * 给文本应用反色样式。
  *
- * @param {string} text
- * @returns {string}
  */
 export function inverse(text: string): string {
   return `${ESC}7m${text}${ESC}27m`;
@@ -162,9 +140,6 @@ export function strikethrough(text: string): string {
 /**
  * 用指定前景色代码包裹文本。
  *
- * @param {number | string} code
- * @param {string} text
- * @returns {string}
  */
 export function foreground(code: number | string, text: string): string {
   return `${ESC}${code}m${text}${ESC}39m`;
@@ -198,12 +173,10 @@ export function background256WithForeground(backgroundCode: number, foregroundCo
   return `${ESC}${foregroundCode}m${background256(backgroundCode, text)}${ESC}39m`;
 }
 
-/** @param {string} text @returns {string} */
 export function cyan(text: string): string {
   return foreground(36, text);
 }
 
-/** @param {string} text @returns {string} */
 export function white(text: string): string {
   return foreground(37, text);
 }
@@ -211,8 +184,6 @@ export function white(text: string): string {
 /**
  * 给文本加红色背景，用于删除内容高亮。
  *
- * @param {string} text
- * @returns {string}
  */
 export function bgRed(text: string): string {
   return background256WithForeground(52, 97, text);
@@ -221,8 +192,6 @@ export function bgRed(text: string): string {
 /**
  * 给文本加绿色背景，用于新增内容高亮。
  *
- * @param {string} text
- * @returns {string}
  */
 export function bgGreen(text: string): string {
   return background256WithForeground(22, 97, text);
@@ -231,7 +200,6 @@ export function bgGreen(text: string): string {
 /**
  * 重置终端样式到默认状态。
  *
- * @returns {string}
  */
 export function reset(): string {
   return `${ESC}0m`;

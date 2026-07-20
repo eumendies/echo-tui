@@ -9,7 +9,7 @@ type McpCommandContext = Pick<AppContext, 'clearContextUsage' | 'setMcpBootstrap
 
 type McpCommandPortOptions = {
   appContext: McpCommandContext;
-  mcpManager?: McpManager;
+  mcpManager: McpManager;
   renderFooter: () => void;
 };
 
@@ -29,11 +29,11 @@ function createMcpCommandPort(options: McpCommandPortOptions): CommandHostApp['m
         return [];
       }
 
-      for (const tool of mcpManager?.listTools() || []) {
+      for (const tool of mcpManager.listTools()) {
         toolCountByServer.set(tool.serverName, (toolCountByServer.get(tool.serverName) || 0) + 1);
       }
 
-      for (const diagnostic of mcpManager?.getDiagnostics() || []) {
+      for (const diagnostic of mcpManager.getDiagnostics()) {
         diagnosticsByServer.set(diagnostic.serverName, diagnostic.message);
       }
 
@@ -70,9 +70,9 @@ function createMcpCommandPort(options: McpCommandPortOptions): CommandHostApp['m
             .filter((server) => server.kind === 'server')
             .map((server) => ({name: server.name, enabled: server.enabled}))
         });
-        await mcpManager?.reload();
+        await mcpManager.reload();
         appContext.clearContextUsage();
-        const diagnostics = (mcpManager?.getDiagnostics() || []).map((diagnostic) => `${diagnostic.serverName}: ${diagnostic.message}`);
+        const diagnostics = mcpManager.getDiagnostics().map((diagnostic) => `${diagnostic.serverName}: ${diagnostic.message}`);
         return {ok: true, diagnostics};
       } catch (error: unknown) {
         return {ok: false, error: sanitizeMcpError(error)};

@@ -5,7 +5,7 @@ import {createKeyParser} from '../input/key-parser';
 import {createTranscriptStore} from '../persistence/transcript-store';
 import {createUsageStore} from '../persistence/usage-store';
 import {readTuiTheme} from '../config/theme-config';
-import {createDebugContext, disabledDebugContext, summarizeText} from '../debug/debug-context';
+import {createDebugContext, summarizeText} from '../debug/debug-context';
 import {readLifecycleHookConfig} from '../hooks/config';
 import {watchUserConfig} from '../config/user-config';
 import {createLifecycleHookDispatcher} from '../hooks/dispatcher';
@@ -39,7 +39,7 @@ import type {UserConfigWatcher} from '../config/user-config';
 /**
  * 创建 app 编排控制器，串联真实 terminal、input、render 和 agent runtime。
  */
-function createApp(runAgent: RunAgent, mcpManager?: McpManager, hooks?: LifecycleHookDispatcher, debug: DebugContext = disabledDebugContext, usageStore?: UsageStore): AppController {
+function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleHookDispatcher, debug: DebugContext, usageStore: UsageStore): AppController {
   // app 层负责把 terminal、input、render 和 agent 串起来，不直接拼 ANSI 细节。
   const input = process.stdin;
   const output = process.stdout;
@@ -83,7 +83,7 @@ function createApp(runAgent: RunAgent, mcpManager?: McpManager, hooks?: Lifecycl
     activeShellController?.abort();
     userConfigWatcher?.close();
     userConfigWatcher = null;
-    void mcpManager?.close();
+    void mcpManager.close();
     appContext.turnContext.cancelStreamingRender();
     appContext.turnContext.stopSpinner();
     renderer.clearFooter();
@@ -334,7 +334,7 @@ function createApp(runAgent: RunAgent, mcpManager?: McpManager, hooks?: Lifecycl
     if (result.noticeRecord) {
       appendRecord(result.noticeRecord);
     }
-    hooks?.emit('assistant_turn_cancelled', {
+    hooks.emit('assistant_turn_cancelled', {
       interactionMode: appContext.getInteractionMode(),
       status: 'cancelled'
     });

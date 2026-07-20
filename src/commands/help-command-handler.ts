@@ -20,7 +20,6 @@ const HELP_SURFACE: InfoCommandSurface & { title: string; lines: string[]; dismi
 /**
  * 为 /help 创建独立的 info surface，避免共享可变数组引用。
  *
- * @returns info surface
  */
 export function createHelpSurface(): InfoCommandSurface {
   return {
@@ -36,8 +35,6 @@ export class HelpCommandHandler implements CommandHandler {
   /**
    * 只匹配纯 /help，保持当前最小行为不变。
    *
-   * @param text 提交文本
-   * @returns 是否命中 /help
    */
   match(text: string): boolean {
     return text === '/help';
@@ -46,7 +43,6 @@ export class HelpCommandHandler implements CommandHandler {
   /**
    * 启动 /help，通过 host 打开 info surface。
    *
-   * @param _text 提交文本
    */
   start(_text: string, host: CommandHost): void {
     host.composer.reset();
@@ -61,8 +57,6 @@ export class HelpCommandHandler implements CommandHandler {
   /**
    * /help 活跃时只消费 Esc，其余事件交给运行时忽略。
    *
-   * @param _session command session
-   * @param event 输入事件
    */
   handleEvent(_session: CommandSession, event: InputEvent, host: CommandHost): void {
     if (event.type !== INPUT_EVENTS.ESCAPE) {

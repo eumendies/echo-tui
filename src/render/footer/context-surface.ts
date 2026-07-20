@@ -32,7 +32,7 @@ function renderContextSurface(surface: ContextUsageCommandSurface, width: number
   const usage = surface.usage;
   const segments = (usage.segments || []).filter((segment) => segment.tokens > 0);
   const lines = [
-    topLine(cardWidth, surface.title || '上下文', theme),
+    topLine(cardWidth, surface.title, theme),
     rowLine(cardWidth, headerLine(usage, contentWidth, theme), theme),
     rowLine(cardWidth, windowGaugeLine(usage, contentWidth, theme), theme),
     rowLine(cardWidth, '', theme),
@@ -45,7 +45,7 @@ function renderContextSurface(surface: ContextUsageCommandSurface, width: number
   }
 
   lines.push(dividerLine(cardWidth, theme));
-  lines.push(rowLine(cardWidth, ansi.dim(clampPlainText(surface.dismissHint || '上下文占用详情 · 按任意键关闭', contentWidth)), theme));
+  lines.push(rowLine(cardWidth, ansi.dim(clampPlainText(surface.dismissHint, contentWidth)), theme));
   lines.push(bottomLine(cardWidth, theme));
 
   return constrainLayoutTail({

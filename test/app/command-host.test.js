@@ -106,7 +106,7 @@ function createHostHarness(options = {}) {
     },
     appendRecord() {},
     exit() {},
-    hooks: options.hooks === false ? undefined : {
+    hooks: {
       updateConfig(config) {
         calls.hookConfigs.push(config);
 
@@ -115,11 +115,24 @@ function createHostHarness(options = {}) {
         }
       }
     },
+    mcpManager: {
+      getDiagnostics() {
+        return [];
+      },
+      listTools() {
+        return [];
+      },
+      async reload() {}
+    },
     renderFooter() {},
     renderResizeRecovery() {
       calls.resizeRecoveries += 1;
     },
-    queryCodexUsage: options.queryCodexUsage
+    usageStore: {
+      listDailyUsage() {
+        return [];
+      }
+    }
   });
 
   return {calls, host, setThemes};
@@ -308,19 +321,12 @@ test('CommandHost hooks facade reports save and reload failures without transcri
     assert.deepEqual(calls.hookConfigs, [{assistant_turn_start: [{command: 'echo valid', timeoutMs: 1000}]}]);
   });
 
-  withTemporaryUserConfig(JSON.stringify({}), () => {
-    const {host} = createHostHarness({hooks: false});
-    const draft = host.hooks.readDraft();
-    draft.events[0].entries.push({command: 'echo valid', enabled: true, timeoutMs: 1000});
-
-    assert.deepEqual(host.hooks.saveDraft(draft), {ok: true});
-  });
 });
 
 test('CommandHost hooks facade creates synthetic payload and maps test result', async () => {
   await withTemporaryUserConfig(JSON.stringify({}), async () => {
     const cwd = process.cwd();
-    const {host} = createHostHarness({hooks: false, cwd});
+    const {host} = createHostHarness({cwd});
 
     const result = await host.hooks.testEntry('tool_call_start', {
       command: 'node -e "let s = \'\'; process.stdin.on(\'data\', c => s += c); process.stdin.on(\'end\', () => { const p = JSON.parse(s); process.stdout.write(process.env.ECHO_HOOK_EVENT + \':\' + p.toolName + \':\' + p.cwd); });"',
@@ -385,8 +391,8 @@ test('CommandHost config facade does not refresh model cache when save fails', (
   });
 });
 
-test('CommandHost status facade aggregates non-sensitive runtime state and Codex usage', async () => {
-  await withTemporaryUserConfig(JSON.stringify({
+test('CommandHost status facade aggregates non-sensitive runtime state', () => {
+  withTemporaryUserConfig(JSON.stringify({
     llm: {
       selectedModel: 'codex-main',
       providers: {
@@ -394,25 +400,17 @@ test('CommandHost status facade aggregates non-sensitive runtime state and Codex
       },
       models: [{id: 'codex-main', provider: 'codex', model: 'gpt-codex'}]
     }
-  }), async ({configPath}) => {
+  }), ({configPath}) => {
     const homeDir = path.dirname(path.dirname(configPath));
     const cwd = path.join(homeDir, 'project');
     fs.mkdirSync(path.join(cwd, '.git'), {recursive: true});
     fs.writeFileSync(path.join(homeDir, '.echo', 'AGENTS.md'), 'global instructions', 'utf8');
     fs.writeFileSync(path.join(cwd, 'AGENTS.md'), 'project instructions', 'utf8');
-    const queryCalls = [];
     const modelContext = new ModelContext();
     const {host} = createHostHarness({
       cwd,
       modelContext,
-      sessionId: 'session-status',
-      async queryCodexUsage(config) {
-        queryCalls.push(config);
-        return {
-          primary: {usedPercent: 20, resetAt: 1_800_000_000_000},
-          secondary: {usedPercent: 30, resetAt: 1_900_000_000_000}
-        };
-      }
+      sessionId: 'session-status'
     });
 
     host.memory.create('enabled user memory');
@@ -422,7 +420,6 @@ test('CommandHost status facade aggregates non-sensitive runtime state and Codex
     assert.equal(catalogResult.ok, true);
 
     const snapshot = host.status.createSnapshot();
-    const usage = await host.status.queryCodexUsage();
 
     assert.equal(snapshot.cwd, cwd);
     assert.equal(snapshot.sessionId, 'session-status');
@@ -431,23 +428,13 @@ test('CommandHost status facade aggregates non-sensitive runtime state and Codex
     assert.equal(snapshot.userMemoryCount, 1);
     assert.deepEqual(snapshot.agentMemoryCatalogs, [{name: 'runtime', scope: 'global'}]);
     assert.deepEqual(snapshot.diagnostics, []);
-    assert.deepEqual(queryCalls, [{authFilePath: '/tmp/codex-auth.json'}]);
-    assert.equal(usage.status, 'available');
-    assert.equal(usage.primary.usedPercent, 20);
   });
 });
 
 test('CommandHost status facade preserves empty state and reports local read failures', async () => {
   await withTemporaryUserConfig('{broken config', async ({configPath}) => {
     fs.writeFileSync(path.join(path.dirname(configPath), 'memories.json'), '{broken memories', 'utf8');
-    let didQuery = false;
-    const {host} = createHostHarness({
-      modelContext: new ModelContext(),
-      async queryCodexUsage() {
-        didQuery = true;
-        throw new Error('should not query');
-      }
-    });
+    const {host} = createHostHarness({modelContext: new ModelContext()});
 
     const snapshot = host.status.createSnapshot();
     const usage = await host.status.queryCodexUsage();
@@ -458,7 +445,6 @@ test('CommandHost status facade preserves empty state and reports local read fai
     assert.equal(snapshot.agentMemoryCatalogs.length, 0);
     assert.equal(snapshot.diagnostics.length >= 2, true);
     assert.equal(usage.status, 'unavailable');
-    assert.equal(didQuery, false);
   });
 });
 

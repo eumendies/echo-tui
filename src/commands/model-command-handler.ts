@@ -18,8 +18,6 @@ type ModelCommandInfoResult = HostModelInfoResult;
 /**
  * 为 /model 创建 info surface，展示配置错误。
  *
- * @param modelCommandInfo 模型命令信息
- * @returns info surface
  */
 export function createModelSurface(modelCommandInfo: ModelCommandInfoResult): InfoCommandSurface {
   const error = 'error' in modelCommandInfo ? modelCommandInfo.error : undefined;
@@ -39,8 +37,6 @@ export function createModelSurface(modelCommandInfo: ModelCommandInfoResult): In
 /**
  * 为 /model 创建模型选择 surface。
  *
- * @param data 模型选择数据
- * @returns select surface
  */
 export function createModelSelectSurface(data: ModelCommandInfo): SelectCommandSurface {
   return {
@@ -129,8 +125,6 @@ export class ModelCommandHandler implements CommandHandler<ModelCommandInfo> {
   /**
    * 只匹配纯 /model，带参数或后缀的输入继续走普通消息路径。
    *
-   * @param text 提交文本
-   * @returns 是否命中 /model
    */
   match(text: string): boolean {
     return text === '/model';
@@ -139,7 +133,6 @@ export class ModelCommandHandler implements CommandHandler<ModelCommandInfo> {
   /**
    * 启动 /model，按配置打开模型信息或模型选择面板。
    *
-   * @param _text 提交文本
    */
   start(_text: string, host: CommandHost): void {
     const modelCommandInfo = host.model.createModelCommandInfo();
@@ -159,8 +152,6 @@ export class ModelCommandHandler implements CommandHandler<ModelCommandInfo> {
   /**
    * /model 活跃时只消费 Esc 关闭面板，其余事件保持会话不变。
    *
-   * @param _session command session
-   * @param event 输入事件
    */
   handleEvent(session: CommandSession<ModelCommandInfo>, event: InputEvent, host: CommandHost): void {
     if (event.type === INPUT_EVENTS.MOVE_UP) {

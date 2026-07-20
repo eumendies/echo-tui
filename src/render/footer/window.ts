@@ -30,7 +30,7 @@ export function clampCursorRow(cursorRow: number, lineCount: number): number {
 }
 
 /**
- * 创建包含 selectedIndex 的可见窗口；用于 slash、select、checkbox 等单行候选列表。
+ * 创建包含 selectedIndex 的可见窗口；用于 slash、select 等单行候选列表。
  */
 export function createSelectedWindow<T>(items: T[], selectedIndex: number | undefined, maxItems: number): {items: T[]; start: number} {
   const normalizedMaxItems = normalizeLineLimit(maxItems, 0);

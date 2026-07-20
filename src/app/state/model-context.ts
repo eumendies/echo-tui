@@ -250,8 +250,6 @@ class ModelContext {
   /**
    * 将 /model 选择的 profile id 持久化到用户级配置文件。
    *
-   * @param modelId 模型 profile id
-   * @returns 选择结果
    */
   selectModel(modelId: string): SelectModelResult {
     try {
@@ -272,8 +270,6 @@ class ModelContext {
   /**
    * 将 /effort 选择的推理等级写入当前模型 profile。
    *
-   * @param effort 推理等级
-   * @returns 选择结果
    */
   selectEffort(effort: ReasoningEffort): SelectEffortResult {
     try {

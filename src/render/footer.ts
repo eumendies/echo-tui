@@ -15,7 +15,6 @@ const TRANSCRIPT_COMPOSER_SPACER_LINE_COUNT = 1;
 /**
  * 创建独立 footer renderer，只负责 pending、composer、transcript/composer 间隔和 status line 的局部重绘。
  *
- * @param {NodeJS.WriteStream} [output=process.stdout]
  */
 export function createFooterRenderer(output: NodeJS.WriteStream = process.stdout): FooterRenderer {
   // footer 是唯一可重复重绘的临时区域；记录上一帧形状，才能只擦掉 footer。
@@ -25,7 +24,6 @@ export function createFooterRenderer(output: NodeJS.WriteStream = process.stdout
   /**
    * 清掉上一帧 footer，可选地保留光标隐藏状态，方便后续继续绘制。
    *
-   * @param {boolean} [keepCursorHidden=false]
    */
   function clearPrevious(keepCursorHidden = false): void {
     if (previousHeight === 0) {
@@ -65,7 +63,6 @@ export function createFooterRenderer(output: NodeJS.WriteStream = process.stdout
   /**
    * 渲染新的 footer 布局，并在完成后把光标放回 composer 的逻辑位置。
    *
-   * @param {{composer: object, commandSurface?: object|null, pending: ({kind: 'thinking', frame: number}|{kind: 'streaming', text: string})|null, statusLine: object, width: number}} options
    */
   function render(options: RenderState): void {
     const layout = renderFooterLayout(options);
@@ -104,8 +101,6 @@ export function createFooterRenderer(output: NodeJS.WriteStream = process.stdout
 /**
  * 根据当前状态生成 footer 的逐行布局和光标坐标。
  *
- * @param {{composer: object, commandSurface?: object|null, pending: ({kind: 'thinking', frame: number}|{kind: 'streaming', text: string})|null, statusLine: object, width: number}} options
- * @returns {{lines: string[], cursorRow: number, cursorColumn: number, showCursor: boolean}}
  */
 export function renderFooterLayout({ composer, commandSurface, slashSuggestions, pending, working, theme = DEFAULT_TUI_THEME, statusLine, rows, width }: RenderState): FooterLayout {
   const footerWidth = width || 80;

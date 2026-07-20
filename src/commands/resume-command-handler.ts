@@ -28,8 +28,6 @@ type ResumeData = {
 /**
  * 格式化 session 更新时间，供恢复列表使用。
  *
- * @param updatedAt 更新时间
- * @returns 可展示时间文本
  */
 function formatUpdatedAt(updatedAt: string): string {
   const date = new Date(updatedAt);
@@ -50,8 +48,6 @@ function formatUpdatedAt(updatedAt: string): string {
 /**
  * 将持久化 session metadata 转为 select surface 可显示的 option。
  *
- * @param session session metadata
- * @returns select option
  */
 function createSessionItem(session: ResumeSessionMetadata): ResumeCommandSurfaceSession {
   const messageCount = Number.isInteger(session.messageCount) ? session.messageCount : 0;
@@ -81,11 +77,6 @@ function createPreviewRecords(session: ResumeSessionMetadata | undefined): Resum
 /**
  * 根据绝对选中项修正窗口起点，保证选中项始终位于最多 5 条可见窗口内。
  *
- * @param selectedIndex 绝对选中项
- * @param windowStart 当前窗口起点
- * @param totalCount 总数
- * @param pageSize 页大小
- * @returns 修正后的窗口起点
  */
 function clampWindowStart(selectedIndex: number, windowStart: number, totalCount: number, pageSize: number): number {
   const maxWindowStart = Math.max(0, totalCount - pageSize);
@@ -103,8 +94,6 @@ function clampWindowStart(selectedIndex: number, windowStart: number, totalCount
 /**
  * 归一化 /resume command session data。
  *
- * @param data 原始 session data
- * @returns 归一化 resume data
  */
 export function normalizeResumeData(data: Partial<ResumeData> | null | undefined): ResumeData {
   const source = data || {};
@@ -164,7 +153,6 @@ function createResumeSurfaceFromData(normalized: ResumeData): ResumeCommandSurfa
 /**
  * 创建无可恢复会话时的 info surface。
  *
- * @returns info surface
  */
 function createEmptyResumeSurface(): InfoCommandSurface {
   return {
@@ -181,8 +169,6 @@ function createEmptyResumeSurface(): InfoCommandSurface {
 /**
  * 根据方向键移动 /resume 选中项；列表边界不循环。
  *
- * @param session command session
- * @param direction 移动方向
  */
 function moveResumeSelection(session: CommandSession<ResumeData>, direction: number, host: CommandHost): void {
   const data = normalizeResumeData(session.data || {});
@@ -251,8 +237,6 @@ function scrollResumePreview(session: CommandSession<ResumeData>, direction: num
 /**
  * 确认恢复当前选中的 session。
  *
- * @param session command session
- * @returns command effects
  */
 function confirmResumeSelection(session: CommandSession<ResumeData>, host: CommandHost): void {
   const data = normalizeResumeData(session.data || {});
@@ -274,8 +258,6 @@ export class ResumeCommandHandler implements CommandHandler<ResumeData> {
   /**
    * 只匹配纯 /resume，带参数或后缀的输入继续走普通消息路径。
    *
-   * @param text 提交文本
-   * @returns 是否命中 /resume
    */
   match(text: string): boolean {
     return text === '/resume';
@@ -284,7 +266,6 @@ export class ResumeCommandHandler implements CommandHandler<ResumeData> {
   /**
    * 启动 /resume，打开恢复列表或空状态 surface。
    *
-   * @param _text 提交文本
    */
   start(_text: string, host: CommandHost): void {
     const sessions = host.transcript.listResumeSessions().map((session) => ({ ...session }));
@@ -321,8 +302,6 @@ export class ResumeCommandHandler implements CommandHandler<ResumeData> {
   /**
    * /resume 活跃时按当前焦点分发选择、预览滚动、恢复和取消事件。
    *
-   * @param session command session
-   * @param event 输入事件
    */
   handleEvent(session: CommandSession<ResumeData>, event: InputEvent, host: CommandHost): void {
     if (event.type === INPUT_EVENTS.MOVE_UP) {

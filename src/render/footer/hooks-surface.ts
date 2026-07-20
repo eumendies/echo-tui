@@ -22,13 +22,13 @@ export function renderHooksSurface(commandSurface: HooksCommandSurface, width: n
   const content = renderHooksContent(commandSurface, contentWidth, theme);
   const bottomMessages = renderBottomMessageRows(commandSurface, contentWidth, theme);
   const lines = [
-    renderTop(boxWidth, commandSurface.title || 'HOOKS', theme),
+    renderTop(boxWidth, commandSurface.title, theme),
     renderLine('', contentWidth, theme),
     ...content,
     renderLine('', contentWidth, theme),
     ...bottomMessages,
     ...(bottomMessages.length > 0 ? [renderLine('', contentWidth, theme)] : []),
-    renderIndentedLine(ansi.dim(clampPlainText(commandSurface.dismissHint || 'Enter 保存 · Esc 取消', getIndentedContentWidth(contentWidth))), contentWidth, theme),
+    renderIndentedLine(ansi.dim(clampPlainText(commandSurface.dismissHint, getIndentedContentWidth(contentWidth))), contentWidth, theme),
     renderBottom(boxWidth, theme)
   ];
 

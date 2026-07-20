@@ -90,7 +90,7 @@ class AppContext {
     this.getCurrentCwdValue = cwd;
     this.getNodeVersionValue = nodeVersion;
 
-    this.composerContext = new ComposerContext(() => this.turnContext ? this.turnContext.isResponding() : false);
+    this.composerContext = new ComposerContext(() => this.turnContext.isResponding());
     this.transcriptContext = new TranscriptContext(transcriptStore, () => this.getCurrentCwd());
     this.modelContext = new ModelContext();
     this.turnContext = new TurnContext(this.composerContext, this.transcriptContext);

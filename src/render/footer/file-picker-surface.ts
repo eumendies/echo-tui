@@ -48,13 +48,13 @@ function renderFilePickerSurface(
   }
 
   const lines = [
-    renderTop(boxWidth, surface.title || '文件', theme),
+    renderTop(boxWidth, surface.title, theme),
     renderLine(renderPathLine(surface, innerWidth, theme), boxWidth, theme),
     ...(surface.query ? [renderLine(renderQueryLine(surface, innerWidth, theme), boxWidth, theme)] : []),
     renderDivider(leftWidth, rightWidth, theme),
     ...bodyRows.slice(0, bodyHeight).map((row, visualIndex) => renderBodyLine(surface, row.entry, row.index, row.more, previewRows[visualIndex] || '', leftWidth, rightWidth, visualIndex === previewFocusIndex, theme)),
     renderDivider(leftWidth, rightWidth, theme),
-    renderLine(ansi.dim(clampPlainText(surface.notice || surface.dismissHint || '', innerWidth)), boxWidth, theme),
+    renderLine(ansi.dim(clampPlainText(surface.notice || surface.dismissHint, innerWidth)), boxWidth, theme),
     renderBottom(boxWidth, theme)
   ];
 

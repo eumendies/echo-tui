@@ -1,4 +1,3 @@
-import {resolveSlashCommand as defaultResolveSlashCommand} from '../../commands/resolve-slash-command';
 import {INPUT_EVENTS} from '../../input/event-types';
 
 import type {
@@ -11,21 +10,13 @@ import type {
 } from '../../types/command';
 import type {InputEvent} from '../../types/input';
 
-type RuntimeSnapshot = {
-  activeCommandSession: {
-    commandName: string;
-    data?: Record<string, unknown> | null;
-    surface: CommandSurface;
-  } | null;
-};
-
 /**
  * 创建 slash command runtime，集中管理命令会话、surface 快照和会话内事件分发。
  *
  * runtime 不解释业务 effect；handler 通过 CommandHost 直接调用受控 app 能力。
  */
 function createCommandRuntime(dependencies: CommandRuntimeDependencies) {
-  const resolveSlashCommand = dependencies.resolveSlashCommand || defaultResolveSlashCommand;
+  const resolveSlashCommand = dependencies.resolveSlashCommand;
   let activeCommandSession: CommandSession | null = null;
   let didMutateSession = false;
 
@@ -80,7 +71,7 @@ function createCommandRuntime(dependencies: CommandRuntimeDependencies) {
     }
 
     didMutateSession = false;
-    const result = matchedSlashHandler.start(text, host) as void | CommandStartResult;
+    const result = matchedSlashHandler.start(text, host);
     renderIfNeeded();
 
     if (result?.kind === 'not_matched') {
@@ -130,35 +121,15 @@ function createCommandRuntime(dependencies: CommandRuntimeDependencies) {
     return undefined;
   }
 
-  /**
-   * 返回当前是否存在活跃 command session。
-   */
   function hasActiveSession(): boolean {
     return Boolean(activeCommandSession);
   }
 
-  /**
-   * 返回当前 command surface 的可渲染快照。
-   */
   function getSurface(): CommandSurface | null {
     return activeCommandSession ? structuredClone(activeCommandSession.surface) : null;
   }
 
-  /**
-   * 返回测试和调试使用的 command runtime 状态快照。
-   */
-  function getSnapshot(): RuntimeSnapshot {
-    return {
-      activeCommandSession: activeCommandSession ? {
-        commandName: activeCommandSession.commandName,
-        data: structuredClone(activeCommandSession.data),
-        surface: structuredClone(activeCommandSession.surface)
-      } : null
-    };
-  }
-
   return {
-    getSnapshot,
     getSurface,
     handleEvent,
     hasActiveSession,

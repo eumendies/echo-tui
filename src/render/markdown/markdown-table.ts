@@ -40,9 +40,6 @@ const HEADER_FILL = '─';
 /**
  * 从指定行尝试解析连续 Markdown pipe table。
  *
- * @param {string[]} lines
- * @param {number} startIndex
- * @returns {ParseTableResult | null}
  */
 export function tryParseMarkdownTable(lines: string[], startIndex: number): ParseTableResult | null {
   const header = parseTableSegments(lines[startIndex]);
@@ -86,8 +83,6 @@ export function tryParseMarkdownTable(lines: string[], startIndex: number): Pars
 /**
  * 判断一组源行里是否包含有效 Markdown pipe table。
  *
- * @param {string[]} lines
- * @returns {boolean}
  */
 export function containsMarkdownTable(lines: string[]): boolean {
   for (let index = 0; index < lines.length - 1; index += 1) {
@@ -102,10 +97,6 @@ export function containsMarkdownTable(lines: string[]): boolean {
 /**
  * 渲染 Markdown table 为无外框 Unicode 内部分隔线表格。
  *
- * @param {MarkdownTable} table
- * @param {number} width
- * @param {string} prefix
- * @returns {string[]}
  */
 export function renderMarkdownTable(table: MarkdownTable, width: number, prefix: string, theme: TuiTheme = DEFAULT_TUI_THEME): string[] {
   const safeWidth = safeRenderWidth(width);
@@ -130,8 +121,6 @@ export function renderMarkdownTable(table: MarkdownTable, width: number, prefix:
 /**
  * Split pipe-delimited line into trimmed cells, ignoring escaped pipe syntax.
  *
- * @param {string} line
- * @returns {string[] | null}
  */
 function parseTableSegments(line: string | undefined): string[] | null {
   if (line === undefined) {
@@ -155,7 +144,6 @@ function parseTableSegments(line: string | undefined): string[] | null {
   return segments.map((segment) => segment.trim().replace(/\\\|/g, '|'));
 }
 
-/** @param {string} content @returns {string[]} */
 function splitUnescapedPipe(content: string): string[] {
   const segments: string[] = [];
   let start = 0;
@@ -176,17 +164,14 @@ function splitUnescapedPipe(content: string): string[] {
   return segments;
 }
 
-/** @param {string[]} segments @returns {boolean} */
 function isTableHeaderSegments(segments: string[]): boolean {
   return segments.some((segment) => segment.trim() !== '');
 }
 
-/** @param {string[]} segments @returns {boolean} */
 function isDelimiterSegments(segments: string[]): boolean {
   return segments.length > 0 && segments.every(isDelimiterSegment);
 }
 
-/** @param {string} segment @returns {boolean} */
 function isDelimiterSegment(segment: string): boolean {
   const trimmed = segment.trim();
   if (trimmed === '') {
@@ -198,7 +183,6 @@ function isDelimiterSegment(segment: string): boolean {
   return withoutTrailing.length >= 3 && /^-+$/.test(withoutTrailing);
 }
 
-/** @param {string} delimiter @returns {TableAlignment} */
 function parseAlignment(delimiter: string): TableAlignment {
   const trimmed = delimiter.trim();
   const left = trimmed.startsWith(':');
@@ -215,7 +199,6 @@ function parseAlignment(delimiter: string): TableAlignment {
   return 'left';
 }
 
-/** @param {string[]} row @param {number} columnCount @returns {string[]} */
 function normalizeRow(row: string[], columnCount: number): string[] {
   const normalized = row.slice(0, columnCount);
   while (normalized.length < columnCount) {
@@ -230,9 +213,6 @@ function normalizeRow(row: string[], columnCount: number): string[] {
  * 分配分三段：自然宽度能放下时不换行；放不下但可读下限能放下时，从可读下限向自然宽度按需扩展；
  * 连可读下限都放不下时，才从硬下限向可读下限退化。这样长文本列会主动换行，但不会被优先压成竖排。
  *
- * @param {MarkdownTable} table
- * @param {number} availableContentWidth
- * @returns {number[]}
  */
 function computeColumnWidths(table: MarkdownTable, availableContentWidth: number): number[] {
   const allRows = [table.header, ...table.rows];
@@ -257,9 +237,6 @@ function computeColumnWidths(table: MarkdownTable, availableContentWidth: number
  *
  * 长文本列不会直接使用自然宽度作为最小值，而是保留一个可读下限；短字段列通常应完整显示，避免为了扩展长文本而被截得过窄。
  *
- * @param {string[][]} rows
- * @param {number} columnIndex
- * @returns {ColumnWidthStats}
  */
 function computeColumnWidthStats(rows: string[][], columnIndex: number): ColumnWidthStats {
   const cells = rows.map((row) => row[columnIndex] ?? '');
@@ -277,8 +254,6 @@ function computeColumnWidthStats(rows: string[][], columnIndex: number): ColumnW
  *
  * 这里使用终端显示宽度而不是单词数量，因为中文、emoji 和内联代码都可能没有稳定的空格分隔。
  *
- * @param {string[]} cells
- * @returns {boolean}
  */
 function isLongTextColumn(cells: string[]): boolean {
   return cells.some((cell) => displayWidth(cell) >= LONG_TEXT_COLUMN_THRESHOLD);
@@ -290,10 +265,6 @@ function isLongTextColumn(cells: string[]): boolean {
  * base 是必须满足的下限，target 是希望达到的宽度；当剩余空间不足以达到 target 时，按各列缺口比例分配，
  * 再用小数余量顺序补齐，保证总宽度稳定落在可用内容区内。
  *
- * @param {number[]} baseWidths
- * @param {number[]} targetWidths
- * @param {number} availableContentWidth
- * @returns {number[]}
  */
 function distributeColumnWidths(baseWidths: number[], targetWidths: number[], availableContentWidth: number): number[] {
   const widths = [...baseWidths];
@@ -340,7 +311,6 @@ function distributeColumnWidths(baseWidths: number[], targetWidths: number[], av
   return widths;
 }
 
-/** @param {number[]} widths @returns {number} */
 function sumWidths(widths: number[]): number {
   return widths.reduce((sum, value) => sum + value, 0);
 }
@@ -363,7 +333,6 @@ function renderTableRow(cells: string[], alignments: TableAlignment[], widths: n
   return lines;
 }
 
-/** @param {StyledSpan[]} spans @param {number} width @returns {CellLine[]} */
 function wrapCell(spans: StyledSpan[], width: number): CellLine[] {
   const lines: CellLine[] = [];
   let currentSpans: StyledSpan[] = [];
@@ -391,7 +360,6 @@ function wrapCell(spans: StyledSpan[], width: number): CellLine[] {
   return lines.length > 0 ? lines : [{ spans: [], width: 0 }];
 }
 
-/** @param {CellLine} line @param {number} width @param {TableAlignment} alignment @returns {string} */
 function renderAlignedCellLine(line: CellLine, width: number, alignment: TableAlignment): string {
   const padding = Math.max(0, width - line.width);
   const leftPadding = alignment === 'right' ? padding : alignment === 'center' ? Math.floor(padding / 2) : 0;
@@ -402,13 +370,11 @@ function renderAlignedCellLine(line: CellLine, width: number, alignment: TableAl
   return `${' '.repeat(leftPadding)}${rendered}${' '.repeat(rightPadding)}`;
 }
 
-/** @param {number[]} widths @param {string} prefix @returns {string} */
 function renderDivider(widths: number[], prefix: string, theme: TuiTheme): string {
   const segments = widths.map((width) => HEADER_FILL.repeat(width));
   return `${styleRolePrefix(prefix, theme)}${markdownStyle(theme, 'tableSeparator', segments.join(`${HEADER_FILL.repeat(CELL_PADDING)}${HEADER_SEPARATOR}${HEADER_FILL.repeat(CELL_PADDING)}`))}`;
 }
 
-/** @param {string[]} sourceLines @param {number} width @param {string} prefix @returns {string[]} */
 function renderFallbackRows(sourceLines: string[], width: number, prefix: string, theme: TuiTheme): string[] {
   const safeWidth = safeRenderWidth(width);
   const lines: string[] = [];
@@ -437,7 +403,6 @@ function renderFallbackRows(sourceLines: string[], width: number, prefix: string
   return lines.length > 0 ? lines : [prefix];
 }
 
-/** @param {string} prefix @returns {string} */
 function styleRolePrefix(prefix: string, theme: TuiTheme): string {
   return stripAnsi(prefix).trim().length > 0 ? markdownStyle(theme, 'rolePrefix', prefix) : prefix;
 }

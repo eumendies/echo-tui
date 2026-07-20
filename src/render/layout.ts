@@ -14,8 +14,6 @@ const TAB_STOP_WIDTH = 8;
 /**
  * 计算单个字符的终端显示宽度，兼容换行、组合字符、emoji 和常见东亚宽字符。
  *
- * @param {string} char
- * @returns {number}
  */
 export function charWidth(char: string): number {
   // 这里实现一个原型级 display width：emoji/中文等宽字符按 2，普通字符按 1。
@@ -53,8 +51,6 @@ export function charWidth(char: string): number {
 /**
  * 计算制表符从当前列移动到下一个固定制表位所需的宽度。
  *
- * @param {number} column 当前可见列
- * @returns {number}
  */
 export function tabWidthAt(column: number): number {
   const normalizedColumn = Number.isFinite(column) ? Math.max(0, Math.floor(column)) : 0;
@@ -64,8 +60,6 @@ export function tabWidthAt(column: number): number {
 /**
  * 计算字符串在终端中的实际显示宽度，会先移除 ANSI 控制序列。
  *
- * @param {string} text
- * @returns {number}
  */
 export function displayWidth(text: string): number {
   let width = 0;
@@ -88,8 +82,6 @@ export function displayWidth(text: string): number {
 /**
  * 返回安全渲染宽度，保守少用最后一列，避免触发终端自动换行。
  *
- * @param {number} width
- * @returns {number}
  */
 export function safeRenderWidth(width: number): number {
   // 终端最后一列容易触发自动换行，所有整行渲染都保守少用一列。
@@ -100,8 +92,6 @@ export function safeRenderWidth(width: number): number {
 /**
  * 去掉字符串中的 ANSI 控制序列，避免颜色或光标控制干扰宽度计算。
  *
- * @param {string} text
- * @returns {string}
  */
 export function stripAnsi(text: string): string {
   return text.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
@@ -110,8 +100,6 @@ export function stripAnsi(text: string): string {
 /**
  * 判断一个 code point 是否应当按宽字符处理。
  *
- * @param {number} codePoint
- * @returns {boolean}
  */
 function isWideCodePoint(codePoint: number): boolean {
   return (
@@ -129,8 +117,6 @@ function isWideCodePoint(codePoint: number): boolean {
 /**
  * 判断 emoji 序列中的组合成分是否不应单独占终端列宽。
  *
- * @param {number} codePoint
- * @returns {boolean}
  */
 function isZeroWidthEmojiComponent(codePoint: number): boolean {
   return (
@@ -143,8 +129,6 @@ function isZeroWidthEmojiComponent(codePoint: number): boolean {
 /**
  * 判断常见 emoji code point 是否通常按 2 列显示。
  *
- * @param {number} codePoint
- * @returns {boolean}
  */
 function isEmojiCodePoint(codePoint: number): boolean {
   return (
@@ -158,8 +142,6 @@ function isEmojiCodePoint(codePoint: number): boolean {
 /**
  * 按 grapheme cluster 切分文本，避免把复合 emoji 拆成多个显示单元。
  *
- * @param {string} text
- * @returns {string[]}
  */
 export function splitGraphemes(text: string): string[] {
   const Segmenter = Intl.Segmenter;
@@ -171,12 +153,10 @@ export function splitGraphemes(text: string): string[] {
   return Array.from(text);
 }
 
-/** @param {string} value @returns {boolean} */
 function isEmojiCluster(value: string): boolean {
   return splitCodePoints(value).some(isEmojiCodePoint);
 }
 
-/** @param {string} value @returns {number[]} */
 function splitCodePoints(value: string): number[] {
   return Array.from(value).map((char) => char.codePointAt(0) ?? 0);
 }
@@ -184,10 +164,6 @@ function splitCodePoints(value: string): number[] {
 /**
  * 使用给定前缀对文本做自动换行，主要服务于 pending preview 一类前缀消息。
  *
- * @param {string} text
- * @param {number} width
- * @param {string} [prefix='']
- * @returns {string[]}
  */
 export function wrapText(text: string, width: number, prefix = ''): string[] {
   // pending preview 使用同一个 prefix 包装；换行后继续保留 role 前缀。
@@ -220,9 +196,6 @@ export function wrapText(text: string, width: number, prefix = ''): string[] {
 /**
  * 把 composer 的字符数组投影成可见行，并同时计算光标应回到的行列。
  *
- * @param {{chars: string[], cursor: number}} composer
- * @param {number} width
- * @returns {{lines: string[], cursorRow: number, cursorColumn: number}}
  */
 export function renderComposer(composer: ComposerState, width: number, prompt = '> ', options: {highlightFileMentions?: boolean; startColumn?: number} = {}): ComposerLayout {
   // 同时生成 composer 可见行和光标坐标，footer 重绘后需要用它恢复光标。
@@ -239,7 +212,6 @@ export function renderComposer(composer: ComposerState, width: number, prompt = 
   /**
    * 在遍历到目标 cursor index 的瞬间记录当前的可见行列位置。
    *
-   * @param {number} index
    */
   function rememberCursor(index: number): void {
     // 在渲染到 cursor index 的瞬间记录当前位置。
