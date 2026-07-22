@@ -379,23 +379,115 @@ test('buildProviderRecords does not append mode context after compacted active r
   assert.equal(records.some((record) => record.text.includes('# Echo Runtime Context')), false);
 });
 
-test('built-in system prompt distinguishes directory reading from path and content search', () => {
+test('built-in system prompt keeps minimal cross-task guidance without tool routing or generic safety reminders', () => {
   const prompt = createBuiltInSystemPrompt({ cwd: TEST_CWD });
 
-  assert.match(prompt, /glob to discover local files by name or path pattern/);
-  assert.match(prompt, /grep for general text search/);
-  assert.match(prompt, /read_files to read known files or list the direct children/);
-  assert.match(prompt, /directory reads are non-recursive/);
+  assert.match(prompt, /built-in terminal development assistant/);
+  assert.match(prompt, /Match the user's language unless asked otherwise/);
+  assert.match(prompt, /concise, direct, actionable, and terminal-friendly/);
+  assert.match(prompt, /Ground answers in the conversation and tool results/);
+  assert.match(prompt, /state uncertainty and never invent facts/);
+  assert.doesNotMatch(prompt, /Before using a tool|Prefer glob|read_files|web_fetch|apply_patch|credentials|sensitive information/);
 });
 
-test('built-in system prompt guides todo tools for long-running tasks only', () => {
+test('built-in system prompt keeps todo guidance for non-trivial multi-step work only', () => {
   const prompt = createBuiltInSystemPrompt({ cwd: TEST_CWD });
 
-  assert.match(prompt, /multi-step or long-running tasks/);
-  assert.match(prompt, /use the todo tools/);
-  assert.match(prompt, /mark items complete promptly/);
-  assert.match(prompt, /loop until every todo is complete/);
-  assert.match(prompt, /Do not create todos for trivial one-step requests/);
+  assert.match(prompt, /non-trivial multi-step work/);
+  assert.match(prompt, /maintain todos to completion/);
+  assert.match(prompt, /periodically summarize findings and next steps/);
+  assert.match(prompt, /skip todos for trivial tasks/);
+});
+
+test('built-in system prompt keeps runtime, AGENTS, skills, and memory sections unchanged', () => {
+  const prompt = createBuiltInSystemPrompt({
+    cwd: TEST_CWD,
+    agentInstructions: [{
+      content: 'Follow project evidence.',
+      filePath: '/repo/AGENTS.md',
+      label: 'AGENTS.md',
+      sourceKind: 'project'
+    }],
+    skillCatalog: [{
+      name: 'review',
+      description: 'Review changes',
+      sourceKind: 'project',
+      sourcePath: '/repo/.echo/skills/review/SKILL.md',
+      resources: []
+    }],
+    memoryPrompts: ['## User-managed memories\n- Prefer Chinese replies.']
+  });
+
+  assert.match(prompt, new RegExp(`Current working directory: ${TEST_CWD}`));
+  assert.match(prompt, /Project AGENTS\.md: AGENTS\.md\nFollow project evidence\./);
+  assert.match(prompt, /Available Skills:[\s\S]*review: Review changes/);
+  assert.match(prompt, /## User-managed memories\n- Prefer Chinese replies\./);
+});
+
+test('SYSTEM.md base prompt replaces built-in text while preserving dynamic sections', () => {
+  const prompt = createBuiltInSystemPrompt({
+    basePrompt: 'You are a project-specific assistant.',
+    cwd: TEST_CWD,
+    agentInstructions: [{
+      content: 'Follow project evidence.',
+      filePath: '/repo/AGENTS.md',
+      label: 'AGENTS.md',
+      sourceKind: 'project'
+    }],
+    skillCatalog: [{
+      name: 'review',
+      description: 'Review changes',
+      sourceKind: 'project',
+      sourcePath: '/repo/.echo/skills/review/SKILL.md',
+      resources: []
+    }],
+    memoryPrompts: ['## User-managed memories\n- Prefer Chinese replies.']
+  });
+
+  assert.equal(prompt.startsWith('You are a project-specific assistant.'), true);
+  assert.doesNotMatch(prompt, /Echo TUI's built-in terminal development assistant/);
+  assert.match(prompt, new RegExp(`Current working directory: ${TEST_CWD}`));
+  assert.match(prompt, /Project AGENTS\.md: AGENTS\.md\nFollow project evidence\./);
+  assert.match(prompt, /Available Skills:[\s\S]*review: Review changes/);
+  assert.match(prompt, /## User-managed memories\n- Prefer Chinese replies\./);
+});
+
+test('createAgentLoopRuntime keeps one project SYSTEM.md snapshot through tool continuation', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-system-prompt-'));
+  const systemPath = path.join(cwd, 'SYSTEM.md');
+  fs.mkdirSync(path.join(cwd, '.git'));
+  fs.writeFileSync(systemPath, 'First project prompt.', 'utf8');
+  const requests = [];
+  const agent = {
+    async runTurn(records) {
+      requests.push(records);
+
+      if (requests.length === 1) {
+        fs.writeFileSync(systemPath, 'Second project prompt.', 'utf8');
+        return {
+          draft: '',
+          toolCalls: [{callId: 'todo-1', toolName: 'create_todos', argumentsText: '{"items":["continue"]}'}]
+        };
+      }
+
+      return {draft: 'done', toolCalls: []};
+    }
+  };
+
+  try {
+    await withPatchedAgentRuntime(agent, () => {
+      const runtime = createAgentLoopRuntime(cwd);
+      return runtime({records: [{role: 'user', text: 'start'}]});
+    });
+  } finally {
+    fs.rmSync(cwd, {recursive: true, force: true});
+  }
+
+  assert.equal(requests.length, 2);
+  assert.match(requests[0][0].text, /^First project prompt\./);
+  assert.match(requests[1][0].text, /^First project prompt\./);
+  assert.doesNotMatch(requests[0][0].text, /Second project prompt|built-in terminal development assistant/);
+  assert.doesNotMatch(requests[1][0].text, /Second project prompt|built-in terminal development assistant/);
 });
 
 test('buildProviderRecords sends slash skill invocation as ordinary user record', () => {

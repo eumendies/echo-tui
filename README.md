@@ -110,6 +110,12 @@ Codex OAuth access token 过期时，echo-tui 会用 auth cache 中的 refresh t
 
 API key 不要提交到仓库。更多配置说明见内置 `echo-tui-setup` skill。
 
+## System prompt 覆盖
+
+可用 `~/.echo/SYSTEM.md` 设置用户级基础 system prompt，或在项目根目录放置 `SYSTEM.md` 进行项目级覆盖；项目级文件优先。没有 Git/`.echo` 项目标记时，Echo TUI 查找启动 cwd 下的 `SYSTEM.md`。
+
+`SYSTEM.md` 只替换 Echo TUI 默认的身份与通用行为文本。当前 cwd、适用的 AGENTS.md、skills 和 memory 仍会继续加入 provider system context。缺失、不可读、非普通文件或空文件会自动回退到下一优先级，最终回退到源码内置 prompt。
+
 ## 交互模式
 
 底部状态行显示当前模式。Tab 在四种模式间循环，也可用 `/mode` 切换：
