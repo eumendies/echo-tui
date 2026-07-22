@@ -118,6 +118,14 @@ test('renderShellBlock renders command output as green message text without tool
   assert.match(block, /\x1b\[38;2;0;170;0m/);
 });
 
+test('renderShellBlock safely displays an offloading marker and tail preview', () => {
+  const marker = '[tool result truncated: /tmp/tool-results/result.txt]';
+  const plain = stripAnsi(renderShellBlock(`$ command\n\n${marker}\n\ntail output`, 80));
+
+  assert.match(plain, /\[tool result truncated: \/tmp\/tool-results\/result\.txt\]/);
+  assert.match(plain, /tail output/);
+});
+
 test('renderUserMessageLines uses explicit bright foreground on gray background', () => {
   const line = renderUserMessageLines('hello', 80)[0];
 

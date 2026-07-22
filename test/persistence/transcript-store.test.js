@@ -15,6 +15,7 @@ const {
   STORE_SCHEMA_VERSION,
   createTranscriptStore
 } = require('../../src/persistence/transcript-store');
+const {createOffloadedTextPreview, createToolResultStore} = require('../../src/tools/tool-result-offloading');
 
 function createTempRoot() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'echo-tui-store-'));
@@ -95,6 +96,77 @@ test('createTranscriptStore appends operations without rewriting earlier journal
     },
     reference: nextReference
   });
+});
+
+test('transcript journal persists only bounded Bash, PDF, and shell offloading previews', () => {
+  const rootDir = createTempRoot();
+  const cwd = '/tmp/example/offloading-project';
+  const transcriptStore = createTranscriptStore({rootDir});
+  const toolResultStore = createToolResultStore({cwd, rootDir});
+  const completeText = `head-FULL_ARTIFACT_ONLY-${'x'.repeat(200)}-tail`;
+  const preview = createOffloadedTextPreview({maxPreviewBytes: 40, strategy: 'tail', store: toolResultStore, text: completeText});
+  const marker = preview.text.match(/\[tool result truncated: [^\]]+\]/)[0];
+  const completePdfText = `--- pdf: doc.pdf\npages: 1\npages_with_text: 1\n\nextracted_text:\n\`\`\`\nPDF_ARTIFACT_ONLY_${'你'.repeat(100)}\n\`\`\``;
+  const pdfPreview = createOffloadedTextPreview({maxPreviewBytes: 80, strategy: 'head', store: toolResultStore, text: completePdfText});
+  const records = [
+    {
+      role: 'tool_result',
+      text: preview.text,
+      toolCallId: 'call-offload',
+      toolName: 'run_bash_command',
+      ok: true,
+      details: {kind: 'bash', truncated: true}
+    },
+    {
+      role: 'tool_result',
+      text: pdfPreview.text,
+      toolCallId: 'call-pdf-offload',
+      toolName: 'read_files',
+      ok: true,
+      details: {kind: 'read_files', truncated: true}
+    },
+    {
+      role: 'shell',
+      text: `$ printf output\n\n${marker}\n\ntail`,
+      command: 'printf output',
+      exitCode: 0,
+      includeInContext: true,
+      output: `${marker}\n\ntail`,
+      truncated: true
+    }
+  ];
+  const reference = transcriptStore.createSession(cwd, createAppendRecordsOperation(records), '2026-07-01T00:00:00.000Z');
+  const journal = fs.readFileSync(transcriptStore.getSessionFilePath(cwd, reference.sessionId), 'utf8');
+  const loaded = transcriptStore.loadSession(cwd, reference.sessionId);
+
+  assert.equal(journal.includes('FULL_ARTIFACT_ONLY'), false);
+  assert.equal(journal.includes('PDF_ARTIFACT_ONLY'), false);
+  assert.equal(fs.readFileSync(preview.offloadFilePath, 'utf8'), completeText);
+  assert.equal(fs.readFileSync(pdfPreview.offloadFilePath, 'utf8'), completePdfText);
+  assert.deepEqual(loaded.session.records, records);
+});
+
+test('transcript journal persists complete shell-local output beyond the shell context limit', () => {
+  const rootDir = createTempRoot();
+  const cwd = '/tmp/example/shell-local-project';
+  const transcriptStore = createTranscriptStore({rootDir});
+  const output = `head-${'x'.repeat(70_000)}-tail`;
+  const records = [{
+    role: 'shell',
+    text: `$ local-command [local]\n\n${output}`,
+    command: 'local-command',
+    exitCode: 0,
+    includeInContext: false,
+    output,
+    truncated: false
+  }];
+  const reference = transcriptStore.createSession(cwd, createAppendRecordsOperation(records), '2026-07-01T00:00:00.000Z');
+  const journal = fs.readFileSync(transcriptStore.getSessionFilePath(cwd, reference.sessionId), 'utf8');
+  const loaded = transcriptStore.loadSession(cwd, reference.sessionId);
+
+  assert.match(journal, /head-x+/);
+  assert.match(journal, /-tail/);
+  assert.deepEqual(loaded.session.records, records);
 });
 
 test('createTranscriptStore replays change history and preserves caller-owned operation data', () => {

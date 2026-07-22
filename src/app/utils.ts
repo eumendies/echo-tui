@@ -4,6 +4,7 @@ import {
   DEFAULT_MAX_FILE_CONTENT_BYTES,
   DEFAULT_MAX_IMAGE_BYTES,
   DEFAULT_MAX_PDF_BYTES,
+  DEFAULT_MAX_PDF_OUTPUT_BYTES,
   DEFAULT_MAX_TOTAL_OUTPUT_BYTES
 } from '../tools/read-files';
 import {readOneFile} from '../tools/read-files/readers';
@@ -50,6 +51,7 @@ async function expandFileMentionsForUserText(userText: string, cwd: string): Pro
         maxFiles: uniquePaths.length,
         maxImageBytes: DEFAULT_MAX_IMAGE_BYTES,
         maxPdfBytes: DEFAULT_MAX_PDF_BYTES,
+        maxPdfOutputBytes: DEFAULT_MAX_PDF_OUTPUT_BYTES,
         maxTotalOutputBytes: DEFAULT_MAX_TOTAL_OUTPUT_BYTES
       }
     });

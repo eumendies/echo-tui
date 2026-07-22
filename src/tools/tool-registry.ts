@@ -10,9 +10,11 @@ import {createTodoToolHandlers} from './todo-tool-handler';
 import {createWebFetchToolHandler} from './web-fetch-tool-handler';
 import {createWebSearchToolHandler} from './web-search';
 import {createMemoryToolHandlers} from './memory-tool-handler';
+import {createToolResultStore} from './tool-result-offloading';
 
 import type {LlmConfig} from '../types/agent';
 import type {ToolHandler, ToolRegistry} from '../types/tool';
+import type {ToolResultStore} from './tool-result-offloading';
 
 /**
  * 创建本地工具目录，负责把 provider-neutral 工具名映射到实际 handler。
@@ -40,12 +42,13 @@ function createToolRegistry(handlers: ToolHandler[] = []): ToolRegistry {
 /**
  * 创建 CLI 默认工具目录；glob/grep/read_files/web_fetch/web_search 负责观察，apply_patch 负责受控文本编辑。
  */
-function createDefaultToolRegistry(config: LlmConfig, cwd: string | (() => string) = process.cwd): ToolRegistry {
+function createDefaultToolRegistry(config: LlmConfig, cwd: string | (() => string) = process.cwd, toolResultStore: ToolResultStore = createToolResultStore({cwd})): ToolRegistry {
   const skillManager = createSkillManager({cwd});
   const registry = createToolRegistry([
     createBashToolHandler({
       cwd,
       maxOutputBytes: config.tools.bash.maxOutputBytes,
+      toolResultStore,
       timeoutMs: config.tools.bash.timeoutMs
     }),
     createApplyPatchToolHandler({
@@ -59,12 +62,14 @@ function createDefaultToolRegistry(config: LlmConfig, cwd: string | (() => strin
       cwd
     }),
     createReadFilesToolHandler({
-      cwd
+      cwd,
+      toolResultStore
     }),
     ...createMemoryToolHandlers(cwd),
     ...createTodoToolHandlers(),
     createUseSkillToolHandler(skillManager),
     createWebFetchToolHandler({
+      toolResultStore
     }),
     createWebSearchToolHandler({
     })

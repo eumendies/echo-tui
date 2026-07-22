@@ -1,16 +1,18 @@
 import * as net from 'node:net';
 
-import {capUtf8Text, normalizePositiveInteger} from './tool-handler-utils';
+import {normalizePositiveInteger} from './tool-handler-utils';
+import {createOffloadedTextPreview} from './tool-result-offloading';
 
 import type {ToolCall, ToolExecutionOptions, ToolHandler, WebFetchToolExecutionResult} from '../types/tool';
 import type {Result} from './tool-handler-utils';
+import type {ToolResultStore} from './tool-result-offloading';
 
 const WEB_FETCH_TOOL_NAME = 'web_fetch';
 
 // 网络工具默认暴露给模型，所有外部输入和回传内容都必须有硬边界。
 const DEFAULT_TIMEOUT_MS = 20_000;
 const DEFAULT_MAX_RESPONSE_BYTES = 1_000_000;
-const DEFAULT_MAX_TOTAL_OUTPUT_BYTES = 256_000;
+const DEFAULT_MAX_TOTAL_OUTPUT_BYTES = 65_536;
 const DEFAULT_MAX_REDIRECTS = 5;
 const DEFAULT_MAX_URL_BYTES = 4096;
 
@@ -23,6 +25,7 @@ type WebFetchToolHandlerOptions = {
   maxTotalOutputBytes?: number;
   maxUrlBytes?: number;
   timeoutMs?: number;
+  toolResultStore?: ToolResultStore;
 };
 
 type WebFetchLimits = {
@@ -92,7 +95,8 @@ function createWebFetchToolHandler(options: WebFetchToolHandlerOptions = {}): To
       const result = await webFetch(args, {
         abortSignal: executionOptions?.abortSignal,
         fetchFn,
-        limits
+        limits,
+        toolResultStore: options.toolResultStore
       });
 
       return {
@@ -110,7 +114,7 @@ function createWebFetchToolHandler(options: WebFetchToolHandlerOptions = {}): To
   };
 }
 
-async function webFetch(args: Record<string, unknown>, options: {abortSignal?: AbortSignal; fetchFn: FetchLike; limits: WebFetchLimits}): Promise<{ok: boolean; text: string; timedOut: boolean; truncated: boolean}> {
+async function webFetch(args: Record<string, unknown>, options: {abortSignal?: AbortSignal; fetchFn: FetchLike; limits: WebFetchLimits; toolResultStore?: ToolResultStore}): Promise<{ok: boolean; text: string; timedOut: boolean; truncated: boolean}> {
   const normalized = normalizeRequest(args, options.limits);
 
   if (!normalized.ok) {
@@ -148,13 +152,18 @@ async function webFetch(args: Record<string, unknown>, options: {abortSignal?: A
   const text = media.kind === 'html' ? htmlToText(fetched.value.body) : fetched.value.body;
   const projection = projectText(text, normalized.value);
   const formatted = formatWebFetchResponse(fetched.value, normalized.value, projection, ok);
-  const capped = capUtf8Text(formatted, options.limits.maxTotalOutputBytes);
+  const preview = createOffloadedTextPreview({
+    maxPreviewBytes: options.limits.maxTotalOutputBytes,
+    strategy: 'head',
+    store: options.toolResultStore,
+    text: formatted
+  });
 
   return {
     ok,
-    text: capped.truncated ? `${capped.text}\n\nOutput was truncated.` : capped.text,
+    text: preview.truncated && !preview.offloadFilePath ? `${preview.text}\n\nOutput was truncated.` : preview.text,
     timedOut: false,
-    truncated: capped.truncated || fetched.value.bodyTruncated
+    truncated: preview.truncated || fetched.value.bodyTruncated
   };
 }
 

@@ -12,6 +12,7 @@ import {createLifecycleHookDispatcher} from '../hooks/dispatcher';
 import {McpManager, sanitizeMcpError} from '../mcp/manager';
 import {createAppRenderer} from '../render/app-renderer';
 import {runBashCommand} from '../tools/bash-command-runner';
+import {createToolResultStore} from '../tools/tool-result-offloading';
 import {setupTerminal} from '../terminal/tty';
 import {createDefaultSlashCommandHandlers, createSlashCommandDescriptors, resolveSlashCommand} from '../commands/resolve-slash-command';
 import {expandFileMentionsForUserText} from './utils';
@@ -51,6 +52,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
 
   // AppContext 只组合语义 context，具体状态由子 context 持有。
   const appContext = new AppContext(terminal, transcriptStore, process.cwd, process.version, theme);
+  const toolResultStore = createToolResultStore({cwd: () => appContext.getCurrentCwd()});
   let started = false;
   let activeShellController: AbortController | null = null;
   let mcpDiagnosticSurface: CommandSurface | null = null;
@@ -274,10 +276,11 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
   }
 
   /**
-   * shell mode 下把 composer 文本作为用户本地 bash 命令执行，并记录为 shell transcript。
+   * shell 模式执行 composer 命令；普通 shell 保留 bounded context，shell-local 把完整结果写入本地 transcript。
    */
   async function submitShellCommand(command: string): Promise<void> {
     const shellController = new AbortController();
+    const includeInContext = appContext.getInteractionMode() === 'shell';
     activeShellController = shellController;
     appContext.turnContext.beginShellCommand(command);
     appContext.turnContext.startSpinner('working');
@@ -288,13 +291,15 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
         abortSignal: shellController.signal,
         command,
         cwd: appContext.getCurrentCwd(),
+        maxOutputBytes: includeInContext ? undefined : null,
         onOutput(event) {
           appContext.turnContext.appendShellOutputPending(event);
           appContext.turnContext.scheduleStreamingRender();
         },
-        timeoutMs: null
+        timeoutMs: null,
+        toolResultStore: includeInContext ? toolResultStore : undefined
       });
-      appendRecord(appContext.turnContext.finishShellCommand(result, appContext.getInteractionMode() === 'shell'));
+      appendRecord(appContext.turnContext.finishShellCommand(result, includeInContext));
     } catch (error: unknown) {
       appendRecord(appContext.turnContext.failShellCommand(error));
     } finally {

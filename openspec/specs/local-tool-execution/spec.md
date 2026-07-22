@@ -51,7 +51,7 @@
 - **THEN** handler SHALL NOT 抛出未捕获异常中断 app
 
 ### Requirement: bash command tool
-系统 SHALL 提供第一版本地 bash 工具 `run_bash_command`。该工具 SHALL 只执行非交互命令，SHALL 在当前工作区中运行，SHALL 捕获 stdout、stderr、exit code、耗时、可选 timeout 和截断状态，并 SHALL 把模型继续工作所需的信息格式化为紧凑 tool result 文本；完整执行状态 SHALL 继续保留在结构化 result 字段中。
+系统 SHALL 提供第一版本地 bash 工具 `run_bash_command`。该工具 SHALL 只执行非交互命令，SHALL 在当前工作区中运行，SHALL 捕获 stdout、stderr、exit code、耗时、可选 timeout 和截断状态，并 SHALL 把模型继续工作所需的信息格式化为紧凑 tool result 文本；完整执行状态 SHALL 继续保留在结构化 result 字段中。输出超过模型可见上限时，共享 runner SHALL 把完整已采集终端输出转存到当前项目分区的用户级文件，并 SHALL 让 tool result 保留输出尾部。
 
 #### Scenario: 执行成功的 bash 命令
 - **WHEN** `run_bash_command` 收到 `{ "command": "pwd" }` 形式的有效参数
@@ -640,7 +640,7 @@
 - **THEN** handler SHALL NOT 生成被截断或不完整的图片附件
 
 ### Requirement: web_fetch remote content retrieval tool
-系统 SHALL 提供本地工具 `web_fetch`，用于读取一个明确 HTTP(S) URL 的远程内容并返回结构化、受限的文本结果。该工具 SHALL 接收 JSON object 参数 `{ "url": string, "offset"?: number | null, "limit"?: number | null }`。该工具 SHALL 只执行 GET 请求，SHALL NOT 支持搜索、浏览器渲染、自定义 headers、cookies、认证或批量 URL 抓取。
+系统 SHALL 提供本地工具 `web_fetch`，用于读取一个明确 HTTP(S) URL 的远程内容并返回结构化、受限的文本结果。该工具 SHALL 接收 JSON object 参数 `{ "url": string, "offset"?: number | null, "limit"?: number | null }`。该工具 SHALL 只执行 GET 请求，SHALL NOT 支持搜索、浏览器渲染、自定义 headers、cookies、认证或批量 URL 抓取。格式化文本超过模型可见输出上限时，工具 SHALL 把完整已格式化结果转存到当前项目分区的用户级文件，并 SHALL 向模型保留结果开头。
 
 #### Scenario: 默认注册 web_fetch 工具定义
 - **WHEN** 系统创建默认 tool registry
@@ -700,6 +700,32 @@
 - **THEN** handler SHALL 返回 `ok: false`
 - **THEN** result 文本 SHALL 包含可回传模型的简洁错误说明
 - **THEN** handler SHALL NOT 抛出未捕获异常中断 app
+
+### Requirement: read_files PDF extracted-text offloading
+系统 SHALL 在 `read_files` 成功提取 PDF 文本并完成结果格式化后应用 context offloading。包含 PDF 已提取文本的格式化结果超过独立的 65,536-byte 模型可见阈值且文件写入成功时，系统 SHALL 保存应用该阈值前的完整格式化结果，并 SHALL 只返回结果开头和位于末尾的统一截断路径标记。该有效阈值 SHALL NOT 超过 `read_files` 的模型可见总输出上限。普通文本与目录读取的总输出行为、PDF metadata、文件大小限制、提取内容硬上限和失败语义 SHALL 保持不变。
+
+#### Scenario: 未超限 PDF 结果保持原格式
+- **WHEN** PDF 格式化结果未超过 65,536-byte PDF 模型可见阈值
+- **THEN** handler SHALL 返回完整 PDF metadata 和已提取文本
+- **THEN** handler SHALL NOT 创建 offloading 文件或添加截断路径标记
+
+#### Scenario: 超限 PDF 提取结果成功转存
+- **WHEN** PDF 提取成功且最终格式化结果超过 65,536-byte PDF 模型可见阈值
+- **AND** 系统成功写入 offloading 文件
+- **THEN** 文件 SHALL 包含应用总输出上限前的完整格式化结果
+- **THEN** result 文本 SHALL 保留 UTF-8 安全的结果开头并以 `[tool result truncated: <absolute-path>]` 结束
+- **THEN** result SHALL 标记 `truncated: true`
+
+#### Scenario: PDF offloading 失败时安全降级
+- **WHEN** PDF 格式化结果超过上限但 offloading 文件写入失败
+- **THEN** handler SHALL 返回现有总输出上限内的 UTF-8 安全开头预览
+- **THEN** result 文本 SHALL NOT 包含无效文件路径
+- **THEN** 原本成功的 PDF 提取 SHALL NOT 变成失败结果
+
+#### Scenario: 普通 read_files 结果保持既有总输出上限
+- **WHEN** `read_files` 只返回文本文件、目录或图片 metadata
+- **THEN** handler SHALL 继续使用既有 256,000-byte 默认总输出上限
+- **THEN** PDF 的独立 65,536-byte 阈值 SHALL NOT 提前截断这些结果
 
 ### Requirement: web_search public web search tool
 系统 SHALL 提供本地工具 `web_search`，用于在无需 API key 的情况下通过公共 HTML 搜索页面执行 best-effort 网页搜索，并返回结构化、受限的文本结果。该工具 SHALL 接收 JSON object 参数 `{ "query": string, "count"?: number | null, "offset"?: number | null, "market"?: string | null, "safe_search"?: string | null }`。该工具 SHALL NOT 使用官方搜索 API、用户登录态、cookies、浏览器自动化、代理池或反爬绕过机制。该工具 SHALL 保留多词 query 语义，SHALL 对搜索结果做确定性质量评估，并 SHALL 在结果明显低质量时执行有界重搜和搜索源 fallback。

@@ -740,6 +740,28 @@ test('AppContext injects only effective model-visible mode transitions and ignor
   assert.match(leavingPlan.text, /Previous Plan Mode restrictions no longer apply/);
 });
 
+test('TurnContext persists shell offloading marker before the bounded terminal tail', () => {
+  const context = createContext();
+  const offloadFilePath = '/tmp/echo-tool-results/full.txt';
+
+  context.turnContext.beginShellCommand('printf output');
+  const record = context.turnContext.finishShellCommand({
+    command: 'printf output',
+    durationMs: 2,
+    exitCode: 0,
+    offloadFilePath,
+    output: 'tail output',
+    stderr: '',
+    stdout: 'tail output',
+    timedOut: false,
+    truncated: true
+  }, true);
+
+  assert.equal(record.output, `[tool result truncated: ${offloadFilePath}]\n\ntail output`);
+  assert.match(record.text, /^\$ printf output\n\n\[tool result truncated: \/tmp\/echo-tool-results\/full\.txt\]\n\ntail output$/);
+  assert.doesNotMatch(record.text, /\[output truncated\]/);
+});
+
 test('AppContext preserves display text and composer history for mode transition messages', () => {
   const context = createContext();
   context.setInteractionMode('plan');

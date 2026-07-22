@@ -2,6 +2,7 @@ import {redactSensitiveText} from '../../agent/agent-errors';
 
 import type {PendingState, StatusLineModelState, WorkingState} from '../../types/render';
 import {createToolCallTranscriptRecord, createToolResultTranscriptRecord} from '../../tools/tool-transcript-record';
+import {createToolResultTruncationMarker} from '../../tools/tool-result-offloading';
 
 import type {ToolCall, ToolExecutionResult} from '../../types/tool';
 import type {ShellTranscriptRecord, TranscriptRecord, UserTranscriptMetadata} from '../../types/transcript';
@@ -596,25 +597,27 @@ class TurnContext {
 }
 
 function createShellRecord(result: BashCommandRunResult, includeInContext: boolean): ShellTranscriptRecord {
+  const output = formatShellOutput(result);
+
   return {
     role: 'shell',
-    text: formatShellRecordText(result, includeInContext),
+    text: formatShellRecordText(result, includeInContext, output),
     command: result.command,
     durationMs: result.durationMs,
     ...(result.error ? {error: result.error} : {}),
     exitCode: result.exitCode,
     includeInContext,
-    output: result.output,
+    output,
     timedOut: result.timedOut,
     truncated: result.truncated
   };
 }
 
-function formatShellRecordText(result: BashCommandRunResult, includeInContext: boolean): string {
+function formatShellRecordText(result: BashCommandRunResult, includeInContext: boolean, output: string): string {
   const lines = [`$ ${result.command}${includeInContext ? '' : ' [local]'}`];
 
-  if (result.output.trim() !== '') {
-    lines.push('', result.output.replace(/\n$/, ''));
+  if (output.trim() !== '') {
+    lines.push('', output.replace(/\n$/, ''));
   }
 
   if (result.error) {
@@ -625,15 +628,24 @@ function formatShellRecordText(result: BashCommandRunResult, includeInContext: b
     lines.push('', `[timed out after ${result.durationMs}ms]`);
   }
 
-  if (result.truncated) {
+  if (result.truncated && !result.offloadFilePath) {
     lines.push('', '[output truncated]');
   }
 
-  if (result.exitCode !== 0 || result.timedOut || result.output.trim() === '') {
+  if (result.exitCode !== 0 || result.timedOut || output.trim() === '') {
     lines.push('', `[exit ${result.exitCode === null ? 'null' : result.exitCode}]`);
   }
 
   return lines.join('\n');
+}
+
+function formatShellOutput(result: BashCommandRunResult): string {
+  if (!result.offloadFilePath) {
+    return result.output;
+  }
+
+  const marker = createToolResultTruncationMarker(result.offloadFilePath);
+  return result.output.trim() === '' ? marker : `${marker}\n\n${result.output}`;
 }
 
 export {

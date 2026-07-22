@@ -112,6 +112,7 @@ slash runtime 通过三类稳定边界协调本地命令：
 | file picker context | composer 内 `@` 文件选择器的 transient 状态。展示当前目录直接子项、查询过滤、文本/代码预览，支持方向键移动、进入/返回目录、Space 多选、Enter 插入 mention，复用 read_files 的资源分类 | `src/app/state/file-picker-context.ts`、`src/input/file-mentions.ts` |
 | status line | 普通输入 footer 底部的一行 segmented 状态。左侧展示当前模型、显式配置的推理等级和项目名，右侧展示最近一次真实 provider context usage 与输入/工作模式；模型 label 与 reasoning effort 默认来自 `ModelContext` 的实例级缓存，普通 redraw/render path 只读内存，不同步读取 `~/.echo/config.json`；`/model`、`/effort` 和 `/config` 保存成功后刷新该缓存。显式 slash skill 使用固定 profile 时，`TurnContext` 在 active assistant turn 内临时覆盖展示为 `<model> (SKILL override)`，完成、失败或中断后恢复全局缓存；无效 profile 回退全局展示且不标记 override。command/approval/user-question/file-picker surface 会替换普通输入区域 | `src/render/footer.ts`、`src/types/render.ts`、`src/app/state/model-context.ts`、`src/app/state/turn-context.ts` |
 | transcript store | 按 cwd hash 分区的本地 append-only JSONL session journal。默认根目录是 `~/.echo/echo_tui/`；每个 session 以 `session_start` 首行建立身份，随后逐行追加 records、compaction、todo 和 `/undo` / `/diff` 共用的 change history 操作。journal 重放校验 envelope、record role 和下游依赖的关键身份字段，但保留未知扩展字段；display metadata 等可选 payload 由消费端自行校验。重放忽略末尾未完成写入，真正恢复 session 时会原子移除无效尾部后再允许续写，但拒绝中间损坏；不保存 composer、pending、command session 或输入历史 | `src/persistence/transcript-store.ts`、`src/persistence/transcript-journal.ts` |
+| tool result offloading | 支持大结果的工具把完整已采集文本写入 `~/.echo/echo_tui/projects/<cwd-hash>/tool-results/`，文件先写临时路径再原子落位，单 artifact 默认硬上限 8 MiB。transcript、provider 和 renderer 只接收 bounded preview 与单一 `[tool result truncated: <absolute-path>]` marker；Bash/shell 保留尾部并把 marker 放在输出前，Web Fetch、PDF 已提取文本和 MCP 保留开头并把 marker 放在结果后。PDF 在 `read_files` 最终格式化边界使用独立的 65,536-byte 默认阈值落盘，artifact 保留路径、页数、提取状态和完整已提取文本；普通 `read_files` 结果仍使用 256,000-byte 默认总输出上限，源 PDF 大小与提取内容硬上限保持不变。文件可由现有 `read_files` / `grep` 回读，不写工作区；写入失败退回无路径的既有 bounded 截断。offloading 不取消网络 body、PDF 提取、进程输出、timeout、取消或搜索数量边界；第一版不自动 GC，避免删除历史 transcript 仍引用的文件 | `src/tools/tool-result-offloading.ts`、`src/tools/bash-command-runner.ts`、`src/tools/read-files/tool-handler.ts` |
 | usage store | 独立于 transcript 的 append-only JSONL token 用量账本，默认位于用户级 `usage/` 分区，按月份写入并按本地日期聚合；只保存 provider/model/mode/cwd hash 和 token 统计，不保存 prompt、响应文本、工具参数或凭据 | `src/persistence/usage-store.ts`、`src/types/usage.ts` |
 | change history context | assistant loop 的 change checkpoint 栈，记录受控文件 snapshot 快照和 `pending` / `created` / `updated` 写入状态；同一份 history 同时服务 `/undo` 回退和 `/diff` fallback | `src/app/state/change-history-context.ts` |
 | LLM config | 从 `~/.echo/config.json` 读取必填 `llm.providers`、`llm.models`、可选 `llm.selectedModel` / `contextWindow` / `reasoning` 配置；model profile 通过 `provider` 引用 provider profile，provider profile 通过 `preset` 引用内置 provider preset catalog，解析层把当前选择归一化为单个运行时 `{agentType, apiKey, baseURL, codexOAuth, headers, model, reasoningEffort, reasoningSummary, contextWindow, tools}` 配置；单次运行可传入可选 model profile ID override，有效时选择该完整 profile，失效时回退全局当前 profile，不写回 `llm.selectedModel`；用户配置不暴露 `agentType`，协议类型由 preset 后台解析；`openai-codex-oauth` preset 不要求 `apiKey`，只记录可选 `codexAuthFile`，运行时按 `codexAuthFile` → `CODEX_HOME/auth.json` → `~/.codex/auth.json` 读取既有 Codex OAuth cache；`headers` 是 preset 固定 headers 与 provider profile 手写 headers 的合并结果；context window 按用户配置 → 内置模型映射 → 默认窗口三级回退 | `src/config/llm-config.ts`、`src/config/provider-presets.ts`、`src/config/codex-oauth.ts` |
@@ -126,13 +127,13 @@ slash runtime 通过三类稳定边界协调本地命令：
 | glob tool | 默认本地文件发现工具。接收 `pattern` 和可选 `paths`，底层用 `spawn` 参数数组调用 `rg --files`，不经 shell 拼接；相对路径按 cwd 解析，绝对路径和 `..` 允许，NUL 和 `.git` 路径拒绝；结果含 hidden 文件但过滤 `.git`，超额时标记 `truncated` | `src/tools/glob-tool-handler.ts` |
 | grep tool | 默认本地文本搜索工具。接收 `pattern` 及可选 `paths` / `glob` / `literal` / `case_sensitive`；底层用 `spawn` 参数数组调用 `rg --json`，默认 fixed-string，`literal: false` 才用 regex；结果只返回 path、line、column 和命中行，超额时标记 `truncated` | `src/tools/grep-tool-handler.ts` |
 | read_files tool | 默认本地路径读取工具。接收 `files[]`，每项含 `path` 和可选 `offset` / `limit`。文本读取返回真实文件行号；目录读取只列稳定排序后的直接子项，不递归；图片作为 provider-neutral 附件返回，PDF 只返回可提取文本，其他非文本资源返回 metadata 与 unsupported 错误。composer `@` mention 与 file picker 复用同一 reader | `src/tools/read-files/`、`src/app/utils.ts`、`src/app/state/file-picker-context.ts` |
-| web_fetch tool | 默认远程 URL 读取工具。只对明确 absolute HTTP(S) URL 执行 GET；拒绝 credentials、localhost、loopback、link-local、metadata 等目标，redirect manual 重校验；文本类直接返回，HTML 轻量文本化，非文本媒体只返回 metadata | `src/tools/web-fetch-tool-handler.ts` |
+| web_fetch tool | 默认远程 URL 读取工具。只对明确 absolute HTTP(S) URL 执行 GET；拒绝 credentials、localhost、loopback、link-local、metadata 等目标，redirect manual 重校验；文本类直接返回，HTML 轻量文本化，非文本媒体只返回 metadata。格式化文本超过默认 64 KiB 模型可见上限时使用 head offloading，但网络响应读取硬上限保持不变 | `src/tools/web-fetch-tool-handler.ts` |
 | web_search tool | 默认公共网页搜索工具。接收 `query` 及可选 `count` / `offset` / `market` / `safe_search`，无需 API key，best-effort 解析公共搜索页自然结果的 title/url/snippet；验证码或结构变化返回工具失败，正文读取仍交给 `web_fetch` | `src/tools/web-search/` |
 | apply_patch tool | 默认本地编辑工具。接收 unified diff 子集和 `*** Begin Patch` Add/Update/Delete File 格式，新增、更新或删除 UTF-8 文本文件，all-or-nothing 模拟后写入；统一拒绝重命名、mode/binary/symlink、`.git` 路径、二进制/NUL 内容和歧义 hunk，unified delete 还会校验 hunk 确认目标内容被删除为空；内存模拟阶段生成 display-only diff metadata（删除文件以 `deleted` 文件类型和 removed 行展示），随 transcript 持久化但不进入 provider-facing result text；上下文窗口和 omitted marker 由 renderer 计算 | `src/tools/apply-patch-tool-handler/` |
 | ask_user_questions tool | 默认用户澄清工具。模型传入问题和选项后打开逐题 `choice` surface，确认后以 tool result 返回结构化答案，取消时返回 cancelled result | `src/tools/ask-user-questions-tool-handler.ts`、`src/app/state/user-question-context.ts` |
 | use_skill tool | 默认 skill 指令读取工具。加载 enabled skill 的 `SKILL.md` frontmatter 与正文，并在存在附加资源时追加 `[Skill Resources]` 清单；disabled/missing skill 返回失败和可用 skill 列表。该工具不读取或应用 skill model override，普通 turn 和 slash override turn 的 continuation 都保持初始化模型 | `src/tools/use-skill-tool-handler.ts`、`src/skills/skill-manager.ts` |
-| run_bash_command tool | 默认本地命令执行工具。用非交互 `/bin/bash -lc` 执行命令，无 stdin/TTY，默认无固定 timeout，响应 turn-level Esc 中断并使用 SIGTERM/SIGKILL 兜底，处理输出截断与 result metadata；与 shell 模式共用底层 runner | `src/tools/bash-tool-handler.ts`、`src/tools/bash-command-runner.ts` |
-| MCP tool adapter | 把 MCP manager 暴露的命名空间工具适配成 provider-neutral tool registry，并与默认 registry 合并供 agent loop 使用 | `src/mcp/tool-adapter.ts` |
+| run_bash_command tool | 默认本地命令执行工具。用非交互 `/bin/bash -lc` 执行命令，无 stdin/TTY，默认无固定 timeout，响应 turn-level Esc 中断并使用 SIGTERM/SIGKILL 兜底；与 shell 模式共用底层 runner。runner 默认以 bounded buffers 保留 stdout、stderr 和合并终端输出尾部，超限后流式写入 offloading 文件；仅本地可见的 shell-local 显式使用无界捕获，把完整输出直接保存在 transcript | `src/tools/bash-tool-handler.ts`、`src/tools/bash-command-runner.ts` |
+| MCP tool adapter | 把 MCP manager 暴露的命名空间工具适配成 provider-neutral tool registry，并与默认 registry 合并供 agent loop 使用；text、structured content 和 legacy result 格式化后超过上限时使用 head offloading，call id、tool name、成功状态和纯文本 continuation 保持不变 | `src/mcp/tool-adapter.ts` |
 | skill manager | 组合项目级 `.echo/skills` 与用户级 `~/.echo/skills` 的发现结果、附加资源路径、启用状态、model profile override 和加载结果；`skills.json` schema v2 按字段独立归一化 `disabled` / `modelOverrides`，并兼容 schema v1。同名项目级覆盖用户级，状态跟当前生效 source root 绑定；同一 enabled catalog 同时服务 `use_skill` tool、slash suggestion 和 `/skills` 命令 | `src/skills/skill-manager.ts`、`src/skills/skill-registry.ts`、`src/skills/skill-state.ts` |
 | OpenAI Responses agent | 单次 provider turn adapter。基于 OpenAI SDK 构造 Responses request，读取 stream，返回 assistant draft、可见 reasoning summary、provider-private reasoning records（仅带 `encrypted_content` 时回传）与 provider-neutral tool calls；不执行本地工具循环 | `src/agent/openai-responses/agent.ts`、`src/agent/openai-responses/transcript-converter.ts` |
 | Codex agent | 单次 Codex OAuth provider turn adapter。基于本机 Codex OAuth auth cache 解析 Bearer token，使用 `https://chatgpt.com/backend-api/codex` Base URL 和可选 `ChatGPT-Account-ID` header，构造 ChatGPT Codex backend 接受的 Responses 请求；复用 OpenAI Responses transcript/tool converter 和 stream reader，不执行本地工具循环 | `src/agent/codex/agent.ts`、`src/config/codex-oauth.ts`、`src/agent/openai-responses/transcript-converter.ts` |
@@ -292,9 +293,18 @@ response 期间不会启动第二次提交。每个普通 turn 开始时先创�
 shell 与 shell-local 模式下，Enter 不发给模型，而是把 composer 文本作为本地命令执行：
 
 - `beginShellCommand` 进入响应态并起 working spinner，`runBashCommand` 以非交互 `/bin/bash -lc` 执行命令
-- stdout/stderr 按到达顺序流式进入 pending preview，受 `maxOutputBytes` 截断；Esc 通过 AbortController 中断当前命令，SIGTERM 后有 SIGKILL 兜底
-- 命令结束后追加一条 `shell` transcript record；`shell` 模式的结果带 `includeInContext`，会进入后续 provider 上下文，`shell-local` 模式只本地显示
+- stdout/stderr 按到达顺序流式进入 pending preview；Esc 通过 AbortController 中断当前命令，SIGTERM 后有 SIGKILL 兜底
+- 命令结束后追加一条 `shell` transcript record；`shell` 模式使用 bounded capture 和 offloading，结果带 `includeInContext` 并进入后续 provider 上下文；`shell-local` 使用无界 capture，把完整输出写入本地 transcript/session 且不发送给 provider
 - shell 模式下 `@` 文件选择器不触发；其余 footer 行为与普通模式一致
+
+Context offloading 的交互式回归由人工执行，至少覆盖：
+
+- `run_bash_command` 产生超限 stdout/stderr，确认结果显示 command/exit status、marker 和尾部，marker 路径可读取
+- shell 产生超限输出时确认最终 transcript 使用 marker + tail；shell-local 产生超过 64 KiB 的输出时确认完整保存在 transcript 且无 marker；两者 Esc 中断均正常收尾
+- `web_fetch` 获取超限文本，确认显示 head + marker，网络 body 上限仍生效
+- `read_files` 读取提取文本超限的 PDF，确认保留 PDF metadata、head + marker，marker 路径可回读完整已格式化结果，PDF 大小与提取硬上限仍生效
+- MCP 工具返回超限 text/structured result，确认 call 配对、成功状态和 head + marker 保持正常
+- 退出后通过 `/resume` 恢复上述 shell/tool transcript，确认 marker 仍可见且路径仍可回读
 
 ## Markdown 渲染
 
@@ -451,6 +461,7 @@ renderer 只理解这些 surface kind，不理解具体命令、tool approval、
 | `src/app/state/file-picker-context.ts` | `FilePickerContext`、`loadDirectoryEntries` | composer `@` 文件选择器状态、目录加载、预览和插入语义 |
 | `src/app/diff/source.ts` | `createDiffSourceResult`、`createGitDiffSource`、`createHistoryDiffSource` | `/diff` 数据源解析，优先 Git worktree diff，失败回退 change history |
 | `src/persistence/transcript-store.ts` | `createTranscriptStore`、`createSession`、`appendSession`、`listSessions`、`loadSession` | 按 cwd hash 分区创建和重放 JSONL transcript journal；首次通过临时文件原子落位，后续操作逐行追加，默认 `~/.echo/echo_tui/` |
+| `src/tools/tool-result-offloading.ts` | `createToolResultStore`、`createOffloadedTextPreview` | 按 cwd hash 写入用户级 tool-results artifact，提供 UTF-8 安全 head/tail preview、统一 marker、原子落位、硬上限和失败降级 |
 | `src/persistence/usage-store.ts` | `createUsageStore`、`createUsageEvent`、`formatLocalDay` | append-only JSONL token usage 账本，按月份写入、容错读取并聚合每日用量 |
 | `src/config/llm-config.ts` | `readLlmConfig`、`readLlmModelConfigInfo`、`resolveContextWindow`、`getDefaultConfigPath` | 读取并校验 `llm.providers`/`models`/`selectedModel`/`reasoning`，按 preset 解析运行时配置，归一化当前选中配置，三级回退 context window；Codex OAuth provider 只输出运行时 `codexOAuth` source，不要求 API key |
 | `src/config/provider-presets.ts` | `listProviderPresets`、`getProviderPreset`、`providerRequiresApiKey` | 内置 provider preset catalog（协议预设、Codex OAuth 与固定 Base URL 厂商预设），把 preset 映射为 agentType/baseURL/headers/API key 要求 |
