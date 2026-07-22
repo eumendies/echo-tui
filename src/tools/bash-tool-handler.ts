@@ -1,8 +1,10 @@
 import {DEFAULT_BASH_MAX_OUTPUT_BYTES, runBashCommand} from './bash-command-runner';
 import {normalizePositiveInteger, resolveCwd} from './tool-handler-utils';
+import {createToolResultTruncationMarker} from './tool-result-offloading';
 
 import type {BashToolExecutionResult, ToolCall, ToolExecutionOptions, ToolHandler} from '../types/tool';
 import type {BashCommandRunResult} from './bash-command-runner';
+import type {ToolResultStore} from './tool-result-offloading';
 
 const RUN_BASH_COMMAND_TOOL_NAME = 'run_bash_command';
 const PLAN_READONLY_BASH_REJECTION = 'In plan mode, run_bash_command may only run readonly inspection commands such as pwd, git status, git diff, git log, git show, git rev-parse, git branch --show-current, git ls-files, and git merge-base. This command may modify the workspace or system state, so it was rejected. To run it, exit plan mode first.';
@@ -17,6 +19,7 @@ type BashToolHandlerOptions = {
   timeoutMs?: number | null;
   maxOutputBytes?: number;
   shell?: string;
+  toolResultStore?: ToolResultStore;
 };
 
 /**
@@ -49,6 +52,7 @@ function createBashToolHandler(options: BashToolHandlerOptions = {}): ToolHandle
         maxOutputBytes,
         shell,
         timeoutMs,
+        toolResultStore: options.toolResultStore,
         changeRecorder: executionOptions?.changeRecorder
       });
     }
@@ -61,7 +65,7 @@ function createBashToolHandler(options: BashToolHandlerOptions = {}): ToolHandle
 function executeBashCommand(
   args: Record<string, unknown>,
   call: ToolCall,
-  options: Required<Pick<BashToolHandlerOptions, 'shell'>> & Pick<ToolExecutionOptions, 'changeRecorder'> & {abortSignal?: AbortSignal; cwd: string; maxOutputBytes: number; timeoutMs: number | null}
+  options: Required<Pick<BashToolHandlerOptions, 'shell'>> & Pick<ToolExecutionOptions, 'changeRecorder'> & {abortSignal?: AbortSignal; cwd: string; maxOutputBytes: number; timeoutMs: number | null; toolResultStore?: ToolResultStore}
 ): Promise<BashToolExecutionResult> {
   const command = args.command;
 
@@ -85,6 +89,7 @@ function executeBashCommand(
     cwd: options.cwd,
     maxOutputBytes: options.maxOutputBytes,
     shell: options.shell,
+    toolResultStore: options.toolResultStore,
     timeoutMs: options.timeoutMs
   }).then((result) => {
     return {
@@ -128,6 +133,10 @@ function formatBashResult(options: BashCommandRunResult): string {
     lines.push(`error: ${options.error}`);
   }
 
+  if (options.offloadFilePath) {
+    lines.push('', createToolResultTruncationMarker(options.offloadFilePath));
+  }
+
   appendLabeledOutput(lines, 'stdout', options.stdout);
   appendLabeledOutput(lines, 'stderr', options.stderr);
 
@@ -139,7 +148,7 @@ function formatBashResult(options: BashCommandRunResult): string {
     lines.push('', 'Command timed out.');
   }
 
-  if (options.truncated) {
+  if (options.truncated && !options.offloadFilePath) {
     lines.push('', 'Output was truncated.');
   }
 

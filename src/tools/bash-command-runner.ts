@@ -1,7 +1,9 @@
 import {Buffer} from 'node:buffer';
 import {spawn} from 'node:child_process';
+import {StringDecoder} from 'node:string_decoder';
 
 import {normalizePositiveInteger} from './tool-handler-utils';
+import type {ToolResultStore, ToolResultStreamWriter} from './tool-result-offloading';
 
 const DEFAULT_BASH_MAX_OUTPUT_BYTES = 65_536;
 const TERMINATE_KILL_GRACE_MS = 500;
@@ -10,10 +12,11 @@ type BashCommandRunnerOptions = {
   abortSignal?: AbortSignal;
   command: string;
   cwd: string;
-  maxOutputBytes?: number;
+  maxOutputBytes?: number | null;
   onOutput?: (event: BashCommandOutputEvent) => void;
   shell?: string;
   timeoutMs?: number | null;
+  toolResultStore?: ToolResultStore;
 };
 
 type BashCommandOutputEvent = {
@@ -27,6 +30,7 @@ type BashCommandRunResult = {
   error?: string;
   exitCode: number | null;
   output: string;
+  offloadFilePath?: string;
   stderr: string;
   stdout: string;
   timedOut: boolean;
@@ -38,7 +42,9 @@ type BashCommandRunResult = {
  */
 function runBashCommand(options: BashCommandRunnerOptions): Promise<BashCommandRunResult> {
   const timeoutMs = normalizeTimeoutMs(options.timeoutMs);
-  const maxOutputBytes = normalizePositiveInteger(options.maxOutputBytes, DEFAULT_BASH_MAX_OUTPUT_BYTES);
+  const maxOutputBytes = options.maxOutputBytes === null
+    ? null
+    : normalizePositiveInteger(options.maxOutputBytes, DEFAULT_BASH_MAX_OUTPUT_BYTES);
   const shell = options.shell || '/bin/bash';
   const startedAt = Date.now();
 
@@ -52,6 +58,8 @@ function runBashCommand(options: BashCommandRunnerOptions): Promise<BashCommandR
     const stdout = createOutputCapture(maxOutputBytes);
     const stderr = createOutputCapture(maxOutputBytes);
     const output = createOutputCapture(maxOutputBytes);
+    let offloadWriter: ToolResultStreamWriter | null = null;
+    let offloadUnavailable = false;
     let timedOut = false;
     let aborted = false;
     let settled = false;
@@ -67,6 +75,20 @@ function runBashCommand(options: BashCommandRunnerOptions): Promise<BashCommandR
         killFallbackTimeout = null;
       }
       options.abortSignal?.removeEventListener('abort', handleAbort);
+    };
+    const appendMergedOutput = (chunk: Buffer | string): string => {
+      if (!offloadWriter && !offloadUnavailable && output.wouldTruncate(chunk)) {
+        offloadWriter = options.toolResultStore?.createStreamWriter() || null;
+
+        if (offloadWriter) {
+          offloadWriter.append(output.getBuffer());
+        } else {
+          offloadUnavailable = true;
+        }
+      }
+
+      offloadWriter?.append(chunk);
+      return output.append(chunk);
     };
     const signalChild = (signal: NodeJS.Signals) => {
       if (child.pid && process.platform !== 'win32') {
@@ -109,14 +131,14 @@ function runBashCommand(options: BashCommandRunnerOptions): Promise<BashCommandR
 
     child.stdout.on('data', (chunk: Buffer | string) => {
       stdout.append(chunk);
-      const acceptedChunk = output.append(chunk);
+      const acceptedChunk = appendMergedOutput(chunk);
       if (acceptedChunk) {
         options.onOutput?.({chunk: acceptedChunk, stream: 'stdout'});
       }
     });
     child.stderr.on('data', (chunk: Buffer | string) => {
       stderr.append(chunk);
-      const acceptedChunk = output.append(chunk);
+      const acceptedChunk = appendMergedOutput(chunk);
       if (acceptedChunk) {
         options.onOutput?.({chunk: acceptedChunk, stream: 'stderr'});
       }
@@ -128,7 +150,7 @@ function runBashCommand(options: BashCommandRunnerOptions): Promise<BashCommandR
 
       settled = true;
       cleanup();
-      resolve(createRunResult({command: options.command, durationMs: Date.now() - startedAt, error: error.message, exitCode: null, output, stderr, stdout, timedOut}));
+      resolve(createRunResult({command: options.command, durationMs: Date.now() - startedAt, error: error.message, exitCode: null, offloadWriter, output, stderr, stdout, timedOut}));
     });
     child.on('close', (code: number | null) => {
       if (settled) {
@@ -137,7 +159,7 @@ function runBashCommand(options: BashCommandRunnerOptions): Promise<BashCommandR
 
       settled = true;
       cleanup();
-      resolve(createRunResult({command: options.command, durationMs: Date.now() - startedAt, ...(aborted ? {error: 'Command interrupted'} : {}), exitCode: code, output, stderr, stdout, timedOut}));
+      resolve(createRunResult({command: options.command, durationMs: Date.now() - startedAt, ...(aborted ? {error: 'Command interrupted'} : {}), exitCode: code, offloadWriter, output, stderr, stdout, timedOut}));
     });
   });
 }
@@ -147,16 +169,20 @@ function createRunResult(options: {
   durationMs: number;
   error?: string;
   exitCode: number | null;
+  offloadWriter: ToolResultStreamWriter | null;
   output: OutputCapture;
   stderr: OutputCapture;
   stdout: OutputCapture;
   timedOut: boolean;
 }): BashCommandRunResult {
+  const offloadResult = options.offloadWriter?.finish();
+
   return {
     command: options.command,
     durationMs: options.durationMs,
     ...(options.error ? {error: options.error} : {}),
     exitCode: options.exitCode,
+    ...(offloadResult?.ok ? {offloadFilePath: offloadResult.path} : {}),
     output: options.output.get(),
     stderr: options.stderr.get(),
     stdout: options.stdout.get(),
@@ -168,44 +194,72 @@ function createRunResult(options: {
 type OutputCapture = {
   append: (chunk: Buffer | string) => string;
   get: () => string;
+  getBuffer: () => Buffer;
   isTruncated: () => boolean;
+  wouldTruncate: (chunk: Buffer | string) => boolean;
 };
 
 /**
- * 捕获有限大小的输出，保证 stdout/stderr 不会无限进入 transcript 和 provider input。
+ * 捕获命令输出；有限模式超限后保留尾部，显式 null 用于只写本地 transcript 的完整输出。
  */
-function createOutputCapture(maxBytes: number): OutputCapture {
+function createOutputCapture(maxBytes: number | null): OutputCapture {
   const chunks: Buffer[] = [];
+  const visibleDecoder = new StringDecoder('utf8');
+  let totalBytes = 0;
   let bytes = 0;
   let truncated = false;
+  const getBuffer = () => Buffer.concat(chunks);
 
   return {
     append(chunk: Buffer | string) {
-      if (bytes >= maxBytes) {
-        truncated = true;
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+      const previousTotalBytes = totalBytes;
+
+      if (buffer.length === 0) {
         return '';
       }
 
-      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
-      const remaining = maxBytes - bytes;
-
-      if (buffer.length > remaining) {
-        const accepted = buffer.subarray(0, remaining);
-        chunks.push(accepted);
-        bytes += remaining;
-        truncated = true;
-        return accepted.toString('utf8');
-      }
-
+      totalBytes += buffer.length;
       chunks.push(buffer);
       bytes += buffer.length;
-      return buffer.toString('utf8');
+
+      while (maxBytes !== null && bytes > maxBytes && chunks.length > 0) {
+        truncated = true;
+        const overflow = bytes - maxBytes;
+        const first = chunks[0];
+
+        if (first.length <= overflow) {
+          chunks.shift();
+          bytes -= first.length;
+          continue;
+        }
+
+        chunks[0] = first.subarray(overflow);
+        bytes -= overflow;
+      }
+
+      const visibleBytes = maxBytes === null
+        ? buffer.length
+        : Math.max(0, Math.min(buffer.length, maxBytes - previousTotalBytes));
+      return visibleDecoder.write(buffer.subarray(0, visibleBytes));
     },
     get() {
-      return Buffer.concat(chunks).toString('utf8');
+      const buffer = getBuffer();
+      let start = 0;
+
+      while (start < buffer.length && buffer[start] >= 0x80 && buffer[start] <= 0xbf) {
+        start += 1;
+      }
+
+      return buffer.subarray(start).toString('utf8');
     },
+    getBuffer,
     isTruncated() {
       return truncated;
+    },
+    wouldTruncate(chunk: Buffer | string) {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+      return maxBytes !== null && totalBytes + buffer.length > maxBytes;
     }
   };
 }

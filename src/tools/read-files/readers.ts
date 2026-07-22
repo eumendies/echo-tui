@@ -18,6 +18,7 @@ type ReadFilesLimits = {
   maxDirectoryEntries: number;
   maxImageBytes: number;
   maxPdfBytes: number;
+  maxPdfOutputBytes: number;
   maxTotalOutputBytes: number;
 };
 
@@ -30,6 +31,7 @@ type NormalizedFileRequest = {
 type FileReadResult = {
   attachments?: ToolResultAttachment[];
   ok: boolean;
+  pdfExtracted?: boolean;
   text: string;
   truncated: boolean;
 };
@@ -143,6 +145,7 @@ async function createPdfFileResult(request: NormalizedFileRequest, absolutePath:
 
   return {
     ok: true,
+    pdfExtracted: true,
     text: formatFileEnvelope({
       body: [
         `pages: ${extracted.value.pageCount}`,

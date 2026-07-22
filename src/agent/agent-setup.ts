@@ -1,6 +1,7 @@
 import {readLlmConfig} from '../config/llm-config';
 import {createMcpToolRegistry, mergeToolRegistries} from '../mcp/tool-adapter';
 import {createDefaultToolRegistry} from '../tools/tool-registry';
+import {createToolResultStore} from '../tools/tool-result-offloading';
 import {createAnthropicAgent} from './anthropic/agent';
 import {createCodexAgent} from './codex/agent';
 import {createFakeAgent} from './fake/agent';
@@ -45,9 +46,10 @@ function createConfiguredAgent(config: LlmConfig, registry: ToolRegistry): Provi
  */
 function prepareAgent(options: PrepareAgentOptions = {}): PreparedAgent {
   const config = readLlmConfig({modelProfileId: options.modelProfileId});
-  const baseRegistry = createDefaultToolRegistry(config, options.cwd);
+  const toolResultStore = createToolResultStore({cwd: options.cwd});
+  const baseRegistry = createDefaultToolRegistry(config, options.cwd, toolResultStore);
   const registry = options.mcpManager
-    ? mergeToolRegistries(baseRegistry, createMcpToolRegistry(options.mcpManager))
+    ? mergeToolRegistries(baseRegistry, createMcpToolRegistry(options.mcpManager, toolResultStore))
     : baseRegistry;
   const agent = createConfiguredAgent(config, registry);
 
