@@ -1,13 +1,15 @@
 import {createToolRegistry} from '../tools/tool-registry';
+import {createOffloadedTextPreview} from '../tools/tool-result-offloading';
 import {sanitizeMcpError} from './manager';
 
 import type {McpCallToolResult} from './client';
 import type {McpManager} from './manager';
 import type {ToolExecutionResult, ToolHandler, ToolRegistry} from '../types/tool';
+import type {ToolResultStore} from '../tools/tool-result-offloading';
 
-const MAX_MCP_TOOL_RESULT_CHARS = 20_000;
+const MAX_MCP_TOOL_RESULT_BYTES = 20_000;
 
-function createMcpToolRegistry(manager: McpManager): ToolRegistry {
+function createMcpToolRegistry(manager: McpManager, toolResultStore?: ToolResultStore): ToolRegistry {
   return createToolRegistry(manager.listTools().map((tool): ToolHandler => ({
     definition: {
       name: tool.namespacedName,
@@ -17,7 +19,7 @@ function createMcpToolRegistry(manager: McpManager): ToolRegistry {
     async execute(args, call) {
       try {
         const result = await manager.callTool(tool.serverName, tool.toolName, args);
-        return createMcpToolExecutionResult(call.callId, call.toolName, result);
+        return createMcpToolExecutionResult(call.callId, call.toolName, result, toolResultStore);
       } catch (error: unknown) {
         return {
           callId: call.callId,
@@ -44,19 +46,19 @@ function mergeToolRegistries(primary: ToolRegistry, secondary: ToolRegistry): To
   };
 }
 
-function createMcpToolExecutionResult(callId: string, toolName: string, result: McpCallToolResult): ToolExecutionResult {
+function createMcpToolExecutionResult(callId: string, toolName: string, result: McpCallToolResult, toolResultStore?: ToolResultStore): ToolExecutionResult {
   return {
     callId,
     toolName,
     ok: !result.isError,
     details: {kind: 'generic'},
-    text: formatMcpToolResult(result)
+    text: formatMcpToolResult(result, toolResultStore)
   };
 }
 
-function formatMcpToolResult(result: McpCallToolResult): string {
+function formatMcpToolResult(result: McpCallToolResult, toolResultStore?: ToolResultStore): string {
   if ('toolResult' in result) {
-    return truncateMcpToolResult(stringifyMcpValue(result.toolResult));
+    return truncateMcpToolResult(stringifyMcpValue(result.toolResult), toolResultStore);
   }
 
   const parts = Array.isArray(result.content) ? result.content.map(formatMcpContentBlock) : [];
@@ -65,7 +67,7 @@ function formatMcpToolResult(result: McpCallToolResult): string {
     parts.push(stringifyMcpValue(result.structuredContent));
   }
 
-  return truncateMcpToolResult(parts.filter((part) => part.trim() !== '').join('\n\n') || '(MCP tool returned no content)');
+  return truncateMcpToolResult(parts.filter((part) => part.trim() !== '').join('\n\n') || '(MCP tool returned no content)', toolResultStore);
 }
 
 function formatMcpContentBlock(block: unknown): string {
@@ -102,16 +104,23 @@ function stringifyMcpValue(value: unknown): string {
   }
 }
 
-function truncateMcpToolResult(text: string): string {
-  if (text.length <= MAX_MCP_TOOL_RESULT_CHARS) {
-    return text;
+function truncateMcpToolResult(text: string, toolResultStore?: ToolResultStore): string {
+  const preview = createOffloadedTextPreview({
+    maxPreviewBytes: MAX_MCP_TOOL_RESULT_BYTES,
+    strategy: 'head',
+    store: toolResultStore,
+    text
+  });
+
+  if (!preview.truncated || preview.offloadFilePath) {
+    return preview.text;
   }
 
-  return `${text.slice(0, MAX_MCP_TOOL_RESULT_CHARS)}\n\n[MCP tool result truncated: ${text.length - MAX_MCP_TOOL_RESULT_CHARS} characters omitted]`;
+  return `${preview.text}\n\n[MCP tool result truncated: ${text.length - preview.text.length} characters omitted]`;
 }
 
 export {
-  MAX_MCP_TOOL_RESULT_CHARS,
+  MAX_MCP_TOOL_RESULT_BYTES,
   createMcpToolExecutionResult,
   createMcpToolRegistry,
   formatMcpToolResult,

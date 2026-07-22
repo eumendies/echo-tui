@@ -546,6 +546,43 @@ test('AppContext falls back to the global status model for a missing skill profi
   });
 });
 
+test('AppContext applies skill effort independently from a fixed or stale model override', () => {
+  const config = {
+    llm: {
+      selectedModel: 'fast',
+      providers: {
+        openai: {preset: 'openai-responses-api', apiKey: 'sk-test-key'}
+      },
+      models: [
+        {id: 'fast', provider: 'openai', model: 'gpt-fast', reasoning: {effort: 'low'}},
+        {id: 'deep', provider: 'openai', model: 'gpt-deep', reasoning: {effort: 'high'}}
+      ]
+    }
+  };
+
+  withTemporaryModelConfig(config, () => {
+    const context = createContext();
+    const fixedTurn = context.beginAssistantTurn('deep', 'minimal');
+    const fixedStatus = context.createRenderState().statusLine;
+
+    assert.equal(fixedStatus.modelLabel, 'gpt-deep');
+    assert.equal(fixedStatus.reasoningEffort, 'minimal');
+    assert.equal(fixedStatus.skillOverride, true);
+    context.turnContext.clearAssistantTurnIfCurrent(fixedTurn);
+
+    const staleTurn = context.beginAssistantTurn('deleted-profile', 'none');
+    const staleStatus = context.createRenderState().statusLine;
+
+    assert.equal(staleStatus.modelLabel, 'gpt-fast');
+    assert.equal(staleStatus.reasoningEffort, 'none');
+    assert.equal(staleStatus.skillOverride, true);
+    context.turnContext.clearAssistantTurnIfCurrent(staleTurn);
+
+    assert.equal(context.createRenderState().statusLine.reasoningEffort, 'low');
+    assert.equal(context.createRenderState().statusLine.skillOverride, undefined);
+  });
+});
+
 test('AppContext status line reads cached model state without rereading user config', () => {
   const config = {
     llm: {
@@ -738,6 +775,28 @@ test('AppContext injects only effective model-visible mode transitions and ignor
 
   assert.deepEqual(leavingPlan.metadata?.modeTransition, {from: 'plan', to: 'normal'});
   assert.match(leavingPlan.text, /Previous Plan Mode restrictions no longer apply/);
+});
+
+test('TurnContext persists shell offloading marker before the bounded terminal tail', () => {
+  const context = createContext();
+  const offloadFilePath = '/tmp/echo-tool-results/full.txt';
+
+  context.turnContext.beginShellCommand('printf output');
+  const record = context.turnContext.finishShellCommand({
+    command: 'printf output',
+    durationMs: 2,
+    exitCode: 0,
+    offloadFilePath,
+    output: 'tail output',
+    stderr: '',
+    stdout: 'tail output',
+    timedOut: false,
+    truncated: true
+  }, true);
+
+  assert.equal(record.output, `[tool result truncated: ${offloadFilePath}]\n\ntail output`);
+  assert.match(record.text, /^\$ printf output\n\n\[tool result truncated: \/tmp\/echo-tool-results\/full\.txt\]\n\ntail output$/);
+  assert.doesNotMatch(record.text, /\[output truncated\]/);
 });
 
 test('AppContext preserves display text and composer history for mode transition messages', () => {

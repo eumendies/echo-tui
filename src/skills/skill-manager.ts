@@ -1,7 +1,7 @@
 import path from 'node:path';
 
 import {createSkillRegistry} from './skill-registry';
-import {createSkillStateStore} from './skill-state';
+import {SKILL_STATE_SCHEMA_VERSION, createSkillStateStore} from './skill-state';
 
 import type {SkillListItem, SkillLoadResult, SkillManager} from '../types/skill';
 import type {SkillRegistryOptions} from './skill-registry';
@@ -36,7 +36,8 @@ function createSkillManager(options: SkillManagerOptions = {}): SkillManager {
       return {
         ...entry,
         enabled: !state.disabled.includes(entry.name),
-        modelProfileId: state.modelOverrides[entry.name]
+        modelProfileId: state.modelOverrides[entry.name],
+        reasoningEffortOverride: state.effortOverrides[entry.name]
       };
     });
   }
@@ -44,7 +45,7 @@ function createSkillManager(options: SkillManagerOptions = {}): SkillManager {
   function listEnabledCatalog() {
     return listSkills()
       .filter((skill) => skill.enabled)
-      .map(({enabled: _enabled, modelProfileId: _modelProfileId, ...entry}) => entry);
+      .map(({enabled: _enabled, modelProfileId: _modelProfileId, reasoningEffortOverride: _reasoningEffortOverride, ...entry}) => entry);
   }
 
   function loadSkill(name: string): SkillLoadResult {
@@ -66,7 +67,11 @@ function createSkillManager(options: SkillManagerOptions = {}): SkillManager {
       return {...result, availableSkills: listEnabledCatalog()};
     }
 
-    return {...result, modelProfileId: skill?.modelProfileId};
+    return {
+      ...result,
+      ...(skill?.modelProfileId ? {modelProfileId: skill.modelProfileId} : {}),
+      ...(skill?.reasoningEffortOverride ? {reasoningEffortOverride: skill.reasoningEffortOverride} : {})
+    };
   }
 
   return {
@@ -74,13 +79,13 @@ function createSkillManager(options: SkillManagerOptions = {}): SkillManager {
     listSkills,
     loadSkill,
     saveSkillStates(skills: SkillListItem[]): void {
-      const nextStateByRoot = new Map<string, Pick<SkillStateFile, 'disabled' | 'modelOverrides'>>();
+      const nextStateByRoot = new Map<string, Pick<SkillStateFile, 'disabled' | 'effortOverrides' | 'modelOverrides'>>();
 
       for (const skill of skills) {
         const rootDir = getSkillRootFromSourcePath(skill.sourcePath);
 
         if (!nextStateByRoot.has(rootDir)) {
-          nextStateByRoot.set(rootDir, {disabled: [], modelOverrides: {}});
+          nextStateByRoot.set(rootDir, {disabled: [], effortOverrides: {}, modelOverrides: {}});
         }
 
         const state = nextStateByRoot.get(rootDir);
@@ -92,13 +97,18 @@ function createSkillManager(options: SkillManagerOptions = {}): SkillManager {
         if (skill.modelProfileId) {
           state!.modelOverrides[skill.name] = skill.modelProfileId;
         }
+
+        if (skill.reasoningEffortOverride) {
+          state!.effortOverrides[skill.name] = skill.reasoningEffortOverride;
+        }
       }
 
       for (const [rootDir, state] of nextStateByRoot) {
         stateStore.writeState(rootDir, state);
         stateByRoot.set(rootDir, {
-          schemaVersion: 2,
+          schemaVersion: SKILL_STATE_SCHEMA_VERSION,
           disabled: [...state.disabled],
+          effortOverrides: {...state.effortOverrides},
           modelOverrides: {...state.modelOverrides}
         });
       }

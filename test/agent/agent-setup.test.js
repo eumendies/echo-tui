@@ -42,11 +42,12 @@ test('prepareAgent reads the selected profile and merges MCP tools into the init
     const prepared = agentSetupModule.prepareAgent({
       cwd: '/tmp/echo-agent-setup',
       mcpManager,
-      modelProfileId: 'review-profile'
+      modelProfileId: 'review-profile',
+      reasoningEffortOverride: 'high'
     });
     const toolNames = prepared.registry.listDefinitions().map((definition) => definition.name);
 
-    assert.deepEqual(configOptions, [{modelProfileId: 'review-profile'}]);
+    assert.deepEqual(configOptions, [{modelProfileId: 'review-profile', reasoningEffortOverride: 'high'}]);
     assert.equal(prepared.config, TEST_CONFIG);
     assert.ok(toolNames.includes('read_files'));
     assert.ok(toolNames.includes('mcp__docs__search'));

@@ -19,14 +19,14 @@ import {loadAgentInstructions} from './agent-instructions';
 import {calibrateContextUsageSegments, estimateContextUsageSegments} from './context/context-usage-breakdown';
 import {estimateTextTokens} from './context/token-estimator';
 import {resolveMemoryPrompt} from './context/memory-prompt';
-import {createBuiltInSystemPrompt} from './context/system-prompt';
+import {createBuiltInSystemPrompt, loadSystemPromptOverride} from './context/system-prompt';
 import {prepareAgent} from './agent-setup';
 import {createCompactionNoticeRecord, runCompaction} from './context/context-compaction';
 import {disabledDebugContext, hashValue, redactProviderConfig, summarizeText} from '../debug/debug-context';
 
 import type {TokenUsageAnchor} from './context/context-compaction';
 
-import type {AgentCallbacks, AgentExecutionMode, AgentInstruction, AgentSessionInput, InteractionMode, LlmConfig, ProviderAgent, ProviderUsage, RunAgent, ToolApprovalDecision} from '../types/agent';
+import type {AgentCallbacks, AgentExecutionMode, AgentInstruction, AgentSessionInput, InteractionMode, LlmConfig, ProviderAgent, ProviderUsage, ReasoningEffort, RunAgent, ToolApprovalDecision} from '../types/agent';
 import type {DebugContext} from '../debug/debug-context';
 import type {LifecycleHookDispatcher} from '../types/hooks';
 import type {UsageStore} from '../types/usage';
@@ -158,11 +158,11 @@ async function resolveToolApprovalDecision(toolCall: ToolCall, approval: ToolApp
  * 构造 provider 请求上下文：稳定前缀 + 活跃区间记录 + 运行时 suffix。
  * system prompt、摘要和运行时状态只存在于 provider 上下文，不写回 app transcript。
  */
-function buildProviderRecords(activeRecords: TranscriptRecord[], cwd: string, compaction?: CompactionState, skillCatalog: SkillCatalogEntry[] = [], agentInstructions: AgentInstruction[] = [], todoState?: TodoState, memoryPrompts: string[] = []): TranscriptRecord[] {
+function buildProviderRecords(activeRecords: TranscriptRecord[], cwd: string, compaction?: CompactionState, skillCatalog: SkillCatalogEntry[] = [], agentInstructions: AgentInstruction[] = [], todoState?: TodoState, memoryPrompts: string[] = [], basePrompt?: string): TranscriptRecord[] {
   const prefix: TranscriptRecord[] = [
     {
       role: 'system',
-      text: createBuiltInSystemPrompt({agentInstructions, cwd, skillCatalog, memoryPrompts})
+      text: createBuiltInSystemPrompt({agentInstructions, basePrompt, cwd, skillCatalog, memoryPrompts})
     }
   ];
 
@@ -227,6 +227,7 @@ type AgentLoopRunState = {
   contextWindow: number;
   skillCatalog: SkillCatalogEntry[];
   skillCatalogTokens: number;
+  basePrompt?: string;
   todoState: TodoState | undefined;
   toolDefinitions: ToolDefinition[];
   mcpManager?: McpManager;
@@ -287,14 +288,15 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
   /**
    * 初始化单次调用的 loop 状态；provider、配置和 registry 由统一装配入口提供。
    */
-  function initializeRunState(interactionMode: InteractionMode, abortSignal: AbortSignal | undefined, executionMode: AgentExecutionMode, modelProfileId?: string): AgentLoopRunState {
-    const {agent, config, registry} = prepareAgent({cwd, mcpManager, modelProfileId});
-
+  function initializeRunState(interactionMode: InteractionMode, abortSignal: AbortSignal | undefined, executionMode: AgentExecutionMode, modelProfileId?: string, reasoningEffortOverride?: ReasoningEffort): AgentLoopRunState {
+    const {agent, config, registry} = prepareAgent({cwd, mcpManager, modelProfileId, reasoningEffortOverride});
     const skillCatalog = registry.listSkillCatalog?.() || [];
+    const systemPromptOverride = loadSystemPromptOverride({cwd});
 
     return {
       agent,
       agentInstructions: loadAgentInstructions({cwd}),
+      basePrompt: systemPromptOverride?.content,
       providerConfig: redactProviderConfig(config),
       providerType: config.agentType,
       model: config.model,
@@ -323,7 +325,7 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
     let state: AgentLoopRunState;
 
     try {
-      state = initializeRunState(interactionMode, abortSignal, executionMode, session.modelProfileId);
+      state = initializeRunState(interactionMode, abortSignal, executionMode, session.modelProfileId, session.reasoningEffortOverride);
     } catch (error: unknown) {
       throw normalizeError(error, '无法加载 LLM 配置');
     }
@@ -435,7 +437,7 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
       const activeStartIndex = compactionState ? compactionState.activeStartIndex : 0;
       const activeRecords = recordRegion.slice(activeStartIndex);
       const memoryPrompt = resolveMemoryPrompt(cwd, state.contextWindow);
-      const providerRecords = buildProviderRecords(activeRecords, cwd, compactionState, state.skillCatalog, state.agentInstructions, state.todoState, memoryPrompt.sections);
+      const providerRecords = buildProviderRecords(activeRecords, cwd, compactionState, state.skillCatalog, state.agentInstructions, state.todoState, memoryPrompt.sections, state.basePrompt);
       state.debug.emit('provider_request_built', {
         activeRecordCount: activeRecords.length,
         activeStartIndex,

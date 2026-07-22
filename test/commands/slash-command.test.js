@@ -893,7 +893,7 @@ test('built-in /review workflow wins before direct skill invocation fallback', (
   assert.deepEqual(normal.calls.transcriptAppends, []);
 });
 
-test('direct skill invocation returns a typed per-turn model profile override', () => {
+test('direct skill invocation returns typed per-turn model and effort overrides', () => {
   const handler = new SkillInvocationCommandHandler();
   const {host} = createFakeHost({
     createSkillInvocation(skillName, argumentsText) {
@@ -901,7 +901,8 @@ test('direct skill invocation returns a typed per-turn model profile override', 
         ok: true,
         text: '[Skill Invocation]\nskill: review',
         metadata: {skillInvocation: {source: 'slash', skillName, argumentsText}},
-        modelProfileId: 'review-profile'
+        modelProfileId: 'review-profile',
+        reasoningEffortOverride: 'high'
       };
     }
   });
@@ -909,6 +910,7 @@ test('direct skill invocation returns a typed per-turn model profile override', 
 
   assert.equal(result.kind, 'submit_user_message');
   assert.equal(result.modelProfileId, 'review-profile');
+  assert.equal(result.reasoningEffortOverride, 'high');
   assert.deepEqual(result.metadata, {
     skillInvocation: {source: 'slash', skillName: 'review', argumentsText: 'src/foo.ts'}
   });
@@ -1631,7 +1633,7 @@ test('skillsCommandHandler opens skills surface, toggles drafts, saves, and canc
   const skillsCommandHandler = new SkillsCommandHandler();
   const skills = [
     { name: 'code-review', description: 'Review code', sourceKind: 'project', sourcePath: '/skills/code-review/SKILL.md', enabled: true },
-    { name: 'unit-test', description: 'Generate tests', sourceKind: 'user', sourcePath: '/skills/unit-test/SKILL.md', enabled: false, modelProfileId: 'current-profile' }
+    { name: 'unit-test', description: 'Generate tests', sourceKind: 'user', sourcePath: '/skills/unit-test/SKILL.md', enabled: false, modelProfileId: 'current-profile', reasoningEffortOverride: 'high' }
   ];
   const modelCommandInfo = {
     models: [
@@ -1654,11 +1656,12 @@ test('skillsCommandHandler opens skills surface, toggles drafts, saves, and canc
   assert.equal(session.surface.kind, 'skills');
   assert.equal(session.surface.title, 'SKILLS');
   assert.equal(session.surface.selectedIndex, 0);
-  assert.deepEqual(session.surface.skills.map((skill) => [skill.name, skill.modelProfileId, skill.modelLabel]), [
-    ['code-review', undefined, '当前模型'],
-    ['unit-test', 'current-profile', 'current-profile']
+  assert.equal(session.surface.activeField, 'model');
+  assert.deepEqual(session.surface.skills.map((skill) => [skill.name, skill.modelProfileId, skill.modelLabel, skill.reasoningEffortOverride]), [
+    ['code-review', undefined, '当前模型', undefined],
+    ['unit-test', 'current-profile', 'current-profile', 'high']
   ]);
-  assert.equal(session.surface.dismissHint, '←/→ 模型 (仅限slash调用) · Space 启停 · Enter 保存 · Esc 取消');
+  assert.match(session.surface.dismissHint, /当前字段 模型 · Tab 切换 · ←\/→ 调整/);
 
   skillsCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_RIGHT}, host);
   assert.equal(host.session.getActive().data.skills[0].modelProfileId, 'fast-profile');
@@ -1673,6 +1676,14 @@ test('skillsCommandHandler opens skills surface, toggles drafts, saves, and canc
   assert.equal(calls.savedSkills.length, 0);
   skillsCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_RIGHT}, host);
   assert.equal(host.session.getActive().data.skills[1].modelProfileId, undefined);
+  skillsCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.TAB}, host);
+  assert.equal(host.session.getActive().data.activeField, 'effort');
+  assert.match(host.session.getActive().surface.dismissHint, /当前字段 effort/);
+  skillsCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_RIGHT}, host);
+  assert.equal(host.session.getActive().data.skills[1].reasoningEffortOverride, 'xhigh');
+  assert.equal(host.session.getActive().data.skills[1].modelProfileId, undefined);
+  skillsCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SHIFT_TAB}, host);
+  assert.equal(host.session.getActive().data.activeField, 'model');
 
   skillsCommandHandler.handleEvent(host.session.getActive(), { type: INPUT_EVENTS.SUBMIT }, host);
   assert.equal(calls.sessionCloses, 1);
@@ -1682,11 +1693,13 @@ test('skillsCommandHandler opens skills surface, toggles drafts, saves, and canc
     ['unit-test', true]
   ]);
   assert.deepEqual(calls.savedSkills[0].map((skill) => skill.modelProfileId), [undefined, undefined]);
+  assert.deepEqual(calls.savedSkills[0].map((skill) => skill.reasoningEffortOverride), [undefined, 'xhigh']);
   assert.equal('modelLabel' in calls.savedSkills[0][0], false);
 
   const cancel = createFakeHost({ skills, modelCommandInfo });
   const cancelSession = startCommand(skillsCommandHandler, '/skills', cancel.host);
   skillsCommandHandler.handleEvent(cancelSession, { type: INPUT_EVENTS.TEXT, value: ' ' }, cancel.host);
+  skillsCommandHandler.handleEvent(cancel.host.session.getActive(), {type: INPUT_EVENTS.TAB}, cancel.host);
   skillsCommandHandler.handleEvent(cancel.host.session.getActive(), {type: INPUT_EVENTS.MOVE_RIGHT}, cancel.host);
   skillsCommandHandler.handleEvent(cancel.host.session.getActive(), { type: INPUT_EVENTS.ESCAPE }, cancel.host);
   assert.equal(cancel.calls.sessionCloses, 1);
@@ -1711,10 +1724,13 @@ test('skillsCommandHandler falls back to dynamic model policy when model config 
   assert.equal(session.surface.skills[0].modelLabel, '当前模型');
   skillsCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_RIGHT}, host);
   assert.equal(calls.sessionUpdates.length, 0);
-  skillsCommandHandler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: ' '}, host);
+  skillsCommandHandler.handleEvent(session, {type: INPUT_EVENTS.TAB}, host);
+  skillsCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_RIGHT}, host);
+  assert.equal(host.session.getActive().data.skills[0].reasoningEffortOverride, 'none');
+  skillsCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.TEXT, value: ' '}, host);
   skillsCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
-  assert.deepEqual(calls.savedSkills[0].map(({enabled, modelProfileId}) => ({enabled, modelProfileId})), [
-    {enabled: true, modelProfileId: undefined}
+  assert.deepEqual(calls.savedSkills[0].map(({enabled, modelProfileId, reasoningEffortOverride}) => ({enabled, modelProfileId, reasoningEffortOverride})), [
+    {enabled: true, modelProfileId: undefined, reasoningEffortOverride: 'none'}
   ]);
 });
 

@@ -70,6 +70,7 @@ export type ResumeCommandSurface = {
 };
 
 export type SkillsCommandSurface = {
+  activeField: SkillsCommandActiveField;
   kind: 'skills';
   title: string;
   skills: CommandSkillSurfaceInfo[];
@@ -77,6 +78,8 @@ export type SkillsCommandSurface = {
   emptyLines: string[];
   dismissHint: string;
 };
+
+export type SkillsCommandActiveField = 'effort' | 'model';
 
 export type McpCommandSurface = {
   kind: 'mcp';
@@ -463,6 +466,7 @@ export type CommandSkillInfo = {
   sourcePath: string;
   enabled: boolean;
   modelProfileId?: string;
+  reasoningEffortOverride?: ReasoningEffort;
 };
 
 export type CommandSkillSurfaceInfo = CommandSkillInfo & {
@@ -507,6 +511,7 @@ export type CommandSkillInvocationResult =
       text: string;
       metadata: UserTranscriptMetadata;
       modelProfileId?: string;
+      reasoningEffortOverride?: ReasoningEffort;
     }
   | {
       ok: false;
@@ -639,7 +644,7 @@ export type CommandHandler<TData extends object = Record<string, unknown>> = {
 export type CommandStartResult =
   | {kind: 'not_matched'}
   | {kind: 'handled'}
-  | {kind: 'submit_user_message'; text: string; displayText?: string; metadata?: UserTranscriptMetadata; modelProfileId?: string};
+  | {kind: 'submit_user_message'; text: string; displayText?: string; metadata?: UserTranscriptMetadata; modelProfileId?: string; reasoningEffortOverride?: ReasoningEffort};
 
 export type MatchableCommandHandler<TData extends object = Record<string, unknown>> =
   CommandHandler<TData> & {

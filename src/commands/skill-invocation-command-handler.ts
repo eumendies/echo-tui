@@ -37,7 +37,8 @@ export class SkillInvocationCommandHandler implements CommandHandler {
         text: result.text,
         displayText: text,
         metadata: result.metadata,
-        ...(result.modelProfileId ? {modelProfileId: result.modelProfileId} : {})
+        ...(result.modelProfileId ? {modelProfileId: result.modelProfileId} : {}),
+        ...(result.reasoningEffortOverride ? {reasoningEffortOverride: result.reasoningEffortOverride} : {})
       };
     }
 

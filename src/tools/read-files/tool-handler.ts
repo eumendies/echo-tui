@@ -1,8 +1,10 @@
 import {formatReadFilesFailure, readOneFile} from './readers';
 import {capUtf8Text, normalizePositiveInteger, resolveCwd} from '../tool-handler-utils';
+import {createOffloadedTextPreview} from '../tool-result-offloading';
 
 import type {ReadFilesToolExecutionResult, ToolCall, ToolHandler, ToolResultAttachment} from '../../types/tool';
 import type {Result} from '../tool-handler-utils';
+import type {ToolResultStore} from '../tool-result-offloading';
 import type {FileReadResult, NormalizedFileRequest, ReadFilesLimits} from './readers';
 
 const READ_FILES_TOOL_NAME = 'read_files';
@@ -11,6 +13,7 @@ const DEFAULT_MAX_FILE_CONTENT_BYTES = 1_000_000;
 const DEFAULT_MAX_DIRECTORY_ENTRIES = 200;
 const DEFAULT_MAX_IMAGE_BYTES = 5_000_000;
 const DEFAULT_MAX_PDF_BYTES = 10_000_000;
+const DEFAULT_MAX_PDF_OUTPUT_BYTES = 65_536;
 const DEFAULT_MAX_TOTAL_OUTPUT_BYTES = 256_000;
 
 type ReadFilesToolHandlerOptions = {
@@ -20,7 +23,9 @@ type ReadFilesToolHandlerOptions = {
   maxDirectoryEntries?: number;
   maxImageBytes?: number;
   maxPdfBytes?: number;
+  maxPdfOutputBytes?: number;
   maxTotalOutputBytes?: number;
+  toolResultStore?: ToolResultStore;
 };
 
 /**
@@ -63,7 +68,8 @@ function createReadFilesToolHandler(options: ReadFilesToolHandlerOptions = {}): 
     async execute(args: Record<string, unknown>, call: ToolCall): Promise<ReadFilesToolExecutionResult> {
       const result = await readFiles(args, {
         cwd: resolveCwd(options.cwd),
-        limits
+        limits,
+        toolResultStore: options.toolResultStore
       });
 
       return {
@@ -81,7 +87,7 @@ function createReadFilesToolHandler(options: ReadFilesToolHandlerOptions = {}): 
 /**
  * 校验输入并按顺序读取文件；批量中单个失败不会隐藏其他成功结果。
  */
-async function readFiles(args: Record<string, unknown>, options: {cwd: string; limits: ReadFilesLimits}): Promise<{attachments?: ToolResultAttachment[]; ok: boolean; text: string; truncated: boolean}> {
+async function readFiles(args: Record<string, unknown>, options: {cwd: string; limits: ReadFilesLimits; toolResultStore?: ToolResultStore}): Promise<{attachments?: ToolResultAttachment[]; ok: boolean; text: string; truncated: boolean}> {
   const normalized = normalizeRequests(args.files, options.limits);
 
   if (!normalized.ok) {
@@ -101,6 +107,23 @@ async function readFiles(args: Record<string, unknown>, options: {cwd: string; l
   const ok = fileResults.every((result) => result.ok);
   const attachments = fileResults.flatMap((result) => result.attachments || []);
   const formatted = fileResults.map((result) => result.text).join('\n\n');
+
+  if (fileResults.some((result) => result.pdfExtracted)) {
+    const preview = createOffloadedTextPreview({
+      maxPreviewBytes: Math.min(options.limits.maxPdfOutputBytes, options.limits.maxTotalOutputBytes),
+      strategy: 'head',
+      store: options.toolResultStore,
+      text: formatted
+    });
+
+    return {
+      ...(attachments.length > 0 ? {attachments} : {}),
+      ok,
+      text: preview.offloadFilePath || !preview.truncated ? preview.text : `${preview.text}\n\nOutput was truncated.`,
+      truncated: preview.truncated || fileResults.some((result) => result.truncated)
+    };
+  }
+
   const capped = capUtf8Text(formatted, options.limits.maxTotalOutputBytes);
 
   return {
@@ -191,6 +214,7 @@ function normalizeLimits(options: ReadFilesToolHandlerOptions): ReadFilesLimits 
     maxDirectoryEntries: normalizePositiveInteger(options.maxDirectoryEntries, DEFAULT_MAX_DIRECTORY_ENTRIES),
     maxImageBytes: normalizePositiveInteger(options.maxImageBytes, DEFAULT_MAX_IMAGE_BYTES),
     maxPdfBytes: normalizePositiveInteger(options.maxPdfBytes, DEFAULT_MAX_PDF_BYTES),
+    maxPdfOutputBytes: normalizePositiveInteger(options.maxPdfOutputBytes, DEFAULT_MAX_PDF_OUTPUT_BYTES),
     maxTotalOutputBytes: normalizePositiveInteger(options.maxTotalOutputBytes, DEFAULT_MAX_TOTAL_OUTPUT_BYTES)
   };
 }
@@ -201,6 +225,7 @@ export {
   DEFAULT_MAX_FILES,
   DEFAULT_MAX_IMAGE_BYTES,
   DEFAULT_MAX_PDF_BYTES,
+  DEFAULT_MAX_PDF_OUTPUT_BYTES,
   DEFAULT_MAX_TOTAL_OUTPUT_BYTES,
   READ_FILES_TOOL_NAME,
   createReadFilesToolHandler

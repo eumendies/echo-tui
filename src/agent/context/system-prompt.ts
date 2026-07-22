@@ -1,34 +1,51 @@
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+
 import {formatSkillCatalogPrompt} from '../../skills/skill-catalog-prompt';
+import {findProjectRoot} from '../agent-instructions';
 
 import type {AgentInstruction} from '../../types/agent';
 import type {SkillCatalogEntry} from '../../types/skill';
 
 const BUILT_IN_SYSTEM_PROMPT = `You are Echo TUI's built-in terminal development assistant.
 
-Behavior guidelines:
-- Reply in the same language as the user's input, unless the user explicitly requests another language. Keep answers concise, direct, and actionable.
-- Base conclusions on the current conversation and tool results first; when uncertain, say so and do not fabricate facts.
-- Before using a tool, judge whether it is truly necessary; do not run commands unrelated to the user's goal.
-- In multi-step tasks, avoid long uninterrupted runs of tool calls; every few tool calls, briefly state what you found and the next step.
-- For multi-step or long-running tasks, use the todo tools to create a concise working todo list, keep it updated as work progresses, and mark items complete promptly. Once todos exist, loop until every todo is complete. Do not create todos for trivial one-step requests.
-- Prefer glob to discover local files by name or path pattern; prefer grep for general text search; prefer read_files to read known files or list the direct children of a known directory (directory reads are non-recursive); prefer web_fetch to read the content of an explicit remote URL; prefer apply_patch for routine source, test, and documentation edits and for creating new files; use bash mainly for verification, complex shell, and command execution that is genuinely necessary.
-- Be careful with local files, command output, and errors; never leak credentials, tokens, keys, or other sensitive information.
-- Answers should read well in a terminal; avoid verbose padding and unnecessary formatting noise.`;
+Guidelines:
+- Match the user's language unless asked otherwise. Be concise, direct, actionable, and terminal-friendly.
+- Ground answers in the conversation and tool results; state uncertainty and never invent facts.
+- For non-trivial multi-step work, maintain todos to completion and periodically summarize findings and next steps; skip todos for trivial tasks.`;
+const SYSTEM_FILE_NAME = 'SYSTEM.md';
+
+type SystemPromptSourceKind = 'global' | 'project';
+
+type SystemPromptOverride = {
+  content: string;
+  filePath: string;
+  sourceKind: SystemPromptSourceKind;
+};
+
+type SystemPromptLoadOptions = {
+  cwd?: string;
+  homedir?: string;
+  readFile?: (filePath: string, encoding: BufferEncoding) => string;
+  stat?: (filePath: string) => fs.Stats;
+};
 
 type BuiltInSystemPromptContext = {
   agentInstructions?: AgentInstruction[];
+  basePrompt?: string;
   cwd: string;
   skillCatalog?: SkillCatalogEntry[];
   memoryPrompts?: string[];
 };
 
 /**
- * 生成每次真实请求使用的内置 system prompt；运行环境信息只进入 provider 上下文，不写入 transcript。
+ * 生成每次真实请求使用的 system prompt；基础文本可覆盖，动态上下文只进入 provider 请求。
  */
 function createBuiltInSystemPrompt(context: BuiltInSystemPromptContext): string {
   const agentInstructionsPrompt = formatAgentInstructionsPrompt(context.agentInstructions || []);
   const skillCatalogPrompt = formatSkillCatalogPrompt(context.skillCatalog || []);
-  const sections = [`${BUILT_IN_SYSTEM_PROMPT}
+  const sections = [`${context.basePrompt || BUILT_IN_SYSTEM_PROMPT}
 
 Runtime environment:
 - Current working directory: ${context.cwd}`];
@@ -44,6 +61,67 @@ Runtime environment:
   sections.push(...(context.memoryPrompts || []).filter((prompt) => prompt !== ''));
 
   return sections.join('\n\n');
+}
+
+/**
+ * 按项目级、用户级顺序读取基础 system prompt 覆盖；无有效文件时返回 null。
+ */
+function loadSystemPromptOverride(options: SystemPromptLoadOptions = {}): SystemPromptOverride | null {
+  const cwd = path.resolve(options.cwd || process.cwd());
+  const homedir = path.resolve(options.homedir || os.homedir());
+  const stat = options.stat || fs.statSync;
+  const readFile = options.readFile || fs.readFileSync;
+  const projectRoot = findProjectRoot(cwd, homedir, stat) || cwd;
+  const candidates = [
+    {filePath: path.join(projectRoot, SYSTEM_FILE_NAME), sourceKind: 'project' as const},
+    {filePath: getDefaultGlobalSystemPromptPath(homedir), sourceKind: 'global' as const}
+  ];
+  const seenPaths = new Set<string>();
+
+  for (const candidate of candidates) {
+    const filePath = path.resolve(candidate.filePath);
+
+    if (seenPaths.has(filePath)) {
+      continue;
+    }
+
+    seenPaths.add(filePath);
+    const content = readSystemPromptFile(filePath, {readFile, stat});
+
+    if (content !== null) {
+      return {...candidate, filePath, content};
+    }
+  }
+
+  return null;
+}
+
+function getDefaultGlobalSystemPromptPath(homedir = os.homedir()): string {
+  return path.join(homedir, '.echo', SYSTEM_FILE_NAME);
+}
+
+function readSystemPromptFile(filePath: string, options: {
+  readFile: (filePath: string, encoding: BufferEncoding) => string;
+  stat: (filePath: string) => fs.Stats;
+}): string | null {
+  try {
+    if (!options.stat(filePath).isFile()) {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+
+  let rawContent: string;
+
+  try {
+    rawContent = options.readFile(filePath, 'utf8');
+  } catch {
+    return null;
+  }
+
+  const normalized = rawContent.replace(/\r\n?/g, '\n').trim();
+  return normalized === '' ? null : normalized;
 }
 
 /**
@@ -72,8 +150,16 @@ function formatAgentInstructionHeading(instruction: AgentInstruction): string {
 
 export {
   BUILT_IN_SYSTEM_PROMPT,
+  SYSTEM_FILE_NAME,
   createBuiltInSystemPrompt,
-  formatAgentInstructionsPrompt
+  formatAgentInstructionsPrompt,
+  getDefaultGlobalSystemPromptPath,
+  loadSystemPromptOverride
 };
 
-export type {BuiltInSystemPromptContext};
+export type {
+  BuiltInSystemPromptContext,
+  SystemPromptLoadOptions,
+  SystemPromptOverride,
+  SystemPromptSourceKind
+};

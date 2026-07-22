@@ -18,14 +18,21 @@ const { createBashToolHandler, RUN_BASH_COMMAND_TOOL_NAME } = require('../../src
 const { runBashCommand } = require('../../src/tools/bash-command-runner');
 const { createGlobToolHandler, DEFAULT_MAX_PATHS, GLOB_TOOL_NAME } = require('../../src/tools/glob-tool-handler');
 const { createGrepToolHandler, DEFAULT_MAX_MATCHES, GREP_TOOL_NAME } = require('../../src/tools/grep-tool-handler');
-const { createReadFilesToolHandler, DEFAULT_MAX_DIRECTORY_ENTRIES, READ_FILES_TOOL_NAME } = require('../../src/tools/read-files');
-const { createWebFetchToolHandler, WEB_FETCH_TOOL_NAME } = require('../../src/tools/web-fetch-tool-handler');
+const {
+  createReadFilesToolHandler,
+  DEFAULT_MAX_DIRECTORY_ENTRIES,
+  DEFAULT_MAX_PDF_OUTPUT_BYTES,
+  DEFAULT_MAX_TOTAL_OUTPUT_BYTES: DEFAULT_READ_FILES_MAX_TOTAL_OUTPUT_BYTES,
+  READ_FILES_TOOL_NAME
+} = require('../../src/tools/read-files');
+const { createWebFetchToolHandler, DEFAULT_MAX_TOTAL_OUTPUT_BYTES: DEFAULT_WEB_FETCH_MAX_TOTAL_OUTPUT_BYTES, WEB_FETCH_TOOL_NAME } = require('../../src/tools/web-fetch-tool-handler');
 const { createWebSearchToolHandler, WEB_SEARCH_TOOL_NAME } = require('../../src/tools/web-search');
 const { createSkillManager } = require('../../src/skills/skill-manager');
 const { createSkillRegistry } = require('../../src/skills/skill-registry');
 const { listSkillUseRecords } = require('../../src/skills/skill-usage');
 const { createToolExecutor } = require('../../src/tools/tool-executor');
 const { createDefaultToolRegistry, createToolRegistry } = require('../../src/tools/tool-registry');
+const { createToolResultStore } = require('../../src/tools/tool-result-offloading');
 const { COMPLETE_TODO_TOOL_NAME, CREATE_TODOS_TOOL_NAME } = require('../../src/tools/todo-tool-handler');
 const { createUseSkillToolHandler, USE_SKILL_TOOL_NAME } = require('../../src/tools/use-skill-tool-handler');
 
@@ -75,6 +82,10 @@ function createReadFilesCall(files) {
     toolName: READ_FILES_TOOL_NAME,
     argumentsText: JSON.stringify({ files })
   };
+}
+
+function extractToolResultMarkerPath(text) {
+  return text.match(/\[tool result truncated: ([^\]]+)\]/)?.[1];
 }
 
 function createGrepCall(args) {
@@ -202,6 +213,15 @@ function escapePdfText(text) {
 
 function createPdfFixture(text) {
   const content = text === '' ? '' : `BT /F1 24 Tf 50 100 Td (${escapePdfText(text)}) Tj ET`;
+  return createPdfFixtureFromContent(content);
+}
+
+function createPdfFixtureWithTextItems(items) {
+  const operators = items.map((item, index) => `1 0 0 1 20 ${120 - (index % 8) * 14} Tm (${escapePdfText(item)}) Tj`).join('\n');
+  return createPdfFixtureFromContent(`BT /F1 10 Tf\n${operators}\nET`);
+}
+
+function createPdfFixtureFromContent(content) {
   const objects = [
     '<< /Type /Catalog /Pages 2 0 R >>',
     '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
@@ -397,19 +417,21 @@ test('skill manager reads disabled state and saves by effective source root', ()
   fs.writeFileSync(path.join(userSkillsDir, 'skills.json'), JSON.stringify({
     schemaVersion: 2,
     disabled: [],
+    effortOverrides: {review: 'low', 'unit-test': 'none'},
     modelOverrides: {review: 'ignored-user-profile'}
   }), 'utf8');
   fs.writeFileSync(path.join(projectSkillsDir, 'skills.json'), JSON.stringify({
     schemaVersion: 2,
     disabled: ['review'],
+    effortOverrides: {review: 'high'},
     modelOverrides: {review: 'project-profile'}
   }), 'utf8');
 
   const manager = createSkillManager({ cwd, projectSkillsDir, userSkillsDir });
 
-  assert.deepEqual(manager.listSkills().map(({ name, enabled, sourceKind, modelProfileId }) => ({ name, enabled, sourceKind, modelProfileId })), [
-    { name: 'review', enabled: false, sourceKind: 'project', modelProfileId: 'project-profile' },
-    { name: 'unit-test', enabled: true, sourceKind: 'user', modelProfileId: undefined }
+  assert.deepEqual(manager.listSkills().map(({ name, enabled, sourceKind, modelProfileId, reasoningEffortOverride }) => ({ name, enabled, sourceKind, modelProfileId, reasoningEffortOverride })), [
+    { name: 'review', enabled: false, sourceKind: 'project', modelProfileId: 'project-profile', reasoningEffortOverride: 'high' },
+    { name: 'unit-test', enabled: true, sourceKind: 'user', modelProfileId: undefined, reasoningEffortOverride: 'none' }
   ]);
   assert.deepEqual(manager.listCatalog().map((skill) => skill.name), ['unit-test']);
   const disabled = manager.loadSkill('review');
@@ -417,17 +439,19 @@ test('skill manager reads disabled state and saves by effective source root', ()
   assert.equal(disabled.reason, 'disabled');
 
   manager.saveSkillStates(manager.listSkills().map((skill) => skill.name === 'review'
-    ? { ...skill, enabled: true, modelProfileId: undefined }
-    : { ...skill, enabled: false, modelProfileId: 'user-profile' }));
+    ? { ...skill, enabled: true, modelProfileId: undefined, reasoningEffortOverride: 'minimal' }
+    : { ...skill, enabled: false, modelProfileId: 'user-profile', reasoningEffortOverride: undefined }));
 
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(projectSkillsDir, 'skills.json'), 'utf8')), {
-    schemaVersion: 2,
+    schemaVersion: 3,
     disabled: [],
+    effortOverrides: {review: 'minimal'},
     modelOverrides: {}
   });
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(userSkillsDir, 'skills.json'), 'utf8')), {
-    schemaVersion: 2,
+    schemaVersion: 3,
     disabled: ['unit-test'],
+    effortOverrides: {},
     modelOverrides: {'unit-test': 'user-profile'}
   });
 });
@@ -861,6 +885,20 @@ test('shared bash runner captures stdout, stderr, and merged terminal output', a
   assert.equal(typeof result.durationMs, 'number');
 });
 
+test('shared bash runner can retain unbounded output for shell-local transcripts', async () => {
+  const output = `head-${'x'.repeat(70_000)}-tail`;
+  const result = await runBashCommand({
+    command: `${JSON.stringify(process.execPath)} -e ${JSON.stringify(`process.stdout.write(${JSON.stringify(output)})`)}`,
+    cwd: process.cwd(),
+    maxOutputBytes: null
+  });
+
+  assert.equal(result.stdout, output);
+  assert.equal(result.output, output);
+  assert.equal(result.truncated, false);
+  assert.equal(result.offloadFilePath, undefined);
+});
+
 test('shared bash runner emits bounded stdout and stderr output events', async () => {
   const events = [];
   const result = await runBashCommand({
@@ -889,8 +927,8 @@ test('shared bash runner emits bounded stdout and stderr output events', async (
   });
 
   assert.equal(truncated.truncated, true);
-  assert.equal(truncated.stdout, '12345');
-  assert.equal(truncated.output, '12345');
+  assert.equal(truncated.stdout, '56789');
+  assert.equal(truncated.output, '56789');
   assert.equal(truncatedEvents.map((event) => event.chunk).join(''), '12345');
 });
 
@@ -968,8 +1006,8 @@ test('shared bash runner reports non-zero exit, timeout, and truncation', async 
   assert.equal(failed.stderr, 'nope');
   assert.equal(timedOut.timedOut, true);
   assert.equal(truncated.truncated, true);
-  assert.equal(truncated.stdout, '12345');
-  assert.equal(truncated.output, '12345');
+  assert.equal(truncated.stdout, '56789');
+  assert.equal(truncated.output, '56789');
 });
 
 test('bash tool reports non-zero exit code as tool failure result', async () => {
@@ -1030,8 +1068,109 @@ test('bash tool truncates oversized output', async () => {
   assert.equal(result.details.truncated, true);
   assert.match(result.text, /command: printf 123456789/);
   assert.match(result.text, /truncated: true/);
-  assert.match(result.text, /stdout:\n12345/);
+  assert.match(result.text, /stdout:\n56789/);
   assert.doesNotMatch(result.text, /stdout:\n123456789/);
+});
+
+test('bash runner offloads complete merged output and bash tool returns marker before tail', async () => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-bash-offload-'));
+  const cwd = createTempWorkspace();
+  const toolResultStore = createToolResultStore({cwd, rootDir});
+  const runResult = await runBashCommand({
+    command: 'printf 123456789',
+    cwd,
+    maxOutputBytes: 5,
+    toolResultStore
+  });
+  const executor = createToolExecutor(createToolRegistry([createBashToolHandler({
+    cwd,
+    maxOutputBytes: 5,
+    toolResultStore
+  })]));
+  const toolResult = await executor.execute(createCall({argumentsText: JSON.stringify({command: 'printf 123456789'})}));
+  const markerPath = toolResult.text.match(/\[tool result truncated: ([^\]]+)\]/)?.[1];
+
+  assert.equal(runResult.stdout, '56789');
+  assert.equal(runResult.output, '56789');
+  assert.equal(fs.readFileSync(runResult.offloadFilePath, 'utf8'), '123456789');
+  assert.equal(markerPath.startsWith(rootDir), true);
+  assert.equal(fs.readFileSync(markerPath, 'utf8'), '123456789');
+  assert.match(toolResult.text, /command: printf 123456789/);
+  assert.match(toolResult.text, /exit_code: 0/);
+  assert.match(toolResult.text, /\[tool result truncated: [^\]]+\]\n\nstdout:\n56789/);
+  assert.doesNotMatch(toolResult.text, /Output was truncated/);
+  assert.equal(fs.existsSync(path.join(cwd, 'tool-results')), false);
+});
+
+test('bash runner preserves merged stdout and stderr arrival order in the offloaded artifact', async () => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-bash-merged-offload-'));
+  const cwd = createTempWorkspace();
+  const toolResultStore = createToolResultStore({cwd, rootDir});
+  const script = [
+    "process.stdout.write('out1\\n');",
+    "setTimeout(() => process.stderr.write('err1\\n'), 20);",
+    "setTimeout(() => process.stdout.write('out2\\n'), 40);",
+    'setTimeout(() => process.exit(0), 60);'
+  ].join('');
+  const result = await runBashCommand({
+    command: `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`,
+    cwd,
+    maxOutputBytes: 5,
+    toolResultStore
+  });
+
+  assert.equal(result.truncated, true);
+  assert.equal(fs.readFileSync(result.offloadFilePath, 'utf8'), 'out1\nerr1\nout2\n');
+});
+
+test('bash runner finalizes overflow artifacts after timeout and interruption', async () => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-bash-stop-offload-'));
+  const cwd = createTempWorkspace();
+  const toolResultStore = createToolResultStore({cwd, rootDir});
+  const script = "process.stdout.write('123456789'); setInterval(() => {}, 1000);";
+  const timedOut = await runBashCommand({
+    command: `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`,
+    cwd,
+    maxOutputBytes: 5,
+    timeoutMs: 100,
+    toolResultStore
+  });
+  const controller = new AbortController();
+  const interruptedPromise = runBashCommand({
+    abortSignal: controller.signal,
+    command: `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`,
+    cwd,
+    maxOutputBytes: 5,
+    onOutput() {
+      controller.abort();
+    },
+    toolResultStore
+  });
+
+  const interrupted = await interruptedPromise;
+
+  assert.equal(timedOut.timedOut, true);
+  assert.equal(fs.readFileSync(timedOut.offloadFilePath, 'utf8'), '123456789');
+  assert.equal(interrupted.error, 'Command interrupted');
+  assert.equal(fs.readFileSync(interrupted.offloadFilePath, 'utf8'), '123456789');
+});
+
+test('bash offloading failure keeps a bounded tail without an invalid path', async () => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-bash-offload-failure-'));
+  const blockingFile = path.join(rootDir, 'blocked');
+  fs.writeFileSync(blockingFile, 'block', 'utf8');
+  const toolResultStore = createToolResultStore({cwd: process.cwd(), rootDir: blockingFile});
+  const executor = createToolExecutor(createToolRegistry([createBashToolHandler({
+    cwd: process.cwd(),
+    maxOutputBytes: 5,
+    toolResultStore
+  })]));
+  const result = await executor.execute(createCall({argumentsText: JSON.stringify({command: 'printf 123456789'})}));
+
+  assert.equal(result.details.truncated, true);
+  assert.match(result.text, /stdout:\n56789/);
+  assert.match(result.text, /Output was truncated/);
+  assert.doesNotMatch(result.text, /\[tool result truncated:/);
 });
 
 test('read_files reads a text file with line pagination metadata', async () => {
@@ -1297,9 +1436,11 @@ test('read_files rejects oversized images without creating partial attachments',
 
 test('read_files extracts PDF text without exposing binary or attachments', async () => {
   const cwd = createTempWorkspace();
+  const rootDir = createTempWorkspace();
   const pdfBytes = createPdfFixture('Hello PDF World');
   fs.writeFileSync(path.join(cwd, 'doc.pdf'), pdfBytes);
-  const executor = createToolExecutor(createToolRegistry([createReadFilesToolHandler({ cwd })]));
+  const toolResultStore = createToolResultStore({ cwd, rootDir });
+  const executor = createToolExecutor(createToolRegistry([createReadFilesToolHandler({ cwd, toolResultStore })]));
   const result = await executor.execute(createReadFilesCall([{ path: 'doc.pdf' }]));
 
   assert.equal(result.ok, true);
@@ -1314,6 +1455,91 @@ test('read_files extracts PDF text without exposing binary or attachments', asyn
   assert.match(result.text, /extracted_text:\n```\nHello PDF World\n```/);
   assert.doesNotMatch(result.text, /%PDF-1\.4/);
   assert.doesNotMatch(result.text, new RegExp(pdfBytes.toString('base64').slice(0, 16)));
+  assert.equal(fs.existsSync(path.join(rootDir, 'projects')), false);
+});
+
+test('read_files defaults PDF previews to 64 KiB without changing its general output cap', () => {
+  assert.equal(DEFAULT_MAX_PDF_OUTPUT_BYTES, 65_536);
+  assert.equal(DEFAULT_READ_FILES_MAX_TOTAL_OUTPUT_BYTES, 256_000);
+});
+
+test('read_files offloads oversized PDF formatted text and supports exact artifact rereads', async () => {
+  const rootDir = createTempWorkspace();
+  const cwd = path.join(rootDir, 'workspace');
+  const pdfItems = ['PDF_HEAD', ...Array.from({ length: 40 }, (_, index) => `item-${index}-${'x'.repeat(12)}`), 'PDF_TAIL'];
+  fs.mkdirSync(cwd);
+  fs.writeFileSync(path.join(cwd, 'large.pdf'), createPdfFixtureWithTextItems(pdfItems));
+
+  const baselineExecutor = createToolExecutor(createToolRegistry([createReadFilesToolHandler({
+    cwd,
+    maxTotalOutputBytes: 10_000
+  })]));
+  const baseline = await baselineExecutor.execute(createReadFilesCall([{ path: 'large.pdf' }]));
+  const toolResultStore = createToolResultStore({ cwd, rootDir });
+  const executor = createToolExecutor(createToolRegistry([createReadFilesToolHandler({
+    cwd,
+    maxPdfOutputBytes: 120,
+    toolResultStore
+  })]));
+  const result = await executor.execute(createReadFilesCall([{ path: 'large.pdf' }]));
+  const artifactPath = extractToolResultMarkerPath(result.text);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.details.truncated, true);
+  assert.match(result.text, /^--- pdf: large\.pdf\npages: 1\npages_with_text: 1/);
+  assert.equal(result.text.endsWith(`[tool result truncated: ${artifactPath}]`), true);
+  assert.doesNotMatch(result.text, /PDF_TAIL/);
+  assert.equal(fs.readFileSync(artifactPath, 'utf8'), baseline.text);
+
+  const reread = await baselineExecutor.execute(createReadFilesCall([{ path: artifactPath }]));
+  assert.equal(reread.ok, true);
+  assert.match(reread.text, /PDF_HEAD/);
+  assert.match(reread.text, /PDF_TAIL/);
+});
+
+test('read_files PDF offloading keeps UTF-8 preview boundaries intact', async () => {
+  const rootDir = createTempWorkspace();
+  const cwd = path.join(rootDir, 'workspace');
+  const toolResultStore = createToolResultStore({ cwd, rootDir });
+  fs.mkdirSync(cwd);
+  fs.writeFileSync(path.join(cwd, '你.pdf'), createPdfFixture('UTF8 boundary PDF text'));
+  const executor = createToolExecutor(createToolRegistry([createReadFilesToolHandler({
+    cwd,
+    maxPdfOutputBytes: 100,
+    maxTotalOutputBytes: 10,
+    toolResultStore
+  })]));
+  const result = await executor.execute(createReadFilesCall([{ path: '你.pdf' }]));
+  const artifactPath = extractToolResultMarkerPath(result.text);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.details.truncated, true);
+  assert.equal(result.text.startsWith('--- pdf: \n\n[tool result truncated: '), true);
+  assert.doesNotMatch(result.text, /\uFFFD/);
+  assert.match(fs.readFileSync(artifactPath, 'utf8'), /--- pdf: 你\.pdf/);
+});
+
+test('read_files PDF offloading failure falls back to a bounded head without changing success', async () => {
+  const rootDir = createTempWorkspace();
+  const cwd = path.join(rootDir, 'workspace');
+  const blockingFile = path.join(rootDir, 'not-a-directory');
+  fs.mkdirSync(cwd);
+  fs.writeFileSync(blockingFile, 'block', 'utf8');
+  fs.writeFileSync(path.join(cwd, 'large.pdf'), createPdfFixtureWithTextItems(['HEAD', ...Array.from({ length: 20 }, (_, index) => `item-${index}-${'x'.repeat(12)}`), 'TAIL']));
+  const toolResultStore = createToolResultStore({ cwd, rootDir: blockingFile });
+  const executor = createToolExecutor(createToolRegistry([createReadFilesToolHandler({
+    cwd,
+    maxPdfOutputBytes: 80,
+    toolResultStore
+  })]));
+  const result = await executor.execute(createReadFilesCall([{ path: 'large.pdf' }]));
+
+  assert.equal(result.ok, true);
+  assert.equal(result.details.truncated, true);
+  assert.match(result.text, /^--- pdf: large\.pdf\npages: 1/);
+  assert.match(result.text, /Output was truncated\.$/);
+  assert.doesNotMatch(result.text, /tool result truncated/);
+  assert.doesNotMatch(result.text, /_TAIL/);
 });
 
 test('read_files ignores PDF offset and limit without treating them as pages', async () => {
@@ -1412,6 +1638,10 @@ test('read_files reports empty line range without line zero', async () => {
   assert.match(result.text, /content:\n```\n```/);
   assert.doesNotMatch(result.text, /start_line:/);
   assert.doesNotMatch(result.text, /0 │/);
+});
+
+test('web_fetch defaults model-visible output to 64 KiB', () => {
+  assert.equal(DEFAULT_WEB_FETCH_MAX_TOTAL_OUTPUT_BYTES, 65_536);
 });
 
 test('web_fetch rejects invalid arguments and unsafe URLs', async () => {
@@ -1585,6 +1815,60 @@ test('web_fetch reports HTTP errors, timeout, body caps, output caps, and unsupp
   assert.doesNotMatch(imageResult.text, /PNG/);
   assert.equal(verboseResult.details.truncated, true);
   assert.match(verboseResult.text, /Output was truncated/);
+});
+
+test('web_fetch offloads the complete formatted result and keeps a UTF-8 head preview', async () => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-web-offload-'));
+  const toolResultStore = createToolResultStore({cwd: process.cwd(), rootDir});
+  const body = `开头\n${'你'.repeat(50)}\n结尾`;
+  const fetchFn = createFakeFetch({
+    'https://example.com/offload': {
+      body,
+      headers: {'content-type': 'text/plain'},
+      status: 200
+    }
+  });
+  const executor = createToolExecutor(createToolRegistry([createWebFetchToolHandler({
+    fetch: fetchFn,
+    maxResponseBytes: 1000,
+    maxTotalOutputBytes: 70,
+    toolResultStore
+  })]));
+  const result = await executor.execute(createWebFetchCall({url: 'https://example.com/offload'}));
+  const markerPath = result.text.match(/\[tool result truncated: ([^\]]+)\]$/)?.[1];
+  const artifact = fs.readFileSync(markerPath, 'utf8');
+
+  assert.equal(result.details.truncated, true);
+  assert.equal(result.text.startsWith('https://example.com/offload'), true);
+  assert.doesNotMatch(result.text, /\uFFFD/);
+  assert.doesNotMatch(result.text, /Output was truncated/);
+  assert.match(artifact, /^https:\/\/example\.com\/offload\nstatus: 200/);
+  assert.match(artifact, /结尾/);
+});
+
+test('web_fetch offloading failure falls back to the existing bounded head', async () => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-web-offload-failure-'));
+  const blockingFile = path.join(rootDir, 'blocked');
+  fs.writeFileSync(blockingFile, 'block', 'utf8');
+  const toolResultStore = createToolResultStore({cwd: process.cwd(), rootDir: blockingFile});
+  const fetchFn = createFakeFetch({
+    'https://example.com/offload-failure': {
+      body: 'x'.repeat(200),
+      headers: {'content-type': 'text/plain'},
+      status: 200
+    }
+  });
+  const executor = createToolExecutor(createToolRegistry([createWebFetchToolHandler({
+    fetch: fetchFn,
+    maxResponseBytes: 1000,
+    maxTotalOutputBytes: 60,
+    toolResultStore
+  })]));
+  const result = await executor.execute(createWebFetchCall({url: 'https://example.com/offload-failure'}));
+
+  assert.equal(result.details.truncated, true);
+  assert.match(result.text, /Output was truncated/);
+  assert.doesNotMatch(result.text, /\[tool result truncated:/);
 });
 
 test('web_fetch reports parent abort as cancellation without timeout', async () => {
