@@ -1,12 +1,16 @@
 import * as fs from 'node:fs';
 import path from 'node:path';
+import {REASONING_EFFORTS} from '../types/agent';
+
+import type {ReasoningEffort} from '../types/agent';
 
 const SKILL_STATE_FILE_NAME = 'skills.json';
-const SKILL_STATE_SCHEMA_VERSION = 2;
+const SKILL_STATE_SCHEMA_VERSION = 3;
 
 type SkillStateFile = {
   schemaVersion: number;
   disabled: string[];
+  effortOverrides: Record<string, ReasoningEffort>;
   modelOverrides: Record<string, string>;
 };
 
@@ -20,7 +24,7 @@ type SkillStateStoreOptions = {
 
 type SkillStateStore = {
   readState: (rootDir: string) => SkillStateFile;
-  writeState: (rootDir: string, state: Pick<SkillStateFile, 'disabled' | 'modelOverrides'>) => void;
+  writeState: (rootDir: string, state: Pick<SkillStateFile, 'disabled' | 'effortOverrides' | 'modelOverrides'>) => void;
 };
 
 /**
@@ -37,12 +41,15 @@ function createSkillStateStore(options: SkillStateStoreOptions = {}): SkillState
     readState(rootDir: string): SkillStateFile {
       return readSkillStateFile(path.join(rootDir, SKILL_STATE_FILE_NAME), readFile);
     },
-    writeState(rootDir: string, input: Pick<SkillStateFile, 'disabled' | 'modelOverrides'>): void {
+    writeState(rootDir: string, input: Pick<SkillStateFile, 'disabled' | 'effortOverrides' | 'modelOverrides'>): void {
       const targetPath = path.join(rootDir, SKILL_STATE_FILE_NAME);
       const tempPath = createTempPath(targetPath);
       const state: SkillStateFile = {
         schemaVersion: SKILL_STATE_SCHEMA_VERSION,
         disabled: [...new Set(input.disabled)].sort((left, right) => left.localeCompare(right)),
+        effortOverrides: Object.fromEntries(
+          Object.entries(input.effortOverrides).sort(([left], [right]) => left.localeCompare(right))
+        ),
         modelOverrides: Object.fromEntries(
           Object.entries(input.modelOverrides).sort(([left], [right]) => left.localeCompare(right))
         )
@@ -73,11 +80,13 @@ function readSkillStateFile(filePath: string, readFile: (filePath: string, encod
 
     const record = parsed as Record<string, unknown>;
     const disabled = normalizeDisabled(record.disabled);
+    const effortOverrides = normalizeEffortOverrides(record.effortOverrides);
     const modelOverrides = normalizeModelOverrides(record.modelOverrides);
 
     return {
       schemaVersion: SKILL_STATE_SCHEMA_VERSION,
       disabled,
+      effortOverrides,
       modelOverrides
     };
   } catch {
@@ -86,7 +95,7 @@ function readSkillStateFile(filePath: string, readFile: (filePath: string, encod
 }
 
 function createEmptySkillState(): SkillStateFile {
-  return {schemaVersion: SKILL_STATE_SCHEMA_VERSION, disabled: [], modelOverrides: {}};
+  return {schemaVersion: SKILL_STATE_SCHEMA_VERSION, disabled: [], effortOverrides: {}, modelOverrides: {}};
 }
 
 function normalizeDisabled(value: unknown): string[] {
@@ -114,6 +123,24 @@ function normalizeModelOverrides(value: unknown): Record<string, string> {
 
     if (normalizedSkillName && normalizedProfileId) {
       entries.push([normalizedSkillName, normalizedProfileId]);
+    }
+  }
+
+  return Object.fromEntries(entries);
+}
+
+function normalizeEffortOverrides(value: unknown): Record<string, ReasoningEffort> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {};
+  }
+
+  const entries: Array<[string, ReasoningEffort]> = [];
+
+  for (const [skillName, effort] of Object.entries(value)) {
+    const normalizedSkillName = skillName.trim();
+
+    if (normalizedSkillName && typeof effort === 'string' && (REASONING_EFFORTS as readonly string[]).includes(effort)) {
+      entries.push([normalizedSkillName, effort as ReasoningEffort]);
     }
   }
 

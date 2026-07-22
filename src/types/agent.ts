@@ -72,6 +72,7 @@ export type AgentSessionInput = {
   interactionMode?: InteractionMode;
   executionMode?: AgentExecutionMode;
   modelProfileId?: string;
+  reasoningEffortOverride?: ReasoningEffort;
 };
 
 export type AgentInstructionSourceKind = 'global' | 'project';

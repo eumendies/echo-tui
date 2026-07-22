@@ -25,7 +25,7 @@ import {ToolApprovalContext} from './state/tool-approval-context';
 import {UserQuestionContext} from './state/user-question-context';
 
 import {isShellInteractionMode} from '../types/agent';
-import type {RunAgent} from '../types/agent';
+import type {ReasoningEffort, RunAgent} from '../types/agent';
 import type {AppController} from '../types/app';
 import type {CommandSurface} from '../types/command';
 import type {DebugContext} from '../debug/debug-context';
@@ -230,6 +230,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     let userMetadata: Record<string, unknown> | undefined;
     let userAttachments: ToolResultAttachment[] | undefined;
     let modelProfileId: string | undefined;
+    let reasoningEffortOverride: ReasoningEffort | undefined;
 
     if (commandResult.kind === 'not_matched' && isShellInteractionMode(appContext.getInteractionMode())) {
       return submitShellCommand(userText);
@@ -240,6 +241,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
       displayText = commandResult.displayText;
       userMetadata = commandResult.metadata;
       modelProfileId = commandResult.modelProfileId;
+      reasoningEffortOverride = commandResult.reasoningEffortOverride;
     }
 
     const expanded = await expandFileMentionsForUserText(userText, appContext.getCurrentCwd());
@@ -266,6 +268,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
       displayText,
       metadata: userMetadata,
       modelProfileId,
+      reasoningEffortOverride,
       attachments: userAttachments,
       debug,
       appendRecord,

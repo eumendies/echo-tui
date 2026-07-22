@@ -1881,15 +1881,16 @@ test('renderFooterLayout renders skills command surface as cyan card', () => {
   const layout = renderFooterLayout({
     composer: createComposer('ignored'),
     commandSurface: {
+      activeField: 'effort',
       kind: 'skills',
       title: 'SKILLS',
       skills: [
         { name: 'code-review', description: 'Review code changes', sourceKind: 'project', sourcePath: '/skills/code-review/SKILL.md', enabled: true, modelLabel: '当前模型' },
-        { name: 'unit-test', description: 'Generate tests', sourceKind: 'user', sourcePath: '/skills/unit-test/SKILL.md', enabled: false, modelProfileId: 'fast', modelLabel: 'fast' }
+        { name: 'unit-test', description: 'Generate tests', sourceKind: 'user', sourcePath: '/skills/unit-test/SKILL.md', enabled: false, modelProfileId: 'fast', modelLabel: 'fast', reasoningEffortOverride: 'high' }
       ],
       selectedIndex: 1,
       emptyLines: [],
-      dismissHint: '←/→ 模型 (仅限slash调用) · Space 启停 · Enter 保存 · Esc 取消'
+      dismissHint: '当前字段 effort · Tab 切换 · ←/→ 调整 (仅限slash调用) · Space 启停 · Enter 保存 · Esc 取消'
     },
     pending: null,
     statusLine: DEFAULT_STATUS_LINE,
@@ -1902,15 +1903,16 @@ test('renderFooterLayout renders skills command surface as cyan card', () => {
   assert.ok(plainLines.some((line) => line.startsWith('╭') && line.includes('SKILLS') && line.includes('1/2 启用')));
   const currentModelLine = plainLines.find((line) => line.includes('● 启用') && line.includes('code-review'));
   const fixedModelLine = plainLines.find((line) => line.includes('▌') && line.includes('○ 停用') && line.includes('unit-test'));
-  assert.ok(currentModelLine.includes('当前模型') && currentModelLine.includes('project · Review code'));
+  assert.ok(currentModelLine.includes('当前模型') && currentModelLine.includes('模型默认') && currentModelLine.includes('project · Review code'));
   assert.ok(currentModelLine.indexOf('● 启用') < currentModelLine.indexOf('当前模型'));
   assert.ok(currentModelLine.indexOf('当前模型') < currentModelLine.indexOf('code-review'));
   assert.ok(!currentModelLine.includes('模型:'));
-  assert.ok(fixedModelLine.includes('fast'));
+  assert.ok(fixedModelLine.includes('fast') && fixedModelLine.includes('‹high›'));
+  assert.ok(layout.lines.some((line) => line.includes('\x1b[1m‹high›')));
   assert.ok(fixedModelLine.indexOf('○ 停用') < fixedModelLine.indexOf('fast'));
   assert.ok(fixedModelLine.indexOf('fast') < fixedModelLine.indexOf('unit-test'));
   assert.ok(!fixedModelLine.includes('模型:'));
-  assert.ok(plainLines.some((line) => line.includes('←/→ 模型') && line.includes('Space 启停') && line.includes('Enter 保存')));
+  assert.ok(plainLines.some((line) => line.includes('当前字段 effort') && line.includes('Tab 切换') && line.includes('←/→ 调整')));
   assert.ok(!plainLines.some((line) => line.includes('/ search') || line.includes('search skills')));
   assert.ok(!plainLines.some((line) => line.includes('a all') || line.includes('n none') || line.includes('j/k')));
   assert.ok(layout.lines.some((line) => line.includes('\x1b[38;2;') && stripAnsi(line).includes('SKILLS')));
@@ -1929,6 +1931,7 @@ test('renderFooterLayout renders skills surface overflow and empty state', () =>
   const overflow = renderFooterLayout({
     composer: createComposer('ignored'),
     commandSurface: {
+      activeField: 'effort',
       kind: 'skills',
       title: 'SKILLS',
       skills,
@@ -1968,6 +1971,7 @@ test('renderFooterLayout keeps skill state, name, and model policy on narrow ter
   const layout = renderFooterLayout({
     composer: createComposer('ignored'),
     commandSurface: {
+      activeField: 'effort',
       kind: 'skills',
       title: 'SKILLS',
       skills: [{
@@ -1977,7 +1981,8 @@ test('renderFooterLayout keeps skill state, name, and model policy on narrow ter
         sourcePath: '/skills/review/SKILL.md',
         enabled: false,
         modelProfileId: 'fast',
-        modelLabel: 'fast'
+        modelLabel: 'fast',
+        reasoningEffortOverride: 'high'
       }],
       selectedIndex: 0,
       dismissHint: '←/→ 模型 · Space 启停 · Enter 保存 · Esc 取消'
@@ -1990,6 +1995,7 @@ test('renderFooterLayout keeps skill state, name, and model policy on narrow ter
 
   assert.ok(skillLine.includes('○ 停用'));
   assert.ok(skillLine.includes('fast'));
+  assert.ok(skillLine.includes('‹high›'));
   assert.ok(skillLine.indexOf('○ 停用') < skillLine.indexOf('fast'));
   assert.ok(skillLine.indexOf('fast') < skillLine.indexOf('review'));
   assert.ok(!skillLine.includes('模型:'));
@@ -2000,6 +2006,7 @@ test('renderFooterLayout expands skills surface with the terminal width budget',
   const createLayout = (width) => renderFooterLayout({
     composer: createComposer('ignored'),
     commandSurface: {
+      activeField: 'model',
       kind: 'skills',
       title: 'SKILLS',
       skills: [{

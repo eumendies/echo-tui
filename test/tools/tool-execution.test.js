@@ -417,19 +417,21 @@ test('skill manager reads disabled state and saves by effective source root', ()
   fs.writeFileSync(path.join(userSkillsDir, 'skills.json'), JSON.stringify({
     schemaVersion: 2,
     disabled: [],
+    effortOverrides: {review: 'low', 'unit-test': 'none'},
     modelOverrides: {review: 'ignored-user-profile'}
   }), 'utf8');
   fs.writeFileSync(path.join(projectSkillsDir, 'skills.json'), JSON.stringify({
     schemaVersion: 2,
     disabled: ['review'],
+    effortOverrides: {review: 'high'},
     modelOverrides: {review: 'project-profile'}
   }), 'utf8');
 
   const manager = createSkillManager({ cwd, projectSkillsDir, userSkillsDir });
 
-  assert.deepEqual(manager.listSkills().map(({ name, enabled, sourceKind, modelProfileId }) => ({ name, enabled, sourceKind, modelProfileId })), [
-    { name: 'review', enabled: false, sourceKind: 'project', modelProfileId: 'project-profile' },
-    { name: 'unit-test', enabled: true, sourceKind: 'user', modelProfileId: undefined }
+  assert.deepEqual(manager.listSkills().map(({ name, enabled, sourceKind, modelProfileId, reasoningEffortOverride }) => ({ name, enabled, sourceKind, modelProfileId, reasoningEffortOverride })), [
+    { name: 'review', enabled: false, sourceKind: 'project', modelProfileId: 'project-profile', reasoningEffortOverride: 'high' },
+    { name: 'unit-test', enabled: true, sourceKind: 'user', modelProfileId: undefined, reasoningEffortOverride: 'none' }
   ]);
   assert.deepEqual(manager.listCatalog().map((skill) => skill.name), ['unit-test']);
   const disabled = manager.loadSkill('review');
@@ -437,17 +439,19 @@ test('skill manager reads disabled state and saves by effective source root', ()
   assert.equal(disabled.reason, 'disabled');
 
   manager.saveSkillStates(manager.listSkills().map((skill) => skill.name === 'review'
-    ? { ...skill, enabled: true, modelProfileId: undefined }
-    : { ...skill, enabled: false, modelProfileId: 'user-profile' }));
+    ? { ...skill, enabled: true, modelProfileId: undefined, reasoningEffortOverride: 'minimal' }
+    : { ...skill, enabled: false, modelProfileId: 'user-profile', reasoningEffortOverride: undefined }));
 
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(projectSkillsDir, 'skills.json'), 'utf8')), {
-    schemaVersion: 2,
+    schemaVersion: 3,
     disabled: [],
+    effortOverrides: {review: 'minimal'},
     modelOverrides: {}
   });
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(userSkillsDir, 'skills.json'), 'utf8')), {
-    schemaVersion: 2,
+    schemaVersion: 3,
     disabled: ['unit-test'],
+    effortOverrides: {},
     modelOverrides: {'unit-test': 'user-profile'}
   });
 });

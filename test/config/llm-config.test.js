@@ -283,6 +283,36 @@ test('readLlmConfig falls back to the configured current profile for a stale per
   assert.equal(config.model, 'gpt-deep');
 });
 
+test('readLlmConfig applies effort override after resolving the per-run model profile', () => {
+  const source = JSON.stringify({
+    llm: {
+      selectedModel: 'deep',
+      providers: {shared: {preset: OPENAI_PRESET, apiKey: 'shared-key'}},
+      models: [
+        {id: 'fast', provider: 'shared', model: 'gpt-fast', reasoning: {effort: 'low'}},
+        {id: 'deep', provider: 'shared', model: 'gpt-deep', reasoning: {effort: 'high'}}
+      ]
+    }
+  });
+  const fixed = readLlmConfig({
+    configPath: '/tmp/echo-config.json',
+    modelProfileId: 'fast',
+    reasoningEffortOverride: 'minimal',
+    readFile: readConfigFrom(source)
+  });
+  const staleModel = readLlmConfig({
+    configPath: '/tmp/echo-config.json',
+    modelProfileId: 'deleted-profile',
+    reasoningEffortOverride: 'none',
+    readFile: readConfigFrom(source)
+  });
+
+  assert.equal(fixed.model, 'gpt-fast');
+  assert.equal(fixed.reasoningEffort, 'minimal');
+  assert.equal(staleModel.model, 'gpt-deep');
+  assert.equal(staleModel.reasoningEffort, 'none');
+});
+
 test('readLlmConfig supports multiple provider configs', () => {
   const config = readLlmConfig({
     configPath: '/tmp/echo-config.json',

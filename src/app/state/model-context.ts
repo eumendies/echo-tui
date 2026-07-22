@@ -163,17 +163,25 @@ class ModelContext {
   /**
    * 解析显式 skill 调用实际使用的 status line 模型；无效 profile 按运行时规则回退当前全局模型。
    */
-  resolveSkillOverrideStatusLineModelState(modelProfileId: string): StatusLineModelState {
+  resolveSkillOverrideStatusLineModelState(options: {modelProfileId?: string; reasoningEffortOverride?: ReasoningEffort}): StatusLineModelState {
     this.refreshModelState();
-    const profile = this.models.find((model) => model.id === modelProfileId);
+    const profile = options.modelProfileId
+      ? this.models.find((model) => model.id === options.modelProfileId)
+      : undefined;
+    const baseState = profile
+      ? {
+          modelLabel: profile.model || profile.id,
+          ...(profile.reasoningEffort ? {reasoningEffort: profile.reasoningEffort} : {})
+        }
+      : this.getStatusLineModelState();
 
-    if (!profile) {
-      return this.getStatusLineModelState();
+    if (!profile && options.reasoningEffortOverride === undefined) {
+      return baseState;
     }
 
     return {
-      modelLabel: profile.model || profile.id,
-      ...(profile.reasoningEffort ? {reasoningEffort: profile.reasoningEffort} : {}),
+      ...baseState,
+      ...(options.reasoningEffortOverride !== undefined ? {reasoningEffort: options.reasoningEffortOverride} : {}),
       skillOverride: true
     };
   }
