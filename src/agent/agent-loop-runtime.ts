@@ -26,7 +26,7 @@ import {disabledDebugContext, hashValue, redactProviderConfig, summarizeText} fr
 
 import type {TokenUsageAnchor} from './context/context-compaction';
 
-import type {AgentCallbacks, AgentExecutionMode, AgentInstruction, AgentSessionInput, InteractionMode, LlmConfig, ProviderAgent, ProviderUsage, RunAgent, ToolApprovalDecision} from '../types/agent';
+import type {AgentCallbacks, AgentExecutionMode, AgentInstruction, AgentSessionInput, InteractionMode, LlmConfig, ProviderAgent, ProviderUsage, ReasoningEffort, RunAgent, ToolApprovalDecision} from '../types/agent';
 import type {DebugContext} from '../debug/debug-context';
 import type {LifecycleHookDispatcher} from '../types/hooks';
 import type {UsageStore} from '../types/usage';
@@ -288,8 +288,8 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
   /**
    * 初始化单次调用的 loop 状态；provider、配置和 registry 由统一装配入口提供。
    */
-  function initializeRunState(interactionMode: InteractionMode, abortSignal: AbortSignal | undefined, executionMode: AgentExecutionMode, modelProfileId?: string): AgentLoopRunState {
-    const {agent, config, registry} = prepareAgent({cwd, mcpManager, modelProfileId});
+  function initializeRunState(interactionMode: InteractionMode, abortSignal: AbortSignal | undefined, executionMode: AgentExecutionMode, modelProfileId?: string, reasoningEffortOverride?: ReasoningEffort): AgentLoopRunState {
+    const {agent, config, registry} = prepareAgent({cwd, mcpManager, modelProfileId, reasoningEffortOverride});
     const skillCatalog = registry.listSkillCatalog?.() || [];
     const systemPromptOverride = loadSystemPromptOverride({cwd});
 
@@ -325,7 +325,7 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
     let state: AgentLoopRunState;
 
     try {
-      state = initializeRunState(interactionMode, abortSignal, executionMode, session.modelProfileId);
+      state = initializeRunState(interactionMode, abortSignal, executionMode, session.modelProfileId, session.reasoningEffortOverride);
     } catch (error: unknown) {
       throw normalizeError(error, '无法加载 LLM 配置');
     }

@@ -546,6 +546,43 @@ test('AppContext falls back to the global status model for a missing skill profi
   });
 });
 
+test('AppContext applies skill effort independently from a fixed or stale model override', () => {
+  const config = {
+    llm: {
+      selectedModel: 'fast',
+      providers: {
+        openai: {preset: 'openai-responses-api', apiKey: 'sk-test-key'}
+      },
+      models: [
+        {id: 'fast', provider: 'openai', model: 'gpt-fast', reasoning: {effort: 'low'}},
+        {id: 'deep', provider: 'openai', model: 'gpt-deep', reasoning: {effort: 'high'}}
+      ]
+    }
+  };
+
+  withTemporaryModelConfig(config, () => {
+    const context = createContext();
+    const fixedTurn = context.beginAssistantTurn('deep', 'minimal');
+    const fixedStatus = context.createRenderState().statusLine;
+
+    assert.equal(fixedStatus.modelLabel, 'gpt-deep');
+    assert.equal(fixedStatus.reasoningEffort, 'minimal');
+    assert.equal(fixedStatus.skillOverride, true);
+    context.turnContext.clearAssistantTurnIfCurrent(fixedTurn);
+
+    const staleTurn = context.beginAssistantTurn('deleted-profile', 'none');
+    const staleStatus = context.createRenderState().statusLine;
+
+    assert.equal(staleStatus.modelLabel, 'gpt-fast');
+    assert.equal(staleStatus.reasoningEffort, 'none');
+    assert.equal(staleStatus.skillOverride, true);
+    context.turnContext.clearAssistantTurnIfCurrent(staleTurn);
+
+    assert.equal(context.createRenderState().statusLine.reasoningEffort, 'low');
+    assert.equal(context.createRenderState().statusLine.skillOverride, undefined);
+  });
+});
+
 test('AppContext status line reads cached model state without rereading user config', () => {
   const config = {
     llm: {

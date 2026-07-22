@@ -323,17 +323,33 @@ test('runAssistantTurn emits error hook while preserving error transcript behavi
   assert.equal(harness.appContext.turnContext.responding, false);
 });
 
-test('runAssistantTurn passes model override only to its current agent session across completion, failure, and interruption', async () => {
+test('runAssistantTurn passes model and effort overrides only to the current session across all outcomes', async () => {
   const harness = createHarness();
   const captured = [];
+  harness.appContext.modelContext = {
+    refreshModelState() {
+      return false;
+    },
+    getStatusLineModelState() {
+      return {modelLabel: 'global-model', reasoningEffort: 'low'};
+    },
+    resolveSkillOverrideStatusLineModelState({modelProfileId, reasoningEffortOverride}) {
+      return {
+        modelLabel: modelProfileId || 'global-model',
+        reasoningEffort: reasoningEffortOverride || 'low',
+        skillOverride: true
+      };
+    }
+  };
 
-  async function run(modelProfileId, outcome) {
+  async function run(modelProfileId, reasoningEffortOverride, outcome) {
     await runAssistantTurn({
       ...harness.input,
       userText: `${outcome}-${modelProfileId || 'current'}`,
       modelProfileId,
+      reasoningEffortOverride,
       async runAgent(session, callbacks) {
-        captured.push(session.modelProfileId);
+        captured.push([session.modelProfileId, session.reasoningEffortOverride]);
 
         if (outcome === 'error') {
           throw new Error('failed');
@@ -347,19 +363,22 @@ test('runAssistantTurn passes model override only to its current agent session a
         return 'done';
       }
     });
+    assert.equal(harness.appContext.createRenderState().statusLine.modelLabel, 'global-model');
+    assert.equal(harness.appContext.createRenderState().statusLine.reasoningEffort, 'low');
+    assert.equal(harness.appContext.createRenderState().statusLine.skillOverride, undefined);
   }
 
-  await run('fixed-complete', 'complete');
-  await run(undefined, 'complete');
-  await run('fixed-error', 'error');
-  await run(undefined, 'complete');
-  await run('fixed-abort', 'abort');
-  await run(undefined, 'complete');
+  await run('fixed-complete', 'high', 'complete');
+  await run(undefined, undefined, 'complete');
+  await run('fixed-error', 'none', 'error');
+  await run(undefined, undefined, 'complete');
+  await run('fixed-abort', 'minimal', 'abort');
+  await run(undefined, undefined, 'complete');
 
   assert.deepEqual(captured, [
-    'fixed-complete', undefined,
-    'fixed-error', undefined,
-    'fixed-abort', undefined
+    ['fixed-complete', 'high'], [undefined, undefined],
+    ['fixed-error', 'none'], [undefined, undefined],
+    ['fixed-abort', 'minimal'], [undefined, undefined]
   ]);
 });
 
@@ -374,13 +393,14 @@ test('runAssistantTurn emits a local model-switch notice and restores the global
       return {modelLabel: 'gpt-global'};
     },
     resolveSkillOverrideStatusLineModelState() {
-      return {modelLabel: 'claude-sonnet-4-6', skillOverride: true};
+      return {modelLabel: 'claude-sonnet-4-6', reasoningEffort: 'high', skillOverride: true};
     }
   };
 
   await runAssistantTurn({
     ...harness.input,
     modelProfileId: 'skill-model',
+    reasoningEffortOverride: 'high',
     renderFooter() {
       renderedModels.push(harness.appContext.createRenderState().statusLine);
     },
@@ -392,11 +412,12 @@ test('runAssistantTurn emits a local model-switch notice and restores the global
   });
 
   assert.equal(renderedModels[0].modelLabel, 'claude-sonnet-4-6');
+  assert.equal(renderedModels[0].reasoningEffort, 'high');
   assert.equal(renderedModels[0].skillOverride, true);
   assert.equal(renderedModels.at(-1).modelLabel, 'gpt-global');
   assert.equal(renderedModels.at(-1).skillOverride, undefined);
   assert.deepEqual(harness.appended.map((record) => record.role), ['user', 'local_notice', 'assistant']);
-  assert.equal(harness.appended[1].text, '已切换到 claude-sonnet-4-6 执行当前 skill。');
+  assert.equal(harness.appended[1].text, '当前 skill 本轮使用 claude-sonnet-4-6，effort high。');
   assert.equal(harness.appContext.transcriptContext.records[1].role, 'local_notice');
 });
 
@@ -424,4 +445,34 @@ test('runAssistantTurn does not emit a model-switch notice when a stale override
   });
 
   assert.deepEqual(harness.appended.map((record) => record.role), ['user', 'assistant']);
+});
+
+test('runAssistantTurn emits one notice for an effort-only override after stale model fallback', async () => {
+  const harness = createHarness();
+  harness.appContext.modelContext = {
+    refreshModelState() {
+      return false;
+    },
+    getStatusLineModelState() {
+      return {modelLabel: 'gpt-global', reasoningEffort: 'low'};
+    },
+    resolveSkillOverrideStatusLineModelState({reasoningEffortOverride}) {
+      return {modelLabel: 'gpt-global', reasoningEffort: reasoningEffortOverride, skillOverride: true};
+    }
+  };
+
+  await runAssistantTurn({
+    ...harness.input,
+    modelProfileId: 'deleted-profile',
+    reasoningEffortOverride: 'none',
+    async runAgent(_session, callbacks) {
+      callbacks.onModelResolved({model: 'gpt-global', reasoningEffort: 'none'});
+      callbacks.onComplete('done');
+      return 'done';
+    }
+  });
+
+  assert.deepEqual(harness.appended.map((record) => record.role), ['user', 'local_notice', 'assistant']);
+  assert.equal(harness.appended[1].text, '当前 skill 本轮使用 gpt-global，effort none。');
+  assert.equal(harness.appContext.createRenderState().statusLine.skillOverride, undefined);
 });

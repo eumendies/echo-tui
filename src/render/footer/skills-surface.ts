@@ -2,12 +2,14 @@ import * as ansi from '../../terminal/ansi';
 import { displayWidth, safeRenderWidth } from '../layout';
 import { activeBackground, renderFocusBar, resolveFooterTheme, tokenText, type FooterTheme } from '../colors';
 import { clampPlainText, padVisibleText } from './text';
-import type { CommandSkillSurfaceInfo, SkillsCommandSurface } from '../../types/command';
+import type { CommandSkillSurfaceInfo, SkillsCommandActiveField, SkillsCommandSurface } from '../../types/command';
 import type { FooterLayout } from '../../types/render';
 
 const WIDE_BOX_HORIZONTAL_MARGIN = 4;
 const SKILLS_MAX_VISIBLE = 8;
 const MODEL_LABEL_MAX_WIDTH = 32;
+const EFFORT_LABEL_MAX_WIDTH = 12;
+const DEFAULT_EFFORT_LABEL = '模型默认';
 
 /**
  * 渲染 skills 管理面板；renderer 只投影 session 快照，启停和模型策略保存由命令 handler 完成。
@@ -69,7 +71,7 @@ function renderSkillContent(commandSurface: SkillsCommandSurface, selectedIndex:
   }
 
   for (let index = start; index < end; index += 1) {
-    rows.push(renderSkillRow(skills[index], index === selectedIndex, contentWidth, theme));
+    rows.push(renderSkillRow(skills[index], index === selectedIndex, commandSurface.activeField || 'model', contentWidth, theme));
   }
 
   if (end < skills.length) {
@@ -82,19 +84,23 @@ function renderSkillContent(commandSurface: SkillsCommandSurface, selectedIndex:
 /**
  * 渲染单个 skill 行，选中态使用左侧 accent 和柔和背景强调。
  */
-function renderSkillRow(skill: CommandSkillSurfaceInfo, active: boolean, contentWidth: number, theme: FooterTheme): string {
+function renderSkillRow(skill: CommandSkillSurfaceInfo, active: boolean, activeField: SkillsCommandActiveField, contentWidth: number, theme: FooterTheme): string {
   const rowContentWidth = Math.max(1, contentWidth - 1);
   const pill = renderPill(skill.enabled, theme);
   const nameToken = active ? 'accentStrong' : skill.enabled ? 'accent' : 'muted';
-  const textBudget = Math.max(1, rowContentWidth - displayWidth(` ${pill}  `));
-  const modelText = skill.modelLabel;
-  const modelBudget = Math.max(1, Math.min(MODEL_LABEL_MAX_WIDTH, Math.floor(textBudget * 0.45)));
-  const nameBudget = Math.max(1, Math.min(24, textBudget - modelBudget - 2));
+  const textBudget = Math.max(3, rowContentWidth - displayWidth(` ${pill}  `));
+  const contentBudget = Math.max(3, textBudget - 4);
+  const nameBudget = Math.max(1, Math.min(24, Math.floor(contentBudget * 0.36)));
+  const policyBudget = Math.max(2, contentBudget - nameBudget);
+  const effortRatio = activeField === 'effort' ? 0.55 : 0.35;
+  const effortBudget = Math.max(1, Math.min(EFFORT_LABEL_MAX_WIDTH, Math.floor(policyBudget * effortRatio)));
+  const modelBudget = Math.max(1, Math.min(MODEL_LABEL_MAX_WIDTH, policyBudget - effortBudget));
   const nameText = clampPlainText(skill.name, nameBudget);
   const name = `${tokenText(theme, nameToken, active ? ansi.bold(nameText) : nameText)}`;
-  const model = tokenText(theme, skill.modelProfileId ? 'accent' : 'muted', clampPlainText(modelText, modelBudget));
+  const model = renderPolicyValue(skill.modelLabel, modelBudget, Boolean(skill.modelProfileId), active && activeField === 'model', theme);
+  const effort = renderPolicyValue(skill.reasoningEffortOverride ?? DEFAULT_EFFORT_LABEL, effortBudget, skill.reasoningEffortOverride !== undefined, active && activeField === 'effort', theme);
   const description = `${skill.sourceKind} · ${skill.description}`;
-  const prefix = `${pill}  ${model}  ${name}`;
+  const prefix = `${pill}  ${model}  ${effort}  ${name}`;
   const descriptionWidth = rowContentWidth - displayWidth(` ${prefix}  `);
   const renderedDescription = descriptionWidth > 0 ? `  ${ansi.dim(clampPlainText(description, descriptionWidth))}` : '';
   const body = padVisibleText(` ${prefix}${renderedDescription}`, rowContentWidth);
@@ -106,6 +112,21 @@ function renderSkillRow(skill: CommandSkillSurfaceInfo, active: boolean, content
   const accent = renderFocusBar(theme);
   const activeBody = activeBackground(theme, body);
   return renderLine(`${accent}${activeBody}`, contentWidth, theme);
+}
+
+/**
+ * 渲染 skill 行内策略值；选中行的活动字段使用更强样式，缺省动态策略保持弱化。
+ */
+function renderPolicyValue(label: string, width: number, fixed: boolean, focused: boolean, theme: FooterTheme): string {
+  if (focused) {
+    const text = width >= 3
+      ? `‹${clampPlainText(label, width - 2)}›`
+      : clampPlainText(label, width);
+    return tokenText(theme, 'accentStrong', ansi.bold(text));
+  }
+
+  const text = clampPlainText(label, width);
+  return tokenText(theme, fixed ? 'accent' : 'muted', text);
 }
 
 /**

@@ -10,7 +10,7 @@ import {createDiffSourceResult} from '../diff/source';
 import {DEFAULT_TUI_THEME, type TuiTheme} from '../../config/theme-config';
 
 import type {TerminalController} from '../../types/app';
-import type {AgentSessionInput, ContextUsage, InteractionMode} from '../../types/agent';
+import type {AgentSessionInput, ContextUsage, InteractionMode, ReasoningEffort} from '../../types/agent';
 import type {DiffSourceResult} from '../../types/diff';
 import type {CommandSurface, SlashCommandDescriptor} from '../../types/command';
 import type {InputEvent} from '../../types/input';
@@ -444,9 +444,9 @@ class AppContext {
   /**
    * 创建当前 assistant turn 句柄，主流程只使用句柄绑定回调和 agent signal。
    */
-  beginAssistantTurn(modelProfileId?: string): AssistantTurnHandle {
-    const statusLineModel = modelProfileId
-      ? this.modelContext.resolveSkillOverrideStatusLineModelState(modelProfileId)
+  beginAssistantTurn(modelProfileId?: string, reasoningEffortOverride?: ReasoningEffort): AssistantTurnHandle {
+    const statusLineModel = modelProfileId || reasoningEffortOverride
+      ? this.modelContext.resolveSkillOverrideStatusLineModelState({modelProfileId, reasoningEffortOverride})
       : this.modelContext.getStatusLineModelState();
 
     return this.turnContext.beginAssistantTurn(statusLineModel);

@@ -575,6 +575,7 @@ function readLlmModelConfigInfo(options: ReadLlmConfigOptions = {}): LlmModelCon
 type ReadLlmConfigOptions = {
   configPath?: string;
   modelProfileId?: string;
+  reasoningEffortOverride?: ReasoningEffort;
   readFile?: (filePath: string, encoding: BufferEncoding) => string;
 };
 
@@ -596,11 +597,12 @@ function readLlmConfig(options: ReadLlmConfigOptions = {}): LlmConfig {
 
   const selectedProfile = resolveSelectedProfile(llmConfig, models, options.modelProfileId);
   const providerConfig = resolveSelectedProviderConfig(selectedProfile, providers);
+  const reasoningEffort = options.reasoningEffortOverride ?? selectedProfile.reasoningEffort;
 
   return {
     ...providerConfig,
     model: selectedProfile.model,
-    ...(selectedProfile.reasoningEffort ? {reasoningEffort: selectedProfile.reasoningEffort} : {}),
+    ...(reasoningEffort ? {reasoningEffort} : {}),
     ...(selectedProfile.reasoningSummary ? {reasoningSummary: selectedProfile.reasoningSummary} : {}),
     contextWindow: selectedProfile.contextWindow,
     tools: readToolRuntimeConfig(rootConfig)

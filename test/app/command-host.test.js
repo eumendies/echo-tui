@@ -210,7 +210,7 @@ test('CommandHost memory facade persists user memories without exposing filesyst
   });
 });
 
-test('CommandHost skill invocation exposes the effective root model override separately from metadata', () => {
+test('CommandHost skill invocation exposes effective root model and effort overrides separately from metadata', () => {
   withTemporaryUserConfig(JSON.stringify({}), ({configPath}) => {
     const homeDir = path.dirname(path.dirname(configPath));
     const cwd = path.join(homeDir, 'project');
@@ -218,6 +218,7 @@ test('CommandHost skill invocation exposes the effective root model override sep
     fs.writeFileSync(path.join(rootDir, 'skills.json'), JSON.stringify({
       schemaVersion: 2,
       disabled: [],
+      effortOverrides: {review: 'none'},
       modelOverrides: {review: 'review-profile'}
     }), 'utf8');
     const {host} = createHostHarness({cwd});
@@ -225,7 +226,9 @@ test('CommandHost skill invocation exposes the effective root model override sep
 
     assert.equal(result.ok, true);
     assert.equal(result.modelProfileId, 'review-profile');
+    assert.equal(result.reasoningEffortOverride, 'none');
     assert.equal('modelProfileId' in result.metadata.skillInvocation, false);
+    assert.equal('reasoningEffortOverride' in result.metadata.skillInvocation, false);
     assert.match(result.text, /\[Skill Invocation\]/);
     assert.match(result.text, /\[User Request\]\nsrc\/foo\.ts/);
   });

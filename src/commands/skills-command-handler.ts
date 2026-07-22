@@ -7,11 +7,16 @@ import type {
   CommandSkillInfo,
   CommandSkillSurfaceInfo,
   CommandModelProfile,
+  SkillsCommandActiveField,
   SkillsCommandSurface
 } from '../types/command';
 import type {InputEvent} from '../types/input';
+import type {ReasoningEffort} from '../types/agent';
+
+import {REASONING_EFFORTS} from '../types/agent';
 
 type SkillsManageData = {
+  activeField: SkillsCommandActiveField;
   modelOptions: SkillModelOption[];
   selectedIndex: number;
   skills: CommandSkillSurfaceInfo[];
@@ -23,10 +28,12 @@ type SkillModelOption = {
 };
 
 const CURRENT_MODEL_LABEL = '当前模型';
+const EFFORT_OPTIONS: readonly (ReasoningEffort | undefined)[] = [undefined, ...REASONING_EFFORTS];
 
 function createSkillsSurface(data: SkillsManageData): SkillsCommandSurface {
   return {
     kind: 'skills',
+    activeField: data.activeField,
     title: 'SKILLS',
     skills: data.skills,
     selectedIndex: data.selectedIndex,
@@ -35,7 +42,7 @@ function createSkillsSurface(data: SkillsManageData): SkillsCommandSurface {
       '项目级目录：.echo/skills/<name>/SKILL.md',
       '用户级目录：~/.echo/skills/<name>/SKILL.md'
     ],
-    dismissHint: '←/→ 模型 (仅限slash调用) · Space 启停 · Enter 保存 · Esc 取消'
+    dismissHint: `当前字段 ${data.activeField === 'model' ? '模型' : 'effort'} · Tab 切换 · ←/→ 调整 (仅限slash调用) · Space 启停 · Enter 保存 · Esc 取消`
   };
 }
 
@@ -44,6 +51,7 @@ function normalizeSkillsManageData(source: SkillsManageData): SkillsManageData {
   const selectedIndex = Math.min(Math.max(0, source.selectedIndex), maxIndex);
 
   return {
+    activeField: source.activeField,
     modelOptions: source.modelOptions.map((option) => ({...option})),
     selectedIndex,
     skills: source.skills.map((skill) => ({...skill}))
@@ -74,6 +82,7 @@ function createSkillsManageData(skills: CommandSkillInfo[], modelOptions: SkillM
   const validProfileIds = new Set(modelOptions.flatMap((option) => option.modelProfileId ? [option.modelProfileId] : []));
 
   return normalizeSkillsManageData({
+    activeField: 'model',
     modelOptions,
     selectedIndex: 0,
     skills: skills.map((skill) => {
@@ -84,6 +93,25 @@ function createSkillsManageData(skills: CommandSkillInfo[], modelOptions: SkillM
 
       return {...skill, modelProfileId, modelLabel};
     })
+  });
+}
+
+function cycleSelectedSkillEffort(data: SkillsManageData, direction: number): SkillsManageData {
+  const selectedSkill = data.skills[data.selectedIndex];
+
+  if (!selectedSkill) {
+    return data;
+  }
+
+  const currentIndex = Math.max(0, EFFORT_OPTIONS.indexOf(selectedSkill.reasoningEffortOverride));
+  const nextIndex = (currentIndex + direction + EFFORT_OPTIONS.length) % EFFORT_OPTIONS.length;
+  const nextEffort = EFFORT_OPTIONS[nextIndex];
+
+  return normalizeSkillsManageData({
+    ...data,
+    skills: data.skills.map((skill, index) => index === data.selectedIndex
+      ? {...skill, reasoningEffortOverride: nextEffort}
+      : skill)
   });
 }
 
@@ -147,11 +175,22 @@ export class SkillsCommandHandler implements CommandHandler<SkillsManageData> {
 
     if (event.type === INPUT_EVENTS.MOVE_LEFT || event.type === INPUT_EVENTS.MOVE_RIGHT) {
       const direction = event.type === INPUT_EVENTS.MOVE_LEFT ? -1 : 1;
-      const nextData = cycleSelectedSkillModel(data, direction);
+      const nextData = data.activeField === 'model'
+        ? cycleSelectedSkillModel(data, direction)
+        : cycleSelectedSkillEffort(data, direction);
 
       if (nextData !== data) {
         host.session.update({surface: createSkillsSurface(nextData), data: nextData});
       }
+      return;
+    }
+
+    if (event.type === INPUT_EVENTS.TAB || event.type === INPUT_EVENTS.SHIFT_TAB) {
+      const nextData = normalizeSkillsManageData({
+        ...data,
+        activeField: data.activeField === 'model' ? 'effort' : 'model'
+      });
+      host.session.update({surface: createSkillsSurface(nextData), data: nextData});
       return;
     }
 

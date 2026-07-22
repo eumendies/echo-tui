@@ -1,7 +1,7 @@
 import {isAbortError} from '../types/agent';
 import {summarizeText} from '../debug/debug-context';
 
-import type {AgentCallbacks, RunAgent} from '../types/agent';
+import type {AgentCallbacks, ReasoningEffort, RunAgent} from '../types/agent';
 import type {DebugContext} from '../debug/debug-context';
 import type {LifecycleHookDispatcher} from '../types/hooks';
 import type {ToolResultAttachment} from '../types/tool';
@@ -19,6 +19,7 @@ type AssistantTurnRunnerInput = {
   displayText?: string;
   metadata?: UserTranscriptMetadata;
   modelProfileId?: string;
+  reasoningEffortOverride?: ReasoningEffort;
   attachments?: ToolResultAttachment[];
   debug: DebugContext;
   appendRecord: (record: TranscriptRecord) => void;
@@ -41,6 +42,7 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
     displayText,
     metadata,
     modelProfileId,
+    reasoningEffortOverride,
     attachments,
     debug,
     appendRecord,
@@ -57,17 +59,18 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
     attachments
   });
   // thinking 和 streaming 都只进入 pending preview，完成或 partial 失败后才正式追加 assistant block。
-  const turn = appContext.beginAssistantTurn(modelProfileId);
+  const turn = appContext.beginAssistantTurn(modelProfileId, reasoningEffortOverride);
   const isCurrentTurn = () => appContext.turnContext.isCurrentAssistantTurn(turn);
   appContext.turnContext.startSpinner('thinking');
   appendRecord(userRecord);
   const activeStatusLineModel = appContext.turnContext.getActiveStatusLineModelState();
-  const skillOverrideModelLabel = activeStatusLineModel?.skillOverride ? activeStatusLineModel.modelLabel : undefined;
+  const hasSkillOverride = Boolean(activeStatusLineModel?.skillOverride);
 
-  if (skillOverrideModelLabel) {
+  if (activeStatusLineModel && hasSkillOverride) {
+    const effortText = activeStatusLineModel.reasoningEffort ? `，effort ${activeStatusLineModel.reasoningEffort}` : '';
     appendRecord(appContext.transcriptContext.appendRecord({
       role: 'local_notice',
-      text: `已切换到 ${skillOverrideModelLabel} 执行当前 skill。`
+      text: `当前 skill 本轮使用 ${activeStatusLineModel.modelLabel}${effortText}。`
     }));
   }
   debug.emit('assistant_turn_start', {
@@ -81,7 +84,7 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
   });
 
   try {
-    await runAgent({...appContext.getAgentSession(), abortSignal: turn.abortSignal, modelProfileId}, {
+    await runAgent({...appContext.getAgentSession(), abortSignal: turn.abortSignal, modelProfileId, reasoningEffortOverride}, {
       changeRecorder: appContext.changeHistoryContext.createRecorder(),
       onModelResolved(model) {
         if (!isCurrentTurn()) {
@@ -91,7 +94,7 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
         appContext.turnContext.setActiveStatusLineModelState(turn, {
           modelLabel: model.model,
           ...(model.reasoningEffort ? {reasoningEffort: model.reasoningEffort} : {}),
-          ...(skillOverrideModelLabel ? {skillOverride: true} : {})
+          ...(hasSkillOverride ? {skillOverride: true} : {})
         });
         renderFooter();
       },

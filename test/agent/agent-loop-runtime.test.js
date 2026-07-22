@@ -33,7 +33,9 @@ async function withPatchedAgentRuntime(agentOrFactory, callback, config = TEST_C
   const originalPrepareAgent = agentSetupModule.prepareAgent;
 
   agentSetupModule.prepareAgent = (options = {}) => {
-    const resolvedConfig = typeof config === 'function' ? config({modelProfileId: options.modelProfileId}) : config;
+    const resolvedConfig = typeof config === 'function'
+      ? config({modelProfileId: options.modelProfileId, reasoningEffortOverride: options.reasoningEffortOverride})
+      : config;
     const baseRegistry = createDefaultToolRegistry(resolvedConfig, options.cwd);
     const registry = options.mcpManager
       ? mergeToolRegistries(baseRegistry, createMcpToolRegistry(options.mcpManager))
@@ -611,14 +613,15 @@ test('createAgentLoopRuntime uses one overridden config for provider, context, u
         usageEvents.push(event);
       }
     });
-    await runtime({records: [{role: 'user', text: 'work'}], modelProfileId: 'override-profile'}, {
+    await runtime({records: [{role: 'user', text: 'work'}], modelProfileId: 'override-profile', reasoningEffortOverride: 'high'}, {
       onContextUsage(usage) {
         contextUsages.push(usage);
       }
     });
   }, (options) => {
     assert.equal(options.modelProfileId, 'override-profile');
-    return overrideConfig;
+    assert.equal(options.reasoningEffortOverride, 'high');
+    return {...overrideConfig, reasoningEffort: options.reasoningEffortOverride};
   });
 
   assert.equal(initialized.length, 1);
@@ -665,11 +668,12 @@ test('autonomous use_skill keeps the model initialized for normal and slash over
   fs.writeFileSync(path.join(cwd, '.echo', 'skills', 'skills.json'), JSON.stringify({
     schemaVersion: 2,
     disabled: [],
+    effortOverrides: {'loaded-skill': 'high'},
     modelOverrides: {'loaded-skill': 'different-profile'}
   }), 'utf8');
 
   const createAgent = (config) => {
-    initializedModels.push(config.model);
+    initializedModels.push([config.model, config.reasoningEffort]);
 
     return {
       async runTurn() {
@@ -687,17 +691,21 @@ test('autonomous use_skill keeps the model initialized for normal and slash over
       const callbacks = {onToolResult(result) { toolResults.push(result); }};
 
       await runtime({records: [{role: 'user', text: 'normal'}]}, callbacks);
-      await runtime({records: [{role: 'user', text: 'slash'}], modelProfileId: 'slash-profile'}, callbacks);
+      await runtime({records: [{role: 'user', text: 'slash'}], modelProfileId: 'slash-profile', reasoningEffortOverride: 'low'}, callbacks);
     }, (options) => {
-      configOptions.push(options.modelProfileId);
-      return {...TEST_CONFIG, model: options.modelProfileId === 'slash-profile' ? 'slash-model' : 'current-model'};
+      configOptions.push([options.modelProfileId, options.reasoningEffortOverride]);
+      return {
+        ...TEST_CONFIG,
+        model: options.modelProfileId === 'slash-profile' ? 'slash-model' : 'current-model',
+        ...(options.reasoningEffortOverride ? {reasoningEffort: options.reasoningEffortOverride} : {})
+      };
     });
   } finally {
     fs.rmSync(cwd, {recursive: true, force: true});
   }
 
-  assert.deepEqual(configOptions, [undefined, 'slash-profile']);
-  assert.deepEqual(initializedModels, ['current-model', 'slash-model']);
+  assert.deepEqual(configOptions, [[undefined, undefined], ['slash-profile', 'low']]);
+  assert.deepEqual(initializedModels, [['current-model', undefined], ['slash-model', 'low']]);
   assert.equal(toolResults.length, 2);
   assert.equal(toolResults.every((result) => result.ok), true);
 });

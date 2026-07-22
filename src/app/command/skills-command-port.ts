@@ -48,6 +48,7 @@ function createSkillsCommandPort(options: SkillsCommandPortOptions): CommandHost
         ok: true as const,
         text: lines.join('\n'),
         ...(result.modelProfileId ? {modelProfileId: result.modelProfileId} : {}),
+        ...(result.reasoningEffortOverride ? {reasoningEffortOverride: result.reasoningEffortOverride} : {}),
         metadata: {
           skillInvocation: {
             source: 'slash',
