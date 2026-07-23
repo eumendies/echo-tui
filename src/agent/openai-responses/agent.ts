@@ -54,7 +54,10 @@ type ResponseClient = {
 
 const OPENAI_MAX_RETRIES = 3;
 const RESPONSE_STREAM_RETRY_DELAY_MS = 100;
-const RETRYABLE_PROCESSING_ERROR_TEXT = 'An error occurred while processing your request. You can retry your request';
+const RETRYABLE_RESPONSE_STREAM_ERROR_TEXTS = [
+  'An error occurred while processing your request. You can retry your request',
+  'Our servers are currently overloaded. Please try again later'
+];
 
 class RetryableResponseStreamError extends LlmAgentError {}
 
@@ -217,9 +220,11 @@ function readResponseErrorMessage(value: unknown): string | null {
 }
 
 function isRetryableResponseStreamError(error: unknown): boolean {
+  const message = readResponseErrorMessage(error);
+
   return error instanceof RetryableResponseStreamError ||
     readResponseErrorCode(error) === 'server_error' ||
-    readResponseErrorMessage(error)?.includes(RETRYABLE_PROCESSING_ERROR_TEXT) === true;
+    (message !== null && RETRYABLE_RESPONSE_STREAM_ERROR_TEXTS.some((text) => message.includes(text)));
 }
 
 function summarizeFailureEvent(event: unknown): string {
