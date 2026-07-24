@@ -3,7 +3,7 @@ import path from 'node:path';
 import type {TerminalController} from '../../types/app';
 import type {CommandSurface} from '../../types/command';
 import type {InteractionMode} from '../../types/agent';
-import type {BannerContext, PendingState, RenderState, SlashSuggestionState, StatusLineMode, StatusLineModelState, StatusLineState, WorkingState} from '../../types/render';
+import type {BannerContext, PendingState, RenderState, SlashSuggestionState, StatusLineMode, StatusLineModelRenderState, StatusLineState, WorkingState} from '../../types/render';
 import type {TuiTheme} from '../../config/theme-config';
 
 type ContextUsageState = StatusLineState['contextUsage'];
@@ -75,7 +75,7 @@ class RenderContext {
   /**
    * 组合渲染层需要的瞬时状态，避免 main.ts 反复散落访问实例字段。
    */
-  createRenderState(options: {allowAllTools?: boolean; commandSurface?: CommandSurface | null; contextUsage?: ContextUsageState | null; model?: StatusLineModelState; slashSuggestions?: SlashSuggestionState | null} = {}): RenderState {
+  createRenderState(options: {allowAllTools?: boolean; commandSurface?: CommandSurface | null; contextUsage?: ContextUsageState | null; model?: StatusLineModelRenderState; slashSuggestions?: SlashSuggestionState | null} = {}): RenderState {
     const terminalSize = this.terminal.getSize();
     const commandSurface = options.commandSurface ?? null;
     const slashSuggestions = options.slashSuggestions ?? null;
@@ -98,11 +98,13 @@ class RenderContext {
   /**
    * 根据当前普通 composer 上下文派生 status line；command surface 使用自身提示，不创建全局状态栏。
    */
-  private createStatusLineState(model: StatusLineModelState | undefined, pending: PendingState | null, working: WorkingState | null, slashSuggestions: SlashSuggestionState | null, contextUsage: ContextUsageState | null, allowAllTools: boolean): StatusLineState {
+  private createStatusLineState(model: StatusLineModelRenderState | undefined, pending: PendingState | null, working: WorkingState | null, slashSuggestions: SlashSuggestionState | null, contextUsage: ContextUsageState | null, allowAllTools: boolean): StatusLineState {
     const mode = this.bootstrapStateOwner.getMcpBootstrapStatus() === 'initializing'
       ? 'mcp'
       : resolveStatusLineMode(pending, slashSuggestions, this.getInteractionMode());
-    const modelLabel = model?.modelLabel;
+    const normalizedModel: StatusLineModelRenderState = model
+      ? {...model, label: model.label.trim() !== '' ? model.label : 'model unavailable'}
+      : {kind: 'default', label: 'model unavailable'};
     const keyHint = resolveStatusLineKeyHint(
       mode,
       this.turnContext.canInterruptAssistantTurn(),
@@ -111,9 +113,7 @@ class RenderContext {
 
     return {
       projectName: path.basename(this.getCurrentCwd()) || this.getCurrentCwd(),
-      modelLabel: modelLabel && modelLabel.trim() !== '' ? modelLabel : 'model unavailable',
-      ...(model?.reasoningEffort ? {reasoningEffort: model.reasoningEffort} : {}),
-      ...(model?.skillOverride ? {skillOverride: true} : {}),
+      model: normalizedModel,
       mode,
       ...(allowAllTools ? {allowAllTools: true} : {}),
       ...(contextUsage ? {contextUsage} : {}),

@@ -216,7 +216,7 @@ class TurnContext {
   }
 
   /**
-   * 返回当前 assistant turn 的临时 status line 模型；普通 turn 不覆盖全局模型展示。
+   * 返回当前 assistant turn 的临时 status line 模型 (skill override)；普通 turn 不覆盖全局模型展示。
    */
   getActiveStatusLineModelState(): StatusLineModelState | undefined {
     const statusLineModel = this.activeAssistantTurn?.statusLineModel;

@@ -21,6 +21,7 @@ const KEY_SEQUENCES = new Map<string, ControlInputEventType>([
   ['\x15', INPUT_EVENTS.DELETE_TO_LINE_START], // Ctrl+U
   ['\x0b', INPUT_EVENTS.DELETE_TO_LINE_END], // Ctrl+K
   ['\x17', INPUT_EVENTS.DELETE_PREVIOUS_WORD], // Ctrl+W
+  ['\x14', INPUT_EVENTS.TOGGLE_MODEL_TUNING], // Ctrl+T
   ['\x1b[A', INPUT_EVENTS.MOVE_UP], // Up Arrow
   ['\x1bOA', INPUT_EVENTS.MOVE_UP], // Up Arrow (application mode)
   ['\x1b[B', INPUT_EVENTS.MOVE_DOWN], // Down Arrow

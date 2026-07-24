@@ -473,8 +473,8 @@ test('AppContext status line includes explicit reasoning effort', () => {
     }
   };
 
-  assert.equal(context.createRenderState().statusLine.modelLabel, 'gpt-deep');
-  assert.equal(context.createRenderState().statusLine.reasoningEffort, 'high');
+  assert.equal(context.createRenderState().statusLine.model.label, 'gpt-deep');
+  assert.equal(context.createRenderState().statusLine.model.effort, 'high');
 });
 
 test('AppContext status line omits effort when profile has no explicit effort', () => {
@@ -485,8 +485,8 @@ test('AppContext status line omits effort when profile has no explicit effort', 
     }
   };
 
-  assert.equal(context.createRenderState().statusLine.modelLabel, 'gpt-fast');
-  assert.equal(context.createRenderState().statusLine.reasoningEffort, undefined);
+  assert.equal(context.createRenderState().statusLine.model.label, 'gpt-fast');
+  assert.equal(context.createRenderState().statusLine.model.effort, undefined);
 });
 
 test('AppContext uses a fixed skill model only for the active assistant turn', () => {
@@ -508,16 +508,16 @@ test('AppContext uses a fixed skill model only for the active assistant turn', (
     const turn = context.beginAssistantTurn('skill-deep');
     const activeStatus = context.createRenderState().statusLine;
 
-    assert.equal(activeStatus.modelLabel, 'claude-sonnet-4-6');
-    assert.equal(activeStatus.reasoningEffort, 'high');
-    assert.equal(activeStatus.skillOverride, true);
+    assert.equal(activeStatus.model.label, 'claude-sonnet-4-6');
+    assert.equal(activeStatus.model.effort, 'high');
+    assert.equal(activeStatus.model.skillOverride, true);
 
     context.turnContext.clearAssistantTurnIfCurrent(turn);
 
     const restoredStatus = context.createRenderState().statusLine;
-    assert.equal(restoredStatus.modelLabel, 'gpt-fast');
-    assert.equal(restoredStatus.reasoningEffort, undefined);
-    assert.equal(restoredStatus.skillOverride, undefined);
+    assert.equal(restoredStatus.model.label, 'gpt-fast');
+    assert.equal(restoredStatus.model.effort, undefined);
+    assert.equal(restoredStatus.model.skillOverride, undefined);
   });
 });
 
@@ -539,8 +539,8 @@ test('AppContext falls back to the global status model for a missing skill profi
     const turn = context.beginAssistantTurn('deleted-profile');
     const status = context.createRenderState().statusLine;
 
-    assert.equal(status.modelLabel, 'gpt-fast');
-    assert.equal(status.skillOverride, undefined);
+    assert.equal(status.model.label, 'gpt-fast');
+    assert.equal(status.model.skillOverride, undefined);
 
     context.turnContext.clearAssistantTurnIfCurrent(turn);
   });
@@ -565,21 +565,21 @@ test('AppContext applies skill effort independently from a fixed or stale model 
     const fixedTurn = context.beginAssistantTurn('deep', 'minimal');
     const fixedStatus = context.createRenderState().statusLine;
 
-    assert.equal(fixedStatus.modelLabel, 'gpt-deep');
-    assert.equal(fixedStatus.reasoningEffort, 'minimal');
-    assert.equal(fixedStatus.skillOverride, true);
+    assert.equal(fixedStatus.model.label, 'gpt-deep');
+    assert.equal(fixedStatus.model.effort, 'minimal');
+    assert.equal(fixedStatus.model.skillOverride, true);
     context.turnContext.clearAssistantTurnIfCurrent(fixedTurn);
 
     const staleTurn = context.beginAssistantTurn('deleted-profile', 'none');
     const staleStatus = context.createRenderState().statusLine;
 
-    assert.equal(staleStatus.modelLabel, 'gpt-fast');
-    assert.equal(staleStatus.reasoningEffort, 'none');
-    assert.equal(staleStatus.skillOverride, true);
+    assert.equal(staleStatus.model.label, 'gpt-fast');
+    assert.equal(staleStatus.model.effort, 'none');
+    assert.equal(staleStatus.model.skillOverride, true);
     context.turnContext.clearAssistantTurnIfCurrent(staleTurn);
 
-    assert.equal(context.createRenderState().statusLine.reasoningEffort, 'low');
-    assert.equal(context.createRenderState().statusLine.skillOverride, undefined);
+    assert.equal(context.createRenderState().statusLine.model.effort, 'low');
+    assert.equal(context.createRenderState().statusLine.model.skillOverride, undefined);
   });
 });
 
@@ -600,7 +600,7 @@ test('AppContext status line reads cached model state without rereading user con
   withTemporaryModelConfig(config, ({configPath}) => {
     const context = createContext();
 
-    assert.equal(context.createRenderState().statusLine.modelLabel, 'gpt-fast');
+    assert.equal(context.createRenderState().statusLine.model.label, 'gpt-fast');
 
     fs.writeFileSync(configPath, JSON.stringify({
       llm: {
@@ -609,12 +609,12 @@ test('AppContext status line reads cached model state without rereading user con
       }
     }), 'utf8');
 
-    assert.equal(context.createRenderState().statusLine.modelLabel, 'gpt-fast');
-    assert.equal(context.createRenderState().statusLine.modelLabel, 'gpt-fast');
+    assert.equal(context.createRenderState().statusLine.model.label, 'gpt-fast');
+    assert.equal(context.createRenderState().statusLine.model.label, 'gpt-fast');
 
     context.modelContext.createModelCommandInfo();
 
-    assert.equal(context.createRenderState().statusLine.modelLabel, 'gpt-deep');
+    assert.equal(context.createRenderState().statusLine.model.label, 'gpt-deep');
   });
 });
 
@@ -630,7 +630,7 @@ test('AppContext skips status-line model cache reads while command surface is op
 
   assert.equal(context.createRenderState({commandSurface: {kind: 'info'}}).statusLine, undefined);
   assert.equal(readCount, 0);
-  assert.equal(context.createRenderState().statusLine.modelLabel, 'cached-model');
+  assert.equal(context.createRenderState().statusLine.model.label, 'cached-model');
   assert.equal(readCount, 1);
 });
 
@@ -1143,13 +1143,13 @@ test('ModelContext refreshes cached status-line label after model selection succ
   }, () => {
     const appContext = createContext();
 
-    assert.equal(appContext.createRenderState().statusLine.modelLabel, 'gpt-fast');
-    assert.equal(appContext.createRenderState().statusLine.reasoningEffort, undefined);
+    assert.equal(appContext.createRenderState().statusLine.model.label, 'gpt-fast');
+    assert.equal(appContext.createRenderState().statusLine.model.effort, undefined);
 
     assert.deepEqual(appContext.modelContext.selectModel('deep'), {ok: true});
 
-    assert.equal(appContext.createRenderState().statusLine.modelLabel, 'gpt-deep');
-    assert.equal(appContext.createRenderState().statusLine.reasoningEffort, 'high');
+    assert.equal(appContext.createRenderState().statusLine.model.label, 'gpt-deep');
+    assert.equal(appContext.createRenderState().statusLine.model.effort, 'high');
   });
 });
 
@@ -1174,10 +1174,161 @@ test('AppContext refreshes externally changed model state and clears stale conte
     fs.writeFileSync(configPath, JSON.stringify(config), 'utf8');
 
     assert.equal(context.refreshModelStateFromConfig(), true);
-    assert.equal(context.createRenderState().statusLine.modelLabel, 'gpt-deep');
-    assert.equal(context.createRenderState().statusLine.reasoningEffort, 'high');
+    assert.equal(context.createRenderState().statusLine.model.label, 'gpt-deep');
+    assert.equal(context.createRenderState().statusLine.model.effort, 'high');
     assert.equal(context.contextUsage, null);
     assert.equal(context.refreshModelStateFromConfig(), false);
+  });
+});
+
+test('AppContext tunes model and effort without changing composer draft or history', () => {
+  const config = {
+    llm: {
+      selectedModel: 'fast',
+      providers: {
+        openai: {preset: 'openai-responses-api', apiKey: 'openai-api-key'}
+      },
+      models: [
+        {id: 'fast', provider: 'openai', model: 'gpt-fast'},
+        {id: 'deep', provider: 'openai', model: 'gpt-deep', reasoning: {effort: 'high'}}
+      ]
+    }
+  };
+
+  withTemporaryModelConfig(config, ({readConfig}) => {
+    const context = createContext();
+    context.configureSlashSuggestions([{name: 'model', description: '切换模型'}], () => false);
+    context.composerContext.setText('/mo');
+    context.composerContext.inputHistory.push('older prompt');
+    context.setContextUsage({usedTokens: 10, contextWindow: 100, source: 'provider'});
+    const originalComposer = structuredClone(context.composerContext.composer);
+
+    assert.equal(context.openModelTuning(), true);
+    assert.equal(context.createRenderState().slashSuggestions, null);
+    assert.deepEqual(context.composerContext.composer, originalComposer);
+
+    assert.equal(context.handleModelTuningEvent({type: INPUT_EVENTS.MOVE_RIGHT}), true);
+    assert.deepEqual(context.createRenderState().statusLine.model, {
+      kind: 'tuning',
+      label: 'gpt-deep',
+      activeField: 'model',
+      effort: 'high'
+    });
+    context.handleModelTuningEvent({type: INPUT_EVENTS.TAB});
+    context.handleModelTuningEvent({type: INPUT_EVENTS.MOVE_RIGHT});
+    context.handleModelTuningEvent({type: INPUT_EVENTS.TEXT, value: 'ignored'});
+    assert.deepEqual(context.composerContext.composer, originalComposer);
+
+    context.handleModelTuningEvent({type: INPUT_EVENTS.SUBMIT});
+
+    assert.equal(context.modelTuningContext.isActive(), false);
+    assert.equal(readConfig().llm.selectedModel, 'deep');
+    assert.equal(readConfig().llm.models[1].reasoning.effort, 'xhigh');
+    assert.deepEqual(context.composerContext.inputHistory, ['older prompt']);
+    assert.deepEqual(context.composerContext.composer, originalComposer);
+    assert.equal(context.getContextUsage(), null);
+    assert.equal(context.createRenderState().statusLine.model.label, 'gpt-deep');
+    assert.equal(context.createRenderState().statusLine.model.effort, 'xhigh');
+    assert.ok(context.createRenderState().slashSuggestions);
+  });
+});
+
+test('AppContext cancels model tuning with Esc or Ctrl+T without persisting changes', () => {
+  const config = {
+    llm: {
+      selectedModel: 'fast',
+      providers: {
+        openai: {preset: 'openai-responses-api', apiKey: 'openai-api-key'}
+      },
+      models: [
+        {id: 'fast', provider: 'openai', model: 'gpt-fast'},
+        {id: 'deep', provider: 'openai', model: 'gpt-deep'}
+      ]
+    }
+  };
+
+  withTemporaryModelConfig(config, ({readConfig}) => {
+    const context = createContext();
+    context.composerContext.setText('keep me');
+    context.openModelTuning();
+    context.handleModelTuningEvent({type: INPUT_EVENTS.MOVE_RIGHT});
+    context.handleModelTuningEvent({type: INPUT_EVENTS.ESCAPE});
+    assert.equal(context.modelTuningContext.isActive(), false);
+    assert.deepEqual(readConfig(), config);
+    assert.equal(context.composerContext.getText(), 'keep me');
+
+    context.openModelTuning();
+    context.handleModelTuningEvent({type: INPUT_EVENTS.TOGGLE_MODEL_TUNING});
+    assert.equal(context.modelTuningContext.isActive(), false);
+    assert.deepEqual(readConfig(), config);
+  });
+});
+
+test('AppContext blocks model tuning during bootstrap, response, and shell modes', () => {
+  withTemporaryModelConfig({
+    llm: {
+      selectedModel: 'fast',
+      providers: {
+        openai: {preset: 'openai-responses-api', apiKey: 'openai-api-key'}
+      },
+      models: [{id: 'fast', provider: 'openai', model: 'gpt-fast'}]
+    }
+  }, () => {
+    const context = createContext();
+    context.setMcpBootstrapStatus('initializing');
+    assert.equal(context.openModelTuning(), false);
+
+    context.setMcpBootstrapStatus('ready');
+    context.setInteractionMode('shell');
+    assert.equal(context.openModelTuning(), false);
+    context.setInteractionMode('shell-local');
+    assert.equal(context.openModelTuning(), false);
+
+    context.setInteractionMode('plan');
+    assert.equal(context.openModelTuning(), true);
+    context.modelTuningContext.cancel();
+
+    context.setInteractionMode('normal');
+    context.beginUserTurn('responding');
+    assert.equal(context.openModelTuning(), false);
+  });
+});
+
+test('AppContext keeps model tuning active and renders a redacted save error', () => {
+  const fakeApiKey = 'sk-tuning-secret';
+  withTemporaryModelConfig({
+    llm: {
+      selectedModel: 'fast',
+      providers: {
+        openai: {preset: 'openai-responses-api', apiKey: fakeApiKey}
+      },
+      models: [
+        {id: 'fast', provider: 'openai', model: 'gpt-fast'},
+        {id: 'deep', provider: 'openai', model: 'gpt-deep'}
+      ]
+    }
+  }, () => {
+    const originalWriteFileSync = fs.writeFileSync;
+    const context = createContext();
+    context.composerContext.setText('draft');
+    context.openModelTuning();
+    context.handleModelTuningEvent({type: INPUT_EVENTS.MOVE_RIGHT});
+    fs.writeFileSync = () => {
+      throw new Error(`cannot write ${fakeApiKey}`);
+    };
+
+    try {
+      context.handleModelTuningEvent({type: INPUT_EVENTS.SUBMIT});
+      const renderState = context.createRenderState();
+
+      assert.equal(context.modelTuningContext.isActive(), true);
+      assert.match(renderState.statusLine.model.error, /<redacted>/);
+      assert.doesNotMatch(renderState.statusLine.model.error, new RegExp(fakeApiKey));
+      assert.equal(context.composerContext.getText(), 'draft');
+      assert.deepEqual(context.modelContext.getStatusLineModelState(), {modelLabel: 'gpt-fast'});
+    } finally {
+      fs.writeFileSync = originalWriteFileSync;
+    }
   });
 });
 
@@ -1202,13 +1353,13 @@ test('AppContext pins the active turn model while the global selection changes',
     fs.writeFileSync(configPath, JSON.stringify(config), 'utf8');
 
     assert.equal(context.refreshModelStateFromConfig(), true);
-    assert.equal(context.createRenderState().statusLine.modelLabel, 'gpt-fast');
+    assert.equal(context.createRenderState().statusLine.model.label, 'gpt-fast');
 
     assert.equal(context.turnContext.setActiveStatusLineModelState(turn, {modelLabel: 'runtime-model'}), true);
-    assert.equal(context.createRenderState().statusLine.modelLabel, 'runtime-model');
+    assert.equal(context.createRenderState().statusLine.model.label, 'runtime-model');
 
     context.turnContext.clearAssistantTurnIfCurrent(turn);
-    assert.equal(context.createRenderState().statusLine.modelLabel, 'gpt-deep');
+    assert.equal(context.createRenderState().statusLine.model.label, 'gpt-deep');
   });
 });
 
@@ -1286,12 +1437,12 @@ test('ModelContext refreshes cached status-line effort after effort selection su
   }, () => {
     const appContext = createContext();
 
-    assert.equal(appContext.createRenderState().statusLine.reasoningEffort, 'low');
+    assert.equal(appContext.createRenderState().statusLine.model.effort, 'low');
 
     assert.deepEqual(appContext.modelContext.selectEffort('xhigh'), {ok: true});
 
-    assert.equal(appContext.createRenderState().statusLine.modelLabel, 'gpt-deep');
-    assert.equal(appContext.createRenderState().statusLine.reasoningEffort, 'xhigh');
+    assert.equal(appContext.createRenderState().statusLine.model.label, 'gpt-deep');
+    assert.equal(appContext.createRenderState().statusLine.model.effort, 'xhigh');
   });
 });
 
@@ -1311,6 +1462,117 @@ test('ModelContext creates reasoning object when persisting effort on profile wi
 
     assert.deepEqual(context.selectEffort('minimal'), {ok: true});
     assert.deepEqual(readConfig().llm.models[0].reasoning, {effort: 'minimal'});
+  });
+});
+
+test('ModelContext atomically selects a model and its effort while preserving unrelated config', () => {
+  withTemporaryModelConfig({
+    unrelated: {keep: true},
+    llm: {
+      selectedModel: 'fast',
+      providers: {
+        openai: {preset: 'openai-responses-api', apiKey: 'openai-api-key'}
+      },
+      models: [
+        {id: 'fast', provider: 'openai', model: 'gpt-fast'},
+        {id: 'deep', provider: 'openai', model: 'gpt-deep', reasoning: {summary: 'auto', effort: 'low'}}
+      ]
+    }
+  }, ({readConfig}) => {
+    const context = new ModelContext();
+
+    assert.deepEqual(context.selectModelAndEffort('deep', 'xhigh'), {ok: true, modelChanged: true});
+    assert.deepEqual(readConfig(), {
+      unrelated: {keep: true},
+      llm: {
+        selectedModel: 'deep',
+        providers: {
+          openai: {preset: 'openai-responses-api', apiKey: 'openai-api-key'}
+        },
+        models: [
+          {id: 'fast', provider: 'openai', model: 'gpt-fast'},
+          {id: 'deep', provider: 'openai', model: 'gpt-deep', reasoning: {summary: 'auto', effort: 'xhigh'}}
+        ]
+      }
+    });
+    assert.deepEqual(context.getStatusLineModelState(), {modelLabel: 'gpt-deep', reasoningEffort: 'xhigh'});
+  });
+});
+
+test('ModelContext writes explicit effort for previously unconfigured profiles', () => {
+  withTemporaryModelConfig({
+    llm: {
+      selectedModel: 'deep',
+      providers: {
+        openai: {preset: 'openai-responses-api', apiKey: 'openai-api-key'}
+      },
+      models: [
+        {id: 'deep', provider: 'openai', model: 'gpt-deep', reasoning: {summary: 'auto'}},
+        {id: 'plain', provider: 'openai', model: 'gpt-plain'}
+      ]
+    }
+  }, ({readConfig}) => {
+    const context = new ModelContext();
+
+    assert.deepEqual(context.selectModelAndEffort('deep', 'medium'), {ok: true, modelChanged: false});
+    assert.deepEqual(readConfig().llm.models[0].reasoning, {summary: 'auto', effort: 'medium'});
+    assert.deepEqual(context.selectModelAndEffort('plain', 'none'), {ok: true, modelChanged: true});
+    assert.deepEqual(readConfig().llm.models[1].reasoning, {effort: 'none'});
+  });
+});
+
+test('ModelContext rejects invalid combined selection without changing config or cache', () => {
+  const config = {
+    llm: {
+      selectedModel: 'fast',
+      providers: {
+        openai: {preset: 'openai-responses-api', apiKey: 'openai-api-key'}
+      },
+      models: [{id: 'fast', provider: 'openai', model: 'gpt-fast'}]
+    }
+  };
+
+  withTemporaryModelConfig(config, ({readConfig}) => {
+    const context = new ModelContext();
+    const result = context.selectModelAndEffort('missing', 'high');
+
+    assert.equal(result.ok, false);
+    assert.match(result.error, /不存在的模型/);
+    assert.deepEqual(readConfig(), config);
+    assert.deepEqual(context.getStatusLineModelState(), {modelLabel: 'gpt-fast'});
+  });
+});
+
+test('ModelContext keeps combined selection cache unchanged and redacts write failures', () => {
+  const fakeApiKey = 'sk-combined-secret';
+  withTemporaryModelConfig({
+    llm: {
+      selectedModel: 'fast',
+      providers: {
+        openai: {preset: 'openai-responses-api', apiKey: fakeApiKey}
+      },
+      models: [
+        {id: 'fast', provider: 'openai', model: 'gpt-fast'},
+        {id: 'deep', provider: 'openai', model: 'gpt-deep'}
+      ]
+    }
+  }, () => {
+    const originalWriteFileSync = fs.writeFileSync;
+    const context = new ModelContext();
+    fs.writeFileSync = () => {
+      throw new Error(`cannot write ${fakeApiKey}`);
+    };
+
+    try {
+      const result = context.selectModelAndEffort('deep', 'high');
+
+      assert.equal(result.ok, false);
+      assert.match(result.error, /<redacted>/);
+      assert.doesNotMatch(result.error, new RegExp(fakeApiKey));
+      assert.deepEqual(context.getStatusLineModelState(), {modelLabel: 'gpt-fast'});
+    } finally {
+      fs.writeFileSync = originalWriteFileSync;
+    }
   });
 });
 
@@ -1385,7 +1647,7 @@ test('ModelContext keeps cached status-line state when model selection write fai
     const originalWriteFileSync = fs.writeFileSync;
     const appContext = createContext();
 
-    assert.equal(appContext.createRenderState().statusLine.modelLabel, 'gpt-fast');
+    assert.equal(appContext.createRenderState().statusLine.model.label, 'gpt-fast');
     fs.writeFileSync = () => {
       throw new Error(`cannot write ${fakeApiKey}`);
     };
@@ -1395,7 +1657,7 @@ test('ModelContext keeps cached status-line state when model selection write fai
 
       assert.equal(result.ok, false);
       assert.ok(result.error.includes('<redacted>'));
-      assert.equal(appContext.createRenderState().statusLine.modelLabel, 'gpt-fast');
+      assert.equal(appContext.createRenderState().statusLine.model.label, 'gpt-fast');
     } finally {
       fs.writeFileSync = originalWriteFileSync;
     }

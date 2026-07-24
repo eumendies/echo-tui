@@ -159,7 +159,7 @@
 - **THEN** pending preview、transcript/composer spacer、composer 和 status line SHALL 按新宽度整体重绘，并保持相对顺序不变
 
 ### Requirement: footer status line
-系统 SHALL 在普通 composer footer 中使用 segmented status line 展示当前运行状态。status line SHALL 优先展示当前选择的模型、当前模型 profile 显式配置的 reasoning effort、当前目录、真实 context usage 和当前运行模式；当前选择的模型 SHALL 作为最靠前的信息显示并使用区别于普通状态文本的强调颜色。reasoning effort SHALL 作为独立 segment 展示，而不是拼接进模型名称；该 segment 的圆点颜色 SHALL 使用固定 cyan 或等价 accent color。status line SHALL 暂不显示 git branch。当当前 interaction mode 为 plan 且没有更高优先级 pending 状态时，status line SHALL 显示 `plan` 或等价 plan mode 状态，并 SHALL 遵循现有终端宽度和 footer 局部重绘约束。普通 composer footer、slash suggestion 和 command surfaces SHALL 遵循共享 footer UI 语言：使用统一 cyan palette、`▌` 焦点条、`●/○` 状态 marker 和中文为主的默认操作提示。
+系统 SHALL 在普通 composer footer 中使用 segmented status line 展示当前运行状态。status line SHALL 优先展示当前选择的模型、当前模型 profile 显式配置的 reasoning effort、当前目录、真实 context usage 和当前运行模式；当前选择的模型 SHALL 作为最靠前的信息显示并使用区别于普通状态文本的强调颜色。reasoning effort SHALL 作为独立 segment 展示，而不是拼接进模型名称或添加圆点前缀。status line SHALL 暂不显示 git branch。当当前 interaction mode 为 plan 且没有更高优先级 pending 状态时，status line SHALL 显示 `plan` 或等价 plan mode 状态，并 SHALL 遵循现有终端宽度和 footer 局部重绘约束。普通 composer footer、slash suggestion 和 command surfaces SHALL 遵循共享 footer UI 语言：使用统一 cyan palette、`▌` 焦点条、`●/○` 状态 marker 和中文为主的默认操作提示。
 
 #### Scenario: 普通输入显示 idle status line
 - **WHEN** 普通 composer 可见且没有 slash suggestion、pending preview、command surface 或 plan mode
@@ -219,7 +219,7 @@
 - **WHEN** 当前 selected model profile 配置了有效的 `reasoning.effort`
 - **THEN** 普通 composer status line SHALL 使用独立 segment 显示该推理等级
 - **THEN** 显示文本 SHALL 能让用户区分当前模型和当前推理等级
-- **THEN** effort segment 前置圆点颜色 SHALL 使用固定 cyan 或等价 accent color
+- **THEN** effort segment SHALL NOT 显示圆点前缀
 
 #### Scenario: 未配置推理等级时 status line 不显示 effort
 - **WHEN** 当前 selected model profile 没有配置 `reasoning.effort`
@@ -229,7 +229,7 @@
 - **WHEN** 用户通过 `/effort` 修改当前模型 profile 的推理等级
 - **THEN** 后续普通 composer status line SHALL 显示新推理等级
 - **THEN** status line SHALL NOT 显示旧推理等级
-- **THEN** 新推理等级的圆点颜色 SHALL 保持固定 accent color
+- **THEN** 新推理等级 SHALL NOT 添加圆点前缀
 
 #### Scenario: command surfaces 保留自身提示
 - **WHEN** footer 当前显示 info、select、scale、resume、confirm 或 choice command surface

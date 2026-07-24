@@ -70,6 +70,21 @@ export type StatusLineModelState = {
   skillOverride?: boolean;
 };
 
+export type StatusLineModelRenderState =
+  | {
+      kind: 'default';
+      label: string;
+      effort?: ReasoningEffort;
+      skillOverride?: boolean;
+    }
+  | {
+      kind: 'tuning';
+      label: string;
+      effort: ReasoningEffort;
+      activeField: 'model' | 'effort';
+      error?: string;
+    };
+
 export type StatusLineActivityState = {
   kind: 'thinking' | 'working';
   elapsedMs: number;
@@ -77,9 +92,7 @@ export type StatusLineActivityState = {
 
 export type StatusLineState = {
   projectName: string;
-  modelLabel: string;
-  reasoningEffort?: ReasoningEffort;
-  skillOverride?: boolean;
+  model: StatusLineModelRenderState;
   mode: StatusLineMode;
   allowAllTools?: boolean;
   contextUsage?: ContextUsage;

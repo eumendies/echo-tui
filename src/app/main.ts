@@ -387,6 +387,17 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
       return undefined;
     }
 
+    if (appContext.handleModelTuningEvent(event)) {
+      renderFooter();
+      return undefined;
+    }
+
+    if (event.type === INPUT_EVENTS.TOGGLE_MODEL_TUNING) {
+      appContext.openModelTuning();
+      renderFooter();
+      return undefined;
+    }
+
     if (event.type === INPUT_EVENTS.SHIFT_TAB) {
       toolApproval.toggleAllowAllForSession();
       return undefined;

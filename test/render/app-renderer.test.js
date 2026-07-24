@@ -7,7 +7,7 @@ const { displayWidth, safeRenderWidth, stripAnsi } = require('../../src/render/l
 
 const DEFAULT_STATUS_LINE = {
   projectName: 'echo_tui',
-  modelLabel: 'GPT-4o',
+  model: {kind: 'default', label: 'GPT-4o'},
   mode: 'idle'
 };
 const ASK_USER_QUESTIONS_TOOL_NAME = 'ask_user_questions';

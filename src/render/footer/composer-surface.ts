@@ -7,10 +7,11 @@ import { createSelectedWindowRows, normalizeLineLimit } from './window';
 import type { ComposerState } from '../../types/composer';
 import type { FooterLayout, SlashSuggestionState, StatusLineState } from '../../types/render';
 
-const COMPOSER_PLACEHOLDER = '/ 命令 · @ 路径 · TAB 切换 mode · Shift+Tab 工具授权 · Ctrl+J 换行';
-const PLAN_COMPOSER_PLACEHOLDER = '计划问题 · @ 路径 · TAB 切换 mode · Ctrl+J 换行';
+const COMPOSER_PLACEHOLDER = '/ 命令 · @ 路径 · TAB mode · Ctrl+T 模型 · Shift+Tab 授权 · Ctrl+J 换行';
+const PLAN_COMPOSER_PLACEHOLDER = '计划问题 · @ 路径 · TAB 切换 mode · Ctrl+T 模型 · Ctrl+J 换行';
 const SHELL_CONTEXT_COMPOSER_PLACEHOLDER = 'bash 命令 · TAB 切换 mode · 结果进上下文 · Enter 执行';
 const SHELL_LOCAL_COMPOSER_PLACEHOLDER = 'bash 命令 · TAB 切换 mode · 仅本地显示 · Enter 执行';
+const MODEL_TUNING_PLACEHOLDER = 'Tab 切换字段 · ←/→ 调整 · Enter 应用 · Esc 取消';
 const COMPOSER_MAX_VISIBLE_LINES = 8;
 const STATUS_SEPARATOR = '│';
 const COMPOSER_BOX_SIDE_BORDER = '│';
@@ -46,13 +47,19 @@ export function renderComposerSurface(
   const suggestionBudget = slashSuggestions ? Math.min(slashSuggestions.options.length, Math.max(0, contentBudget - 3)) : 0;
   const suggestionLines = slashSuggestions && suggestionBudget > 0 ? renderSlashSuggestionLines(slashSuggestions, width, suggestionBudget, theme) : [];
   const composerBudget = Math.min(COMPOSER_MAX_VISIBLE_LINES, Math.max(1, contentBudget - suggestionLines.length));
-  const composerLayout = renderBoxedComposer(composer, width, composerBudget, resolveComposerTheme(statusLine, theme));
+  const composerTheme = resolveComposerTheme(statusLine, theme);
+  const composerLayout = renderBoxedComposer(
+    composer,
+    width,
+    composerBudget,
+    statusLine?.model.kind === 'tuning' ? {...composerTheme, placeholder: MODEL_TUNING_PLACEHOLDER} : composerTheme
+  );
 
   return {
     lines: [...composerLayout.lines, ...suggestionLines, statusLineText],
     cursorRow: composerLayout.cursorRow,
     cursorColumn: composerLayout.cursorColumn,
-    showCursor: true
+    showCursor: statusLine?.model.kind !== 'tuning'
   };
 }
 
@@ -173,22 +180,9 @@ function renderStatusLineText(statusLine: StatusLineState | undefined, width: nu
 }
 
 function createLeftStatusSegments(statusLine: StatusLineState, theme: FooterTheme): StatusSegment[] {
-  const modelLabel = statusLine.skillOverride
-    ? `${statusLine.modelLabel} (SKILL override)`
-    : statusLine.modelLabel;
-  const segments: StatusSegment[] = [
-    {
-      plain: modelLabel,
-      rendered: tokenText(theme, 'accentStrong', ansi.bold(modelLabel))
-    }
-  ];
-
-  if (statusLine.reasoningEffort) {
-    segments.push({
-      plain: `● effort ${statusLine.reasoningEffort}`,
-      rendered: `${tokenText(theme, 'accent', '●')} ${ansi.dim('effort')} ${tokenText(theme, 'accent', statusLine.reasoningEffort)}`
-    });
-  }
+  const segments = statusLine.model.kind === 'tuning'
+    ? createModelTuningStatusSegments(statusLine.model, theme)
+    : createDefaultModelStatusSegments(statusLine.model, theme);
 
   if (statusLine.allowAllTools) {
     segments.push({
@@ -205,8 +199,58 @@ function createLeftStatusSegments(statusLine: StatusLineState, theme: FooterThem
   return segments;
 }
 
+/**
+ * 投影普通或 skill override 的模型信息，保持既有 model/effort 分段语义。
+ */
+function createDefaultModelStatusSegments(model: Extract<StatusLineState['model'], {kind: 'default'}>, theme: FooterTheme): StatusSegment[] {
+  const modelLabel = model.skillOverride
+    ? `${model.label} (SKILL override)`
+    : model.label;
+  const segments: StatusSegment[] = [{
+    plain: modelLabel,
+    rendered: tokenText(theme, 'accentStrong', ansi.bold(modelLabel))
+  }];
+
+  if (model.effort) {
+    segments.push({
+      plain: `effort ${model.effort}`,
+      rendered: `${ansi.dim('effort')} ${tokenText(theme, 'accent', model.effort)}`
+    });
+  }
+
+  return segments;
+}
+
+/**
+ * 将暂存 model/effort 投影为 status segments；活动字段用成对尖括号表达键盘焦点。
+ */
+function createModelTuningStatusSegments(model: Extract<StatusLineState['model'], {kind: 'tuning'}>, theme: FooterTheme): StatusSegment[] {
+  const modelFocused = model.activeField === 'model';
+  const effortFocused = model.activeField === 'effort';
+  const modelText = modelFocused ? `‹${model.label}›` : model.label;
+  const effortValue = effortFocused ? `‹${model.effort}›` : model.effort;
+
+  return [
+    {
+      plain: modelText,
+      rendered: tokenText(theme, modelFocused ? 'accentStrong' : 'accent', modelFocused ? ansi.bold(modelText) : modelText)
+    },
+    {
+      plain: `effort ${effortValue}`,
+      rendered: `${ansi.dim('effort')} ${tokenText(theme, effortFocused ? 'accentStrong' : 'accent', effortFocused ? ansi.bold(effortValue) : effortValue)}`
+    }
+  ];
+}
+
 function createRightStatusSegments(statusLine: StatusLineState, theme: FooterTheme): StatusSegment[] {
   const segments: StatusSegment[] = [];
+
+  if (statusLine.model.kind === 'tuning' && statusLine.model.error) {
+    segments.push({
+      plain: `保存失败 ${statusLine.model.error}`,
+      rendered: tokenText(theme, 'danger', `保存失败 ${statusLine.model.error}`)
+    });
+  }
 
   if (statusLine.contextUsage) {
     const text = `${formatTokenCount(statusLine.contextUsage.usedTokens)}/${formatTokenCount(statusLine.contextUsage.contextWindow)}`;

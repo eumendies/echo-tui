@@ -1,5 +1,6 @@
 import {ComposerContext} from './composer-context';
 import {ModelContext} from './model-context';
+import {ModelTuningContext} from './model-tuning-context';
 import {RenderContext} from './render-context';
 import {SlashSuggestionContext} from './slash-suggestion-context';
 import {TranscriptContext} from './transcript-context';
@@ -8,13 +9,14 @@ import {ChangeHistoryContext} from './change-history-context';
 import {INPUT_EVENTS} from '../../input/event-types';
 import {createDiffSourceResult} from '../diff/source';
 import {DEFAULT_TUI_THEME, type TuiTheme} from '../../config/theme-config';
+import {isShellInteractionMode} from '../../types/agent';
 
 import type {TerminalController} from '../../types/app';
 import type {AgentSessionInput, ContextUsage, InteractionMode, ReasoningEffort} from '../../types/agent';
 import type {DiffSourceResult} from '../../types/diff';
 import type {CommandSurface, SlashCommandDescriptor} from '../../types/command';
 import type {InputEvent} from '../../types/input';
-import type {RenderState, SlashSuggestionState, StatusLineModelState} from '../../types/render';
+import type {RenderState, SlashSuggestionState, StatusLineModelRenderState} from '../../types/render';
 import type {ToolExecutionResult} from '../../types/tool';
 import type {TranscriptRecord, TranscriptSession, TranscriptStore, UserTranscriptMetadata} from '../../types/transcript';
 import type {UndoExecuteResult} from '../../types/change-history';
@@ -70,6 +72,7 @@ class AppContext {
   readonly composerContext: ComposerContext;
   readonly transcriptContext: TranscriptContext;
   readonly modelContext: ModelContext;
+  readonly modelTuningContext: ModelTuningContext;
   readonly turnContext: TurnContext;
   readonly changeHistoryContext: ChangeHistoryContext;
   readonly renderContext: RenderContext;
@@ -93,6 +96,7 @@ class AppContext {
     this.composerContext = new ComposerContext(() => this.turnContext.isResponding());
     this.transcriptContext = new TranscriptContext(transcriptStore, () => this.getCurrentCwd());
     this.modelContext = new ModelContext();
+    this.modelTuningContext = new ModelTuningContext();
     this.turnContext = new TurnContext(this.composerContext, this.transcriptContext);
     this.changeHistoryContext = new ChangeHistoryContext();
     this.theme = theme;
@@ -189,8 +193,19 @@ class AppContext {
    */
   createRenderState(options: {commandSurface?: CommandSurface | null; toolApproval?: Pick<ToolApprovalContext, 'isAllowAllForSession'> | null} = {}): RenderState {
     const commandSurface = options.commandSurface ?? null;
-    const slashSuggestions = commandSurface || this.mcpBootstrapStatus === 'initializing' ? null : this.getSlashSuggestionState();
-    const model = commandSurface ? undefined : this.createStatusLineModelState();
+    const modelTuningSnapshot = commandSurface ? null : this.modelTuningContext.getRenderState();
+    const slashSuggestions = commandSurface || modelTuningSnapshot || this.mcpBootstrapStatus === 'initializing' ? null : this.getSlashSuggestionState();
+    const model = commandSurface
+      ? undefined
+      : modelTuningSnapshot
+        ? {
+            kind: 'tuning' as const,
+            label: modelTuningSnapshot.modelLabel,
+            effort: modelTuningSnapshot.effort,
+            activeField: modelTuningSnapshot.activeField,
+            ...(modelTuningSnapshot.error ? {error: modelTuningSnapshot.error} : {})
+          }
+        : this.createStatusLineModelRenderState();
 
     return this.renderContext.createRenderState({
       commandSurface,
@@ -199,6 +214,73 @@ class AppContext {
       allowAllTools: options.toolApproval?.isAllowAllForSession() || false,
       slashSuggestions
     });
+  }
+
+  /**
+   * 从当前模型快照启动 composer 调节；配置不可用时返回 false 且不创建瞬时状态。
+   */
+  openModelTuning(): boolean {
+    if (this.turnContext.responding || this.mcpBootstrapStatus === 'initializing' || isShellInteractionMode(this.interactionMode)) {
+      return false;
+    }
+
+    return this.modelTuningContext.open(this.modelContext.createModelCommandInfo());
+  }
+
+  /**
+   * 原子应用暂存 model/effort；失败时保留调节状态并显示脱敏错误。
+   */
+  applyModelTuning(): boolean {
+    const selection = this.modelTuningContext.getSelection();
+
+    if (!selection) {
+      return false;
+    }
+
+    const result = this.modelContext.selectModelAndEffort(selection.modelId, selection.effort);
+
+    if (!result.ok) {
+      this.modelTuningContext.setError(result.error || '无法保存模型调节选择');
+      return false;
+    }
+
+    if (selection.originalModelId !== selection.modelId || result.modelChanged) {
+      this.clearContextUsage();
+    }
+
+    this.modelTuningContext.cancel();
+    return true;
+  }
+
+  /**
+   * 消费活跃调节模式的 modal 输入；Exit 留给 app 全局退出流程处理。
+   */
+  handleModelTuningEvent(event: InputEvent): boolean {
+    if (!this.modelTuningContext.isActive() || event.type === INPUT_EVENTS.EXIT) {
+      return false;
+    }
+
+    if (event.type === INPUT_EVENTS.ESCAPE || event.type === INPUT_EVENTS.TOGGLE_MODEL_TUNING) {
+      this.modelTuningContext.cancel();
+      return true;
+    }
+
+    if (event.type === INPUT_EVENTS.TAB || event.type === INPUT_EVENTS.SHIFT_TAB) {
+      this.modelTuningContext.toggleField();
+      return true;
+    }
+
+    if (event.type === INPUT_EVENTS.MOVE_LEFT || event.type === INPUT_EVENTS.MOVE_RIGHT) {
+      this.modelTuningContext.cycle(event.type === INPUT_EVENTS.MOVE_LEFT ? -1 : 1);
+      return true;
+    }
+
+    if (event.type === INPUT_EVENTS.SUBMIT) {
+      this.applyModelTuning();
+      return true;
+    }
+
+    return true;
   }
 
   /**
@@ -240,8 +322,15 @@ class AppContext {
   /**
    * 读取当前选择模型的展示名；配置不可用时返回稳定占位，避免 footer 重绘打断主流程。
    */
-  private createStatusLineModelState(): StatusLineModelState {
-    return this.turnContext.getActiveStatusLineModelState() ?? this.modelContext.getStatusLineModelState();
+  private createStatusLineModelRenderState(): StatusLineModelRenderState {
+    const model = this.turnContext.getActiveStatusLineModelState() ?? this.modelContext.getStatusLineModelState();
+
+    return {
+      kind: 'default',
+      label: model.modelLabel,
+      ...(model.reasoningEffort ? {effort: model.reasoningEffort} : {}),
+      ...(model.skillOverride ? {skillOverride: true} : {})
+    };
   }
 
   /**
