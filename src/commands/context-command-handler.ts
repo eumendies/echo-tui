@@ -34,10 +34,10 @@ export class ContextCommandHandler implements CommandHandler {
   description = '查看 context 占用详情';
 
   /**
-   * 只匹配纯 /context，避免带参数内容被误消费。
+   * 只匹配 /context 和尾随空白，避免带参数内容被误消费。
    */
   match(text: string): boolean {
-    return text === '/context';
+    return text.trimEnd() === '/context';
   }
 
   /**

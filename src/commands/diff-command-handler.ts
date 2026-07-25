@@ -95,7 +95,7 @@ class DiffCommandHandler implements CommandHandler<DiffCommandData> {
   description = '查看当前文件差异';
 
   match(text: string): boolean {
-    return text.trim() === '/diff';
+    return text.trimEnd() === '/diff';
   }
 
   start(_text: string, host: CommandHost): void {

@@ -70,9 +70,9 @@ class SlashSuggestionContext {
   }
 
   /**
-   * 返回当前选中的纯 slash 命令文本，用于写回 composer。
+   * 返回当前选中的 slash 命令文本，用于写回 composer；补全路径可选择追加分隔空格。
    */
-  completeSelection(composerText: string): string | null {
+  completeSelection(composerText: string, options: {appendSpace?: boolean} = {}): string | null {
     const matches = this.getMatchingCommands(composerText);
 
     if (matches.length === 0) {
@@ -81,7 +81,7 @@ class SlashSuggestionContext {
     }
 
     this.selectedIndex = Math.min(Math.max(0, this.selectedIndex), matches.length - 1);
-    return `/${matches[this.selectedIndex].name}`;
+    return `/${matches[this.selectedIndex].name}${options.appendSpace ? ' ' : ''}`;
   }
 
   /**

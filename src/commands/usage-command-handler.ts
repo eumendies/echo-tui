@@ -57,10 +57,10 @@ export class UsageCommandHandler implements CommandHandler {
   description = '查看每日 token 用量';
 
   /**
-   * 只匹配纯 /usage，避免带参数输入被误消费。
+   * 只匹配 /usage 和尾随空白，避免带参数输入被误消费。
    */
   match(text: string): boolean {
-    return text === '/usage';
+    return text.trimEnd() === '/usage';
   }
 
   /**

@@ -55,7 +55,7 @@ class ConfigCommandHandler implements CommandHandler<ConfigCommandData> {
   description = '配置常规设置、模型和主题';
 
   match(text: string): boolean {
-    return text.trim() === '/config';
+    return text.trimEnd() === '/config';
   }
 
   start(_text: string, host: CommandHost): void {

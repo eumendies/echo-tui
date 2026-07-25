@@ -445,7 +445,7 @@ test('AppContext owns slash suggestion state and exposes it through render state
   assert.equal(context.handleSlashSuggestionEvent({ type: INPUT_EVENTS.MOVE_UP }), true);
 
   assert.equal(context.handleSlashSuggestionEvent({ type: INPUT_EVENTS.TAB }), true);
-  assert.equal(composerOps.getText(context.composerContext.composer), '/model');
+  assert.equal(composerOps.getText(context.composerContext.composer), '/model ');
 
   activeCommandSession = true;
   assert.equal(context.createRenderState().slashSuggestions, null);

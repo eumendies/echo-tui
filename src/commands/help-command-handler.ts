@@ -33,11 +33,11 @@ export class HelpCommandHandler implements CommandHandler {
   description = '查看帮助';
 
   /**
-   * 只匹配纯 /help，保持当前最小行为不变。
+   * 只匹配 /help 和尾随空白，保持当前最小行为不变。
    *
    */
   match(text: string): boolean {
-    return text === '/help';
+    return text.trimEnd() === '/help';
   }
 
   /**

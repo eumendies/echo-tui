@@ -174,10 +174,10 @@ export class CopyCommandHandler implements CommandHandler<CopyCommandData> {
   description = '复制会话消息';
 
   /**
-   * 只匹配纯 /copy，避免带参数时误消费普通消息。
+   * 只匹配 /copy 和尾随空白，避免带参数时误消费普通消息。
    */
   match(text: string): boolean {
-    return text === '/copy';
+    return text.trimEnd() === '/copy';
   }
 
   /**

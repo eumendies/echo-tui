@@ -45,7 +45,7 @@ export class AgentWorkflowCommandHandler implements CommandHandler {
   }
 
   /**
-   * 按 workflow 定义匹配 slash command；无参数 workflow 不消费带后缀的输入。
+   * 按 workflow 定义匹配 slash command；无参数 workflow 接受尾随空白但不消费非空参数。
    */
   match(text: string): boolean {
     return Boolean(parseAgentWorkflowText(text, this.definition));

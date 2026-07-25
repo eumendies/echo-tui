@@ -396,7 +396,7 @@ class AppContext {
     }
 
     if (event.type === INPUT_EVENTS.TAB || event.type === INPUT_EVENTS.SUBMIT) {
-      const completedText = this.slashSuggestionContext.completeSelection(composerText);
+      const completedText = this.slashSuggestionContext.completeSelection(composerText, {appendSpace: event.type === INPUT_EVENTS.TAB});
 
       if (completedText) {
         this.composerContext.leaveHistoryBrowsing();

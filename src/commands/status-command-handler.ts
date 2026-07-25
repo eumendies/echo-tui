@@ -32,10 +32,10 @@ export class StatusCommandHandler implements CommandHandler<StatusCommandData> {
   private nextRequestId = 0;
 
   /**
-   * 只匹配纯 `/status`，带参数输入继续走普通 slash fallback。
+   * 只匹配 `/status` 和尾随空白，带参数输入继续走普通 slash fallback。
    */
   match(text: string): boolean {
-    return text === '/status';
+    return text.trimEnd() === '/status';
   }
 
   /**

@@ -674,7 +674,7 @@ test('usageCommandHandler opens empty state without submitting transcript', () =
 
   assert.equal(usageCommandHandler.match('/usage'), true);
   assert.equal(usageCommandHandler.match('/usage today'), false);
-  assert.equal(usageCommandHandler.match('/usage '), false);
+  assert.equal(usageCommandHandler.match('/usage '), true);
   assert.equal(resolveSlashCommand('/usage', createDefaultHandlersForTest()).name, 'usage');
   assert.equal(resolveSlashCommand('/usage today', [usageCommandHandler]), null);
 
@@ -1293,6 +1293,17 @@ test('createSlashCommandDescriptors derives display metadata from handlers', () 
     { name: 'init', description: '分析项目并生成或评审 AGENTS.md' },
     { name: 'review', description: '审查当前代码变更' }
   ]);
+});
+
+test('default slash command handlers accept tab-completed trailing whitespace', () => {
+  const handlers = createDefaultHandlersForTest();
+  const descriptors = createSlashCommandDescriptors(handlers);
+
+  for (const descriptor of descriptors) {
+    assert.equal(resolveSlashCommand(`/${descriptor.name} `, handlers)?.name, descriptor.name);
+  }
+
+  assert.equal(resolveSlashCommand('/model more', handlers)?.name, undefined);
 });
 
 test('/themes is no longer a local command', () => {
