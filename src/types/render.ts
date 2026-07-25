@@ -3,6 +3,7 @@ import type { CommandSurface, CommandSurfaceOption } from './command';
 import type { TranscriptRecord } from './transcript';
 import type { TuiTheme } from '../config/theme-config';
 import type { ContextUsage, ReasoningEffort } from './agent';
+import type { AppRenderPreferences } from '../config/app-settings-config';
 
 export type TerminalSize = {
   columns: number;
@@ -101,6 +102,8 @@ export type StatusLineState = {
   keyHint?: string;
 };
 
+export type RenderPreferences = AppRenderPreferences;
+
 export type RenderState = {
   composer: ComposerState;
   commandSurface: CommandSurface | null;
@@ -108,6 +111,7 @@ export type RenderState = {
   pending: PendingState | null;
   working: WorkingState | null;
   theme: TuiTheme;
+  renderPreferences: RenderPreferences;
   statusLine?: StatusLineState;
   rows?: number;
   width: number;
@@ -143,6 +147,7 @@ export type RenderFinalOptions = {
   bannerContext: BannerContext;
   records: TranscriptRecord[];
   theme: TuiTheme;
+  renderPreferences: RenderPreferences;
   width: number;
 };
 

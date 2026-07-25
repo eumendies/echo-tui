@@ -19,7 +19,6 @@ const { ResumeCommandHandler, RESUME_PAGE_SIZE } = require('../../src/commands/r
 const { SkillsCommandHandler } = require('../../src/commands/skills-command-handler');
 const { SkillInvocationCommandHandler } = require('../../src/commands/skill-invocation-command-handler');
 const { StatusCommandHandler } = require('../../src/commands/status-command-handler');
-const { ThemesCommandHandler } = require('../../src/commands/themes-command-handler');
 const { UndoCommandHandler } = require('../../src/commands/undo-command-handler');
 const { UsageCommandHandler } = require('../../src/commands/usage-command-handler');
 const {
@@ -51,6 +50,7 @@ function createFakeHost(options = {}) {
     renders: 0,
     resets: 0,
     savedConfigDrafts: [],
+    savedSettingsDrafts: [],
     savedHookDrafts: [],
     hookTests: [],
     savedMcpServers: [],
@@ -114,6 +114,16 @@ function createFakeHost(options = {}) {
       }
     },
     config: {
+      readSettings() {
+        if (options.settingsReadError) {
+          throw new Error(options.settingsReadError);
+        }
+        return structuredClone(options.appSettings || {
+          compactionThresholdRatio: 0.8,
+          showReasoningSummary: true,
+          slashSuggestionMaxVisible: 8
+        });
+      },
       readDraft() {
         if (options.configReadError) {
           throw new Error(options.configReadError);
@@ -138,6 +148,10 @@ function createFakeHost(options = {}) {
       saveDraft(draft) {
         calls.savedConfigDrafts.push(draft);
         return options.saveConfig ? options.saveConfig(draft) : {ok: true};
+      },
+      saveSettings(draft) {
+        calls.savedSettingsDrafts.push(structuredClone(draft));
+        return options.saveSettings ? options.saveSettings(draft) : {ok: true};
       }
     },
     skills: {
@@ -331,6 +345,11 @@ function startCommand(handler, text, host) {
   return host.session.getActive();
 }
 
+async function openConfigModelsTab(handler, session, host) {
+  await handler.handleEvent(session, {type: INPUT_EVENTS.TAB}, host);
+  return host.session.getActive();
+}
+
 test('resolveSlashCommand asks handlers in order and returns the first match', () => {
   const hits = [];
   const handlers = [
@@ -366,7 +385,7 @@ test('resolveSlashCommand asks handlers in order and returns the first match', (
 test('createDefaultSlashCommandHandlers wires handlers in order', () => {
   const handlers = createDefaultHandlersForTest();
 
-  assert.equal(handlers.length, 22);
+  assert.equal(handlers.length, 21);
   assert.equal(handlers.some((handler) => handler.name === 'skill'), false);
   assert.equal(handlers[0].name, 'help');
   assert.equal(handlers[1].name, 'config');
@@ -386,10 +405,9 @@ test('createDefaultSlashCommandHandlers wires handlers in order', () => {
   assert.equal(handlers[15].name, 'memory');
   assert.equal(handlers[16].name, 'hooks');
   assert.equal(handlers[17].name, 'skills');
-  assert.equal(handlers[18].name, 'themes');
-  assert.equal(handlers[19].name, 'init');
-  assert.equal(handlers[20].name, 'review');
-  assert.equal(handlers[21].name, undefined);
+  assert.equal(handlers[18].name, 'init');
+  assert.equal(handlers[19].name, 'review');
+  assert.equal(handlers[20].name, undefined);
   assert.equal(handlers[0] instanceof HelpCommandHandler, true);
   assert.equal(handlers[1] instanceof ConfigCommandHandler, true);
   assert.equal(handlers[2] instanceof ModelCommandHandler, true);
@@ -408,10 +426,9 @@ test('createDefaultSlashCommandHandlers wires handlers in order', () => {
   assert.equal(handlers[15] instanceof MemoryCommandHandler, true);
   assert.equal(handlers[16] instanceof HooksCommandHandler, true);
   assert.equal(handlers[17] instanceof SkillsCommandHandler, true);
-  assert.equal(handlers[18] instanceof ThemesCommandHandler, true);
+  assert.equal(handlers[18] instanceof AgentWorkflowCommandHandler, true);
   assert.equal(handlers[19] instanceof AgentWorkflowCommandHandler, true);
-  assert.equal(handlers[20] instanceof AgentWorkflowCommandHandler, true);
-  assert.equal(handlers[21] instanceof SkillInvocationCommandHandler, true);
+  assert.equal(handlers[20] instanceof SkillInvocationCommandHandler, true);
 });
 
 test('statusCommandHandler loads Codex usage and isolates late results', async () => {
@@ -760,72 +777,6 @@ test('usageCommandHandler starts at the latest day when the viewport shows fewer
   assert.equal(session.surface.offset, 2);
 });
 
-test('themesCommandHandler opens select surface and only matches pure /themes', () => {
-  const themesCommandHandler = new ThemesCommandHandler();
-  const themes = [
-    {id: 'default', label: 'Echo Default', description: 'Default cyan render theme.', selected: true},
-    {id: 'amber', label: 'Amber Night', description: 'Warm amber accents.', selected: false}
-  ];
-  const selectable = createFakeHost({themes});
-
-  assert.equal(themesCommandHandler.match('/themes'), true);
-  assert.equal(themesCommandHandler.match('/themes amber'), false);
-  assert.equal(themesCommandHandler.match('/themes '), false);
-  assert.equal(resolveSlashCommand('/themes', [themesCommandHandler]).name, 'themes');
-  assert.equal(resolveSlashCommand('/themes amber', [themesCommandHandler]), null);
-  assert.equal(resolveSlashCommand('/themes', createDefaultHandlersForTest()).name, 'themes');
-
-  let session = startCommand(themesCommandHandler, '/themes', selectable.host);
-  assert.equal(selectable.calls.resets, 1);
-  assert.equal(session.surface.kind, 'select');
-  assert.equal(session.surface.title, '/themes 选择主题 (2)');
-  assert.equal(session.surface.selectedIndex, 0);
-  assert.deepEqual(session.surface.options, [
-    {label: 'Echo Default', description: 'Default cyan render theme.'},
-    {label: 'Amber Night', description: 'Warm amber accents.'}
-  ]);
-
-  themesCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_DOWN}, selectable.host);
-  session = selectable.host.session.getActive();
-  assert.equal(session.surface.selectedIndex, 1);
-
-  themesCommandHandler.handleEvent(session, {type: INPUT_EVENTS.SUBMIT}, selectable.host);
-  assert.deepEqual(selectable.calls.themeSelections, ['amber']);
-  assert.equal(selectable.calls.sessionCloses, 1);
-  assert.equal(selectable.calls.resets, 2);
-});
-
-test('themesCommandHandler handles empty, cancel, and save failure states', () => {
-  const themesCommandHandler = new ThemesCommandHandler();
-  const empty = createFakeHost({themes: []});
-  let session = startCommand(themesCommandHandler, '/themes', empty.host);
-
-  assert.equal(session.surface.kind, 'info');
-  assert.match(session.surface.lines.join('\n'), /没有可用/);
-
-  const cancel = createFakeHost({
-    themes: [{id: 'default', label: 'Echo Default', description: '', selected: true}]
-  });
-  session = startCommand(themesCommandHandler, '/themes', cancel.host);
-  themesCommandHandler.handleEvent(session, {type: INPUT_EVENTS.ESCAPE}, cancel.host);
-  assert.deepEqual(cancel.calls.themeSelections, []);
-  assert.equal(cancel.calls.sessionCloses, 1);
-  assert.equal(cancel.calls.resets, 2);
-
-  const failure = createFakeHost({
-    themes: [{id: 'amber', label: 'Amber Night', description: '', selected: true}],
-    selectTheme() {
-      return {ok: false, error: 'cannot write theme'};
-    }
-  });
-  session = startCommand(themesCommandHandler, '/themes', failure.host);
-  themesCommandHandler.handleEvent(session, {type: INPUT_EVENTS.SUBMIT}, failure.host);
-  assert.deepEqual(failure.calls.themeSelections, ['amber']);
-  assert.equal(failure.calls.sessionCloses, 0);
-  assert.equal(failure.host.session.getActive().surface.kind, 'info');
-  assert.match(failure.host.session.getActive().surface.lines.join('\n'), /cannot write theme/);
-});
-
 test('built-in /init workflow wins before direct skill invocation fallback', () => {
   const handlers = createDefaultHandlersForTest();
   const handler = resolveSlashCommand('/init', handlers);
@@ -1094,7 +1045,7 @@ test('diffCommandHandler opens empty info surface', () => {
   assert.equal(empty.calls.sessionCloses, 1);
 });
 
-test('configCommandHandler opens panel, updates state, saves, and closes result', () => {
+test('configCommandHandler opens general tab, saves independently, and lazily opens models', () => {
   const configCommandHandler = new ConfigCommandHandler();
   const {calls, host} = createFakeHost();
 
@@ -1108,53 +1059,53 @@ test('configCommandHandler opens panel, updates state, saves, and closes result'
   assert.equal(calls.resets, 1);
   assert.equal(session.commandName, 'config');
   assert.equal(session.surface.kind, 'config');
-  assert.equal(session.surface.state.mode, 'list');
-  assert.equal(session.surface.state.draft.providers[0].id, 'chat');
+  assert.equal(session.surface.view, 'general');
+  assert.equal(session.surface.activeTab, 'general');
+  assert.equal(session.data.models, undefined);
 
-  configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.SUBMIT}, host);
-  assert.equal(calls.sessionUpdates[0].surface.kind, 'config');
-  assert.equal(calls.sessionUpdates[0].surface.state.mode, 'form');
-
-  while (host.session.getActive().surface.state.formIndex < host.session.getActive().surface.rows.findIndex((row) => row.kind === 'save')) {
+  configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_RIGHT}, host);
+  for (let index = 0; index < 3; index += 1) {
     configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
   }
-
   configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
-  assert.equal(calls.savedConfigDrafts.length, 1);
-  assert.equal(host.session.getActive().surface.kind, 'config');
-  assert.equal(host.session.getActive().surface.result.providersCount, 1);
-  assert.equal(host.session.getActive().surface.result.modelsCount, 1);
+  assert.equal(calls.savedSettingsDrafts.length, 1);
+  assert.equal(calls.savedSettingsDrafts[0].compactionThresholdRatio, 0.85);
+  assert.match(host.session.getActive().surface.state.feedback, /已保存/);
 
-  configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
-  assert.equal(calls.sessionCloses, 1);
-  assert.equal(calls.resets, 2);
+  configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.TAB}, host);
+  assert.equal(host.session.getActive().surface.view, 'models');
+  assert.equal(host.session.getActive().surface.state.draft.providers[0].id, 'chat');
 });
 
-test('configCommandHandler shows read and save errors without writing transcript', () => {
+test('configCommandHandler isolates tab read errors and keeps save errors inline', () => {
   const configCommandHandler = new ConfigCommandHandler();
-  const readError = createFakeHost({configReadError: 'cannot read config'});
+  const readError = createFakeHost({settingsReadError: 'cannot read settings'});
 
   const errorSession = startCommand(configCommandHandler, '/config', readError.host);
-  assert.equal(errorSession.surface.kind, 'info');
-  assert.equal(errorSession.surface.title, '/config');
-  assert.ok(errorSession.surface.lines.some((line) => line.includes('cannot read config')));
+  assert.equal(errorSession.surface.kind, 'config');
+  assert.equal(errorSession.surface.view, 'error');
+  assert.match(errorSession.surface.error, /cannot read settings/);
+
+  configCommandHandler.handleEvent(errorSession, {type: INPUT_EVENTS.TAB}, readError.host);
+  assert.equal(readError.host.session.getActive().surface.view, 'models');
 
   configCommandHandler.handleEvent(errorSession, {type: INPUT_EVENTS.ESCAPE}, readError.host);
   assert.equal(readError.calls.sessionCloses, 1);
 
   const saveError = createFakeHost({
-    saveConfig() {
-      return {ok: false, error: 'cannot write config'};
+    saveSettings() {
+      return {ok: false, error: 'cannot write settings'};
     }
   });
   const session = startCommand(configCommandHandler, '/config', saveError.host);
-  configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_DOWN}, saveError.host);
-  configCommandHandler.handleEvent(saveError.host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, saveError.host);
+  for (let index = 0; index < 3; index += 1) {
+    configCommandHandler.handleEvent(saveError.host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, saveError.host);
+  }
   configCommandHandler.handleEvent(saveError.host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, saveError.host);
 
-  assert.equal(saveError.calls.savedConfigDrafts.length, 1);
+  assert.equal(saveError.calls.savedSettingsDrafts.length, 1);
   assert.equal(saveError.host.session.getActive().surface.kind, 'config');
-  assert.equal(saveError.host.session.getActive().surface.state.error, 'cannot write config');
+  assert.equal(saveError.host.session.getActive().surface.state.error, 'cannot write settings');
   assert.equal(saveError.calls.sessionCloses, 0);
 });
 
@@ -1192,7 +1143,8 @@ test('configCommandHandler lists provider models and adds a selected model witho
       });
     }
   });
-  const session = startCommand(configCommandHandler, '/config', host);
+  let session = startCommand(configCommandHandler, '/config', host);
+  session = await openConfigModelsTab(configCommandHandler, session, host);
 
   await configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.SUBMIT}, host);
   while (host.session.getActive().surface.rows[host.session.getActive().surface.state.formIndex].kind !== 'listModels') {
@@ -1220,7 +1172,7 @@ test('configCommandHandler lists provider models and adds a selected model witho
   assert.equal(calls.savedConfigDrafts.length, 0);
 });
 
-test('configCommandHandler keeps hidden reasoning when saving', () => {
+test('configCommandHandler keeps hidden reasoning when saving', async () => {
   const configCommandHandler = new ConfigCommandHandler();
   const {calls, host} = createFakeHost({
     configDraft: {
@@ -1239,7 +1191,8 @@ test('configCommandHandler keeps hidden reasoning when saving', () => {
       rootConfig: {}
     }
   });
-  const session = startCommand(configCommandHandler, '/config', host);
+  let session = startCommand(configCommandHandler, '/config', host);
+  session = await openConfigModelsTab(configCommandHandler, session, host);
 
   configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.SUBMIT}, host);
   while (host.session.getActive().surface.rows[host.session.getActive().surface.state.formIndex].kind !== 'save') {
@@ -1260,7 +1213,8 @@ test('configCommandHandler isolates late list models callbacks after user leaves
       });
     }
   });
-  const session = startCommand(configCommandHandler, '/config', host);
+  let session = startCommand(configCommandHandler, '/config', host);
+  session = await openConfigModelsTab(configCommandHandler, session, host);
 
   await configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.SUBMIT}, host);
   while (host.session.getActive().surface.rows[host.session.getActive().surface.state.formIndex].kind !== 'listModels') {
@@ -1286,7 +1240,8 @@ test('configCommandHandler shows unsupported and redacted list models errors', a
       return Promise.resolve({ok: false, reason: 'unsupported', error: 'unsupported provider'});
     }
   });
-  const unsupportedSession = startCommand(configCommandHandler, '/config', unsupported.host);
+  let unsupportedSession = startCommand(configCommandHandler, '/config', unsupported.host);
+  unsupportedSession = await openConfigModelsTab(configCommandHandler, unsupportedSession, unsupported.host);
 
   await configCommandHandler.handleEvent(unsupportedSession, {type: INPUT_EVENTS.SUBMIT}, unsupported.host);
   while (unsupported.host.session.getActive().surface.rows[unsupported.host.session.getActive().surface.state.formIndex].kind !== 'listModels') {
@@ -1300,7 +1255,8 @@ test('configCommandHandler shows unsupported and redacted list models errors', a
       return Promise.resolve({ok: false, reason: 'error', error: '无法列出模型：Authorization: <redacted>'});
     }
   });
-  const failingSession = startCommand(configCommandHandler, '/config', failing.host);
+  let failingSession = startCommand(configCommandHandler, '/config', failing.host);
+  failingSession = await openConfigModelsTab(configCommandHandler, failingSession, failing.host);
 
   await configCommandHandler.handleEvent(failingSession, {type: INPUT_EVENTS.SUBMIT}, failing.host);
   while (failing.host.session.getActive().surface.rows[failing.host.session.getActive().surface.state.formIndex].kind !== 'listModels') {
@@ -1317,7 +1273,7 @@ test('createSlashCommandDescriptors derives display metadata from handlers', () 
   assert.equal(descriptors.some((descriptor) => descriptor.name === 'skill'), false);
   assert.deepEqual(descriptors, [
     { name: 'help', description: '查看帮助' },
-    { name: 'config', description: '配置 LLM providers 和 models' },
+    { name: 'config', description: '配置常规设置、模型和主题' },
     { name: 'model', description: '切换模型' },
     { name: 'effort', description: '调整推理等级' },
     { name: 'mode', description: '切换交互模式' },
@@ -1334,10 +1290,19 @@ test('createSlashCommandDescriptors derives display metadata from handlers', () 
     { name: 'memory', description: '查看和管理持久 memory' },
     { name: 'hooks', description: '查看、管理和测试 lifecycle hooks' },
     { name: 'skills', description: '查看和管理 skills' },
-    { name: 'themes', description: '切换主题' },
     { name: 'init', description: '分析项目并生成或评审 AGENTS.md' },
     { name: 'review', description: '审查当前代码变更' }
   ]);
+});
+
+test('/themes is no longer a local command', () => {
+  const handlers = createDefaultHandlersForTest();
+  const descriptors = createSlashCommandDescriptors(handlers);
+  const handler = resolveSlashCommand('/themes', handlers);
+
+  assert.equal(handlers.some((candidate) => candidate.name === 'themes'), false);
+  assert.equal(descriptors.some((descriptor) => descriptor.name === 'themes'), false);
+  assert.equal(handler instanceof SkillInvocationCommandHandler, true);
 });
 
 test('helpCommandHandler opens and closes help session through host', () => {

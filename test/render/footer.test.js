@@ -43,11 +43,7 @@ function completeCommandSurfaceFixture(surface) {
     case 'confirm':
       return {title: '确认', bodyLines: [], confirmLabel: '确认', cancelLabel: '取消', ...surface};
     case 'config':
-      return surface.view ? surface : surface.result
-        ? {...surface, view: 'result'}
-        : surface.state
-          ? {...surface, view: 'editor', rows: surface.rows || []}
-          : {...surface, view: 'loading'};
+      return surface;
     case 'context':
       return {title: '上下文', dismissHint: '上下文占用详情 · 按任意键关闭', ...surface};
     case 'usage':
@@ -2727,6 +2723,43 @@ test('renderFooterLayout renders slash suggestions below composer while keeping 
   assert.ok(plainLines.at(-1).includes('Tab 补全'));
   assert.ok(plainLines.some((line) => line.includes('GPT-4o')));
   assert.ok(layout.lines.some((line) => line.includes('\x1b[48;5;23m') && stripAnsi(line).includes('▌ /model')));
+});
+
+test('renderFooterLayout applies the configured slash suggestion visible limit without truncating state', () => {
+  const options = Array.from({length: 10}, (_value, index) => ({label: `/command-${index}`, description: `item ${index}`}));
+  const slashSuggestions = {options, selectedIndex: 7};
+  const layout = renderFooterLayout({
+    composer: createComposer('/command'),
+    slashSuggestions,
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    renderPreferences: {showReasoningSummary: true, slashSuggestionMaxVisible: 3},
+    rows: 30,
+    width: 80
+  });
+  const plain = layout.lines.map((line) => stripAnsi(line));
+
+  assert.ok(plain.filter((line) => /command-\d/.test(line)).length <= 3);
+  assert.equal(plain.some((line) => line.includes('command-7')), true);
+  assert.equal(slashSuggestions.options.length, 10);
+});
+
+test('renderFooterLayout does not count slash suggestion more hints against the configured limit', () => {
+  const options = Array.from({length: 12}, (_value, index) => ({label: `/command-${index + 1}`, description: `item ${index + 1}`}));
+  const layout = renderFooterLayout({
+    composer: createComposer('/command'),
+    slashSuggestions: {options, selectedIndex: 6},
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    renderPreferences: {showReasoningSummary: true, slashSuggestionMaxVisible: 10},
+    rows: 40,
+    width: 80
+  });
+  const plain = layout.lines.map((line) => stripAnsi(line));
+
+  assert.equal(plain.filter((line) => /command-\d/.test(line)).length, 10);
+  assert.equal(plain.some((line) => line.includes('↑ 1 更多')), true);
+  assert.equal(plain.some((line) => line.includes('↓ 1 更多')), true);
 });
 
 test('renderFooterLayout clamps long slash suggestions and budgets pending preview height', () => {

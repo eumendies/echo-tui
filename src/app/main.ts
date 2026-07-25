@@ -5,6 +5,7 @@ import {createKeyParser} from '../input/key-parser';
 import {createTranscriptStore} from '../persistence/transcript-store';
 import {createUsageStore} from '../persistence/usage-store';
 import {readTuiTheme} from '../config/theme-config';
+import {readAppSettings} from '../config/app-settings-config';
 import {createDebugContext, summarizeText} from '../debug/debug-context';
 import {readLifecycleHookConfig} from '../hooks/config';
 import {watchUserConfig} from '../config/user-config';
@@ -49,9 +50,10 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
   const renderer = createAppRenderer(output);
   const transcriptStore = createTranscriptStore();
   const theme = readTuiTheme();
+  const appSettings = readAppSettings();
 
   // AppContext 只组合语义 context，具体状态由子 context 持有。
-  const appContext = new AppContext(terminal, transcriptStore, process.cwd, process.version, theme);
+  const appContext = new AppContext(terminal, transcriptStore, process.cwd, process.version, theme, appSettings);
   const toolResultStore = createToolResultStore({cwd: () => appContext.getCurrentCwd()});
   let started = false;
   let activeShellController: AbortController | null = null;
@@ -493,7 +495,12 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     try {
       userConfigWatcher = watchUserConfig(
         () => {
-          if (appContext.refreshModelStateFromConfig()) {
+          const modelChanged = appContext.refreshModelStateFromConfig();
+          const settingsRefresh = appContext.refreshAppSettingsFromConfig();
+
+          if (settingsRefresh.reasoningVisibilityChanged) {
+            renderResizeRecovery();
+          } else if (modelChanged || settingsRefresh.slashSuggestionLimitChanged) {
             renderFooter();
           }
         },

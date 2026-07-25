@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 
 const { INPUT_EVENTS } = require('../../src/input/event-types');
 const { displayWidth, stripAnsi } = require('../../src/render/layout');
-const { createInitialConfigState, getConfigRows } = require('../../src/commands/config/state');
+const { createInitialAppearanceConfigState, createInitialConfigState, createInitialGeneralConfigState, getConfigRows } = require('../../src/commands/config/state');
 const { handleConfigPanelEvent } = require('../../src/commands/config/panel-state');
 const { listProviderPresets } = require('../../src/config/provider-presets');
 const { renderConfigSurface } = require('../../src/render/footer/config-surface');
@@ -11,18 +11,16 @@ const { renderConfigSurface } = require('../../src/render/footer/config-surface'
 function renderConfigPanel(state, width, options = {}) {
   return renderConfigSurface({
     kind: 'config',
-    view: 'editor',
+    view: 'models',
+    activeTab: 'models',
+    tabs: [
+      {id: 'general', label: '常规'},
+      {id: 'models', label: '模型与 Provider'},
+      {id: 'appearance', label: '外观'}
+    ],
     state,
     rows: options.rows || getConfigRows(state)
   }, width, options).lines;
-}
-
-function renderConfigResult(width, providersCount, modelsCount) {
-  return renderConfigSurface({
-    kind: 'config',
-    view: 'result',
-    result: {providersCount, modelsCount}
-  }, width).lines;
 }
 
 function createDraft() {
@@ -81,6 +79,74 @@ function nextState(state, event) {
   assert.equal('state' in result, true);
   return result.state;
 }
+
+test('config center renders general tabs, settings, and constrained width', () => {
+  const state = createInitialGeneralConfigState({
+    compactionThresholdRatio: 0.8,
+    showReasoningSummary: true,
+    slashSuggestionMaxVisible: 8
+  });
+  const layout = renderConfigSurface({
+    kind: 'config',
+    view: 'general',
+    activeTab: 'general',
+    tabs: [
+      {id: 'general', label: '常规', status: 'dirty'},
+      {id: 'models', label: '模型与 Provider'},
+      {id: 'appearance', label: '外观'}
+    ],
+    state
+  }, 42, {maxLines: 9});
+  const text = layout.lines.map(stripAnsi).join('\n');
+
+  assert.match(text, /常规/);
+  assert.match(text, /模型与 Provider/);
+  assert.match(text, /自动压缩阈值/);
+  assert.match(text, /80%/);
+  assert.ok(layout.lines.every((line) => displayWidth(line) <= 38));
+});
+
+test('config center highlights active tab with foreground color only', () => {
+  const state = createInitialGeneralConfigState({
+    compactionThresholdRatio: 0.8,
+    showReasoningSummary: true,
+    slashSuggestionMaxVisible: 8
+  });
+  const layout = renderConfigSurface({
+    kind: 'config',
+    view: 'general',
+    activeTab: 'general',
+    tabs: [
+      {id: 'general', label: '常规'},
+      {id: 'models', label: '模型与 Provider'},
+      {id: 'appearance', label: '外观'}
+    ],
+    state
+  }, 70);
+  const tabLine = layout.lines.find((line) => stripAnsi(line).includes('[常规]'));
+
+  assert.ok(tabLine);
+  assert.equal(tabLine.includes('\x1b[48;5;23m'), false);
+});
+
+test('config center renders appearance markers, errors, and discard confirmation', () => {
+  const appearance = createInitialAppearanceConfigState([
+    {id: 'default', label: 'Default', description: 'cyan', selected: true},
+    {id: 'amber', label: 'Amber', description: 'warm', selected: false}
+  ]);
+  const tabs = [
+    {id: 'general', label: '常规'},
+    {id: 'models', label: '模型与 Provider', status: 'error'},
+    {id: 'appearance', label: '外观'}
+  ];
+  const appearanceText = renderConfigSurface({kind: 'config', view: 'appearance', activeTab: 'appearance', tabs, state: appearance}, 70).lines.map(stripAnsi).join('\n');
+  const confirmText = renderConfigSurface({kind: 'config', view: 'discardConfirm', activeTab: 'general', tabs, dirtyTabs: ['常规', '模型与 Provider'], selectedIndex: 1}, 70).lines.map(stripAnsi).join('\n');
+
+  assert.match(appearanceText, /● Default/);
+  assert.match(appearanceText, /○ Amber/);
+  assert.match(confirmText, /未保存：常规、模型与 Provider/);
+  assert.match(confirmText, /放弃更改/);
+});
 
 test('config surface masks API keys and renders base URL mode', () => {
   let state = createInitialConfigState(createDraft());
@@ -183,7 +249,6 @@ test('config surface keeps frame lines the same width', () => {
   assertUniformLineWidths(renderConfigPanel(state, 60, {rows: getConfigRows(state)}));
   assertUniformLineWidths(renderConfigPanel(state, 30, {rows: getConfigRows(state)}));
   assertMaxLineWidth(renderConfigPanel(state, 30, {rows: getConfigRows(state)}), 30);
-  assertUniformLineWidths(renderConfigResult(100, 1, 1));
 });
 
 test('config surface windows long provider and preset lists within max lines', () => {
@@ -220,11 +285,11 @@ test('config surface windows long form and model lists within max lines', () => 
   }));
   state = {...state, mode: 'form', formIndex: 13};
 
-  const formLines = renderConfigSurface({kind: 'config', view: 'editor', state, rows: getConfigRows(state)}, 100, {maxLines: 10}).lines;
+  const formLines = renderConfigPanel(state, 100, {maxLines: 10, rows: getConfigRows(state)});
   const formText = stripAnsi(formLines.join('\n'));
   assert.ok(formLines.length <= 10);
   assert.match(formText, /↑ \d+ 更多/);
-  assert.match(formText, /model-10/);
+  assert.match(formText, /model-9/);
   assert.match(stripAnsi(formLines[0]), /Provider 1/);
   assert.match(stripAnsi(formLines.at(-1)), /^╰/);
   assertUniformLineWidths(formLines);
@@ -241,7 +306,7 @@ test('config surface windows long form and model lists within max lines', () => 
     }
   };
 
-  const modelListLines = renderConfigSurface({kind: 'config', view: 'editor', state, rows: getConfigRows(state)}, 100, {maxLines: 10}).lines;
+  const modelListLines = renderConfigPanel(state, 100, {maxLines: 10, rows: getConfigRows(state)});
   const modelListText = stripAnsi(modelListLines.join('\n'));
   assert.ok(modelListLines.length <= 10);
   assert.match(modelListText, /↑ \d+ 更多/);

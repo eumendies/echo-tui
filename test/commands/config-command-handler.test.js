@@ -172,7 +172,7 @@ test('config command state preserves an existing header value when no replacemen
   assert.deepEqual(driver.getState().draft.providers[0].headers, {'x-source': 'hidden-value'});
 });
 
-test('config command state confirms before discarding dirty drafts', () => {
+test('config command state delegates dirty discard confirmation to the config center root', () => {
   const driver = createStateDriver();
 
   openForm(driver);
@@ -181,11 +181,9 @@ test('config command state confirms before discarding dirty drafts', () => {
   driver.handle({type: INPUT_EVENTS.TEXT, value: 'Renamed'});
   driver.handle({type: INPUT_EVENTS.SUBMIT});
   driver.handle({type: INPUT_EVENTS.ESCAPE});
-  driver.handle({type: INPUT_EVENTS.ESCAPE});
-  assert.equal(driver.getState().mode, 'discardConfirm');
+  const result = driver.handle({type: INPUT_EVENTS.ESCAPE});
 
-  driver.handle({type: INPUT_EVENTS.MOVE_DOWN});
-  const result = driver.handle({type: INPUT_EVENTS.SUBMIT});
+  assert.equal(driver.getState().mode, 'list');
   assert.equal(result.kind, 'cancel');
 });
 

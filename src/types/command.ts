@@ -6,6 +6,7 @@ import type {UndoExecuteResult, UndoSummary} from './change-history';
 import type {UsageDailyAggregate, UsageQueryOptions} from './usage';
 import type {LifecycleHookConfigDraft, LifecycleHookDraftEntry, LifecycleHookEventName, LifecycleHookTestResult} from './hooks';
 import type {AgentMemoryCatalog, AgentMemoryCatalogListResult, AgentMemoryCatalogReadResult, AgentMemoryItem, AgentMemoryMutationResult, AgentMemoryScope, UserMemory, UserMemoryMutationResult, UserMemoryReadResult} from './memory';
+import type {AppSettings} from '../config/app-settings-config';
 
 export type CommandSurfaceOption = {
   label: string;
@@ -195,8 +196,7 @@ export type ConfigPanelMode =
   | 'modelList'
   | 'headerList'
   | 'headerDetail'
-  | 'modelDetail'
-  | 'discardConfirm';
+  | 'modelDetail';
 
 export type ConfigRemoteModel = {
   id: string;
@@ -258,6 +258,7 @@ export type ConfigCommandState = {
   editReplacePending: boolean;
   editTarget?: ConfigEditTarget;
   error?: string;
+  feedback?: string;
   formIndex: number;
   headerDetailIndex: number;
   headerEditor?: {
@@ -277,17 +278,35 @@ export type ConfigCommandState = {
   providerIndex: number;
 };
 
+export type ConfigTabId = 'general' | 'models' | 'appearance';
+
+export type ConfigSurfaceTab = {
+  id: ConfigTabId;
+  label: string;
+  status?: 'dirty' | 'error';
+};
+
+export type GeneralConfigState = {
+  draft: AppSettings;
+  error?: string;
+  feedback?: string;
+  initialDraftFingerprint: string;
+  selectedIndex: number;
+};
+
+export type AppearanceConfigState = {
+  error?: string;
+  feedback?: string;
+  selectedIndex: number;
+  themes: CommandThemeInfo[];
+};
+
 export type ConfigCommandSurface =
-  | {kind: 'config'; view: 'loading'}
-  | {kind: 'config'; view: 'editor'; state: ConfigCommandState; rows: ConfigFormRow[]}
-  | {
-      kind: 'config';
-      view: 'result';
-      result: {
-        providersCount: number;
-        modelsCount: number;
-      };
-    };
+  | {kind: 'config'; view: 'general'; activeTab: ConfigTabId; tabs: ConfigSurfaceTab[]; state: GeneralConfigState}
+  | {kind: 'config'; view: 'models'; activeTab: ConfigTabId; tabs: ConfigSurfaceTab[]; state: ConfigCommandState; rows: ConfigFormRow[]}
+  | {kind: 'config'; view: 'appearance'; activeTab: ConfigTabId; tabs: ConfigSurfaceTab[]; state: AppearanceConfigState}
+  | {kind: 'config'; view: 'error'; activeTab: ConfigTabId; tabs: ConfigSurfaceTab[]; error: string}
+  | {kind: 'config'; view: 'discardConfirm'; activeTab: ConfigTabId; tabs: ConfigSurfaceTab[]; dirtyTabs: string[]; selectedIndex: number};
 
 export type ContextUsageCommandSurface = {
   kind: 'context';
@@ -547,8 +566,10 @@ export type CommandHostApp = {
     selectEffort(effort: ReasoningEffort): CommandSelectEffortResult;
   };
   config: {
+    readSettings(): AppSettings;
     readDraft(): LlmConfigDraft;
     listModels(provider: ConfigProviderDraft): Promise<CommandConfigListModelsResult>;
+    saveSettings(draft: AppSettings): CommandConfigSaveResult;
     saveDraft(draft: LlmConfigDraft): CommandConfigSaveResult;
   };
   skills: {

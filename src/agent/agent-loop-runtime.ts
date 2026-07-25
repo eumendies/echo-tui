@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 
 import {resolveContextWindow} from '../config/llm-config';
+import {readAppSettings} from '../config/app-settings-config';
 import {
   ASK_USER_QUESTIONS_TOOL_NAME,
   createAskUserQuestionsCancelledResult,
@@ -225,6 +226,7 @@ type AgentLoopRunState = {
   interactionMode: InteractionMode;
   executor: ToolExecutor;
   contextWindow: number;
+  compactionThresholdRatio: number;
   skillCatalog: SkillCatalogEntry[];
   skillCatalogTokens: number;
   basePrompt?: string;
@@ -288,7 +290,7 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
   /**
    * 初始化单次调用的 loop 状态；provider、配置和 registry 由统一装配入口提供。
    */
-  function initializeRunState(interactionMode: InteractionMode, abortSignal: AbortSignal | undefined, executionMode: AgentExecutionMode, modelProfileId?: string, reasoningEffortOverride?: ReasoningEffort): AgentLoopRunState {
+  function initializeRunState(interactionMode: InteractionMode, abortSignal: AbortSignal | undefined, executionMode: AgentExecutionMode, compactionThresholdRatio: number, modelProfileId?: string, reasoningEffortOverride?: ReasoningEffort): AgentLoopRunState {
     const {agent, config, registry} = prepareAgent({cwd, mcpManager, modelProfileId, reasoningEffortOverride});
     const skillCatalog = registry.listSkillCatalog?.() || [];
     const systemPromptOverride = loadSystemPromptOverride({cwd});
@@ -304,6 +306,7 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
       interactionMode,
       executor: createToolExecutor(registry),
       contextWindow: resolveContextWindow(config),
+      compactionThresholdRatio,
       skillCatalog,
       skillCatalogTokens: estimateTextTokens(formatSkillCatalogPrompt(skillCatalog)),
       todoState: undefined,
@@ -320,12 +323,14 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
     const abortSignal = session.abortSignal;
     const interactionMode = session.interactionMode || 'normal';
     const executionMode = session.executionMode || INTERACTIVE_EXECUTION_MODE;
+    // 单次 assistant run 固定使用启动时阈值，运行中配置变化只影响后续 turn。
+    const compactionThresholdRatio = session.compactionThresholdRatio ?? readAppSettings().compactionThresholdRatio;
 
     throwIfAborted(abortSignal);
     let state: AgentLoopRunState;
 
     try {
-      state = initializeRunState(interactionMode, abortSignal, executionMode, session.modelProfileId, session.reasoningEffortOverride);
+      state = initializeRunState(interactionMode, abortSignal, executionMode, compactionThresholdRatio, session.modelProfileId, session.reasoningEffortOverride);
     } catch (error: unknown) {
       throw normalizeError(error, '无法加载 LLM 配置');
     }
@@ -353,6 +358,7 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
         compaction: compactionState,
         anchor: usageAnchor,
         contextWindow: state.contextWindow,
+        thresholdRatio: state.compactionThresholdRatio,
         force: false,
         agent: state.agent,
         abortSignal

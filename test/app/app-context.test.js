@@ -29,7 +29,8 @@ function createContext(overrides = {}) {
     overrides.transcriptStore || createFakeTranscriptStore(),
     overrides.cwd || '/tmp/echo_tui',
     overrides.nodeVersion || 'v20.0.0',
-    overrides.theme
+    overrides.theme,
+    overrides.appSettings
   );
 }
 
@@ -643,6 +644,51 @@ test('AppContext projects tool approval allow-all state into status line', () =>
   assert.equal(context.createRenderState({ toolApproval }).statusLine.allowAllTools, true);
   assert.equal(toolApproval.toggleAllowAllForSession(), false);
   assert.equal(context.createRenderState({ toolApproval }).statusLine.allowAllTools, undefined);
+});
+
+test('AppContext snapshots app settings into render state and agent sessions', () => {
+  const context = createContext({
+    appSettings: {
+      compactionThresholdRatio: 0.65,
+      showReasoningSummary: false,
+      slashSuggestionMaxVisible: 3
+    }
+  });
+
+  assert.deepEqual(context.createRenderState().renderPreferences, {
+    showReasoningSummary: false,
+    slashSuggestionMaxVisible: 3
+  });
+  assert.equal(context.getAgentSession().compactionThresholdRatio, 0.65);
+});
+
+test('AppContext refreshes external app settings and classifies redraw impact', () => {
+  const originalHomedir = os.homedir;
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-app-settings-'));
+  os.homedir = () => homeDir;
+
+  try {
+    fs.mkdirSync(path.join(homeDir, '.echo'), {recursive: true});
+    fs.writeFileSync(path.join(homeDir, '.echo', 'config.json'), JSON.stringify({
+      compaction: {thresholdRatio: 0.65},
+      ui: {showReasoningSummary: false, slashSuggestionMaxVisible: 4}
+    }));
+    const context = createContext();
+    const result = context.refreshAppSettingsFromConfig();
+
+    assert.deepEqual(result, {
+      reasoningVisibilityChanged: true,
+      slashSuggestionLimitChanged: true
+    });
+    assert.equal(context.getAgentSession().compactionThresholdRatio, 0.65);
+    assert.deepEqual(context.createRenderState().renderPreferences, {
+      showReasoningSummary: false,
+      slashSuggestionMaxVisible: 4
+    });
+  } finally {
+    os.homedir = originalHomedir;
+    fs.rmSync(homeDir, {recursive: true, force: true});
+  }
 });
 
 test('AppContext status line shows plan mode without exit hint', () => {

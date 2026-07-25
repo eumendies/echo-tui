@@ -116,6 +116,7 @@ slash runtime 通过三类稳定边界协调本地命令：
 | usage store | 独立于 transcript 的 append-only JSONL token 用量账本，默认位于用户级 `usage/` 分区，按月份写入并按本地日期聚合；只保存 provider/model/mode/cwd hash 和 token 统计，不保存 prompt、响应文本、工具参数或凭据 | `src/persistence/usage-store.ts`、`src/types/usage.ts` |
 | change history context | assistant loop 的 change checkpoint 栈，记录受控文件 snapshot 快照和 `pending` / `created` / `updated` 写入状态；同一份 history 同时服务 `/undo` 回退和 `/diff` fallback | `src/app/state/change-history-context.ts` |
 | LLM config | 从 `~/.echo/config.json` 读取必填 `llm.providers`、`llm.models`、可选 `llm.selectedModel` / `contextWindow` / `reasoning` 配置；model profile 通过 `provider` 引用 provider profile，provider profile 通过 `preset` 引用内置 provider preset catalog，解析层把当前选择归一化为单个运行时 `{agentType, apiKey, baseURL, codexOAuth, headers, model, reasoningEffort, reasoningSummary, contextWindow, tools}` 配置；单次运行可传入可选 model profile ID override，有效时选择该完整 profile，失效时回退全局当前 profile，不写回 `llm.selectedModel`；用户配置不暴露 `agentType`，协议类型由 preset 后台解析；`openai-codex-oauth` preset 不要求 `apiKey`，只记录可选 `codexAuthFile`，运行时按 `codexAuthFile` → `CODEX_HOME/auth.json` → `~/.codex/auth.json` 读取既有 Codex OAuth cache；`headers` 是 preset 固定 headers 与 provider profile 手写 headers 的合并结果；context window 按用户配置 → 内置模型映射 → 默认窗口三级回退 | `src/config/llm-config.ts`、`src/config/provider-presets.ts`、`src/config/codex-oauth.ts` |
+| App settings | `~/.echo/config.json` 的 `compaction.thresholdRatio`（0.5–0.95）和 `ui.slashSuggestionMaxVisible`（1–20）、`ui.showReasoningSummary` 逐字段归一化并缓存到 `AppContext`；普通 render 热路径只读缓存。reasoning 开关只过滤可见 transcript block，不删除 journal/provider 事实；压缩阈值在每次 agent run 启动时形成快照并贯穿 tool continuation | `src/config/app-settings-config.ts`、`src/app/state/app-context.ts`、`src/types/render.ts` |
 | MCP manager | 启动期统一初始化 enabled MCP servers，单 server 失败只记录脱敏诊断；以 `mcp__<server>__<tool>` 命名空间暴露工具、按名调用、保存 per-tool approval、支持重载与关闭 | `src/mcp/manager.ts`、`src/mcp/client.ts`、`src/config/mcp-config.ts` |
 | 用户 memory | 用户通过 `/memory` 显式维护的全局持久背景，存储于 `~/.echo/memories.json`；`/memory` 是其唯一的读取和修改入口，支持新增、编辑、Space 启停和确认删除。每轮真实 provider 请求重新读取并 transient 注入已启用项，绝不写入 transcript、session 或 compaction；内容会发送给 provider，不能当作秘密存储 | `src/memory/memory-store.ts`、`src/commands/memory-command-handler.ts` |
 | Agent memory | 与 user memory 分离存储于 `~/.echo/agent-memory/`，索引记录 global/project scope、catalog 名称、描述和启停状态，items 按 catalog id 分文件保存并各自记录启停状态。每轮 provider request 只注入当前 scope 的 enabled 有效 catalog 名称与描述，disabled project 不覆盖同名 enabled global catalog；scope 和 item 不进入 prompt。agent 仅通过 `read_memory`、`add_memory`、`update_memory` 和 `remove_memory` 操作 enabled catalog 和 items；用户明确要求记住的稳定信息也应存入语义化 agent catalog。读取结果按普通 tool result 进入 transcript/session/compaction，三个 mutation tools 需审批，`/memory` 提供 scope/catalog/item 的启停和人工纠错入口 | `src/memory/agent-memory-store.ts`、`src/tools/memory-tool-handler.ts` |
@@ -156,7 +157,7 @@ handler 协议保持最小：
 
 这让“无交互命令”和“有交互命令”共享同一套总线，而不是拆成两套 app 分支。
 
-默认 handlers 在 app 装配阶段无参实例化：`createDefaultSlashCommandHandlers()` 创建 `/help`、`/config`、`/model`、`/effort`、`/mode`、`/status`、`/context`、`/usage`、`/memory`、`/clear`、`/compact`、`/diff`、`/undo`、`/resume`、`/mcp`、`/hooks`、`/skills`、`/themes`、内置 agent workflow（`/init`、`/review`）和 direct skill invocation handler。命令需要的 app 能力在运行时由 `CommandHost` 提供。`createSlashCommandDescriptors()` 从同一组 handlers 派生命令 `{name, description}`，再与 enabled skill descriptors 合并去重，供普通 composer 输入态下的 slash suggestion 使用，避免维护第二份命令/skill 清单。
+默认 handlers 在 app 装配阶段无参实例化：`createDefaultSlashCommandHandlers()` 创建 `/help`、`/config`、`/model`、`/effort`、`/mode`、`/status`、`/context`、`/usage`、`/memory`、`/clear`、`/compact`、`/diff`、`/undo`、`/resume`、`/mcp`、`/hooks`、`/skills`、内置 agent workflow（`/init`、`/review`）和 direct skill invocation handler。命令需要的 app 能力在运行时由 `CommandHost` 提供。`createSlashCommandDescriptors()` 从同一组 handlers 派生命令 `{name, description}`，再与 enabled skill descriptors 合并去重，供普通 composer 输入态下的 slash suggestion 使用，避免维护第二份命令/skill 清单。
 
 direct skill invocation 的模型策略通过独立 typed 字段沿 `CommandStartResult` → `AssistantTurnRunnerInput` → `AgentSessionInput` 传递，不从 transcript metadata 反推。缺少字段表示动态跟随全局当前模型；固定 profile 只作用于当前显式 slash turn。
 
@@ -173,13 +174,13 @@ direct skill invocation 的模型策略通过独立 typed 字段沿 `CommandStar
 | `transcript` | 清空当前 transcript、加载历史 session、追加本地 record、列出可复制 records 和可恢复 session metadata |
 | `clipboard` | 把格式化后的命令结果写入系统剪贴板，并返回结构化成功或失败结果 |
 | `model` | 为 `/model` 读取模型命令信息并持久化选择；为 `/effort` 读取当前推理等级并覆盖当前模型 profile 的 `reasoning.effort` |
-| `config` | 为 `/config` 读取 provider/model 草稿、基于 provider 草稿调用 models API 列出远端模型，并原子保存有效草稿；保存成功后清空 context usage |
+| `config` | 为 `/config` 的常规与模型 Tab 分别读取/保存草稿，基于 provider 草稿列出远端模型；设置保存后按变化类型执行 footer redraw 或 destructive replay |
 | `skills` | 为 `/skills` 和 direct skill invocation 提供 skill 列表、enabled descriptors、启停/model override 状态保存和注入文本创建 |
 | `mcp` | 为 `/mcp` 列出全局开关与各 server 状态（含传输类型、工具数量、诊断），保存 enabled 草稿并重载 MCP 工具集合 |
 | `memory` | 为 `/memory` 受控管理 user memory，以及当前 cwd 可访问的 global/project agent catalog 和 items；支持通过 facade 切换 user memory、agent catalog 和 agent item 的启停状态，handler 不直接访问文件系统或自行解析 project scope |
 | `hooks` | 为 `/hooks` 读取 hooks 管理草稿、保存 root `hooks` 节点并 reload dispatcher、按 event 构造 synthetic payload、执行单条 hook synthetic test；handler 不直接读写用户配置、不持有 dispatcher 或 renderer/terminal 引用 |
 | `mode` | 读取与设置当前 interaction mode，并清空 context usage 后重绘 footer |
-| `theme` | 为 `/themes` 列出内置 theme metadata、保存当前 base theme id、更新当前进程 render theme 并触发完整重绘 |
+| `theme` | 为配置中心“外观”Tab 列出并保存内置 theme，更新当前进程 theme 后完整重绘 |
 | `context` | 为 `/context` 返回最近一次真实 provider context usage 快照 |
 | `status` | 为 `/status` 聚合 cwd、AGENTS 来源、有效 memory、model/provider 与 session id；Codex provider 额外复用 OAuth 凭据查询账户配额，失败只返回脱敏不可用状态 |
 | `usage` | 为 `/usage` 返回 usage store 的每日聚合快照；命令只读，不追加 transcript，也不触发 provider request |
@@ -331,7 +332,7 @@ flowchart LR
 
 代码块遵循用户体验约束：fenced code block 不画边框、不做卡片、不显示语言标签，只把代码内容直接高亮并保留原始缩进。`src/render/syntax-highlight.ts` 提供 render-only 的通用跨行高亮器，以完整 code block 为输入维护未闭合字符串和块注释的跨行状态，输出 semantic `StyledSpan[]` 再复用 display-width aware wrapping。代码块内部不解析 inline Markdown。streaming 中遇到未闭合 fenced code block 时，renderer 把 fence 后内容视为持续到 draft 末尾的代码块。
 
-Render theme 在 app 创建时从独立用户级 `~/.echo/theme.json` 读取一次，并通过 `RenderState.theme` 传给 footer layout、banner、transcript block、pending preview、Markdown renderer、syntax highlighter、tool message renderer 和 destructive resize replay。`src/config/theme-config.ts` 只负责 theme 数据模型、默认值、内置 JSON、读取、归一化和 base theme 保存；`src/render/colors.ts` 集中负责 color/style 到 ANSI 的应用 helper。Theme 使用区域化 semantic token，包括 `footer`、`blocks`、`markdown` 和 `syntax`；默认值由代码内常量提供并保持现有 cyan/gray 默认视觉，默认启动路径不读取内置 theme JSON。内置 theme 以完整 JSON 放在 `src/config/themes/`，构建时复制到 `dist/src/config/themes/` 并随安装包发布，供 `/themes` 命令列举和切换；其中 `default-light`、`macaron`、`paper-light`、`porcelain`、`rose-dusk`、`solarized-light` 和 `spring-mist` 面向浅色终端。`theme.json` 根字段 `theme` 表示内置 base id；缺失或无效时回退 `default`，同文件中的区域 token 继续作为 override 合并到 base 上。`/themes` 只更新根字段 `theme`，保留 override，并通过 `AppContext.setTheme()` 更新当前进程 theme 后触发 destructive resize recovery。配置文件缺失、JSON 无效或局部 token 无效时回退默认值，不写 transcript error。
+Render theme 在 app 创建时从独立用户级 `~/.echo/theme.json` 读取一次，并通过 `RenderState.theme` 传给 footer layout、banner、transcript block、pending preview、Markdown renderer、syntax highlighter、tool message renderer 和 destructive resize replay。`src/config/theme-config.ts` 只负责 theme 数据模型、默认值、内置 JSON、读取、归一化和 base theme 保存；`src/render/colors.ts` 集中负责 color/style 到 ANSI 的应用 helper。Theme 使用区域化 semantic token，包括 `footer`、`blocks`、`markdown` 和 `syntax`；默认值由代码内常量提供并保持现有 cyan/gray 默认视觉，默认启动路径不读取内置 theme JSON。内置 theme 以完整 JSON 放在 `src/config/themes/`，构建时复制到 `dist/src/config/themes/` 并随安装包发布，供配置中心“外观”Tab 列举和切换；其中 `default-light`、`macaron`、`paper-light`、`porcelain`、`rose-dusk`、`solarized-light` 和 `spring-mist` 面向浅色终端。`theme.json` 根字段 `theme` 表示内置 base id；缺失或无效时回退 `default`，同文件中的区域 token 继续作为 override 合并到 base 上。主题确认只更新根字段 `theme`，保留 override，并通过 `AppContext.setTheme()` 更新当前进程 theme 后触发 destructive resize recovery。配置文件缺失、JSON 无效或局部 token 无效时回退默认值，不写 transcript error。
 
 Theme color 只支持 RGB/hex 和 ANSI 256 色。代码块 syntax highlight 是 render theme 的 `syntax` 分组；`apply_patch` tool result 中 added/removed 行背景是文件修改事实语义色，固定在代码中，不开放给 theme 覆盖。
 
@@ -392,7 +393,7 @@ flowchart TB
 | kind | 用途 | renderer 行为 |
 | --- | --- | --- |
 | `info` | 静态说明，例如 `/help`、用法和空状态 | 渲染标题、正文和关闭提示，隐藏光标 |
-| `select` | 通用单选命令，例如 `/model`、`/mode`、`/themes` | 将候选项 label 和说明压成单行渲染，展示选中态，隐藏光标 |
+| `select` | 通用单选命令，例如 `/model`、`/mode` | 将候选项 label 和说明压成单行渲染，展示选中态，隐藏光标 |
 | `resume` | `/resume` 历史恢复面板 | 左侧渲染最多 5 条 session 窗口，右侧渲染当前选中 session 的最近消息预览，隐藏光标 |
 | `skills` | `/skills` skill 管理面板 | 渲染 card、enabled 计数、on/off pill、行内模型策略、当前行 accent 和滚动提示；Left/Right 循环模型草稿，窄终端优先保留启停、名称和模型策略，隐藏光标 |
 | `mcp` | `/mcp` server 管理面板 | 渲染全局开关、各 server 启用状态、传输类型、工具数量和诊断，隐藏光标 |
@@ -401,7 +402,7 @@ flowchart TB
 | `scale` | 有序强度选择，例如 `/effort` | 用 rounded slider 轨道展示档位与当前 knob，隐藏光标 |
 | `choice` | 阻塞式单选交互，例如 tool approval 和 `ask_user_questions` | 渲染问题、选项、可选 inline input 和 dismiss hint；选中 inline input 时显示光标 |
 | `confirm` | 确认型命令，例如 `/clear`、`/compact`、`/undo` | 渲染标题、正文和确认/取消提示，Enter 确认操作高亮，隐藏光标 |
-| `config` | `/config` provider/model 配置面板 | 渲染 provider/header/model 分层页面、preset 选择、校验错误、未保存确认和保存结果，隐藏光标 |
+| `config` | `/config` 三 Tab 配置中心 | 统一渲染常规设置、provider/header/model 分层页面、内置主题、按域错误、保存反馈和共享未保存确认，隐藏光标 |
 | `context` | `/context` 上下文占用详情 | 渲染最近一次真实 provider usage 与分类占用，隐藏光标 |
 | `usage` | `/usage` 每日 token 用量面板 | 渲染累计输入/输出/缓存命中、日期窗口、每日堆叠柱状图、图例和导航提示，隐藏光标 |
 | `status` | `/status` 运行状态与 Codex 配额面板 | 渲染本地运行状态；以进度条展示 Codex OAuth 5 小时/每周配额、百分比和重置时间，隐藏光标 |
@@ -439,7 +440,6 @@ renderer 只理解这些 surface kind，不理解具体命令、tool approval、
 | `src/commands/resume-command-handler.ts` | `ResumeCommandHandler`、`createResumeSurface` | `/resume` 最多 5 条窗口、消息预览、确认恢复 |
 | `src/commands/mcp-command-handler.ts` | `McpCommandHandler`、`createMcpSurface` | `/mcp` 列出 server、Space 切换、Enter 保存并重载 |
 | `src/commands/skills-command-handler.ts` | `SkillsCommandHandler`、`createSkillsSurface` | `/skills` skill 列表、Space 切换启停、Left/Right 循环模型策略、Enter 统一保存 |
-| `src/commands/themes-command-handler.ts` | `ThemesCommandHandler`、`createThemesSelectSurface` | `/themes` 内置 theme select、Enter 即时切换 |
 | `src/commands/agent-workflows/agent-workflow-command-handler.ts` | `AgentWorkflowCommandHandler`、`createBuiltInAgentWorkflowHandlers` | `/init`、`/review`：把工作流 prompt 作为普通用户消息提交 |
 | `src/commands/skill-invocation-command-handler.ts` | `SkillInvocationCommandHandler` | `/<skill-name> [arguments...]`，注入 enabled skill 指令为普通用户消息，并传递可选单 turn model profile ID |
 | `src/app/main.ts` | `createApp`、`submitComposer`、`submitShellCommand`、`handleEvent`、`renderResizeRecovery`、`run` | 应用入口编排：依赖装配、输入分发、agent/shell 生命周期、MCP 初始化、resize recovery |

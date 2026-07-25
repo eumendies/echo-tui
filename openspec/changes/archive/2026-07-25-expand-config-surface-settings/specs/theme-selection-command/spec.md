@@ -1,8 +1,5 @@
-# theme-selection-command Specification
+## MODIFIED Requirements
 
-## Purpose
-定义内置 render theme 的选择能力，包括 `/config` 配置中心“外观”Tab 中的主题列举、即时应用、错误处理和与旧 `/themes` 命令解绑后的外部行为。
-## Requirements
 ### Requirement: Appearance tab switches builtin render themes
 系统 SHALL 通过 `/config` 配置中心的“外观”Tab 查看并切换内置 render theme。系统 SHALL NOT 注册独立 `/themes` slash command；主题选择 SHALL 使用 config footer surface，打开、确认、取消或失败时 SHALL NOT 写入 transcript，SHALL NOT 启动 agent loop，SHALL NOT 进入 tool approval flow。
 
@@ -34,13 +31,13 @@
 #### Scenario: 关闭外观 Tab
 - **WHEN** “外观”Tab处于活跃状态且其他 Tab没有未保存草稿
 - **AND** 用户按 Esc
-- **THEN** 系统 SHALL 关闭 command session 并清空 composer
+- **THEN** 系统 SHALL 关闭配置中心并清空 composer
 - **THEN** 系统 SHALL 保留最近一次已经确认保存的 theme
 
 ### Requirement: Appearance tab handles unavailable lists and save errors
 系统 SHALL 在配置中心“外观”Tab对内置 theme 列表不可用和配置保存失败展示可理解错误。失败路径 SHALL NOT 修改当前进程 render theme，SHALL NOT 破坏已有 `theme.json` 内容，且 SHALL 保持配置中心可关闭或可继续操作。
 
-#### Scenario: theme 列表为空时显示错误
+#### Scenario: Theme 列表为空时显示错误
 - **WHEN** 用户通过 `/config` 打开“外观”Tab
 - **AND** 系统无法列出任何可用内置 theme
 - **THEN** 外观 Tab SHALL 说明当前没有可用内置 theme
@@ -52,4 +49,3 @@
 - **THEN** 外观 Tab SHALL 显示可理解错误
 - **THEN** 系统 SHALL 保持当前进程 render theme 和选中 marker 不变
 - **THEN** 系统 SHALL NOT 追加 transcript record 或启动 agent loop
-

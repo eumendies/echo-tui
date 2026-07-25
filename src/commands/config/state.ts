@@ -1,52 +1,82 @@
 import {getProviderPreset, providerRequiresApiKey} from '../../config/provider-presets';
 import {normalizeConfigDraft} from '../../config/llm-config-editor';
+
 import type {
+  AppearanceConfigState,
   ConfigCommandState,
   ConfigCommandSurface,
   ConfigFormRow,
-  InfoCommandSurface,
+  ConfigSurfaceTab,
+  ConfigTabId,
+  GeneralConfigState,
   LlmConfigDraft
 } from '../../types/command';
+import type {AppSettings} from '../../config/app-settings-config';
 
-type ConfigCommandData = {
-  state?: ConfigCommandState;
-  result?: {
-    providersCount: number;
-    modelsCount: number;
-  };
+type ConfigStateSlot<T> = {
+  error?: string;
+  state?: T;
 };
 
+type ConfigCommandData = {
+  activeTab: ConfigTabId;
+  appearance?: ConfigStateSlot<AppearanceConfigState>;
+  discardConfirm?: {
+    dirtyTabs: string[];
+    selectedIndex: number;
+  };
+  general?: ConfigStateSlot<GeneralConfigState>;
+  models?: ConfigStateSlot<ConfigCommandState>;
+};
+
+const CONFIG_TABS: ReadonlyArray<{id: ConfigTabId; label: string}> = [
+  {id: 'general', label: '常规'},
+  {id: 'models', label: '模型与 Provider'},
+  {id: 'appearance', label: '外观'}
+];
+
+/**
+ * 把配置中心 command data 投影为当前 Tab 的只读 surface 快照。
+ */
 function createConfigSurface(data: ConfigCommandData): ConfigCommandSurface {
-  if (data.result) {
-    return {kind: 'config', view: 'result', result: data.result};
+  const tabs = createConfigTabs(data);
+
+  if (data.discardConfirm) {
+    return {
+      kind: 'config',
+      view: 'discardConfirm',
+      activeTab: data.activeTab,
+      tabs,
+      dirtyTabs: [...data.discardConfirm.dirtyTabs],
+      selectedIndex: data.discardConfirm.selectedIndex
+    };
   }
 
-  if (!data.state) {
-    return {kind: 'config', view: 'loading'};
+  const slot = getActiveSlot(data);
+  if (slot?.error) {
+    return {kind: 'config', view: 'error', activeTab: data.activeTab, tabs, error: slot.error};
   }
 
-  return {
-    kind: 'config',
-    view: 'editor',
-    state: cloneConfigState(data.state),
-    rows: getConfigRows(data.state)
-  };
-}
+  if (data.activeTab === 'general' && data.general?.state) {
+    return {kind: 'config', view: 'general', activeTab: data.activeTab, tabs, state: structuredClone(data.general.state)};
+  }
 
-function createConfigErrorSurface(error: string): InfoCommandSurface {
-  return {
-    kind: 'info',
-    title: '/config',
-    lines: ['无法打开配置面板。', error],
-    dismissHint: 'Esc 关闭'
-  };
-}
+  if (data.activeTab === 'models' && data.models?.state) {
+    return {
+      kind: 'config',
+      view: 'models',
+      activeTab: data.activeTab,
+      tabs,
+      state: cloneConfigState(data.models.state),
+      rows: getConfigRows(data.models.state)
+    };
+  }
 
-function createResult(state: ConfigCommandState): ConfigCommandData['result'] {
-  return {
-    providersCount: state.draft.providers.length,
-    modelsCount: state.draft.providers.reduce((sum, provider) => sum + provider.models.length, 0)
-  };
+  if (data.activeTab === 'appearance' && data.appearance?.state) {
+    return {kind: 'config', view: 'appearance', activeTab: data.activeTab, tabs, state: structuredClone(data.appearance.state)};
+  }
+
+  return {kind: 'config', view: 'error', activeTab: data.activeTab, tabs, error: '配置页面未初始化'};
 }
 
 function createInitialConfigState(initialDraft: LlmConfigDraft): ConfigCommandState {
@@ -68,6 +98,22 @@ function createInitialConfigState(initialDraft: LlmConfigDraft): ConfigCommandSt
   };
 }
 
+function createInitialGeneralConfigState(settings: AppSettings): GeneralConfigState {
+  const draft = structuredClone(settings) as AppSettings;
+  return {
+    draft,
+    initialDraftFingerprint: createGeneralDraftFingerprint(draft),
+    selectedIndex: 0
+  };
+}
+
+function createInitialAppearanceConfigState(themes: AppearanceConfigState['themes']): AppearanceConfigState {
+  return {
+    selectedIndex: Math.max(0, themes.findIndex((theme) => theme.selected)),
+    themes: themes.map((theme) => ({...theme}))
+  };
+}
+
 function cloneConfigState(state: ConfigCommandState): ConfigCommandState {
   return structuredClone(state) as ConfigCommandState;
 }
@@ -77,6 +123,36 @@ function createDraftFingerprint(draft: LlmConfigDraft): string {
     providers: draft.providers,
     selectedModelId: draft.selectedModelId
   });
+}
+
+function createGeneralDraftFingerprint(draft: AppSettings): string {
+  return JSON.stringify(draft);
+}
+
+function isModelConfigDirty(state: ConfigCommandState | undefined): boolean {
+  return Boolean(state && createDraftFingerprint(state.draft) !== state.initialDraftFingerprint);
+}
+
+function isGeneralConfigDirty(state: GeneralConfigState | undefined): boolean {
+  return Boolean(state && createGeneralDraftFingerprint(state.draft) !== state.initialDraftFingerprint);
+}
+
+function markModelConfigSaved(state: ConfigCommandState): ConfigCommandState {
+  return {
+    ...cloneConfigState(state),
+    error: undefined,
+    feedback: '✓ 模型配置已保存',
+    initialDraftFingerprint: createDraftFingerprint(state.draft)
+  };
+}
+
+function markGeneralConfigSaved(state: GeneralConfigState): GeneralConfigState {
+  return {
+    ...structuredClone(state),
+    error: undefined,
+    feedback: '✓ 常规设置已保存',
+    initialDraftFingerprint: createGeneralDraftFingerprint(state.draft)
+  };
 }
 
 function getConfigRows(state: ConfigCommandState): ConfigFormRow[] {
@@ -113,16 +189,41 @@ function getConfigRows(state: ConfigCommandState): ConfigFormRow[] {
   return rows;
 }
 
+function createConfigTabs(data: ConfigCommandData): ConfigSurfaceTab[] {
+  return CONFIG_TABS.map((tab) => {
+    const slot = tab.id === 'general' ? data.general : tab.id === 'models' ? data.models : data.appearance;
+    const dirty = tab.id === 'general'
+      ? isGeneralConfigDirty(data.general?.state)
+      : tab.id === 'models'
+        ? isModelConfigDirty(data.models?.state)
+        : false;
+    return {
+      ...tab,
+      ...(slot?.error ? {status: 'error' as const} : dirty ? {status: 'dirty' as const} : {})
+    };
+  });
+}
+
+function getActiveSlot(data: ConfigCommandData): ConfigStateSlot<unknown> | undefined {
+  return data.activeTab === 'general' ? data.general : data.activeTab === 'models' ? data.models : data.appearance;
+}
+
 export {
+  CONFIG_TABS,
   cloneConfigState,
-  createConfigErrorSurface,
   createConfigSurface,
   createDraftFingerprint,
+  createInitialAppearanceConfigState,
   createInitialConfigState,
-  createResult,
-  getConfigRows
+  createInitialGeneralConfigState,
+  getConfigRows,
+  isGeneralConfigDirty,
+  isModelConfigDirty,
+  markGeneralConfigSaved,
+  markModelConfigSaved
 };
 
 export type {
-  ConfigCommandData
+  ConfigCommandData,
+  ConfigStateSlot
 };

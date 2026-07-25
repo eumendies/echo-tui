@@ -9,6 +9,7 @@ import {ChangeHistoryContext} from './change-history-context';
 import {INPUT_EVENTS} from '../../input/event-types';
 import {createDiffSourceResult} from '../diff/source';
 import {DEFAULT_TUI_THEME, type TuiTheme} from '../../config/theme-config';
+import {DEFAULT_APP_SETTINGS, readAppSettings, type AppSettings} from '../../config/app-settings-config';
 import {isShellInteractionMode} from '../../types/agent';
 
 import type {TerminalController} from '../../types/app';
@@ -24,6 +25,11 @@ import type {ToolApprovalContext} from './tool-approval-context';
 import type {AssistantTurnHandle, InterruptAssistantTurnResult} from './turn-context';
 
 type AgentInteractionMode = 'normal' | 'plan';
+
+type AppSettingsRefreshResult = {
+  reasoningVisibilityChanged: boolean;
+  slashSuggestionLimitChanged: boolean;
+};
 
 const PLAN_MODE_INSTRUCTIONS = 'Plan mode is active. Discuss and inspect only; do not modify files, run mutating commands, run tests or builds, install dependencies, change branch or repository state, or use MCP tools. Ask the user to switch to /mode normal before implementing.';
 const NORMAL_MODE_INSTRUCTIONS = 'Normal mode is active. Previous Plan Mode restrictions no longer apply. You may implement changes and use mutation tools, subject to the normal tool approval and risk policies.';
@@ -77,6 +83,7 @@ class AppContext {
   readonly changeHistoryContext: ChangeHistoryContext;
   readonly renderContext: RenderContext;
   private theme: TuiTheme;
+  private appSettings: AppSettings;
   private slashSuggestionContext: SlashSuggestionContext;
   private interactionMode: InteractionMode;
   private lastSubmittedAgentMode: AgentInteractionMode;
@@ -88,7 +95,8 @@ class AppContext {
     transcriptStore: TranscriptStore,
     cwd: string | (() => string),
     nodeVersion: string | (() => string),
-    theme: TuiTheme = DEFAULT_TUI_THEME
+    theme: TuiTheme = DEFAULT_TUI_THEME,
+    appSettings: AppSettings = DEFAULT_APP_SETTINGS
   ) {
     this.getCurrentCwdValue = cwd;
     this.getNodeVersionValue = nodeVersion;
@@ -100,6 +108,7 @@ class AppContext {
     this.turnContext = new TurnContext(this.composerContext, this.transcriptContext);
     this.changeHistoryContext = new ChangeHistoryContext();
     this.theme = theme;
+    this.appSettings = structuredClone(appSettings) as AppSettings;
     this.interactionMode = 'normal';
     this.lastSubmittedAgentMode = 'normal';
     this.contextUsage = null;
@@ -211,6 +220,10 @@ class AppContext {
       commandSurface,
       contextUsage: this.contextUsage,
       model,
+      renderPreferences: {
+        showReasoningSummary: this.appSettings.showReasoningSummary,
+        slashSuggestionMaxVisible: this.appSettings.slashSuggestionMaxVisible
+      },
       allowAllTools: options.toolApproval?.isAllowAllForSession() || false,
       slashSuggestions
     });
@@ -317,6 +330,18 @@ class AppContext {
     }
 
     return changed;
+  }
+
+  /**
+   * 从用户配置刷新常规设置缓存，并分类报告渲染影响。
+   */
+  refreshAppSettingsFromConfig(): AppSettingsRefreshResult {
+    const next = readAppSettings();
+    const reasoningVisibilityChanged = next.showReasoningSummary !== this.appSettings.showReasoningSummary;
+    const slashSuggestionLimitChanged = next.slashSuggestionMaxVisible !== this.appSettings.slashSuggestionMaxVisible;
+
+    this.appSettings = structuredClone(next) as AppSettings;
+    return {reasoningVisibilityChanged, slashSuggestionLimitChanged};
   }
 
   /**
@@ -488,7 +513,8 @@ class AppContext {
       records: structuredClone(this.transcriptContext.getRecords()),
       compaction: this.transcriptContext.compaction ? {...this.transcriptContext.compaction} : undefined,
       todoState: structuredClone(this.transcriptContext.todoState),
-      interactionMode: this.interactionMode
+      interactionMode: this.interactionMode,
+      compactionThresholdRatio: this.appSettings.compactionThresholdRatio
     };
   }
 

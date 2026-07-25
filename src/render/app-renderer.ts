@@ -1,4 +1,5 @@
 import * as ansi from '../terminal/ansi';
+import {DEFAULT_RENDER_PREFERENCES} from '../config/app-settings-config';
 import {DEFAULT_TUI_THEME} from '../config/theme-config';
 import { renderAssistantBlock, renderBanner, renderCompactionNoticeBlock, renderErrorBlock, renderLocalNoticeBlock, renderReasoningSummaryBlock, renderShellBlock, renderUserBlock } from './blocks';
 import { createFooterRenderer, renderFooterLayout } from './footer';
@@ -30,9 +31,9 @@ export function createAppRenderer(output: NodeJS.WriteStream = process.stdout): 
    * 启动时先追加 banner，再绘制 footer；main 不需要自己拼接多种 renderer。
    *
    */
-  function renderInitial({ bannerContext, composer, commandSurface, slashSuggestions, pending, working, theme, statusLine, rows, width }: RenderInitialOptions): void {
+  function renderInitial({ bannerContext, composer, commandSurface, slashSuggestions, pending, working, theme, renderPreferences, statusLine, rows, width }: RenderInitialOptions): void {
     output.write(renderBanner(bannerContext, theme));
-    footer.render({ composer, commandSurface, slashSuggestions, pending, working, theme, statusLine, rows, width });
+    footer.render({ composer, commandSurface, slashSuggestions, pending, working, theme, renderPreferences, statusLine, rows, width });
   }
 
   /**
@@ -54,31 +55,31 @@ export function createAppRenderer(output: NodeJS.WriteStream = process.stdout): 
    * transcript 新增事实内容时，统一执行“清 footer → append block → 重绘 footer”。
    *
    */
-  function appendRecord({ record, composer, commandSurface, slashSuggestions, pending, working, theme, statusLine, rows, width }: AppendRecordOptions): void {
-    appendRecords({ records: [record], composer, commandSurface, slashSuggestions, pending, working, theme, statusLine, rows, width });
+  function appendRecord({ record, composer, commandSurface, slashSuggestions, pending, working, theme, renderPreferences, statusLine, rows, width }: AppendRecordOptions): void {
+    appendRecords({ records: [record], composer, commandSurface, slashSuggestions, pending, working, theme, renderPreferences, statusLine, rows, width });
   }
 
   /**
    * transcript 成组新增事实内容时，一次性清 footer、append blocks、再重绘 footer。
    */
-  function appendRecords({ records, composer, commandSurface, slashSuggestions, pending, working, theme, statusLine, rows, width }: AppendRecordsOptions): void {
-    const blocks = renderTranscriptBlocks(records, width, theme);
+  function appendRecords({ records, composer, commandSurface, slashSuggestions, pending, working, theme, renderPreferences, statusLine, rows, width }: AppendRecordsOptions): void {
+    const blocks = renderTranscriptBlocks(records, width, theme, renderPreferences);
 
     footer.clear();
     if (blocks.length > 0) {
       output.write(blocks.join(''));
     }
-    footer.render({ composer, commandSurface, slashSuggestions, pending, working, theme, statusLine, rows, width });
+    footer.render({ composer, commandSurface, slashSuggestions, pending, working, theme, renderPreferences, statusLine, rows, width });
   }
 
   /**
    * 在 destructive recovery 中清屏并从左上角重放 banner、transcript 和 footer 的完整快照。
    *
    */
-  function renderDestructive({ bannerContext, records, composer, commandSurface, slashSuggestions, pending, working, theme, statusLine, rows, width }: RenderDestructiveOptions): void {
-    const footerLayout = renderFooterLayout({ composer, commandSurface, slashSuggestions, pending, working, theme, statusLine, rows, width });
+  function renderDestructive({ bannerContext, records, composer, commandSurface, slashSuggestions, pending, working, theme, renderPreferences, statusLine, rows, width }: RenderDestructiveOptions): void {
+    const footerLayout = renderFooterLayout({ composer, commandSurface, slashSuggestions, pending, working, theme, renderPreferences, statusLine, rows, width });
     const bannerLines = splitRenderedBlock(renderBanner(bannerContext, theme));
-    const transcriptLines = renderTranscriptLines(records, width, theme);
+    const transcriptLines = renderTranscriptLines(records, width, theme, renderPreferences);
     const lines = [...bannerLines, ...transcriptLines, ...footerLayout.lines];
     const cursorRow = bannerLines.length + transcriptLines.length + footerLayout.cursorRow;
 
@@ -107,8 +108,8 @@ export function createAppRenderer(output: NodeJS.WriteStream = process.stdout): 
    * 输出退出时使用的最终静态内容；调用方应先移除临时 footer。
    *
    */
-  function renderFinal({ bannerContext, records, theme, width }: RenderFinalOptions): void {
-    const lines = [...renderBannerLines(bannerContext, theme), ...renderTranscriptLines(records, width, theme)];
+  function renderFinal({ bannerContext, records, theme, renderPreferences, width }: RenderFinalOptions): void {
+    const lines = [...renderBannerLines(bannerContext, theme), ...renderTranscriptLines(records, width, theme, renderPreferences)];
     output.write(`${ansi.showCursor()}${lines.join('\n')}\n`);
   }
 
@@ -138,11 +139,12 @@ export function createAppRenderer(output: NodeJS.WriteStream = process.stdout): 
 export function renderTranscriptLines(
   records: TranscriptRecord[] = [],
   width = 80,
-  theme: RenderState['theme'] = DEFAULT_TUI_THEME
+  theme: RenderState['theme'] = DEFAULT_TUI_THEME,
+  renderPreferences: RenderState['renderPreferences'] = DEFAULT_RENDER_PREFERENCES
 ): string[] {
   const lines: string[] = [];
 
-  for (const block of renderTranscriptBlocks(records, width, theme)) {
+  for (const block of renderTranscriptBlocks(records, width, theme, renderPreferences)) {
     lines.push(...splitRenderedBlock(block));
   }
 
@@ -155,9 +157,13 @@ export function renderTranscriptLines(
 function renderTranscriptBlocks(
   records: TranscriptRecord[] = [],
   width = 80,
-  theme: RenderState['theme'] = DEFAULT_TUI_THEME
+  theme: RenderState['theme'] = DEFAULT_TUI_THEME,
+  renderPreferences: RenderState['renderPreferences'] = DEFAULT_RENDER_PREFERENCES
 ): string[] {
-  return groupTranscriptRecords(records)
+  const visibleRecords = renderPreferences.showReasoningSummary
+    ? records
+    : records.filter((record) => record.role !== 'reasoning_summary');
+  return groupTranscriptRecords(visibleRecords)
     .map((block) => renderTranscriptBlock(block, width, theme))
     .filter((block) => block.length > 0);
 }

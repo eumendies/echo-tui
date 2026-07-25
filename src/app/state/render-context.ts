@@ -1,9 +1,10 @@
 import path from 'node:path';
 
+import {DEFAULT_RENDER_PREFERENCES} from '../../config/app-settings-config';
 import type {TerminalController} from '../../types/app';
 import type {CommandSurface} from '../../types/command';
 import type {InteractionMode} from '../../types/agent';
-import type {BannerContext, PendingState, RenderState, SlashSuggestionState, StatusLineMode, StatusLineModelRenderState, StatusLineState, WorkingState} from '../../types/render';
+import type {BannerContext, PendingState, RenderPreferences, RenderState, SlashSuggestionState, StatusLineMode, StatusLineModelRenderState, StatusLineState, WorkingState} from '../../types/render';
 import type {TuiTheme} from '../../config/theme-config';
 
 type ContextUsageState = StatusLineState['contextUsage'];
@@ -75,7 +76,7 @@ class RenderContext {
   /**
    * 组合渲染层需要的瞬时状态，避免 main.ts 反复散落访问实例字段。
    */
-  createRenderState(options: {allowAllTools?: boolean; commandSurface?: CommandSurface | null; contextUsage?: ContextUsageState | null; model?: StatusLineModelRenderState; slashSuggestions?: SlashSuggestionState | null} = {}): RenderState {
+  createRenderState(options: {allowAllTools?: boolean; commandSurface?: CommandSurface | null; contextUsage?: ContextUsageState | null; model?: StatusLineModelRenderState; renderPreferences?: RenderPreferences; slashSuggestions?: SlashSuggestionState | null} = {}): RenderState {
     const terminalSize = this.terminal.getSize();
     const commandSurface = options.commandSurface ?? null;
     const slashSuggestions = options.slashSuggestions ?? null;
@@ -89,6 +90,7 @@ class RenderContext {
       pending,
       working,
       theme: this.theme,
+      renderPreferences: options.renderPreferences || DEFAULT_RENDER_PREFERENCES,
       statusLine: commandSurface ? undefined : this.createStatusLineState(options.model, pending, working, slashSuggestions, options.contextUsage ?? null, options.allowAllTools || false),
       rows: terminalSize.rows,
       width: terminalSize.columns

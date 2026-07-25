@@ -39,7 +39,7 @@ function createCommandHost(options: CommandHostOptions): CommandHostApp {
     renderFooter,
     renderResizeRecovery
   });
-  const modelPorts = createModelCommandPorts(appContext);
+  const modelPorts = createModelCommandPorts({appContext, renderFooter, renderResizeRecovery});
   const settingsPorts = createSettingsCommandPorts({appContext, renderFooter, renderResizeRecovery});
   const statusPorts = createStatusCommandPorts({
     appContext,

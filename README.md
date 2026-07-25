@@ -70,7 +70,7 @@ echo-tui --once --full-access "按要求修改文件并运行检查"
 
 首次启动会在缺失时创建 `~/.echo/config.json`（预置内置 fake agent，可直接进入界面）和内置 setup skill，不覆盖已有内容。
 
-进入界面后用 `/config` 配置真实 provider 和 model：选择 provider preset、填写 API key / Base URL、添加模型，保存后即可对话。也可以直接编辑 `~/.echo/config.json`：
+进入界面后用 `/config` 打开配置中心：`常规` 管理压缩与显示偏好，`模型与 Provider` 管理真实 provider/model，`外观` 切换内置主题。Tab 循环切换页面；常规与模型草稿分别保存，主题选择立即保存并应用。也可以直接编辑 `~/.echo/config.json`：
 
 ```json
 {
@@ -82,6 +82,11 @@ echo-tui --once --full-access "按要求修改文件并运行检查"
     "models": [
       { "id": "fast", "provider": "default", "model": "<model-name>" }
     ]
+  },
+  "compaction": { "thresholdRatio": 0.8 },
+  "ui": {
+    "slashSuggestionMaxVisible": 8,
+    "showReasoningSummary": true
   }
 }
 ```
@@ -89,6 +94,7 @@ echo-tui --once --full-access "按要求修改文件并运行检查"
 - `preset` 选择运行时协议，常用 `openai-responses-api`、`openai-chat-compatible-api`、`anthropic-compatible-api`，以及一组固定 Base URL、只需填 API key 的厂商 preset（DeepSeek、Kimi、Z.ai、Minimax、StepFun、OpenRouter、Xiaomi 等）。
 - `model` 是 provider 的 API 模型名；`contextWindow` 可选，留空时按内置模型映射或默认窗口推断。
 - `reasoning.effort` 可选，用 `/effort` 调整；`tools.bash.maxOutputBytes` 可限制 bash 工具输出上限。bash 工具默认无固定超时，可用 Esc 中断；如确实需要自动终止，可显式配置 `tools.bash.timeoutMs` 为正整数。
+- `compaction.thresholdRatio` 范围为 `0.5–0.95`；`ui.slashSuggestionMaxVisible` 范围为 `1–20`。`ui.showReasoningSummary` 只控制显示，摘要仍会完整写入会话记录。
 
 也可以选择 `openai-codex-oauth` preset，通过本机已有 Codex/ChatGPT OAuth 登录态使用 Codex 订阅模型。本项目不会发起 OpenAI 登录流程，只读取现有 auth cache：优先使用 provider 的 `codexAuthFile`，其次是 `CODEX_HOME/auth.json`，最后是 `~/.codex/auth.json`。示例：
 
@@ -145,13 +151,13 @@ normal 与 plan 之间发生模型可见切换时，模式说明只会加入切�
 | 命令 | 行为 |
 | --- | --- |
 | `/help` | 查看帮助 |
-| `/config` `/model` `/effort` | 配置 provider/model、切换模型、调整推理等级 |
+| `/config` `/model` `/effort` | 配置常规偏好、provider/model 与主题；切换模型和推理等级 |
 | `/mode` | 切换交互模式 |
 | `/status` | 查看目录、AGENTS、memory、model/provider、session，以及 Codex OAuth 5 小时/每周配额进度 |
 | `/context` `/usage` | 查看 provider 上下文占用、本地每日 token 用量 |
 | `/clear` `/compact` `/resume` | 清屏、压缩上下文、恢复历史会话 |
 | `/diff` `/undo` | 查看文件差异、回退上一轮文件修改与会话记录 |
-| `/mcp` `/hooks` `/skills` `/themes` | 管理 MCP server、lifecycle hooks、skills、内置主题 |
+| `/mcp` `/hooks` `/skills` | 管理 MCP server、lifecycle hooks 和 skills |
 | `/init` `/review` | 生成或评审 AGENTS.md、审查当前 Git 变更 |
 | `/<skill-name> [args]` | 调用已启用 skill |
 
@@ -189,7 +195,7 @@ skill 放在 `.echo/skills/<name>/SKILL.md`（项目级）或 `~/.echo/skills/<n
 
 ## 主题与 MCP
 
-- 主题配置在 `~/.echo/theme.json`，根字段 `theme` 选择内置主题，其余字段作为 override；用 `/themes` 即时切换。浅色终端可优先试 `default-light`、`macaron`、`paper-light`、`porcelain`、`rose-dusk`、`solarized-light` 或 `spring-mist`。
+- 主题配置仍在 `~/.echo/theme.json`，根字段 `theme` 选择内置主题，其余字段作为 override；可从 `/config` 的“外观”Tab 切换。浅色终端可优先试 `default-light`、`macaron`、`paper-light`、`porcelain`、`rose-dusk`、`solarized-light` 或 `spring-mist`。
 - MCP 配置在 `~/.echo/config.json` 的 `mcp` 节点（`enabled` 加按名组织的 `servers`，支持 stdio / http），用 `/mcp` 查看和管理。
 
 ## 会话存储

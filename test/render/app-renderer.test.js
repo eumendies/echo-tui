@@ -156,6 +156,23 @@ test('renderTranscriptLines projects user, assistant, error, local notice, and r
   assert.ok(lines.some((line) => line.startsWith('◇ 我会先检查上下文。')));
 });
 
+test('renderTranscriptLines filters reasoning summaries only at the render boundary', () => {
+  const records = [
+    {role: 'user', text: 'question'},
+    {role: 'reasoning_summary', text: 'private visible summary'},
+    {role: 'assistant', text: 'answer'}
+  ];
+  const lines = renderTranscriptLines(records, 80, undefined, {
+    showReasoningSummary: false,
+    slashSuggestionMaxVisible: 8
+  }).map((line) => stripAnsi(line));
+
+  assert.equal(lines.some((line) => line.includes('private visible summary')), false);
+  assert.equal(lines.some((line) => line.includes('question')), true);
+  assert.equal(lines.some((line) => line.includes('answer')), true);
+  assert.equal(records[1].role, 'reasoning_summary');
+});
+
 test('renderTranscriptLines uses displayText for user records when present', () => {
   const lines = renderTranscriptLines(
     [

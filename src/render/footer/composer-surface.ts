@@ -3,7 +3,7 @@ import { ECHO_SPINNER_ACTIVE_FRAME_COUNT, getEchoSpinnerFrame, getEchoSpinnerFra
 import { displayWidth, renderComposer, safeRenderWidth } from '../layout';
 import { activeBackground, renderFocusBar, resolveFooterTheme, tokenText, type FooterTheme, type TuiTheme } from '../colors';
 import { clampPlainText, formatSelectOptionText, padVisibleText } from './text';
-import { createSelectedWindowRows, normalizeLineLimit } from './window';
+import { clampIndex, normalizeLineLimit } from './window';
 import type { ComposerState } from '../../types/composer';
 import type { FooterLayout, SlashSuggestionState, StatusLineState } from '../../types/render';
 
@@ -29,6 +29,10 @@ type StatusSegment = {
   rendered: string;
 };
 
+type SlashSuggestionRow =
+  | {kind: 'item'; index: number; item: SlashSuggestionState['options'][number]}
+  | {count: number; direction: 'up' | 'down'; kind: 'more'};
+
 /**
  * 渲染普通输入态 surface：composer、可选 slash suggestion 和固定 status line。
  */
@@ -38,14 +42,17 @@ export function renderComposerSurface(
   width: number,
   slashSuggestions: SlashSuggestionState | null,
   maxLines = Number.POSITIVE_INFINITY,
-  tuiTheme?: TuiTheme
+  tuiTheme?: TuiTheme,
+  slashSuggestionMaxVisible = Number.POSITIVE_INFINITY
 ): FooterLayout {
   const theme = resolveFooterTheme(tuiTheme);
   const normalizedMaxLines = normalizeLineLimit(maxLines);
   const statusLineText = renderStatusLineText(statusLine, width, theme);
   const contentBudget = Math.max(1, normalizedMaxLines - 1);
-  const suggestionBudget = slashSuggestions ? Math.min(slashSuggestions.options.length, Math.max(0, contentBudget - 3)) : 0;
-  const suggestionLines = slashSuggestions && suggestionBudget > 0 ? renderSlashSuggestionLines(slashSuggestions, width, suggestionBudget, theme) : [];
+  const suggestionItemBudget = slashSuggestions ? Math.min(slashSuggestions.options.length, slashSuggestionMaxVisible, Math.max(0, contentBudget - 3)) : 0;
+  const suggestionLines = slashSuggestions && suggestionItemBudget > 0
+    ? renderSlashSuggestionLines(slashSuggestions, width, suggestionItemBudget, Math.max(0, contentBudget - 3), theme)
+    : [];
   const composerBudget = Math.min(COMPOSER_MAX_VISIBLE_LINES, Math.max(1, contentBudget - suggestionLines.length));
   const composerTheme = resolveComposerTheme(statusLine, theme);
   const composerLayout = renderBoxedComposer(
@@ -448,8 +455,8 @@ function defaultBorder(text: string): string {
 /**
  * 渲染 composer 编辑态下的 slash 命令提示，不接管 composer 光标。
  */
-function renderSlashSuggestionLines(slashSuggestions: SlashSuggestionState, width: number, maxLines: number, theme: FooterTheme): string[] {
-  const rows = createSelectedWindowRows(slashSuggestions.options, slashSuggestions.selectedIndex, maxLines);
+function renderSlashSuggestionLines(slashSuggestions: SlashSuggestionState, width: number, maxItems: number, maxRows: number, theme: FooterTheme): string[] {
+  const rows = createSlashSuggestionRows(slashSuggestions.options, slashSuggestions.selectedIndex, maxItems, maxRows);
 
   return rows.map((row) => {
     if (row.kind === 'more') {
@@ -466,4 +473,65 @@ function renderSlashSuggestionLines(slashSuggestions: SlashSuggestionState, widt
     const text = tokenText(theme, 'accentStrong', ansi.bold(clampPlainText(optionText, Math.max(1, rowWidth - 1))));
     return `${renderFocusBar(theme)}${activeBackground(theme, padVisibleText(` ${text}`, rowWidth))}`;
   });
+}
+
+/**
+ * Slash suggestion 的配置值表示最多显示的候选项数量；more 提示是额外状态行，只在高度不足时回收候选项。
+ */
+function createSlashSuggestionRows(options: SlashSuggestionState['options'], selectedIndex: number, maxItems: number, maxRows: number): SlashSuggestionRow[] {
+  const itemLimit = normalizeLineLimit(maxItems, 0);
+  const rowLimit = normalizeLineLimit(maxRows, 0);
+
+  if (itemLimit <= 0 || rowLimit <= 0) {
+    return [];
+  }
+
+  const selected = clampIndex(selectedIndex, options.length);
+  let itemSlots = Math.min(options.length, itemLimit);
+
+  if (itemSlots <= 0) {
+    return [];
+  }
+
+  let start = calculateSlashSuggestionStart(options.length, selected, itemSlots);
+  let end = Math.min(options.length, start + itemSlots);
+  let showTopHint = start > 0;
+  let showBottomHint = end < options.length;
+
+  while (itemSlots > 1 && itemSlots + (showTopHint ? 1 : 0) + (showBottomHint ? 1 : 0) > rowLimit) {
+    itemSlots -= 1;
+    start = calculateSlashSuggestionStart(options.length, selected, itemSlots);
+    end = Math.min(options.length, start + itemSlots);
+    showTopHint = start > 0;
+    showBottomHint = end < options.length;
+  }
+
+  while (itemSlots + (showTopHint ? 1 : 0) + (showBottomHint ? 1 : 0) > rowLimit) {
+    if (showBottomHint) {
+      showBottomHint = false;
+    } else if (showTopHint) {
+      showTopHint = false;
+    } else {
+      break;
+    }
+  }
+
+  const rows: SlashSuggestionRow[] = [];
+
+  if (showTopHint) {
+    rows.push({kind: 'more', direction: 'up', count: start});
+  }
+
+  rows.push(...options.slice(start, end).map((item, offset) => ({kind: 'item' as const, item, index: start + offset})));
+
+  if (showBottomHint) {
+    rows.push({kind: 'more', direction: 'down', count: options.length - end});
+  }
+
+  return rows;
+}
+
+function calculateSlashSuggestionStart(itemCount: number, selectedIndex: number, itemSlots: number): number {
+  const half = Math.floor(itemSlots / 2);
+  return Math.min(Math.max(0, selectedIndex - half), Math.max(0, itemCount - itemSlots));
 }
