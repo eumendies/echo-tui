@@ -794,6 +794,7 @@ test('createAgentLoopRuntime rejects write tools in plan mode without approval',
 });
 
 test('createAgentLoopRuntime immediately denies approval-required tools in headless mode', async () => {
+  const hooks = createHookRecorder();
   let turnCount = 0;
   let approvalCount = 0;
   const results = [];
@@ -817,7 +818,7 @@ test('createAgentLoopRuntime immediately denies approval-required tools in headl
   };
 
   const result = await withPatchedAgentRuntime(agent, () => {
-    const runAgent = createAgentLoopRuntime(TEST_CWD);
+    const runAgent = createAgentLoopRuntime(TEST_CWD, undefined, hooks.dispatcher);
     return runAgent({
       records: [{role: 'user', text: 'edit'}],
       executionMode: {kind: 'headless', approvalPolicy: 'deny'}
@@ -836,10 +837,19 @@ test('createAgentLoopRuntime immediately denies approval-required tools in headl
   assert.equal(approvalCount, 0);
   assert.equal(results[0].ok, false);
   assert.match(results[0].text, /--full-access/);
+  assert.deepEqual(hooks.events.map((event) => event.event), [
+    'tool_call_start',
+    'tool_approval_request',
+    'tool_approval_response',
+    'tool_call_end'
+  ]);
+  assert.equal(hooks.events[2].payload.interactionMode, 'normal');
+  assert.equal(hooks.events[2].payload.decision, 'deny');
 });
 
 test('createAgentLoopRuntime full-access executes registered patch tools without approval callback', async () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-full-access-'));
+  const hooks = createHookRecorder();
   let turnCount = 0;
   const results = [];
   const agent = {
@@ -863,7 +873,7 @@ test('createAgentLoopRuntime full-access executes registered patch tools without
 
   try {
     const result = await withPatchedAgentRuntime(agent, () => {
-      const runAgent = createAgentLoopRuntime(cwd);
+      const runAgent = createAgentLoopRuntime(cwd, undefined, hooks.dispatcher);
       return runAgent({
         records: [{role: 'user', text: 'edit'}],
         executionMode: {kind: 'headless', approvalPolicy: 'full-access'}
@@ -880,12 +890,21 @@ test('createAgentLoopRuntime full-access executes registered patch tools without
     assert.equal(result, 'done');
     assert.equal(results[0].ok, true);
     assert.equal(fs.readFileSync(path.join(cwd, 'allowed.txt'), 'utf8'), 'allowed\n');
+    assert.deepEqual(hooks.events.map((event) => event.event), [
+      'tool_call_start',
+      'tool_approval_request',
+      'tool_approval_response',
+      'tool_call_end'
+    ]);
+    assert.equal(hooks.events[2].payload.interactionMode, 'normal');
+    assert.equal(hooks.events[2].payload.decision, 'allow_once');
   } finally {
     fs.rmSync(cwd, {recursive: true, force: true});
   }
 });
 
 test('createAgentLoopRuntime cancels ask_user_questions when no interactive callback exists', async () => {
+  const hooks = createHookRecorder();
   let turnCount = 0;
   const results = [];
   const agent = {
@@ -908,7 +927,7 @@ test('createAgentLoopRuntime cancels ask_user_questions when no interactive call
   };
 
   const result = await withPatchedAgentRuntime(agent, () => {
-    const runAgent = createAgentLoopRuntime(TEST_CWD);
+    const runAgent = createAgentLoopRuntime(TEST_CWD, undefined, hooks.dispatcher);
     return runAgent({
       records: [{role: 'user', text: 'ask'}],
       executionMode: {kind: 'headless', approvalPolicy: 'deny'}
@@ -921,6 +940,16 @@ test('createAgentLoopRuntime cancels ask_user_questions when no interactive call
 
   assert.equal(result, 'cancelled and done');
   assert.deepEqual(JSON.parse(results[0].text), {cancelled: true, reason: 'User cancelled ask_user_questions'});
+  assert.deepEqual(hooks.events.map((event) => event.event), [
+    'tool_call_start',
+    'user_question_request',
+    'user_question_response',
+    'tool_call_end'
+  ]);
+  assert.equal(hooks.events[1].payload.interactionMode, 'normal');
+  assert.equal(hooks.events[1].payload.questionCount, 1);
+  assert.equal(hooks.events[2].payload.ok, false);
+  assert.equal(hooks.events[2].payload.resultText, results[0].text);
 });
 
 test('createAgentLoopRuntime creates todos, persists state, and injects suffix on continuation', async () => {
@@ -1122,6 +1151,162 @@ test('createAgentLoopRuntime emits tool lifecycle hooks without changing continu
       }
     }
   ]);
+});
+
+test('createAgentLoopRuntime emits tool approval request and response hooks with feedback text', async () => {
+  const hooks = createHookRecorder();
+  const results = [];
+  let turnCount = 0;
+  const agent = {
+    async runTurn() {
+      turnCount += 1;
+
+      if (turnCount === 1) {
+        return {
+          draft: '',
+          toolCalls: [{
+            callId: 'approval-call',
+            toolName: 'run_bash_command',
+            argumentsText: JSON.stringify({command: 'rm generated.txt'})
+          }]
+        };
+      }
+
+      return {draft: 'done', toolCalls: []};
+    }
+  };
+
+  const result = await withPatchedAgentRuntime(agent, () => {
+    const runAgent = createAgentLoopRuntime(TEST_CWD, undefined, hooks.dispatcher);
+    return runAgent({records: [{role: 'user', text: 'run command'}]}, {
+      onToolApprovalRequest() {
+        return Promise.resolve({kind: 'provide_feedback', message: 'Use ls instead.'});
+      },
+      onToolResult(toolResult) {
+        results.push(toolResult);
+      }
+    });
+  });
+
+  assert.equal(result, 'done');
+  assert.equal(results[0].ok, false);
+  assert.match(results[0].text, /Use ls instead/);
+  assert.deepEqual(hooks.events.map((event) => event.event), [
+    'tool_call_start',
+    'tool_approval_request',
+    'tool_approval_response',
+    'tool_call_end'
+  ]);
+  assert.deepEqual(hooks.events[1].payload, {
+    interactionMode: 'normal',
+    toolCallId: 'approval-call',
+    toolName: 'run_bash_command',
+    argumentsText: JSON.stringify({command: 'rm generated.txt'}),
+    preview: 'rm generated.txt'
+  });
+  assert.deepEqual(hooks.events[2].payload, {
+    interactionMode: 'normal',
+    toolCallId: 'approval-call',
+    toolName: 'run_bash_command',
+    argumentsText: JSON.stringify({command: 'rm generated.txt'}),
+    decision: 'provide_feedback',
+    feedbackText: 'Use ls instead.'
+  });
+});
+
+test('createAgentLoopRuntime omits approval hooks for cached session decisions', async () => {
+  const hooks = createHookRecorder();
+  const results = [];
+  let turnCount = 0;
+  const agent = {
+    async runTurn() {
+      turnCount += 1;
+
+      if (turnCount === 1) {
+        return {
+          draft: '',
+          toolCalls: [{
+            callId: 'cached-approval-call',
+            toolName: 'apply_patch',
+            argumentsText: JSON.stringify({patch: 'invalid patch'})
+          }]
+        };
+      }
+
+      return {draft: 'done', toolCalls: []};
+    }
+  };
+
+  const result = await withPatchedAgentRuntime(agent, () => {
+    const runAgent = createAgentLoopRuntime(TEST_CWD, undefined, hooks.dispatcher);
+    return runAgent({records: [{role: 'user', text: 'edit'}]}, {
+      onToolApprovalRequest() {
+        return {kind: 'allow_all_for_session'};
+      },
+      onToolResult(toolResult) {
+        results.push(toolResult);
+      }
+    });
+  });
+
+  assert.equal(result, 'done');
+  assert.equal(results[0].ok, false);
+  assert.deepEqual(hooks.events.map((event) => event.event), [
+    'tool_call_start',
+    'tool_call_end'
+  ]);
+});
+
+test('createAgentLoopRuntime emits user question request and response hooks with answer text', async () => {
+  const hooks = createHookRecorder();
+  const answerText = JSON.stringify({answers: [{index: 0, selected: 'yes'}]});
+  let turnCount = 0;
+  const agent = {
+    async runTurn() {
+      turnCount += 1;
+
+      if (turnCount === 1) {
+        return {
+          draft: '',
+          toolCalls: [{
+            callId: 'question-call',
+            toolName: 'ask_user_questions',
+            argumentsText: JSON.stringify({questions: [{question: 'Continue?', options: [{label: 'yes'}, {label: 'no'}]}]})
+          }]
+        };
+      }
+
+      return {draft: 'done', toolCalls: []};
+    }
+  };
+
+  const result = await withPatchedAgentRuntime(agent, () => {
+    const runAgent = createAgentLoopRuntime(TEST_CWD, undefined, hooks.dispatcher);
+    return runAgent({records: [{role: 'user', text: 'ask'}]}, {
+      onUserQuestionRequest(call) {
+        return {
+          callId: call.callId,
+          toolName: 'ask_user_questions',
+          ok: true,
+          details: {kind: 'generic'},
+          text: answerText
+        };
+      }
+    });
+  });
+
+  assert.equal(result, 'done');
+  assert.deepEqual(hooks.events.map((event) => event.event), [
+    'tool_call_start',
+    'user_question_request',
+    'user_question_response',
+    'tool_call_end'
+  ]);
+  assert.equal(hooks.events[1].payload.questionCount, 1);
+  assert.equal(hooks.events[1].payload.questionsText, 'Continue?');
+  assert.equal(hooks.events[2].payload.ok, true);
+  assert.equal(hooks.events[2].payload.answerCount, 1);
+  assert.equal(hooks.events[2].payload.resultText, answerText);
 });
 
 test('createAgentLoopRuntime emits compaction hook and no token hook', async () => {

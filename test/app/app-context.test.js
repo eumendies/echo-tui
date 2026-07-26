@@ -2221,13 +2221,60 @@ test('ToolApprovalContext toggles allow-all session state and returns cached dec
   assert.equal(toolApproval.isAllowAllForSession(), true);
   assert.equal(updateCount, 1);
 
-  const decision = await toolApproval.request(call);
+  const decision = toolApproval.request(call);
 
   assert.deepEqual(decision, {kind: 'allow_all_for_session'});
+  assert.equal(typeof decision.then, 'undefined');
   assert.equal(toolApproval.hasActiveRequest(), false);
   assert.equal(toolApproval.toggleAllowAllForSession(), false);
   assert.equal(toolApproval.isAllowAllForSession(), false);
   assert.equal(updateCount, 2);
+});
+
+test('ToolApprovalContext returns synchronous cached tool and command decisions', async () => {
+  const toolApproval = new ToolApprovalContext(() => {});
+  const toolCall = {
+    callId: 'call_patch',
+    toolName: 'apply_patch',
+    argumentsText: '{"patch":"invalid"}'
+  };
+  const toolPending = toolApproval.request(toolCall);
+
+  assert.equal(typeof toolPending.then, 'function');
+  toolApproval.handleEvent({type: INPUT_EVENTS.MOVE_DOWN});
+  toolApproval.handleEvent({type: INPUT_EVENTS.SUBMIT});
+  assert.deepEqual(await toolPending, {kind: 'allow_tool_for_session', toolName: 'apply_patch'});
+
+  const cachedToolDecision = toolApproval.request({...toolCall, callId: 'call_patch_cached'});
+  assert.deepEqual(cachedToolDecision, {kind: 'allow_tool_for_session', toolName: 'apply_patch'});
+  assert.equal(typeof cachedToolDecision.then, 'undefined');
+  assert.equal(toolApproval.hasActiveRequest(), false);
+
+  const commandApproval = new ToolApprovalContext(() => {});
+  const commandCall = {
+    callId: 'call_bash',
+    toolName: 'run_bash_command',
+    argumentsText: '{"command":"rm --help"}'
+  };
+  const commandPending = commandApproval.request(commandCall);
+
+  assert.equal(typeof commandPending.then, 'function');
+  commandApproval.handleEvent({type: INPUT_EVENTS.MOVE_DOWN});
+  commandApproval.handleEvent({type: INPUT_EVENTS.SUBMIT});
+  assert.deepEqual(await commandPending, {
+    kind: 'allow_command_for_session',
+    toolName: 'run_bash_command',
+    command: 'rm --help'
+  });
+
+  const cachedCommandDecision = commandApproval.request({...commandCall, callId: 'call_bash_cached'});
+  assert.deepEqual(cachedCommandDecision, {
+    kind: 'allow_command_for_session',
+    toolName: 'run_bash_command',
+    command: 'rm --help'
+  });
+  assert.equal(typeof cachedCommandDecision.then, 'undefined');
+  assert.equal(commandApproval.hasActiveRequest(), false);
 });
 
 test('AppContext keeps stale assistant turn cleanup from clearing a newer turn', () => {

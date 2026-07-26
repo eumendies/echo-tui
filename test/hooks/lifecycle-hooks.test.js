@@ -18,6 +18,12 @@ const {
 } = require('../../src/hooks/config');
 const {createLifecycleHookDispatcher} = require('../../src/hooks/dispatcher');
 const {executeLifecycleHookSubprocess} = require('../../src/hooks/executor');
+const {
+  emitToolApprovalRequestHook,
+  emitToolApprovalResponseHook,
+  emitUserQuestionRequestHook,
+  emitUserQuestionResponseHook
+} = require('../../src/hooks/lifecycle-events');
 const {LIFECYCLE_HOOK_EVENTS} = require('../../src/types/hooks');
 
 function withTemporaryConfig(config, callback) {
@@ -49,6 +55,12 @@ test('parseLifecycleHookConfig reads valid hook entries and string shorthand', (
       ],
       tool_call_start: [
         {command: 'echo tool'}
+      ],
+      tool_approval_response: [
+        {command: 'echo approval'}
+      ],
+      user_question_response: [
+        {command: 'echo question'}
       ]
     }
   });
@@ -60,6 +72,12 @@ test('parseLifecycleHookConfig reads valid hook entries and string shorthand', (
     ],
     tool_call_start: [
       {command: 'echo tool', timeoutMs: DEFAULT_HOOK_TIMEOUT_MS}
+    ],
+    tool_approval_response: [
+      {command: 'echo approval', timeoutMs: DEFAULT_HOOK_TIMEOUT_MS}
+    ],
+    user_question_response: [
+      {command: 'echo question', timeoutMs: DEFAULT_HOOK_TIMEOUT_MS}
     ]
   });
 });
@@ -257,7 +275,105 @@ test('createLifecycleHookSyntheticPayload covers lifecycle events with stable fi
   assert.equal(payloads.find((payload) => payload.event === 'assistant_turn_error').errorName, 'HookTestError');
   assert.equal(payloads.find((payload) => payload.event === 'tool_call_start').argumentsText, '{}');
   assert.equal(payloads.find((payload) => payload.event === 'tool_call_end').ok, true);
+  assert.equal(payloads.find((payload) => payload.event === 'tool_approval_request').preview, 'echo hook');
+  assert.equal(payloads.find((payload) => payload.event === 'tool_approval_response').feedbackText, 'synthetic feedback');
+  assert.equal(payloads.find((payload) => payload.event === 'user_question_request').questionCount, 1);
+  assert.match(payloads.find((payload) => payload.event === 'user_question_response').resultText, /"selected":"yes"/);
   assert.equal(payloads.find((payload) => payload.event === 'compaction_end').activeStartIndex, 0);
+});
+
+test('interaction lifecycle helpers map domain values and emit stable payloads', () => {
+  const events = [];
+  const hooks = {
+    emit(event, payload) {
+      events.push({event, payload});
+    }
+  };
+  const approvalCall = {
+    callId: 'approval-call',
+    toolName: 'run_bash_command',
+    argumentsText: '{"command":"rm generated.txt"}'
+  };
+  const questionCall = {
+    callId: 'question-call',
+    toolName: 'ask_user_questions',
+    argumentsText: '{"questions":[]}'
+  };
+
+  emitToolApprovalRequestHook(hooks, {
+    interactionMode: 'plan',
+    toolCall: approvalCall,
+    approval: {previewTitle: 'command', preview: 'rm generated.txt'}
+  });
+  emitToolApprovalResponseHook(hooks, {
+    interactionMode: 'plan',
+    toolCall: approvalCall,
+    decision: {kind: 'allow_command_for_session', toolName: 'run_bash_command', command: 'rm generated.txt'}
+  });
+  emitUserQuestionRequestHook(hooks, {
+    interactionMode: 'normal',
+    toolCall: questionCall,
+    request: {questions: [{question: 'First?', options: [{label: 'yes'}]}, {question: 'Second?', options: [{label: 'no'}]}]}
+  });
+  emitUserQuestionResponseHook(hooks, {
+    interactionMode: 'normal',
+    toolCall: questionCall,
+    result: {
+      callId: questionCall.callId,
+      toolName: questionCall.toolName,
+      ok: true,
+      details: {kind: 'generic'},
+      text: '{"answers":[{"selected":"yes"},{"selected":"no"}]}'
+    }
+  });
+
+  assert.deepEqual(events, [
+    {
+      event: 'tool_approval_request',
+      payload: {
+        interactionMode: 'plan',
+        toolCallId: 'approval-call',
+        toolName: 'run_bash_command',
+        argumentsText: '{"command":"rm generated.txt"}',
+        previewTitle: 'command',
+        preview: 'rm generated.txt'
+      }
+    },
+    {
+      event: 'tool_approval_response',
+      payload: {
+        interactionMode: 'plan',
+        toolCallId: 'approval-call',
+        toolName: 'run_bash_command',
+        argumentsText: '{"command":"rm generated.txt"}',
+        decision: 'allow_command_for_session',
+        approvedCommand: 'rm generated.txt'
+      }
+    },
+    {
+      event: 'user_question_request',
+      payload: {
+        interactionMode: 'normal',
+        toolCallId: 'question-call',
+        toolName: 'ask_user_questions',
+        argumentsText: '{"questions":[]}',
+        questionCount: 2,
+        questionsText: 'First?\nSecond?'
+      }
+    },
+    {
+      event: 'user_question_response',
+      payload: {
+        interactionMode: 'normal',
+        toolCallId: 'question-call',
+        toolName: 'ask_user_questions',
+        argumentsText: '{"questions":[]}',
+        ok: true,
+        resultText: '{"answers":[{"selected":"yes"},{"selected":"no"}]}',
+        answerCount: 2
+      }
+    }
+  ]);
 });
 
 test('executeLifecycleHookSyntheticTest captures success, failure, truncation, startup error, and timeout', async () => {

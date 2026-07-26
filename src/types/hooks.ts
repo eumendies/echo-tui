@@ -7,6 +7,10 @@ const LIFECYCLE_HOOK_EVENTS = [
   'assistant_turn_cancelled',
   'tool_call_start',
   'tool_call_end',
+  'tool_approval_request',
+  'tool_approval_response',
+  'user_question_request',
+  'user_question_response',
   'compaction_end'
 ] as const;
 
@@ -53,6 +57,15 @@ type LifecycleHookPayload = {
   toolName?: string;
   argumentsText?: string;
   ok?: boolean;
+  preview?: string;
+  previewTitle?: string;
+  decision?: string;
+  feedbackText?: string;
+  approvedCommand?: string;
+  questionCount?: number;
+  questionsText?: string;
+  answerCount?: number;
+  resultText?: string;
   activeStartIndex?: number;
   createdAt?: string;
   errorName?: string;
