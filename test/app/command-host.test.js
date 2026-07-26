@@ -303,6 +303,10 @@ test('CommandHost hooks facade reports save and reload failures without transcri
         {event: 'assistant_turn_cancelled', entries: []},
         {event: 'tool_call_start', entries: []},
         {event: 'tool_call_end', entries: []},
+        {event: 'tool_approval_request', entries: []},
+        {event: 'tool_approval_response', entries: []},
+        {event: 'user_question_request', entries: []},
+        {event: 'user_question_response', entries: []},
         {event: 'compaction_end', entries: []}
       ]
     };

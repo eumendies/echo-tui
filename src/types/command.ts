@@ -136,9 +136,11 @@ export type HooksCommandSurfaceTest = {
 };
 
 export type HooksCommandSurface = {
+  commandScroll?: number;
   diagnostics?: string[];
   dismissHint: string;
   editBuffer?: string;
+  editCursor?: number;
   editTarget?: HooksCommandEditTarget;
   detailIndex?: number;
   entries: LifecycleHookDraftEntry[];

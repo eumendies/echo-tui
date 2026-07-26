@@ -194,6 +194,10 @@ function createFakeHost(options = {}) {
             {event: 'assistant_turn_cancelled', entries: []},
             {event: 'tool_call_start', entries: []},
             {event: 'tool_call_end', entries: []},
+            {event: 'tool_approval_request', entries: []},
+            {event: 'tool_approval_response', entries: []},
+            {event: 'user_question_request', entries: []},
+            {event: 'user_question_response', entries: []},
             {event: 'compaction_end', entries: []}
           ]
         });
@@ -1810,12 +1814,17 @@ test('hooksCommandHandler opens, edits, saves, and cancels draft state', () => {
   assert.equal(session.commandName, 'hooks');
   assert.equal(session.surface.kind, 'hooks');
   assert.equal(session.surface.mode, 'events');
-  assert.equal(session.surface.events.length, 7);
+  assert.equal(session.surface.events.length, 11);
 
   hooksCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_DOWN}, host);
   session = host.session.getActive();
   assert.equal(session.surface.selectedEvent, 'assistant_turn_end');
   assert.equal(session.surface.eventIndex, 1);
+
+  hooksCommandHandler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: 'a'}, host);
+  session = host.session.getActive();
+  assert.equal(session.surface.mode, 'events');
+  assert.equal(session.surface.entries.length, 2);
 
   hooksCommandHandler.handleEvent(session, {type: INPUT_EVENTS.SUBMIT}, host);
   session = host.session.getActive();
@@ -1833,11 +1842,27 @@ test('hooksCommandHandler opens, edits, saves, and cancels draft state', () => {
 
   hooksCommandHandler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: 'a'}, host);
   session = host.session.getActive();
+  assert.equal(session.surface.mode, 'entries');
+  assert.equal(session.surface.entries.length, 2);
+  hooksCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_DOWN}, host);
+  hooksCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
+  hooksCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
+  session = host.session.getActive();
   assert.equal(session.surface.mode, 'entryDetail');
   assert.equal(session.surface.editTarget, 'command');
   assert.equal(session.surface.entryIndex, 2);
 
-  hooksCommandHandler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: 'echo added'}, host);
+  hooksCommandHandler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: 'echo aded'}, host);
+  session = host.session.getActive();
+  assert.equal(session.surface.editCursor, 9);
+  hooksCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_LEFT}, host);
+  hooksCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_LEFT}, host);
+  session = host.session.getActive();
+  assert.equal(session.surface.editCursor, 7);
+  hooksCommandHandler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: 'd'}, host);
+  session = host.session.getActive();
+  assert.equal(session.surface.editBuffer, 'echo added');
+  assert.equal(session.surface.editCursor, 8);
   hooksCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
   session = host.session.getActive();
   assert.equal(session.surface.mode, 'entryDetail');
@@ -1861,10 +1886,31 @@ test('hooksCommandHandler opens, edits, saves, and cancels draft state', () => {
   assert.equal(session.data.draft.events[1].entries.some((entry) => entry.command === 'echo added'), false);
 
   hooksCommandHandler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: 's'}, host);
+  assert.equal(calls.savedHookDrafts.length, 0);
+  assert.equal(calls.sessionCloses, 0);
+  assert.equal(host.session.getActive().surface.kind, 'hooks');
+
+  hooksCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
+  hooksCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
+  hooksCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
   assert.equal(calls.sessionCloses, 1);
   assert.equal(calls.resets, 2);
   assert.equal(calls.savedHookDrafts.length, 1);
   assert.equal(calls.savedHookDrafts[0].events[1].entries[0].enabled, false);
+
+  const detailSave = createFakeHost();
+  let detailSession = startCommand(hooksCommandHandler, '/hooks', detailSave.host);
+  hooksCommandHandler.handleEvent(detailSession, {type: INPUT_EVENTS.MOVE_DOWN}, detailSave.host);
+  hooksCommandHandler.handleEvent(detailSave.host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, detailSave.host);
+  hooksCommandHandler.handleEvent(detailSave.host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, detailSave.host);
+  for (let step = 0; step < 5; step += 1) {
+    hooksCommandHandler.handleEvent(detailSave.host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, detailSave.host);
+  }
+  detailSession = detailSave.host.session.getActive();
+  assert.equal(detailSession.surface.detailIndex, 5);
+  hooksCommandHandler.handleEvent(detailSession, {type: INPUT_EVENTS.SUBMIT}, detailSave.host);
+  assert.equal(detailSave.calls.savedHookDrafts.length, 1);
+  assert.equal(detailSave.calls.sessionCloses, 1);
 
   const cancel = createFakeHost();
   const cancelSession = startCommand(hooksCommandHandler, '/hooks', cancel.host);
@@ -1876,6 +1922,34 @@ test('hooksCommandHandler opens, edits, saves, and cancels draft state', () => {
   assert.equal(cancel.calls.savedHookDrafts.length, 0);
 });
 
+test('hooksCommandHandler edits command text at the movable cursor', () => {
+  const hooksCommandHandler = new HooksCommandHandler();
+  const {host} = createFakeHost();
+  let session = startCommand(hooksCommandHandler, '/hooks', host);
+
+  hooksCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_DOWN}, host);
+  hooksCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
+  hooksCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
+  hooksCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
+  session = host.session.getActive();
+  assert.equal(session.surface.editBuffer, 'echo done');
+  assert.equal(session.surface.editCursor, 9);
+
+  hooksCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_HOME}, host);
+  hooksCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_RIGHT}, host);
+  hooksCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.DELETE_FORWARD}, host);
+  hooksCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.TEXT, value: 'A'}, host);
+  session = host.session.getActive();
+  assert.equal(session.surface.editBuffer, 'eAho done');
+  assert.equal(session.surface.editCursor, 2);
+
+  hooksCommandHandler.handleEvent(session, {type: INPUT_EVENTS.BACKSPACE}, host);
+  hooksCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_END}, host);
+  session = host.session.getActive();
+  assert.equal(session.surface.editBuffer, 'eho done');
+  assert.equal(session.surface.editCursor, 8);
+});
+
 test('hooksCommandHandler blocks invalid save, reports save failure, and runs synthetic tests through host', async () => {
   const hooksCommandHandler = new HooksCommandHandler();
   const saveFailure = createFakeHost({saveHooks: () => ({ok: false, error: 'disk full'})});
@@ -1884,6 +1958,11 @@ test('hooksCommandHandler blocks invalid save, reports save failure, and runs sy
   hooksCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_DOWN}, saveFailure.host);
   hooksCommandHandler.handleEvent(saveFailure.host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, saveFailure.host);
   hooksCommandHandler.handleEvent(saveFailure.host.session.getActive(), {type: INPUT_EVENTS.TEXT, value: 'a'}, saveFailure.host);
+  assert.equal(saveFailure.host.session.getActive().surface.mode, 'entries');
+  assert.equal(saveFailure.host.session.getActive().surface.entries.length, 2);
+  hooksCommandHandler.handleEvent(saveFailure.host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, saveFailure.host);
+  hooksCommandHandler.handleEvent(saveFailure.host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, saveFailure.host);
+  hooksCommandHandler.handleEvent(saveFailure.host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, saveFailure.host);
   hooksCommandHandler.handleEvent(saveFailure.host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, saveFailure.host);
   session = saveFailure.host.session.getActive();
   assert.match(session.surface.error, /command 不能为空/);
@@ -1891,6 +1970,11 @@ test('hooksCommandHandler blocks invalid save, reports save failure, and runs sy
   hooksCommandHandler.handleEvent(saveFailure.host.session.getActive(), {type: INPUT_EVENTS.TEXT, value: 'echo valid'}, saveFailure.host);
   hooksCommandHandler.handleEvent(saveFailure.host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, saveFailure.host);
   hooksCommandHandler.handleEvent(saveFailure.host.session.getActive(), {type: INPUT_EVENTS.TEXT, value: 's'}, saveFailure.host);
+  assert.equal(saveFailure.calls.savedHookDrafts.length, 0);
+  for (let step = 0; step < 5; step += 1) {
+    hooksCommandHandler.handleEvent(saveFailure.host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, saveFailure.host);
+  }
+  hooksCommandHandler.handleEvent(saveFailure.host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, saveFailure.host);
   session = saveFailure.host.session.getActive();
   assert.equal(session.surface.kind, 'hooks');
   assert.match(session.surface.error, /disk full/);

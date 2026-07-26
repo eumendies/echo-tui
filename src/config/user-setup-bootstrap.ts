@@ -171,8 +171,9 @@ Configure optional lifecycle hooks in \`~/.echo/config.json\` under \`hooks\`:
 }
 \`\`\`
 
-- Supported events: \`assistant_turn_start\`, \`assistant_turn_end\`, \`assistant_turn_error\`, \`assistant_turn_cancelled\`, \`tool_call_start\`, \`tool_call_end\`, and \`compaction_end\`.
+- Supported events: \`assistant_turn_start\`, \`assistant_turn_end\`, \`assistant_turn_error\`, \`assistant_turn_cancelled\`, \`tool_call_start\`, \`tool_call_end\`, \`tool_approval_request\`, \`tool_approval_response\`, \`user_question_request\`, \`user_question_response\`, and \`compaction_end\`.
 - Hook commands receive a JSON payload on stdin and \`ECHO_HOOK_EVENT\` / \`ECHO_HOOK_CWD\` environment variables.
+- Tool approval and user question response payloads may include user feedback or answer text for local auditing.
 - Hooks are best-effort observers: they cannot intercept execution, are not shown in the TUI, are not written to transcript/session files, and are not returned to the model.
 
 ## Providers

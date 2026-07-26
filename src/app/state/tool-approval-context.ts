@@ -53,9 +53,9 @@ class ToolApprovalContext {
   }
 
   /**
-   * 打开一次工具授权请求，并返回等待用户选择的 Promise。
+   * 处理一次工具授权请求；命中会话缓存时同步返回，只有真实打开选择界面时才返回 Promise。
    */
-  request(call: ToolCall, display?: ToolApprovalRequest): Promise<ToolApprovalDecision> {
+  request(call: ToolCall, display?: ToolApprovalRequest): ToolApprovalDecision | Promise<ToolApprovalDecision> {
     if (this.activeRequest) {
       this.resolveActive({kind: 'deny', message: 'Tool execution was rejected because another approval request replaced it.'});
     }
@@ -63,7 +63,7 @@ class ToolApprovalContext {
     const cachedDecision = this.createCachedDecision(call);
 
     if (cachedDecision) {
-      return Promise.resolve(cachedDecision);
+      return cachedDecision;
     }
 
     return new Promise((resolve) => {
