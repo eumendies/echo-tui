@@ -25,7 +25,7 @@ import type {
 import type {InputEvent} from '../../types/input';
 import type {ConfigCommandData} from './state';
 
-const GENERAL_ROW_COUNT = 5;
+const GENERAL_ROW_COUNT = 6;
 
 function createModelListState(requestId: number, result: CommandConfigListModelsResult): NonNullable<ConfigCommandState['modelList']> {
   if (result.ok) {
@@ -128,7 +128,7 @@ class ConfigCommandHandler implements CommandHandler<ConfigCommandData> {
     } else if (event.type === INPUT_EVENTS.SUBMIT) {
       if (nextState.selectedIndex === 3) {
         nextState.draft.showReasoningSummary = !nextState.draft.showReasoningSummary;
-      } else if (nextState.selectedIndex === 4) {
+      } else if (nextState.selectedIndex === 5) {
         const result = host.config.saveSettings(nextState.draft);
         nextState = result.ok
           ? markGeneralConfigSaved(nextState)
@@ -323,6 +323,8 @@ function adjustGeneralValue(state: GeneralConfigState, direction: number): Gener
     state.draft.slashSuggestionMaxVisible = clamp(state.draft.slashSuggestionMaxVisible + direction, 1, 20);
   } else if (state.selectedIndex === 3) {
     state.draft.showReasoningSummary = !state.draft.showReasoningSummary;
+  } else if (state.selectedIndex === 4) {
+    state.draft.defaultInteractionMode = state.draft.defaultInteractionMode === 'normal' ? 'plan' : 'normal';
   }
   return state;
 }

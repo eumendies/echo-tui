@@ -83,6 +83,7 @@ function nextState(state, event) {
 test('config center renders general tabs, settings, and constrained width', () => {
   const state = createInitialGeneralConfigState({
     compactionThresholdRatio: 0.8,
+    defaultInteractionMode: 'plan',
     skillCatalogContextRatio: 0.02,
     showReasoningSummary: true,
     slashSuggestionMaxVisible: 8
@@ -97,7 +98,7 @@ test('config center renders general tabs, settings, and constrained width', () =
       {id: 'appearance', label: '外观'}
     ],
     state
-  }, 42, {maxLines: 9});
+  }, 42, {maxLines: 11});
   const text = layout.lines.map(stripAnsi).join('\n');
 
   assert.match(text, /常规/);
@@ -106,12 +107,15 @@ test('config center renders general tabs, settings, and constrained width', () =
   assert.match(text, /80%/);
   assert.match(text, /技能列表上下文占比上限/);
   assert.match(text, /2%/);
+  assert.match(text, /默认启动模式/);
+  assert.match(text, /plan/);
   assert.ok(layout.lines.every((line) => displayWidth(line) <= 38));
 });
 
 test('config center highlights active tab with foreground color only', () => {
   const state = createInitialGeneralConfigState({
     compactionThresholdRatio: 0.8,
+    defaultInteractionMode: 'normal',
     skillCatalogContextRatio: 0.02,
     showReasoningSummary: true,
     slashSuggestionMaxVisible: 8

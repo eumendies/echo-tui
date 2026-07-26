@@ -650,6 +650,7 @@ test('AppContext snapshots app settings into render state and agent sessions', (
   const context = createContext({
     appSettings: {
       compactionThresholdRatio: 0.65,
+      defaultInteractionMode: 'plan',
       skillCatalogContextRatio: 0.04,
       showReasoningSummary: false,
       slashSuggestionMaxVisible: 3
@@ -662,6 +663,7 @@ test('AppContext snapshots app settings into render state and agent sessions', (
   });
   assert.equal(context.getAgentSession().compactionThresholdRatio, 0.65);
   assert.equal(context.getAgentSession().skillCatalogContextRatio, 0.04);
+  assert.equal(context.getInteractionMode(), 'plan');
 });
 
 test('AppContext refreshes external app settings and classifies redraw impact', () => {
@@ -674,7 +676,7 @@ test('AppContext refreshes external app settings and classifies redraw impact', 
     fs.writeFileSync(path.join(homeDir, '.echo', 'config.json'), JSON.stringify({
       compaction: {thresholdRatio: 0.65},
       skills: {catalogContextRatio: 0.07},
-      ui: {showReasoningSummary: false, slashSuggestionMaxVisible: 4}
+      ui: {defaultInteractionMode: 'plan', showReasoningSummary: false, slashSuggestionMaxVisible: 4}
     }));
     const context = createContext();
     context.setContextUsage({usedTokens: 100, contextWindow: 1000, source: 'provider'});
@@ -687,6 +689,7 @@ test('AppContext refreshes external app settings and classifies redraw impact', 
     });
     assert.equal(context.getAgentSession().compactionThresholdRatio, 0.65);
     assert.equal(context.getAgentSession().skillCatalogContextRatio, 0.07);
+    assert.equal(context.getInteractionMode(), 'normal');
     assert.equal(context.getContextUsage(), null);
     assert.deepEqual(context.createRenderState().renderPreferences, {
       showReasoningSummary: false,
