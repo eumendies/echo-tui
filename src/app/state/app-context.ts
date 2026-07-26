@@ -27,6 +27,7 @@ import type {AssistantTurnHandle, InterruptAssistantTurnResult} from './turn-con
 type AgentInteractionMode = 'normal' | 'plan';
 
 type AppSettingsRefreshResult = {
+  agentInstructionFileChanged: boolean;
   reasoningVisibilityChanged: boolean;
   skillCatalogContextRatioChanged: boolean;
   slashSuggestionLimitChanged: boolean;
@@ -334,19 +335,20 @@ class AppContext {
   }
 
   /**
-   * 从用户配置刷新常规设置缓存，并分类报告渲染影响。
+   * 从用户配置刷新常规设置缓存，分类报告渲染影响，并使失效的 context usage 归零。
    */
   refreshAppSettingsFromConfig(): AppSettingsRefreshResult {
     const next = readAppSettings();
+    const agentInstructionFileChanged = next.agentInstructionFileName !== this.appSettings.agentInstructionFileName;
     const reasoningVisibilityChanged = next.showReasoningSummary !== this.appSettings.showReasoningSummary;
     const skillCatalogContextRatioChanged = next.skillCatalogContextRatio !== this.appSettings.skillCatalogContextRatio;
     const slashSuggestionLimitChanged = next.slashSuggestionMaxVisible !== this.appSettings.slashSuggestionMaxVisible;
 
     this.appSettings = structuredClone(next) as AppSettings;
-    if (skillCatalogContextRatioChanged) {
+    if (agentInstructionFileChanged || skillCatalogContextRatioChanged) {
       this.clearContextUsage();
     }
-    return {reasoningVisibilityChanged, skillCatalogContextRatioChanged, slashSuggestionLimitChanged};
+    return {agentInstructionFileChanged, reasoningVisibilityChanged, skillCatalogContextRatioChanged, slashSuggestionLimitChanged};
   }
 
   /**

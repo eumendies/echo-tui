@@ -2,8 +2,10 @@ import {JsonConfigFile, type JsonConfigFileOptions} from './json-config-file';
 import {getDefaultUserConfigPath, readOptionalUserConfig} from './user-config';
 
 import type {ReadUserConfigOptions, UserConfigSource} from './user-config';
+import type {AgentInstructionFileName} from '../types/agent';
 
 type AppSettings = {
+  agentInstructionFileName: AgentInstructionFileName;
   compactionThresholdRatio: number;
   defaultInteractionMode: DefaultInteractionMode;
   skillCatalogContextRatio: number;
@@ -22,6 +24,7 @@ type AppSettingsValidationResult =
   | {ok: false; error: string};
 
 const DEFAULT_APP_SETTINGS: Readonly<AppSettings> = {
+  agentInstructionFileName: 'AGENTS.md',
   compactionThresholdRatio: 0.8,
   defaultInteractionMode: 'normal',
   skillCatalogContextRatio: 0.02,
@@ -59,6 +62,10 @@ function readAppSettingsDraft(options: AppSettingsConfigOptions = {}): AppSettin
  * 校验面板草稿范围，确保写入后的值能被运行时无损读取。
  */
 function validateAppSettingsDraft(draft: AppSettings): AppSettingsValidationResult {
+  if (!isAgentInstructionFileName(draft.agentInstructionFileName)) {
+    return {ok: false, error: '项目指令文件必须是 AGENTS.md 或 CLAUDE.md'};
+  }
+
   if (!isFiniteNumberInRange(draft.compactionThresholdRatio, MIN_COMPACTION_THRESHOLD_RATIO, MAX_COMPACTION_THRESHOLD_RATIO)) {
     return {ok: false, error: '自动压缩阈值必须在 50% 到 95% 之间'};
   }
@@ -98,15 +105,18 @@ function saveAppSettingsDraft(draft: AppSettings, options: AppSettingsConfigOpti
   const configFile = new JsonConfigFile(configPath, options);
   configFile.update((rootConfig) => {
     const compaction = isPlainObject(rootConfig.compaction) ? {...rootConfig.compaction} : {};
+    const instructions = isPlainObject(rootConfig.instructions) ? {...rootConfig.instructions} : {};
     const skills = isPlainObject(rootConfig.skills) ? {...rootConfig.skills} : {};
     const ui = isPlainObject(rootConfig.ui) ? {...rootConfig.ui} : {};
 
     compaction.thresholdRatio = draft.compactionThresholdRatio;
+    instructions.fileName = draft.agentInstructionFileName;
     skills.catalogContextRatio = draft.skillCatalogContextRatio;
     ui.defaultInteractionMode = draft.defaultInteractionMode;
     ui.slashSuggestionMaxVisible = draft.slashSuggestionMaxVisible;
     ui.showReasoningSummary = draft.showReasoningSummary;
     rootConfig.compaction = compaction;
+    rootConfig.instructions = instructions;
     rootConfig.skills = skills;
     rootConfig.ui = ui;
   });
@@ -114,6 +124,7 @@ function saveAppSettingsDraft(draft: AppSettings, options: AppSettingsConfigOpti
 
 function normalizeAppSettings(rootConfig: UserConfigSource): AppSettings {
   const compaction = isPlainObject(rootConfig.compaction) ? rootConfig.compaction : {};
+  const instructions = isPlainObject(rootConfig.instructions) ? rootConfig.instructions : {};
   const skills = isPlainObject(rootConfig.skills) ? rootConfig.skills : {};
   const ui = isPlainObject(rootConfig.ui) ? rootConfig.ui : {};
   const thresholdRatio = compaction.thresholdRatio;
@@ -121,6 +132,9 @@ function normalizeAppSettings(rootConfig: UserConfigSource): AppSettings {
   const slashMaxVisible = ui.slashSuggestionMaxVisible;
 
   return {
+    agentInstructionFileName: isAgentInstructionFileName(instructions.fileName)
+      ? instructions.fileName
+      : DEFAULT_APP_SETTINGS.agentInstructionFileName,
     compactionThresholdRatio: isFiniteNumberInRange(thresholdRatio, MIN_COMPACTION_THRESHOLD_RATIO, MAX_COMPACTION_THRESHOLD_RATIO)
       ? thresholdRatio
       : DEFAULT_APP_SETTINGS.compactionThresholdRatio,
@@ -139,6 +153,10 @@ function normalizeAppSettings(rootConfig: UserConfigSource): AppSettings {
       ? Number(slashMaxVisible)
       : DEFAULT_APP_SETTINGS.slashSuggestionMaxVisible
   };
+}
+
+function isAgentInstructionFileName(value: unknown): value is AgentInstructionFileName {
+  return value === 'AGENTS.md' || value === 'CLAUDE.md';
 }
 
 function isDefaultInteractionMode(value: unknown): value is DefaultInteractionMode {

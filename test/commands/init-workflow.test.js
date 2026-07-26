@@ -1,5 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
 const {
   INIT_WORKFLOW,
@@ -13,7 +16,7 @@ test('/init workflow definition is an optional-argument plan-to-normal workflow'
 });
 
 test('/init prompt defines evidence, create, review, and reload boundaries', () => {
-  const prompt = createInitWorkflowPrompt();
+  const prompt = createInitWorkflowPrompt({fileName: 'AGENTS.md'});
 
   assert.match(prompt, /nearest \.git file\/directory or a project-level \.echo directory/);
   assert.match(prompt, /Do not mistake the ~\/\.echo directory used for global configuration/);
@@ -32,8 +35,33 @@ test('/init prompt defines evidence, create, review, and reload boundaries', () 
 });
 
 test('/init prompt includes user arguments when provided', () => {
-  const prompt = createInitWorkflowPrompt({argumentsText: 'focus on monorepo package commands'});
+  const prompt = createInitWorkflowPrompt({argumentsText: 'focus on monorepo package commands', fileName: 'AGENTS.md'});
 
   assert.match(prompt, /User-provided \/init arguments/);
   assert.match(prompt, /focus on monorepo package commands/);
+});
+
+test('/init prompt follows the selected CLAUDE.md instruction file', () => {
+  const prompt = createInitWorkflowPrompt({fileName: 'CLAUDE.md'});
+
+  assert.match(prompt, /generate or review the CLAUDE\.md/);
+  assert.match(prompt, /target CLAUDE\.md path/);
+  assert.doesNotMatch(prompt, /AGENTS\.md/);
+});
+
+test('/init prompt reads the current instruction selection from user config', () => {
+  const originalHomedir = os.homedir;
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-init-workflow-'));
+  os.homedir = () => homeDir;
+
+  try {
+    fs.mkdirSync(path.join(homeDir, '.echo'), {recursive: true});
+    fs.writeFileSync(path.join(homeDir, '.echo', 'config.json'), JSON.stringify({instructions: {fileName: 'CLAUDE.md'}}), 'utf8');
+
+    const prompt = createInitWorkflowPrompt();
+    assert.match(prompt, /generate or review the CLAUDE\.md/);
+  } finally {
+    os.homedir = originalHomedir;
+    fs.rmSync(homeDir, {recursive: true, force: true});
+  }
 });

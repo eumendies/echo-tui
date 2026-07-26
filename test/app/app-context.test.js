@@ -675,6 +675,7 @@ test('AppContext refreshes external app settings and classifies redraw impact', 
     fs.mkdirSync(path.join(homeDir, '.echo'), {recursive: true});
     fs.writeFileSync(path.join(homeDir, '.echo', 'config.json'), JSON.stringify({
       compaction: {thresholdRatio: 0.65},
+      instructions: {fileName: 'CLAUDE.md'},
       skills: {catalogContextRatio: 0.07},
       ui: {defaultInteractionMode: 'plan', showReasoningSummary: false, slashSuggestionMaxVisible: 4}
     }));
@@ -683,6 +684,7 @@ test('AppContext refreshes external app settings and classifies redraw impact', 
     const result = context.refreshAppSettingsFromConfig();
 
     assert.deepEqual(result, {
+      agentInstructionFileChanged: true,
       reasoningVisibilityChanged: true,
       skillCatalogContextRatioChanged: true,
       slashSuggestionLimitChanged: true

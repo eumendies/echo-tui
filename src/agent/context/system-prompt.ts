@@ -125,27 +125,28 @@ function readSystemPromptFile(filePath: string, options: {
 }
 
 /**
- * 将 AGENTS.md 内容渲染为单个 system prompt section；顺序由 loader 保证为全局到具体路径。
+ * 将项目指令文件渲染为单个 system prompt section；顺序由 loader 保证为全局到具体路径。
  */
 function formatAgentInstructionsPrompt(agentInstructions: AgentInstruction[]): string {
   if (agentInstructions.length === 0) {
     return '';
   }
 
-  const instructionSections = agentInstructions.map((instruction) => `## ${formatAgentInstructionHeading(instruction)}\n${instruction.content}`);
+  const fileName = path.basename(agentInstructions[0].filePath);
+  const instructionSections = agentInstructions.map((instruction) => `## ${formatAgentInstructionHeading(instruction, fileName)}\n${instruction.content}`);
 
-  return `AGENTS.md instructions:
-The following comes from user-level or project-level AGENTS.md. Built-in runtime constraints, tool safety policy, and the current interaction mode take the highest precedence; when AGENTS.md files conflict, a more specific project path takes precedence over the project root, and a project AGENTS.md takes precedence over the global AGENTS.md.
+  return `${fileName} instructions:
+The following comes from user-level or project-level ${fileName}. Built-in runtime constraints, tool safety policy, and the current interaction mode take the highest precedence; when ${fileName} files conflict, a more specific project path takes precedence over the project root, and a project ${fileName} takes precedence over the global ${fileName}.
 
 ${instructionSections.join('\n\n')}`;
 }
 
-function formatAgentInstructionHeading(instruction: AgentInstruction): string {
+function formatAgentInstructionHeading(instruction: AgentInstruction, fileName: string): string {
   if (instruction.sourceKind === 'global') {
-    return 'Global AGENTS.md';
+    return `Global ${fileName}`;
   }
 
-  return `Project AGENTS.md: ${instruction.label}`;
+  return `Project ${fileName}: ${instruction.label}`;
 }
 
 export {

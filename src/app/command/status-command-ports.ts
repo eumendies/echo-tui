@@ -2,6 +2,7 @@ import {redactSensitiveText} from '../../agent/agent-errors';
 import {loadAgentInstructions} from '../../agent/agent-instructions';
 import {queryCodexUsage} from '../../config/codex-oauth';
 import {readLlmConfig} from '../../config/llm-config';
+import {readAppSettings} from '../../config/app-settings-config';
 import {listEffectiveAgentMemoryCatalogs} from '../../memory/agent-memory-store';
 import {readUserMemories} from '../../memory/memory-store';
 import {createCommandViewport} from './command-viewport';
@@ -79,6 +80,7 @@ function createStatusSnapshot(appContext: StatusCommandContext): CommandStatusSn
   const userMemoryResult = readUserMemories();
   const agentMemoryResult = listEffectiveAgentMemoryCatalogs(cwd);
   const modelResult = appContext.modelContext.createStatusInfo();
+  const appSettings = readAppSettings();
   const diagnostics: string[] = [];
 
   if (!userMemoryResult.ok) {
@@ -95,9 +97,10 @@ function createStatusSnapshot(appContext: StatusCommandContext): CommandStatusSn
 
   return {
     cwd,
+    agentInstructionFileName: appSettings.agentInstructionFileName,
     sessionId: appContext.transcriptContext.getCurrentSessionId(),
     model: 'error' in modelResult ? null : {...modelResult},
-    agentInstructions: loadAgentInstructions({cwd}).map((instruction) => ({
+    agentInstructions: loadAgentInstructions({cwd, fileName: appSettings.agentInstructionFileName}).map((instruction) => ({
       filePath: instruction.filePath,
       label: instruction.label,
       sourceKind: instruction.sourceKind

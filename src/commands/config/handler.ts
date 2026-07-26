@@ -25,7 +25,7 @@ import type {
 import type {InputEvent} from '../../types/input';
 import type {ConfigCommandData} from './state';
 
-const GENERAL_ROW_COUNT = 6;
+const GENERAL_ROW_COUNT = 7;
 
 function createModelListState(requestId: number, result: CommandConfigListModelsResult): NonNullable<ConfigCommandState['modelList']> {
   if (result.ok) {
@@ -52,7 +52,7 @@ function createModelListState(requestId: number, result: CommandConfigListModels
  */
 class ConfigCommandHandler implements CommandHandler<ConfigCommandData> {
   name = 'config';
-  description = '配置常规设置、模型和主题';
+  description = '配置常规设置、指令文件、模型和主题';
 
   match(text: string): boolean {
     return text.trimEnd() === '/config';
@@ -128,7 +128,7 @@ class ConfigCommandHandler implements CommandHandler<ConfigCommandData> {
     } else if (event.type === INPUT_EVENTS.SUBMIT) {
       if (nextState.selectedIndex === 3) {
         nextState.draft.showReasoningSummary = !nextState.draft.showReasoningSummary;
-      } else if (nextState.selectedIndex === 5) {
+      } else if (nextState.selectedIndex === 6) {
         const result = host.config.saveSettings(nextState.draft);
         nextState = result.ok
           ? markGeneralConfigSaved(nextState)
@@ -325,6 +325,8 @@ function adjustGeneralValue(state: GeneralConfigState, direction: number): Gener
     state.draft.showReasoningSummary = !state.draft.showReasoningSummary;
   } else if (state.selectedIndex === 4) {
     state.draft.defaultInteractionMode = state.draft.defaultInteractionMode === 'normal' ? 'plan' : 'normal';
+  } else if (state.selectedIndex === 5) {
+    state.draft.agentInstructionFileName = state.draft.agentInstructionFileName === 'AGENTS.md' ? 'CLAUDE.md' : 'AGENTS.md';
   }
   return state;
 }

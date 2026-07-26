@@ -10,7 +10,7 @@ Baseline and scope:
 - If this is not a Git workspace, or there are no changes vs HEAD, say so clearly and stop; do not pivot to unrelated existing code.
 
 Approach:
-- Understand the intent first: read focused diffs, then surrounding code, callers, types, tests, config, or AGENTS.md when they clarify impact. Do not map the whole repository.
+- Understand the intent first: read focused diffs, then surrounding code, callers, types, tests, config, or repository instruction files when they clarify impact. Do not map the whole repository.
 - Report issues a maintainer would fix before merging: correctness bugs, regressions, broken contracts, boundary conditions, error-handling gaps, security or data-loss risks, and maintainability issues with concrete impact.
 - Only report issues introduced or directly exposed by the diff, each grounded in changed code with a realistic trigger, broken contract, user-visible impact, or concrete maintenance cost. Skip unrelated existing issues, missing tests alone, formatting or naming preferences, broad refactor ideas, and nits.
 - Verify by reading the code path, tests, types, or a cheap targeted command; you need not run tests for every finding. If a command fails and you cannot tie it to the diff, do not treat it as a finding.

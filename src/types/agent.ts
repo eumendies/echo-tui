@@ -79,6 +79,8 @@ export type AgentSessionInput = {
 
 export type AgentInstructionSourceKind = 'global' | 'project';
 
+export type AgentInstructionFileName = 'AGENTS.md' | 'CLAUDE.md';
+
 export type AgentInstruction = {
   content: string;
   filePath: string;

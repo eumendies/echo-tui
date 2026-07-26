@@ -1,5 +1,5 @@
 import type { InputEvent } from './input';
-import type { AgentType, ContextUsage, InteractionMode, ReasoningEffort } from './agent';
+import type { AgentInstructionFileName, AgentType, ContextUsage, InteractionMode, ReasoningEffort } from './agent';
 import type {DiffFile, DiffSourceInfo, DiffSourceResult} from './diff';
 import type { CompactionState, TranscriptRecord, TranscriptSessionMetadata, UserTranscriptMetadata } from './transcript';
 import type {UndoExecuteResult, UndoSummary} from './change-history';
@@ -326,6 +326,7 @@ export type UsageCommandSurface = {
 };
 
 export type CommandStatusSnapshot = {
+  agentInstructionFileName: AgentInstructionFileName;
   agentInstructions: Array<{
     filePath: string;
     label: string;

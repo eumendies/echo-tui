@@ -83,6 +83,7 @@ echo-tui --once --full-access "按要求修改文件并运行检查"
       { "id": "fast", "provider": "default", "model": "<model-name>" }
     ]
   },
+  "instructions": { "fileName": "AGENTS.md" },
   "compaction": { "thresholdRatio": 0.8 },
   "ui": {
     "defaultInteractionMode": "normal",
@@ -95,6 +96,7 @@ echo-tui --once --full-access "按要求修改文件并运行检查"
 - `preset` 选择运行时协议，常用 `openai-responses-api`、`openai-chat-compatible-api`、`anthropic-compatible-api`，以及一组固定 Base URL、只需填 API key 的厂商 preset（DeepSeek、Kimi、Z.ai、Minimax、StepFun、OpenRouter、Xiaomi 等）。
 - `model` 是 provider 的 API 模型名；`contextWindow` 可选，留空时按内置模型映射或默认窗口推断。
 - `reasoning.effort` 可选，用 `/effort` 调整；`tools.bash.maxOutputBytes` 可限制 bash 工具输出上限。bash 工具默认无固定超时，可用 Esc 中断；如确实需要自动终止，可显式配置 `tools.bash.timeoutMs` 为正整数。
+- `instructions.fileName` 可设为 `AGENTS.md` 或 `CLAUDE.md`，默认读取 `AGENTS.md`。两者互斥，不会在所选文件缺失时回退到另一种文件。
 - `compaction.thresholdRatio` 范围为 `0.5–0.95`；`ui.defaultInteractionMode` 可设为 `normal` 或 `plan`，只影响新启动的 TUI，不会切换当前运行中的模式或改变 `--once`；`ui.slashSuggestionMaxVisible` 范围为 `1–20`。`ui.showReasoningSummary` 只控制显示，摘要仍会完整写入会话记录。
 
 也可以选择 `openai-codex-oauth` preset，通过本机已有 Codex/ChatGPT OAuth 登录态使用 Codex 订阅模型。本项目不会发起 OpenAI 登录流程，只读取现有 auth cache：优先使用 provider 的 `codexAuthFile`，其次是 `CODEX_HOME/auth.json`，最后是 `~/.codex/auth.json`。示例：
@@ -121,7 +123,11 @@ API key 不要提交到仓库。更多配置说明见内置 `echo-tui-setup` ski
 
 可用 `~/.echo/SYSTEM.md` 设置用户级基础 system prompt，或在项目根目录放置 `SYSTEM.md` 进行项目级覆盖；项目级文件优先。没有 Git/`.echo` 项目标记时，Echo TUI 查找启动 cwd 下的 `SYSTEM.md`。
 
-`SYSTEM.md` 只替换 Echo TUI 默认的身份与通用行为文本。当前 cwd、适用的 AGENTS.md、skills 和 memory 仍会继续加入 provider system context。缺失、不可读、非普通文件或空文件会自动回退到下一优先级，最终回退到源码内置 prompt。
+`SYSTEM.md` 只替换 Echo TUI 默认的身份与通用行为文本。当前 cwd、所选项目指令文件、skills 和 memory 仍会继续加入 provider system context。缺失、不可读、非普通文件或空文件会自动回退到下一优先级，最终回退到源码内置 prompt。
+
+## 项目指令文件
+
+在 `/config` → `常规` 中可以选择读取 `AGENTS.md` 或 `CLAUDE.md`。用户级文件分别位于 `~/.echo/AGENTS.md` 和 `~/.echo/CLAUDE.md`；项目文件均从项目根目录到当前 cwd 逐级加载，更具体的目录优先。配置和文件变化从下一次 agent 请求开始生效，当前 tool continuation 保持启动时的快照。
 
 ## 交互模式
 
@@ -159,7 +165,7 @@ normal 与 plan 之间发生模型可见切换时，模式说明只会加入切�
 | `/clear` `/compact` `/resume` | 清屏、压缩上下文、恢复历史会话 |
 | `/diff` `/undo` | 查看文件差异、回退上一轮文件修改与会话记录 |
 | `/mcp` `/hooks` `/skills` | 管理 MCP server、lifecycle hooks 和 skills |
-| `/init` `/review` | 生成或评审 AGENTS.md、审查当前 Git 变更 |
+| `/init` `/review` | 生成或评审当前选择的项目指令文件、审查当前 Git 变更 |
 | `/<skill-name> [args]` | 调用已启用 skill |
 
 ## Skills

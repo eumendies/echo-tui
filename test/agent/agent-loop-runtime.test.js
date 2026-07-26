@@ -207,6 +207,35 @@ test('createAgentLoopRuntime reads the headless skill catalog ratio from app set
   });
 });
 
+test('createAgentLoopRuntime loads only the configured CLAUDE instruction files', async () => {
+  await withTemporaryMemoryHome(async (homeDir) => {
+    const cwd = path.join(homeDir, 'repo');
+    fs.mkdirSync(path.join(homeDir, '.echo'), {recursive: true});
+    fs.mkdirSync(path.join(cwd, '.git'), {recursive: true});
+    fs.writeFileSync(path.join(homeDir, '.echo', 'config.json'), JSON.stringify({instructions: {fileName: 'CLAUDE.md'}}), 'utf8');
+    fs.writeFileSync(path.join(homeDir, '.echo', 'CLAUDE.md'), 'CLAUDE GLOBAL ONLY', 'utf8');
+    fs.writeFileSync(path.join(homeDir, '.echo', 'AGENTS.md'), 'AGENTS GLOBAL MUST NOT LOAD', 'utf8');
+    fs.writeFileSync(path.join(cwd, 'CLAUDE.md'), 'CLAUDE PROJECT ONLY', 'utf8');
+    fs.writeFileSync(path.join(cwd, 'AGENTS.md'), 'AGENTS PROJECT MUST NOT LOAD', 'utf8');
+    const requests = [];
+    const agent = {
+      async runTurn(records) {
+        requests.push(records);
+        return {draft: 'done', toolCalls: []};
+      }
+    };
+
+    await withPatchedAgentRuntime(agent, () => createAgentLoopRuntime(cwd)({
+      records: [{role: 'user', text: 'follow instructions'}]
+    }));
+
+    assert.match(requests[0][0].text, /CLAUDE\.md instructions/);
+    assert.match(requests[0][0].text, /CLAUDE GLOBAL ONLY/);
+    assert.match(requests[0][0].text, /CLAUDE PROJECT ONLY/);
+    assert.doesNotMatch(requests[0][0].text, /AGENTS .* MUST NOT LOAD/);
+  });
+});
+
 test('buildProviderRecords includes AGENTS instructions with precedence text', () => {
   const records = buildProviderRecords([{ role: 'user', text: 'follow repo rules' }], TEST_CWD, undefined, [], [
     {
@@ -231,6 +260,21 @@ test('buildProviderRecords includes AGENTS instructions with precedence text', (
   assert.match(records[0].text, /Run npm test before finishing\./);
   assert.match(records[0].text, /Built-in runtime constraints/);
   assert.deepEqual(records.slice(1), [{ role: 'user', text: 'follow repo rules' }]);
+});
+
+test('buildProviderRecords labels CLAUDE instructions dynamically', () => {
+  const records = buildProviderRecords([{role: 'user', text: 'follow rules'}], TEST_CWD, undefined, [], [
+    {
+      content: 'Use the Claude project rules.',
+      filePath: '/repo/CLAUDE.md',
+      label: 'CLAUDE.md',
+      sourceKind: 'project'
+    }
+  ]);
+
+  assert.match(records[0].text, /CLAUDE\.md instructions/);
+  assert.match(records[0].text, /Project CLAUDE\.md: CLAUDE\.md/);
+  assert.doesNotMatch(records[0].text, /AGENTS\.md instructions/);
 });
 
 test('buildProviderRecords injects user memories only into the transient system prompt', () => {

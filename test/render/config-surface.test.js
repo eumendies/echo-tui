@@ -82,6 +82,7 @@ function nextState(state, event) {
 
 test('config center renders general tabs, settings, and constrained width', () => {
   const state = createInitialGeneralConfigState({
+    agentInstructionFileName: 'CLAUDE.md',
     compactionThresholdRatio: 0.8,
     defaultInteractionMode: 'plan',
     skillCatalogContextRatio: 0.02,
@@ -98,7 +99,7 @@ test('config center renders general tabs, settings, and constrained width', () =
       {id: 'appearance', label: '外观'}
     ],
     state
-  }, 42, {maxLines: 11});
+  }, 42, {maxLines: 13});
   const text = layout.lines.map(stripAnsi).join('\n');
 
   assert.match(text, /常规/);
@@ -109,11 +110,14 @@ test('config center renders general tabs, settings, and constrained width', () =
   assert.match(text, /2%/);
   assert.match(text, /默认启动模式/);
   assert.match(text, /plan/);
+  assert.match(text, /项目指令文件/);
+  assert.match(text, /CLAUDE\.md/);
   assert.ok(layout.lines.every((line) => displayWidth(line) <= 38));
 });
 
 test('config center highlights active tab with foreground color only', () => {
   const state = createInitialGeneralConfigState({
+    agentInstructionFileName: 'AGENTS.md',
     compactionThresholdRatio: 0.8,
     defaultInteractionMode: 'normal',
     skillCatalogContextRatio: 0.02,

@@ -119,6 +119,7 @@ function createFakeHost(options = {}) {
           throw new Error(options.settingsReadError);
         }
         return structuredClone(options.appSettings || {
+          agentInstructionFileName: 'AGENTS.md',
           compactionThresholdRatio: 0.8,
           defaultInteractionMode: 'normal',
           skillCatalogContextRatio: 0.02,
@@ -246,6 +247,7 @@ function createFakeHost(options = {}) {
     status: {
       createSnapshot() {
         return structuredClone(options.statusSnapshot || {
+          agentInstructionFileName: 'AGENTS.md',
           cwd: '/tmp/echo_tui',
           sessionId: null,
           model: {agentType: 'fake', model: 'echo-fake-agent', provider: 'fake'},
@@ -444,6 +446,7 @@ test('statusCommandHandler loads Codex usage and isolates late results', async (
     resolveUsage = resolve;
   });
   const snapshot = {
+    agentInstructionFileName: 'CLAUDE.md',
     cwd: '/tmp/project',
     sessionId: 'session-1',
     model: {agentType: 'codex', model: 'gpt-codex', provider: 'codex'},
@@ -512,6 +515,7 @@ test('statusCommandHandler resolves non-Codex usage and maps query rejection', a
 
   const failed = createFakeHost({
     statusSnapshot: {
+      agentInstructionFileName: 'AGENTS.md',
       cwd: '/tmp/project',
       sessionId: null,
       model: {agentType: 'codex', model: 'gpt-codex', provider: 'codex'},
@@ -530,6 +534,7 @@ test('statusCommandHandler resolves non-Codex usage and maps query rejection', a
 
   const missingModel = createFakeHost({
     statusSnapshot: {
+      agentInstructionFileName: 'AGENTS.md',
       cwd: '/tmp/project',
       sessionId: null,
       model: null,
@@ -1081,11 +1086,15 @@ test('configCommandHandler opens general tab, saves independently, and lazily op
   assert.equal(host.session.getActive().surface.state.draft.defaultInteractionMode, 'plan');
   assert.equal(calls.savedSettingsDrafts.length, 0);
   configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
+  configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_RIGHT}, host);
+  assert.equal(host.session.getActive().surface.state.draft.agentInstructionFileName, 'CLAUDE.md');
+  configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
   configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
   assert.equal(calls.savedSettingsDrafts.length, 1);
   assert.equal(calls.savedSettingsDrafts[0].compactionThresholdRatio, 0.85);
   assert.equal(calls.savedSettingsDrafts[0].skillCatalogContextRatio, 0.03);
   assert.equal(calls.savedSettingsDrafts[0].defaultInteractionMode, 'plan');
+  assert.equal(calls.savedSettingsDrafts[0].agentInstructionFileName, 'CLAUDE.md');
   assert.match(host.session.getActive().surface.state.feedback, /已保存/);
 
   configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.TAB}, host);
@@ -1114,7 +1123,7 @@ test('configCommandHandler isolates tab read errors and keeps save errors inline
     }
   });
   const session = startCommand(configCommandHandler, '/config', saveError.host);
-  for (let index = 0; index < 5; index += 1) {
+  for (let index = 0; index < 6; index += 1) {
     configCommandHandler.handleEvent(saveError.host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, saveError.host);
   }
   configCommandHandler.handleEvent(saveError.host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, saveError.host);
@@ -1289,7 +1298,7 @@ test('createSlashCommandDescriptors derives display metadata from handlers', () 
   assert.equal(descriptors.some((descriptor) => descriptor.name === 'skill'), false);
   assert.deepEqual(descriptors, [
     { name: 'help', description: '查看帮助' },
-    { name: 'config', description: '配置常规设置、模型和主题' },
+    { name: 'config', description: '配置常规设置、指令文件、模型和主题' },
     { name: 'model', description: '切换模型' },
     { name: 'effort', description: '调整推理等级' },
     { name: 'mode', description: '切换交互模式' },
@@ -1306,7 +1315,7 @@ test('createSlashCommandDescriptors derives display metadata from handlers', () 
     { name: 'memory', description: '查看和管理持久 memory' },
     { name: 'hooks', description: '查看、管理和测试 lifecycle hooks' },
     { name: 'skills', description: '查看和管理 skills' },
-    { name: 'init', description: '分析项目并生成或评审 AGENTS.md' },
+    { name: 'init', description: '分析项目并生成或评审当前指令文件' },
     { name: 'review', description: '审查当前代码变更' }
   ]);
 });

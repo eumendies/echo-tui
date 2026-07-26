@@ -74,6 +74,7 @@ function renderGeneralView(state: GeneralConfigState, tabs: ConfigSurfaceTab[], 
     {label: 'Slash 建议最多显示', value: `${state.draft.slashSuggestionMaxVisible} 条`},
     {label: '显示推理摘要', value: state.draft.showReasoningSummary ? '开' : '关'},
     {label: '默认启动模式', value: state.draft.defaultInteractionMode},
+    {label: '项目指令文件', value: state.draft.agentInstructionFileName},
     {label: '保存常规设置', value: '写入 ~/.echo/config.json', action: true}
   ];
   const fixedLines = 5 + (state.error || state.feedback ? 1 : 0);

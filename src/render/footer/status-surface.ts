@@ -27,7 +27,7 @@ function renderStatusSurface(surface: StatusCommandSurface, width: number, maxLi
     plainRow(cardWidth, `模型  ${model?.model || '不可用'}`, theme),
     plainRow(cardWidth, `Provider  ${model ? `${model.provider} (${model.agentType})` : '不可用'}`, theme),
     plainRow(cardWidth, `Session  ${snapshot.sessionId || '未创建'}`, theme),
-    plainRow(cardWidth, `AGENTS  ${instructionLabels.length > 0 ? instructionLabels.join(', ') : '无'}`, theme),
+    plainRow(cardWidth, `Instructions  ${snapshot.agentInstructionFileName} · ${instructionLabels.length > 0 ? instructionLabels.join(', ') : '无'}`, theme),
     plainRow(cardWidth, `Memory  user:${snapshot.userMemoryCount} · catalogs:${catalogLabels.length > 0 ? catalogLabels.join(', ') : '无'}`, theme)
   ];
 

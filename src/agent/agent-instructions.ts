@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import type {AgentInstruction, AgentInstructionSourceKind} from '../types/agent';
+import type {AgentInstruction, AgentInstructionFileName, AgentInstructionSourceKind} from '../types/agent';
 
 const AGENTS_FILE_NAME = 'AGENTS.md';
 const DEFAULT_MAX_AGENT_INSTRUCTION_FILE_BYTES = 64 * 1024;
@@ -17,6 +17,7 @@ type AgentInstructionCandidate = {
 
 type AgentInstructionLoadOptions = {
   cwd?: string;
+  fileName?: AgentInstructionFileName;
   homedir?: string;
   maxFileBytes?: number;
   maxTotalBytes?: number;
@@ -25,22 +26,23 @@ type AgentInstructionLoadOptions = {
 };
 
 /**
- * 读取本次 provider 请求适用的 AGENTS.md 指令；缺失或不可读文件会被跳过。
+ * 读取本次 provider 请求适用的项目指令文件；缺失或不可读文件会被跳过。
  */
 function loadAgentInstructions(options: AgentInstructionLoadOptions = {}): AgentInstruction[] {
   const cwd = path.resolve(options.cwd || process.cwd());
   const homedir = path.resolve(options.homedir || os.homedir());
+  const fileName = options.fileName || AGENTS_FILE_NAME;
   const readFile = options.readFile || fs.readFileSync;
   const stat = options.stat || fs.statSync;
   const maxFileBytes = normalizePositiveInteger(options.maxFileBytes, DEFAULT_MAX_AGENT_INSTRUCTION_FILE_BYTES);
   const maxTotalBytes = normalizePositiveInteger(options.maxTotalBytes, DEFAULT_MAX_AGENT_INSTRUCTIONS_TOTAL_BYTES);
   const candidates = [
     {
-      filePath: getDefaultGlobalAgentsPath(homedir),
-      label: AGENTS_FILE_NAME,
+      filePath: getDefaultGlobalAgentInstructionsPath(fileName, homedir),
+      label: fileName,
       sourceKind: 'global' as const
     },
-    ...collectProjectAgentInstructionCandidates(cwd, homedir, stat)
+    ...collectProjectAgentInstructionCandidates(cwd, homedir, stat, fileName)
   ];
   const instructions: AgentInstruction[] = [];
   const seenPaths = new Set<string>();
@@ -69,16 +71,20 @@ function loadAgentInstructions(options: AgentInstructionLoadOptions = {}): Agent
 }
 
 function getDefaultGlobalAgentsPath(homedir = os.homedir()): string {
-  return path.join(homedir, '.echo', AGENTS_FILE_NAME);
+  return getDefaultGlobalAgentInstructionsPath(AGENTS_FILE_NAME, homedir);
 }
 
-function collectProjectAgentInstructionCandidates(cwd: string, homedir: string, stat: (filePath: string) => fs.Stats): AgentInstructionCandidate[] {
+function getDefaultGlobalAgentInstructionsPath(fileName: AgentInstructionFileName, homedir = os.homedir()): string {
+  return path.join(homedir, '.echo', fileName);
+}
+
+function collectProjectAgentInstructionCandidates(cwd: string, homedir: string, stat: (filePath: string) => fs.Stats, fileName: AgentInstructionFileName = AGENTS_FILE_NAME): AgentInstructionCandidate[] {
   const projectRoot = findProjectRoot(cwd, homedir, stat);
   const dirs = projectRoot ? listDirectoriesFromRootToCwd(projectRoot, cwd) : [cwd];
 
   return dirs.map((dirPath) => ({
-    filePath: path.join(dirPath, AGENTS_FILE_NAME),
-    label: projectRoot ? normalizeProjectRelativePath(path.relative(projectRoot, path.join(dirPath, AGENTS_FILE_NAME))) : AGENTS_FILE_NAME,
+    filePath: path.join(dirPath, fileName),
+    label: projectRoot ? normalizeProjectRelativePath(path.relative(projectRoot, path.join(dirPath, fileName)), fileName) : fileName,
     sourceKind: 'project' as const
   }));
 }
@@ -141,8 +147,8 @@ function listDirectoriesFromRootToCwd(root: string, cwd: string): string[] {
   }
 }
 
-function normalizeProjectRelativePath(relativePath: string): string {
-  return relativePath === '' ? AGENTS_FILE_NAME : relativePath.split(path.sep).join(path.posix.sep);
+function normalizeProjectRelativePath(relativePath: string, fileName: AgentInstructionFileName): string {
+  return relativePath === '' ? fileName : relativePath.split(path.sep).join(path.posix.sep);
 }
 
 function readAgentInstructionFile(candidate: AgentInstructionCandidate, options: {
@@ -221,6 +227,7 @@ export {
   DEFAULT_MAX_AGENT_INSTRUCTIONS_TOTAL_BYTES,
   collectProjectAgentInstructionCandidates,
   findProjectRoot,
+  getDefaultGlobalAgentInstructionsPath,
   getDefaultGlobalAgentsPath,
   loadAgentInstructions
 };
