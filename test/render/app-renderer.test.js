@@ -7,7 +7,7 @@ const { displayWidth, safeRenderWidth, stripAnsi } = require('../../src/render/l
 
 const DEFAULT_STATUS_LINE = {
   projectName: 'echo_tui',
-  modelLabel: 'GPT-4o',
+  model: {kind: 'default', label: 'GPT-4o'},
   mode: 'idle'
 };
 const ASK_USER_QUESTIONS_TOOL_NAME = 'ask_user_questions';
@@ -154,6 +154,23 @@ test('renderTranscriptLines projects user, assistant, error, local notice, and r
   assert.ok(lines.some((line) => line.startsWith('✕ 模型响应失败：timeout')));
   assert.ok(lines.some((line) => line.startsWith('◇ 已中断模型回答')));
   assert.ok(lines.some((line) => line.startsWith('◇ 我会先检查上下文。')));
+});
+
+test('renderTranscriptLines filters reasoning summaries only at the render boundary', () => {
+  const records = [
+    {role: 'user', text: 'question'},
+    {role: 'reasoning_summary', text: 'private visible summary'},
+    {role: 'assistant', text: 'answer'}
+  ];
+  const lines = renderTranscriptLines(records, 80, undefined, {
+    showReasoningSummary: false,
+    slashSuggestionMaxVisible: 8
+  }).map((line) => stripAnsi(line));
+
+  assert.equal(lines.some((line) => line.includes('private visible summary')), false);
+  assert.equal(lines.some((line) => line.includes('question')), true);
+  assert.equal(lines.some((line) => line.includes('answer')), true);
+  assert.equal(records[1].role, 'reasoning_summary');
 });
 
 test('renderTranscriptLines uses displayText for user records when present', () => {

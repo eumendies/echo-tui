@@ -17,7 +17,6 @@ import { ResumeCommandHandler } from './resume-command-handler';
 import { SkillInvocationCommandHandler } from './skill-invocation-command-handler';
 import { SkillsCommandHandler } from './skills-command-handler';
 import { StatusCommandHandler } from './status-command-handler';
-import { ThemesCommandHandler } from './themes-command-handler';
 import { UndoCommandHandler } from './undo-command-handler';
 import { UsageCommandHandler } from './usage-command-handler';
 
@@ -45,7 +44,6 @@ export function createDefaultSlashCommandHandlers(): MatchableCommandHandler[] {
     new MemoryCommandHandler(),
     new HooksCommandHandler(),
     new SkillsCommandHandler(),
-    new ThemesCommandHandler(),
     ...createBuiltInAgentWorkflowHandlers(),
     new SkillInvocationCommandHandler()
   ];

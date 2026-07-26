@@ -12,7 +12,7 @@ const { displayWidth, safeRenderWidth, stripAnsi } = require('../../src/render/l
 
 const DEFAULT_STATUS_LINE = {
   projectName: 'echo_tui',
-  modelLabel: 'GPT-4o',
+  model: {kind: 'default', label: 'GPT-4o'},
   mode: 'idle'
 };
 
@@ -43,11 +43,7 @@ function completeCommandSurfaceFixture(surface) {
     case 'confirm':
       return {title: '确认', bodyLines: [], confirmLabel: '确认', cancelLabel: '取消', ...surface};
     case 'config':
-      return surface.view ? surface : surface.result
-        ? {...surface, view: 'result'}
-        : surface.state
-          ? {...surface, view: 'editor', rows: surface.rows || []}
-          : {...surface, view: 'loading'};
+      return surface;
     case 'context':
       return {title: '上下文', dismissHint: '上下文占用详情 · 按任意键关闭', ...surface};
     case 'usage':
@@ -160,10 +156,121 @@ test('renderFooterLayout renders empty composer placeholder without changing cur
 
   const plainLines = layout.lines.map((line) => stripAnsi(line));
 
-  assert.ok(plainLines.some((line) => line.includes('> / 命令 · @ 路径 · TAB 切换 mode · Shift+Tab 工具授权 · Ctrl+J 换行')));
+  assert.ok(plainLines.some((line) => line.includes('> / 命令 · @ 路径 · TAB mode · Ctrl+T 模型 · Shift+Tab 授权 · Ctrl+J 换行')));
   assert.equal(plainLines.some((line) => line.includes('Enter 发送')), false);
   assert.equal(layout.cursorRow, 2);
   assert.equal(layout.cursorColumn, 4);
+});
+
+test('renderFooterLayout replaces the empty composer placeholder while model tuning', () => {
+  const normal = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: null,
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    width: 100
+  });
+  const tuning = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: null,
+    pending: null,
+    statusLine: {
+      ...DEFAULT_STATUS_LINE,
+      model: {
+        kind: 'tuning',
+        label: 'gpt-deep',
+        activeField: 'model',
+        effort: 'medium'
+      }
+    },
+    width: 100
+  });
+  const plainLines = tuning.lines.map((line) => stripAnsi(line));
+
+  assert.equal(tuning.lines.length, normal.lines.length);
+  assert.ok(plainLines.some((line) => line.includes('> Tab 切换字段 · ←/→ 调整 · Enter 应用 · Esc 取消')));
+  assert.equal(plainLines.some((line) => line.includes('/ 命令 · @ 路径')), false);
+  assert.ok(plainLines.at(-1).includes('‹gpt-deep›'));
+  assert.ok(plainLines.at(-1).includes('effort medium'));
+  assert.equal(plainLines.at(-1).includes('● effort'), false);
+  assert.equal(tuning.showCursor, false);
+});
+
+test('renderFooterLayout keeps typed composer text and focuses the tuning effort only in status line', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('keep this draft'),
+    commandSurface: null,
+    pending: null,
+    statusLine: {
+      ...DEFAULT_STATUS_LINE,
+      model: {
+        kind: 'tuning',
+        label: 'gpt-deep',
+        activeField: 'effort',
+        effort: 'high'
+      }
+    },
+    width: 100
+  });
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+
+  assert.ok(plainLines.some((line) => line.includes('> keep this draft')));
+  assert.equal(plainLines.some((line) => line.includes('Tab 切换字段 · ←/→ 调整')), false);
+  assert.ok(plainLines.at(-1).includes('gpt-deep'));
+  assert.ok(plainLines.at(-1).includes('effort ‹high›'));
+  assert.equal(layout.showCursor, false);
+});
+
+test('renderFooterLayout renders tuning errors safely and restores mode placeholders after exit', () => {
+  const tuning = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: null,
+    pending: null,
+    statusLine: {
+      ...DEFAULT_STATUS_LINE,
+      mode: 'plan',
+      model: {
+        kind: 'tuning',
+        label: 'very-long-model-name',
+        activeField: 'model',
+        effort: 'low',
+        error: '无法保存'
+      }
+    },
+    width: 42
+  });
+  const resized = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: null,
+    pending: null,
+    statusLine: {
+      ...DEFAULT_STATUS_LINE,
+      mode: 'plan',
+      model: {
+        kind: 'tuning',
+        label: 'very-long-model-name',
+        activeField: 'model',
+        effort: 'low',
+        error: '无法保存'
+      }
+    },
+    width: 100
+  });
+  const restored = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: null,
+    pending: null,
+    statusLine: {...DEFAULT_STATUS_LINE, mode: 'plan'},
+    width: 80
+  });
+
+  assert.ok(tuning.lines.every((line) => displayWidth(line) <= safeRenderWidth(42)));
+  assert.ok(stripAnsi(tuning.lines.at(-1)).includes('very-long-model-name'));
+  assert.ok(stripAnsi(resized.lines.at(-1)).includes('保存失败 无法保存'));
+  assert.ok(stripAnsi(resized.lines.at(-1)).includes('‹very-long-model-name›'));
+  assert.equal(resized.showCursor, false);
+  assert.ok(stripAnsi(restored.lines[2]).includes('? 计划问题'));
+  assert.equal(restored.showCursor, true);
 });
 
 test('renderFooterLayout keeps boxed composer borders aligned for tab-indented text', () => {
@@ -206,15 +313,14 @@ test('renderFooterLayout hides empty composer placeholder when terminal is too n
   assert.equal(layout.cursorColumn, 4);
 });
 
-test('renderFooterLayout renders effort as separate colored segment', () => {
+test('renderFooterLayout renders effort as a compact separate colored segment', () => {
   const layout = renderFooterLayout({
     composer: createComposer('hello'),
     commandSurface: null,
     pending: null,
     statusLine: {
       ...DEFAULT_STATUS_LINE,
-      modelLabel: 'GPT-5.5',
-      reasoningEffort: 'high'
+      model: {kind: 'default', label: 'GPT-5.5', effort: 'high'}
     },
     width: 80
   });
@@ -222,9 +328,10 @@ test('renderFooterLayout renders effort as separate colored segment', () => {
   const plainStatusLine = stripAnsi(layout.lines.at(-1));
 
   assert.ok(plainStatusLine.startsWith('GPT-5.5'));
-  assert.ok(plainStatusLine.includes('● effort high'));
+  assert.ok(plainStatusLine.includes('effort high'));
+  assert.equal(plainStatusLine.includes('● effort'), false);
   assert.ok(!plainStatusLine.includes('GPT-5.5 · effort high'));
-  assert.ok(layout.lines.at(-1).includes('\x1b[38;2;0;200;220m●'));
+  assert.ok(layout.lines.at(-1).includes('\x1b[38;2;0;200;220mhigh'));
 });
 
 test('renderFooterLayout renders skill model override as part of the model label', () => {
@@ -234,8 +341,7 @@ test('renderFooterLayout renders skill model override as part of the model label
     pending: {kind: 'thinking', elapsedMs: 0},
     statusLine: {
       ...DEFAULT_STATUS_LINE,
-      modelLabel: 'claude-sonnet-4-6',
-      skillOverride: true,
+      model: {kind: 'default', label: 'claude-sonnet-4-6', skillOverride: true},
       mode: 'thinking'
     },
     width: 100
@@ -897,7 +1003,7 @@ test('renderFooterLayout clamps long status line to safe width', () => {
     pending: null,
     statusLine: {
       projectName: 'very-long-project-name',
-      modelLabel: 'very-long-model-name',
+      model: {kind: 'default', label: 'very-long-model-name'},
       mode: 'idle'
     },
     width: 30
@@ -957,9 +1063,9 @@ test('renderFooterLayout uses mode-specific composer prefix and border color', (
     width: 80
   });
 
-  assert.ok(stripAnsi(normal.lines[2]).includes('> / 命令 · @ 路径 · TAB 切换 mode'));
-  assert.ok(stripAnsi(normal.lines[2]).includes('Shift+Tab 工具授权'));
-  assert.ok(stripAnsi(plan.lines[2]).includes('? 计划问题 · @ 路径 · TAB 切换 mode'));
+  assert.ok(stripAnsi(normal.lines[2]).includes('> / 命令 · @ 路径 · TAB mode · Ctrl+T 模型'));
+  assert.ok(stripAnsi(normal.lines[2]).includes('Shift+Tab 授权'));
+  assert.ok(stripAnsi(plan.lines[2]).includes('? 计划问题 · @ 路径 · TAB 切换 mode · Ctrl+T 模型'));
   assert.equal(stripAnsi(plan.lines[2]).includes('Shift+Tab 工具授权'), false);
   assert.equal(stripAnsi(plan.lines[2]).includes('Enter 发送'), false);
   assert.ok(stripAnsi(shell.lines[2]).includes('$ bash 命令 · TAB 切换 mode · 结果进上下文'));
@@ -2617,6 +2723,43 @@ test('renderFooterLayout renders slash suggestions below composer while keeping 
   assert.ok(plainLines.at(-1).includes('Tab 补全'));
   assert.ok(plainLines.some((line) => line.includes('GPT-4o')));
   assert.ok(layout.lines.some((line) => line.includes('\x1b[48;5;23m') && stripAnsi(line).includes('▌ /model')));
+});
+
+test('renderFooterLayout applies the configured slash suggestion visible limit without truncating state', () => {
+  const options = Array.from({length: 10}, (_value, index) => ({label: `/command-${index}`, description: `item ${index}`}));
+  const slashSuggestions = {options, selectedIndex: 7};
+  const layout = renderFooterLayout({
+    composer: createComposer('/command'),
+    slashSuggestions,
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    renderPreferences: {showReasoningSummary: true, slashSuggestionMaxVisible: 3},
+    rows: 30,
+    width: 80
+  });
+  const plain = layout.lines.map((line) => stripAnsi(line));
+
+  assert.ok(plain.filter((line) => /command-\d/.test(line)).length <= 3);
+  assert.equal(plain.some((line) => line.includes('command-7')), true);
+  assert.equal(slashSuggestions.options.length, 10);
+});
+
+test('renderFooterLayout does not count slash suggestion more hints against the configured limit', () => {
+  const options = Array.from({length: 12}, (_value, index) => ({label: `/command-${index + 1}`, description: `item ${index + 1}`}));
+  const layout = renderFooterLayout({
+    composer: createComposer('/command'),
+    slashSuggestions: {options, selectedIndex: 6},
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    renderPreferences: {showReasoningSummary: true, slashSuggestionMaxVisible: 10},
+    rows: 40,
+    width: 80
+  });
+  const plain = layout.lines.map((line) => stripAnsi(line));
+
+  assert.equal(plain.filter((line) => /command-\d/.test(line)).length, 10);
+  assert.equal(plain.some((line) => line.includes('↑ 1 更多')), true);
+  assert.equal(plain.some((line) => line.includes('↓ 1 更多')), true);
 });
 
 test('renderFooterLayout clamps long slash suggestions and budgets pending preview height', () => {

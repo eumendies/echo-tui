@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {createTuiTheme} = require('../../src/config/theme-config');
-const {stripAnsi} = require('../../src/render/layout');
+const {displayWidth, stripAnsi} = require('../../src/render/layout');
 const {renderHooksSurface} = require('../../src/render/footer/hooks-surface');
 
 function createHooksSurface(overrides = {}) {
@@ -18,6 +18,10 @@ function createHooksSurface(overrides = {}) {
       {event: 'assistant_turn_cancelled', count: 0},
       {event: 'tool_call_start', count: 0},
       {event: 'tool_call_end', count: 0},
+      {event: 'tool_approval_request', count: 0},
+      {event: 'tool_approval_response', count: 0},
+      {event: 'user_question_request', count: 0},
+      {event: 'user_question_response', count: 0},
       {event: 'compaction_end', count: 0}
     ],
     selectedEvent: 'assistant_turn_end',
@@ -43,8 +47,8 @@ test('renderHooksSurface renders events, diagnostics, and omits verbose labels',
   assert.doesNotMatch(text, /\.echo\/config\.json/);
   assert.match(text, /assistant_turn_start/);
   assert.match(text, /assistant_turn_end/);
-  assert.match(text, /assistant_turn_start\s+0 hooks/);
-  assert.match(text, /assistant_turn_end\s+2 hooks/);
+  assert.match(text, /assistant_turn_start\s+0 个 Hook/);
+  assert.match(text, /assistant_turn_end\s+2 个 Hook/);
   assert.doesNotMatch(text, /enabled ·/);
   assert.doesNotMatch(text, /disabled/);
   assert.match(text, /诊断/);
@@ -71,7 +75,7 @@ test('renderHooksSurface renders errors between form and dismiss hint', () => {
   }), 100);
   const lines = layout.lines.map((line) => stripAnsi(line));
   const text = lines.join('\n');
-  const formEndIndex = lines.findIndex((line) => line.includes('Delete entry'));
+  const formEndIndex = lines.findIndex((line) => line.includes('保存更改'));
   const hintIndex = lines.findIndex((line) => line.includes('hint'));
   const errorIndex = lines.findIndex((line) => line.includes('command 不能为空'));
 
@@ -85,9 +89,9 @@ test('renderHooksSurface renders errors between form and dismiss hint', () => {
   assert.equal(hintIndex, errorIndex + 2);
   assert.ok(isBlankBoxLine(lines[errorIndex - 1]));
   assert.ok(isBlankBoxLine(lines[errorIndex + 1]));
-  assert.equal(visibleColumn(lines[errorIndex], 'command 不能为空。'), visibleColumn(lines[formEndIndex], 'Delete entry'));
-  assert.equal(visibleColumn(lines[hintIndex], 'hint'), visibleColumn(lines[formEndIndex], 'Delete entry'));
-  assert.equal(visibleColumn(lines[errorIndex], '▌'), visibleColumn(lines[formEndIndex], 'Delete entry') - 2);
+  assert.equal(visibleColumn(lines[errorIndex], 'command 不能为空。'), visibleColumn(lines[formEndIndex], '保存更改'));
+  assert.equal(visibleColumn(lines[hintIndex], 'hint'), visibleColumn(lines[formEndIndex], '保存更改'));
+  assert.equal(visibleColumn(lines[errorIndex], '▌'), visibleColumn(lines[formEndIndex], '保存更改') - 2);
 });
 
 test('renderHooksSurface renders empty and disabled entry states', () => {
@@ -100,9 +104,11 @@ test('renderHooksSurface renders empty and disabled entry states', () => {
   }), 80);
   const disabled = renderHooksSurface(createHooksSurface({mode: 'entries', entryIndex: 1}), 100);
 
-  assert.match(stripAnsi(empty.lines.join('\n')), /当前 event 没有 hook entry/);
+  assert.match(stripAnsi(empty.lines.join('\n')), /当前事件没有 Hook 配置/);
+  assert.match(stripAnsi(empty.lines.join('\n')), /添加 Hook/);
+  assert.match(stripAnsi(empty.lines.join('\n')), /保存更改/);
   assert.doesNotMatch(stripAnsi(empty.lines.join('\n')), /按 a 添加/);
-  assert.match(stripAnsi(disabled.lines.join('\n')), /○ off/);
+  assert.match(stripAnsi(disabled.lines.join('\n')), /○ 禁用/);
   assert.match(stripAnsi(disabled.lines.join('\n')), /echo disabled/);
 });
 
@@ -130,13 +136,110 @@ test('renderHooksSurface renders entry windowing and detail edit block cursor', 
 
   assert.equal(detailLayout.showCursor, false);
   assert.match(listText, /↑/);
-  assert.match(detailText, /Command/);
-  assert.match(detailText, /Timeout/);
+  assert.match(detailText, /命令/);
+  assert.match(detailText, /超时时间/);
   assert.match(detailText, /echo edited█/);
-  assert.match(detailText, /Enabled[\s\S]*─+[\s\S]*Run synthetic test[\s\S]*Delete entry/);
+  assert.match(detailText, /启用状态[\s\S]*─+[\s\S]*运行模拟测试[\s\S]*删除 Hook[\s\S]*保存更改/);
   assert.doesNotMatch(detailText, /Save hooks/);
   assert.doesNotMatch(detailText, /Back to entries/);
   assert.doesNotMatch(detailText, /重排/);
+});
+
+test('renderHooksSurface renders long command with horizontal window markers', () => {
+  const command = 'node scripts/hook.js --first alpha --second beta --final final-marker';
+  const startText = stripAnsi(renderHooksSurface(createHooksSurface({
+    mode: 'entryDetail',
+    entries: [{command, enabled: true, timeoutMs: 1000}],
+    detailIndex: 0,
+    commandScroll: 0
+  }), 80).lines.join('\n'));
+  const scrolledText = stripAnsi(renderHooksSurface(createHooksSurface({
+    mode: 'entryDetail',
+    entries: [{command, enabled: true, timeoutMs: 1000}],
+    detailIndex: 0,
+    commandScroll: 36
+  }), 80).lines.join('\n'));
+
+  assert.match(startText, /node scripts\/hook\.js/);
+  assert.match(startText, /…/);
+  assert.doesNotMatch(startText, /final-marker/);
+  assert.match(scrolledText, /…/);
+  assert.match(scrolledText, /final-marker/);
+  assert.doesNotMatch(scrolledText, /node scripts\/hook\.js/);
+});
+
+test('renderHooksSurface keeps tabbed and grapheme commands inside the frame', () => {
+  const family = '👨‍👩‍👧‍👦';
+  const command = `printf 'a\tb\tc' '${family.repeat(30)}'`;
+  const lines = renderHooksSurface(createHooksSurface({
+    mode: 'entryDetail',
+    entries: [{command, enabled: true, timeoutMs: 1000}],
+    detailIndex: 0,
+    commandScroll: 0
+  }), 80).lines;
+  const widths = lines.map((line) => displayWidth(line));
+  const commandLine = stripAnsi(lines.find((line) => stripAnsi(line).includes('命令')));
+
+  assert.equal(new Set(widths).size, 1);
+  assert.match(commandLine, /👨‍👩‍👧‍👦/);
+  assert.doesNotMatch(commandLine, /‍…/u);
+});
+
+test('renderHooksSurface windows long command edits around the tail cursor', () => {
+  const editBuffer = 'node scripts/hook.js --first alpha --second beta --final final-marker';
+  const text = stripAnsi(renderHooksSurface(createHooksSurface({
+    mode: 'entryDetail',
+    entries: [{command: '', enabled: true, timeoutMs: 1000}],
+    detailIndex: 0,
+    editTarget: 'command',
+    editBuffer
+  }), 80).lines.join('\n'));
+
+  assert.match(text, /命令/);
+  assert.match(text, /…/);
+  assert.match(text, /final-marker█/);
+  assert.doesNotMatch(text, /node scripts\/hook\.js/);
+});
+
+test('renderHooksSurface follows a command edit cursor in the middle', () => {
+  const editBuffer = 'node scripts/hook.js --first alpha --second beta --final final-marker';
+  const editCursor = editBuffer.indexOf('second') + 2;
+  const lines = renderHooksSurface(createHooksSurface({
+    mode: 'entryDetail',
+    entries: [{command: '', enabled: true, timeoutMs: 1000}],
+    detailIndex: 0,
+    editTarget: 'command',
+    editBuffer,
+    editCursor
+  }), 80).lines.map((line) => stripAnsi(line));
+  const commandLine = lines.find((line) => line.includes('命令'));
+
+  assert.match(commandLine, /….*█.*…/);
+  assert.match(commandLine, /se█cond/);
+  assert.doesNotMatch(commandLine, /node scripts\/hook\.js/);
+  assert.doesNotMatch(commandLine, /final-marker/);
+});
+
+test('renderHooksSurface keeps the command edit window filled when moving left from the end', () => {
+  const editBuffer = Array.from({length: 80}, (_value, index) => String(index % 10)).join('');
+  const renderValue = (editCursor) => {
+    const lines = renderHooksSurface(createHooksSurface({
+      mode: 'entryDetail',
+      entries: [{command: '', enabled: true, timeoutMs: 1000}],
+      detailIndex: 0,
+      editTarget: 'command',
+      editBuffer,
+      editCursor
+    }), 80).lines.map((line) => stripAnsi(line));
+    const commandLine = lines.find((line) => line.includes('命令'));
+    return commandLine.match(/[0-9…█]+/)[0];
+  };
+  const atEnd = renderValue(editBuffer.length);
+  const oneLeft = renderValue(editBuffer.length - 1);
+
+  assert.match(atEnd, /^….*9█$/);
+  assert.match(oneLeft, /^….*8█9$/);
+  assert.equal(displayWidth(oneLeft), displayWidth(atEnd));
 });
 
 test('renderHooksSurface renders synthetic test status as a bottom message only', () => {
@@ -160,8 +263,8 @@ test('renderHooksSurface renders synthetic test status as a bottom message only'
   }), 100);
   const lines = layout.lines.map((line) => stripAnsi(line));
   const text = lines.join('\n');
-  const formEndIndex = lines.findIndex((line) => line.includes('echo disabled'));
-  const testIndex = lines.findIndex((line) => line.includes('synthetic test: failed'));
+  const formEndIndex = lines.findIndex((line) => line.includes('保存更改'));
+  const testIndex = lines.findIndex((line) => line.includes('模拟测试：失败'));
   const hintIndex = lines.findIndex((line) => line.includes('hint'));
 
   assert.ok(formEndIndex >= 0);
@@ -171,9 +274,9 @@ test('renderHooksSurface renders synthetic test status as a bottom message only'
   assert.equal(hintIndex, testIndex + 2);
   assert.ok(isBlankBoxLine(lines[testIndex - 1]));
   assert.ok(isBlankBoxLine(lines[testIndex + 1]));
-  assert.equal(visibleColumn(lines[testIndex], 'synthetic test: failed'), visibleColumn(lines[formEndIndex], '#2'));
-  assert.equal(visibleColumn(lines[hintIndex], 'hint'), visibleColumn(lines[formEndIndex], '#2'));
-  assert.equal(visibleColumn(lines[testIndex], '▌'), visibleColumn(lines[formEndIndex], '#2') - 2);
+  assert.equal(visibleColumn(lines[testIndex], '模拟测试：失败'), visibleColumn(lines[formEndIndex], '保存更改'));
+  assert.equal(visibleColumn(lines[hintIndex], 'hint'), visibleColumn(lines[formEndIndex], '保存更改'));
+  assert.equal(visibleColumn(lines[testIndex], '▌'), visibleColumn(lines[formEndIndex], '保存更改') - 2);
   assert.doesNotMatch(text, /exit 2/);
   assert.doesNotMatch(text, /45ms/);
   assert.doesNotMatch(text, /stdout/);
@@ -205,12 +308,12 @@ test('renderHooksSurface uses the same focus bar for selected rows and feedback 
   }), 100, theme);
   const lines = layout.lines.map((line) => stripAnsi(line));
   const activeIndex = lines.findIndex((line) => line.includes('#1'));
-  const testIndex = lines.findIndex((line) => line.includes('synthetic test: ok'));
+  const testIndex = lines.findIndex((line) => line.includes('模拟测试：成功'));
 
   assert.ok(activeIndex >= 0);
   assert.ok(testIndex > activeIndex);
   assert.equal(visibleColumn(lines[activeIndex], '┃'), visibleColumn(lines[testIndex], '┃'));
-  assert.equal(visibleColumn(lines[activeIndex], '#1'), visibleColumn(lines[testIndex], 'synthetic test: ok'));
+  assert.equal(visibleColumn(lines[activeIndex], '#1'), visibleColumn(lines[testIndex], '模拟测试：成功'));
   assert.doesNotMatch(lines[testIndex], /▌/);
 });
 
@@ -234,5 +337,5 @@ test('renderHooksSurface renders timeout test status', () => {
     }
   }), 100);
 
-  assert.match(stripAnsi(layout.lines.join('\n')), /timeout/);
+  assert.match(stripAnsi(layout.lines.join('\n')), /模拟测试：超时/);
 });

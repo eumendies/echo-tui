@@ -29,6 +29,7 @@ const TEST_CONFIG = {
   }
 };
 const RETRYABLE_PROCESSING_ERROR = 'An error occurred while processing your request. You can retry your request';
+const RETRYABLE_OVERLOADED_ERROR = 'Our servers are currently overloaded. Please try again later.';
 
 async function* streamFrom(events) {
   for (const event of events) {
@@ -367,6 +368,21 @@ test('createOpenAiAgent retries a transient stream processing error before outpu
   assert.deepEqual(result, {draft: 'recovered', toolCalls: [], usageInputTokens: undefined});
   assert.equal(harness.requests.length, 2);
   assert.deepEqual(harness.requests[0], harness.requests[1]);
+});
+
+test('createOpenAiAgent retries an overloaded stream error before output', async () => {
+  let attempts = 0;
+  const harness = createHarness(() => {
+    attempts += 1;
+    return attempts === 1
+      ? [new Error(RETRYABLE_OVERLOADED_ERROR)]
+      : [{type: 'response.output_text.delta', delta: 'recovered'}, {type: 'response.completed'}];
+  });
+
+  const result = await harness.runTurn([{role: 'user', text: 'hello'}], {});
+
+  assert.deepEqual(result, {draft: 'recovered', toolCalls: [], usageInputTokens: undefined});
+  assert.equal(harness.requests.length, 2);
 });
 
 test('createOpenAiAgent retries response.failed server_error events before output', async () => {

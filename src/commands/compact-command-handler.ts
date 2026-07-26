@@ -50,11 +50,11 @@ export class CompactCommandHandler implements CommandHandler {
   description = '手动压缩当前会话上下文';
 
   /**
-   * 只匹配纯 /compact，带参数或后缀的输入继续走普通消息路径。
+   * 只匹配 /compact 和尾随空白，带参数输入继续走普通消息路径。
    *
    */
   match(text: string): boolean {
-    return text === '/compact';
+    return text.trimEnd() === '/compact';
   }
 
   /**

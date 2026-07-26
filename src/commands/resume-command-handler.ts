@@ -256,11 +256,11 @@ export class ResumeCommandHandler implements CommandHandler<ResumeData> {
   description = '恢复历史会话';
 
   /**
-   * 只匹配纯 /resume，带参数或后缀的输入继续走普通消息路径。
+   * 只匹配 /resume 和尾随空白，带参数输入继续走普通消息路径。
    *
    */
   match(text: string): boolean {
-    return text === '/resume';
+    return text.trimEnd() === '/resume';
   }
 
   /**

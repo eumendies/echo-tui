@@ -33,11 +33,11 @@ export class ClearCommandHandler implements CommandHandler {
   description = '清空当前会话';
 
   /**
-   * 只匹配纯 /clear，带参数或后缀的输入继续走普通消息路径。
+   * 只匹配 /clear 和尾随空白，带参数输入继续走普通消息路径。
    *
    */
   match(text: string): boolean {
-    return text === '/clear';
+    return text.trimEnd() === '/clear';
   }
 
   /**

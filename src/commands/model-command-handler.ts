@@ -123,11 +123,11 @@ export class ModelCommandHandler implements CommandHandler<ModelCommandInfo> {
   description = '切换模型';
 
   /**
-   * 只匹配纯 /model，带参数或后缀的输入继续走普通消息路径。
+   * 只匹配 /model 和尾随空白，带参数输入继续走普通消息路径。
    *
    */
   match(text: string): boolean {
-    return text === '/model';
+    return text.trimEnd() === '/model';
   }
 
   /**

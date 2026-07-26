@@ -39,6 +39,24 @@ test('exceedsCompactionThreshold compares against window * ratio', () => {
   // 默认阈值比例 0.8：80000 未超 100000*0.8，80001 超。
   assert.equal(exceedsCompactionThreshold(80000, 100000), false);
   assert.equal(exceedsCompactionThreshold(80001, 100000), true);
+  assert.equal(exceedsCompactionThreshold(60000, 100000, 0.6), false);
+  assert.equal(exceedsCompactionThreshold(60001, 100000, 0.6), true);
+});
+
+test('runCompaction uses a custom threshold while force bypasses it', async () => {
+  const records = buildRecords(30).map((record) => ({...record, text: 'abcdefghij'}));
+  const belowAgent = createSummaryAgent();
+  const below = await runCompaction({records, contextWindow: 100, thresholdRatio: 0.95, agent: belowAgent});
+  assert.equal(below.didCompact, false);
+  assert.equal(belowAgent.calls.length, 0);
+
+  const customAgent = createSummaryAgent();
+  const custom = await runCompaction({records, contextWindow: 100, thresholdRatio: 0.5, agent: customAgent});
+  assert.equal(custom.didCompact, true);
+
+  const forcedAgent = createSummaryAgent();
+  const forced = await runCompaction({records, contextWindow: 100000, thresholdRatio: 0.95, force: true, agent: forcedAgent});
+  assert.equal(forced.didCompact, true);
 });
 
 test('estimateContextTokens uses usage anchor plus added record increment', () => {

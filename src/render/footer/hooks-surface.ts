@@ -1,5 +1,5 @@
 import * as ansi from '../../terminal/ansi';
-import {displayWidth, safeRenderWidth} from '../layout';
+import {displayWidth, safeRenderWidth, splitGraphemes} from '../layout';
 import {activeBackground, renderFocusBar, resolveFooterTheme, tokenText, type FooterTheme} from '../colors';
 import {clampPlainText, padVisibleText} from './text';
 import {clampIndex, createSelectedWindowRows} from './window';
@@ -99,7 +99,7 @@ function renderEventRows(commandSurface: HooksCommandSurface, contentWidth: numb
       continue;
     }
 
-    rows.push(renderSelectableRow(row.item.event, `${row.item.count} hooks`, row.index === selectedIndex, contentWidth, theme));
+    rows.push(renderSelectableRow(row.item.event, `${row.item.count} 个 Hook`, row.index === selectedIndex, contentWidth, theme));
   }
 
   return rows;
@@ -108,20 +108,30 @@ function renderEventRows(commandSurface: HooksCommandSurface, contentWidth: numb
 function renderEntryRows(commandSurface: HooksCommandSurface, contentWidth: number, theme: FooterTheme): string[] {
   const rows = [renderLine(tokenText(theme, 'accentStrong', ansi.bold(clampPlainText(commandSurface.selectedEvent, contentWidth))), contentWidth, theme)];
   const entries = commandSurface.entries || [];
-  const selectedIndex = clampIndex(commandSurface.entryIndex, entries.length);
+  const rowItems = [
+    ...entries.map((entry, index) => ({entry, entryIndex: index, kind: 'entry' as const})),
+    {kind: 'add' as const},
+    {kind: 'save' as const}
+  ];
+  const selectedIndex = clampIndex(commandSurface.entryIndex, rowItems.length);
 
   if (entries.length === 0) {
-    rows.push(renderLine(ansi.dim('当前 event 没有 hook entry。'), contentWidth, theme));
-    return rows;
+    rows.push(renderLine(ansi.dim('当前事件没有 Hook 配置。'), contentWidth, theme));
   }
 
-  for (const row of createSelectedWindowRows(entries, selectedIndex, HOOKS_MAX_VISIBLE)) {
+  for (const row of createSelectedWindowRows(rowItems, selectedIndex, HOOKS_MAX_VISIBLE)) {
     if (row.kind === 'more') {
       rows.push(renderLine(ansi.dim(`  ${row.direction === 'up' ? '↑' : '↓'} ${row.count} 更多`), contentWidth, theme));
       continue;
     }
 
-    rows.push(renderEntryRow(row.item, row.index, row.index === selectedIndex, contentWidth, theme));
+    if (row.item.kind === 'add') {
+      rows.push(renderActionRow('添加 Hook', '新建配置草稿', row.index === selectedIndex, false, contentWidth, theme));
+    } else if (row.item.kind === 'save') {
+      rows.push(renderActionRow('保存更改', '写入 ~/.echo/config.json', row.index === selectedIndex, false, contentWidth, theme));
+    } else {
+      rows.push(renderEntryRow(row.item.entry, row.item.entryIndex, row.index === selectedIndex, contentWidth, theme));
+    }
   }
 
   return rows;
@@ -132,33 +142,34 @@ function renderEntryDetailRows(commandSurface: HooksCommandSurface, contentWidth
   const entries = commandSurface.entries || [];
   const selectedIndex = clampIndex(commandSurface.entryIndex, entries.length);
   const entry = entries[selectedIndex];
-  const detailIndex = clampIndex(commandSurface.detailIndex, 5);
+  const detailIndex = clampIndex(commandSurface.detailIndex, 6);
 
   if (!entry) {
-    rows.push(renderLine(ansi.dim('当前 event 没有 hook entry。'), contentWidth, theme));
+    rows.push(renderLine(ansi.dim('当前事件没有 Hook 配置。'), contentWidth, theme));
     return rows;
   }
 
   const commandValue = commandSurface.editTarget === 'command'
-    ? `${commandSurface.editBuffer || ''}█`
-    : entry.command || '<empty command>';
+    ? createEditingCommandValue(commandSurface.editBuffer || '', commandSurface.editCursor, contentWidth)
+    : createScrollableCommandValue(entry.command || '<空命令>', commandSurface.commandScroll || 0, contentWidth);
   const timeoutValue = commandSurface.editTarget === 'timeoutMs'
     ? `${commandSurface.editBuffer || ''}█`
     : `${entry.timeoutMs}ms`;
-  const enabledValue = entry.enabled ? 'on' : 'off';
+  const enabledValue = entry.enabled ? '已启用' : '已禁用';
 
   rows.push(renderLine(ansi.dim(`#${selectedIndex + 1}`), contentWidth, theme));
-  rows.push(renderDetailRow('Command', commandValue, detailIndex === 0, contentWidth, theme));
-  rows.push(renderDetailRow('Timeout', timeoutValue, detailIndex === 1, contentWidth, theme));
-  rows.push(renderDetailRow('Enabled', enabledValue, detailIndex === 2, contentWidth, theme));
+  rows.push(renderDetailRow('命令', commandValue, detailIndex === 0, contentWidth, theme));
+  rows.push(renderDetailRow('超时时间', timeoutValue, detailIndex === 1, contentWidth, theme));
+  rows.push(renderDetailRow('启用状态', enabledValue, detailIndex === 2, contentWidth, theme));
   rows.push(renderSeparatorRow(contentWidth, theme));
-  rows.push(renderActionRow('Run synthetic test', 'display only', detailIndex === 3, false, contentWidth, theme));
-  rows.push(renderActionRow('Delete entry', 'remove from draft', detailIndex === 4, true, contentWidth, theme));
+  rows.push(renderActionRow('运行模拟测试', '仅展示结果', detailIndex === 3, false, contentWidth, theme));
+  rows.push(renderActionRow('删除 Hook', '从草稿移除', detailIndex === 4, true, contentWidth, theme));
+  rows.push(renderActionRow('保存更改', '写入 ~/.echo/config.json', detailIndex === 5, false, contentWidth, theme));
   return rows;
 }
 
 function renderEntryRow(entry: LifecycleHookDraftEntry, index: number, active: boolean, contentWidth: number, theme: FooterTheme): string {
-  const pill = entry.enabled ? tokenText(theme, 'success', '● on') : tokenText(theme, 'off', '○ off');
+  const pill = entry.enabled ? tokenText(theme, 'success', '● 启用') : tokenText(theme, 'off', '○ 禁用');
   const label = `#${index + 1} ${pill} ${entry.timeoutMs}ms`;
   const commandWidth = Math.max(1, contentWidth - displayWidth(stripAnsiForWidth(label)) - 6);
   const description = clampPlainText(entry.command || '<empty command>', commandWidth);
@@ -176,19 +187,19 @@ function createTestStatusMessage(commandSurface: HooksCommandSurface): {text: st
   }
 
   if (test.status === 'running') {
-    return {text: 'synthetic test: running…', token: 'warning'};
+    return {text: '模拟测试：运行中…', token: 'warning'};
   }
 
   const result = test.result;
   if (result?.ok) {
-    return {text: 'synthetic test: ok', token: 'success'};
+    return {text: '模拟测试：成功', token: 'success'};
   }
 
   if (result?.timedOut) {
-    return {text: 'synthetic test: timeout', token: 'danger'};
+    return {text: '模拟测试：超时', token: 'danger'};
   }
 
-  return {text: 'synthetic test: failed', token: 'danger'};
+  return {text: '模拟测试：失败', token: 'danger'};
 }
 
 function renderSelectableRow(label: string, description: string, active: boolean, contentWidth: number, theme: FooterTheme): string {
@@ -222,6 +233,139 @@ function renderDetailRow(label: string, value: string, active: boolean, contentW
   }
 
   return renderLine(`${renderFocusBar(theme)}${activeBackground(theme, body)}`, contentWidth, theme);
+}
+
+/**
+ * 将 command 字段映射到单行可见窗口；省略号标记窗口左右仍有隐藏内容。
+ */
+function createScrollableCommandValue(command: string, scroll: number, contentWidth: number): string {
+  const maxValueWidth = calculateCommandValueWidth(contentWidth);
+  const projectedCommand = projectCommandText(command || '<空命令>');
+  const chars = splitGraphemes(projectedCommand);
+  const tailStart = findTailWindowStart(chars, Math.max(1, maxValueWidth - 1));
+  const normalizedScroll = Math.min(Math.max(0, Math.floor(scroll)), tailStart);
+  const visible = takeVisibleWindow(chars.slice(normalizedScroll), maxValueWidth);
+  const hasLeft = normalizedScroll > 0;
+  const hasRight = normalizedScroll + visible.count < chars.length;
+
+  if (!hasLeft && !hasRight) {
+    return projectedCommand;
+  }
+
+  const prefix = hasLeft ? '…' : '';
+  const suffix = hasRight ? '…' : '';
+  const bodyWidth = Math.max(1, maxValueWidth - displayWidth(prefix) - displayWidth(suffix));
+  return `${prefix}${takeVisibleWindow(chars.slice(normalizedScroll), bodyWidth).text}${suffix}`;
+}
+
+/**
+ * 编辑 command 时按光标位置生成可见窗口；左右省略号分别表达窗口两侧仍有隐藏内容。
+ */
+function createEditingCommandValue(text: string, cursor: number | undefined, contentWidth: number): string {
+  const maxValueWidth = calculateCommandValueWidth(contentWidth);
+  const cursorMarker = '█';
+  const projection = projectCommandTextWithCursor(text, cursor);
+  const chars = projection.chars;
+  const normalizedCursor = projection.cursor;
+  const fullText = `${chars.slice(0, normalizedCursor).join('')}${cursorMarker}${chars.slice(normalizedCursor).join('')}`;
+
+  if (displayWidth(fullText) <= maxValueWidth) {
+    return fullText;
+  }
+
+  if (maxValueWidth <= displayWidth(cursorMarker)) {
+    return cursorMarker;
+  }
+
+  let start = normalizedCursor;
+  let end = normalizedCursor;
+  let leftWidth = 0;
+  let rightWidth = 0;
+
+  while (start > 0 || end < chars.length) {
+    const canExpandLeft = start > 0 && displayWidth(formatEditingCommandWindow(chars, normalizedCursor, start - 1, end, cursorMarker)) <= maxValueWidth;
+    const canExpandRight = end < chars.length && displayWidth(formatEditingCommandWindow(chars, normalizedCursor, start, end + 1, cursorMarker)) <= maxValueWidth;
+
+    if (!canExpandLeft && !canExpandRight) {
+      break;
+    }
+
+    if (canExpandLeft && (!canExpandRight || leftWidth <= rightWidth)) {
+      start -= 1;
+      leftWidth += displayWidth(chars[start]);
+    } else {
+      rightWidth += displayWidth(chars[end]);
+      end += 1;
+    }
+  }
+
+  return formatEditingCommandWindow(chars, normalizedCursor, start, end, cursorMarker);
+}
+
+function formatEditingCommandWindow(chars: string[], cursor: number, start: number, end: number, cursorMarker: string): string {
+  const leading = start > 0 ? '…' : '';
+  const trailing = end < chars.length ? '…' : '';
+  return `${leading}${chars.slice(start, cursor).join('')}${cursorMarker}${chars.slice(cursor, end).join('')}${trailing}`;
+}
+
+function calculateCommandValueWidth(contentWidth: number): number {
+  return Math.max(1, Math.floor(Math.max(1, contentWidth - 1) * 0.56));
+}
+
+function findTailWindowStart(chars: string[], width: number): number {
+  let columns = 0;
+
+  for (let index = chars.length - 1; index >= 0; index -= 1) {
+    const nextColumns = columns + displayWidth(chars[index]);
+
+    if (nextColumns > width) {
+      return index + 1;
+    }
+
+    columns = nextColumns;
+  }
+
+  return 0;
+}
+
+function takeVisibleWindow(chars: string[], width: number): {count: number; text: string} {
+  const safeWidth = Math.max(1, width);
+  let result = '';
+  let columns = 0;
+  let count = 0;
+
+  for (const char of chars) {
+    const nextColumns = columns + displayWidth(char);
+
+    if (nextColumns > safeWidth) {
+      break;
+    }
+
+    result += char;
+    columns = nextColumns;
+    count += 1;
+  }
+
+  return {count, text: result};
+}
+
+/** 将命令中的物理空白投影为安全单行文本，不改变实际配置草稿。 */
+function projectCommandText(text: string): string {
+  return splitGraphemes(text)
+    .map((grapheme) => /[\t\r\n]/u.test(grapheme) ? ' ' : grapheme)
+    .join('');
+}
+
+/** 将编辑光标从 code point 索引映射到单行 grapheme 投影。 */
+function projectCommandTextWithCursor(text: string, cursor: number | undefined): {chars: string[]; cursor: number} {
+  const codePoints = Array.from(text);
+  const codePointCursor = Math.min(Math.max(0, Number.isInteger(cursor) ? Number(cursor) : codePoints.length), codePoints.length);
+  const chars = splitGraphemes(projectCommandText(text));
+  const projectedPrefix = projectCommandText(codePoints.slice(0, codePointCursor).join(''));
+  return {
+    chars,
+    cursor: Math.min(splitGraphemes(projectedPrefix).length, chars.length)
+  };
 }
 
 function renderActionRow(label: string, hint: string, active: boolean, danger: boolean, contentWidth: number, theme: FooterTheme): string {

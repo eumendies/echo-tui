@@ -57,8 +57,8 @@ function estimateContextTokens(options: {
 /**
  * 判断当前预估是否超过上下文窗口阈值（窗口 * 安全比例）。
  */
-function exceedsCompactionThreshold(estimatedTokens: number, contextWindow: number): boolean {
-  return estimatedTokens > contextWindow * COMPACTION_THRESHOLD_RATIO;
+function exceedsCompactionThreshold(estimatedTokens: number, contextWindow: number, thresholdRatio = COMPACTION_THRESHOLD_RATIO): boolean {
+  return estimatedTokens > contextWindow * thresholdRatio;
 }
 
 /**
@@ -168,11 +168,12 @@ async function runCompaction(options: {
   compaction?: CompactionState;
   anchor?: TokenUsageAnchor | null;
   contextWindow?: number;
+  thresholdRatio?: number;
   force?: boolean;
   agent: ProviderAgent;
   abortSignal?: AbortSignal;
 }): Promise<RunCompactionResult> {
-  const {records, compaction, anchor, contextWindow, force = false, agent, abortSignal} = options;
+  const {records, compaction, anchor, contextWindow, thresholdRatio = COMPACTION_THRESHOLD_RATIO, force = false, agent, abortSignal} = options;
   const activeStartIndex = compaction ? compaction.activeStartIndex : 0;
 
   throwIfAborted(abortSignal);
@@ -185,7 +186,7 @@ async function runCompaction(options: {
       anchor
     });
 
-    if (typeof contextWindow !== 'number' || !exceedsCompactionThreshold(estimated, contextWindow)) {
+    if (typeof contextWindow !== 'number' || !exceedsCompactionThreshold(estimated, contextWindow, thresholdRatio)) {
       return {didCompact: false, reason: 'below_threshold'};
     }
   }

@@ -39,6 +39,17 @@ test('parseKeyChunk parses control editing shortcuts', () => {
   ]);
 });
 
+test('parseKeyChunk parses ctrl-t model tuning shortcut in plain and mixed chunks', () => {
+  assert.deepEqual(parseKeyChunk('\x14'), [
+    { type: INPUT_EVENTS.TOGGLE_MODEL_TUNING }
+  ]);
+  assert.deepEqual(parseKeyChunk('a\x14\x1b[C'), [
+    { type: INPUT_EVENTS.TEXT, value: 'a' },
+    { type: INPUT_EVENTS.TOGGLE_MODEL_TUNING },
+    { type: INPUT_EVENTS.MOVE_RIGHT }
+  ]);
+});
+
 test('parseKeyChunk keeps printable unicode text and bare escape distinct', () => {
   assert.deepEqual(parseKeyChunk('你\x1b'), [
     { type: INPUT_EVENTS.TEXT, value: '你' },

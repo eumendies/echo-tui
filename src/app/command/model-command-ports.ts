@@ -1,15 +1,24 @@
+import {readAppSettingsDraft, saveAppSettingsDraft} from '../../config/app-settings-config';
 import {readLlmConfigDraft, saveLlmConfigDraft} from '../../config/llm-config-editor';
 import {listProviderModels} from '../../config/provider-model-list';
 
 import type {CommandHostApp} from '../../types/command';
 import type {AppContext} from '../state/app-context';
 
-type ModelCommandContext = Pick<AppContext, 'clearContextUsage' | 'modelContext'>;
+type ModelCommandContext = Pick<AppContext, 'clearContextUsage' | 'modelContext' | 'refreshAppSettingsFromConfig'>;
+
+type ModelCommandPortOptions = {
+  appContext: ModelCommandContext;
+  renderFooter: () => void;
+  renderResizeRecovery: () => void;
+};
 
 /**
- * 创建模型选择和 LLM 配置编辑端口；配置变化后同步刷新运行时模型状态。
+ * 创建模型和配置中心端口；写入后刷新对应实例缓存并执行所需重绘。
  */
-function createModelCommandPorts(appContext: ModelCommandContext): Pick<CommandHostApp, 'model' | 'config'> {
+function createModelCommandPorts(options: ModelCommandPortOptions): Pick<CommandHostApp, 'model' | 'config'> {
+  const {appContext, renderFooter, renderResizeRecovery} = options;
+
   return {
     model: {
       createModelCommandInfo() {
@@ -32,11 +41,32 @@ function createModelCommandPorts(appContext: ModelCommandContext): Pick<CommandH
       }
     },
     config: {
+      readSettings() {
+        return readAppSettingsDraft();
+      },
       readDraft() {
         return readLlmConfigDraft();
       },
       listModels(provider) {
         return listProviderModels(provider);
+      },
+      saveSettings(draft) {
+        try {
+          saveAppSettingsDraft(draft);
+          const refresh = appContext.refreshAppSettingsFromConfig();
+
+          if (refresh.reasoningVisibilityChanged) {
+            renderResizeRecovery();
+          } else if (refresh.slashSuggestionLimitChanged) {
+            renderFooter();
+          }
+          return {ok: true};
+        } catch (error: unknown) {
+          return {
+            ok: false,
+            error: error instanceof Error ? error.message : String(error)
+          };
+        }
       },
       saveDraft(draft) {
         try {
@@ -57,4 +87,8 @@ function createModelCommandPorts(appContext: ModelCommandContext): Pick<CommandH
 
 export {
   createModelCommandPorts
+};
+
+export type {
+  ModelCommandPortOptions
 };

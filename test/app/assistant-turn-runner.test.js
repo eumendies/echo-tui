@@ -363,9 +363,9 @@ test('runAssistantTurn passes model and effort overrides only to the current ses
         return 'done';
       }
     });
-    assert.equal(harness.appContext.createRenderState().statusLine.modelLabel, 'global-model');
-    assert.equal(harness.appContext.createRenderState().statusLine.reasoningEffort, 'low');
-    assert.equal(harness.appContext.createRenderState().statusLine.skillOverride, undefined);
+    assert.equal(harness.appContext.createRenderState().statusLine.model.label, 'global-model');
+    assert.equal(harness.appContext.createRenderState().statusLine.model.effort, 'low');
+    assert.equal(harness.appContext.createRenderState().statusLine.model.skillOverride, undefined);
   }
 
   await run('fixed-complete', 'high', 'complete');
@@ -411,11 +411,11 @@ test('runAssistantTurn emits a local model-switch notice and restores the global
     }
   });
 
-  assert.equal(renderedModels[0].modelLabel, 'claude-sonnet-4-6');
-  assert.equal(renderedModels[0].reasoningEffort, 'high');
-  assert.equal(renderedModels[0].skillOverride, true);
-  assert.equal(renderedModels.at(-1).modelLabel, 'gpt-global');
-  assert.equal(renderedModels.at(-1).skillOverride, undefined);
+  assert.equal(renderedModels[0].model.label, 'claude-sonnet-4-6');
+  assert.equal(renderedModels[0].model.effort, 'high');
+  assert.equal(renderedModels[0].model.skillOverride, true);
+  assert.equal(renderedModels.at(-1).model.label, 'gpt-global');
+  assert.equal(renderedModels.at(-1).model.skillOverride, undefined);
   assert.deepEqual(harness.appended.map((record) => record.role), ['user', 'local_notice', 'assistant']);
   assert.equal(harness.appended[1].text, '当前 skill 本轮使用 claude-sonnet-4-6，effort high。');
   assert.equal(harness.appContext.transcriptContext.records[1].role, 'local_notice');
@@ -474,5 +474,5 @@ test('runAssistantTurn emits one notice for an effort-only override after stale 
 
   assert.deepEqual(harness.appended.map((record) => record.role), ['user', 'local_notice', 'assistant']);
   assert.equal(harness.appended[1].text, '当前 skill 本轮使用 gpt-global，effort none。');
-  assert.equal(harness.appContext.createRenderState().statusLine.skillOverride, undefined);
+  assert.equal(harness.appContext.createRenderState().statusLine.model.skillOverride, undefined);
 });

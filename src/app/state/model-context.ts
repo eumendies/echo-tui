@@ -51,6 +51,12 @@ type SelectEffortResult = {
   error?: string;
 };
 
+type SelectModelAndEffortResult = {
+  ok: boolean;
+  error?: string;
+  modelChanged?: boolean;
+};
+
 type ModelStatusInfo = {
   agentType: AgentType;
   model: string;
@@ -317,6 +323,48 @@ class ModelContext {
     }
   }
 
+  /**
+   * 在一次配置事务中应用全局 model 与目标 profile 的显式 effort。
+   */
+  selectModelAndEffort(modelId: string, effort: ReasoningEffort): SelectModelAndEffortResult {
+    const currentModelId = this.models[this.selectedIndex]?.id;
+
+    try {
+      const targetPath = getDefaultConfigPath();
+      const configFile = new JsonConfigFile(targetPath);
+
+      configFile.update((parsedConfig) => {
+        if (!isJsonObject(parsedConfig.llm)) {
+          throw new Error('LLM 配置 llm 必须是对象');
+        }
+
+        const models = parsedConfig.llm.models;
+
+        if (!Array.isArray(models)) {
+          throw new Error('LLM 配置缺少 models');
+        }
+
+        const targetModel = models.find((model): model is JsonObject => isJsonObject(model) && model.id === modelId);
+
+        if (!targetModel) {
+          throw new Error(`无法选择不存在的模型：${modelId}`);
+        }
+
+        parsedConfig.llm.selectedModel = modelId;
+
+        targetModel.reasoning = isJsonObject(targetModel.reasoning) ? {...targetModel.reasoning, effort} : {effort};
+      }, {allowMissing: false});
+      this.refreshModelState();
+
+      return {ok: true, modelChanged: currentModelId !== modelId};
+    } catch (error: unknown) {
+      return {
+        ok: false,
+        error: sanitizeModelConfigError(error, '无法保存模型调节选择')
+      };
+    }
+  }
+
   private writeSelectedModel(modelId: string): void {
     const targetPath = getDefaultConfigPath();
     const configFile = new JsonConfigFile(targetPath);
@@ -362,5 +410,6 @@ export type {
   EffortCommandInfo,
   EffortCommandInfoResult,
   SelectEffortResult,
+  SelectModelAndEffortResult,
   SelectModelResult
 };

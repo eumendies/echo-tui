@@ -1,5 +1,6 @@
 import {DEFAULT_HOOK_TIMEOUT_MS, validateLifecycleHookCommand, validateLifecycleHookTimeoutMs} from '../hooks/config';
 import {INPUT_EVENTS} from '../input/event-types';
+import {applyComposerEditEvent, getText} from '../input/composer';
 
 import type {
   CommandHandler,
@@ -13,8 +14,10 @@ import type {LifecycleHookConfigDiagnostic, LifecycleHookConfigDraft, LifecycleH
 import type {InputEvent} from '../types/input';
 
 type HooksManageData = {
+  commandScroll: number;
   draft: LifecycleHookConfigDraft;
   editBuffer?: string;
+  editCursor?: number;
   editTarget?: HooksCommandEditTarget;
   detailIndex: number;
   entryIndex: number;
@@ -24,10 +27,12 @@ type HooksManageData = {
   test?: HooksCommandSurfaceTest;
 };
 
-const HOOKS_DETAIL_ROW_COUNT = 5;
+const HOOKS_DETAIL_ROW_COUNT = 6;
+const HOOKS_COMMAND_SCROLL_STEP = 4;
 
 function createHooksManageData(draft: LifecycleHookConfigDraft): HooksManageData {
   return normalizeHooksManageData({
+    commandScroll: 0,
     draft,
     detailIndex: 0,
     entryIndex: 0,
@@ -52,7 +57,9 @@ function createHooksSurface(data: HooksManageData): HooksCommandSurface {
     eventIndex: data.eventIndex,
     entries: eventDraft.entries.map((entry) => ({...entry})),
     entryIndex: data.entryIndex,
+    commandScroll: data.commandScroll,
     editBuffer: data.editBuffer,
+    editCursor: data.editCursor,
     editTarget: data.editTarget,
     detailIndex: data.detailIndex,
     error: data.error,
@@ -66,7 +73,7 @@ export class HooksCommandHandler implements CommandHandler<HooksManageData> {
   description = '查看、管理和测试 lifecycle hooks';
 
   match(text: string): boolean {
-    return text.trim() === '/hooks';
+    return text.trimEnd() === '/hooks';
   }
 
   start(_text: string, host: CommandHost): void {
@@ -89,12 +96,12 @@ export class HooksCommandHandler implements CommandHandler<HooksManageData> {
 
     if (event.type === INPUT_EVENTS.ESCAPE) {
       if (data.editTarget) {
-        this.updateSession(host, {...data, editBuffer: undefined, editTarget: undefined, error: undefined});
+        this.updateSession(host, {...data, commandScroll: 0, editBuffer: undefined, editCursor: undefined, editTarget: undefined, error: undefined});
         return undefined;
       }
 
       if (data.mode === 'entryDetail') {
-        this.updateSession(host, {...data, detailIndex: 0, error: undefined, mode: 'entries', test: undefined});
+        this.updateSession(host, {...data, commandScroll: 0, detailIndex: 0, error: undefined, mode: 'entries', test: undefined});
         return undefined;
       }
 
@@ -123,37 +130,41 @@ export class HooksCommandHandler implements CommandHandler<HooksManageData> {
   private handleEventsEvent(data: HooksManageData, event: InputEvent, host: CommandHost): void {
     if (event.type === INPUT_EVENTS.MOVE_UP || event.type === INPUT_EVENTS.MOVE_DOWN) {
       const direction = event.type === INPUT_EVENTS.MOVE_UP ? -1 : 1;
-      this.updateSession(host, {...data, eventIndex: data.eventIndex + direction, entryIndex: 0, error: undefined, test: undefined});
+      this.updateSession(host, {...data, commandScroll: 0, eventIndex: data.eventIndex + direction, entryIndex: 0, error: undefined, test: undefined});
       return;
     }
 
     if (event.type === INPUT_EVENTS.SUBMIT) {
-      this.updateSession(host, {...data, entryIndex: 0, error: undefined, mode: 'entries', test: undefined});
+      this.updateSession(host, {...data, commandScroll: 0, entryIndex: 0, error: undefined, mode: 'entries', test: undefined});
       return;
     }
 
-    if (event.type === INPUT_EVENTS.TEXT && event.value === 'a') {
-      this.addEntry(data, host);
-      return;
-    }
-
-    if (event.type === INPUT_EVENTS.TEXT && event.value === 's') {
-      this.saveDraft(data, host);
-    }
+    return;
   }
 
   private handleEntriesEvent(data: HooksManageData, event: InputEvent, host: CommandHost): void | Promise<void> {
     const entries = getActiveEntries(data);
+    const activeRow = getActiveEntriesRow(data);
 
     if (event.type === INPUT_EVENTS.MOVE_UP || event.type === INPUT_EVENTS.MOVE_DOWN) {
       const direction = event.type === INPUT_EVENTS.MOVE_UP ? -1 : 1;
-      this.updateSession(host, {...data, entryIndex: data.entryIndex + direction, error: undefined});
+      this.updateSession(host, {...data, commandScroll: 0, entryIndex: data.entryIndex + direction, error: undefined});
       return undefined;
     }
 
     if (event.type === INPUT_EVENTS.SUBMIT) {
-      if (entries.length > 0) {
-        this.updateSession(host, {...data, detailIndex: 0, error: undefined, mode: 'entryDetail', test: undefined});
+      if (activeRow.kind === 'add') {
+        this.addEntry(data, host);
+        return undefined;
+      }
+
+      if (activeRow.kind === 'save') {
+        this.saveDraft(data, host);
+        return undefined;
+      }
+
+      if (entries.length > 0 && activeRow.kind === 'entry') {
+        this.updateSession(host, {...data, commandScroll: 0, detailIndex: 0, entryIndex: activeRow.entryIndex, error: undefined, mode: 'entryDetail', test: undefined});
       }
       return undefined;
     }
@@ -162,17 +173,7 @@ export class HooksCommandHandler implements CommandHandler<HooksManageData> {
       return undefined;
     }
 
-    if (event.value === 'a') {
-      this.addEntry(data, host);
-      return undefined;
-    }
-
-    if (event.value === 's') {
-      this.saveDraft(data, host);
-      return undefined;
-    }
-
-    if (entries.length === 0) {
+    if (entries.length === 0 || activeRow.kind !== 'entry') {
       return undefined;
     }
 
@@ -205,16 +206,16 @@ export class HooksCommandHandler implements CommandHandler<HooksManageData> {
       return undefined;
     }
 
+    if (data.detailIndex === 0 && isCommandScrollEvent(event)) {
+      this.handleCommandScrollEvent(data, event, host);
+      return undefined;
+    }
+
     if (event.type === INPUT_EVENTS.SUBMIT) {
       return this.activateDetailRow(data, host);
     }
 
     if (event.type !== INPUT_EVENTS.TEXT) {
-      return undefined;
-    }
-
-    if (event.value === 's') {
-      this.saveDraft(data, host);
       return undefined;
     }
 
@@ -259,7 +260,30 @@ export class HooksCommandHandler implements CommandHandler<HooksManageData> {
       return undefined;
     }
 
+    if (data.detailIndex === 5) {
+      this.saveDraft(data, host);
+      return undefined;
+    }
+
     return undefined;
+  }
+
+  private handleCommandScrollEvent(data: HooksManageData, event: InputEvent, host: CommandHost): void {
+    const command = getActiveEntry(data)?.command || '';
+    const commandLength = Array.from(command).length;
+
+    if (event.type === INPUT_EVENTS.MOVE_HOME) {
+      this.updateSession(host, {...data, commandScroll: 0, error: undefined});
+      return;
+    }
+
+    if (event.type === INPUT_EVENTS.MOVE_END) {
+      this.updateSession(host, {...data, commandScroll: Math.max(0, commandLength - 1), error: undefined});
+      return;
+    }
+
+    const direction = event.type === INPUT_EVENTS.MOVE_LEFT ? -1 : 1;
+    this.updateSession(host, {...data, commandScroll: data.commandScroll + direction * HOOKS_COMMAND_SCROLL_STEP, error: undefined});
   }
 
   private handleEditEvent(data: HooksManageData, event: InputEvent, host: CommandHost): void {
@@ -268,13 +292,13 @@ export class HooksCommandHandler implements CommandHandler<HooksManageData> {
       return;
     }
 
-    const nextEdit = applyInlineEdit(data.editBuffer || '', event);
+    const nextEdit = applyInlineEdit(data.editBuffer || '', data.editCursor, event);
 
     if (nextEdit === null) {
       return;
     }
 
-    this.updateSession(host, {...data, editBuffer: nextEdit, error: undefined});
+    this.updateSession(host, {...data, editBuffer: nextEdit.text, editCursor: nextEdit.cursor, error: undefined});
   }
 
   private addEntry(data: HooksManageData, host: CommandHost): void {
@@ -285,8 +309,10 @@ export class HooksCommandHandler implements CommandHandler<HooksManageData> {
     entries.push({command: '', enabled: true, timeoutMs: DEFAULT_HOOK_TIMEOUT_MS});
     this.updateSession(host, {
       ...data,
+      commandScroll: 0,
       draft,
       editBuffer: '',
+      editCursor: 0,
       editTarget: 'command',
       detailIndex: 0,
       entryIndex: entries.length - 1,
@@ -304,7 +330,7 @@ export class HooksCommandHandler implements CommandHandler<HooksManageData> {
     }
 
     const editBuffer = target === 'timeoutMs' ? String(entry.timeoutMs) : entry.command;
-    this.updateSession(host, {...data, editBuffer, editTarget: target, detailIndex: target === 'timeoutMs' ? 1 : 0, error: undefined, mode: 'entryDetail'});
+    this.updateSession(host, {...data, commandScroll: target === 'command' ? 0 : data.commandScroll, editBuffer, editCursor: Array.from(editBuffer).length, editTarget: target, detailIndex: target === 'timeoutMs' ? 1 : 0, error: undefined, mode: 'entryDetail'});
   }
 
   private commitFieldEdit(data: HooksManageData, host: CommandHost): void {
@@ -322,7 +348,7 @@ export class HooksCommandHandler implements CommandHandler<HooksManageData> {
     const command = data.editBuffer || '';
 
     if (!entry) {
-      this.updateSession(host, {...data, editBuffer: undefined, editTarget: undefined, mode: 'entries'});
+      this.updateSession(host, {...data, editBuffer: undefined, editCursor: undefined, editTarget: undefined, mode: 'entries'});
       return;
     }
 
@@ -330,8 +356,10 @@ export class HooksCommandHandler implements CommandHandler<HooksManageData> {
     const validation = validateLifecycleHookCommand(entry.command);
     this.updateSession(host, {
       ...data,
+      commandScroll: 0,
       draft,
       editBuffer: validation.ok ? undefined : command,
+      editCursor: validation.ok ? undefined : data.editCursor,
       editTarget: validation.ok ? undefined : 'command',
       error: validation.ok ? undefined : `${validation.message}，保存前需要修正。`,
       mode: 'entryDetail',
@@ -357,8 +385,10 @@ export class HooksCommandHandler implements CommandHandler<HooksManageData> {
 
     this.updateSession(host, {
       ...data,
+      commandScroll: 0,
       draft,
       editBuffer: undefined,
+      editCursor: undefined,
       editTarget: undefined,
       error: undefined,
       mode: 'entryDetail',
@@ -389,9 +419,11 @@ export class HooksCommandHandler implements CommandHandler<HooksManageData> {
     entries.splice(clampIndex(data.entryIndex, entries.length), 1);
     this.updateSession(host, {
       ...data,
+      commandScroll: 0,
       draft,
       detailIndex: 0,
       editBuffer: undefined,
+      editCursor: undefined,
       editTarget: undefined,
       entryIndex: Math.min(data.entryIndex, Math.max(0, entries.length - 1)),
       error: undefined,
@@ -462,65 +494,67 @@ export class HooksCommandHandler implements CommandHandler<HooksManageData> {
 
 function createHooksDismissHint(data: HooksManageData): string {
   if (data.mode === 'events') {
-    return '↑/↓ 选择 event · Enter 查看 entries · a 添加 · s 保存 · Esc 取消';
+    return '↑/↓ 选择事件 · Enter 查看 Hook · Esc 取消';
   }
 
   if (data.editTarget === 'command') {
-    return '编辑 command · Enter 确认 · Esc 返回';
+    return '编辑命令 · ←/→ 移动光标 · Enter 确认 · Esc 返回';
   }
 
   if (data.editTarget === 'timeoutMs') {
-    return '编辑 timeoutMs · Enter 确认 · Esc 返回';
+    return '编辑超时时间 · Enter 确认 · Esc 返回';
   }
 
   if (data.mode === 'entryDetail') {
-    return '↑/↓ 移动 · Enter 编辑/执行 · s 保存 · Esc 返回';
+    if (!data.editTarget && data.detailIndex === 0) {
+      return '↑/↓ 移动 · ←/→ 查看命令 · Enter 编辑 · Esc 返回';
+    }
+
+    return '↑/↓ 移动 · Enter 编辑/执行/保存 · Esc 返回';
   }
 
-  return '↑/↓ 选择 · Enter 详情 · a 添加 · d 删除 · t 测试 · s 保存 · Esc 取消';
+  return '↑/↓ 选择 · Enter 查看/执行 · d 删除 · t 测试 · Esc 取消';
 }
 
-function applyInlineEdit(text: string, event: InputEvent): string | null {
+function applyInlineEdit(text: string, cursor: number | undefined, event: InputEvent): {cursor: number; text: string} | null {
   const chars = Array.from(text);
+  const composer = {
+    chars,
+    cursor: Math.min(Math.max(0, Number.isInteger(cursor) ? Number(cursor) : chars.length), chars.length)
+  };
 
-  switch (event.type) {
-    case INPUT_EVENTS.TEXT: {
-      const incoming = Array.from(event.value || '');
-      chars.push(...incoming);
-      return chars.join('');
-    }
-    case INPUT_EVENTS.BACKSPACE:
-      if (chars.length === 0) {
-        return text;
-      }
-      chars.pop();
-      return chars.join('');
-    case INPUT_EVENTS.DELETE_FORWARD:
-      return text;
-    case INPUT_EVENTS.DELETE_TO_LINE_START:
-      return '';
-    case INPUT_EVENTS.DELETE_TO_LINE_END:
-      return text;
-    default:
-      return null;
+  if (!applyComposerEditEvent(composer, event)) {
+    return null;
   }
+
+  return {cursor: composer.cursor, text: getText(composer)};
 }
 
 function normalizeHooksManageData(source: HooksManageData): HooksManageData {
   const draft = cloneHooksDraft(source.draft);
   const eventIndex = clampIndex(source.eventIndex, draft.events.length);
   const entries = draft.events[eventIndex]?.entries || [];
-  const entryIndex = clampIndex(source.entryIndex, entries.length);
   const mode = source.mode === 'entryDetail' && entries.length === 0 ? 'entries' : source.mode;
+  const entryIndex = mode === 'entries'
+    ? clampIndex(source.entryIndex, entries.length + 2)
+    : clampIndex(source.entryIndex, entries.length);
   const editTarget = mode === 'entryDetail' ? source.editTarget : undefined;
+  const commandScroll = mode === 'entryDetail' && !editTarget ? Math.max(0, Math.floor(source.commandScroll || 0)) : 0;
+  const editBuffer = editTarget ? source.editBuffer || '' : undefined;
+  const editLength = Array.from(editBuffer || '').length;
+  const editCursor = editTarget
+    ? Math.min(Math.max(0, Number.isInteger(source.editCursor) ? Number(source.editCursor) : editLength), editLength)
+    : undefined;
 
   return {
     ...source,
+    commandScroll,
     draft,
     detailIndex: clampIndex(source.detailIndex, HOOKS_DETAIL_ROW_COUNT),
     eventIndex,
     entryIndex,
-    editBuffer: editTarget ? source.editBuffer || '' : undefined,
+    editBuffer,
+    editCursor,
     editTarget,
     mode,
     test: source.test ? cloneTestState(source.test) : undefined
@@ -563,6 +597,21 @@ function getActiveEntries(data: HooksManageData): LifecycleHookDraftEntry[] {
 function getActiveEntry(data: HooksManageData): LifecycleHookDraftEntry | undefined {
   const entries = getActiveEntries(data);
   return entries[clampIndex(data.entryIndex, entries.length)];
+}
+
+function getActiveEntriesRow(data: HooksManageData): {kind: 'entry'; entryIndex: number} | {kind: 'add'} | {kind: 'save'} {
+  const entries = getActiveEntries(data);
+  const rowIndex = clampIndex(data.entryIndex, entries.length + 2);
+
+  if (rowIndex < entries.length) {
+    return {kind: 'entry', entryIndex: rowIndex};
+  }
+
+  return rowIndex === entries.length ? {kind: 'add'} : {kind: 'save'};
+}
+
+function isCommandScrollEvent(event: InputEvent): boolean {
+  return event.type === INPUT_EVENTS.MOVE_LEFT || event.type === INPUT_EVENTS.MOVE_RIGHT || event.type === INPUT_EVENTS.MOVE_HOME || event.type === INPUT_EVENTS.MOVE_END;
 }
 
 function getDraftEntry(draft: LifecycleHookConfigDraft, eventIndex: number, entryIndex: number): LifecycleHookDraftEntry | undefined {

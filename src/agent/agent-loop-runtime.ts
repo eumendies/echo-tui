@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 
 import {resolveContextWindow} from '../config/llm-config';
+import {readAppSettings} from '../config/app-settings-config';
 import {
   ASK_USER_QUESTIONS_TOOL_NAME,
   createAskUserQuestionsCancelledResult,
@@ -23,6 +24,12 @@ import {createBuiltInSystemPrompt, loadSystemPromptOverride} from './context/sys
 import {prepareAgent} from './agent-setup';
 import {createCompactionNoticeRecord, runCompaction} from './context/context-compaction';
 import {disabledDebugContext, hashValue, redactProviderConfig, summarizeText} from '../debug/debug-context';
+import {
+  emitToolApprovalRequestHook,
+  emitToolApprovalResponseHook,
+  emitUserQuestionRequestHook,
+  emitUserQuestionResponseHook
+} from '../hooks/lifecycle-events';
 
 import type {TokenUsageAnchor} from './context/context-compaction';
 
@@ -69,6 +76,11 @@ function isToolExecutionAllowed(kind: string): boolean {
   return kind === 'allow_once' || kind === 'allow_tool_for_session' || kind === 'allow_command_for_session' || kind === 'allow_all_for_session';
 }
 
+type ToolApprovalResolution = {
+  decision: ToolApprovalDecision;
+  emitLifecycleEvents: boolean;
+};
+
 /**
  * 执行单个 tool call；交互式工具在这里短路到 app callback，避免普通 executor 持有 UI 状态。
  */
@@ -90,14 +102,25 @@ async function executeToolCall(toolCall: ToolCall, state: AgentLoopRunState, cal
     const parsed = parseAskUserQuestionsToolCall(toolCall);
 
     if (!parsed.ok) {
-      return createAskUserQuestionsFailureResult(toolCall, parsed.message);
+      const result = createAskUserQuestionsFailureResult(toolCall, parsed.message);
+      emitUserQuestionResponseHook(state.hooks, {interactionMode: state.interactionMode, toolCall, result});
+      return result;
     }
 
+    emitUserQuestionRequestHook(state.hooks, {
+      interactionMode: state.interactionMode,
+      toolCall,
+      request: parsed.value
+    });
+
     if (state.executionMode.kind === 'headless') {
-      return createAskUserQuestionsCancelledResult(toolCall);
+      const result = createAskUserQuestionsCancelledResult(toolCall);
+      emitUserQuestionResponseHook(state.hooks, {interactionMode: state.interactionMode, toolCall, result});
+      return result;
     }
 
     const result = await Promise.resolve(callbacks.onUserQuestionRequest!(toolCall, parsed.value));
+    emitUserQuestionResponseHook(state.hooks, {interactionMode: state.interactionMode, toolCall, result});
     throwIfAborted(state.abortSignal);
     return result;
   }
@@ -116,9 +139,17 @@ async function executeToolCall(toolCall: ToolCall, state: AgentLoopRunState, cal
   }
 
   const approval = riskAssessment.risk === 'approval_required' ? riskAssessment.approval : undefined;
-  const approvalDecision = riskAssessment.risk === 'approval_required'
+  const approvalResolution = riskAssessment.risk === 'approval_required'
     ? await resolveToolApprovalDecision(toolCall, approval, state, callbacks)
     : undefined;
+  const approvalDecision = approvalResolution?.decision;
+  if (approvalResolution?.emitLifecycleEvents) {
+    emitToolApprovalResponseHook(state.hooks, {
+      interactionMode: state.interactionMode,
+      toolCall,
+      decision: approvalResolution.decision
+    });
+  }
   state.debug.emit('tool_call_approval', {
     decision: approvalDecision?.kind || (riskAssessment.risk === 'approval_required' ? 'missing' : 'not_required'),
     interactionMode: state.interactionMode,
@@ -139,19 +170,35 @@ async function executeToolCall(toolCall: ToolCall, state: AgentLoopRunState, cal
 /**
  * 根据 execution mode 决定是否等待 UI；headless 策略永远不会触碰交互 callback。
  */
-async function resolveToolApprovalDecision(toolCall: ToolCall, approval: ToolApprovalRequest | undefined, state: AgentLoopRunState, callbacks: AgentCallbacks): Promise<ToolApprovalDecision> {
+async function resolveToolApprovalDecision(toolCall: ToolCall, approval: ToolApprovalRequest | undefined, state: AgentLoopRunState, callbacks: AgentCallbacks): Promise<ToolApprovalResolution> {
   if (state.executionMode.kind === 'headless') {
+    emitToolApprovalRequestHook(state.hooks, {interactionMode: state.interactionMode, toolCall, approval});
+
     if (state.executionMode.approvalPolicy === 'full-access') {
-      return {kind: 'allow_once'};
+      return {decision: {kind: 'allow_once'}, emitLifecycleEvents: true};
     }
 
     return {
-      kind: 'deny',
-      message: `Tool execution requires approval in headless mode: ${toolCall.toolName}. Re-run with --full-access to allow it.`
+      decision: {
+        kind: 'deny',
+        message: `Tool execution requires approval in headless mode: ${toolCall.toolName}. Re-run with --full-access to allow it.`
+      },
+      emitLifecycleEvents: true
     };
   }
 
-  return Promise.resolve(callbacks.onToolApprovalRequest!(toolCall, approval));
+  const pendingDecision = callbacks.onToolApprovalRequest!(toolCall, approval);
+
+  if (!isPromiseLike(pendingDecision)) {
+    return {decision: pendingDecision, emitLifecycleEvents: false};
+  }
+
+  emitToolApprovalRequestHook(state.hooks, {interactionMode: state.interactionMode, toolCall, approval});
+  return {decision: await pendingDecision, emitLifecycleEvents: true};
+}
+
+function isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {
+  return Boolean(value) && typeof (value as Promise<T>).then === 'function';
 }
 
 /**
@@ -225,6 +272,7 @@ type AgentLoopRunState = {
   interactionMode: InteractionMode;
   executor: ToolExecutor;
   contextWindow: number;
+  compactionThresholdRatio: number;
   skillCatalog: SkillCatalogEntry[];
   skillCatalogTokens: number;
   basePrompt?: string;
@@ -288,7 +336,7 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
   /**
    * 初始化单次调用的 loop 状态；provider、配置和 registry 由统一装配入口提供。
    */
-  function initializeRunState(interactionMode: InteractionMode, abortSignal: AbortSignal | undefined, executionMode: AgentExecutionMode, modelProfileId?: string, reasoningEffortOverride?: ReasoningEffort): AgentLoopRunState {
+  function initializeRunState(interactionMode: InteractionMode, abortSignal: AbortSignal | undefined, executionMode: AgentExecutionMode, compactionThresholdRatio: number, modelProfileId?: string, reasoningEffortOverride?: ReasoningEffort): AgentLoopRunState {
     const {agent, config, registry} = prepareAgent({cwd, mcpManager, modelProfileId, reasoningEffortOverride});
     const skillCatalog = registry.listSkillCatalog?.() || [];
     const systemPromptOverride = loadSystemPromptOverride({cwd});
@@ -304,6 +352,7 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
       interactionMode,
       executor: createToolExecutor(registry),
       contextWindow: resolveContextWindow(config),
+      compactionThresholdRatio,
       skillCatalog,
       skillCatalogTokens: estimateTextTokens(formatSkillCatalogPrompt(skillCatalog)),
       todoState: undefined,
@@ -320,12 +369,14 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
     const abortSignal = session.abortSignal;
     const interactionMode = session.interactionMode || 'normal';
     const executionMode = session.executionMode || INTERACTIVE_EXECUTION_MODE;
+    // 单次 assistant run 固定使用启动时阈值，运行中配置变化只影响后续 turn。
+    const compactionThresholdRatio = session.compactionThresholdRatio ?? readAppSettings().compactionThresholdRatio;
 
     throwIfAborted(abortSignal);
     let state: AgentLoopRunState;
 
     try {
-      state = initializeRunState(interactionMode, abortSignal, executionMode, session.modelProfileId, session.reasoningEffortOverride);
+      state = initializeRunState(interactionMode, abortSignal, executionMode, compactionThresholdRatio, session.modelProfileId, session.reasoningEffortOverride);
     } catch (error: unknown) {
       throw normalizeError(error, '无法加载 LLM 配置');
     }
@@ -353,6 +404,7 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
         compaction: compactionState,
         anchor: usageAnchor,
         contextWindow: state.contextWindow,
+        thresholdRatio: state.compactionThresholdRatio,
         force: false,
         agent: state.agent,
         abortSignal

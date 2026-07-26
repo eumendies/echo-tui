@@ -3,6 +3,7 @@ import type { CommandSurface, CommandSurfaceOption } from './command';
 import type { TranscriptRecord } from './transcript';
 import type { TuiTheme } from '../config/theme-config';
 import type { ContextUsage, ReasoningEffort } from './agent';
+import type { AppRenderPreferences } from '../config/app-settings-config';
 
 export type TerminalSize = {
   columns: number;
@@ -70,6 +71,21 @@ export type StatusLineModelState = {
   skillOverride?: boolean;
 };
 
+export type StatusLineModelRenderState =
+  | {
+      kind: 'default';
+      label: string;
+      effort?: ReasoningEffort;
+      skillOverride?: boolean;
+    }
+  | {
+      kind: 'tuning';
+      label: string;
+      effort: ReasoningEffort;
+      activeField: 'model' | 'effort';
+      error?: string;
+    };
+
 export type StatusLineActivityState = {
   kind: 'thinking' | 'working';
   elapsedMs: number;
@@ -77,9 +93,7 @@ export type StatusLineActivityState = {
 
 export type StatusLineState = {
   projectName: string;
-  modelLabel: string;
-  reasoningEffort?: ReasoningEffort;
-  skillOverride?: boolean;
+  model: StatusLineModelRenderState;
   mode: StatusLineMode;
   allowAllTools?: boolean;
   contextUsage?: ContextUsage;
@@ -88,6 +102,8 @@ export type StatusLineState = {
   keyHint?: string;
 };
 
+export type RenderPreferences = AppRenderPreferences;
+
 export type RenderState = {
   composer: ComposerState;
   commandSurface: CommandSurface | null;
@@ -95,6 +111,7 @@ export type RenderState = {
   pending: PendingState | null;
   working: WorkingState | null;
   theme: TuiTheme;
+  renderPreferences: RenderPreferences;
   statusLine?: StatusLineState;
   rows?: number;
   width: number;
@@ -130,6 +147,7 @@ export type RenderFinalOptions = {
   bannerContext: BannerContext;
   records: TranscriptRecord[];
   theme: TuiTheme;
+  renderPreferences: RenderPreferences;
   width: number;
 };
 

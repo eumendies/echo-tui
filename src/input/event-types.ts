@@ -14,6 +14,7 @@ export const INPUT_EVENTS = {
   PAGE_DOWN: 'page_down',
   MOVE_HOME: 'move_home',
   MOVE_END: 'move_end',
+  TOGGLE_MODEL_TUNING: 'toggle_model_tuning',
   TAB: 'tab',
   SHIFT_TAB: 'shift_tab',
   SUBMIT: 'submit',

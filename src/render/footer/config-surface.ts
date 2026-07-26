@@ -4,7 +4,7 @@ import {activeBackground, renderFocusBar, resolveFooterTheme, tokenText, type Fo
 import {clampPlainText, padVisibleText} from './text';
 import {constrainLayoutTail, createSelectedWindowRows} from './window';
 import {getProviderPreset, listProviderPresets, providerRequiresApiKey} from '../../config/provider-presets';
-import type {ConfigCommandState, ConfigCommandSurface, ConfigFormRow} from '../../types/command';
+import type {AppearanceConfigState, ConfigCommandState, ConfigCommandSurface, ConfigFormRow, ConfigSurfaceTab, ConfigTabId, GeneralConfigState} from '../../types/command';
 import type {FooterLayout} from '../../types/render';
 
 type RenderConfigPanelOptions = {
@@ -28,11 +28,32 @@ type ConfigListItem =
  */
 function renderConfigSurface(commandSurface: ConfigCommandSurface, width: number, options: RenderConfigSurfaceOptions = {}): FooterLayout {
   const theme = resolveFooterTheme(options.theme);
-  const lines = commandSurface.view === 'result'
-    ? renderConfigResult(width, commandSurface.result.providersCount, commandSurface.result.modelsCount, theme)
-    : commandSurface.view === 'editor'
-      ? renderConfigPanel(commandSurface.state, width, {maxLines: options.maxLines, rows: commandSurface.rows, theme: options.theme})
-      : [];
+  let lines: string[];
+
+  if (commandSurface.view === 'general') {
+    lines = renderGeneralView(commandSurface.state, commandSurface.tabs, commandSurface.activeTab, width, options.maxLines, theme);
+  } else if (commandSurface.view === 'appearance') {
+    lines = renderAppearanceView(commandSurface.state, commandSurface.tabs, commandSurface.activeTab, width, options.maxLines, theme);
+  } else if (commandSurface.view === 'models') {
+    const extraLines = 1 + (commandSurface.state.feedback ? 1 : 0);
+    const modelLines = renderConfigPanel(commandSurface.state, width, {
+      maxLines: Number.isFinite(options.maxLines) ? Math.max(1, Number(options.maxLines) - extraLines) : options.maxLines,
+      rows: commandSurface.rows,
+      theme: options.theme
+    });
+    const boxWidth = calculateBoxWidth(width);
+    modelLines.splice(1, 0, renderTabsLine(boxWidth, commandSurface.tabs, commandSurface.activeTab, theme));
+    if (commandSurface.state.feedback) {
+      modelLines.splice(Math.max(1, modelLines.length - 2), 0, feedbackLine(boxWidth, commandSurface.state.feedback, theme));
+    }
+    lines = modelLines;
+  } else if (commandSurface.view === 'error') {
+    lines = renderConfigErrorView(commandSurface.error, commandSurface.tabs, commandSurface.activeTab, width, theme);
+  } else if (commandSurface.view === 'discardConfirm') {
+    lines = renderCenterDiscardConfirm(commandSurface.dirtyTabs, commandSurface.selectedIndex, commandSurface.tabs, commandSurface.activeTab, width, theme);
+  } else {
+    lines = [];
+  }
 
   return constrainLayoutTail({
     lines,
@@ -40,6 +61,119 @@ function renderConfigSurface(commandSurface: ConfigCommandSurface, width: number
     cursorColumn: 0,
     showCursor: false
   }, options.maxLines);
+}
+
+/**
+ * 渲染常规设置 Tab；数值只显示归一化草稿，状态转移由 command handler 负责。
+ */
+function renderGeneralView(state: GeneralConfigState, tabs: ConfigSurfaceTab[], activeTab: ConfigTabId, columns: number, maxLines: number | undefined, theme: FooterTheme): string[] {
+  const width = calculateBoxWidth(columns);
+  const rows = [
+    {label: '自动压缩阈值', value: `${Math.round(state.draft.compactionThresholdRatio * 100)}%`},
+    {label: 'Slash 建议最多显示', value: `${state.draft.slashSuggestionMaxVisible} 条`},
+    {label: '显示推理摘要', value: state.draft.showReasoningSummary ? '开' : '关'},
+    {label: '保存常规设置', value: '写入 ~/.echo/config.json', action: true}
+  ];
+  const fixedLines = 5 + (state.error || state.feedback ? 1 : 0);
+  const visibleRows = Number.isFinite(maxLines)
+    ? createSelectedWindowRows(rows, state.selectedIndex, calculateItemBudget(maxLines, fixedLines))
+    : rows.map((item, index) => ({kind: 'item' as const, item, index}));
+  const lines = [top(width, ' CONFIG ', 'accentStrong', theme, ansi.dim('常规')), renderTabsLine(width, tabs, activeTab, theme)];
+
+  for (const row of visibleRows) {
+    if (row.kind === 'more') {
+      lines.push(moreRow(width, row.direction, row.count, theme));
+    } else if (row.item.action) {
+      lines.push(actionRow(width, row.item.label, row.item.value, row.index === state.selectedIndex, false, theme));
+    } else {
+      lines.push(splitRow(width, row.item.label, row.item.value, row.index === state.selectedIndex, theme));
+    }
+  }
+
+  if (state.error) {
+    lines.push(errorLine(width, state.error, theme));
+  } else if (state.feedback) {
+    lines.push(feedbackLine(width, state.feedback, theme));
+  }
+  lines.push(line(width, dimHint(width, 'Tab 切换 · ↑/↓ 移动 · ←/→ 调整 · Enter 执行 · Esc 关闭'), theme));
+  lines.push(bottom(width, theme));
+  return lines;
+}
+
+function renderAppearanceView(state: AppearanceConfigState, tabs: ConfigSurfaceTab[], activeTab: ConfigTabId, columns: number, maxLines: number | undefined, theme: FooterTheme): string[] {
+  const width = calculateBoxWidth(columns);
+  const fixedLines = 5 + (state.error || state.feedback ? 1 : 0) + (state.themes.length === 0 ? 1 : 0);
+  const visibleRows = Number.isFinite(maxLines)
+    ? createSelectedWindowRows(state.themes, state.selectedIndex, calculateItemBudget(maxLines, fixedLines))
+    : state.themes.map((item, index) => ({kind: 'item' as const, item, index}));
+  const lines = [top(width, ' CONFIG ', 'accentStrong', theme, ansi.dim('外观')), renderTabsLine(width, tabs, activeTab, theme)];
+
+  if (state.themes.length === 0) {
+    lines.push(line(width, ansi.dim('当前没有可用的内置 theme。'), theme));
+  }
+
+  for (const row of visibleRows) {
+    if (row.kind === 'more') {
+      lines.push(moreRow(width, row.direction, row.count, theme));
+    } else {
+      const marker = row.item.selected ? tokenText(theme, 'success', '●') : tokenText(theme, 'muted', '○');
+      lines.push(presetRow(width, `${marker} ${row.item.label}`, row.item.description, row.index === state.selectedIndex, theme));
+    }
+  }
+
+  if (state.error) {
+    lines.push(errorLine(width, state.error, theme));
+  } else if (state.feedback) {
+    lines.push(feedbackLine(width, state.feedback, theme));
+  }
+  lines.push(line(width, dimHint(width, 'Tab 切换 · ↑/↓ 移动 · Enter 应用主题 · Esc 关闭'), theme));
+  lines.push(bottom(width, theme));
+  return lines;
+}
+
+function renderConfigErrorView(error: string, tabs: ConfigSurfaceTab[], activeTab: ConfigTabId, columns: number, theme: FooterTheme): string[] {
+  const width = calculateBoxWidth(columns);
+  return [
+    top(width, ' CONFIG ', 'accentStrong', theme, ansi.dim('错误')),
+    renderTabsLine(width, tabs, activeTab, theme),
+    line(width, '', theme),
+    errorLine(width, error, theme),
+    line(width, '', theme),
+    line(width, dimHint(width, 'Tab 切换 · Esc 关闭'), theme),
+    bottom(width, theme)
+  ];
+}
+
+function renderCenterDiscardConfirm(dirtyTabs: string[], selectedIndex: number, tabs: ConfigSurfaceTab[], activeTab: ConfigTabId, columns: number, theme: FooterTheme): string[] {
+  const width = calculateBoxWidth(columns);
+  return [
+    top(width, ' CONFIG ', 'warning', theme, ansi.dim('未保存的更改')),
+    renderTabsLine(width, tabs, activeTab, theme),
+    line(width, ansi.dim(`未保存：${dirtyTabs.join('、')}`), theme),
+    actionRow(width, '继续编辑', '返回配置中心', selectedIndex === 0, false, theme),
+    actionRow(width, '放弃更改', '关闭 /config', selectedIndex === 1, true, theme),
+    line(width, dimHint(width, '↑/↓ 移动 · Enter 确认 · Esc 返回'), theme),
+    bottom(width, theme)
+  ];
+}
+
+function renderTabsLine(width: number, tabs: ConfigSurfaceTab[], activeTab: ConfigTabId, theme: FooterTheme): string {
+  const text = tabs.map((tab) => {
+    const marker = tab.status === 'dirty' ? '● ' : tab.status === 'error' ? '! ' : '';
+    const label = `[${marker}${tab.label}]`;
+    return tab.id === activeTab
+      ? tokenText(theme, 'accentStrong', ansi.bold(label))
+      : tokenText(theme, tab.status === 'error' ? 'warning' : 'muted', label);
+  }).join(' ');
+  return line(width, clampInnerText(text, contentWidth(width)), theme);
+}
+
+function errorLine(width: number, error: string, theme: FooterTheme): string {
+  return line(width, ` ${tokenText(theme, 'danger', '▌')} ${ansi.dim(clampPlainText(error, width - 6))}`, theme);
+}
+
+function feedbackLine(width: number, feedback: string, theme: FooterTheme): string {
+  return line(width, ` ${tokenText(theme, 'success', clampPlainText(feedback, width - 5))}`, theme);
 }
 
 function renderConfigPanel(state: ConfigCommandState, columns: number, options: RenderConfigPanelOptions): string[] {
@@ -64,23 +198,7 @@ function renderConfigPanel(state: ConfigCommandState, columns: number, options: 
   if (state.mode === 'modelDetail') {
     return renderModelDetailView(state, width, theme);
   }
-  if (state.mode === 'discardConfirm') {
-    return renderDiscardConfirmView(state, width, theme);
-  }
   return renderListView(state, width, options.maxLines, theme);
-}
-
-function renderConfigResult(columns: number, providersCount: number, modelsCount: number, theme: FooterTheme = resolveFooterTheme(undefined)): string[] {
-  const width = calculateBoxWidth(columns);
-  const message = `${tokenText(theme, 'success', ansi.bold('✓ 已保存'))}${ansi.dim(` · ${providersCount} providers · ${modelsCount} models`)}`;
-
-  return [
-    top(width, ' CONFIG ', 'accentStrong', theme),
-    line(width, '', theme),
-    line(width, ` ${message}`, theme),
-    line(width, '', theme),
-    bottom(width, theme)
-  ];
 }
 
 function calculateBoxWidth(columns: number): number {
@@ -371,20 +489,6 @@ function renderModelDetailView(state: ConfigCommandState, width: number, theme: 
   lines.push(line(width, '', theme));
   lines.push(line(width, dimHint(width, '↑/↓ 移动 · Enter 编辑/执行 · Esc 返回'), theme));
   lines.push(bottom(width, theme));
-  return lines;
-}
-
-function renderDiscardConfirmView(state: ConfigCommandState, width: number, theme: FooterTheme): string[] {
-  const lines = [
-    top(width, ' 未保存的更改 ', 'warning', theme),
-    line(width, '', theme),
-    line(width, ` ${ansi.dim('配置草稿尚未保存。')}`, theme),
-    actionRow(width, '继续编辑', '返回 provider 列表', state.formIndex === 0, false, theme),
-    actionRow(width, '放弃更改', '关闭 /config', state.formIndex === 1, true, theme),
-    line(width, '', theme),
-    line(width, dimHint(width, '↑/↓ 移动 · Enter 确认 · Esc 返回'), theme),
-    bottom(width, theme)
-  ];
   return lines;
 }
 

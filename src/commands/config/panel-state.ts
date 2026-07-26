@@ -3,7 +3,6 @@ import {getProviderPreset, listProviderPresets, providerRequiresApiKey} from '..
 import {normalizeConfigDraft, validateConfigDraft} from '../../config/llm-config-editor';
 import {
   cloneConfigState,
-  createDraftFingerprint,
   getConfigRows
 } from './state';
 import type {
@@ -64,9 +63,6 @@ class ConfigPanelController {
     if (this.state.mode === 'modelDetail') {
       return this.handleModelDetailEvent();
     }
-    if (this.state.mode === 'discardConfirm') {
-      return this.handleDiscardConfirmEvent();
-    }
     return this.handleListEvent();
   }
 
@@ -91,10 +87,6 @@ class ConfigPanelController {
     };
   }
 
-  private isDirty(): boolean {
-    return createDraftFingerprint(this.state.draft) !== this.state.initialDraftFingerprint;
-  }
-
   private saveCurrentDraft(): ConfigCommandEventResult {
     const validation = validateConfigDraft(this.state.draft);
 
@@ -111,11 +103,6 @@ class ConfigPanelController {
     const saveIndex = addIndex + 1;
 
     if (this.event.type === INPUT_EVENTS.ESCAPE) {
-      if (this.isDirty()) {
-        this.state = {...this.state, error: undefined, formIndex: 0, mode: 'discardConfirm'};
-        return {kind: 'continue', state: this.getState()};
-      }
-
       return {kind: 'cancel'};
     }
 
@@ -566,29 +553,6 @@ class ConfigPanelController {
 
     const rowIndex = getConfigRows({...this.state, mode: 'form'}).findIndex((row) => row.kind === 'model' && row.modelIndex === modelIndex);
     this.state = {...this.state, error: undefined, formIndex: rowIndex === -1 ? this.state.formIndex : rowIndex, mode: 'form'};
-  }
-
-  private handleDiscardConfirmEvent(): ConfigCommandEventResult {
-    if (this.event.type === INPUT_EVENTS.ESCAPE) {
-      this.state = {...this.state, formIndex: 0, mode: 'list'};
-      return {kind: 'continue', state: this.getState()};
-    }
-
-    if (this.event.type === INPUT_EVENTS.MOVE_UP || this.event.type === INPUT_EVENTS.MOVE_DOWN) {
-      const delta = this.event.type === INPUT_EVENTS.MOVE_UP ? -1 : 1;
-      this.state = {...this.state, formIndex: clamp(this.state.formIndex + delta, 0, 1)};
-      return {kind: 'continue', state: this.getState()};
-    }
-
-    if (this.event.type === INPUT_EVENTS.SUBMIT) {
-      if (this.state.formIndex === 1) {
-        return {kind: 'cancel'};
-      }
-
-      this.state = {...this.state, formIndex: 0, mode: 'list'};
-    }
-
-    return {kind: 'continue', state: this.getState()};
   }
 
   private startEdit(target: ConfigEditTarget, value: string, replacePending: boolean): void {
