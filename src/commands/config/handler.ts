@@ -25,7 +25,7 @@ import type {
 import type {InputEvent} from '../../types/input';
 import type {ConfigCommandData} from './state';
 
-const GENERAL_ROW_COUNT = 4;
+const GENERAL_ROW_COUNT = 5;
 
 function createModelListState(requestId: number, result: CommandConfigListModelsResult): NonNullable<ConfigCommandState['modelList']> {
   if (result.ok) {
@@ -126,9 +126,9 @@ class ConfigCommandHandler implements CommandHandler<ConfigCommandData> {
     } else if (event.type === INPUT_EVENTS.MOVE_LEFT || event.type === INPUT_EVENTS.MOVE_RIGHT) {
       nextState = adjustGeneralValue(nextState, event.type === INPUT_EVENTS.MOVE_LEFT ? -1 : 1);
     } else if (event.type === INPUT_EVENTS.SUBMIT) {
-      if (nextState.selectedIndex === 2) {
+      if (nextState.selectedIndex === 3) {
         nextState.draft.showReasoningSummary = !nextState.draft.showReasoningSummary;
-      } else if (nextState.selectedIndex === 3) {
+      } else if (nextState.selectedIndex === 4) {
         const result = host.config.saveSettings(nextState.draft);
         nextState = result.ok
           ? markGeneralConfigSaved(nextState)
@@ -317,8 +317,11 @@ function adjustGeneralValue(state: GeneralConfigState, direction: number): Gener
     const next = Math.round((state.draft.compactionThresholdRatio + direction * 0.05) * 100) / 100;
     state.draft.compactionThresholdRatio = clamp(next, 0.5, 0.95);
   } else if (state.selectedIndex === 1) {
-    state.draft.slashSuggestionMaxVisible = clamp(state.draft.slashSuggestionMaxVisible + direction, 1, 20);
+    const next = Math.round((state.draft.skillCatalogContextRatio + direction * 0.01) * 100) / 100;
+    state.draft.skillCatalogContextRatio = clamp(next, 0.01, 0.1);
   } else if (state.selectedIndex === 2) {
+    state.draft.slashSuggestionMaxVisible = clamp(state.draft.slashSuggestionMaxVisible + direction, 1, 20);
+  } else if (state.selectedIndex === 3) {
     state.draft.showReasoningSummary = !state.draft.showReasoningSummary;
   }
   return state;

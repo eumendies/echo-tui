@@ -14,6 +14,7 @@ test('readAppSettings reads valid fields and falls back invalid fields independe
     readFile() {
       return JSON.stringify({
         compaction: {thresholdRatio: 0.65},
+        skills: {catalogContextRatio: 0.05},
         ui: {slashSuggestionMaxVisible: 12, showReasoningSummary: false}
       });
     }
@@ -22,6 +23,7 @@ test('readAppSettings reads valid fields and falls back invalid fields independe
     readFile() {
       return JSON.stringify({
         compaction: {thresholdRatio: Number.NaN},
+        skills: {catalogContextRatio: 0.5},
         ui: {slashSuggestionMaxVisible: 30, showReasoningSummary: false}
       });
     }
@@ -29,6 +31,7 @@ test('readAppSettings reads valid fields and falls back invalid fields independe
 
   assert.deepEqual(valid, {
     compactionThresholdRatio: 0.65,
+    skillCatalogContextRatio: 0.05,
     slashSuggestionMaxVisible: 12,
     showReasoningSummary: false
   });
@@ -42,8 +45,9 @@ test('readAppSettings uses defaults for missing and malformed optional config', 
   assert.deepEqual(readAppSettings({readFile() { throw Object.assign(new Error('missing'), {code: 'ENOENT'}); }}), DEFAULT_APP_SETTINGS);
   assert.deepEqual(readAppSettings({readFile() { return '{broken'; }}), DEFAULT_APP_SETTINGS);
   assert.deepEqual(readAppSettings({readFile() { return JSON.stringify({compaction: {thresholdRatio: 0.49}, ui: {slashSuggestionMaxVisible: 0}}); }}), DEFAULT_APP_SETTINGS);
-  assert.deepEqual(readAppSettings({readFile() { return JSON.stringify({compaction: {thresholdRatio: 0.95}, ui: {slashSuggestionMaxVisible: 20}}); }}), {
+  assert.deepEqual(readAppSettings({readFile() { return JSON.stringify({compaction: {thresholdRatio: 0.95}, skills: {catalogContextRatio: 0.1}, ui: {slashSuggestionMaxVisible: 20}}); }}), {
     compactionThresholdRatio: 0.95,
+    skillCatalogContextRatio: 0.1,
     slashSuggestionMaxVisible: 20,
     showReasoningSummary: true
   });
@@ -61,6 +65,7 @@ test('saveAppSettingsDraft patches owned fields and writes atomically', () => {
 
   saveAppSettingsDraft({
     compactionThresholdRatio: 0.7,
+    skillCatalogContextRatio: 0.04,
     slashSuggestionMaxVisible: 5,
     showReasoningSummary: false
   }, {
@@ -77,6 +82,7 @@ test('saveAppSettingsDraft patches owned fields and writes atomically', () => {
         hooks: {assistant_turn_end: ['echo done']},
         unknown: {kept: true},
         compaction: {keepCount: 20},
+        skills: {other: 'kept'},
         ui: {other: 'kept'}
       });
     },
@@ -94,6 +100,7 @@ test('saveAppSettingsDraft patches owned fields and writes atomically', () => {
   assert.deepEqual(renames, [['/tmp/echo/config.json.tmp-test', '/tmp/echo/config.json']]);
   assert.equal(saved.compaction.thresholdRatio, 0.7);
   assert.equal(saved.compaction.keepCount, 20);
+  assert.deepEqual(saved.skills, {other: 'kept', catalogContextRatio: 0.04});
   assert.deepEqual(saved.ui, {other: 'kept', slashSuggestionMaxVisible: 5, showReasoningSummary: false});
   assert.equal(saved.llm.selectedModel, 'fast');
   assert.equal(saved.tools.bash.timeoutMs, 1000);
@@ -120,9 +127,11 @@ test('saveAppSettingsDraft creates missing config and rejects invalid drafts bef
   assert.equal(writes.length, 1);
   assert.deepEqual(writes[0], {
     compaction: {thresholdRatio: 0.8},
+    skills: {catalogContextRatio: 0.02},
     ui: {slashSuggestionMaxVisible: 8, showReasoningSummary: true}
   });
   assert.deepEqual(validateAppSettingsDraft({...DEFAULT_APP_SETTINGS, compactionThresholdRatio: 0.49}), {ok: false, error: '自动压缩阈值必须在 50% 到 95% 之间'});
+  assert.deepEqual(validateAppSettingsDraft({...DEFAULT_APP_SETTINGS, skillCatalogContextRatio: 0.11}), {ok: false, error: '技能列表上下文占比上限必须在 1% 到 10% 之间'});
   assert.deepEqual(validateAppSettingsDraft({...DEFAULT_APP_SETTINGS, slashSuggestionMaxVisible: 21}), {ok: false, error: 'Slash suggestion 显示数量必须在 1 到 20 之间'});
   assert.throws(() => saveAppSettingsDraft({...DEFAULT_APP_SETTINGS, slashSuggestionMaxVisible: 0}, {
     writeFile() {

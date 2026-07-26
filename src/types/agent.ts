@@ -74,6 +74,7 @@ export type AgentSessionInput = {
   modelProfileId?: string;
   reasoningEffortOverride?: ReasoningEffort;
   compactionThresholdRatio?: number;
+  skillCatalogContextRatio?: number;
 };
 
 export type AgentInstructionSourceKind = 'global' | 'project';

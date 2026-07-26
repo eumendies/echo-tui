@@ -120,6 +120,7 @@ function createFakeHost(options = {}) {
         }
         return structuredClone(options.appSettings || {
           compactionThresholdRatio: 0.8,
+          skillCatalogContextRatio: 0.02,
           showReasoningSummary: true,
           slashSuggestionMaxVisible: 8
         });
@@ -1068,12 +1069,17 @@ test('configCommandHandler opens general tab, saves independently, and lazily op
   assert.equal(session.data.models, undefined);
 
   configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_RIGHT}, host);
+  configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
+  configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_RIGHT}, host);
+  assert.equal(host.session.getActive().surface.state.draft.skillCatalogContextRatio, 0.03);
+  assert.equal(calls.savedSettingsDrafts.length, 0);
   for (let index = 0; index < 3; index += 1) {
     configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
   }
   configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
   assert.equal(calls.savedSettingsDrafts.length, 1);
   assert.equal(calls.savedSettingsDrafts[0].compactionThresholdRatio, 0.85);
+  assert.equal(calls.savedSettingsDrafts[0].skillCatalogContextRatio, 0.03);
   assert.match(host.session.getActive().surface.state.feedback, /已保存/);
 
   configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.TAB}, host);
@@ -1102,7 +1108,7 @@ test('configCommandHandler isolates tab read errors and keeps save errors inline
     }
   });
   const session = startCommand(configCommandHandler, '/config', saveError.host);
-  for (let index = 0; index < 3; index += 1) {
+  for (let index = 0; index < 4; index += 1) {
     configCommandHandler.handleEvent(saveError.host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, saveError.host);
   }
   configCommandHandler.handleEvent(saveError.host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, saveError.host);

@@ -74,7 +74,8 @@ function createHostHarness(options = {}) {
     contextUsageClears: 0,
     hookConfigs: [],
     modelRefreshes: 0,
-    resizeRecoveries: 0
+    resizeRecoveries: 0,
+    settingsRefreshes: 0
   };
   const host = createCommandHost({
     appContext: {
@@ -94,6 +95,14 @@ function createHostHarness(options = {}) {
         refreshModelState() {
           calls.modelRefreshes += 1;
         }
+      },
+      refreshAppSettingsFromConfig() {
+        calls.settingsRefreshes += 1;
+        return {
+          reasoningVisibilityChanged: false,
+          skillCatalogContextRatioChanged: true,
+          slashSuggestionLimitChanged: false
+        };
       },
       transcriptContext: {
         getCurrentSessionId() {
@@ -383,6 +392,23 @@ test('CommandHost config facade refreshes model status cache after successful sa
     assert.equal(calls.contextUsageClears, 1);
     assert.equal(modelContext.getStatusLineModelState().modelLabel, 'gpt-deep');
     assert.equal(modelContext.getStatusLineModelState().reasoningEffort, 'high');
+  });
+});
+
+test('CommandHost config facade saves and refreshes skill catalog context ratio', () => {
+  withTemporaryUserConfig(JSON.stringify({unknown: {kept: true}}), ({readConfig}) => {
+    const {calls, host} = createHostHarness();
+    const result = host.config.saveSettings({
+      compactionThresholdRatio: 0.8,
+      skillCatalogContextRatio: 0.03,
+      slashSuggestionMaxVisible: 8,
+      showReasoningSummary: true
+    });
+
+    assert.deepEqual(result, {ok: true});
+    assert.equal(calls.settingsRefreshes, 1);
+    assert.equal(readConfig().skills.catalogContextRatio, 0.03);
+    assert.deepEqual(readConfig().unknown, {kept: true});
   });
 });
 
