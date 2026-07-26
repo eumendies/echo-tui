@@ -110,7 +110,7 @@ class AppContext {
     this.changeHistoryContext = new ChangeHistoryContext();
     this.theme = theme;
     this.appSettings = structuredClone(appSettings) as AppSettings;
-    this.interactionMode = 'normal';
+    this.interactionMode = appSettings.defaultInteractionMode;
     this.lastSubmittedAgentMode = 'normal';
     this.contextUsage = null;
     this.mcpBootstrapStatus = 'idle';

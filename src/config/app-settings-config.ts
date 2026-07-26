@@ -5,10 +5,13 @@ import type {ReadUserConfigOptions, UserConfigSource} from './user-config';
 
 type AppSettings = {
   compactionThresholdRatio: number;
+  defaultInteractionMode: DefaultInteractionMode;
   skillCatalogContextRatio: number;
   showReasoningSummary: boolean;
   slashSuggestionMaxVisible: number;
 };
+
+type DefaultInteractionMode = 'normal' | 'plan';
 
 type AppRenderPreferences = Pick<AppSettings, 'showReasoningSummary' | 'slashSuggestionMaxVisible'>;
 
@@ -20,6 +23,7 @@ type AppSettingsValidationResult =
 
 const DEFAULT_APP_SETTINGS: Readonly<AppSettings> = {
   compactionThresholdRatio: 0.8,
+  defaultInteractionMode: 'normal',
   skillCatalogContextRatio: 0.02,
   showReasoningSummary: true,
   slashSuggestionMaxVisible: 8
@@ -63,6 +67,10 @@ function validateAppSettingsDraft(draft: AppSettings): AppSettingsValidationResu
     return {ok: false, error: '技能列表上下文占比上限必须在 1% 到 10% 之间'};
   }
 
+  if (!isDefaultInteractionMode(draft.defaultInteractionMode)) {
+    return {ok: false, error: '默认启动模式必须是普通或规划'};
+  }
+
   if (!Number.isInteger(draft.slashSuggestionMaxVisible)
     || draft.slashSuggestionMaxVisible < MIN_SLASH_SUGGESTION_MAX_VISIBLE
     || draft.slashSuggestionMaxVisible > MAX_SLASH_SUGGESTION_MAX_VISIBLE) {
@@ -95,6 +103,7 @@ function saveAppSettingsDraft(draft: AppSettings, options: AppSettingsConfigOpti
 
     compaction.thresholdRatio = draft.compactionThresholdRatio;
     skills.catalogContextRatio = draft.skillCatalogContextRatio;
+    ui.defaultInteractionMode = draft.defaultInteractionMode;
     ui.slashSuggestionMaxVisible = draft.slashSuggestionMaxVisible;
     ui.showReasoningSummary = draft.showReasoningSummary;
     rootConfig.compaction = compaction;
@@ -115,6 +124,9 @@ function normalizeAppSettings(rootConfig: UserConfigSource): AppSettings {
     compactionThresholdRatio: isFiniteNumberInRange(thresholdRatio, MIN_COMPACTION_THRESHOLD_RATIO, MAX_COMPACTION_THRESHOLD_RATIO)
       ? thresholdRatio
       : DEFAULT_APP_SETTINGS.compactionThresholdRatio,
+    defaultInteractionMode: isDefaultInteractionMode(ui.defaultInteractionMode)
+      ? ui.defaultInteractionMode
+      : DEFAULT_APP_SETTINGS.defaultInteractionMode,
     skillCatalogContextRatio: isFiniteNumberInRange(skillCatalogRatio, MIN_SKILL_CATALOG_CONTEXT_RATIO, MAX_SKILL_CATALOG_CONTEXT_RATIO)
       ? skillCatalogRatio
       : DEFAULT_APP_SETTINGS.skillCatalogContextRatio,
@@ -127,6 +139,10 @@ function normalizeAppSettings(rootConfig: UserConfigSource): AppSettings {
       ? Number(slashMaxVisible)
       : DEFAULT_APP_SETTINGS.slashSuggestionMaxVisible
   };
+}
+
+function isDefaultInteractionMode(value: unknown): value is DefaultInteractionMode {
+  return value === 'normal' || value === 'plan';
 }
 
 function isFiniteNumberInRange(value: unknown, min: number, max: number): value is number {
@@ -156,5 +172,6 @@ export type {
   AppRenderPreferences,
   AppSettings,
   AppSettingsConfigOptions,
-  AppSettingsValidationResult
+  AppSettingsValidationResult,
+  DefaultInteractionMode
 };

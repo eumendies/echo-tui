@@ -400,6 +400,7 @@ test('CommandHost config facade saves and refreshes skill catalog context ratio'
     const {calls, host} = createHostHarness();
     const result = host.config.saveSettings({
       compactionThresholdRatio: 0.8,
+      defaultInteractionMode: 'plan',
       skillCatalogContextRatio: 0.03,
       slashSuggestionMaxVisible: 8,
       showReasoningSummary: true
@@ -408,6 +409,7 @@ test('CommandHost config facade saves and refreshes skill catalog context ratio'
     assert.deepEqual(result, {ok: true});
     assert.equal(calls.settingsRefreshes, 1);
     assert.equal(readConfig().skills.catalogContextRatio, 0.03);
+    assert.equal(readConfig().ui.defaultInteractionMode, 'plan');
     assert.deepEqual(readConfig().unknown, {kept: true});
   });
 });
