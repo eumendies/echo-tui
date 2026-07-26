@@ -6,6 +6,7 @@ const {
   estimateContextUsageSegments
 } = require('../../src/agent/context/context-usage-breakdown');
 const { estimateTextTokens } = require('../../src/agent/context/token-estimator');
+const {createSkillCatalogPromptProjection, formatSkillCatalogPrompt} = require('../../src/skills/skill-catalog-prompt');
 
 test('estimateTextTokens is shared by token estimator module', () => {
   assert.equal(estimateTextTokens('abcd'), 1);
@@ -54,6 +55,27 @@ test('estimateContextUsageSegments classifies provider-visible records', () => {
   assert.ok(byCategory.messages > 0);
   assert.ok(byCategory.reasoning > 0);
   assert.equal(segments.length, 6);
+});
+
+test('context usage uses the projected skill catalog tokens before calibration', () => {
+  const catalog = [{
+    name: 'large-skill',
+    description: `BEGIN ${'routing '.repeat(200)} END`,
+    sourceKind: 'project',
+    sourcePath: '/tmp/large-skill/SKILL.md'
+  }];
+  const projection = createSkillCatalogPromptProjection(catalog, 2000, 0.1);
+  const skillCatalogText = formatSkillCatalogPrompt(projection.catalog);
+  const segments = estimateContextUsageSegments([
+    {role: 'system', text: `system prompt\n\n${skillCatalogText}`}
+  ], [], projection.estimatedTokens);
+  const byCategory = Object.fromEntries(segments.map((segment) => [segment.category, segment.estimatedTokens]));
+  const calibrated = calibrateContextUsageSegments(segments, 500);
+
+  assert.equal(projection.mode, 'truncated');
+  assert.equal(byCategory.skills, projection.estimatedTokens);
+  assert.ok(byCategory.skills <= projection.budgetTokens);
+  assert.equal(calibrated.reduce((sum, segment) => sum + segment.tokens, 0), 500);
 });
 
 test('estimateContextUsageSegments separates user memory from the rest of the system prompt', () => {

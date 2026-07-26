@@ -28,6 +28,7 @@ type AgentInteractionMode = 'normal' | 'plan';
 
 type AppSettingsRefreshResult = {
   reasoningVisibilityChanged: boolean;
+  skillCatalogContextRatioChanged: boolean;
   slashSuggestionLimitChanged: boolean;
 };
 
@@ -338,10 +339,14 @@ class AppContext {
   refreshAppSettingsFromConfig(): AppSettingsRefreshResult {
     const next = readAppSettings();
     const reasoningVisibilityChanged = next.showReasoningSummary !== this.appSettings.showReasoningSummary;
+    const skillCatalogContextRatioChanged = next.skillCatalogContextRatio !== this.appSettings.skillCatalogContextRatio;
     const slashSuggestionLimitChanged = next.slashSuggestionMaxVisible !== this.appSettings.slashSuggestionMaxVisible;
 
     this.appSettings = structuredClone(next) as AppSettings;
-    return {reasoningVisibilityChanged, slashSuggestionLimitChanged};
+    if (skillCatalogContextRatioChanged) {
+      this.clearContextUsage();
+    }
+    return {reasoningVisibilityChanged, skillCatalogContextRatioChanged, slashSuggestionLimitChanged};
   }
 
   /**
@@ -514,7 +519,8 @@ class AppContext {
       compaction: this.transcriptContext.compaction ? {...this.transcriptContext.compaction} : undefined,
       todoState: structuredClone(this.transcriptContext.todoState),
       interactionMode: this.interactionMode,
-      compactionThresholdRatio: this.appSettings.compactionThresholdRatio
+      compactionThresholdRatio: this.appSettings.compactionThresholdRatio,
+      skillCatalogContextRatio: this.appSettings.skillCatalogContextRatio
     };
   }
 
