@@ -1,6 +1,7 @@
 import {INPUT_EVENTS} from '../../input/event-types';
 import {
   CONFIG_TABS,
+  GENERAL_CONFIG_ROW_IDS,
   createConfigSurface,
   createInitialAppearanceConfigState,
   createInitialConfigState,
@@ -24,8 +25,6 @@ import type {
 } from '../../types/command';
 import type {InputEvent} from '../../types/input';
 import type {ConfigCommandData} from './state';
-
-const GENERAL_ROW_COUNT = 4;
 
 function createModelListState(requestId: number, result: CommandConfigListModelsResult): NonNullable<ConfigCommandState['modelList']> {
   if (result.ok) {
@@ -52,7 +51,7 @@ function createModelListState(requestId: number, result: CommandConfigListModels
  */
 class ConfigCommandHandler implements CommandHandler<ConfigCommandData> {
   name = 'config';
-  description = '配置常规设置、模型和主题';
+  description = '配置常规设置、指令文件、模型和主题';
 
   match(text: string): boolean {
     return text.trimEnd() === '/config';
@@ -122,13 +121,14 @@ class ConfigCommandHandler implements CommandHandler<ConfigCommandData> {
 
     if (event.type === INPUT_EVENTS.MOVE_UP || event.type === INPUT_EVENTS.MOVE_DOWN) {
       const delta = event.type === INPUT_EVENTS.MOVE_UP ? -1 : 1;
-      nextState.selectedIndex = clamp(nextState.selectedIndex + delta, 0, GENERAL_ROW_COUNT - 1);
+      nextState.selectedIndex = clamp(nextState.selectedIndex + delta, 0, GENERAL_CONFIG_ROW_IDS.length - 1);
     } else if (event.type === INPUT_EVENTS.MOVE_LEFT || event.type === INPUT_EVENTS.MOVE_RIGHT) {
       nextState = adjustGeneralValue(nextState, event.type === INPUT_EVENTS.MOVE_LEFT ? -1 : 1);
     } else if (event.type === INPUT_EVENTS.SUBMIT) {
-      if (nextState.selectedIndex === 2) {
+      const selectedRow = GENERAL_CONFIG_ROW_IDS[nextState.selectedIndex];
+      if (selectedRow === 'reasoningSummary') {
         nextState.draft.showReasoningSummary = !nextState.draft.showReasoningSummary;
-      } else if (nextState.selectedIndex === 3) {
+      } else if (selectedRow === 'save') {
         const result = host.config.saveSettings(nextState.draft);
         nextState = result.ok
           ? markGeneralConfigSaved(nextState)
@@ -313,13 +313,23 @@ function initializeTab(data: ConfigCommandData, tab: ConfigTabId, host: CommandH
 }
 
 function adjustGeneralValue(state: GeneralConfigState, direction: number): GeneralConfigState {
-  if (state.selectedIndex === 0) {
+  const selectedRow = GENERAL_CONFIG_ROW_IDS[state.selectedIndex];
+  if (selectedRow === 'compactionThreshold') {
     const next = Math.round((state.draft.compactionThresholdRatio + direction * 0.05) * 100) / 100;
     state.draft.compactionThresholdRatio = clamp(next, 0.5, 0.95);
-  } else if (state.selectedIndex === 1) {
+  } else if (selectedRow === 'skillCatalogRatio') {
+    const next = Math.round((state.draft.skillCatalogContextRatio + direction * 0.01) * 100) / 100;
+    state.draft.skillCatalogContextRatio = clamp(next, 0.01, 0.1);
+  } else if (selectedRow === 'slashSuggestionLimit') {
     state.draft.slashSuggestionMaxVisible = clamp(state.draft.slashSuggestionMaxVisible + direction, 1, 20);
-  } else if (state.selectedIndex === 2) {
+  } else if (selectedRow === 'reasoningSummary') {
     state.draft.showReasoningSummary = !state.draft.showReasoningSummary;
+  } else if (selectedRow === 'defaultInteractionMode') {
+    state.draft.defaultInteractionMode = state.draft.defaultInteractionMode === 'normal' ? 'plan' : 'normal';
+  } else if (selectedRow === 'fileEditMode') {
+    state.draft.fileEditMode = state.draft.fileEditMode === 'apply_patch' ? 'edit_file' : 'apply_patch';
+  } else if (selectedRow === 'instructionFile') {
+    state.draft.agentInstructionFileName = state.draft.agentInstructionFileName === 'AGENTS.md' ? 'CLAUDE.md' : 'AGENTS.md';
   }
   return state;
 }

@@ -31,22 +31,30 @@ export type ToolRiskAssessment =
   | {risk: 'approval_required'; approval?: ToolApprovalRequest}
   | {risk: 'rejected'; message: string; reason?: 'plan_mode'};
 
-export type ApplyPatchDisplayLine = {
+export type FileEditDisplayLine = {
   kind: 'context' | 'removed' | 'added';
   text: string;
   postLine: number | null;
 };
 
-export type ApplyPatchDisplayFile = {
+export type FileEditDisplayFile = {
   path: string;
   kind: 'added' | 'updated' | 'deleted';
-  lines: ApplyPatchDisplayLine[];
+  lines: FileEditDisplayLine[];
 };
 
-export type ToolResultDisplayMetadata = {
-  kind: 'apply_patch';
-  files: ApplyPatchDisplayFile[];
+export type FileEditDisplayKind = 'apply_patch' | 'edit_file';
+
+export type FileEditDisplayMetadata<Kind extends FileEditDisplayKind> = {
+  kind: Kind;
+  files: FileEditDisplayFile[];
 };
+
+export type ApplyPatchDisplayLine = FileEditDisplayLine;
+export type ApplyPatchDisplayFile = FileEditDisplayFile;
+export type ApplyPatchDisplayMetadata = FileEditDisplayMetadata<'apply_patch'>;
+export type EditFileDisplayMetadata = FileEditDisplayMetadata<'edit_file'>;
+export type ToolResultDisplayMetadata = ApplyPatchDisplayMetadata | EditFileDisplayMetadata;
 
 export type ToolResultImageAttachment = {
   kind: 'image';
@@ -129,7 +137,15 @@ export type ApplyPatchToolExecutionResult = ToolExecutionResultBase & {
   toolName: 'apply_patch';
   details: {
     kind: 'apply_patch';
-    display?: ToolResultDisplayMetadata;
+    display?: ApplyPatchDisplayMetadata;
+  };
+};
+
+export type EditFileToolExecutionResult = ToolExecutionResultBase & {
+  toolName: 'edit_file';
+  details: {
+    kind: 'edit_file';
+    display?: EditFileDisplayMetadata;
   };
 };
 
@@ -181,6 +197,7 @@ export type ToolExecutionResult =
   | WebFetchToolExecutionResult
   | WebSearchToolExecutionResult
   | ApplyPatchToolExecutionResult
+  | EditFileToolExecutionResult
   | AskUserQuestionsToolExecutionResult
   | UseSkillToolExecutionResult;
 

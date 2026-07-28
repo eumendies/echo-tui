@@ -14,7 +14,10 @@ test('readAppSettings reads valid fields and falls back invalid fields independe
     readFile() {
       return JSON.stringify({
         compaction: {thresholdRatio: 0.65},
-        ui: {slashSuggestionMaxVisible: 12, showReasoningSummary: false}
+        instructions: {fileName: 'CLAUDE.md'},
+        skills: {catalogContextRatio: 0.05},
+        tools: {fileEdit: {mode: 'edit_file'}},
+        ui: {defaultInteractionMode: 'plan', slashSuggestionMaxVisible: 12, showReasoningSummary: false}
       });
     }
   });
@@ -22,13 +25,18 @@ test('readAppSettings reads valid fields and falls back invalid fields independe
     readFile() {
       return JSON.stringify({
         compaction: {thresholdRatio: Number.NaN},
-        ui: {slashSuggestionMaxVisible: 30, showReasoningSummary: false}
+        skills: {catalogContextRatio: 0.5},
+        ui: {defaultInteractionMode: 'invalid', slashSuggestionMaxVisible: 30, showReasoningSummary: false}
       });
     }
   });
 
   assert.deepEqual(valid, {
+    agentInstructionFileName: 'CLAUDE.md',
     compactionThresholdRatio: 0.65,
+    defaultInteractionMode: 'plan',
+    fileEditMode: 'edit_file',
+    skillCatalogContextRatio: 0.05,
     slashSuggestionMaxVisible: 12,
     showReasoningSummary: false
   });
@@ -42,8 +50,12 @@ test('readAppSettings uses defaults for missing and malformed optional config', 
   assert.deepEqual(readAppSettings({readFile() { throw Object.assign(new Error('missing'), {code: 'ENOENT'}); }}), DEFAULT_APP_SETTINGS);
   assert.deepEqual(readAppSettings({readFile() { return '{broken'; }}), DEFAULT_APP_SETTINGS);
   assert.deepEqual(readAppSettings({readFile() { return JSON.stringify({compaction: {thresholdRatio: 0.49}, ui: {slashSuggestionMaxVisible: 0}}); }}), DEFAULT_APP_SETTINGS);
-  assert.deepEqual(readAppSettings({readFile() { return JSON.stringify({compaction: {thresholdRatio: 0.95}, ui: {slashSuggestionMaxVisible: 20}}); }}), {
+  assert.deepEqual(readAppSettings({readFile() { return JSON.stringify({compaction: {thresholdRatio: 0.95}, skills: {catalogContextRatio: 0.1}, ui: {slashSuggestionMaxVisible: 20}}); }}), {
+    agentInstructionFileName: 'AGENTS.md',
     compactionThresholdRatio: 0.95,
+    defaultInteractionMode: 'normal',
+    fileEditMode: 'apply_patch',
+    skillCatalogContextRatio: 0.1,
     slashSuggestionMaxVisible: 20,
     showReasoningSummary: true
   });
@@ -60,7 +72,11 @@ test('saveAppSettingsDraft patches owned fields and writes atomically', () => {
   const mkdirs = [];
 
   saveAppSettingsDraft({
+    agentInstructionFileName: 'CLAUDE.md',
     compactionThresholdRatio: 0.7,
+    defaultInteractionMode: 'plan',
+    fileEditMode: 'edit_file',
+    skillCatalogContextRatio: 0.04,
     slashSuggestionMaxVisible: 5,
     showReasoningSummary: false
   }, {
@@ -72,11 +88,13 @@ test('saveAppSettingsDraft patches owned fields and writes atomically', () => {
     readFile() {
       return JSON.stringify({
         llm: {selectedModel: 'fast'},
-        tools: {bash: {timeoutMs: 1000}},
+        tools: {bash: {timeoutMs: 1000}, other: {kept: true}},
         mcp: {enabled: true},
         hooks: {assistant_turn_end: ['echo done']},
         unknown: {kept: true},
         compaction: {keepCount: 20},
+        instructions: {other: 'kept'},
+        skills: {other: 'kept'},
         ui: {other: 'kept'}
       });
     },
@@ -94,9 +112,13 @@ test('saveAppSettingsDraft patches owned fields and writes atomically', () => {
   assert.deepEqual(renames, [['/tmp/echo/config.json.tmp-test', '/tmp/echo/config.json']]);
   assert.equal(saved.compaction.thresholdRatio, 0.7);
   assert.equal(saved.compaction.keepCount, 20);
-  assert.deepEqual(saved.ui, {other: 'kept', slashSuggestionMaxVisible: 5, showReasoningSummary: false});
+  assert.deepEqual(saved.instructions, {other: 'kept', fileName: 'CLAUDE.md'});
+  assert.deepEqual(saved.skills, {other: 'kept', catalogContextRatio: 0.04});
+  assert.deepEqual(saved.ui, {other: 'kept', defaultInteractionMode: 'plan', slashSuggestionMaxVisible: 5, showReasoningSummary: false});
   assert.equal(saved.llm.selectedModel, 'fast');
   assert.equal(saved.tools.bash.timeoutMs, 1000);
+  assert.equal(saved.tools.fileEdit.mode, 'edit_file');
+  assert.deepEqual(saved.tools.other, {kept: true});
   assert.equal(saved.mcp.enabled, true);
   assert.deepEqual(saved.hooks.assistant_turn_end, ['echo done']);
   assert.deepEqual(saved.unknown, {kept: true});
@@ -120,10 +142,17 @@ test('saveAppSettingsDraft creates missing config and rejects invalid drafts bef
   assert.equal(writes.length, 1);
   assert.deepEqual(writes[0], {
     compaction: {thresholdRatio: 0.8},
-    ui: {slashSuggestionMaxVisible: 8, showReasoningSummary: true}
+    instructions: {fileName: 'AGENTS.md'},
+    skills: {catalogContextRatio: 0.02},
+    ui: {defaultInteractionMode: 'normal', slashSuggestionMaxVisible: 8, showReasoningSummary: true},
+    tools: {fileEdit: {mode: 'apply_patch'}}
   });
   assert.deepEqual(validateAppSettingsDraft({...DEFAULT_APP_SETTINGS, compactionThresholdRatio: 0.49}), {ok: false, error: '自动压缩阈值必须在 50% 到 95% 之间'});
+  assert.deepEqual(validateAppSettingsDraft({...DEFAULT_APP_SETTINGS, skillCatalogContextRatio: 0.11}), {ok: false, error: '技能列表上下文占比上限必须在 1% 到 10% 之间'});
+  assert.deepEqual(validateAppSettingsDraft({...DEFAULT_APP_SETTINGS, defaultInteractionMode: 'shell'}), {ok: false, error: '默认启动模式必须是普通或规划'});
   assert.deepEqual(validateAppSettingsDraft({...DEFAULT_APP_SETTINGS, slashSuggestionMaxVisible: 21}), {ok: false, error: 'Slash suggestion 显示数量必须在 1 到 20 之间'});
+  assert.deepEqual(validateAppSettingsDraft({...DEFAULT_APP_SETTINGS, agentInstructionFileName: 'OTHER.md'}), {ok: false, error: '项目指令文件必须是 AGENTS.md 或 CLAUDE.md'});
+  assert.deepEqual(validateAppSettingsDraft({...DEFAULT_APP_SETTINGS, fileEditMode: 'other'}), {ok: false, error: '文件编辑工具必须是 apply_patch 或 edit_file'});
   assert.throws(() => saveAppSettingsDraft({...DEFAULT_APP_SETTINGS, slashSuggestionMaxVisible: 0}, {
     writeFile() {
       throw new Error('should not write');

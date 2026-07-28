@@ -54,13 +54,19 @@ async function withPatchedAgentRuntime(agentOrFactory, callback, config = TEST_C
   }
 }
 
+function writeUserSkill(homeDir, name, description) {
+  const skillDir = path.join(homeDir, '.echo', 'skills', name);
+  fs.mkdirSync(skillDir, {recursive: true});
+  fs.writeFileSync(path.join(skillDir, 'SKILL.md'), `---\nname: ${name}\ndescription: ${description}\n---\n# ${name}\n`, 'utf8');
+}
+
 async function withTemporaryMemoryHome(callback) {
   const originalHomedir = os.homedir;
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-agent-memory-'));
   os.homedir = () => homeDir;
 
   try {
-    return await callback();
+    return await callback(homeDir);
   } finally {
     os.homedir = originalHomedir;
     fs.rmSync(homeDir, {recursive: true, force: true});
@@ -117,6 +123,119 @@ test('buildProviderRecords includes skill catalog without skill body', () => {
   assert.deepEqual(records.slice(1), [{ role: 'user', text: 'review this' }]);
 });
 
+test('createAgentLoopRuntime snapshots a budgeted skill catalog across tool continuation', async () => {
+  await withTemporaryMemoryHome(async (homeDir) => {
+    const description = `BEGIN ${'routing details '.repeat(100)} END`;
+    writeUserSkill(homeDir, 'large-skill', description);
+    const requests = [];
+    const contextUsages = [];
+    const debug = createDebugRecorder();
+    let originalDescription;
+    let turnCount = 0;
+    const agentFactory = (_config, registry) => {
+      originalDescription = registry.listSkillCatalog()[0].description;
+      return {
+        async runTurn(records) {
+          requests.push(records);
+          turnCount += 1;
+
+          if (turnCount === 1) {
+            return {
+              draft: '',
+              toolCalls: [{callId: 'todo-call', toolName: 'create_todos', argumentsText: JSON.stringify({items: ['continue']})}]
+            };
+          }
+
+          return {draft: 'done', toolCalls: [], usageInputTokens: 900};
+        }
+      };
+    };
+
+    await withPatchedAgentRuntime(agentFactory, () => {
+      const runtime = createAgentLoopRuntime(TEST_CWD, undefined, undefined, debug.context);
+      return runtime({
+        records: [{role: 'user', text: 'use a skill'}],
+        skillCatalogContextRatio: 0.1
+      }, {
+        onContextUsage(usage) {
+          contextUsages.push(usage);
+        }
+      });
+    }, {...TEST_CONFIG, contextWindow: 2000});
+
+    const firstSystemPrompt = requests[0][0].text;
+    const secondSystemPrompt = requests[1][0].text;
+    const requestDebug = debug.events.filter((event) => event.event === 'provider_request_built');
+
+    assert.equal(originalDescription, description);
+    assert.equal(firstSystemPrompt, secondSystemPrompt);
+    assert.match(firstSystemPrompt, /large-skill: BEGIN/);
+    assert.match(firstSystemPrompt, /END/);
+    assert.match(firstSystemPrompt, /\[…description truncated…\]/);
+    assert.equal(requestDebug[0].payload.skillCatalogMode, 'truncated');
+    assert.equal(requestDebug[0].payload.skillCatalogBudgetTokens, 200);
+    assert.ok(requestDebug[0].payload.skillCatalogTokens <= 200);
+    assert.equal(requestDebug[0].payload.skillCatalogOriginalTokens > requestDebug[0].payload.skillCatalogTokens, true);
+    assert.equal(contextUsages[0].segments.reduce((sum, segment) => sum + segment.tokens, 0), 900);
+    assert.ok(contextUsages[0].segments.find((segment) => segment.category === 'skills').tokens > 0);
+  });
+});
+
+test('createAgentLoopRuntime reads the headless skill catalog ratio from app settings', async () => {
+  await withTemporaryMemoryHome(async (homeDir) => {
+    writeUserSkill(homeDir, 'headless-skill', `HEAD ${'details '.repeat(100)} TAIL`);
+    fs.mkdirSync(path.join(homeDir, '.echo'), {recursive: true});
+    fs.writeFileSync(path.join(homeDir, '.echo', 'config.json'), JSON.stringify({skills: {catalogContextRatio: 0.01}}), 'utf8');
+    const requests = [];
+    const agent = {
+      async runTurn(records) {
+        requests.push(records);
+        return {draft: 'done', toolCalls: []};
+      }
+    };
+
+    await withPatchedAgentRuntime(agent, () => {
+      const runtime = createAgentLoopRuntime(TEST_CWD);
+      return runtime({
+        records: [{role: 'user', text: 'headless'}],
+        executionMode: {kind: 'headless', approvalPolicy: 'deny'}
+      });
+    }, {...TEST_CONFIG, contextWindow: 1000});
+
+    assert.match(requests[0][0].text, /- headless-skill/);
+    assert.doesNotMatch(requests[0][0].text, /HEAD|TAIL|details/);
+  });
+});
+
+test('createAgentLoopRuntime loads only the configured CLAUDE instruction files', async () => {
+  await withTemporaryMemoryHome(async (homeDir) => {
+    const cwd = path.join(homeDir, 'repo');
+    fs.mkdirSync(path.join(homeDir, '.echo'), {recursive: true});
+    fs.mkdirSync(path.join(cwd, '.git'), {recursive: true});
+    fs.writeFileSync(path.join(homeDir, '.echo', 'config.json'), JSON.stringify({instructions: {fileName: 'CLAUDE.md'}}), 'utf8');
+    fs.writeFileSync(path.join(homeDir, '.echo', 'CLAUDE.md'), 'CLAUDE GLOBAL ONLY', 'utf8');
+    fs.writeFileSync(path.join(homeDir, '.echo', 'AGENTS.md'), 'AGENTS GLOBAL MUST NOT LOAD', 'utf8');
+    fs.writeFileSync(path.join(cwd, 'CLAUDE.md'), 'CLAUDE PROJECT ONLY', 'utf8');
+    fs.writeFileSync(path.join(cwd, 'AGENTS.md'), 'AGENTS PROJECT MUST NOT LOAD', 'utf8');
+    const requests = [];
+    const agent = {
+      async runTurn(records) {
+        requests.push(records);
+        return {draft: 'done', toolCalls: []};
+      }
+    };
+
+    await withPatchedAgentRuntime(agent, () => createAgentLoopRuntime(cwd)({
+      records: [{role: 'user', text: 'follow instructions'}]
+    }));
+
+    assert.match(requests[0][0].text, /CLAUDE\.md instructions/);
+    assert.match(requests[0][0].text, /CLAUDE GLOBAL ONLY/);
+    assert.match(requests[0][0].text, /CLAUDE PROJECT ONLY/);
+    assert.doesNotMatch(requests[0][0].text, /AGENTS .* MUST NOT LOAD/);
+  });
+});
+
 test('buildProviderRecords includes AGENTS instructions with precedence text', () => {
   const records = buildProviderRecords([{ role: 'user', text: 'follow repo rules' }], TEST_CWD, undefined, [], [
     {
@@ -141,6 +260,21 @@ test('buildProviderRecords includes AGENTS instructions with precedence text', (
   assert.match(records[0].text, /Run npm test before finishing\./);
   assert.match(records[0].text, /Built-in runtime constraints/);
   assert.deepEqual(records.slice(1), [{ role: 'user', text: 'follow repo rules' }]);
+});
+
+test('buildProviderRecords labels CLAUDE instructions dynamically', () => {
+  const records = buildProviderRecords([{role: 'user', text: 'follow rules'}], TEST_CWD, undefined, [], [
+    {
+      content: 'Use the Claude project rules.',
+      filePath: '/repo/CLAUDE.md',
+      label: 'CLAUDE.md',
+      sourceKind: 'project'
+    }
+  ]);
+
+  assert.match(records[0].text, /CLAUDE\.md instructions/);
+  assert.match(records[0].text, /Project CLAUDE\.md: CLAUDE\.md/);
+  assert.doesNotMatch(records[0].text, /AGENTS\.md instructions/);
 });
 
 test('buildProviderRecords injects user memories only into the transient system prompt', () => {
@@ -901,6 +1035,67 @@ test('createAgentLoopRuntime full-access executes registered patch tools without
   } finally {
     fs.rmSync(cwd, {recursive: true, force: true});
   }
+});
+
+test('createAgentLoopRuntime applies edit_file approvals across tool continuation', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-edit-session-'));
+  const target = path.join(cwd, 'value.txt');
+  fs.writeFileSync(target, 'one\n');
+  let turnCount = 0;
+  let approvalCount = 0;
+  const results = [];
+  const agent = {
+    async runTurn() {
+      turnCount += 1;
+      if (turnCount === 1) return {draft: '', toolCalls: [{callId: 'edit-one', toolName: 'edit_file', argumentsText: JSON.stringify({path: 'value.txt', old_string: 'one', new_string: 'two'})}]};
+      if (turnCount === 2) return {draft: '', toolCalls: [{callId: 'edit-two', toolName: 'edit_file', argumentsText: JSON.stringify({path: 'value.txt', old_string: 'two', new_string: 'three'})}]};
+      return {draft: 'done', toolCalls: []};
+    }
+  };
+
+  try {
+    const config = {...TEST_CONFIG, tools: {...TEST_CONFIG.tools, fileEditMode: 'edit_file'}};
+    const result = await withPatchedAgentRuntime(agent, () => createAgentLoopRuntime(cwd)(
+      {records: [{role: 'user', text: 'edit twice'}]},
+      {
+        onToolApprovalRequest() {
+          approvalCount += 1;
+          return {kind: 'allow_tool_for_session', toolName: 'edit_file'};
+        },
+        onToolResult(toolResult) { results.push(toolResult); }
+      }
+    ), config);
+
+    assert.equal(result, 'done');
+    assert.equal(approvalCount, 2);
+    assert.deepEqual(results.map((item) => item.ok), [true, true]);
+    assert.equal(fs.readFileSync(target, 'utf8'), 'three\n');
+  } finally {
+    fs.rmSync(cwd, {recursive: true, force: true});
+  }
+});
+
+test('createAgentLoopRuntime denies selected edit_file in headless deny mode', async () => {
+  let turnCount = 0;
+  const results = [];
+  const agent = {
+    async runTurn() {
+      turnCount += 1;
+      return turnCount === 1
+        ? {draft: '', toolCalls: [{callId: 'denied-edit', toolName: 'edit_file', argumentsText: JSON.stringify({path: 'x.txt', old_string: 'x', new_string: 'y'})}]}
+        : {draft: 'done', toolCalls: []};
+    }
+  };
+  const config = {...TEST_CONFIG, tools: {...TEST_CONFIG.tools, fileEditMode: 'edit_file'}};
+
+  await withPatchedAgentRuntime(agent, () => createAgentLoopRuntime(TEST_CWD)(
+    {records: [{role: 'user', text: 'edit'}], executionMode: {kind: 'headless', approvalPolicy: 'deny'}},
+    {onToolResult(result) { results.push(result); }}
+  ), config);
+
+  assert.equal(results[0].toolName, 'edit_file');
+  assert.equal(results[0].ok, false);
+  assert.match(results[0].text, /--full-access/);
 });
 
 test('createAgentLoopRuntime cancels ask_user_questions when no interactive callback exists', async () => {

@@ -27,7 +27,10 @@ import type {AssistantTurnHandle, InterruptAssistantTurnResult} from './turn-con
 type AgentInteractionMode = 'normal' | 'plan';
 
 type AppSettingsRefreshResult = {
+  agentInstructionFileChanged: boolean;
+  fileEditModeChanged: boolean;
   reasoningVisibilityChanged: boolean;
+  skillCatalogContextRatioChanged: boolean;
   slashSuggestionLimitChanged: boolean;
 };
 
@@ -109,7 +112,7 @@ class AppContext {
     this.changeHistoryContext = new ChangeHistoryContext();
     this.theme = theme;
     this.appSettings = structuredClone(appSettings) as AppSettings;
-    this.interactionMode = 'normal';
+    this.interactionMode = appSettings.defaultInteractionMode;
     this.lastSubmittedAgentMode = 'normal';
     this.contextUsage = null;
     this.mcpBootstrapStatus = 'idle';
@@ -333,15 +336,21 @@ class AppContext {
   }
 
   /**
-   * 从用户配置刷新常规设置缓存，并分类报告渲染影响。
+   * 从用户配置刷新常规设置缓存，分类报告渲染影响，并使失效的 context usage 归零。
    */
   refreshAppSettingsFromConfig(): AppSettingsRefreshResult {
     const next = readAppSettings();
+    const agentInstructionFileChanged = next.agentInstructionFileName !== this.appSettings.agentInstructionFileName;
+    const fileEditModeChanged = next.fileEditMode !== this.appSettings.fileEditMode;
     const reasoningVisibilityChanged = next.showReasoningSummary !== this.appSettings.showReasoningSummary;
+    const skillCatalogContextRatioChanged = next.skillCatalogContextRatio !== this.appSettings.skillCatalogContextRatio;
     const slashSuggestionLimitChanged = next.slashSuggestionMaxVisible !== this.appSettings.slashSuggestionMaxVisible;
 
     this.appSettings = structuredClone(next) as AppSettings;
-    return {reasoningVisibilityChanged, slashSuggestionLimitChanged};
+    if (agentInstructionFileChanged || fileEditModeChanged || skillCatalogContextRatioChanged) {
+      this.clearContextUsage();
+    }
+    return {agentInstructionFileChanged, fileEditModeChanged, reasoningVisibilityChanged, skillCatalogContextRatioChanged, slashSuggestionLimitChanged};
   }
 
   /**
@@ -514,7 +523,8 @@ class AppContext {
       compaction: this.transcriptContext.compaction ? {...this.transcriptContext.compaction} : undefined,
       todoState: structuredClone(this.transcriptContext.todoState),
       interactionMode: this.interactionMode,
-      compactionThresholdRatio: this.appSettings.compactionThresholdRatio
+      compactionThresholdRatio: this.appSettings.compactionThresholdRatio,
+      skillCatalogContextRatio: this.appSettings.skillCatalogContextRatio
     };
   }
 

@@ -13,12 +13,11 @@ import {createToolExecutor} from '../tools/tool-executor';
 import {createToolCallTranscriptRecord, createToolResultTranscriptRecord} from '../tools/tool-transcript-record';
 import {executeTodoToolCall, isTodoToolName} from '../tools/todo-tool-handler';
 import {getMcpToolApproval} from '../mcp/manager';
-import {formatSkillCatalogPrompt} from '../skills/skill-catalog-prompt';
+import {createSkillCatalogPromptProjection} from '../skills/skill-catalog-prompt';
 import {throwIfAborted} from '../types/agent';
 import {normalizeError} from './agent-errors';
 import {loadAgentInstructions} from './agent-instructions';
 import {calibrateContextUsageSegments, estimateContextUsageSegments} from './context/context-usage-breakdown';
-import {estimateTextTokens} from './context/token-estimator';
 import {resolveMemoryPrompt} from './context/memory-prompt';
 import {createBuiltInSystemPrompt, loadSystemPromptOverride} from './context/system-prompt';
 import {prepareAgent} from './agent-setup';
@@ -33,11 +32,12 @@ import {
 
 import type {TokenUsageAnchor} from './context/context-compaction';
 
-import type {AgentCallbacks, AgentExecutionMode, AgentInstruction, AgentSessionInput, InteractionMode, LlmConfig, ProviderAgent, ProviderUsage, ReasoningEffort, RunAgent, ToolApprovalDecision} from '../types/agent';
+import type {AgentCallbacks, AgentExecutionMode, AgentInstruction, AgentInstructionFileName, AgentSessionInput, InteractionMode, LlmConfig, ProviderAgent, ProviderUsage, ReasoningEffort, RunAgent, ToolApprovalDecision} from '../types/agent';
 import type {DebugContext} from '../debug/debug-context';
 import type {LifecycleHookDispatcher} from '../types/hooks';
 import type {UsageStore} from '../types/usage';
 import type {SkillCatalogEntry} from '../types/skill';
+import type {SkillCatalogPromptProjection} from '../skills/skill-catalog-prompt';
 import type {ToolApprovalRequest, ToolCall, ToolDefinition, ToolExecutionResult, ToolExecutor} from '../types/tool';
 import type {CompactionState, TodoState, TranscriptRecord} from '../types/transcript';
 import type {McpManager} from '../mcp/manager';
@@ -275,6 +275,7 @@ type AgentLoopRunState = {
   compactionThresholdRatio: number;
   skillCatalog: SkillCatalogEntry[];
   skillCatalogTokens: number;
+  skillCatalogProjection: Pick<SkillCatalogPromptProjection, 'budgetTokens' | 'mode' | 'originalTokens'>;
   basePrompt?: string;
   todoState: TodoState | undefined;
   toolDefinitions: ToolDefinition[];
@@ -322,6 +323,7 @@ function isToolResultTruncated(result: ToolExecutionResult): boolean | undefined
     case 'bash':
       return result.details.truncated;
     case 'apply_patch':
+    case 'edit_file':
     case 'generic':
       return undefined;
   }
@@ -336,14 +338,15 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
   /**
    * 初始化单次调用的 loop 状态；provider、配置和 registry 由统一装配入口提供。
    */
-  function initializeRunState(interactionMode: InteractionMode, abortSignal: AbortSignal | undefined, executionMode: AgentExecutionMode, compactionThresholdRatio: number, modelProfileId?: string, reasoningEffortOverride?: ReasoningEffort): AgentLoopRunState {
+  function initializeRunState(interactionMode: InteractionMode, abortSignal: AbortSignal | undefined, executionMode: AgentExecutionMode, compactionThresholdRatio: number, skillCatalogContextRatio: number, agentInstructionFileName: AgentInstructionFileName, modelProfileId?: string, reasoningEffortOverride?: ReasoningEffort): AgentLoopRunState {
     const {agent, config, registry} = prepareAgent({cwd, mcpManager, modelProfileId, reasoningEffortOverride});
-    const skillCatalog = registry.listSkillCatalog?.() || [];
+    const contextWindow = resolveContextWindow(config);
+    const skillCatalogProjection = createSkillCatalogPromptProjection(registry.listSkillCatalog?.() || [], contextWindow, skillCatalogContextRatio);
     const systemPromptOverride = loadSystemPromptOverride({cwd});
 
     return {
       agent,
-      agentInstructions: loadAgentInstructions({cwd}),
+      agentInstructions: loadAgentInstructions({cwd, fileName: agentInstructionFileName}),
       basePrompt: systemPromptOverride?.content,
       providerConfig: redactProviderConfig(config),
       providerType: config.agentType,
@@ -351,10 +354,15 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
       reasoningEffort: config.reasoningEffort,
       interactionMode,
       executor: createToolExecutor(registry),
-      contextWindow: resolveContextWindow(config),
+      contextWindow,
       compactionThresholdRatio,
-      skillCatalog,
-      skillCatalogTokens: estimateTextTokens(formatSkillCatalogPrompt(skillCatalog)),
+      skillCatalog: skillCatalogProjection.catalog,
+      skillCatalogTokens: skillCatalogProjection.estimatedTokens,
+      skillCatalogProjection: {
+        budgetTokens: skillCatalogProjection.budgetTokens,
+        mode: skillCatalogProjection.mode,
+        originalTokens: skillCatalogProjection.originalTokens
+      },
       todoState: undefined,
       toolDefinitions: registry.listDefinitions(),
       mcpManager,
@@ -369,14 +377,16 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
     const abortSignal = session.abortSignal;
     const interactionMode = session.interactionMode || 'normal';
     const executionMode = session.executionMode || INTERACTIVE_EXECUTION_MODE;
-    // 单次 assistant run 固定使用启动时阈值，运行中配置变化只影响后续 turn。
-    const compactionThresholdRatio = session.compactionThresholdRatio ?? readAppSettings().compactionThresholdRatio;
+    const appSettings = readAppSettings();
+    // 单次 assistant run 固定使用启动时设置，运行中配置变化只影响后续 turn。
+    const compactionThresholdRatio = session.compactionThresholdRatio ?? appSettings.compactionThresholdRatio;
+    const skillCatalogContextRatio = session.skillCatalogContextRatio ?? appSettings.skillCatalogContextRatio;
 
     throwIfAborted(abortSignal);
     let state: AgentLoopRunState;
 
     try {
-      state = initializeRunState(interactionMode, abortSignal, executionMode, compactionThresholdRatio, session.modelProfileId, session.reasoningEffortOverride);
+      state = initializeRunState(interactionMode, abortSignal, executionMode, compactionThresholdRatio, skillCatalogContextRatio, appSettings.agentInstructionFileName, session.modelProfileId, session.reasoningEffortOverride);
     } catch (error: unknown) {
       throw normalizeError(error, '无法加载 LLM 配置');
     }
@@ -509,6 +519,11 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
         providerInputHash: hashValue(providerRecords),
         recordCount: providerRecords.length,
         recordRoles: providerRecords.map((record) => record.role),
+        skillCatalogBudgetTokens: state.skillCatalogProjection.budgetTokens,
+        skillCatalogCount: state.skillCatalog.length,
+        skillCatalogMode: state.skillCatalogProjection.mode,
+        skillCatalogOriginalTokens: state.skillCatalogProjection.originalTokens,
+        skillCatalogTokens: state.skillCatalogTokens,
         systemPromptHash: providerRecords[0]?.role === 'system' ? hashValue(providerRecords[0].text) : null,
         toolNames: state.toolDefinitions.map((definition) => definition.name),
         toolSchemaHash: hashValue(state.toolDefinitions)

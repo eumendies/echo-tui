@@ -82,7 +82,11 @@ function nextState(state, event) {
 
 test('config center renders general tabs, settings, and constrained width', () => {
   const state = createInitialGeneralConfigState({
+    agentInstructionFileName: 'CLAUDE.md',
     compactionThresholdRatio: 0.8,
+    defaultInteractionMode: 'plan',
+    fileEditMode: 'edit_file',
+    skillCatalogContextRatio: 0.02,
     showReasoningSummary: true,
     slashSuggestionMaxVisible: 8
   });
@@ -96,19 +100,31 @@ test('config center renders general tabs, settings, and constrained width', () =
       {id: 'appearance', label: '外观'}
     ],
     state
-  }, 42, {maxLines: 9});
+  }, 42, {maxLines: 13});
   const text = layout.lines.map(stripAnsi).join('\n');
 
   assert.match(text, /常规/);
   assert.match(text, /模型与 Provider/);
   assert.match(text, /自动压缩阈值/);
   assert.match(text, /80%/);
+  assert.match(text, /技能列表上下文占比上限/);
+  assert.match(text, /2%/);
+  assert.match(text, /默认启动模式/);
+  assert.match(text, /plan/);
+  assert.match(text, /项目指令文件/);
+  assert.match(text, /文件编辑工具/);
+  assert.match(text, /edit_file/);
+  assert.match(text, /CLAUDE\.md/);
   assert.ok(layout.lines.every((line) => displayWidth(line) <= 38));
 });
 
 test('config center highlights active tab with foreground color only', () => {
   const state = createInitialGeneralConfigState({
+    agentInstructionFileName: 'AGENTS.md',
     compactionThresholdRatio: 0.8,
+    defaultInteractionMode: 'normal',
+    fileEditMode: 'apply_patch',
+    skillCatalogContextRatio: 0.02,
     showReasoningSummary: true,
     slashSuggestionMaxVisible: 8
   });

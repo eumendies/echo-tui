@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const {
   collectProjectAgentInstructionCandidates,
   findProjectRoot,
+  getDefaultGlobalAgentInstructionsPath,
   getDefaultGlobalAgentsPath,
   loadAgentInstructions
 } = require('../../src/agent/agent-instructions');
@@ -69,6 +70,52 @@ test('loadAgentInstructions reads global and project AGENTS from root to cwd', (
     'src rules',
     'pkg rules'
   ]);
+});
+
+test('loadAgentInstructions reads only selected CLAUDE files with the native user path', () => {
+  const homedir = '/home/user';
+  const cwd = '/work/repo/src';
+  const fs = createFakeFs({
+    '/home/user/.echo/CLAUDE.md': {kind: 'file', content: 'claude global rules'},
+    '/home/user/.echo/AGENTS.md': {kind: 'file', content: 'agents global rules'},
+    '/work/repo/.git': {kind: 'dir'},
+    '/work/repo/CLAUDE.md': {kind: 'file', content: 'claude root rules'},
+    '/work/repo/AGENTS.md': {kind: 'file', content: 'agents root rules'},
+    '/work/repo/src/CLAUDE.md': {kind: 'file', content: 'claude src rules'}
+  });
+
+  const instructions = loadAgentInstructions({
+    cwd,
+    fileName: 'CLAUDE.md',
+    homedir,
+    readFile: fs.readFile,
+    stat: fs.stat
+  });
+
+  assert.equal(getDefaultGlobalAgentInstructionsPath('CLAUDE.md', homedir), '/home/user/.echo/CLAUDE.md');
+  assert.deepEqual(instructions.map(({label, content}) => ({label, content})), [
+    {label: 'CLAUDE.md', content: 'claude global rules'},
+    {label: 'CLAUDE.md', content: 'claude root rules'},
+    {label: 'src/CLAUDE.md', content: 'claude src rules'}
+  ]);
+});
+
+test('loadAgentInstructions does not fall back to AGENTS when CLAUDE is selected but missing', () => {
+  const homedir = '/home/user';
+  const cwd = '/work/repo';
+  const fs = createFakeFs({
+    '/home/user/.echo/AGENTS.md': {kind: 'file', content: 'agents global rules'},
+    '/work/repo/.git': {kind: 'dir'},
+    '/work/repo/AGENTS.md': {kind: 'file', content: 'agents project rules'}
+  });
+
+  assert.deepEqual(loadAgentInstructions({
+    cwd,
+    fileName: 'CLAUDE.md',
+    homedir,
+    readFile: fs.readFile,
+    stat: fs.stat
+  }), []);
 });
 
 test('findProjectRoot supports git file and project echo marker', () => {

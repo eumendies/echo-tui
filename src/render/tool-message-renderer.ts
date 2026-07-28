@@ -7,10 +7,11 @@ import {
 } from './tool-message-renderers/ask-user-questions';
 import {
   APPLY_PATCH_TOOL_NAME,
-  isApplyPatchDisplayMetadata,
+  isFileEditDisplayMetadata,
   renderApplyPatchToolCallLines,
-  renderApplyPatchToolResultLines
+  renderFileEditToolResultLines
 } from './tool-message-renderers/apply-patch';
+import {EDIT_FILE_TOOL_NAME, renderEditFileToolCallLines} from './tool-message-renderers/edit-file';
 import {renderBashToolCallLines, renderBashToolPairLines, renderBashToolResultLines} from './tool-message-renderers/bash';
 import {
   READ_FILES_TOOL_NAME,
@@ -131,8 +132,18 @@ function renderToolRecordLines(record: ToolTranscriptRecord, width: number, opti
       return renderApplyPatchToolCallLines(record, width, options.callStatus, theme);
     }
 
-    if (record.role === 'tool_result' && record.ok && record.details.kind === 'apply_patch' && isApplyPatchDisplayMetadata(record.details.display)) {
-      return renderApplyPatchToolResultLines(record, record.details.display, width, theme);
+    if (record.role === 'tool_result' && record.ok && record.details.kind === 'apply_patch' && isFileEditDisplayMetadata(record.details.display, APPLY_PATCH_TOOL_NAME)) {
+      return renderFileEditToolResultLines(record, record.details.display, width, theme);
+    }
+  }
+
+  if (record.toolName === EDIT_FILE_TOOL_NAME) {
+    if (record.role === 'tool_call') {
+      return renderEditFileToolCallLines(record, width, options.callStatus, theme);
+    }
+
+    if (record.role === 'tool_result' && record.ok && record.details.kind === 'edit_file' && isFileEditDisplayMetadata(record.details.display, EDIT_FILE_TOOL_NAME)) {
+      return renderFileEditToolResultLines(record, record.details.display, width, theme);
     }
   }
 

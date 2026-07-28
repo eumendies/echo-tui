@@ -74,7 +74,8 @@ function createHostHarness(options = {}) {
     contextUsageClears: 0,
     hookConfigs: [],
     modelRefreshes: 0,
-    resizeRecoveries: 0
+    resizeRecoveries: 0,
+    settingsRefreshes: 0
   };
   const host = createCommandHost({
     appContext: {
@@ -94,6 +95,16 @@ function createHostHarness(options = {}) {
         refreshModelState() {
           calls.modelRefreshes += 1;
         }
+      },
+      refreshAppSettingsFromConfig() {
+        calls.settingsRefreshes += 1;
+        return {
+          agentInstructionFileChanged: false,
+          fileEditModeChanged: false,
+          reasoningVisibilityChanged: false,
+          skillCatalogContextRatioChanged: true,
+          slashSuggestionLimitChanged: false
+        };
       },
       transcriptContext: {
         getCurrentSessionId() {
@@ -349,6 +360,7 @@ test('CommandHost hooks facade creates synthetic payload and maps test result', 
 
 test('CommandHost config facade refreshes model status cache after successful save', () => {
   withTemporaryUserConfig(JSON.stringify({
+    instructions: {fileName: 'CLAUDE.md'},
     llm: {
       selectedModel: 'fast',
       providers: {
@@ -386,6 +398,28 @@ test('CommandHost config facade refreshes model status cache after successful sa
   });
 });
 
+test('CommandHost config facade saves and refreshes skill catalog context ratio', () => {
+  withTemporaryUserConfig(JSON.stringify({unknown: {kept: true}}), ({readConfig}) => {
+    const {calls, host} = createHostHarness();
+    const result = host.config.saveSettings({
+      agentInstructionFileName: 'CLAUDE.md',
+      compactionThresholdRatio: 0.8,
+      defaultInteractionMode: 'plan',
+      fileEditMode: 'edit_file',
+      skillCatalogContextRatio: 0.03,
+      slashSuggestionMaxVisible: 8,
+      showReasoningSummary: true
+    });
+
+    assert.deepEqual(result, {ok: true});
+    assert.equal(calls.settingsRefreshes, 1);
+    assert.equal(readConfig().skills.catalogContextRatio, 0.03);
+    assert.equal(readConfig().ui.defaultInteractionMode, 'plan');
+    assert.equal(readConfig().tools.fileEdit.mode, 'edit_file');
+    assert.deepEqual(readConfig().unknown, {kept: true});
+  });
+});
+
 test('CommandHost config facade does not refresh model cache when save fails', () => {
   withTemporaryUserConfig(JSON.stringify({}), () => {
     const {calls, host} = createHostHarness();
@@ -400,6 +434,7 @@ test('CommandHost config facade does not refresh model cache when save fails', (
 
 test('CommandHost status facade aggregates non-sensitive runtime state', () => {
   withTemporaryUserConfig(JSON.stringify({
+    instructions: {fileName: 'CLAUDE.md'},
     llm: {
       selectedModel: 'codex-main',
       providers: {
@@ -411,8 +446,8 @@ test('CommandHost status facade aggregates non-sensitive runtime state', () => {
     const homeDir = path.dirname(path.dirname(configPath));
     const cwd = path.join(homeDir, 'project');
     fs.mkdirSync(path.join(cwd, '.git'), {recursive: true});
-    fs.writeFileSync(path.join(homeDir, '.echo', 'AGENTS.md'), 'global instructions', 'utf8');
-    fs.writeFileSync(path.join(cwd, 'AGENTS.md'), 'project instructions', 'utf8');
+    fs.writeFileSync(path.join(homeDir, '.echo', 'CLAUDE.md'), 'global instructions', 'utf8');
+    fs.writeFileSync(path.join(cwd, 'CLAUDE.md'), 'project instructions', 'utf8');
     const modelContext = new ModelContext();
     const {host} = createHostHarness({
       cwd,
@@ -430,8 +465,10 @@ test('CommandHost status facade aggregates non-sensitive runtime state', () => {
 
     assert.equal(snapshot.cwd, cwd);
     assert.equal(snapshot.sessionId, 'session-status');
+    assert.equal(snapshot.agentInstructionFileName, 'CLAUDE.md');
     assert.deepEqual(snapshot.model, {agentType: 'codex', model: 'gpt-codex', provider: 'codex'});
     assert.deepEqual(snapshot.agentInstructions.map((source) => source.sourceKind), ['global', 'project']);
+    assert.deepEqual(snapshot.agentInstructions.map((source) => source.label), ['CLAUDE.md', 'CLAUDE.md']);
     assert.equal(snapshot.userMemoryCount, 1);
     assert.deepEqual(snapshot.agentMemoryCatalogs, [{name: 'runtime', scope: 'global'}]);
     assert.deepEqual(snapshot.diagnostics, []);

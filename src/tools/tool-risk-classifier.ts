@@ -2,6 +2,7 @@ import {APPLY_PATCH_TOOL_NAME, createApplyPatchCallLabel} from './apply-patch-to
 import {PLAN_READONLY_BASH_REJECTION, RUN_BASH_COMMAND_TOOL_NAME, isPlanReadonlyBashCommand} from './bash-tool-handler';
 import {isMcpToolName} from '../mcp/manager';
 import {isMemoryMutationToolName} from './memory-tool-handler';
+import {EDIT_FILE_TOOL_NAME, createEditFileCallLabel} from './edit-file-tool-handler';
 
 import type {InteractionMode} from '../types/agent';
 import type {ToolCall, ToolRiskAssessment} from '../types/tool';
@@ -38,7 +39,7 @@ function classifyToolCallRisk(call: ToolCall, interactionMode: InteractionMode =
     };
   }
 
-  if (call.toolName === APPLY_PATCH_TOOL_NAME) {
+  if (call.toolName === APPLY_PATCH_TOOL_NAME || call.toolName === EDIT_FILE_TOOL_NAME) {
     if (interactionMode === 'plan') {
       return {risk: 'rejected', reason: 'plan_mode', message: PLAN_WRITE_TOOL_REJECTION};
     }
@@ -46,7 +47,9 @@ function classifyToolCallRisk(call: ToolCall, interactionMode: InteractionMode =
     return {
       risk: 'approval_required',
       approval: {
-        preview: createApplyPatchCallLabel(call.argumentsText)
+        preview: call.toolName === EDIT_FILE_TOOL_NAME
+          ? createEditFileCallLabel(call.argumentsText)
+          : createApplyPatchCallLabel(call.argumentsText)
       }
     };
   }

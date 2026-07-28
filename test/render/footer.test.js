@@ -645,6 +645,7 @@ test('renderFooterLayout renders runtime status and Codex usage progress bars', 
       kind: 'status',
       title: 'Status',
       snapshot: {
+        agentInstructionFileName: 'AGENTS.md',
         cwd: '/work/echo-tui',
         sessionId: 'session-123',
         model: {agentType: 'codex', model: 'gpt-codex', provider: 'codex-main'},
@@ -676,7 +677,7 @@ test('renderFooterLayout renders runtime status and Codex usage progress bars', 
   assert.match(plain, /模型\s+gpt-codex/);
   assert.match(plain, /Provider\s+codex-main \(codex\)/);
   assert.match(plain, /Session\s+session-123/);
-  assert.match(plain, /AGENTS\s+global:AGENTS\.md, project:AGENTS\.md/);
+  assert.match(plain, /Instructions\s+AGENTS\.md · global:AGENTS\.md, project:AGENTS\.md/);
   assert.match(plain, /Memory\s+user:2 · catalogs:project:runtime/);
   assert.match(plain, /5 小时.*25%.*2030-01-02 03:04/);
   assert.match(plain, /每周.*80\.5%.*2030-02-03 04:05/);
@@ -690,6 +691,7 @@ test('renderFooterLayout renders runtime status and Codex usage progress bars', 
 
 test('renderStatusSurface handles loading, unavailable, not-applicable, and empty state', () => {
   const snapshot = {
+    agentInstructionFileName: 'CLAUDE.md',
     cwd: '/tmp/project',
     sessionId: null,
     model: null,
@@ -707,7 +709,7 @@ test('renderStatusSurface handles loading, unavailable, not-applicable, and empt
     const layout = renderStatusSurface({kind: 'status', snapshot, usage}, 70, 20, CUSTOM_THEME.footer);
     const plain = layout.lines.map((line) => stripAnsi(line)).join('\n');
     assert.match(plain, /Session\s+未创建/);
-    assert.match(plain, /AGENTS\s+无/);
+    assert.match(plain, /Instructions\s+CLAUDE\.md · 无/);
     assert.match(plain, /Memory\s+user:0 · catalogs:无/);
     assert.match(plain, expected);
     assert.ok(layout.lines.every((line) => displayWidth(line) <= safeRenderWidth(70)));
@@ -723,6 +725,7 @@ test('renderStatusSurface preserves both quota labels, bars, and percentages in 
   const layout = renderStatusSurface({
     kind: 'status',
     snapshot: {
+      agentInstructionFileName: 'AGENTS.md',
       cwd: '/a/very/long/project/path/that/will/be/clamped',
       sessionId: null,
       model: {agentType: 'codex', model: 'gpt-codex', provider: 'codex'},
@@ -751,6 +754,7 @@ test('renderStatusSurface keeps primary progress when Codex omits weekly window'
   const layout = renderStatusSurface({
     kind: 'status',
     snapshot: {
+      agentInstructionFileName: 'AGENTS.md',
       cwd: '/tmp/project',
       sessionId: null,
       model: {agentType: 'codex', model: 'gpt-codex', provider: 'codex'},
@@ -1488,12 +1492,12 @@ test('renderFooterLayout renders diff surface unified fallback on narrow width',
     commandSurface: {
       kind: 'diff',
       title: '/diff',
-      source: {kind: 'history', label: 'apply_patch history'},
+      source: {kind: 'history', label: 'controlled file edit history'},
       focus: 'list',
       selectedIndex: 0,
       detailScroll: 0,
       notices: [
-        '非 Git 工作区：当前 diff 基于 apply_patch 历史拼接，可能不包含手动编辑或 shell 写入。',
+        '非 Git 工作区：当前 diff 基于受控文件编辑历史拼接，可能不包含手动编辑或 shell 写入。',
         '已遇到不可追踪写入边界：写入型 bash 不可追踪；仅展示边界之后的 apply_patch 记录。'
       ],
       files: [{
@@ -1520,7 +1524,7 @@ test('renderFooterLayout renders diff surface unified fallback on narrow width',
 
   assert.ok(plainLines.some((line) => line.includes('- before')));
   assert.ok(plainLines.some((line) => line.includes('+ after')));
-  assert.ok(plainLines.some((line) => line.includes('非 Git 工作区') && line.includes('apply_patch')));
+  assert.ok(plainLines.some((line) => line.includes('非 Git 工作区') && line.includes('受控文件编辑')));
   assert.ok(layout.lines.length <= 16);
   assert.ok(layout.lines.every((line) => displayWidth(line) <= safeRenderWidth(52)));
 });

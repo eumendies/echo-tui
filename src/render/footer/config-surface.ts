@@ -4,6 +4,7 @@ import {activeBackground, renderFocusBar, resolveFooterTheme, tokenText, type Fo
 import {clampPlainText, padVisibleText} from './text';
 import {constrainLayoutTail, createSelectedWindowRows} from './window';
 import {getProviderPreset, listProviderPresets, providerRequiresApiKey} from '../../config/provider-presets';
+import {GENERAL_CONFIG_ROW_IDS} from '../../commands/config/state';
 import type {AppearanceConfigState, ConfigCommandState, ConfigCommandSurface, ConfigFormRow, ConfigSurfaceTab, ConfigTabId, GeneralConfigState} from '../../types/command';
 import type {FooterLayout} from '../../types/render';
 
@@ -68,12 +69,16 @@ function renderConfigSurface(commandSurface: ConfigCommandSurface, width: number
  */
 function renderGeneralView(state: GeneralConfigState, tabs: ConfigSurfaceTab[], activeTab: ConfigTabId, columns: number, maxLines: number | undefined, theme: FooterTheme): string[] {
   const width = calculateBoxWidth(columns);
-  const rows = [
-    {label: '自动压缩阈值', value: `${Math.round(state.draft.compactionThresholdRatio * 100)}%`},
-    {label: 'Slash 建议最多显示', value: `${state.draft.slashSuggestionMaxVisible} 条`},
-    {label: '显示推理摘要', value: state.draft.showReasoningSummary ? '开' : '关'},
-    {label: '保存常规设置', value: '写入 ~/.echo/config.json', action: true}
-  ];
+  const rows = GENERAL_CONFIG_ROW_IDS.map((rowId) => {
+    if (rowId === 'compactionThreshold') return {label: '自动压缩阈值', value: `${Math.round(state.draft.compactionThresholdRatio * 100)}%`};
+    if (rowId === 'skillCatalogRatio') return {label: '技能列表上下文占比上限', value: `${Math.round(state.draft.skillCatalogContextRatio * 100)}%`};
+    if (rowId === 'slashSuggestionLimit') return {label: 'Slash 建议最多显示', value: `${state.draft.slashSuggestionMaxVisible} 条`};
+    if (rowId === 'reasoningSummary') return {label: '显示推理摘要', value: state.draft.showReasoningSummary ? '开' : '关'};
+    if (rowId === 'defaultInteractionMode') return {label: '默认启动模式', value: state.draft.defaultInteractionMode};
+    if (rowId === 'fileEditMode') return {label: '文件编辑工具', value: state.draft.fileEditMode};
+    if (rowId === 'instructionFile') return {label: '项目指令文件', value: state.draft.agentInstructionFileName};
+    return {label: '保存常规设置', value: '写入 ~/.echo/config.json', action: true};
+  });
   const fixedLines = 5 + (state.error || state.feedback ? 1 : 0);
   const visibleRows = Number.isFinite(maxLines)
     ? createSelectedWindowRows(rows, state.selectedIndex, calculateItemBudget(maxLines, fixedLines))

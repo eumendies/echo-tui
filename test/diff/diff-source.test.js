@@ -103,7 +103,7 @@ test('createHistoryDiffSource folds multiple entries for one file into final dif
   assert.equal(result.files[0].path, 'file.txt');
   assert.equal(result.files[0].removed, 1);
   assert.equal(result.files[0].added, 1);
-  assert.ok(result.notices.some((notice) => notice.includes('apply_patch 历史拼接')));
+  assert.ok(result.notices.some((notice) => notice.includes('受控文件编辑历史拼接')));
 
   removeTempDir(cwd);
 });

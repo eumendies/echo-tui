@@ -9,7 +9,7 @@ import type {TranscriptRecord} from '../types/transcript';
  */
 function createPromptCacheKey(records: TranscriptRecord[], config: Pick<LlmConfig, 'model'>, toolDefinitions: ToolDefinition[] = []): string {
   const systemPrompt = records.find((record) => record.role === 'system')?.text || '';
-  // system prompt里面包含cwd、AGENTS.md等动态内容，各用户互不相同，所以相当于按照用户进行路由分组
+  // system prompt 里面包含 cwd、项目指令文件等动态内容，各用户互不相同，所以相当于按照用户进行路由分组
   const payload = stableStringify({
     model: config.model,
     systemPrompt,

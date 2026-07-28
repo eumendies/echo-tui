@@ -74,9 +74,12 @@ export type AgentSessionInput = {
   modelProfileId?: string;
   reasoningEffortOverride?: ReasoningEffort;
   compactionThresholdRatio?: number;
+  skillCatalogContextRatio?: number;
 };
 
 export type AgentInstructionSourceKind = 'global' | 'project';
+
+export type AgentInstructionFileName = 'AGENTS.md' | 'CLAUDE.md';
 
 export type AgentInstruction = {
   content: string;
@@ -135,6 +138,8 @@ export function throwIfAborted(signal?: AbortSignal): void {
 
 export type AgentType = 'openai' | 'openai-chat' | 'anthropic' | 'codex' | 'fake';
 
+export type FileEditToolMode = 'apply_patch' | 'edit_file';
+
 export const REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const;
 
 export type ReasoningEffort = typeof REASONING_EFFORTS[number];
@@ -158,6 +163,7 @@ export type LlmConfig = {
 
 export type ToolRuntimeConfig = {
   bash: BashToolConfig;
+  fileEditMode: FileEditToolMode;
 };
 
 export type BashToolConfig = {

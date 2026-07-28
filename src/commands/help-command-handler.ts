@@ -11,7 +11,7 @@ const HELP_SURFACE: InfoCommandSurface & { title: string; lines: string[]; dismi
     '控制：Ctrl+T 调节 model/effort · Shift+Tab 工具授权 · Esc 中断 response 或关闭当前面板 · Ctrl+C/Ctrl+D 退出',
     '提示：输入 / 显示命令/skill 候选 · Tab 补全 · Up/Down 选择',
     '命令：/config /model /mode /status /context /usage /memory /clear /compact /resume /skills /init /review',
-    '工作流：/init 生成或评审 AGENTS.md · /review 审查当前代码变更',
+    '工作流：/init 生成或评审当前指令文件 · /review 审查当前代码变更',
     'Skills：/<skill-name> [arguments] 调用已启用 skill'
   ],
   dismissHint: 'Esc 关闭帮助'

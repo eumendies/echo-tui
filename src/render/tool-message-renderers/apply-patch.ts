@@ -5,12 +5,13 @@ import {blockText} from '../colors';
 import {displayWidth, safeRenderWidth} from '../layout';
 import {renderPrefixedLines, resolveToolCallPrefixStyle, wrapContentLine} from './shared';
 
-import type {ApplyPatchDisplayFile, ApplyPatchDisplayLine, ToolResultDisplayMetadata} from '../../types/tool';
+import type {FileEditDisplayFile, FileEditDisplayKind, FileEditDisplayLine, FileEditDisplayMetadata, ToolResultDisplayMetadata} from '../../types/tool';
 import type {ToolCallTranscriptRecord, ToolResultTranscriptRecord} from '../../types/transcript';
 
 const APPLY_PATCH_TOOL_NAME = 'apply_patch';
-const APPLY_PATCH_RESULT_MAX_DISPLAY_LINES = 120;
+const FILE_EDIT_RESULT_MAX_DISPLAY_LINES = 120;
 const APPLY_PATCH_TRUNCATION_TEXT = '[patch display truncated]';
+const EDIT_FILE_TRUNCATION_TEXT = '[edit_file display truncated]';
 
 type ApplyPatchRenderRow = {
   kind: 'header' | 'neutral' | 'context' | 'removed' | 'added' | 'omitted';
@@ -49,7 +50,7 @@ function renderApplyPatchToolCallLines(
 /**
  * apply_patch result 按文件和修改区块投影当前 metadata schema。
  */
-function renderApplyPatchToolResultLines(
+function renderFileEditToolResultLines(
   result: ToolResultTranscriptRecord,
   display: ToolResultDisplayMetadata,
   width: number,
@@ -57,7 +58,8 @@ function renderApplyPatchToolResultLines(
 ): string[] {
   const failureRows = result.ok === false ? createApplyPatchFailureRows(result.text) : [];
   const files = display.files.map(createApplyPatchRenderFile);
-  const rows = applyPatchDisplayBudget(failureRows, files, APPLY_PATCH_RESULT_MAX_DISPLAY_LINES);
+  const truncationText = display.kind === 'edit_file' ? EDIT_FILE_TRUNCATION_TEXT : APPLY_PATCH_TRUNCATION_TEXT;
+  const rows = applyPatchDisplayBudget(failureRows, files, FILE_EDIT_RESULT_MAX_DISPLAY_LINES, truncationText);
   const gutterWidth = resolveApplyPatchGutterWidth(display.files);
 
     return renderApplyPatchRows(rows, width, gutterWidth, theme);
@@ -66,41 +68,42 @@ function renderApplyPatchToolResultLines(
 /**
  * 校验 apply-patch metadata 的完整事实行结构。
  */
-function isApplyPatchDisplayMetadata(value: unknown): value is ToolResultDisplayMetadata {
+function isFileEditDisplayMetadata<Kind extends FileEditDisplayKind>(
+  value: unknown,
+  expectedKind: Kind
+): value is FileEditDisplayMetadata<Kind> {
   if (!value || typeof value !== 'object') {
     return false;
   }
 
   const display = value as Partial<ToolResultDisplayMetadata>;
 
-  return (
-    display.kind === APPLY_PATCH_TOOL_NAME &&
-    Array.isArray(display.files) &&
-    display.files.every(isApplyPatchDisplayFile)
-  );
+  return display.kind === expectedKind
+    && Array.isArray(display.files)
+    && display.files.every(isFileEditDisplayFile);
 }
 
-function isApplyPatchDisplayFile(value: unknown): value is ApplyPatchDisplayFile {
+function isFileEditDisplayFile(value: unknown): value is FileEditDisplayFile {
   if (!value || typeof value !== 'object') {
     return false;
   }
 
-  const file = value as Partial<ApplyPatchDisplayFile>;
+  const file = value as Partial<FileEditDisplayFile>;
 
   return (
     typeof file.path === 'string' &&
     (file.kind === 'added' || file.kind === 'updated' || file.kind === 'deleted') &&
     Array.isArray(file.lines) &&
-    file.lines.every(isApplyPatchDisplayLine)
+    file.lines.every(isFileEditDisplayLine)
   );
 }
 
-function isApplyPatchDisplayLine(value: unknown): value is ApplyPatchDisplayLine {
+function isFileEditDisplayLine(value: unknown): value is FileEditDisplayLine {
   if (!value || typeof value !== 'object') {
     return false;
   }
 
-  const line = value as Partial<ApplyPatchDisplayLine>;
+  const line = value as Partial<FileEditDisplayLine>;
 
   return (
     (line.kind === 'context' || line.kind === 'removed' || line.kind === 'added') &&
@@ -120,7 +123,7 @@ function createApplyPatchFailureRows(text: unknown): ApplyPatchRenderRow[] {
   ];
 }
 
-function createApplyPatchRenderFile(file: ApplyPatchDisplayFile): ApplyPatchRenderFile {
+function createApplyPatchRenderFile(file: FileEditDisplayFile): ApplyPatchRenderFile {
   const added = file.lines.filter((line) => line.kind === 'added').length;
   const removed = file.lines.filter((line) => line.kind === 'removed').length;
   const sourceRows = file.lines.map((line) => ({
@@ -238,7 +241,8 @@ function mergeAdjacentApplyPatchOmittedRows(rows: ApplyPatchRenderRow[]): ApplyP
 function applyPatchDisplayBudget(
   failureRows: ApplyPatchRenderRow[],
   files: ApplyPatchRenderFile[],
-  maxLines: number
+  maxLines: number,
+  truncationText: string
 ): ApplyPatchRenderRow[] {
   const fullRows = [
     ...failureRows,
@@ -262,14 +266,14 @@ function applyPatchDisplayBudget(
     rows.push(file.header);
 
     for (const group of changeGroups) {
-      rows.push(...truncateApplyPatchChangedRows(group.changedRows, quota));
+      rows.push(...truncateApplyPatchChangedRows(group.changedRows, quota, truncationText));
     }
   }
 
   return rows;
 }
 
-function truncateApplyPatchChangedRows(rows: ApplyPatchRenderRow[], quota: number): ApplyPatchRenderRow[] {
+function truncateApplyPatchChangedRows(rows: ApplyPatchRenderRow[], quota: number, truncationText: string): ApplyPatchRenderRow[] {
   if (rows.length <= quota) {
     return rows;
   }
@@ -285,12 +289,12 @@ function truncateApplyPatchChangedRows(rows: ApplyPatchRenderRow[], quota: numbe
 
   return [
     ...rows.slice(0, headCount),
-    {kind: 'omitted', locator: '…', text: `${APPLY_PATCH_TRUNCATION_TEXT} ${hidden} changed ${hidden === 1 ? 'line' : 'lines'}`},
+    {kind: 'omitted', locator: '…', text: `${truncationText} ${hidden} changed ${hidden === 1 ? 'line' : 'lines'}`},
     ...(tailCount > 0 ? rows.slice(rows.length - tailCount) : [])
   ];
 }
 
-function resolveApplyPatchGutterWidth(files: ApplyPatchDisplayFile[]): number {
+function resolveApplyPatchGutterWidth(files: FileEditDisplayFile[]): number {
   const maxLine = files.reduce((fileMax, file) => Math.max(
     fileMax,
     ...file.lines.map((line) => line.postLine ?? 0)
@@ -348,7 +352,7 @@ function renderApplyPatchRows(rows: ApplyPatchRenderRow[], width: number, gutter
 
 export {
   APPLY_PATCH_TOOL_NAME,
-  isApplyPatchDisplayMetadata,
+  isFileEditDisplayMetadata,
   renderApplyPatchToolCallLines,
-  renderApplyPatchToolResultLines
+  renderFileEditToolResultLines
 };

@@ -2,12 +2,19 @@ import {JsonConfigFile, type JsonConfigFileOptions} from './json-config-file';
 import {getDefaultUserConfigPath, readOptionalUserConfig} from './user-config';
 
 import type {ReadUserConfigOptions, UserConfigSource} from './user-config';
+import type {AgentInstructionFileName, FileEditToolMode} from '../types/agent';
 
 type AppSettings = {
+  agentInstructionFileName: AgentInstructionFileName;
   compactionThresholdRatio: number;
+  defaultInteractionMode: DefaultInteractionMode;
+  fileEditMode: FileEditToolMode;
+  skillCatalogContextRatio: number;
   showReasoningSummary: boolean;
   slashSuggestionMaxVisible: number;
 };
+
+type DefaultInteractionMode = 'normal' | 'plan';
 
 type AppRenderPreferences = Pick<AppSettings, 'showReasoningSummary' | 'slashSuggestionMaxVisible'>;
 
@@ -18,7 +25,11 @@ type AppSettingsValidationResult =
   | {ok: false; error: string};
 
 const DEFAULT_APP_SETTINGS: Readonly<AppSettings> = {
+  agentInstructionFileName: 'AGENTS.md',
   compactionThresholdRatio: 0.8,
+  defaultInteractionMode: 'normal',
+  fileEditMode: 'apply_patch',
+  skillCatalogContextRatio: 0.02,
   showReasoningSummary: true,
   slashSuggestionMaxVisible: 8
 };
@@ -28,6 +39,8 @@ const DEFAULT_RENDER_PREFERENCES: Readonly<AppRenderPreferences> = {
 };
 const MIN_COMPACTION_THRESHOLD_RATIO = 0.5;
 const MAX_COMPACTION_THRESHOLD_RATIO = 0.95;
+const MIN_SKILL_CATALOG_CONTEXT_RATIO = 0.01;
+const MAX_SKILL_CATALOG_CONTEXT_RATIO = 0.1;
 const MIN_SLASH_SUGGESTION_MAX_VISIBLE = 1;
 const MAX_SLASH_SUGGESTION_MAX_VISIBLE = 20;
 
@@ -51,8 +64,24 @@ function readAppSettingsDraft(options: AppSettingsConfigOptions = {}): AppSettin
  * 校验面板草稿范围，确保写入后的值能被运行时无损读取。
  */
 function validateAppSettingsDraft(draft: AppSettings): AppSettingsValidationResult {
+  if (!isAgentInstructionFileName(draft.agentInstructionFileName)) {
+    return {ok: false, error: '项目指令文件必须是 AGENTS.md 或 CLAUDE.md'};
+  }
+
   if (!isFiniteNumberInRange(draft.compactionThresholdRatio, MIN_COMPACTION_THRESHOLD_RATIO, MAX_COMPACTION_THRESHOLD_RATIO)) {
     return {ok: false, error: '自动压缩阈值必须在 50% 到 95% 之间'};
+  }
+
+  if (!isFiniteNumberInRange(draft.skillCatalogContextRatio, MIN_SKILL_CATALOG_CONTEXT_RATIO, MAX_SKILL_CATALOG_CONTEXT_RATIO)) {
+    return {ok: false, error: '技能列表上下文占比上限必须在 1% 到 10% 之间'};
+  }
+
+  if (!isDefaultInteractionMode(draft.defaultInteractionMode)) {
+    return {ok: false, error: '默认启动模式必须是普通或规划'};
+  }
+
+  if (draft.fileEditMode !== 'apply_patch' && draft.fileEditMode !== 'edit_file') {
+    return {ok: false, error: '文件编辑工具必须是 apply_patch 或 edit_file'};
   }
 
   if (!Number.isInteger(draft.slashSuggestionMaxVisible)
@@ -82,26 +111,53 @@ function saveAppSettingsDraft(draft: AppSettings, options: AppSettingsConfigOpti
   const configFile = new JsonConfigFile(configPath, options);
   configFile.update((rootConfig) => {
     const compaction = isPlainObject(rootConfig.compaction) ? {...rootConfig.compaction} : {};
+    const instructions = isPlainObject(rootConfig.instructions) ? {...rootConfig.instructions} : {};
+    const skills = isPlainObject(rootConfig.skills) ? {...rootConfig.skills} : {};
     const ui = isPlainObject(rootConfig.ui) ? {...rootConfig.ui} : {};
+    const tools = isPlainObject(rootConfig.tools) ? {...rootConfig.tools} : {};
+    const fileEdit = isPlainObject(tools.fileEdit) ? {...tools.fileEdit} : {};
 
     compaction.thresholdRatio = draft.compactionThresholdRatio;
+    instructions.fileName = draft.agentInstructionFileName;
+    skills.catalogContextRatio = draft.skillCatalogContextRatio;
+    ui.defaultInteractionMode = draft.defaultInteractionMode;
     ui.slashSuggestionMaxVisible = draft.slashSuggestionMaxVisible;
     ui.showReasoningSummary = draft.showReasoningSummary;
+    fileEdit.mode = draft.fileEditMode;
+    tools.fileEdit = fileEdit;
     rootConfig.compaction = compaction;
+    rootConfig.instructions = instructions;
+    rootConfig.skills = skills;
     rootConfig.ui = ui;
+    rootConfig.tools = tools;
   });
 }
 
 function normalizeAppSettings(rootConfig: UserConfigSource): AppSettings {
   const compaction = isPlainObject(rootConfig.compaction) ? rootConfig.compaction : {};
+  const instructions = isPlainObject(rootConfig.instructions) ? rootConfig.instructions : {};
+  const skills = isPlainObject(rootConfig.skills) ? rootConfig.skills : {};
   const ui = isPlainObject(rootConfig.ui) ? rootConfig.ui : {};
+  const tools = isPlainObject(rootConfig.tools) ? rootConfig.tools : {};
+  const fileEdit = isPlainObject(tools.fileEdit) ? tools.fileEdit : {};
   const thresholdRatio = compaction.thresholdRatio;
+  const skillCatalogRatio = skills.catalogContextRatio;
   const slashMaxVisible = ui.slashSuggestionMaxVisible;
 
   return {
+    agentInstructionFileName: isAgentInstructionFileName(instructions.fileName)
+      ? instructions.fileName
+      : DEFAULT_APP_SETTINGS.agentInstructionFileName,
     compactionThresholdRatio: isFiniteNumberInRange(thresholdRatio, MIN_COMPACTION_THRESHOLD_RATIO, MAX_COMPACTION_THRESHOLD_RATIO)
       ? thresholdRatio
       : DEFAULT_APP_SETTINGS.compactionThresholdRatio,
+    defaultInteractionMode: isDefaultInteractionMode(ui.defaultInteractionMode)
+      ? ui.defaultInteractionMode
+      : DEFAULT_APP_SETTINGS.defaultInteractionMode,
+    fileEditMode: fileEdit.mode === 'edit_file' ? 'edit_file' : DEFAULT_APP_SETTINGS.fileEditMode,
+    skillCatalogContextRatio: isFiniteNumberInRange(skillCatalogRatio, MIN_SKILL_CATALOG_CONTEXT_RATIO, MAX_SKILL_CATALOG_CONTEXT_RATIO)
+      ? skillCatalogRatio
+      : DEFAULT_APP_SETTINGS.skillCatalogContextRatio,
     showReasoningSummary: typeof ui.showReasoningSummary === 'boolean'
       ? ui.showReasoningSummary
       : DEFAULT_APP_SETTINGS.showReasoningSummary,
@@ -111,6 +167,14 @@ function normalizeAppSettings(rootConfig: UserConfigSource): AppSettings {
       ? Number(slashMaxVisible)
       : DEFAULT_APP_SETTINGS.slashSuggestionMaxVisible
   };
+}
+
+function isAgentInstructionFileName(value: unknown): value is AgentInstructionFileName {
+  return value === 'AGENTS.md' || value === 'CLAUDE.md';
+}
+
+function isDefaultInteractionMode(value: unknown): value is DefaultInteractionMode {
+  return value === 'normal' || value === 'plan';
 }
 
 function isFiniteNumberInRange(value: unknown, min: number, max: number): value is number {
@@ -125,8 +189,10 @@ export {
   DEFAULT_APP_SETTINGS,
   DEFAULT_RENDER_PREFERENCES,
   MAX_COMPACTION_THRESHOLD_RATIO,
+  MAX_SKILL_CATALOG_CONTEXT_RATIO,
   MAX_SLASH_SUGGESTION_MAX_VISIBLE,
   MIN_COMPACTION_THRESHOLD_RATIO,
+  MIN_SKILL_CATALOG_CONTEXT_RATIO,
   MIN_SLASH_SUGGESTION_MAX_VISIBLE,
   readAppSettings,
   readAppSettingsDraft,
@@ -138,5 +204,6 @@ export type {
   AppRenderPreferences,
   AppSettings,
   AppSettingsConfigOptions,
-  AppSettingsValidationResult
+  AppSettingsValidationResult,
+  DefaultInteractionMode
 };
