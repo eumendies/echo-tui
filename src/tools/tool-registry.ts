@@ -11,6 +11,7 @@ import {createWebFetchToolHandler} from './web-fetch-tool-handler';
 import {createWebSearchToolHandler} from './web-search';
 import {createMemoryToolHandlers} from './memory-tool-handler';
 import {createToolResultStore} from './tool-result-offloading';
+import {createEditFileToolHandler} from './edit-file-tool-handler';
 
 import type {LlmConfig} from '../types/agent';
 import type {ToolHandler, ToolRegistry} from '../types/tool';
@@ -44,6 +45,9 @@ function createToolRegistry(handlers: ToolHandler[] = []): ToolRegistry {
  */
 function createDefaultToolRegistry(config: LlmConfig, cwd: string | (() => string) = process.cwd, toolResultStore: ToolResultStore = createToolResultStore({cwd})): ToolRegistry {
   const skillManager = createSkillManager({cwd});
+  const fileEditHandler = config.tools.fileEditMode === 'edit_file'
+    ? createEditFileToolHandler({cwd})
+    : createApplyPatchToolHandler({cwd});
   const registry = createToolRegistry([
     createBashToolHandler({
       cwd,
@@ -51,9 +55,7 @@ function createDefaultToolRegistry(config: LlmConfig, cwd: string | (() => strin
       toolResultStore,
       timeoutMs: config.tools.bash.timeoutMs
     }),
-    createApplyPatchToolHandler({
-      cwd
-    }),
+    fileEditHandler,
     createAskUserQuestionsToolHandler(),
     createGlobToolHandler({
       cwd

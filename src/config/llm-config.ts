@@ -538,9 +538,13 @@ function readToolRuntimeConfig(rootConfig: ConfigSource): ToolRuntimeConfig {
   const bashConfig = toolsConfig.bash && typeof toolsConfig.bash === 'object' && !Array.isArray(toolsConfig.bash)
     ? toolsConfig.bash as ConfigSource
     : {};
+  const fileEditConfig = toolsConfig.fileEdit && typeof toolsConfig.fileEdit === 'object' && !Array.isArray(toolsConfig.fileEdit)
+    ? toolsConfig.fileEdit as ConfigSource
+    : {};
 
   return {
-    bash: readBashToolConfig(bashConfig)
+    bash: readBashToolConfig(bashConfig),
+    fileEditMode: fileEditConfig.mode === 'edit_file' ? 'edit_file' : 'apply_patch'
   };
 }
 

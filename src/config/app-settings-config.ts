@@ -2,12 +2,13 @@ import {JsonConfigFile, type JsonConfigFileOptions} from './json-config-file';
 import {getDefaultUserConfigPath, readOptionalUserConfig} from './user-config';
 
 import type {ReadUserConfigOptions, UserConfigSource} from './user-config';
-import type {AgentInstructionFileName} from '../types/agent';
+import type {AgentInstructionFileName, FileEditToolMode} from '../types/agent';
 
 type AppSettings = {
   agentInstructionFileName: AgentInstructionFileName;
   compactionThresholdRatio: number;
   defaultInteractionMode: DefaultInteractionMode;
+  fileEditMode: FileEditToolMode;
   skillCatalogContextRatio: number;
   showReasoningSummary: boolean;
   slashSuggestionMaxVisible: number;
@@ -27,6 +28,7 @@ const DEFAULT_APP_SETTINGS: Readonly<AppSettings> = {
   agentInstructionFileName: 'AGENTS.md',
   compactionThresholdRatio: 0.8,
   defaultInteractionMode: 'normal',
+  fileEditMode: 'apply_patch',
   skillCatalogContextRatio: 0.02,
   showReasoningSummary: true,
   slashSuggestionMaxVisible: 8
@@ -78,6 +80,10 @@ function validateAppSettingsDraft(draft: AppSettings): AppSettingsValidationResu
     return {ok: false, error: '默认启动模式必须是普通或规划'};
   }
 
+  if (draft.fileEditMode !== 'apply_patch' && draft.fileEditMode !== 'edit_file') {
+    return {ok: false, error: '文件编辑工具必须是 apply_patch 或 edit_file'};
+  }
+
   if (!Number.isInteger(draft.slashSuggestionMaxVisible)
     || draft.slashSuggestionMaxVisible < MIN_SLASH_SUGGESTION_MAX_VISIBLE
     || draft.slashSuggestionMaxVisible > MAX_SLASH_SUGGESTION_MAX_VISIBLE) {
@@ -108,6 +114,8 @@ function saveAppSettingsDraft(draft: AppSettings, options: AppSettingsConfigOpti
     const instructions = isPlainObject(rootConfig.instructions) ? {...rootConfig.instructions} : {};
     const skills = isPlainObject(rootConfig.skills) ? {...rootConfig.skills} : {};
     const ui = isPlainObject(rootConfig.ui) ? {...rootConfig.ui} : {};
+    const tools = isPlainObject(rootConfig.tools) ? {...rootConfig.tools} : {};
+    const fileEdit = isPlainObject(tools.fileEdit) ? {...tools.fileEdit} : {};
 
     compaction.thresholdRatio = draft.compactionThresholdRatio;
     instructions.fileName = draft.agentInstructionFileName;
@@ -115,10 +123,13 @@ function saveAppSettingsDraft(draft: AppSettings, options: AppSettingsConfigOpti
     ui.defaultInteractionMode = draft.defaultInteractionMode;
     ui.slashSuggestionMaxVisible = draft.slashSuggestionMaxVisible;
     ui.showReasoningSummary = draft.showReasoningSummary;
+    fileEdit.mode = draft.fileEditMode;
+    tools.fileEdit = fileEdit;
     rootConfig.compaction = compaction;
     rootConfig.instructions = instructions;
     rootConfig.skills = skills;
     rootConfig.ui = ui;
+    rootConfig.tools = tools;
   });
 }
 
@@ -127,6 +138,8 @@ function normalizeAppSettings(rootConfig: UserConfigSource): AppSettings {
   const instructions = isPlainObject(rootConfig.instructions) ? rootConfig.instructions : {};
   const skills = isPlainObject(rootConfig.skills) ? rootConfig.skills : {};
   const ui = isPlainObject(rootConfig.ui) ? rootConfig.ui : {};
+  const tools = isPlainObject(rootConfig.tools) ? rootConfig.tools : {};
+  const fileEdit = isPlainObject(tools.fileEdit) ? tools.fileEdit : {};
   const thresholdRatio = compaction.thresholdRatio;
   const skillCatalogRatio = skills.catalogContextRatio;
   const slashMaxVisible = ui.slashSuggestionMaxVisible;
@@ -141,6 +154,7 @@ function normalizeAppSettings(rootConfig: UserConfigSource): AppSettings {
     defaultInteractionMode: isDefaultInteractionMode(ui.defaultInteractionMode)
       ? ui.defaultInteractionMode
       : DEFAULT_APP_SETTINGS.defaultInteractionMode,
+    fileEditMode: fileEdit.mode === 'edit_file' ? 'edit_file' : DEFAULT_APP_SETTINGS.fileEditMode,
     skillCatalogContextRatio: isFiniteNumberInRange(skillCatalogRatio, MIN_SKILL_CATALOG_CONTEXT_RATIO, MAX_SKILL_CATALOG_CONTEXT_RATIO)
       ? skillCatalogRatio
       : DEFAULT_APP_SETTINGS.skillCatalogContextRatio,

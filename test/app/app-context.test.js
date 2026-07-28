@@ -16,6 +16,8 @@ const { TranscriptContext } = require('../../src/app/state/transcript-context');
 const { TurnContext } = require('../../src/app/state/turn-context');
 const { INPUT_EVENTS } = require('../../src/input/event-types');
 const { DEFAULT_TUI_THEME, createTuiTheme } = require('../../src/config/theme-config');
+const {createTranscriptStore} = require('../../src/persistence/transcript-store');
+const {createEditFileToolHandler} = require('../../src/tools/edit-file-tool-handler');
 
 function createContext(overrides = {}) {
   const terminal = overrides.terminal || {
@@ -685,6 +687,7 @@ test('AppContext refreshes external app settings and classifies redraw impact', 
 
     assert.deepEqual(result, {
       agentInstructionFileChanged: true,
+      fileEditModeChanged: false,
       reasoningVisibilityChanged: true,
       skillCatalogContextRatioChanged: true,
       slashSuggestionLimitChanged: true
@@ -1841,6 +1844,34 @@ test('AppContext restores persisted change history for diff and undo', () => {
   assert.equal(undo.ok, true);
   assert.equal(fs.readFileSync(target, 'utf8'), 'before\n');
 
+  fs.rmSync(cwd, {recursive: true, force: true});
+});
+
+test('AppContext resumes persisted edit_file history through a new store instance', () => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-edit-resume-store-'));
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-edit-resume-workspace-'));
+  const target = path.join(cwd, 'file.txt');
+  fs.writeFileSync(target, 'before\n');
+  const first = createContext({cwd, transcriptStore: createTranscriptStore({rootDir})});
+  first.beginUserTurn('edit file');
+  first.beginChangeCheckpoint();
+  const args = {path: 'file.txt', old_string: 'before', new_string: 'after'};
+  const result = createEditFileToolHandler({cwd}).execute(
+    args,
+    {callId: 'persisted-edit', toolName: 'edit_file', argumentsText: JSON.stringify(args)},
+    {changeRecorder: first.changeHistoryContext.createRecorder()}
+  );
+  first.finalizeChangeCheckpoint();
+  const sessionId = first.transcriptContext.currentSessionId;
+
+  const resumed = createContext({cwd, transcriptStore: createTranscriptStore({rootDir})});
+  assert.equal(result.ok, true);
+  assert.ok(resumed.loadTranscriptSession(sessionId));
+  assert.equal(resumed.createDiffSourceResult().files[0].path, 'file.txt');
+  assert.equal(resumed.executeUndo().ok, true);
+  assert.equal(fs.readFileSync(target, 'utf8'), 'before\n');
+
+  fs.rmSync(rootDir, {recursive: true, force: true});
   fs.rmSync(cwd, {recursive: true, force: true});
 });
 

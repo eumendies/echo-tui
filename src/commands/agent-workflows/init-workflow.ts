@@ -25,12 +25,13 @@ Follow these steps in order:
 
 If the file does not exist:
 - Generate a concise, maintainable project-level ${fileName} covering project structure, common commands, coding conventions, testing requirements, and architectural constraints that are genuinely supported by evidence.
-- Use apply_patch to create the file. Do not use shell redirection or any other file-writing method.
+- Use the currently registered file-editing tool to create the file only if that tool supports file creation. Do not use shell redirection or another write path to bypass the selected tool's capabilities.
+- If the selected file-editing tool only updates existing files, explain that it cannot create ${fileName} and ask the user to select a creation-capable file-edit mode for the next request.
 - After creating it successfully, summarize the key content and state clearly that the new ${fileName} will be loaded starting from the next agent request and will not retroactively affect the request that just initialized it.
 
 If the file already exists:
 - Read the existing ${fileName} and check it item by item against the current state of the repository.
-- Do not call apply_patch to modify, overwrite, or rewrite the file.
+- Do not call any file-editing tool to modify, overwrite, or rewrite the file.
 - Output what the current file already covers well.
 - Output prioritized improvement suggestions, pointing out content that is missing, outdated, ambiguous, or not verifiable from the repository.
 - For each suggestion, provide the corresponding repository evidence and ready-to-use Markdown text or a localized diff.

@@ -24,11 +24,13 @@ test('/init prompt defines evidence, create, review, and reload boundaries', () 
   assert.match(prompt, /use run_bash_command for read-only checks/);
   assert.match(prompt, /Only adopt facts that can be verified in the repository/);
   assert.match(prompt, /If the file does not exist/);
-  assert.match(prompt, /Use apply_patch to create the file/);
+  assert.match(prompt, /currently registered file-editing tool/);
+  assert.match(prompt, /only updates existing files/);
+  assert.doesNotMatch(prompt, /apply_patch/);
   assert.doesNotMatch(prompt, /\/undo|undo/);
   assert.match(prompt, /loaded starting from the next agent request/);
   assert.match(prompt, /If the file already exists/);
-  assert.match(prompt, /Do not call apply_patch to modify, overwrite, or rewrite the file/);
+  assert.match(prompt, /Do not call any file-editing tool to modify, overwrite, or rewrite the file/);
   assert.match(prompt, /prioritized improvement suggestions/);
   assert.match(prompt, /repository evidence/);
   assert.match(prompt, /Markdown text or a localized diff/);

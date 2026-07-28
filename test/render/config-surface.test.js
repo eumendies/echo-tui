@@ -85,6 +85,7 @@ test('config center renders general tabs, settings, and constrained width', () =
     agentInstructionFileName: 'CLAUDE.md',
     compactionThresholdRatio: 0.8,
     defaultInteractionMode: 'plan',
+    fileEditMode: 'edit_file',
     skillCatalogContextRatio: 0.02,
     showReasoningSummary: true,
     slashSuggestionMaxVisible: 8
@@ -111,6 +112,8 @@ test('config center renders general tabs, settings, and constrained width', () =
   assert.match(text, /默认启动模式/);
   assert.match(text, /plan/);
   assert.match(text, /项目指令文件/);
+  assert.match(text, /文件编辑工具/);
+  assert.match(text, /edit_file/);
   assert.match(text, /CLAUDE\.md/);
   assert.ok(layout.lines.every((line) => displayWidth(line) <= 38));
 });
@@ -120,6 +123,7 @@ test('config center highlights active tab with foreground color only', () => {
     agentInstructionFileName: 'AGENTS.md',
     compactionThresholdRatio: 0.8,
     defaultInteractionMode: 'normal',
+    fileEditMode: 'apply_patch',
     skillCatalogContextRatio: 0.02,
     showReasoningSummary: true,
     slashSuggestionMaxVisible: 8

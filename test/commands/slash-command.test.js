@@ -122,6 +122,7 @@ function createFakeHost(options = {}) {
           agentInstructionFileName: 'AGENTS.md',
           compactionThresholdRatio: 0.8,
           defaultInteractionMode: 'normal',
+          fileEditMode: 'apply_patch',
           skillCatalogContextRatio: 0.02,
           showReasoningSummary: true,
           slashSuggestionMaxVisible: 8
@@ -276,7 +277,7 @@ function createFakeHost(options = {}) {
     },
     diff: {
       getSource() {
-        return options.diffSource || {status: 'empty', source: {kind: 'history', label: 'apply_patch history'}, files: [], notices: []};
+        return options.diffSource || {status: 'empty', source: {kind: 'history', label: 'controlled file edit history'}, files: [], notices: []};
       },
       getViewport() {
         return options.diffViewport || {width: 100, maxLines: 10};
@@ -957,8 +958,8 @@ test('diffCommandHandler opens diff surface, handles focus and scroll, and close
   const diffCommandHandler = new DiffCommandHandler();
   const diffSource = {
     status: 'ready',
-    source: {kind: 'history', label: 'apply_patch history'},
-    notices: ['非 Git 工作区：当前 diff 基于 apply_patch 历史拼接，可能不包含手动编辑或 shell 写入。'],
+    source: {kind: 'history', label: 'controlled file edit history'},
+    notices: ['非 Git 工作区：当前 diff 基于受控文件编辑历史拼接，可能不包含手动编辑或 shell 写入。'],
     files: [
       {
         path: 'a.txt',
@@ -1042,7 +1043,7 @@ test('diffCommandHandler opens empty info surface', () => {
   const empty = createFakeHost({
     diffSource: {
       status: 'empty',
-      source: {kind: 'history', label: 'apply_patch history'},
+      source: {kind: 'history', label: 'controlled file edit history'},
       files: [],
       notices: ['非 Git 工作区']
     }
@@ -1087,6 +1088,9 @@ test('configCommandHandler opens general tab, saves independently, and lazily op
   assert.equal(calls.savedSettingsDrafts.length, 0);
   configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
   configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_RIGHT}, host);
+  assert.equal(host.session.getActive().surface.state.draft.fileEditMode, 'edit_file');
+  configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
+  configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_RIGHT}, host);
   assert.equal(host.session.getActive().surface.state.draft.agentInstructionFileName, 'CLAUDE.md');
   configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
   configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
@@ -1094,6 +1098,7 @@ test('configCommandHandler opens general tab, saves independently, and lazily op
   assert.equal(calls.savedSettingsDrafts[0].compactionThresholdRatio, 0.85);
   assert.equal(calls.savedSettingsDrafts[0].skillCatalogContextRatio, 0.03);
   assert.equal(calls.savedSettingsDrafts[0].defaultInteractionMode, 'plan');
+  assert.equal(calls.savedSettingsDrafts[0].fileEditMode, 'edit_file');
   assert.equal(calls.savedSettingsDrafts[0].agentInstructionFileName, 'CLAUDE.md');
   assert.match(host.session.getActive().surface.state.feedback, /已保存/);
 
@@ -1123,7 +1128,7 @@ test('configCommandHandler isolates tab read errors and keeps save errors inline
     }
   });
   const session = startCommand(configCommandHandler, '/config', saveError.host);
-  for (let index = 0; index < 6; index += 1) {
+  for (let index = 0; index < 7; index += 1) {
     configCommandHandler.handleEvent(saveError.host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, saveError.host);
   }
   configCommandHandler.handleEvent(saveError.host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, saveError.host);
