@@ -1,4 +1,4 @@
-import type {ToolResultAttachment, ToolResultDisplayMetadata} from './tool';
+import type {ApplyPatchDisplayMetadata, EditFileDisplayMetadata, ToolResultAttachment} from './tool';
 import type {ChangeCheckpoint} from './change-history';
 import type {InteractionMode} from './agent';
 
@@ -89,7 +89,11 @@ export type ToolResultTranscriptDetails =
     }
   | {
       kind: 'apply_patch';
-      display?: ToolResultDisplayMetadata;
+      display?: ApplyPatchDisplayMetadata;
+    }
+  | {
+      kind: 'edit_file';
+      display?: EditFileDisplayMetadata;
     };
 
 export type ToolResultTranscriptRecord = ToolResultTranscriptRecordBase & {

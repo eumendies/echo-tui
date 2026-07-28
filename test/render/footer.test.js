@@ -1492,12 +1492,12 @@ test('renderFooterLayout renders diff surface unified fallback on narrow width',
     commandSurface: {
       kind: 'diff',
       title: '/diff',
-      source: {kind: 'history', label: 'apply_patch history'},
+      source: {kind: 'history', label: 'controlled file edit history'},
       focus: 'list',
       selectedIndex: 0,
       detailScroll: 0,
       notices: [
-        '非 Git 工作区：当前 diff 基于 apply_patch 历史拼接，可能不包含手动编辑或 shell 写入。',
+        '非 Git 工作区：当前 diff 基于受控文件编辑历史拼接，可能不包含手动编辑或 shell 写入。',
         '已遇到不可追踪写入边界：写入型 bash 不可追踪；仅展示边界之后的 apply_patch 记录。'
       ],
       files: [{
@@ -1524,7 +1524,7 @@ test('renderFooterLayout renders diff surface unified fallback on narrow width',
 
   assert.ok(plainLines.some((line) => line.includes('- before')));
   assert.ok(plainLines.some((line) => line.includes('+ after')));
-  assert.ok(plainLines.some((line) => line.includes('非 Git 工作区') && line.includes('apply_patch')));
+  assert.ok(plainLines.some((line) => line.includes('非 Git 工作区') && line.includes('受控文件编辑')));
   assert.ok(layout.lines.length <= 16);
   assert.ok(layout.lines.every((line) => displayWidth(line) <= safeRenderWidth(52)));
 });

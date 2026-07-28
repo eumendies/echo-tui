@@ -42,8 +42,8 @@ function normalizeTranscriptRecord(record, index = 0) {
 
     if (!details && record.toolName === 'run_bash_command') {
       details = {kind: 'bash', exitCode, timedOut, truncated, durationMs};
-    } else if (!details && record.toolName === 'apply_patch') {
-      details = {kind: 'apply_patch', ...(display ? {display} : {})};
+    } else if (!details && (record.toolName === 'apply_patch' || record.toolName === 'edit_file')) {
+      details = {kind: record.toolName, ...(display ? {display} : {})};
     }
 
     return {
@@ -1543,6 +1543,83 @@ test('renderTranscriptLines renders current apply_patch metadata with file group
   assert.doesNotMatch(renderedLines.find((line) => stripAnsi(line).includes('alpha')), /\x1b\[48;5;(52|22)m/);
   assert.equal(stripAnsi(renderedLines.find((line) => stripAnsi(line).includes('- │ beta'))).length, 79);
   assert.equal(stripAnsi(renderedLines.find((line) => stripAnsi(line).includes('+ │ BETA'))).length, 79);
+});
+
+test('renderTranscriptLines renders edit_file with the shared diff projection and hides raw strings', () => {
+  const rendered = renderTranscriptLines([
+    {
+      role: 'tool_call',
+      text: '',
+      toolCallId: 'call_edit',
+      toolName: 'edit_file',
+      argumentsText: JSON.stringify({path: 'src/edit.ts', old_string: 'PRIVATE_OLD', new_string: 'PRIVATE_NEW', replace_all: true})
+    },
+    {
+      role: 'tool_result',
+      text: 'Replaced 2 occurrences in src/edit.ts.',
+      toolCallId: 'call_edit',
+      toolName: 'edit_file',
+      ok: true,
+      display: {
+        kind: 'edit_file',
+        files: [{
+          path: 'src/edit.ts',
+          kind: 'updated',
+          lines: [
+            {kind: 'context', text: 'before', postLine: 1},
+            {kind: 'removed', text: 'const first = false;', postLine: null},
+            {kind: 'added', text: 'const first = true;', postLine: 2},
+            ...Array.from({length: 8}, (_, index) => ({kind: 'context', text: `middle ${index + 1}`, postLine: index + 3})),
+            {kind: 'removed', text: 'const second = false;', postLine: null},
+            {kind: 'added', text: 'const second = true;', postLine: 11}
+          ]
+        }]
+      }
+    }
+  ], 48);
+  const text = rendered.map(stripAnsi).join('\n');
+
+  assert.match(text, /◆ edit_file\(src\/edit\.ts, replace all\)/);
+  assert.match(text, /src\/edit\.ts  \+2 -2/);
+  assert.match(text, /- │ const first = false;/);
+  assert.match(text, /\+ │ const second = true;/);
+  assert.match(text, /unchanged lines/);
+  assert.doesNotMatch(text, /PRIVATE_OLD|PRIVATE_NEW|Replaced 2 occurrences/);
+  assert.match(rendered.find((line) => stripAnsi(line).includes('- │ const first')), /\x1b\[48;5;52m/);
+  assert.match(rendered.find((line) => stripAnsi(line).includes('+ │ const second')), /\x1b\[48;5;22m/);
+  assert.ok(rendered.every((line) => displayWidth(line) <= 47));
+});
+
+test('renderTranscriptLines labels truncated edit_file results without patch terminology', () => {
+  const text = renderTranscriptLines([
+    {role: 'tool_call', text: '', toolCallId: 'large-edit', toolName: 'edit_file', argumentsText: JSON.stringify({path: 'large.txt', old_string: 'x', new_string: 'y', replace_all: true})},
+    {
+      role: 'tool_result', text: 'Replaced many occurrences.', toolCallId: 'large-edit', toolName: 'edit_file', ok: true,
+      display: {
+        kind: 'edit_file',
+        files: [{
+          path: 'large.txt',
+          kind: 'updated',
+          lines: Array.from({length: 160}, (_unused, index) => ({kind: 'added', text: `changed ${index + 1}`, postLine: index + 1}))
+        }]
+      }
+    }
+  ], 80).map(stripAnsi).join('\n');
+
+  assert.match(text, /\[edit_file display truncated\]/);
+  assert.doesNotMatch(text, /\[patch display truncated\]/);
+});
+
+test('renderTranscriptLines safely falls back for failed or mismatched edit_file metadata', () => {
+  const lines = renderTranscriptLines([
+    {role: 'tool_call', text: '', toolCallId: 'bad-edit', toolName: 'edit_file', argumentsText: JSON.stringify({path: 'a.txt', old_string: 'x', new_string: 'y'})},
+    {role: 'tool_result', text: 'Edit failed.\nReason: no match', toolCallId: 'bad-edit', toolName: 'edit_file', ok: false, display: {kind: 'edit_file', files: []}},
+    {role: 'tool_call', text: '', toolCallId: 'mismatch-edit', toolName: 'edit_file', argumentsText: JSON.stringify({path: 'b.txt', old_string: 'x', new_string: 'y'})},
+    {role: 'tool_result', text: 'fallback text', toolCallId: 'mismatch-edit', toolName: 'edit_file', ok: true, display: {kind: 'apply_patch', files: []}}
+  ], 60).map(stripAnsi).join('\n');
+
+  assert.match(lines, /Edit failed/);
+  assert.match(lines, /fallback text/);
 });
 
 test('renderTranscriptLines renders deleted apply_patch metadata as removed file content', () => {

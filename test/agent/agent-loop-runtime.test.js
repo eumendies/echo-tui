@@ -1037,6 +1037,67 @@ test('createAgentLoopRuntime full-access executes registered patch tools without
   }
 });
 
+test('createAgentLoopRuntime applies edit_file approvals across tool continuation', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-edit-session-'));
+  const target = path.join(cwd, 'value.txt');
+  fs.writeFileSync(target, 'one\n');
+  let turnCount = 0;
+  let approvalCount = 0;
+  const results = [];
+  const agent = {
+    async runTurn() {
+      turnCount += 1;
+      if (turnCount === 1) return {draft: '', toolCalls: [{callId: 'edit-one', toolName: 'edit_file', argumentsText: JSON.stringify({path: 'value.txt', old_string: 'one', new_string: 'two'})}]};
+      if (turnCount === 2) return {draft: '', toolCalls: [{callId: 'edit-two', toolName: 'edit_file', argumentsText: JSON.stringify({path: 'value.txt', old_string: 'two', new_string: 'three'})}]};
+      return {draft: 'done', toolCalls: []};
+    }
+  };
+
+  try {
+    const config = {...TEST_CONFIG, tools: {...TEST_CONFIG.tools, fileEditMode: 'edit_file'}};
+    const result = await withPatchedAgentRuntime(agent, () => createAgentLoopRuntime(cwd)(
+      {records: [{role: 'user', text: 'edit twice'}]},
+      {
+        onToolApprovalRequest() {
+          approvalCount += 1;
+          return {kind: 'allow_tool_for_session', toolName: 'edit_file'};
+        },
+        onToolResult(toolResult) { results.push(toolResult); }
+      }
+    ), config);
+
+    assert.equal(result, 'done');
+    assert.equal(approvalCount, 2);
+    assert.deepEqual(results.map((item) => item.ok), [true, true]);
+    assert.equal(fs.readFileSync(target, 'utf8'), 'three\n');
+  } finally {
+    fs.rmSync(cwd, {recursive: true, force: true});
+  }
+});
+
+test('createAgentLoopRuntime denies selected edit_file in headless deny mode', async () => {
+  let turnCount = 0;
+  const results = [];
+  const agent = {
+    async runTurn() {
+      turnCount += 1;
+      return turnCount === 1
+        ? {draft: '', toolCalls: [{callId: 'denied-edit', toolName: 'edit_file', argumentsText: JSON.stringify({path: 'x.txt', old_string: 'x', new_string: 'y'})}]}
+        : {draft: 'done', toolCalls: []};
+    }
+  };
+  const config = {...TEST_CONFIG, tools: {...TEST_CONFIG.tools, fileEditMode: 'edit_file'}};
+
+  await withPatchedAgentRuntime(agent, () => createAgentLoopRuntime(TEST_CWD)(
+    {records: [{role: 'user', text: 'edit'}], executionMode: {kind: 'headless', approvalPolicy: 'deny'}},
+    {onToolResult(result) { results.push(result); }}
+  ), config);
+
+  assert.equal(results[0].toolName, 'edit_file');
+  assert.equal(results[0].ok, false);
+  assert.match(results[0].text, /--full-access/);
+});
+
 test('createAgentLoopRuntime cancels ask_user_questions when no interactive callback exists', async () => {
   const hooks = createHookRecorder();
   let turnCount = 0;

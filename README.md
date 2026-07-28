@@ -85,6 +85,9 @@ echo-tui --once --full-access "按要求修改文件并运行检查"
   },
   "instructions": { "fileName": "AGENTS.md" },
   "compaction": { "thresholdRatio": 0.8 },
+  "tools": {
+    "fileEdit": { "mode": "apply_patch" }
+  },
   "ui": {
     "defaultInteractionMode": "normal",
     "slashSuggestionMaxVisible": 8,
@@ -96,6 +99,7 @@ echo-tui --once --full-access "按要求修改文件并运行检查"
 - `preset` 选择运行时协议，常用 `openai-responses-api`、`openai-chat-compatible-api`、`anthropic-compatible-api`，以及一组固定 Base URL、只需填 API key 的厂商 preset（DeepSeek、Kimi、Z.ai、Minimax、StepFun、OpenRouter、Xiaomi 等）。
 - `model` 是 provider 的 API 模型名；`contextWindow` 可选，留空时按内置模型映射或默认窗口推断。
 - `reasoning.effort` 可选，用 `/effort` 调整；`tools.bash.maxOutputBytes` 可限制 bash 工具输出上限。bash 工具默认无固定超时，可用 Esc 中断；如确实需要自动终止，可显式配置 `tools.bash.timeoutMs` 为正整数。
+- `tools.fileEdit.mode` 可设为 `apply_patch`（默认）或 `edit_file`。每轮 assistant 请求只注册其中一个；在 `/config` 保存后从下一轮生效，进行中的 tool continuation 保持原 registry 快照。`edit_file`只更新已有 UTF-8 文本文件，以精确 `old_string`/`new_string` 替换；默认要求唯一匹配，只有明确设置 `replace_all` 才会替换调用前原始内容中的全部非重叠匹配。
 - `instructions.fileName` 可设为 `AGENTS.md` 或 `CLAUDE.md`，默认读取 `AGENTS.md`。两者互斥，不会在所选文件缺失时回退到另一种文件。
 - `compaction.thresholdRatio` 范围为 `0.5–0.95`；`ui.defaultInteractionMode` 可设为 `normal` 或 `plan`，只影响新启动的 TUI，不会切换当前运行中的模式或改变 `--once`；`ui.slashSuggestionMaxVisible` 范围为 `1–20`。`ui.showReasoningSummary` 只控制显示，摘要仍会完整写入会话记录。
 
@@ -176,7 +180,7 @@ skill 放在 `.echo/skills/<name>/SKILL.md`（项目级）或 `~/.echo/skills/<n
 
 ## 工具与授权
 
-默认工具包括文件发现/搜索/读取、网页读取与搜索、bash 执行、`apply_patch` 编辑、skill 加载和用户提问；配置并启用后还有 MCP 工具。`apply_patch`、高风险 bash 和 `approval: "always"` 的 MCP 工具在 TUI 中执行前请求授权；plan 模式只暴露只读工具。单轮模式默认拒绝审批工具，只有显式 `--once --full-access` 才会自动允许当前已注册工具。工具没有沙箱，请只在信任当前工作区、模型和授权提示时允许执行。
+默认工具包括文件发现/搜索/读取、网页读取与搜索、bash 执行、所选文件编辑工具（`apply_patch` 或 `edit_file`）、skill 加载和用户提问；配置并启用后还有 MCP 工具。文件编辑工具、高风险 bash 和 `approval: "always"` 的 MCP 工具在 TUI 中执行前请求授权；plan 模式拒绝写工具。单轮模式默认拒绝审批工具，只有显式 `--once --full-access` 才会自动允许当前已注册工具。`replace_all` 可能一次修改多处文本，授权前应检查路径与意图。工具没有沙箱，请只在信任当前工作区、模型和授权提示时允许执行。
 
 ## Lifecycle hooks
 

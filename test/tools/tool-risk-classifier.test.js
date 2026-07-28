@@ -143,6 +143,25 @@ test('tool risk classifier previews apply_patch calls with a lightweight label',
   });
 });
 
+test('tool risk classifier treats edit_file as an approval-required write tool', () => {
+  const call = {
+    callId: 'call_edit',
+    toolName: 'edit_file',
+    argumentsText: JSON.stringify({path: 'src/a.ts', old_string: 'secret old text', new_string: 'secret new text', replace_all: true})
+  };
+
+  assert.deepEqual(classifyToolCallRisk(call), {
+    risk: 'approval_required',
+    approval: {preview: 'edit_file(src/a.ts, replace all)'}
+  });
+  assert.doesNotMatch(classifyToolCallRisk(call).approval.preview, /secret/);
+  assert.deepEqual(classifyToolCallRisk(call, 'plan'), {
+    risk: 'rejected',
+    reason: 'plan_mode',
+    message: 'In plan mode, tools that modify files or system state are not available. To make changes, exit plan mode first.'
+  });
+});
+
 test('tool risk classifier leaves invalid bash arguments to the executor path', () => {
   assert.equal(parseBashCommand('{not-json'), null);
   assert.equal(parseBashCommand('[]'), null);

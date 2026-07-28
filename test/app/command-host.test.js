@@ -100,6 +100,7 @@ function createHostHarness(options = {}) {
         calls.settingsRefreshes += 1;
         return {
           agentInstructionFileChanged: false,
+          fileEditModeChanged: false,
           reasoningVisibilityChanged: false,
           skillCatalogContextRatioChanged: true,
           slashSuggestionLimitChanged: false
@@ -404,6 +405,7 @@ test('CommandHost config facade saves and refreshes skill catalog context ratio'
       agentInstructionFileName: 'CLAUDE.md',
       compactionThresholdRatio: 0.8,
       defaultInteractionMode: 'plan',
+      fileEditMode: 'edit_file',
       skillCatalogContextRatio: 0.03,
       slashSuggestionMaxVisible: 8,
       showReasoningSummary: true
@@ -413,6 +415,7 @@ test('CommandHost config facade saves and refreshes skill catalog context ratio'
     assert.equal(calls.settingsRefreshes, 1);
     assert.equal(readConfig().skills.catalogContextRatio, 0.03);
     assert.equal(readConfig().ui.defaultInteractionMode, 'plan');
+    assert.equal(readConfig().tools.fileEdit.mode, 'edit_file');
     assert.deepEqual(readConfig().unknown, {kept: true});
   });
 });

@@ -29,6 +29,17 @@ type ConfigCommandData = {
   models?: ConfigStateSlot<ConfigCommandState>;
 };
 
+const GENERAL_CONFIG_ROW_IDS = [
+  'compactionThreshold',
+  'skillCatalogRatio',
+  'slashSuggestionLimit',
+  'reasoningSummary',
+  'defaultInteractionMode',
+  'fileEditMode',
+  'instructionFile',
+  'save'
+] as const;
+
 const CONFIG_TABS: ReadonlyArray<{id: ConfigTabId; label: string}> = [
   {id: 'general', label: '常规'},
   {id: 'models', label: '模型与 Provider'},
@@ -209,6 +220,7 @@ function getActiveSlot(data: ConfigCommandData): ConfigStateSlot<unknown> | unde
 }
 
 export {
+  GENERAL_CONFIG_ROW_IDS,
   CONFIG_TABS,
   cloneConfigState,
   createConfigSurface,

@@ -11,7 +11,7 @@ import type {DiffFile, DiffSourceResult} from '../../types/diff';
 const DEFAULT_GIT_TIMEOUT_MS = 5_000;
 const DEFAULT_GIT_MAX_OUTPUT_BYTES = 2_000_000;
 const DEFAULT_TEXT_FILE_MAX_BYTES = 1_000_000;
-const FALLBACK_NOTICE = '非 Git 工作区：当前 diff 基于 apply_patch 历史拼接，可能不包含手动编辑或 shell 写入。';
+const FALLBACK_NOTICE = '非 Git 工作区：当前 diff 基于受控文件编辑历史拼接，可能不包含手动编辑或 shell 写入。';
 
 type CreateDiffSourceOptions = {
   changeHistory: ChangeCheckpoint[];
@@ -97,7 +97,7 @@ function createGitDiffSource(options: CreateDiffSourceOptions): DiffSourceResult
 }
 
 /**
- * 使用 change history 生成 fallback diff；该来源只覆盖受控 apply_patch 历史。
+ * 使用 change history 生成 fallback diff；该来源覆盖通过 recorder 登记的受控文件编辑历史。
  */
 function createHistoryDiffSource(options: {changeHistory: ChangeCheckpoint[]; cwd: string; reason?: string}): DiffSourceResult {
   const lastInvalidIndex = findLastInvalidCheckpointIndex(options.changeHistory);
@@ -105,9 +105,9 @@ function createHistoryDiffSource(options: {changeHistory: ChangeCheckpoint[]; cw
   const notices = [
     ...(options.reason ? [options.reason] : []),
     FALLBACK_NOTICE,
-    ...(invalidCheckpoint ? [`已遇到不可追踪写入边界：${invalidCheckpoint.invalidReason || '上一轮包含不可安全追踪的写入操作'}；仅展示边界之后的 apply_patch 记录。`] : [])
+    ...(invalidCheckpoint ? [`已遇到不可追踪写入边界：${invalidCheckpoint.invalidReason || '上一轮包含不可安全追踪的写入操作'}；仅展示边界之后的受控文件编辑记录。`] : [])
   ];
-  // invalid checkpoint 表示中间出现不可追踪写入，只能展示它之后仍可信的 apply_patch 历史。
+  // invalid checkpoint 表示中间出现不可追踪写入，只能展示它之后仍可信的受控文件编辑历史。
   const entries = aggregateHistoryEntries(options.changeHistory.slice(lastInvalidIndex + 1));
   const files: DiffFile[] = [];
 
@@ -122,13 +122,13 @@ function createHistoryDiffSource(options: {changeHistory: ChangeCheckpoint[]; cw
   return files.length > 0
     ? {
       status: 'ready',
-      source: {kind: 'history', label: 'apply_patch history', ...(options.reason ? {reason: options.reason} : {})},
+      source: {kind: 'history', label: 'controlled file edit history', ...(options.reason ? {reason: options.reason} : {})},
       files,
       notices
     }
     : {
       status: 'empty',
-      source: {kind: 'history', label: 'apply_patch history', ...(options.reason ? {reason: options.reason} : {})},
+      source: {kind: 'history', label: 'controlled file edit history', ...(options.reason ? {reason: options.reason} : {})},
       files: [],
       notices
     };

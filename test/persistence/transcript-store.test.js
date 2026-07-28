@@ -98,6 +98,26 @@ test('createTranscriptStore appends operations without rewriting earlier journal
   });
 });
 
+test('transcript journal round-trips edit_file display metadata without migrating apply_patch records', () => {
+  const rootDir = createTempRoot();
+  const store = createTranscriptStore({rootDir});
+  const cwd = '/tmp/example/file-edit-project';
+  const records = [
+    {role: 'tool_call', text: '', toolCallId: 'edit-1', toolName: 'edit_file', argumentsText: '{"path":"a.txt"}'},
+    {
+      role: 'tool_result', text: 'Replaced 1 occurrence in a.txt.', toolCallId: 'edit-1', toolName: 'edit_file', ok: true,
+      details: {kind: 'edit_file', display: {kind: 'edit_file', files: [{path: 'a.txt', kind: 'updated', lines: [{kind: 'added', text: 'new', postLine: 1}]}]}}
+    },
+    {
+      role: 'tool_result', text: 'Applied patch.', toolCallId: 'patch-1', toolName: 'apply_patch', ok: true,
+      details: {kind: 'apply_patch', display: {kind: 'apply_patch', files: [{path: 'old.txt', kind: 'updated', lines: [{kind: 'added', text: 'kept', postLine: 1}]}]}}
+    }
+  ];
+  const reference = store.createSession(cwd, createAppendRecordsOperation(records), '2026-07-01T00:00:00.000Z');
+
+  assert.deepEqual(store.loadSession(cwd, reference.sessionId).session.records, records);
+});
+
 test('transcript journal persists only bounded Bash, PDF, and shell offloading previews', () => {
   const rootDir = createTempRoot();
   const cwd = '/tmp/example/offloading-project';

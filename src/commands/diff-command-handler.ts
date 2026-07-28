@@ -63,7 +63,7 @@ function normalizeDiffData(data: Partial<DiffCommandData> | null | undefined): D
     : 0;
 
   return {
-    source: data?.source || {kind: 'history', label: 'apply_patch history'},
+    source: data?.source || {kind: 'history', label: 'controlled file edit history'},
     files,
     notices: Array.isArray(data?.notices) ? data.notices : [],
     focus: data?.focus === 'detail' ? 'detail' : 'list',

@@ -15,7 +15,8 @@ const DEFAULT_TOOLS = {
   bash: {
     timeoutMs: DEFAULT_BASH_TOOL_TIMEOUT_MS,
     maxOutputBytes: DEFAULT_BASH_TOOL_MAX_OUTPUT_BYTES
-  }
+  },
+  fileEditMode: 'apply_patch'
 };
 
 const OPENAI_PRESET = 'openai-responses-api';
@@ -471,8 +472,23 @@ test('readLlmConfig reads explicit bash tool limits without the previous 30s tim
     bash: {
       timeoutMs: 120000,
       maxOutputBytes: 4096
-    }
+    },
+    fileEditMode: 'apply_patch'
   });
+});
+
+test('readLlmConfig reads and normalizes file edit tool mode', () => {
+  const base = {
+    llm: {
+      providers: {shared: {preset: OPENAI_PRESET, apiKey: 'key'}},
+      models: [{id: 'fast', provider: 'shared', model: 'gpt-fast'}]
+    }
+  };
+  const selected = readLlmConfig({readFile: readConfigFrom(JSON.stringify({...base, tools: {fileEdit: {mode: 'edit_file'}}}))});
+  const invalid = readLlmConfig({readFile: readConfigFrom(JSON.stringify({...base, tools: {fileEdit: {mode: 'other'}}}))});
+
+  assert.equal(selected.tools.fileEditMode, 'edit_file');
+  assert.equal(invalid.tools.fileEditMode, 'apply_patch');
 });
 
 test('readLlmConfig normalizes invalid bash tool settings to safe defaults', () => {

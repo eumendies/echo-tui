@@ -2,9 +2,7 @@
 
 ## Purpose
 定义 `/diff` 命令的外部行为，包括 Git 优先的数据源策略、change history fallback、只读差异查看 surface，以及与 `/undo` 共享的变更历史语义。
-
 ## Requirements
-
 ### Requirement: /diff 命令打开只读差异查看
 系统 SHALL 提供 `/diff` slash command，用于查看当前工作区文件差异。该命令 SHALL 使用 command runtime 和 command surface 打开只读 diff 查看面板；SHALL NOT 触发 assistant turn，SHALL NOT 追加 user、assistant、tool、local notice 或 error transcript record。
 
@@ -54,13 +52,17 @@
 - **THEN** diff surface SHALL 显示降级原因或等价错误摘要
 
 ### Requirement: change history fallback 持久化受控编辑历史
-系统 SHALL 为非 Git fallback 和 `/undo` 维护同一份可序列化 change history。change history SHALL 记录受控 `apply_patch` 成功写入文件所需的 before snapshot、写入状态、checkpoint 时间、transcript 边界、compaction 状态和 invalid boundary；该 history SHALL 随当前 transcript session 持久化，并在 `/resume` 加载 session 后恢复给 `/diff` 与 `/undo` 共用。
+系统 SHALL 为非 Git fallback 和 `/undo` 维护同一份可序列化 change history。change history SHALL 记录受控文件编辑工具成功写入文件所需的 before snapshot、写入状态、checkpoint 时间、transcript 边界、compaction 状态和 invalid boundary；受控工具 SHALL 包含 `apply_patch` 与 `edit_file`。该 history SHALL 随当前 transcript session 持久化，并在 `/resume` 加载 session 后恢复给 `/diff` 与 `/undo` 共用。
 
 #### Scenario: apply_patch 成功写入进入 history
 - **WHEN** assistant loop 中 `apply_patch` 成功写入一个已有文本文件
 - **THEN** change history SHALL 记录该文件写入前的 snapshot 和 `updated` 状态
 - **WHEN** assistant loop 中 `apply_patch` 成功新增一个文本文件
 - **THEN** change history SHALL 记录该文件写入前不存在和 `created` 状态
+
+#### Scenario: edit_file 成功写入进入 history
+- **WHEN** assistant loop 中 `edit_file` 成功更新一个已有文本文件
+- **THEN** change history SHALL 记录该文件写入前的 snapshot 和 `updated` 状态
 
 #### Scenario: history 随 session 持久化
 - **WHEN** 当前 session 中存在 change history entries
@@ -76,7 +78,7 @@
 - **THEN** change history SHALL 记录 invalid boundary 及其原因
 - **WHEN** 后续 `/diff` 使用 fallback source
 - **THEN** fallback source SHALL NOT 跨越 invalid boundary 聚合更早 entries
-- **THEN** diff surface SHALL 提示仅展示不可追踪写入边界之后的 `apply_patch` 记录
+- **THEN** diff surface SHALL 提示仅展示不可追踪写入边界之后的受控文件编辑记录
 
 #### Scenario: undo 成功后同步 history
 - **WHEN** 用户确认 `/undo` 且文件和 transcript 回退成功
@@ -139,7 +141,7 @@
 
 #### Scenario: fallback source 显示完整性提示
 - **WHEN** diff surface 使用 change history fallback
-- **THEN** surface SHALL 显示“非 Git 工作区：当前 diff 基于 apply_patch 历史拼接，可能不包含手动编辑或 shell 写入”或等价提示
+- **THEN** surface SHALL 显示“非 Git 工作区：当前 diff 基于受控文件编辑历史拼接，可能不包含手动编辑或 shell 写入”或等价的工具无关提示
 
 #### Scenario: 不使用 alternate screen
 - **WHEN** diff surface 打开、重绘或关闭
@@ -178,3 +180,4 @@
 #### Scenario: 不要求额外快捷键
 - **WHEN** diff surface 可见
 - **THEN** 系统 SHALL NOT 要求用户使用 hjkl、PageUp、PageDown、跳 hunk、搜索或手动 layout toggle 完成基本查看
+

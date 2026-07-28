@@ -28,6 +28,7 @@ type AgentInteractionMode = 'normal' | 'plan';
 
 type AppSettingsRefreshResult = {
   agentInstructionFileChanged: boolean;
+  fileEditModeChanged: boolean;
   reasoningVisibilityChanged: boolean;
   skillCatalogContextRatioChanged: boolean;
   slashSuggestionLimitChanged: boolean;
@@ -340,15 +341,16 @@ class AppContext {
   refreshAppSettingsFromConfig(): AppSettingsRefreshResult {
     const next = readAppSettings();
     const agentInstructionFileChanged = next.agentInstructionFileName !== this.appSettings.agentInstructionFileName;
+    const fileEditModeChanged = next.fileEditMode !== this.appSettings.fileEditMode;
     const reasoningVisibilityChanged = next.showReasoningSummary !== this.appSettings.showReasoningSummary;
     const skillCatalogContextRatioChanged = next.skillCatalogContextRatio !== this.appSettings.skillCatalogContextRatio;
     const slashSuggestionLimitChanged = next.slashSuggestionMaxVisible !== this.appSettings.slashSuggestionMaxVisible;
 
     this.appSettings = structuredClone(next) as AppSettings;
-    if (agentInstructionFileChanged || skillCatalogContextRatioChanged) {
+    if (agentInstructionFileChanged || fileEditModeChanged || skillCatalogContextRatioChanged) {
       this.clearContextUsage();
     }
-    return {agentInstructionFileChanged, reasoningVisibilityChanged, skillCatalogContextRatioChanged, slashSuggestionLimitChanged};
+    return {agentInstructionFileChanged, fileEditModeChanged, reasoningVisibilityChanged, skillCatalogContextRatioChanged, slashSuggestionLimitChanged};
   }
 
   /**

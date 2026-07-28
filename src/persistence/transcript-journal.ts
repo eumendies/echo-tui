@@ -291,6 +291,7 @@ function isToolResultDetails(value: unknown): boolean {
   switch (value.kind) {
     case 'generic':
     case 'apply_patch':
+    case 'edit_file':
       return true;
     case 'bash':
       return true;

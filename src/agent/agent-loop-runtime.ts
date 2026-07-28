@@ -323,6 +323,7 @@ function isToolResultTruncated(result: ToolExecutionResult): boolean | undefined
     case 'bash':
       return result.details.truncated;
     case 'apply_patch':
+    case 'edit_file':
     case 'generic':
       return undefined;
   }
