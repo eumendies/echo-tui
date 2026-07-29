@@ -1,6 +1,6 @@
 import {blockText} from '../colors';
 import {safeRenderWidth} from '../layout';
-import {TOOL_RESULT_MAX_DISPLAY_LINES, renderPrefixedLines, truncateDisplayText, wrapContentLine} from './shared';
+import {TOOL_RESULT_MAX_DISPLAY_LINES, createToolRailPrefix, renderPrefixedLines, truncateDisplayText, wrapContentLine} from './shared';
 
 import type {TuiTheme} from '../../config/theme-config';
 import type {ToolCallTranscriptRecord, ToolResultTranscriptRecord} from '../../types/transcript';
@@ -123,31 +123,12 @@ function renderRailRows(
 
   for (const row of normalizeRailRows(rows)) {
     for (const segment of wrapContentLine(row.text, safeWidth, prefixWidth)) {
-      rendered.push(`${createRailPrefix(first, safeWidth, theme, railStyle, markerStyle)}${colorizeRailContent(row.style, segment, theme)}`);
+      rendered.push(`${createToolRailPrefix(first, safeWidth, theme, railStyle, markerStyle)}${colorizeRailContent(row.style, segment, theme)}`);
       first = false;
     }
   }
 
-  return rendered.length > 0 ? rendered : [createRailPrefix(includeMarker, safeWidth, theme, railStyle, markerStyle)];
-}
-
-function createRailPrefix(
-  first: boolean,
-  safeWidth: number,
-  theme: TuiTheme,
-  railStyle: BashRailStyle,
-  markerStyle: BashStatusStyle
-): string {
-  if (safeWidth >= 4) {
-    const marker = first ? `${blockText(theme, markerStyle, '◆')} ` : '  ';
-    return `${marker}${blockText(theme, railStyle, '▌')} `;
-  }
-
-  if (safeWidth >= 2) {
-    return first ? `${blockText(theme, markerStyle, '◆')} ` : '  ';
-  }
-
-  return '';
+  return rendered.length > 0 ? rendered : [createToolRailPrefix(includeMarker, safeWidth, theme, railStyle, markerStyle)];
 }
 
 function colorizeRailContent(style: BashRailRow['style'], text: string, theme: TuiTheme): string {
