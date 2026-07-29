@@ -113,7 +113,6 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
           return;
         }
 
-        appContext.turnContext.cancelStreamingRender();
         appendRecord(appContext.transcriptContext.applyCompaction(compaction));
       },
       onContextUsage(usage) {
@@ -133,14 +132,12 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
           appContext.turnContext.startSpinner('working');
         }
         appContext.turnContext.setStreamingPending(draft);
-        appContext.turnContext.scheduleStreamingRender();
       },
       onReasoningSummary(text: string) {
         if (!isCurrentTurn()) {
           return;
         }
 
-        appContext.turnContext.cancelStreamingRender();
         appendRecord(appContext.turnContext.appendReasoningSummary(text));
       },
       onProviderRecords(records: TranscriptRecord[]) {
@@ -155,7 +152,6 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
           return;
         }
 
-        appContext.turnContext.cancelStreamingRender();
         const segmentRecord = appContext.turnContext.commitPartialAssistantTurn(segmentText);
 
         if (segmentRecord) {
@@ -170,7 +166,6 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
         if (!appContext.turnContext.getWorking()) {
           appContext.turnContext.startSpinner('working');
         }
-        appContext.turnContext.cancelStreamingRender();
         appContext.turnContext.setToolCallPending(call);
         renderFooter();
       },
@@ -179,7 +174,6 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
           return {kind: 'deny', message: 'Tool execution was interrupted.'};
         }
 
-        appContext.turnContext.cancelStreamingRender();
         return toolApproval.request(call, request);
       },
       onUserQuestionRequest(call, request) {
@@ -192,7 +186,6 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
           };
         }
 
-        appContext.turnContext.cancelStreamingRender();
         return userQuestion.request(call, request);
       },
       onToolResult(result) {
@@ -200,7 +193,6 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
           return;
         }
 
-        appContext.turnContext.cancelStreamingRender();
         appendRecords(appContext.transcriptContext.appendRecords(appContext.turnContext.appendPendingToolResult(result)));
       },
       onTodoStateChange(todoState) {
@@ -215,7 +207,6 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
           return;
         }
 
-        appContext.turnContext.cancelStreamingRender();
         appContext.turnContext.stopSpinner();
         const assistantRecord = appContext.turnContext.finishAssistantTurn(finalText);
 
@@ -240,7 +231,6 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
       return;
     }
 
-    appContext.turnContext.cancelStreamingRender();
     appContext.turnContext.stopSpinner();
     const partialRecord = appContext.turnContext.commitPendingAssistantDraft();
 

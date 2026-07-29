@@ -745,6 +745,28 @@ test('AppContext keeps plan status line mode while assistant output streams', ()
   assert.deepEqual(renderState.pending, { kind: 'streaming', text: 'draft' });
 });
 
+test('TurnContext activity clock projects the latest accumulated shell output once per tick', async () => {
+  const context = createContext();
+  const renderedPending = [];
+
+  context.turnContext.configureSpinnerTimer({
+    onTick() {
+      renderedPending.push(context.createRenderState().pending);
+    }
+  });
+  context.turnContext.beginShellCommand('printf ab');
+  context.turnContext.startSpinner('working');
+  context.turnContext.appendShellOutputPending({stream: 'stdout', chunk: 'a'});
+  context.turnContext.appendShellOutputPending({stream: 'stdout', chunk: 'b'});
+
+  assert.equal(renderedPending.length, 0);
+  await new Promise((resolve) => setTimeout(resolve, 130));
+  context.turnContext.stopSpinner();
+
+  assert.ok(renderedPending.length >= 1);
+  assert.deepEqual(renderedPending.at(-1), {kind: 'shell_output', command: 'printf ab', output: 'ab'});
+});
+
 test('AppContext keeps plan status line mode while waiting for first assistant token', () => {
   const context = createContext();
 

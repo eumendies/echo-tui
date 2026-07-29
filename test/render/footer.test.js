@@ -5,10 +5,11 @@ const { createComposer } = require('../../src/input/composer');
 const { createTuiTheme } = require('../../src/config/theme-config');
 const { ECHO_SPINNER_ACTIVE_FRAME_COUNT, ECHO_SPINNER_FRAME_INTERVAL_MS, getEchoSpinnerFrameIndex } = require('../../src/render/echo-spinner');
 const { renderDiffSurface } = require('../../src/render/footer/diff-surface');
-const { renderFooterLayout: renderRuntimeFooterLayout } = require('../../src/render/footer');
+const { createFooterRenderer, renderFooterLayout: renderRuntimeFooterLayout } = require('../../src/render/footer');
 const { humanizeTokens } = require('../../src/render/footer/usage-surface');
 const { renderStatusSurface: renderRuntimeStatusSurface } = require('../../src/render/footer/status-surface');
 const { displayWidth, safeRenderWidth, stripAnsi } = require('../../src/render/layout');
+const ansi = require('../../src/terminal/ansi');
 
 const DEFAULT_STATUS_LINE = {
   projectName: 'echo_tui',
@@ -112,6 +113,62 @@ function assertActiveBackgroundReachesRightPadding(line) {
   assert.notEqual(resetIndex, -1);
   assert.equal(stripAnsi(line.slice(resetIndex + '\x1b[49m'.length)), ' │');
 }
+
+test('createFooterRenderer writes each complete redraw as one frame and preserves cleanup and cursor state', () => {
+  const output = {
+    writes: [],
+    write(chunk) {
+      this.writes.push(String(chunk));
+    }
+  };
+  const renderer = createFooterRenderer(output);
+  const baseState = {
+    composer: createComposer('draft'),
+    commandSurface: null,
+    pending: null,
+    working: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    rows: 24,
+    width: 80
+  };
+  const tallState = {
+    ...baseState,
+    pending: {kind: 'streaming', text: Array.from({length: 8}, (_value, index) => `line ${index + 1}`).join('\n')}
+  };
+  const tallLayout = renderFooterLayout(tallState);
+
+  renderer.render(baseState);
+  assert.equal(output.writes.length, 1);
+
+  renderer.render(tallState);
+  assert.equal(output.writes.length, 2);
+
+  const shortLayout = renderFooterLayout(baseState);
+  renderer.render(baseState);
+  assert.equal(output.writes.length, 3);
+  assert.equal((output.writes[2].match(/\x1b\[2K/g) || []).length, tallLayout.lines.length);
+  assert.ok(stripAnsi(output.writes[2]).includes('draft'));
+  assert.ok(output.writes[2].endsWith(
+    `${ansi.cursorUp(shortLayout.lines.length - 1 - shortLayout.cursorRow)}${ansi.carriageReturn()}${ansi.cursorForward(shortLayout.cursorColumn)}${ansi.showCursor()}`
+  ));
+
+  const commandState = {
+    ...baseState,
+    commandSurface: {kind: 'info', title: 'Info', lines: ['details'], dismissHint: 'Esc 关闭'}
+  };
+  const commandLayout = renderFooterLayout(commandState);
+  renderer.render(commandState);
+  assert.equal(output.writes.length, 4);
+  assert.equal(output.writes[3].includes(ansi.showCursor()), false);
+
+  renderer.clear();
+  assert.equal(output.writes.length, 5);
+  assert.equal((output.writes[4].match(/\x1b\[2K/g) || []).length, commandLayout.lines.length);
+  assert.ok(output.writes[4].endsWith(ansi.showCursor()));
+
+  renderer.clear();
+  assert.equal(output.writes.length, 5);
+});
 
 test('renderFooterLayout renders boxed composer and idle segmented status line', () => {
   const layout = renderFooterLayout({

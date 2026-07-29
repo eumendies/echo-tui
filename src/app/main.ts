@@ -61,12 +61,9 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
   let mcpDiagnosticSurface: CommandSurface | null = null;
   let referenceErrorSurface: CommandSurface | null = null;
   let userConfigWatcher: UserConfigWatcher | null = null;
-  // spinner 的 timer 完全下沉到 turnContext；main 仅注入 footer 重绘回调。
+  // 活动重绘 timer 完全下沉到 turnContext；spinner 与高频 pending 共用这一刷新时钟。
   appContext.turnContext.configureSpinnerTimer({
     onTick: () => renderFooter()
-  });
-  appContext.turnContext.configureStreamingRenderTimer({
-    onRender: () => renderFooter()
   });
 
   /**
@@ -91,7 +88,6 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     userConfigWatcher?.close();
     userConfigWatcher = null;
     void mcpManager.close();
-    appContext.turnContext.cancelStreamingRender();
     appContext.turnContext.stopSpinner();
     renderer.clearFooter();
     terminal.cleanup();
@@ -142,7 +138,6 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
    * 当列宽变化时执行 destructive full replay，并把 footer renderer 与当前可见 footer 同步。
    */
   function renderResizeRecovery(): void {
-    appContext.turnContext.cancelStreamingRender();
     debug.emit('resize_recovery', {
       recordCount: appContext.transcriptContext.records.length,
       terminalSize: terminal.getSize()
@@ -338,7 +333,6 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
         maxOutputBytes: includeInContext ? undefined : null,
         onOutput(event) {
           appContext.turnContext.appendShellOutputPending(event);
-          appContext.turnContext.scheduleStreamingRender();
         },
         timeoutMs: null,
         toolResultStore: includeInContext ? toolResultStore : undefined
@@ -369,7 +363,6 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
    * 中断当前普通 assistant turn；modal/command surface 的 Esc 消费在调用前已完成。
    */
   function interruptActiveTurn(): boolean {
-    appContext.turnContext.cancelStreamingRender();
     const result = appContext.interruptActiveAssistantTurn();
 
     if (!result.interrupted) {
