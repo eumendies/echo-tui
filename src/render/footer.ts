@@ -103,7 +103,7 @@ export function createFooterRenderer(output: NodeJS.WriteStream = process.stdout
  * 根据当前状态生成 footer 的逐行布局和光标坐标。
  *
  */
-export function renderFooterLayout({ composer, commandSurface, slashSuggestions, pending, working, theme = DEFAULT_TUI_THEME, renderPreferences = DEFAULT_RENDER_PREFERENCES, statusLine, rows, width }: RenderState): FooterLayout {
+export function renderFooterLayout({ composer, conversationReference, commandSurface, slashSuggestions, pending, working, theme = DEFAULT_TUI_THEME, renderPreferences = DEFAULT_RENDER_PREFERENCES, statusLine, rows, width }: RenderState): FooterLayout {
   const footerWidth = width || 80;
   const maxFooterLines = calculateFooterMaxLines(rows);
   const transcriptComposerSpacerLine = TRANSCRIPT_COMPOSER_SPACER_LINE;
@@ -112,7 +112,7 @@ export function renderFooterLayout({ composer, commandSurface, slashSuggestions,
   const effectiveStatusLine = attachStatusLineActivity(statusLine, pending, working);
   const inputSurface = commandSurface
     ? renderCommandSurface(commandSurface, footerWidth, {maxLines: inputMaxLines, theme})
-    : renderComposerSurface(composer, effectiveStatusLine, footerWidth, slashSuggestions ?? null, inputMaxLines, theme, renderPreferences.slashSuggestionMaxVisible);
+    : renderComposerSurface(composer, effectiveStatusLine, footerWidth, slashSuggestions ?? null, inputMaxLines, theme, renderPreferences.slashSuggestionMaxVisible, conversationReference);
   const pendingMaxLines = Math.max(0, maxFooterLines - fixedLineCount - inputSurface.lines.length);
   const pendingLines = pending ? renderPendingAssistantLines(pending, footerWidth, pendingMaxLines, theme) : [];
   const layout = {

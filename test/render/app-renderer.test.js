@@ -189,6 +189,28 @@ test('renderTranscriptLines uses displayText for user records when present', () 
   assert.equal(lines.some((line) => line.includes('Skill Instructions')), false);
 });
 
+test('renderTranscriptLines replays conversation reference card without expanded history or internal metadata', () => {
+  const lines = renderTranscriptLines([{
+    role: 'user',
+    text: '<referenced_conversation>\nprivate long history\n</referenced_conversation>\n<current_request>\ncontinue\n</current_request>',
+    displayText: 'continue',
+    metadata: {
+      conversationReference: {
+        projectionMode: 'summary',
+        sourcePath: '/tmp/session-internal.jsonl',
+        sourceSessionId: 'session-internal',
+        title: 'MCP 权限分级设计'
+      }
+    }
+  }], 80).map((line) => stripAnsi(line));
+
+  assert.ok(lines.some((line) => line.includes('引用对话 · 总结')));
+  assert.ok(lines.some((line) => line.includes('MCP 权限分级设计')));
+  assert.ok(lines.some((line) => line.startsWith('▌ continue')));
+  assert.equal(lines.some((line) => line.includes('private long history')), false);
+  assert.equal(lines.some((line) => line.includes('session-internal')), false);
+});
+
 test('renderTranscriptLines hides mode transition prompt behind user display text', () => {
   const lines = renderTranscriptLines(
     [{

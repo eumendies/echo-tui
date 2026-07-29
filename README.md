@@ -167,10 +167,13 @@ normal 与 plan 之间发生模型可见切换时，模式说明只会加入切�
 | `/status` | 查看目录、AGENTS、memory、model/provider、session，以及 Codex OAuth 5 小时/每周配额进度 |
 | `/context` `/usage` | 查看 provider 上下文占用、本地每日 token 用量 |
 | `/clear` `/compact` `/resume` | 清屏、压缩上下文、恢复历史会话 |
+| `/reference` | 选择一个历史会话，作为下一条消息的参考上下文 |
 | `/diff` `/undo` | 查看文件差异、回退上一轮文件修改与会话记录 |
 | `/mcp` `/hooks` `/skills` | 管理 MCP server、lifecycle hooks 和 skills |
 | `/init` `/review` | 生成或评审当前选择的项目指令文件、审查当前 Git 变更 |
 | `/<skill-name> [args]` | 调用已启用 skill |
+
+`/reference` 只引用一个完整历史会话，不提供单条消息勾选，也不会自动搜索历史。较短会话会以中立文本全量加入下一条 user message；超过当前模型引用预算的长会话会在发送下一条消息时由当前 provider 生成结构化总结，选择会话本身不会发起模型请求。总结期间可按 Esc 取消并保留引用和输入，再次发送即可重试；发送前按 Esc 可移除待提交引用，再次执行 `/reference` 会替换已有引用。provider 可见内容只包含标题、源 journal 的 `source_file`、全量正文或总结，以及当前请求，不包含独立 session id 或时间；总结模式会提示模型在确有需要时复用现有 `read_files` 读取 `source_file`，不会注册专用会话读取工具。
 
 ## Skills
 

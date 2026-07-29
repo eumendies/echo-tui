@@ -153,7 +153,9 @@ function createTranscriptStore(options: TranscriptStoreOptions = {}): Transcript
         cwd: session.cwd,
         messageCount: session.records.length,
         lastMessagePreview: createLastMessagePreview(session.records),
-        previewRecords: createSessionPreviewRecords(session.records)
+        previewRecords: createSessionPreviewRecords(session.records),
+        sourcePath: getSessionFilePath(cwd, session.sessionId),
+        title: createSessionTitle(session.records)
       }))
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   }
@@ -163,6 +165,15 @@ function createTranscriptStore(options: TranscriptStoreOptions = {}): Transcript
    */
   function loadSession(cwd: string, sessionId: string): LoadedTranscriptSession | null {
     const loaded = safelyReadJournal(getSessionFilePath(cwd, sessionId), cwd, true);
+
+    return loaded?.session.sessionId === sessionId ? loaded : null;
+  }
+
+  /**
+   * 只读重放一个 session，不修复或改写源 journal。
+   */
+  function loadSessionReadOnly(cwd: string, sessionId: string): LoadedTranscriptSession | null {
+    const loaded = safelyReadJournal(getSessionFilePath(cwd, sessionId), cwd, false);
 
     return loaded?.session.sessionId === sessionId ? loaded : null;
   }
@@ -211,7 +222,8 @@ function createTranscriptStore(options: TranscriptStoreOptions = {}): Transcript
     getProjectMetadata,
     getSessionFilePath,
     listSessions,
-    loadSession
+    loadSession,
+    loadSessionReadOnly
   };
 }
 
@@ -267,7 +279,21 @@ function normalizePreviewText(text: unknown): string {
   return String(text || '').replace(/\s+/g, ' ').trim();
 }
 
+/**
+ * 从第一条用户消息派生稳定标题；列表只需要可辨识摘要，不引入额外模型调用。
+ */
+function createSessionTitle(records: import('../types/transcript').TranscriptRecord[]): string {
+  const firstUser = records.find((record) => record.role === 'user');
+  const text = firstUser && firstUser.role === 'user'
+    ? firstUser.displayText || firstUser.text
+    : '';
+  const normalized = normalizePreviewText(text);
+
+  return normalized === '' ? '未命名对话' : normalized.slice(0, 60);
+}
+
 export {
   STORE_SCHEMA_VERSION,
+  createSessionTitle,
   createTranscriptStore
 };

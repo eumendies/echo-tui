@@ -162,6 +162,43 @@ test('renderFooterLayout renders empty composer placeholder without changing cur
   assert.equal(layout.cursorColumn, 4);
 });
 
+test('renderFooterLayout renders a compact conversation reference above editable composer', () => {
+  const composer = createComposer('continue with this');
+  const layout = renderFooterLayout({
+    composer,
+    conversationReference: {projectionMode: 'summary', title: 'MCP 权限分级设计'},
+    commandSurface: null,
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    width: 80
+  });
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+
+  assert.ok(plainLines.some((line) => line.includes('引用对话 · 总结')));
+  assert.ok(plainLines.some((line) => line.includes('MCP 权限分级设计')));
+  assert.ok(plainLines.some((line) => line.includes('Esc 移除')));
+  assert.ok(plainLines.some((line) => line.startsWith('↳ 引用对话 · 总结')));
+  assert.ok(plainLines.some((line) => line.includes('> continue with this')));
+  assert.equal(plainLines.some((line) => line.includes('session-')), false);
+  assert.equal(composer.chars.join(''), 'continue with this');
+  assert.equal(layout.cursorRow, 4);
+});
+
+test('renderFooterLayout changes the reference hint while deferred summary is running', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('continue'),
+    conversationReference: {preparing: true, projectionMode: 'summary', title: 'Long history'},
+    commandSurface: null,
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    width: 80
+  });
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+
+  assert.ok(plainLines.some((line) => line.includes('Esc 取消总结')));
+  assert.equal(plainLines.some((line) => line.includes('Esc 移除')), false);
+});
+
 test('renderFooterLayout replaces the empty composer placeholder while model tuning', () => {
   const normal = renderFooterLayout({
     composer: createComposer(''),
@@ -1237,11 +1274,13 @@ test('renderFooterLayout renders resume command surfaces with two columns and pr
     composer: createComposer('ignored'),
     commandSurface: {
       kind: 'resume',
-      title: '/resume 恢复会话 (2)',
+      title: '/resume 恢复会话 (7)',
       sessions: [
         { label: '2026-05-19 10:00 · 4 条消息' },
         { label: '2026-05-18 09:00 · 1 条消息' }
       ],
+      hiddenSessionCountAbove: 2,
+      hiddenSessionCountBelow: 3,
       focus: 'list',
       selectedIndex: 0,
       previewScroll: 0,
@@ -1264,11 +1303,13 @@ test('renderFooterLayout renders resume command surfaces with two columns and pr
   assert.equal(layout.showCursor, false);
   assert.ok(plainLines.some((line) => line.startsWith('╭')));
   assert.ok(plainLines.some((line) => line.startsWith('╰')));
-  assert.ok(plainLines.some((line) => line.includes('/resume 恢复会话 (2)')));
+  assert.ok(plainLines.some((line) => line.includes('/resume 恢复会话 (7)')));
   assert.ok(plainLines.some((line) => line.includes('▌ 会话') && line.includes('预览')));
   const headerIndex = plainLines.findIndex((line) => line.includes('▌ 会话') && line.includes('预览'));
   assert.ok(plainLines[headerIndex + 1].includes('────'));
   assert.ok(plainLines.some((line) => line.includes('▌ 2026-05-19')));
+  assert.ok(plainLines.some((line) => line.includes('↑ 2 更多')));
+  assert.ok(plainLines.some((line) => line.includes('↓ 3 更多')));
   assert.ok(!plainLines.some((line) => line.includes('● 2026-05-19') || line.includes('○ 2026-05-18')));
   assert.ok(!plainLines.some((line) => line.includes('2026-05-19') && line.includes('restored reply')));
   assert.ok(plainLines.some((line) => line.includes('USER resume me')));
@@ -1281,7 +1322,7 @@ test('renderFooterLayout renders resume command surfaces with two columns and pr
 
   const resumeFrameColor = '\x1b[38;2;40;110;125m';
   const topLine = layout.lines[plainLines.findIndex((line) => line.startsWith('╭'))];
-  const titleLine = layout.lines[plainLines.findIndex((line) => line.includes('/resume 恢复会话 (2)'))];
+  const titleLine = layout.lines[plainLines.findIndex((line) => line.includes('/resume 恢复会话 (7)'))];
   const bottomLine = layout.lines[plainLines.findIndex((line) => line.startsWith('╰'))];
   assert.ok(topLine.startsWith(`${resumeFrameColor}╭─`));
   assert.ok(titleLine.startsWith(`${resumeFrameColor}│`));
@@ -1538,6 +1579,8 @@ test('renderFooterLayout clamps resume surface on narrow width and renders empty
       sessions: [
         { label: '2026-05-19 10:00 · 0 条消息' }
       ],
+      hiddenSessionCountAbove: 0,
+      hiddenSessionCountBelow: 0,
       focus: 'list',
       selectedIndex: 0,
       previewScroll: 0,
@@ -1567,6 +1610,8 @@ test('renderFooterLayout renders scrolled single-line resume preview with previe
       sessions: [
         { label: '2026-05-19 10:00 · 12 条消息' }
       ],
+      hiddenSessionCountAbove: 0,
+      hiddenSessionCountBelow: 0,
       focus: 'preview',
       selectedIndex: 0,
       previewScroll: 3,

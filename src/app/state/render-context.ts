@@ -76,7 +76,7 @@ class RenderContext {
   /**
    * 组合渲染层需要的瞬时状态，避免 main.ts 反复散落访问实例字段。
    */
-  createRenderState(options: {allowAllTools?: boolean; commandSurface?: CommandSurface | null; contextUsage?: ContextUsageState | null; model?: StatusLineModelRenderState; renderPreferences?: RenderPreferences; slashSuggestions?: SlashSuggestionState | null} = {}): RenderState {
+  createRenderState(options: {allowAllTools?: boolean; commandSurface?: CommandSurface | null; contextUsage?: ContextUsageState | null; conversationReference?: RenderState['conversationReference']; model?: StatusLineModelRenderState; renderPreferences?: RenderPreferences; slashSuggestions?: SlashSuggestionState | null} = {}): RenderState {
     const terminalSize = this.terminal.getSize();
     const commandSurface = options.commandSurface ?? null;
     const slashSuggestions = options.slashSuggestions ?? null;
@@ -85,6 +85,7 @@ class RenderContext {
 
     return {
       composer: this.composerContext.composer,
+      conversationReference: options.conversationReference ?? null,
       commandSurface,
       slashSuggestions,
       pending,

@@ -157,11 +157,11 @@ handler 协议保持最小：
 
 这让“无交互命令”和“有交互命令”共享同一套总线，而不是拆成两套 app 分支。
 
-默认 handlers 在 app 装配阶段无参实例化：`createDefaultSlashCommandHandlers()` 创建 `/help`、`/config`、`/model`、`/effort`、`/mode`、`/status`、`/context`、`/usage`、`/memory`、`/clear`、`/compact`、`/diff`、`/undo`、`/resume`、`/mcp`、`/hooks`、`/skills`、内置 agent workflow（`/init`、`/review`）和 direct skill invocation handler。命令需要的 app 能力在运行时由 `CommandHost` 提供。`createSlashCommandDescriptors()` 从同一组 handlers 派生命令 `{name, description}`，再与 enabled skill descriptors 合并去重，供普通 composer 输入态下的 slash suggestion 使用，避免维护第二份命令/skill 清单。
+默认 handlers 在 app 装配阶段无参实例化：`createDefaultSlashCommandHandlers()` 创建 `/help`、`/config`、`/model`、`/effort`、`/mode`、`/status`、`/context`、`/usage`、`/memory`、`/clear`、`/compact`、`/diff`、`/undo`、`/resume`、`/reference`、`/mcp`、`/hooks`、`/skills`、内置 agent workflow（`/init`、`/review`）和 direct skill invocation handler。命令需要的 app 能力在运行时由 `CommandHost` 提供。`createSlashCommandDescriptors()` 从同一组 handlers 派生命令 `{name, description}`，再与 enabled skill descriptors 合并去重，供普通 composer 输入态下的 slash suggestion 使用，避免维护第二份命令/skill 清单。
 
 direct skill invocation 的模型策略通过独立 typed 字段沿 `CommandStartResult` → `AssistantTurnRunnerInput` → `AgentSessionInput` 传递，不从 transcript metadata 反推。缺少字段表示动态跟随全局当前模型；固定 profile 只作用于当前显式 slash turn。
 
-`AppContext` 是实例级组合根和跨 context 事务协调器。构造期创建 `ComposerContext`、`TranscriptContext`、`ModelContext`、`TurnContext`、`RenderContext`、`SlashSuggestionContext` 和 `ChangeHistoryContext`；其中主要子 context 以只读引用提供给 app 编排层，interaction mode、context usage、MCP bootstrap 状态和 mode transition 跟踪由 `AppContext` 私有持有。render state、agent session、session 恢复、transcript 清理、change checkpoint、undo 和 turn 边界由 `AppContext` 组合或协调。`ToolApprovalContext`、`UserQuestionContext` 和 `FilePickerContext` 由 `main.ts` 持有。
+`AppContext` 是实例级组合根和跨 context 事务协调器。构造期创建 `ComposerContext`、`TranscriptContext`、`ModelContext`、`TurnContext`、`RenderContext`、`SlashSuggestionContext`、`ChangeHistoryContext` 和 `ConversationReferenceContext`；其中主要子 context 以只读引用提供给 app 编排层，interaction mode、context usage、MCP bootstrap 状态和 mode transition 跟踪由 `AppContext` 私有持有。对话引用独立于 composer 字符数组保存；确认选择时只加载目标 journal 并保存 replay 后的中立素材，长会话总结延后到下一次普通消息提交，再扩展为 provider-facing user text，并通过 user metadata 重放简洁卡片。render state、agent session、session 恢复、transcript 清理、change checkpoint、undo 和 turn 边界由 `AppContext` 组合或协调。`ToolApprovalContext`、`UserQuestionContext` 和 `FilePickerContext` 由 `main.ts` 持有。
 
 ### CommandHost 能力
 

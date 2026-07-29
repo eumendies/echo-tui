@@ -51,6 +51,9 @@ function createFakeTranscriptStore() {
     },
     loadSession() {
       return currentSession ? {session: structuredClone(currentSession), reference: {...currentReference}} : null;
+    },
+    loadSessionReadOnly() {
+      return currentSession ? {session: structuredClone(currentSession), reference: {...currentReference}} : null;
     }
   };
 }

@@ -7,6 +7,7 @@ const path = require('node:path');
 const {
   createAppendRecordsOperation,
   createBatchOperation,
+  createTruncateRecordsOperation,
   createSetChangeHistoryOperation,
   createSetCompactionOperation,
   createSetTodoStateOperation
@@ -245,6 +246,21 @@ test('createTranscriptStore tolerates a torn final write and rejects corrupt ear
   assert.equal(store.loadSession(cwd, reference.sessionId), null);
 });
 
+test('loadSessionReadOnly replays a torn tail without repairing the source journal', () => {
+  const rootDir = createTempRoot();
+  const store = createTranscriptStore({rootDir});
+  const cwd = '/tmp/example/read-only-reference';
+  const reference = store.createSession(cwd, createAppendRecordsOperation([{role: 'user', text: 'saved'}]), '2026-07-01T00:00:00.000Z');
+  const filePath = store.getSessionFilePath(cwd, reference.sessionId);
+  fs.appendFileSync(filePath, '{"schemaVersion":1,"seq":2', 'utf8');
+  const source = fs.readFileSync(filePath, 'utf8');
+
+  const loaded = store.loadSessionReadOnly(cwd, reference.sessionId);
+
+  assert.deepEqual(loaded.session.records, [{role: 'user', text: 'saved'}]);
+  assert.equal(fs.readFileSync(filePath, 'utf8'), source);
+});
+
 test('createTranscriptStore preserves unknown transcript fields while validating required record identity', () => {
   const rootDir = createTempRoot();
   const store = createTranscriptStore({rootDir});
@@ -325,7 +341,28 @@ test('createTranscriptStore lists valid JSONL sessions by updatedAt with bounded
   assert.equal(sessions[0].previewRecords.length, 20);
   assert.equal(sessions[0].previewRecords[0].text.startsWith('record-5 '), true);
   assert.equal(sessions[0].previewRecords[0].text.length, 500);
+  assert.equal(sessions[0].title.startsWith('record-0 '), true);
+  assert.equal(sessions[0].sourcePath, store.getSessionFilePath(cwd, second.sessionId));
   assert.equal(sessions[1].sessionId, first.sessionId);
+});
+
+test('reference metadata title and preview come from replayed final records', () => {
+  const rootDir = createTempRoot();
+  const store = createTranscriptStore({rootDir});
+  const cwd = '/tmp/example/project';
+  let reference = store.createSession(cwd, createAppendRecordsOperation([
+    {role: 'user', text: 'provider wrapper', displayText: 'Readable title'},
+    {role: 'assistant', text: 'discarded answer'}
+  ]), '2026-07-01T00:00:00.000Z');
+  reference = store.appendSession(cwd, reference, createTruncateRecordsOperation(1));
+  store.appendSession(cwd, reference, createAppendRecordsOperation([{role: 'assistant', text: 'final answer'}]));
+
+  const [session] = store.listSessions(cwd);
+
+  assert.equal(session.title, 'Readable title');
+  assert.equal(session.sourcePath, store.getSessionFilePath(cwd, reference.sessionId));
+  assert.deepEqual(session.previewRecords.map((record) => record.text), ['Readable title', 'final answer']);
+  assert.equal(session.previewRecords.some((record) => record.text.includes('discarded')), false);
 });
 
 test('createTranscriptStore hides provider-facing mode prompts from session previews', () => {

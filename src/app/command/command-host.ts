@@ -1,5 +1,6 @@
 import {createAssistantCommandPort} from './assistant-command-port';
 import {createCoreCommandPorts} from './core-command-ports';
+import {createConversationReferenceCommandPort} from './conversation-reference-command-port';
 import {createHistoryCommandPorts} from './history-command-ports';
 import {createHooksCommandPort} from './hooks-command-port';
 import {createMcpCommandPort} from './mcp-command-port';
@@ -51,6 +52,7 @@ function createCommandHost(options: CommandHostOptions): CommandHostApp {
   return {
     composer: corePorts.composer,
     transcript: createTranscriptCommandPort({appContext, appendRecord, renderResizeRecovery}),
+    reference: createConversationReferenceCommandPort({appContext, renderFooter, usageStore}),
     clipboard: corePorts.clipboard,
     model: modelPorts.model,
     config: modelPorts.config,
