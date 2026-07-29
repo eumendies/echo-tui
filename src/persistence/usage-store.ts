@@ -7,6 +7,10 @@ import type {UsageDailyAggregate, UsageEvent, UsageEventInput, UsageQueryOptions
 
 const USAGE_SCHEMA_VERSION = 1;
 
+function createUsageCwdHash(cwd: string): string {
+  return crypto.createHash('sha1').update(String(cwd)).digest('hex');
+}
+
 type UsageStoreOptions = {
   cryptoImpl?: Pick<typeof crypto, 'randomBytes'>;
   fsImpl?: Pick<typeof fs, 'appendFileSync' | 'existsSync' | 'mkdirSync' | 'readFileSync' | 'readdirSync'>;
@@ -236,6 +240,7 @@ function isNonNegativeNumber(value: unknown): value is number {
 }
 
 export {
+  createUsageCwdHash,
   createUsageEvent,
   createUsageStore,
   formatLocalDay

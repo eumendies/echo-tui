@@ -12,6 +12,7 @@ import {cloneChangeHistory} from './change-history-context';
 import type {ChangeCheckpoint} from '../../types/change-history';
 import type {
   CompactionState,
+  ConversationReferenceSource,
   TodoState,
   TranscriptJournalOperation,
   TranscriptJournalSubOperation,
@@ -74,6 +75,34 @@ class TranscriptContext {
       ...session,
       previewRecords: session.previewRecords.map((record) => ({...record}))
     }));
+  }
+
+  /**
+   * 列出可作为附件的历史会话；当前 session 不允许自引用。
+   */
+  listReferenceSessions(): TranscriptSessionMetadata[] {
+    return this.listResumeSessions().filter((session) => session.sessionId !== this.currentSessionId);
+  }
+
+  /**
+   * 只读加载历史会话，不改变当前 transcript、compaction 或 journal 指针。
+   */
+  loadReferenceSession(candidate: TranscriptSessionMetadata): ConversationReferenceSource | null {
+    if (candidate.sessionId === this.currentSessionId || candidate.cwd !== this.getCurrentCwd()) {
+      return null;
+    }
+
+    const loaded = this.transcriptStore.loadSessionReadOnly(this.getCurrentCwd(), candidate.sessionId);
+
+    if (!loaded || loaded.session.sessionId !== candidate.sessionId || loaded.session.cwd !== candidate.cwd) {
+      return null;
+    }
+
+    return {
+      session: structuredClone(loaded.session),
+      sourcePath: candidate.sourcePath,
+      title: candidate.title
+    };
   }
 
   /**

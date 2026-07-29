@@ -1,5 +1,3 @@
-import crypto from 'node:crypto';
-
 import {resolveContextWindow} from '../config/llm-config';
 import {readAppSettings} from '../config/app-settings-config';
 import {
@@ -23,6 +21,7 @@ import {createBuiltInSystemPrompt, loadSystemPromptOverride} from './context/sys
 import {prepareAgent} from './agent-setup';
 import {createCompactionNoticeRecord, runCompaction} from './context/context-compaction';
 import {disabledDebugContext, hashValue, redactProviderConfig, summarizeText} from '../debug/debug-context';
+import {createUsageCwdHash} from '../persistence/usage-store';
 import {
   emitToolApprovalRequestHook,
   emitToolApprovalResponseHook,
@@ -296,10 +295,6 @@ function createProviderUsageDebugPayload(usage: ProviderUsage | undefined, usage
   };
 
   return Object.keys(payload).length > 0 ? payload : null;
-}
-
-function createUsageCwdHash(cwd: string): string {
-  return crypto.createHash('sha1').update(String(cwd)).digest('hex');
 }
 
 function hasRecordableProviderUsage(usage: ProviderUsage | undefined, usageInputTokens: number | undefined): boolean {

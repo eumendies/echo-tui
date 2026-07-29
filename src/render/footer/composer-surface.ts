@@ -5,7 +5,7 @@ import { activeBackground, renderFocusBar, resolveFooterTheme, tokenText, type F
 import { clampPlainText, formatSelectOptionText, padVisibleText } from './text';
 import { clampIndex, normalizeLineLimit } from './window';
 import type { ComposerState } from '../../types/composer';
-import type { FooterLayout, SlashSuggestionState, StatusLineState } from '../../types/render';
+import type { FooterLayout, RenderState, SlashSuggestionState, StatusLineState } from '../../types/render';
 
 const COMPOSER_PLACEHOLDER = '/ 命令 · @ 路径 · TAB mode · Ctrl+T 模型 · Shift+Tab 授权 · Ctrl+J 换行';
 const PLAN_COMPOSER_PLACEHOLDER = '计划问题 · @ 路径 · TAB 切换 mode · Ctrl+T 模型 · Ctrl+J 换行';
@@ -43,12 +43,14 @@ export function renderComposerSurface(
   slashSuggestions: SlashSuggestionState | null,
   maxLines = Number.POSITIVE_INFINITY,
   tuiTheme?: TuiTheme,
-  slashSuggestionMaxVisible = Number.POSITIVE_INFINITY
+  slashSuggestionMaxVisible = Number.POSITIVE_INFINITY,
+  conversationReference: RenderState['conversationReference'] = null
 ): FooterLayout {
   const theme = resolveFooterTheme(tuiTheme);
   const normalizedMaxLines = normalizeLineLimit(maxLines);
   const statusLineText = renderStatusLineText(statusLine, width, theme);
-  const contentBudget = Math.max(1, normalizedMaxLines - 1);
+  const referenceLines = renderConversationReferenceLines(conversationReference, width, theme);
+  const contentBudget = Math.max(1, normalizedMaxLines - 1 - referenceLines.length);
   const suggestionItemBudget = slashSuggestions ? Math.min(slashSuggestions.options.length, slashSuggestionMaxVisible, Math.max(0, contentBudget - 3)) : 0;
   const suggestionLines = slashSuggestions && suggestionItemBudget > 0
     ? renderSlashSuggestionLines(slashSuggestions, width, suggestionItemBudget, Math.max(0, contentBudget - 3), theme)
@@ -63,11 +65,30 @@ export function renderComposerSurface(
   );
 
   return {
-    lines: [...composerLayout.lines, ...suggestionLines, statusLineText],
-    cursorRow: composerLayout.cursorRow,
+    lines: [...referenceLines, ...composerLayout.lines, ...suggestionLines, statusLineText],
+    cursorRow: referenceLines.length + composerLayout.cursorRow,
     cursorColumn: composerLayout.cursorColumn,
     showCursor: statusLine?.model.kind !== 'tuning'
   };
+}
+
+/**
+ * 在 composer 上方渲染轻量引用卡片，只展示标题和投影模式，不泄露内部 session metadata。
+ */
+function renderConversationReferenceLines(reference: RenderState['conversationReference'], width: number, theme: FooterTheme): string[] {
+  if (!reference) {
+    return [];
+  }
+
+  const safeWidth = safeRenderWidth(width);
+  const mode = reference.projectionMode === 'summary' ? '总结' : '全文';
+  const hint = reference.preparing ? 'Esc 取消总结' : 'Esc 移除';
+  const title = clampPlainText(`${reference.title} · ${hint}`, Math.max(1, safeWidth - 2));
+
+  return [
+    tokenText(theme, 'accentStrong', ansi.bold(clampPlainText(`↳ 引用对话 · ${mode}`, safeWidth))),
+    tokenText(theme, 'muted', clampPlainText(`  ${title}`, safeWidth))
+  ];
 }
 
 /**

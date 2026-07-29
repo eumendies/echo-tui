@@ -11,6 +11,18 @@ type PreviewRowsOptions = {
   width: number;
 };
 
+type SessionListRow =
+  | {
+      kind: 'session'; // 标识该行承载一个可选择的会话。
+      session: ResumeCommandSurfaceSession; // 左栏需要展示的会话标签。
+      selected: boolean; // 指示该会话是否为当前选中项。
+    }
+  | {
+      kind: 'more'; // 标识该行承载窗口之外的数量提示。
+      count: number; // 当前方向尚未显示的会话数量。
+      direction: 'up' | 'down'; // 隐藏会话相对当前窗口的方向。
+    };
+
 const RESUME_SURFACE_MAX_WIDTH = 118;
 const RESUME_BODY_HEIGHT = 8;
 
@@ -26,6 +38,7 @@ export function renderResumeSurface(commandSurface: ResumeCommandSurface, width:
   const sessions = commandSurface.sessions;
   const selectedIndex = clampIndex(commandSurface.selectedIndex, sessions.length);
   const bodyHeight = RESUME_BODY_HEIGHT;
+  const sessionRows = createSessionListRows(commandSurface, selectedIndex);
   const previewRows = createPreviewRows(
     commandSurface.previewRecords,
     commandSurface.emptyPreviewHint,
@@ -54,7 +67,7 @@ export function renderResumeSurface(commandSurface: ResumeCommandSurface, width:
 
   for (let index = 0; index < bodyHeight; index += 1) {
     lines.push(renderSplitLine(
-      renderSessionRow(sessions[index], index, selectedIndex, leftWidth, theme),
+      renderSessionListRow(sessionRows[index], leftWidth, theme),
       previewRows[index] || '',
       leftWidth,
       rightWidth,
@@ -71,6 +84,27 @@ export function renderResumeSurface(commandSurface: ResumeCommandSurface, width:
     cursorColumn: 0,
     showCursor: false
   };
+}
+
+/**
+ * 组合左栏会话和窗口提示；page size 为提示预留空间，因此上下提示不会挤掉候选项。
+ */
+function createSessionListRows(commandSurface: ResumeCommandSurface, selectedIndex: number): SessionListRow[] {
+  const rows: SessionListRow[] = [];
+  const hiddenAbove = Math.max(0, Number(commandSurface.hiddenSessionCountAbove) || 0);
+  const hiddenBelow = Math.max(0, Number(commandSurface.hiddenSessionCountBelow) || 0);
+
+  if (hiddenAbove > 0) {
+    rows.push({kind: 'more', count: hiddenAbove, direction: 'up'});
+  }
+
+  rows.push(...commandSurface.sessions.map((session, index) => ({kind: 'session' as const, session, selected: index === selectedIndex})));
+
+  if (hiddenBelow > 0) {
+    rows.push({kind: 'more', count: hiddenBelow, direction: 'down'});
+  }
+
+  return rows;
 }
 
 /**
@@ -127,17 +161,20 @@ function renderPanelDivider(width: number, theme: FooterTheme): string {
 }
 
 /**
- * 渲染左侧 session 行，选中项使用整行背景突出显示。
+ * 渲染左侧会话或窗口提示行，选中会话使用整行背景突出显示。
  */
-function renderSessionRow(session: ResumeCommandSurfaceSession | undefined, index: number, selectedIndex: number, width: number, theme: FooterTheme): string {
-  if (!session) {
+function renderSessionListRow(row: SessionListRow | undefined, width: number, theme: FooterTheme): string {
+  if (!row) {
     return '';
   }
 
-  const active = index === selectedIndex;
-  const text = clampPlainText(session.label, Math.max(1, width - (active ? 2 : 2)));
+  if (row.kind === 'more') {
+    return ansi.dim(clampPlainText(`${row.direction === 'up' ? '↑' : '↓'} ${row.count} 更多`, width));
+  }
 
-  if (active) {
+  const text = clampPlainText(row.session.label, Math.max(1, width - 2));
+
+  if (row.selected) {
     const contentWidth = Math.max(1, width - 1);
     const body = padVisibleText(` ${tokenText(theme, 'accentStrong', ansi.bold(text))}`, contentWidth);
     return `${renderFocusBar(theme)}${activeBackground(theme, body)}`;

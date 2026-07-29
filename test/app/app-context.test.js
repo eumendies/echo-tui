@@ -40,6 +40,7 @@ function createFakeTranscriptStore(initialSessions = []) {
   const sessionsByCwd = new Map();
   const saveCalls = [];
   const operations = [];
+  let listCallCount = 0;
   let nextSessionIndex = 1;
 
   for (const session of initialSessions) {
@@ -113,6 +114,7 @@ function createFakeTranscriptStore(initialSessions = []) {
   }
 
   function listSessions(cwd) {
+    listCallCount += 1;
     return getSessions(cwd)
       .map(({session}) => ({
         sessionId: session.sessionId,
@@ -121,7 +123,11 @@ function createFakeTranscriptStore(initialSessions = []) {
         cwd: session.cwd,
         messageCount: session.records.length,
         lastMessagePreview: session.records.length > 0 ? session.records.at(-1).text : '空会话',
-        previewRecords: createPreviewRecords(session.records)
+        previewRecords: createPreviewRecords(session.records),
+        sourcePath: `/tmp/${session.sessionId}.jsonl`,
+        title: session.records.find((record) => record.role === 'user')?.displayText
+          || session.records.find((record) => record.role === 'user')?.text
+          || '未命名对话'
       }))
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   }
@@ -131,11 +137,19 @@ function createFakeTranscriptStore(initialSessions = []) {
     return entry ? {session: cloneSession(entry.session), reference: {...entry.reference}} : null;
   }
 
+  function loadSessionReadOnly(cwd, sessionId) {
+    return loadSession(cwd, sessionId);
+  }
+
   return {
     createSession,
     appendSession,
     listSessions,
     loadSession,
+    loadSessionReadOnly,
+    get listCallCount() {
+      return listCallCount;
+    },
     operations,
     saveCalls
   };
@@ -1894,6 +1908,46 @@ test('AppContext exposes semantic subcontexts for resume sessions and composer s
   assert.deepEqual(context.composerContext.getInputHistory(), ['previous input']);
   assert.equal(context.turnContext.isResponding(), true);
   assert.equal(context.transcriptContext.listResumeSessions()[0].sessionId, 'saved-session');
+});
+
+test('AppContext lists reference sessions without current session and clears pending references on load and clear', () => {
+  const transcriptStore = createFakeTranscriptStore([
+    {
+      sessionId: 'source-session',
+      createdAt: '2026-05-18T00:00:00.000Z',
+      updatedAt: '2026-05-18T00:00:00.000Z',
+      records: [{role: 'user', text: 'source title'}, {role: 'assistant', text: 'source answer'}]
+    },
+    {
+      sessionId: 'current-session',
+      createdAt: '2026-05-19T00:00:00.000Z',
+      updatedAt: '2026-05-19T00:00:00.000Z',
+      records: [{role: 'user', text: 'current'}]
+    }
+  ]);
+  const context = createContext({transcriptStore});
+  assert.ok(context.loadTranscriptSession('current-session'));
+  const candidates = context.transcriptContext.listReferenceSessions();
+  assert.deepEqual(candidates.map((session) => session.sessionId), ['source-session']);
+  const listCallCount = transcriptStore.listCallCount;
+  const source = context.transcriptContext.loadReferenceSession(candidates[0]);
+  assert.equal(source.title, 'source title');
+  assert.equal(source.sourcePath, '/tmp/source-session.jsonl');
+  assert.equal(context.transcriptContext.currentSessionId, 'current-session');
+  assert.equal(transcriptStore.listCallCount, listCallCount);
+
+  context.conversationReferenceContext.setPending({
+    materialText: 'source', projectionMode: 'full', sourcePath: source.sourcePath, sourceSessionId: 'source-session', title: source.title
+  });
+  assert.ok(context.conversationReferenceContext.getPending());
+  context.clearTranscriptRecords();
+  assert.equal(context.conversationReferenceContext.getPending(), null);
+
+  context.conversationReferenceContext.setPending({
+    materialText: 'source', projectionMode: 'full', sourcePath: source.sourcePath, sourceSessionId: 'source-session', title: source.title
+  });
+  assert.ok(context.loadTranscriptSession('source-session'));
+  assert.equal(context.conversationReferenceContext.getPending(), null);
 });
 
 test('AppContext browseHistory only enters history mode from an empty idle composer', () => {

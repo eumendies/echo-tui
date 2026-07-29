@@ -16,6 +16,7 @@ const { MemoryCommandHandler } = require('../../src/commands/memory-command-hand
 const { MODEL_CONFIG_PATH_HINT, ModelCommandHandler } = require('../../src/commands/model-command-handler');
 const { ModeCommandHandler } = require('../../src/commands/mode-command-handler');
 const { ResumeCommandHandler, RESUME_PAGE_SIZE } = require('../../src/commands/resume-command-handler');
+const { ReferenceCommandHandler } = require('../../src/commands/reference-command-handler');
 const { SkillsCommandHandler } = require('../../src/commands/skills-command-handler');
 const { SkillInvocationCommandHandler } = require('../../src/commands/skill-invocation-command-handler');
 const { StatusCommandHandler } = require('../../src/commands/status-command-handler');
@@ -34,7 +35,9 @@ function createResumeSessions(count) {
     updatedAt: `2026-05-${String(index + 10).padStart(2, '0')}T10:0${index % 6}:00.000Z`,
     messageCount: index + 1,
     lastMessagePreview: `message ${index + 1}`,
-    previewRecords: [{ role: 'assistant', text: `message ${index + 1}` }]
+    previewRecords: [{ role: 'assistant', text: `message ${index + 1}` }],
+    sourcePath: `/tmp/session-${index + 1}.jsonl`,
+    title: `conversation ${index + 1}`
   })).reverse();
 }
 
@@ -63,7 +66,8 @@ function createFakeHost(options = {}) {
     transcriptAppends: [],
     themeSelections: [],
     undoExecutes: 0,
-    resizeRecoveries: 0
+    resizeRecoveries: 0,
+    referencePreparations: []
   };
   let activeSession = null;
   const host = {
@@ -89,6 +93,22 @@ function createFakeHost(options = {}) {
       },
       listResumeSessions() {
         return (options.sessions || []).map((session) => ({ ...session }));
+      }
+    },
+    reference: {
+      cancelPreparation() {
+        calls.referenceCancelled = (calls.referenceCancelled || 0) + 1;
+        return true;
+      },
+      listSessions() {
+        return (options.referenceSessions || options.sessions || []).map((session) => ({...session}));
+      },
+      prepareForSubmission() {
+        return Promise.resolve(options.referenceFinalizeResult || {ok: false, reason: 'failed'});
+      },
+      prepare(candidate) {
+        calls.referencePreparations.push(candidate);
+        return Promise.resolve(options.referencePrepareResult || {ok: true});
       }
     },
     clipboard: {
@@ -394,7 +414,7 @@ test('resolveSlashCommand asks handlers in order and returns the first match', (
 test('createDefaultSlashCommandHandlers wires handlers in order', () => {
   const handlers = createDefaultHandlersForTest();
 
-  assert.equal(handlers.length, 21);
+  assert.equal(handlers.length, 22);
   assert.equal(handlers.some((handler) => handler.name === 'skill'), false);
   assert.equal(handlers[0].name, 'help');
   assert.equal(handlers[1].name, 'config');
@@ -410,13 +430,14 @@ test('createDefaultSlashCommandHandlers wires handlers in order', () => {
   assert.equal(handlers[11].name, 'diff');
   assert.equal(handlers[12].name, 'undo');
   assert.equal(handlers[13].name, 'resume');
-  assert.equal(handlers[14].name, 'mcp');
-  assert.equal(handlers[15].name, 'memory');
-  assert.equal(handlers[16].name, 'hooks');
-  assert.equal(handlers[17].name, 'skills');
-  assert.equal(handlers[18].name, 'init');
-  assert.equal(handlers[19].name, 'review');
-  assert.equal(handlers[20].name, undefined);
+  assert.equal(handlers[14].name, 'reference');
+  assert.equal(handlers[15].name, 'mcp');
+  assert.equal(handlers[16].name, 'memory');
+  assert.equal(handlers[17].name, 'hooks');
+  assert.equal(handlers[18].name, 'skills');
+  assert.equal(handlers[19].name, 'init');
+  assert.equal(handlers[20].name, 'review');
+  assert.equal(handlers[21].name, undefined);
   assert.equal(handlers[0] instanceof HelpCommandHandler, true);
   assert.equal(handlers[1] instanceof ConfigCommandHandler, true);
   assert.equal(handlers[2] instanceof ModelCommandHandler, true);
@@ -431,13 +452,14 @@ test('createDefaultSlashCommandHandlers wires handlers in order', () => {
   assert.equal(handlers[11] instanceof DiffCommandHandler, true);
   assert.equal(handlers[12] instanceof UndoCommandHandler, true);
   assert.equal(handlers[13] instanceof ResumeCommandHandler, true);
-  assert.equal(handlers[14] instanceof McpCommandHandler, true);
-  assert.equal(handlers[15] instanceof MemoryCommandHandler, true);
-  assert.equal(handlers[16] instanceof HooksCommandHandler, true);
-  assert.equal(handlers[17] instanceof SkillsCommandHandler, true);
-  assert.equal(handlers[18] instanceof AgentWorkflowCommandHandler, true);
+  assert.equal(handlers[14] instanceof ReferenceCommandHandler, true);
+  assert.equal(handlers[15] instanceof McpCommandHandler, true);
+  assert.equal(handlers[16] instanceof MemoryCommandHandler, true);
+  assert.equal(handlers[17] instanceof HooksCommandHandler, true);
+  assert.equal(handlers[18] instanceof SkillsCommandHandler, true);
   assert.equal(handlers[19] instanceof AgentWorkflowCommandHandler, true);
-  assert.equal(handlers[20] instanceof SkillInvocationCommandHandler, true);
+  assert.equal(handlers[20] instanceof AgentWorkflowCommandHandler, true);
+  assert.equal(handlers[21] instanceof SkillInvocationCommandHandler, true);
 });
 
 test('statusCommandHandler loads Codex usage and isolates late results', async () => {
@@ -1316,6 +1338,7 @@ test('createSlashCommandDescriptors derives display metadata from handlers', () 
     { name: 'diff', description: '查看当前文件差异' },
     { name: 'undo', description: '回退上一轮文件修改和会话记录' },
     { name: 'resume', description: '恢复历史会话' },
+    { name: 'reference', description: '引用历史对话' },
     { name: 'mcp', description: '查看和管理 MCP servers' },
     { name: 'memory', description: '查看和管理持久 memory' },
     { name: 'hooks', description: '查看、管理和测试 lifecycle hooks' },
@@ -2094,6 +2117,8 @@ test('resumeCommandHandler opens empty state, selectable sessions, moves, confir
   const session = startCommand(resumeCommandHandler, '/resume', selectable.host);
   assert.equal(session.surface.kind, 'resume');
   assert.equal(session.surface.sessions.length, 5);
+  assert.equal(session.surface.hiddenSessionCountAbove, 0);
+  assert.equal(session.surface.hiddenSessionCountBelow, 2);
   assert.equal(session.surface.focus, 'list');
   assert.equal(session.surface.previewScroll, 0);
   assert.equal(session.data.selectedIndex, 0);
@@ -2110,6 +2135,8 @@ test('resumeCommandHandler opens empty state, selectable sessions, moves, confir
   assert.equal(activeSession.data.windowStart, 1);
   assert.equal(activeSession.data.previewScroll, 0);
   assert.equal(activeSession.surface.selectedIndex, 4);
+  assert.equal(activeSession.surface.hiddenSessionCountAbove, 1);
+  assert.equal(activeSession.surface.hiddenSessionCountBelow, 1);
   assert.deepEqual(activeSession.surface.previewRecords, [{ role: 'assistant', text: 'message 2' }]);
 
   resumeCommandHandler.handleEvent(activeSession, { type: INPUT_EVENTS.SUBMIT }, selectable.host);
@@ -2170,6 +2197,56 @@ test('resumeCommandHandler switches focus and scrolls preview without moving ses
   session = selectable.host.session.getActive();
   assert.equal(session.data.selectedIndex, 1);
   assert.equal(session.data.previewScroll, 0);
+});
+
+test('referenceCommandHandler selects one whole session without loading the current transcript', async () => {
+  const handler = new ReferenceCommandHandler();
+  const empty = createFakeHost({referenceSessions: []});
+
+  assert.equal(handler.match('/reference'), true);
+  assert.equal(handler.match('/reference more'), false);
+  assert.equal(resolveSlashCommand('/reference', createDefaultHandlersForTest()).name, 'reference');
+
+  let session = startCommand(handler, '/reference', empty.host);
+  assert.equal(session.surface.kind, 'info');
+  assert.match(session.surface.lines[0], /没有可引用/);
+  handler.handleEvent(session, {type: INPUT_EVENTS.ESCAPE}, empty.host);
+  assert.equal(empty.calls.sessionCloses, 1);
+
+  const sessions = createResumeSessions(7);
+  const selectable = createFakeHost({referenceSessions: sessions});
+  session = startCommand(handler, '/reference', selectable.host);
+  assert.equal(session.surface.kind, 'resume');
+  assert.equal(session.surface.sessions.length, 5);
+  assert.equal(session.surface.hiddenSessionCountAbove, 0);
+  assert.equal(session.surface.hiddenSessionCountBelow, 2);
+  assert.match(session.surface.sessions[0].label, /conversation 7/);
+  assert.deepEqual(session.surface.previewRecords, [{role: 'assistant', text: 'message 7'}]);
+
+  handler.handleEvent(session, {type: INPUT_EVENTS.MOVE_DOWN}, selectable.host);
+  session = selectable.host.session.getActive();
+  await handler.handleEvent(session, {type: INPUT_EVENTS.SUBMIT}, selectable.host);
+
+  assert.equal(selectable.calls.referencePreparations.length, 1);
+  assert.equal(selectable.calls.referencePreparations[0].sessionId, 'session-6');
+  assert.equal(selectable.calls.referencePreparations[0].sourcePath, '/tmp/session-6.jsonl');
+  assert.deepEqual(selectable.calls.loadedSessionIds, []);
+  assert.equal(selectable.calls.sessionCloses, 1);
+});
+
+test('referenceCommandHandler exposes preparation failures without creating transcript records', async () => {
+  const handler = new ReferenceCommandHandler();
+  const failing = createFakeHost({
+    referenceSessions: createResumeSessions(1),
+    referencePrepareResult: {ok: false, reason: 'failed', error: 'summary failed'}
+  });
+  const session = startCommand(handler, '/reference', failing.host);
+
+  await handler.handleEvent(session, {type: INPUT_EVENTS.SUBMIT}, failing.host);
+
+  assert.equal(failing.host.session.getActive().surface.kind, 'info');
+  assert.match(failing.host.session.getActive().surface.lines[0], /summary failed/);
+  assert.deepEqual(failing.calls.transcriptAppends, []);
 });
 
 test('compactCommandHandler opens confirm session, runs manual compaction through host, and cancels', async () => {

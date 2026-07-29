@@ -109,7 +109,38 @@ function createHostHarness(options = {}) {
       transcriptContext: {
         getCurrentSessionId() {
           return options.sessionId || null;
+        },
+        listReferenceSessions() {
+          return [];
+        },
+        loadReferenceSession() {
+          return null;
         }
+      },
+      conversationReferenceContext: {
+        getPending() {
+          return null;
+        },
+        setPending() {},
+        beginPreparation() {
+          return new AbortController();
+        },
+        cancelPreparation() {
+          return false;
+        },
+        completePreparation() {
+          return false;
+        },
+        failPreparation() {},
+        isPreparing() {
+          return false;
+        },
+        clear() {}
+      },
+      turnContext: {
+        startSpinner() {},
+        stopSpinner() {},
+        clearWorking() {}
       },
       setTheme(theme) {
         setThemes.push(theme);
@@ -163,6 +194,7 @@ test('createCommandHost composes the complete command protocol from domain ports
   assert.deepEqual(Object.keys(host), [
     'composer',
     'transcript',
+    'reference',
     'clipboard',
     'model',
     'config',
@@ -179,6 +211,12 @@ test('createCommandHost composes the complete command protocol from domain ports
     'undo',
     'assistant',
     'ui'
+  ]);
+  assert.deepEqual(Object.keys(host.reference), [
+    'listSessions',
+    'cancelPreparation',
+    'prepare',
+    'prepareForSubmission'
   ]);
 });
 

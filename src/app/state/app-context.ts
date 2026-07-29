@@ -6,6 +6,7 @@ import {SlashSuggestionContext} from './slash-suggestion-context';
 import {TranscriptContext} from './transcript-context';
 import {TurnContext} from './turn-context';
 import {ChangeHistoryContext} from './change-history-context';
+import {ConversationReferenceContext} from './conversation-reference-context';
 import {INPUT_EVENTS} from '../../input/event-types';
 import {createDiffSourceResult} from '../diff/source';
 import {DEFAULT_TUI_THEME, type TuiTheme} from '../../config/theme-config';
@@ -84,6 +85,7 @@ class AppContext {
   readonly modelTuningContext: ModelTuningContext;
   readonly turnContext: TurnContext;
   readonly changeHistoryContext: ChangeHistoryContext;
+  readonly conversationReferenceContext: ConversationReferenceContext;
   readonly renderContext: RenderContext;
   private theme: TuiTheme;
   private appSettings: AppSettings;
@@ -110,6 +112,7 @@ class AppContext {
     this.modelTuningContext = new ModelTuningContext();
     this.turnContext = new TurnContext(this.composerContext, this.transcriptContext);
     this.changeHistoryContext = new ChangeHistoryContext();
+    this.conversationReferenceContext = new ConversationReferenceContext();
     this.theme = theme;
     this.appSettings = structuredClone(appSettings) as AppSettings;
     this.interactionMode = appSettings.defaultInteractionMode;
@@ -221,6 +224,7 @@ class AppContext {
 
     return this.renderContext.createRenderState({
       commandSurface,
+      conversationReference: this.conversationReferenceContext.getRenderState(),
       contextUsage: this.contextUsage,
       model,
       renderPreferences: {
@@ -426,6 +430,7 @@ class AppContext {
     const loadedSession = this.transcriptContext.loadSession(sessionId);
 
     if (loadedSession) {
+      this.conversationReferenceContext.clear();
       this.changeHistoryContext.restoreHistory(this.transcriptContext.changeHistory);
       this.rebuildLastSubmittedAgentMode();
     }
@@ -437,6 +442,7 @@ class AppContext {
    * 清空当前 transcript records，并把当前持久化 session 指针从实例上解绑。
    */
   clearTranscriptRecords(): void {
+    this.conversationReferenceContext.clear();
     this.transcriptContext.clearRecords();
     this.changeHistoryContext.restoreHistory(this.transcriptContext.changeHistory);
     this.lastSubmittedAgentMode = 'normal';
