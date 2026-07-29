@@ -2015,3 +2015,227 @@ test('createAppRenderer appendRecords preserves block spacing for realtime trans
   assert.match(written, /▌ move the file[\s\S]*\n\n◆ ▌ Bash/);
   assert.match(output.writes[0], /\x1b\[38;2;0;170;0m◆\x1b\[39m/);
 });
+
+test('web_search pending preview hides raw arguments and successful pair renders a compact result tree', () => {
+  const preview = renderToolCallPreviewLines('web_search', JSON.stringify({
+    query: 'Echo TUI GitHub',
+    count: 5,
+    market: 'en-US'
+  }), 80).map((line) => stripAnsi(line));
+  assert.deepEqual(preview, ['◆ Web search · “Echo TUI GitHub” · searching']);
+
+  const rendered = renderTranscriptLines(createWebSearchPair('search-success', 'Echo TUI GitHub', [
+    {
+      title: 'Echo TUI — GitHub',
+      url: 'https://github.com/example/echo-tui?q=terminal#readme',
+      snippet: 'Terminal-native AI assistant.'
+    },
+    {
+      title: 'Echo TUI Documentation',
+      url: 'https://echo-tui.dev/docs/getting-started',
+      snippet: 'Installation and configuration.'
+    }
+  ]), 100);
+  const lines = rendered.map((line) => stripAnsi(line));
+
+  assert.deepEqual(lines, [
+    '◆ Web search · “Echo TUI GitHub”',
+    '  2 results',
+    '  ├─ Echo TUI — GitHub',
+    '  │  github.com/example/echo-tui?q=terminal#readme · Terminal-native AI assistant.',
+    '  └─ Echo TUI Documentation',
+    '     echo-tui.dev/docs/getting-started · Installation and configuration.',
+    ''
+  ]);
+  assert.match(rendered[0], /\x1b\[38;2;0;170;0m◆\x1b\[39m/);
+  assert.match(rendered[1], /\x1b\[38;2;85;85;85m/);
+  assert.match(rendered[2], /\x1b\[38;2;255;255;255m/);
+  assert.match(rendered[2], /\x1b\[38;2;85;85;85m  ├─ \x1b\[39m/);
+  assert.match(rendered[3], /\x1b\[38;2;85;85;85m  │  \x1b\[39m/);
+  assert.equal(lines.some((line) => /results:|url:|snippet:/.test(line)), false);
+});
+
+test('web_search result tree displays five complete results and counts omitted results', () => {
+  const fiveResults = Array.from({length: 5}, (_value, index) => ({
+    title: `Result ${index + 1}`,
+    url: `https://example.com/result/${index + 1}`,
+    snippet: `Snippet ${index + 1}`
+  }));
+  const fiveLines = renderTranscriptLines(createWebSearchPair('search-five', 'five results', fiveResults), 80)
+    .map((line) => stripAnsi(line));
+
+  assert.equal(fiveLines.includes('  5 results'), true);
+  assert.equal(fiveLines.includes('  └─ Result 5'), true);
+  assert.equal(fiveLines.some((line) => line.includes('more results')), false);
+
+  const sevenResults = [
+    ...fiveResults,
+    {title: 'Result 6', url: 'https://example.com/result/6', snippet: 'Snippet 6'},
+    {title: 'Result 7', url: 'https://example.com/result/7', snippet: 'Snippet 7'}
+  ];
+  const sevenLines = renderTranscriptLines(createWebSearchPair('search-seven', 'seven results', sevenResults), 80)
+    .map((line) => stripAnsi(line));
+
+  assert.equal(sevenLines.includes('  7 results'), true);
+  assert.equal(sevenLines.includes('  ├─ Result 5'), true);
+  assert.equal(sevenLines.includes('  └─ … 2 more results'), true);
+  assert.equal(sevenLines.some((line) => line.includes('Result 6')), false);
+  assert.equal(sevenLines.some((line) => line.includes('example.com/result/6')), false);
+});
+
+test('web_search projects partial match diagnostics as muted metadata without warning fields', () => {
+  const text = [
+    'warning: results may be unrelated or incomplete',
+    'missing_query_terms: github.com, repository',
+    '',
+    formatWebSearchResults([{
+      title: 'Echo definition',
+      url: 'https://example.com/echo',
+      snippet: 'Echo is a reflected sound.'
+    }])
+  ].join('\n');
+  const rendered = renderTranscriptLines(createWebSearchPairFromText('search-partial', 'Echo TUI GitHub', text), 100);
+  const lines = rendered.map((line) => stripAnsi(line));
+  const metadata = rendered.find((line) => stripAnsi(line).includes('partial match'));
+
+  assert.equal(lines.includes('  1 result · partial match · “github.com”, “repository” not matched'), true);
+  assert.equal(lines.some((line) => line.includes('warning:') || line.includes('missing_query_terms:') || line.includes('△')), false);
+  assert.match(metadata, /\x1b\[38;2;85;85;85m/);
+  assert.doesNotMatch(metadata, /\x1b\[38;2;170;0;0m/);
+});
+
+test('web_search renders empty, failed, and timed out states without result protocol noise', () => {
+  const emptyLines = renderTranscriptLines(createWebSearchPairFromText(
+    'search-empty',
+    'nothing here',
+    'results:\nno search results'
+  ), 80).map((line) => stripAnsi(line));
+  assert.deepEqual(emptyLines, [
+    '◆ Web search · “nothing here”',
+    '  no results',
+    ''
+  ]);
+
+  const failedRecords = createWebSearchPairFromText(
+    'search-failed',
+    'slow query',
+    'web_search failed.\nReason: search request timed out after 15000ms',
+    {ok: false, timedOut: true}
+  );
+  const renderedFailure = renderTranscriptLines(failedRecords, 80);
+  const failureLines = renderedFailure.map((line) => stripAnsi(line));
+
+  assert.deepEqual(failureLines, [
+    '◆ Web search · “slow query” · timed out',
+    '  ⎿ search request timed out after 15000ms',
+    ''
+  ]);
+  assert.match(renderedFailure[0], /\x1b\[38;2;170;0;0m◆\x1b\[39m/);
+  assert.equal(failureLines.some((line) => line.includes('web_search failed') || line.includes('Reason:')), false);
+});
+
+test('web_search only projects truncated status from structured result details', () => {
+  const resultText = [
+    'truncated: true',
+    '',
+    formatWebSearchResults([{
+      title: 'Truncated output guide',
+      url: 'https://example.com/truncated',
+      snippet: 'The literal truncated: true can appear in ordinary page text.'
+    }]),
+    '',
+    'Output was truncated.'
+  ].join('\n');
+  const unstructuredLines = renderTranscriptLines(createWebSearchPairFromText(
+    'search-literal',
+    'truncation docs',
+    resultText
+  ), 100).map((line) => stripAnsi(line));
+  const structuredLines = renderTranscriptLines(createWebSearchPairFromText(
+    'search-truncated',
+    'truncation docs',
+    resultText,
+    {truncated: true}
+  ), 100).map((line) => stripAnsi(line));
+
+  assert.equal(unstructuredLines.includes('  1 result'), true);
+  assert.equal(unstructuredLines.some((line) => line.includes('displayed result')), false);
+  assert.equal(structuredLines.includes('  1 displayed result · truncated'), true);
+});
+
+test('web_search malformed arguments and result text fall back without inventing result items', () => {
+  const malformedPreview = renderToolCallPreviewLines('web_search', '{bad-json', 80).map((line) => stripAnsi(line));
+  assert.deepEqual(malformedPreview, ['◆ web_search({bad-json)']);
+
+  const malformedText = [
+    'results:',
+    '1. Unsafe URL',
+    '   url: javascript:alert(1)',
+    '   snippet: Do not render this as a result tree.'
+  ].join('\n');
+  const lines = renderTranscriptLines(createWebSearchPairFromText(
+    'search-malformed',
+    'unsafe result',
+    malformedText
+  ), 80).map((line) => stripAnsi(line));
+
+  assert.equal(lines.includes('◆ Web search · “unsafe result”'), true);
+  assert.equal(lines.includes('  ⎿ results:'), true);
+  assert.equal(lines.some((line) => line.includes('└─ Unsafe URL') || line.includes('1 result')), false);
+});
+
+test('web_search renderer preserves records and safely wraps long wide-character fields', () => {
+  const records = createWebSearchPair('search-width', `很长的\n搜索 ${'查询'.repeat(50)}`, [{
+    title: `终端搜索结果 ${'标题'.repeat(20)}`,
+    url: `https://example.com/${'long-path/'.repeat(8)}?q=${'值'.repeat(20)}#section`,
+    snippet: `这是一个包含宽字符的摘要。${'内容'.repeat(30)}`
+  }]);
+  const before = structuredClone(records);
+  const width = 24;
+  const lines = renderTranscriptLines(records, width);
+
+  assert.deepEqual(records, before);
+  assertSafeRenderLines(lines, width);
+  assert.equal(lines.every((line) => !stripAnsi(line).includes('\n') && !stripAnsi(line).includes('\r')), true);
+  assert.equal(lines.some((line) => stripAnsi(line).startsWith('  └─ ')), true);
+  assert.equal(lines.some((line) => stripAnsi(line).startsWith('     ')), true);
+});
+
+function createWebSearchPair(callId, query, results) {
+  return createWebSearchPairFromText(callId, query, formatWebSearchResults(results));
+}
+
+function createWebSearchPairFromText(callId, query, text, options = {}) {
+  return [
+    {
+      role: 'tool_call',
+      text: '',
+      toolCallId: callId,
+      toolName: 'web_search',
+      argumentsText: JSON.stringify({query, count: null, offset: null, market: null, safe_search: null})
+    },
+    {
+      role: 'tool_result',
+      text,
+      toolCallId: callId,
+      toolName: 'web_search',
+      ok: options.ok ?? true,
+      details: {
+        kind: 'web_search',
+        timedOut: options.timedOut ?? false,
+        truncated: options.truncated ?? false
+      }
+    }
+  ];
+}
+
+function formatWebSearchResults(results) {
+  return [
+    'results:',
+    ...results.flatMap((result, index) => [
+      `${index + 1}. ${result.title}`,
+      `   url: ${result.url}`,
+      `   snippet: ${result.snippet}`
+    ])
+  ].join('\n');
+}
