@@ -8,6 +8,7 @@ import {readTextFile} from './text-reader';
 import {isGitPath} from '../tool-handler-utils';
 
 import type {ToolResultAttachment} from '../../types/tool';
+import type {ImageReadOptions} from './image-reader';
 import type {Result} from '../tool-handler-utils';
 import type {DirectoryEntry, DirectoryReadResult} from './directory-reader';
 import type {TextFileReadResult} from './text-reader';
@@ -16,7 +17,6 @@ type ReadFilesLimits = {
   maxFiles: number;
   maxFileContentBytes: number;
   maxDirectoryEntries: number;
-  maxImageBytes: number;
   maxPdfBytes: number;
   maxPdfOutputBytes: number;
   maxTotalOutputBytes: number;
@@ -41,7 +41,13 @@ type MediaInfo = {
   mediaType: string;
 };
 
-async function readOneFile(request: NormalizedFileRequest, options: {cwd: string; limits: ReadFilesLimits}): Promise<FileReadResult> {
+type ReadOneFileOptions = {
+  cwd: string; // 作为相对路径解析基准的当前工作目录。
+  imageOptions: ImageReadOptions; // 控制图片附件安全上限和超限压缩行为。
+  limits: ReadFilesLimits; // 控制文本、目录、PDF 与总输出规模。
+};
+
+async function readOneFile(request: NormalizedFileRequest, options: ReadOneFileOptions): Promise<FileReadResult> {
   const resolved = resolveFilePath(request.path, options.cwd);
   const media = guessMedia(request.path);
 
@@ -71,7 +77,7 @@ async function readOneFile(request: NormalizedFileRequest, options: {cwd: string
     }
 
     if (media.kind === 'image') {
-      return createImageFileResult(request, absolutePath, media, stat.size, options.limits.maxImageBytes);
+      return await createImageFileResult(request, absolutePath, media, stat.size, options.imageOptions);
     }
 
     if (media.kind === 'pdf') {
@@ -164,8 +170,8 @@ async function createPdfFileResult(request: NormalizedFileRequest, absolutePath:
   };
 }
 
-function createImageFileResult(request: NormalizedFileRequest, absolutePath: string, media: MediaInfo, sizeBytes: number, maxImageBytes: number): FileReadResult {
-  const result = readImageFile(request.path, absolutePath, media.mediaType, sizeBytes, maxImageBytes);
+async function createImageFileResult(request: NormalizedFileRequest, absolutePath: string, media: MediaInfo, sizeBytes: number, imageOptions: ImageReadOptions): Promise<FileReadResult> {
+  const result = await readImageFile(request.path, absolutePath, media.mediaType, sizeBytes, imageOptions);
 
   if (!result.ok) {
     return result.unsupported
@@ -178,7 +184,9 @@ function createImageFileResult(request: NormalizedFileRequest, absolutePath: str
     ok: true,
     text: formatFileEnvelope({
       body: [
-        `size_bytes: ${sizeBytes}`,
+        ...(result.compressed ? [`original_size_bytes: ${result.originalSizeBytes}`] : []),
+        `size_bytes: ${result.attachment.sizeBytes}`,
+        ...(result.compressed ? ['image_compressed: true'] : []),
         'image_attached: true'
       ],
       kind: 'image',
@@ -330,5 +338,6 @@ export {
 export type {
   FileReadResult,
   NormalizedFileRequest,
+  ReadOneFileOptions,
   ReadFilesLimits
 };

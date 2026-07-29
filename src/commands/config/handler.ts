@@ -128,6 +128,8 @@ class ConfigCommandHandler implements CommandHandler<ConfigCommandData> {
       const selectedRow = GENERAL_CONFIG_ROW_IDS[nextState.selectedIndex];
       if (selectedRow === 'reasoningSummary') {
         nextState.draft.showReasoningSummary = !nextState.draft.showReasoningSummary;
+      } else if (selectedRow === 'autoCompressImages') {
+        nextState.draft.autoCompressImages = !nextState.draft.autoCompressImages;
       } else if (selectedRow === 'save') {
         const result = host.config.saveSettings(nextState.draft);
         nextState = result.ok
@@ -326,6 +328,8 @@ function adjustGeneralValue(state: GeneralConfigState, direction: number): Gener
     state.draft.showReasoningSummary = !state.draft.showReasoningSummary;
   } else if (selectedRow === 'defaultInteractionMode') {
     state.draft.defaultInteractionMode = state.draft.defaultInteractionMode === 'normal' ? 'plan' : 'normal';
+  } else if (selectedRow === 'autoCompressImages') {
+    state.draft.autoCompressImages = !state.draft.autoCompressImages;
   } else if (selectedRow === 'fileEditMode') {
     state.draft.fileEditMode = state.draft.fileEditMode === 'apply_patch' ? 'edit_file' : 'apply_patch';
   } else if (selectedRow === 'instructionFile') {

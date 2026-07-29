@@ -140,6 +140,7 @@ function createFakeHost(options = {}) {
         }
         return structuredClone(options.appSettings || {
           agentInstructionFileName: 'AGENTS.md',
+          autoCompressImages: true,
           compactionThresholdRatio: 0.8,
           defaultInteractionMode: 'normal',
           fileEditMode: 'apply_patch',
@@ -1110,6 +1111,13 @@ test('configCommandHandler opens general tab, saves independently, and lazily op
   assert.equal(calls.savedSettingsDrafts.length, 0);
   configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
   configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_RIGHT}, host);
+  assert.equal(host.session.getActive().surface.state.draft.autoCompressImages, false);
+  configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_LEFT}, host);
+  assert.equal(host.session.getActive().surface.state.draft.autoCompressImages, true);
+  configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
+  assert.equal(host.session.getActive().surface.state.draft.autoCompressImages, false);
+  configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
+  configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_RIGHT}, host);
   assert.equal(host.session.getActive().surface.state.draft.fileEditMode, 'edit_file');
   configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
   configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_RIGHT}, host);
@@ -1120,6 +1128,7 @@ test('configCommandHandler opens general tab, saves independently, and lazily op
   assert.equal(calls.savedSettingsDrafts[0].compactionThresholdRatio, 0.85);
   assert.equal(calls.savedSettingsDrafts[0].skillCatalogContextRatio, 0.03);
   assert.equal(calls.savedSettingsDrafts[0].defaultInteractionMode, 'plan');
+  assert.equal(calls.savedSettingsDrafts[0].autoCompressImages, false);
   assert.equal(calls.savedSettingsDrafts[0].fileEditMode, 'edit_file');
   assert.equal(calls.savedSettingsDrafts[0].agentInstructionFileName, 'CLAUDE.md');
   assert.match(host.session.getActive().surface.state.feedback, /已保存/);
@@ -1150,7 +1159,7 @@ test('configCommandHandler isolates tab read errors and keeps save errors inline
     }
   });
   const session = startCommand(configCommandHandler, '/config', saveError.host);
-  for (let index = 0; index < 7; index += 1) {
+  for (let index = 0; index < 8; index += 1) {
     configCommandHandler.handleEvent(saveError.host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, saveError.host);
   }
   configCommandHandler.handleEvent(saveError.host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, saveError.host);

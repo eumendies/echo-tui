@@ -2,6 +2,7 @@ import {REASONING_EFFORTS, REASONING_SUMMARIES} from '../types/agent';
 import {JsonConfigFile, JsonConfigFileError} from './json-config-file';
 import {getDefaultUserConfigPath} from './user-config';
 import {getProviderPreset, providerRequiresApiKey} from './provider-presets';
+import {DEFAULT_APP_SETTINGS} from './app-settings-config';
 import type {AgentType, BashToolConfig, LlmConfig, ReasoningEffort, ReasoningSummary, ToolRuntimeConfig} from '../types/agent';
 import type {ProviderPreset} from './provider-presets';
 
@@ -541,8 +542,14 @@ function readToolRuntimeConfig(rootConfig: ConfigSource): ToolRuntimeConfig {
   const fileEditConfig = toolsConfig.fileEdit && typeof toolsConfig.fileEdit === 'object' && !Array.isArray(toolsConfig.fileEdit)
     ? toolsConfig.fileEdit as ConfigSource
     : {};
+  const readFilesConfig = toolsConfig.readFiles && typeof toolsConfig.readFiles === 'object' && !Array.isArray(toolsConfig.readFiles)
+    ? toolsConfig.readFiles as ConfigSource
+    : {};
 
   return {
+    autoCompressImages: typeof readFilesConfig.autoCompressImages === 'boolean'
+      ? readFilesConfig.autoCompressImages
+      : DEFAULT_APP_SETTINGS.autoCompressImages,
     bash: readBashToolConfig(bashConfig),
     fileEditMode: fileEditConfig.mode === 'edit_file' ? 'edit_file' : 'apply_patch'
   };

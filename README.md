@@ -6,7 +6,7 @@
 
 ## 前置要求
 
-- Node.js >= 20
+- Node.js >= 20.3
 - 支持 ANSI 控制序列和 stdin raw mode 的终端
 - Windows 下建议在 Windows Terminal + WSL2 中使用；终端需较完整支持 ANSI 控制序列，否则可能出现渲染错位、颜色残留或按键处理异常。
 - `rg`（ripgrep），供 `glob` / `grep` 工具使用
@@ -86,7 +86,8 @@ echo-tui --once --full-access "按要求修改文件并运行检查"
   "instructions": { "fileName": "AGENTS.md" },
   "compaction": { "thresholdRatio": 0.8 },
   "tools": {
-    "fileEdit": { "mode": "apply_patch" }
+    "fileEdit": { "mode": "apply_patch" },
+    "readFiles": { "autoCompressImages": true }
   },
   "ui": {
     "defaultInteractionMode": "normal",
@@ -100,6 +101,7 @@ echo-tui --once --full-access "按要求修改文件并运行检查"
 - `model` 是 provider 的 API 模型名；`contextWindow` 可选，留空时按内置模型映射或默认窗口推断。
 - `reasoning.effort` 可选，用 `/effort` 调整；`tools.bash.maxOutputBytes` 可限制 bash 工具输出上限。bash 工具默认无固定超时，可用 Esc 中断；如确实需要自动终止，可显式配置 `tools.bash.timeoutMs` 为正整数。
 - `tools.fileEdit.mode` 可设为 `apply_patch`（默认）或 `edit_file`。每轮 assistant 请求只注册其中一个；在 `/config` 保存后从下一轮生效，进行中的 tool continuation 保持原 registry 快照。`edit_file`只更新已有 UTF-8 文本文件，以精确 `old_string`/`new_string` 替换；默认要求唯一匹配，只有明确设置 `replace_all` 才会替换调用前原始内容中的全部非重叠匹配。
+- `tools.readFiles.autoCompressImages` 默认为 `true`，同时作用于模型调用 `read_files` 和 File Picker／`@` mention。未超过 5 MB 的 PNG、JPEG、GIF、WebP 保持原样；超限图片会在进入 transcript 前用 Sharp 缩小到附件上限内，npm 安装已包含所需平台运行时，无需预装 ImageMagick 或 libvips。设为 `false` 后，超限图片恢复为明确的读取失败。
 - `instructions.fileName` 可设为 `AGENTS.md` 或 `CLAUDE.md`，默认读取 `AGENTS.md`。两者互斥，不会在所选文件缺失时回退到另一种文件。
 - `compaction.thresholdRatio` 范围为 `0.5–0.95`；`ui.defaultInteractionMode` 可设为 `normal` 或 `plan`，只影响新启动的 TUI，不会切换当前运行中的模式或改变 `--once`；`ui.slashSuggestionMaxVisible` 范围为 `1–20`。`ui.showReasoningSummary` 只控制显示，摘要仍会完整写入会话记录。
 

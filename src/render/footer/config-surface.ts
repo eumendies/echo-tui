@@ -75,6 +75,7 @@ function renderGeneralView(state: GeneralConfigState, tabs: ConfigSurfaceTab[], 
     if (rowId === 'slashSuggestionLimit') return {label: 'Slash 建议最多显示', value: `${state.draft.slashSuggestionMaxVisible} 条`};
     if (rowId === 'reasoningSummary') return {label: '显示推理摘要', value: state.draft.showReasoningSummary ? '开' : '关'};
     if (rowId === 'defaultInteractionMode') return {label: '默认启动模式', value: state.draft.defaultInteractionMode};
+    if (rowId === 'autoCompressImages') return {label: '超限图片自动压缩', value: state.draft.autoCompressImages ? '开' : '关'};
     if (rowId === 'fileEditMode') return {label: '文件编辑工具', value: state.draft.fileEditMode};
     if (rowId === 'instructionFile') return {label: '项目指令文件', value: state.draft.agentInstructionFileName};
     return {label: '保存常规设置', value: '写入 ~/.echo/config.json', action: true};

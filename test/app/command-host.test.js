@@ -441,6 +441,7 @@ test('CommandHost config facade saves and refreshes skill catalog context ratio'
     const {calls, host} = createHostHarness();
     const result = host.config.saveSettings({
       agentInstructionFileName: 'CLAUDE.md',
+      autoCompressImages: false,
       compactionThresholdRatio: 0.8,
       defaultInteractionMode: 'plan',
       fileEditMode: 'edit_file',
@@ -454,6 +455,7 @@ test('CommandHost config facade saves and refreshes skill catalog context ratio'
     assert.equal(readConfig().skills.catalogContextRatio, 0.03);
     assert.equal(readConfig().ui.defaultInteractionMode, 'plan');
     assert.equal(readConfig().tools.fileEdit.mode, 'edit_file');
+    assert.equal(readConfig().tools.readFiles.autoCompressImages, false);
     assert.deepEqual(readConfig().unknown, {kept: true});
   });
 });

@@ -665,8 +665,11 @@ test('AppContext projects tool approval allow-all state into status line', () =>
 test('AppContext snapshots app settings into render state and agent sessions', () => {
   const context = createContext({
     appSettings: {
+      agentInstructionFileName: 'AGENTS.md',
+      autoCompressImages: false,
       compactionThresholdRatio: 0.65,
       defaultInteractionMode: 'plan',
+      fileEditMode: 'apply_patch',
       skillCatalogContextRatio: 0.04,
       showReasoningSummary: false,
       slashSuggestionMaxVisible: 3
@@ -680,6 +683,7 @@ test('AppContext snapshots app settings into render state and agent sessions', (
   assert.equal(context.getAgentSession().compactionThresholdRatio, 0.65);
   assert.equal(context.getAgentSession().skillCatalogContextRatio, 0.04);
   assert.equal(context.getInteractionMode(), 'plan');
+  assert.equal(context.getAutoCompressImages(), false);
 });
 
 test('AppContext refreshes external app settings and classifies redraw impact', () => {
@@ -693,6 +697,7 @@ test('AppContext refreshes external app settings and classifies redraw impact', 
       compaction: {thresholdRatio: 0.65},
       instructions: {fileName: 'CLAUDE.md'},
       skills: {catalogContextRatio: 0.07},
+      tools: {readFiles: {autoCompressImages: false}},
       ui: {defaultInteractionMode: 'plan', showReasoningSummary: false, slashSuggestionMaxVisible: 4}
     }));
     const context = createContext();
@@ -709,11 +714,43 @@ test('AppContext refreshes external app settings and classifies redraw impact', 
     assert.equal(context.getAgentSession().compactionThresholdRatio, 0.65);
     assert.equal(context.getAgentSession().skillCatalogContextRatio, 0.07);
     assert.equal(context.getInteractionMode(), 'normal');
+    assert.equal(context.getAutoCompressImages(), false);
     assert.equal(context.getContextUsage(), null);
     assert.deepEqual(context.createRenderState().renderPreferences, {
       showReasoningSummary: false,
       slashSuggestionMaxVisible: 4
     });
+  } finally {
+    os.homedir = originalHomedir;
+    fs.rmSync(homeDir, {recursive: true, force: true});
+  }
+});
+
+test('AppContext refreshes image compression without clearing context usage or requesting redraw', () => {
+  const originalHomedir = os.homedir;
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-image-settings-'));
+  os.homedir = () => homeDir;
+
+  try {
+    fs.mkdirSync(path.join(homeDir, '.echo'), {recursive: true});
+    fs.writeFileSync(path.join(homeDir, '.echo', 'config.json'), JSON.stringify({
+      tools: {readFiles: {autoCompressImages: false}}
+    }));
+    const context = createContext();
+    const usage = {usedTokens: 100, contextWindow: 1000, source: 'provider'};
+    context.setContextUsage(usage);
+
+    assert.deepEqual(context.refreshAppSettingsFromConfig(), {
+      agentInstructionFileChanged: false,
+      fileEditModeChanged: false,
+      reasoningVisibilityChanged: false,
+      skillCatalogContextRatioChanged: false,
+      slashSuggestionLimitChanged: false
+    });
+    assert.equal(context.getAutoCompressImages(), false);
+    assert.equal(context.getContextUsage().usedTokens, usage.usedTokens);
+    assert.equal(context.getContextUsage().contextWindow, usage.contextWindow);
+    assert.equal(context.getContextUsage().source, usage.source);
   } finally {
     os.homedir = originalHomedir;
     fs.rmSync(homeDir, {recursive: true, force: true});

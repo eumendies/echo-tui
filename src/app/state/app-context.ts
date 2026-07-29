@@ -151,6 +151,13 @@ class AppContext {
   }
 
   /**
+   * 返回当前实例缓存的超限图片压缩偏好，供提交前 mention 展开使用。
+   */
+  getAutoCompressImages(): boolean {
+    return this.appSettings.autoCompressImages;
+  }
+
+  /**
    * 返回当前 Node.js 版本展示文本。
    */
   getNodeVersion(): string {

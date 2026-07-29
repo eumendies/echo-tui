@@ -6,6 +6,7 @@ import type {AgentInstructionFileName, FileEditToolMode} from '../types/agent';
 
 type AppSettings = {
   agentInstructionFileName: AgentInstructionFileName;
+  autoCompressImages: boolean; // 控制本地图片超过最终附件上限时是否自动缩小。
   compactionThresholdRatio: number;
   defaultInteractionMode: DefaultInteractionMode;
   fileEditMode: FileEditToolMode;
@@ -26,6 +27,7 @@ type AppSettingsValidationResult =
 
 const DEFAULT_APP_SETTINGS: Readonly<AppSettings> = {
   agentInstructionFileName: 'AGENTS.md',
+  autoCompressImages: true,
   compactionThresholdRatio: 0.8,
   defaultInteractionMode: 'normal',
   fileEditMode: 'apply_patch',
@@ -84,6 +86,10 @@ function validateAppSettingsDraft(draft: AppSettings): AppSettingsValidationResu
     return {ok: false, error: '文件编辑工具必须是 apply_patch 或 edit_file'};
   }
 
+  if (typeof draft.autoCompressImages !== 'boolean') {
+    return {ok: false, error: '超限图片自动压缩设置必须是布尔值'};
+  }
+
   if (!Number.isInteger(draft.slashSuggestionMaxVisible)
     || draft.slashSuggestionMaxVisible < MIN_SLASH_SUGGESTION_MAX_VISIBLE
     || draft.slashSuggestionMaxVisible > MAX_SLASH_SUGGESTION_MAX_VISIBLE) {
@@ -116,6 +122,7 @@ function saveAppSettingsDraft(draft: AppSettings, options: AppSettingsConfigOpti
     const ui = isPlainObject(rootConfig.ui) ? {...rootConfig.ui} : {};
     const tools = isPlainObject(rootConfig.tools) ? {...rootConfig.tools} : {};
     const fileEdit = isPlainObject(tools.fileEdit) ? {...tools.fileEdit} : {};
+    const readFiles = isPlainObject(tools.readFiles) ? {...tools.readFiles} : {};
 
     compaction.thresholdRatio = draft.compactionThresholdRatio;
     instructions.fileName = draft.agentInstructionFileName;
@@ -124,7 +131,9 @@ function saveAppSettingsDraft(draft: AppSettings, options: AppSettingsConfigOpti
     ui.slashSuggestionMaxVisible = draft.slashSuggestionMaxVisible;
     ui.showReasoningSummary = draft.showReasoningSummary;
     fileEdit.mode = draft.fileEditMode;
+    readFiles.autoCompressImages = draft.autoCompressImages;
     tools.fileEdit = fileEdit;
+    tools.readFiles = readFiles;
     rootConfig.compaction = compaction;
     rootConfig.instructions = instructions;
     rootConfig.skills = skills;
@@ -140,6 +149,7 @@ function normalizeAppSettings(rootConfig: UserConfigSource): AppSettings {
   const ui = isPlainObject(rootConfig.ui) ? rootConfig.ui : {};
   const tools = isPlainObject(rootConfig.tools) ? rootConfig.tools : {};
   const fileEdit = isPlainObject(tools.fileEdit) ? tools.fileEdit : {};
+  const readFiles = isPlainObject(tools.readFiles) ? tools.readFiles : {};
   const thresholdRatio = compaction.thresholdRatio;
   const skillCatalogRatio = skills.catalogContextRatio;
   const slashMaxVisible = ui.slashSuggestionMaxVisible;
@@ -148,6 +158,9 @@ function normalizeAppSettings(rootConfig: UserConfigSource): AppSettings {
     agentInstructionFileName: isAgentInstructionFileName(instructions.fileName)
       ? instructions.fileName
       : DEFAULT_APP_SETTINGS.agentInstructionFileName,
+    autoCompressImages: typeof readFiles.autoCompressImages === 'boolean'
+      ? readFiles.autoCompressImages
+      : DEFAULT_APP_SETTINGS.autoCompressImages,
     compactionThresholdRatio: isFiniteNumberInRange(thresholdRatio, MIN_COMPACTION_THRESHOLD_RATIO, MAX_COMPACTION_THRESHOLD_RATIO)
       ? thresholdRatio
       : DEFAULT_APP_SETTINGS.compactionThresholdRatio,

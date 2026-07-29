@@ -246,7 +246,9 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
       reasoningEffortOverride = commandResult.reasoningEffortOverride;
     }
 
-    const expanded = await expandFileMentionsForUserText(userText, appContext.getCurrentCwd());
+    const expanded = await expandFileMentionsForUserText(userText, appContext.getCurrentCwd(), {
+      autoCompressImages: appContext.getAutoCompressImages()
+    });
     if (expanded.text !== userText || expanded.attachments) {
       displayText = displayText || userText;
       userText = expanded.text;

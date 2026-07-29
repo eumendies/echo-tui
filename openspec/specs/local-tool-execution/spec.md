@@ -527,7 +527,7 @@
 - **THEN** result 文本 SHALL 包含可回传模型的简洁错误说明
 
 ### Requirement: read_files local file reading tool
-系统 SHALL 提供本地工具 `read_files`，用于按已知路径读取一个或多个本地文件。该工具 SHALL 接收 JSON object 参数 `{ "files": Array<{ "path": string, "offset"?: number, "limit"?: number }> }`，并 SHALL 返回可回传模型的 bounded tool execution result。`offset` 与 `limit` SHALL 仅对文本文件读取生效；图片 reader 和 PDF 文字提取 reader SHALL 忽略这些字段而不把字段本身视为错误。文本文件结果 SHALL 在内容块中包含真实的 1-based 文件行号。受支持图片文件 result SHALL 携带 provider-neutral 图片附件并在文本中给出简短附件摘要。PDF 文件 result SHALL 包含可提取文字内容和必要页数摘要；handler SHALL NOT 把图片、PDF 原始二进制内容或 base64 原样写入 result 文本。
+系统 SHALL 提供本地工具 `read_files`，用于按已知路径读取一个或多个本地文件。该工具 SHALL 接收 JSON object 参数 `{ "files": Array<{ "path": string, "offset"?: number, "limit"?: number }> }`，并 SHALL 返回可回传模型的 bounded tool execution result。`offset` 与 `limit` SHALL 仅对文本文件读取生效；图片 reader 和 PDF 文字提取 reader SHALL 忽略这些字段而不把字段本身视为错误。文本文件结果 SHALL 在内容块中包含真实的 1-based 文件行号。受支持图片文件 result SHALL 携带 provider-neutral 图片附件并在文本中给出简短附件摘要；未超过最终附件大小上限的图片 SHALL 保持原始字节，超过该上限但未超过源文件安全上限的图片 SHALL 按 `tools.readFiles.autoCompressImages` 设置压缩或失败。PDF 文件 result SHALL 包含可提取文字内容和必要页数摘要；handler SHALL NOT 把图片、PDF 原始二进制内容或 base64 原样写入 result 文本。
 
 #### Scenario: 默认注册 read_files 工具定义
 - **WHEN** 系统创建默认 tool registry
@@ -561,18 +561,44 @@
 - **THEN** result 文本 SHALL 明确表示该片段没有返回内容
 - **THEN** result 文本 SHALL 不得暗示存在文件第 0 行
 
-#### Scenario: 读取受支持图片文件
-- **WHEN** `read_files` 收到 PNG、JPEG、GIF 或 WebP 图片文件路径
+#### Scenario: 读取未超限的受支持图片文件
+- **WHEN** `read_files` 收到未超过最终附件大小上限的 PNG、JPEG、GIF 或 WebP 图片文件路径
 - **THEN** handler SHALL 按当前工作目录解析路径并读取该图片文件
 - **THEN** result SHALL 标记 `ok: true`
-- **THEN** result 文本 SHALL 包含图片路径、size bytes 和图片已附加的简短摘要
-- **THEN** result SHALL 携带一个 `kind: image` 的 provider-neutral 附件，包含 media type、base64 图片数据、path 和 size bytes
+- **THEN** result 文本 SHALL 包含图片路径、原始 size bytes 和图片已附加的简短摘要
+- **THEN** result SHALL 携带一个 `kind: image` 的 provider-neutral 附件，包含 media type、原始 base64 图片数据、path 和 size bytes
 - **THEN** result 文本 SHALL NOT 包含完整 base64 图片数据或原始二进制内容
+
+#### Scenario: 自动压缩超限 read_files 图片
+- **WHEN** `read_files` 收到超过最终附件大小上限但未超过源文件安全上限的受支持图片
+- **AND** `tools.readFiles.autoCompressImages` 为 `true`
+- **THEN** handler SHALL 使用受限图片处理流程缩小并按原媒体类型重新编码图片
+- **THEN** 只有输出 bytes 不超过最终附件大小上限时 result SHALL 标记 `ok: true` 并生成图片附件
+- **THEN** 附件 SHALL 保留原路径和媒体类型，并使用压缩输出的 Base64 与 size bytes
+- **THEN** result 文本 SHALL 包含原始大小、输出大小和图片已压缩的简短摘要
+- **THEN** result 文本 SHALL NOT 包含完整 base64 图片数据或原始二进制内容
+
+#### Scenario: 关闭自动压缩时超限图片保持失败
+- **WHEN** `read_files` 收到超过最终附件大小上限的受支持图片
+- **AND** `tools.readFiles.autoCompressImages` 为 `false`
+- **THEN** handler SHALL 返回包含图片路径和大小上限的失败结果
+- **THEN** handler SHALL NOT 解码、重新编码或生成该图片附件
+
+#### Scenario: 图片压缩无法安全完成
+- **WHEN** 图片超过源文件安全上限、解码像素上限，或在有限压缩尝试后仍超过最终附件大小上限
+- **THEN** handler SHALL 返回 `ok: false` 和可回传模型的明确失败原因
+- **THEN** handler SHALL NOT 生成原始、部分或仍然超限的图片附件
+- **THEN** handler SHALL NOT 抛出未捕获异常中断 app
+
+#### Scenario: 动态 GIF 压缩保留动画
+- **WHEN** 自动压缩流程处理受支持的动态 GIF
+- **THEN** handler SHALL 保留 GIF 媒体类型和动画帧
+- **THEN** handler SHALL 仅在完整输出满足最终附件大小与处理安全边界时生成附件
 
 #### Scenario: 图片读取忽略 offset 和 limit
 - **WHEN** `read_files` 收到图片 file item 且该 item 包含 `offset` 或 `limit`
 - **THEN** handler SHALL NOT 因这些字段额外失败
-- **THEN** handler SHALL 忽略这些字段读取完整图片附件
+- **THEN** handler SHALL 忽略这些字段读取或压缩完整图片附件
 - **THEN** result 文本 SHALL NOT 常态回显被忽略的 offset 或 limit
 
 #### Scenario: 读取包含可提取文字的 PDF 文件
@@ -604,9 +630,9 @@
 
 #### Scenario: 批量读取多个文件
 - **WHEN** `read_files` 收到多个 file items
-- **THEN** handler SHALL 按输入顺序读取每个文件
+- **THEN** handler SHALL 按输入顺序读取并处理每个文件
 - **THEN** result 文本 SHALL 为每个文件生成独立但紧凑的文件段落
-- **THEN** 成功读取的图片文件 SHALL 按输入顺序追加对应图片附件
+- **THEN** 成功读取或压缩的图片文件 SHALL 按输入顺序追加对应图片附件
 - **THEN** 成功读取的 PDF 文件 SHALL 按输入顺序保留对应文字提取结果
 - **THEN** 任一文件失败时整体 result SHALL 标记 `ok: false`，但成功文件的文本内容、PDF 提取内容和图片附件 SHALL 仍保留在 result 中
 
@@ -632,12 +658,12 @@
 - **THEN** result 文本 SHALL 包含对应文件的简洁失败原因
 - **THEN** handler SHALL NOT 抛出未捕获异常中断 app
 
-#### Scenario: 限制读取规模、图片规模、PDF 规模和输出规模
-- **WHEN** files 数量、单文件本次返回文本内容 bytes、单张图片 bytes、单个 PDF bytes 或总输出 bytes 超过内置安全上限
-- **THEN** handler SHALL 返回 `ok: false` 或在安全边界内截断输出
-- **THEN** result 文本 SHALL 明确说明失败或截断原因
+#### Scenario: 限制读取规模、图片处理规模、PDF 规模和输出规模
+- **WHEN** files 数量、单文件本次返回文本内容 bytes、图片源文件 bytes、图片解码像素、图片最终附件 bytes、单个 PDF bytes 或总输出 bytes 超过对应内置安全上限
+- **THEN** handler SHALL 在允许压缩的图片场景中只生成满足最终附件上限的完整输出，否则 SHALL 返回 `ok: false` 或在文本安全边界内截断输出
+- **THEN** result 文本 SHALL 明确说明失败、压缩或截断原因
 - **THEN** result SHALL 在发生文本输出截断或 PDF 提取文本截断时标记 `truncated: true`
-- **THEN** handler SHALL NOT 生成被截断或不完整的图片附件
+- **THEN** handler SHALL NOT 生成部分、损坏或超过最终附件上限的图片附件
 
 ### Requirement: web_fetch remote content retrieval tool
 系统 SHALL 提供本地工具 `web_fetch`，用于读取一个明确 HTTP(S) URL 的远程内容并返回结构化、受限的文本结果。该工具 SHALL 接收 JSON object 参数 `{ "url": string, "offset"?: number | null, "limit"?: number | null }`。该工具 SHALL 只执行 GET 请求，SHALL NOT 支持搜索、浏览器渲染、自定义 headers、cookies、认证或批量 URL 抓取。格式化文本超过模型可见输出上限时，工具 SHALL 把完整已格式化结果转存到当前项目分区的用户级文件，并 SHALL 向模型保留结果开头。
