@@ -51,6 +51,9 @@ function createFakeTranscriptStore() {
     },
     loadSession() {
       return currentSession ? {session: structuredClone(currentSession), reference: {...currentReference}} : null;
+    },
+    loadSessionReadOnly() {
+      return currentSession ? {session: structuredClone(currentSession), reference: {...currentReference}} : null;
     }
   };
 }
@@ -149,6 +152,66 @@ test('runAssistantTurn emits start and end hooks without adding hook records', a
   ]);
   assert.equal(harness.debugEvents[0].payload.userText.length, 5);
   assert.equal(harness.appContext.turnContext.responding, false);
+});
+
+test('runAssistantTurn coalesces token renders on the activity clock and redraws structural events immediately', async () => {
+  const harness = createHarness();
+  const renderedStates = [];
+  const renderFooter = () => {
+    renderedStates.push(harness.appContext.createRenderState());
+  };
+
+  harness.appContext.turnContext.configureSpinnerTimer({onTick: renderFooter});
+
+  await runAssistantTurn({
+    ...harness.input,
+    renderFooter,
+    async runAgent(_session, callbacks) {
+      callbacks.onToken('a', 'a');
+      callbacks.onToken('b', 'ab');
+
+      assert.equal(renderedStates.length, 0);
+      await new Promise((resolve) => setTimeout(resolve, 130));
+      assert.equal(renderedStates.at(-1).pending.text, 'ab');
+
+      const renderCountBeforeToolCall = renderedStates.length;
+      callbacks.onToolCall({callId: 'call-1', toolName: 'grep', argumentsText: '{"pattern":"ab"}'});
+      assert.equal(renderedStates.length, renderCountBeforeToolCall + 1);
+      assert.equal(renderedStates.at(-1).pending.kind, 'tool_call');
+
+      callbacks.onComplete('ab');
+      return 'ab';
+    }
+  });
+
+  assert.equal(harness.appContext.turnContext.spinnerTimer, null);
+  assert.deepEqual(harness.appended.map((record) => record.role), ['user', 'assistant']);
+  assert.equal(harness.appended[1].text, 'ab');
+});
+
+test('runAssistantTurn preserves final streamed text when completion precedes the first activity tick', async () => {
+  const harness = createHarness();
+  let activityTicks = 0;
+
+  harness.appContext.turnContext.configureSpinnerTimer({
+    onTick() {
+      activityTicks += 1;
+    }
+  });
+
+  await runAssistantTurn({
+    ...harness.input,
+    async runAgent(_session, callbacks) {
+      callbacks.onToken('o', 'ok');
+      callbacks.onComplete('ok');
+      return 'ok';
+    }
+  });
+
+  assert.equal(activityTicks, 0);
+  assert.equal(harness.appContext.turnContext.getPending(), null);
+  assert.equal(harness.appended.at(-1).role, 'assistant');
+  assert.equal(harness.appended.at(-1).text, 'ok');
 });
 
 test('runAssistantTurn stores plan transition prompt while preserving display, history, metadata, and attachments', async () => {

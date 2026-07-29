@@ -27,6 +27,16 @@ import {
   renderUseSkillToolResultLines
 } from './tool-message-renderers/use-skill';
 import {
+  WEB_SEARCH_TOOL_NAME,
+  renderWebSearchToolCallLines,
+  renderWebSearchToolPairLines
+} from './tool-message-renderers/web-search';
+import {
+  WEB_FETCH_TOOL_NAME,
+  renderWebFetchToolCallLines,
+  renderWebFetchToolPairLines
+} from './tool-message-renderers/web-fetch';
+import {
   TOOL_RESULT_MAX_DISPLAY_LINES,
   renderPrefixedLines,
   resolveToolCallPrefixStyle,
@@ -76,6 +86,14 @@ function renderPairAwareToolPairLines(call: ToolCallTranscriptRecord, result: To
 
   if (call.toolName === USE_SKILL_TOOL_NAME && result.toolName === USE_SKILL_TOOL_NAME) {
     return renderUseSkillToolPairLines(call, result, width, theme);
+  }
+
+  if (call.toolName === WEB_SEARCH_TOOL_NAME && result.toolName === WEB_SEARCH_TOOL_NAME) {
+    return renderWebSearchToolPairLines(call, result, width, theme);
+  }
+
+  if (call.toolName === WEB_FETCH_TOOL_NAME && result.toolName === WEB_FETCH_TOOL_NAME) {
+    return renderWebFetchToolPairLines(call, result, width, theme);
   }
 
   if (isMemoryRenderToolName(call.toolName) && call.toolName === result.toolName) {
@@ -187,6 +205,16 @@ function renderToolRecordLines(record: ToolTranscriptRecord, width: number, opti
     if (record.role === 'tool_result') {
       return renderUseSkillToolResultLines(record, width, theme);
     }
+  }
+
+  if (record.toolName === WEB_SEARCH_TOOL_NAME && record.role === 'tool_call') {
+    return renderWebSearchToolCallLines(record, width, options.callStatus, theme)
+      ?? renderGenericToolRecordLines(record, width, options, theme);
+  }
+
+  if (record.toolName === WEB_FETCH_TOOL_NAME && record.role === 'tool_call') {
+    return renderWebFetchToolCallLines(record, width, options.callStatus, theme)
+      ?? renderGenericToolRecordLines(record, width, options, theme);
   }
 
   if (isMemoryRenderToolName(record.toolName)) {

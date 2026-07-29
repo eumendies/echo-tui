@@ -2,9 +2,7 @@
 
 ## Purpose
 定义 composer `@` 文件选择器、文件 mention 渲染、提交时文件上下文注入，以及 user 图片附件转换到 provider request 的外部行为。
-
 ## Requirements
-
 ### Requirement: @ 文件选择器触发与查询
 系统 SHALL 在普通和计划 composer 输入态支持通过输入 `@` 打开文件选择器。文件选择器 SHALL 使用当前 composer 中从 `@` 开始的 trigger range 表示查询文本；用户在选择器打开期间继续输入的普通字符 SHALL 追加到该 range 并作为文件过滤 query。shell 和 shell-local 输入态 SHALL 将 `@` 作为普通字符处理。query 过滤 SHALL 保持有界，避免在大目录中因为搜索输出过大导致 file picker 空白或不可交互。
 
@@ -173,7 +171,7 @@ composer SHALL 在渲染层对 `@path` 和 `@"path with spaces"` 文件 mention 
 - **THEN** renderer SHALL NOT 为每次渲染同步读取文件系统来校验 mention 是否存在
 
 ### Requirement: 文件 mention 提交上下文
-系统 SHALL 在提交普通用户消息前解析 composer 中的文件或目录 mention，并将支持的文件内容、目录直接子项或 user attachments 加入 provider-facing user text。可见 transcript SHALL 保留用户原始输入；provider-facing 文本 SHALL 包含路径上下文说明。provider-facing `@` 上下文 SHALL 只保留对模型有用的路径、文件内容、目录直接子项、图片已附件化说明和读取/支持错误信息，不包含 verbose `read_files` metadata。系统 SHALL 对重复 mention 去重读取，但不得修改用户可见文本。
+系统 SHALL 在提交普通用户消息前解析 composer 中的文件或目录 mention，并将支持的文件内容、目录直接子项或 user attachments 加入 provider-facing user text。可见 transcript SHALL 保留用户原始输入；provider-facing 文本 SHALL 包含路径上下文说明。provider-facing `@` 上下文 SHALL 只保留对模型有用的路径、文件内容、目录直接子项、图片已附件化说明和读取/支持错误信息，不包含 verbose `read_files` metadata。系统 SHALL 对重复 mention 去重读取，但不得修改用户可见文本。受支持图片超过最终附件大小上限但未超过源文件安全上限时，系统 SHALL 按归一化的 `tools.readFiles.autoCompressImages` 设置决定生成压缩附件或返回失败。
 
 #### Scenario: 文本文件加入上下文
 - **WHEN** 用户提交的 composer 文本包含可读取文本文件 mention
@@ -195,15 +193,30 @@ composer SHALL 在渲染层对 `@path` 和 `@"path with spaces"` 文件 mention 
 - **THEN** 系统 SHALL 提取 PDF 文字并将提取文本加入 provider-facing user text
 - **THEN** 系统 SHALL NOT 对 PDF 执行 OCR 或页面渲染
 
-#### Scenario: 图片文件作为模型图片输入
-- **WHEN** 用户提交的 composer 文本包含受支持图片 mention
-- **THEN** 系统 SHALL 将该图片作为 provider-neutral user image attachment 附加到 user transcript record
+#### Scenario: 未超限图片文件作为模型图片输入
+- **WHEN** 用户提交的 composer 文本包含受支持且未超过最终附件大小上限的图片 mention
+- **THEN** 系统 SHALL 将该图片原始字节作为 provider-neutral user image attachment 附加到 user transcript record
 - **THEN** provider-facing user text SHALL 说明该图片已作为附件提供
 - **THEN** provider-facing user text SHALL 包含图片文件路径
 - **THEN** provider-facing user text SHALL NOT 包含图片 base64 或原始二进制内容
 
+#### Scenario: 自动压缩超限 mention 图片
+- **WHEN** 用户提交的 composer 文本包含受支持图片 mention
+- **AND** 图片超过最终附件大小上限但未超过源文件安全上限
+- **AND** `tools.readFiles.autoCompressImages` 为 `true`
+- **THEN** 系统 SHALL 在提交 user transcript record 前缩小并重新编码该图片
+- **THEN** 系统 SHALL 只把不超过最终附件大小上限的压缩结果作为 user 图片附件
+- **THEN** 附件 SHALL 保留原路径和媒体类型，并使用压缩结果的 Base64 与 size bytes
+- **THEN** 可见 transcript SHALL 继续显示用户原始 composer 文本
+
+#### Scenario: 关闭自动压缩时拒绝超限 mention 图片
+- **WHEN** 用户提交的图片 mention 超过最终附件大小上限
+- **AND** `tools.readFiles.autoCompressImages` 为 `false`
+- **THEN** provider-facing user text SHALL 包含该路径和图片超限说明
+- **THEN** 系统 SHALL NOT 为该图片生成附件
+
 #### Scenario: 不支持或读取失败路径明确反馈
-- **WHEN** 用户提交的 composer 文本包含不支持、不可读取、不存在或超出限制的路径 mention
+- **WHEN** 用户提交的 composer 文本包含不支持、不可读取、不存在、超过源文件安全上限或无法安全压缩的路径 mention
 - **THEN** provider-facing user text SHALL 包含该路径的明确失败说明
 - **THEN** provider-facing user text SHALL 包含失败路径和模型可理解的错误摘要
 - **THEN** 系统 SHALL NOT 静默丢弃该 mention
@@ -211,7 +224,7 @@ composer SHALL 在渲染层对 `@path` 和 `@"path with spaces"` 文件 mention 
 
 #### Scenario: 重复 mention 去重读取
 - **WHEN** 用户提交的 composer 文本多次引用同一路径
-- **THEN** 系统 SHALL 最多读取该路径一次
+- **THEN** 系统 SHALL 最多读取和处理该路径一次
 - **THEN** 可见 transcript SHALL 保留用户原始重复 mention 文本
 
 ### Requirement: user record 图片附件转换
@@ -236,3 +249,4 @@ composer SHALL 在渲染层对 `@path` 和 `@"path with spaces"` 文件 mention 
 #### Scenario: 无图片附件保持原有文本转换
 - **WHEN** user transcript record 不包含有效图片附件
 - **THEN** provider converters SHALL 保持既有纯文本 user message 转换语义
+

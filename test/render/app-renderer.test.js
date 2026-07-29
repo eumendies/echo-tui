@@ -189,6 +189,28 @@ test('renderTranscriptLines uses displayText for user records when present', () 
   assert.equal(lines.some((line) => line.includes('Skill Instructions')), false);
 });
 
+test('renderTranscriptLines replays conversation reference card without expanded history or internal metadata', () => {
+  const lines = renderTranscriptLines([{
+    role: 'user',
+    text: '<referenced_conversation>\nprivate long history\n</referenced_conversation>\n<current_request>\ncontinue\n</current_request>',
+    displayText: 'continue',
+    metadata: {
+      conversationReference: {
+        projectionMode: 'summary',
+        sourcePath: '/tmp/session-internal.jsonl',
+        sourceSessionId: 'session-internal',
+        title: 'MCP 权限分级设计'
+      }
+    }
+  }], 80).map((line) => stripAnsi(line));
+
+  assert.ok(lines.some((line) => line.includes('引用对话 · 总结')));
+  assert.ok(lines.some((line) => line.includes('MCP 权限分级设计')));
+  assert.ok(lines.some((line) => line.startsWith('▌ continue')));
+  assert.equal(lines.some((line) => line.includes('private long history')), false);
+  assert.equal(lines.some((line) => line.includes('session-internal')), false);
+});
+
 test('renderTranscriptLines hides mode transition prompt behind user display text', () => {
   const lines = renderTranscriptLines(
     [{
@@ -1993,3 +2015,547 @@ test('createAppRenderer appendRecords preserves block spacing for realtime trans
   assert.match(written, /▌ move the file[\s\S]*\n\n◆ ▌ Bash/);
   assert.match(output.writes[0], /\x1b\[38;2;0;170;0m◆\x1b\[39m/);
 });
+
+test('web_search pending preview hides raw arguments and successful pair renders a compact result tree', () => {
+  const preview = renderToolCallPreviewLines('web_search', JSON.stringify({
+    query: 'Echo TUI GitHub',
+    count: 5,
+    market: 'en-US'
+  }), 80).map((line) => stripAnsi(line));
+  assert.deepEqual(preview, ['◆ Web search · “Echo TUI GitHub” · searching']);
+
+  const rendered = renderTranscriptLines(createWebSearchPair('search-success', 'Echo TUI GitHub', [
+    {
+      title: 'Echo TUI — GitHub',
+      url: 'https://github.com/example/echo-tui?q=terminal#readme',
+      snippet: 'Terminal-native AI assistant.'
+    },
+    {
+      title: 'Echo TUI Documentation',
+      url: 'https://echo-tui.dev/docs/getting-started',
+      snippet: 'Installation and configuration.'
+    }
+  ]), 100);
+  const lines = rendered.map((line) => stripAnsi(line));
+
+  assert.deepEqual(lines, [
+    '◆ Web search · “Echo TUI GitHub”',
+    '  2 results',
+    '  ├─ Echo TUI — GitHub',
+    '  │  github.com/example/echo-tui?q=terminal#readme · Terminal-native AI assistant.',
+    '  └─ Echo TUI Documentation',
+    '     echo-tui.dev/docs/getting-started · Installation and configuration.',
+    ''
+  ]);
+  assert.match(rendered[0], /\x1b\[38;2;0;170;0m◆\x1b\[39m/);
+  assert.match(rendered[1], /\x1b\[38;2;85;85;85m/);
+  assert.match(rendered[2], /\x1b\[38;2;255;255;255m/);
+  assert.match(rendered[2], /\x1b\[38;2;85;85;85m  ├─ \x1b\[39m/);
+  assert.match(rendered[3], /\x1b\[38;2;85;85;85m  │  \x1b\[39m/);
+  assert.equal(lines.some((line) => /results:|url:|snippet:/.test(line)), false);
+});
+
+test('web_search result tree displays five complete results and counts omitted results', () => {
+  const fiveResults = Array.from({length: 5}, (_value, index) => ({
+    title: `Result ${index + 1}`,
+    url: `https://example.com/result/${index + 1}`,
+    snippet: `Snippet ${index + 1}`
+  }));
+  const fiveLines = renderTranscriptLines(createWebSearchPair('search-five', 'five results', fiveResults), 80)
+    .map((line) => stripAnsi(line));
+
+  assert.equal(fiveLines.includes('  5 results'), true);
+  assert.equal(fiveLines.includes('  └─ Result 5'), true);
+  assert.equal(fiveLines.some((line) => line.includes('more results')), false);
+
+  const sevenResults = [
+    ...fiveResults,
+    {title: 'Result 6', url: 'https://example.com/result/6', snippet: 'Snippet 6'},
+    {title: 'Result 7', url: 'https://example.com/result/7', snippet: 'Snippet 7'}
+  ];
+  const sevenLines = renderTranscriptLines(createWebSearchPair('search-seven', 'seven results', sevenResults), 80)
+    .map((line) => stripAnsi(line));
+
+  assert.equal(sevenLines.includes('  7 results'), true);
+  assert.equal(sevenLines.includes('  ├─ Result 5'), true);
+  assert.equal(sevenLines.includes('  └─ … 2 more results'), true);
+  assert.equal(sevenLines.some((line) => line.includes('Result 6')), false);
+  assert.equal(sevenLines.some((line) => line.includes('example.com/result/6')), false);
+});
+
+test('web_search projects partial match diagnostics as muted metadata without warning fields', () => {
+  const text = [
+    'warning: results may be unrelated or incomplete',
+    'missing_query_terms: github.com, repository',
+    '',
+    formatWebSearchResults([{
+      title: 'Echo definition',
+      url: 'https://example.com/echo',
+      snippet: 'Echo is a reflected sound.'
+    }])
+  ].join('\n');
+  const rendered = renderTranscriptLines(createWebSearchPairFromText('search-partial', 'Echo TUI GitHub', text), 100);
+  const lines = rendered.map((line) => stripAnsi(line));
+  const metadata = rendered.find((line) => stripAnsi(line).includes('partial match'));
+
+  assert.equal(lines.includes('  1 result · partial match · “github.com”, “repository” not matched'), true);
+  assert.equal(lines.some((line) => line.includes('warning:') || line.includes('missing_query_terms:') || line.includes('△')), false);
+  assert.match(metadata, /\x1b\[38;2;85;85;85m/);
+  assert.doesNotMatch(metadata, /\x1b\[38;2;170;0;0m/);
+});
+
+test('web_search renders empty, failed, and timed out states without result protocol noise', () => {
+  const emptyLines = renderTranscriptLines(createWebSearchPairFromText(
+    'search-empty',
+    'nothing here',
+    'results:\nno search results'
+  ), 80).map((line) => stripAnsi(line));
+  assert.deepEqual(emptyLines, [
+    '◆ Web search · “nothing here”',
+    '  no results',
+    ''
+  ]);
+
+  const failedRecords = createWebSearchPairFromText(
+    'search-failed',
+    'slow query',
+    'web_search failed.\nReason: search request timed out after 15000ms',
+    {ok: false, timedOut: true}
+  );
+  const renderedFailure = renderTranscriptLines(failedRecords, 80);
+  const failureLines = renderedFailure.map((line) => stripAnsi(line));
+
+  assert.deepEqual(failureLines, [
+    '◆ Web search · “slow query” · timed out',
+    '  ⎿ search request timed out after 15000ms',
+    ''
+  ]);
+  assert.match(renderedFailure[0], /\x1b\[38;2;170;0;0m◆\x1b\[39m/);
+  assert.equal(failureLines.some((line) => line.includes('web_search failed') || line.includes('Reason:')), false);
+});
+
+test('web_search only projects truncated status from structured result details', () => {
+  const resultText = [
+    'truncated: true',
+    '',
+    formatWebSearchResults([{
+      title: 'Truncated output guide',
+      url: 'https://example.com/truncated',
+      snippet: 'The literal truncated: true can appear in ordinary page text.'
+    }]),
+    '',
+    'Output was truncated.'
+  ].join('\n');
+  const unstructuredLines = renderTranscriptLines(createWebSearchPairFromText(
+    'search-literal',
+    'truncation docs',
+    resultText
+  ), 100).map((line) => stripAnsi(line));
+  const structuredLines = renderTranscriptLines(createWebSearchPairFromText(
+    'search-truncated',
+    'truncation docs',
+    resultText,
+    {truncated: true}
+  ), 100).map((line) => stripAnsi(line));
+
+  assert.equal(unstructuredLines.includes('  1 result'), true);
+  assert.equal(unstructuredLines.some((line) => line.includes('displayed result')), false);
+  assert.equal(structuredLines.includes('  1 displayed result · truncated'), true);
+});
+
+test('web_search malformed arguments and result text fall back without inventing result items', () => {
+  const malformedPreview = renderToolCallPreviewLines('web_search', '{bad-json', 80).map((line) => stripAnsi(line));
+  assert.deepEqual(malformedPreview, ['◆ web_search({bad-json)']);
+
+  const malformedText = [
+    'results:',
+    '1. Unsafe URL',
+    '   url: javascript:alert(1)',
+    '   snippet: Do not render this as a result tree.'
+  ].join('\n');
+  const lines = renderTranscriptLines(createWebSearchPairFromText(
+    'search-malformed',
+    'unsafe result',
+    malformedText
+  ), 80).map((line) => stripAnsi(line));
+
+  assert.equal(lines.includes('◆ Web search · “unsafe result”'), true);
+  assert.equal(lines.includes('  ⎿ results:'), true);
+  assert.equal(lines.some((line) => line.includes('└─ Unsafe URL') || line.includes('1 result')), false);
+});
+
+test('web_search renderer preserves records and safely wraps long wide-character fields', () => {
+  const records = createWebSearchPair('search-width', `很长的\n搜索 ${'查询'.repeat(50)}`, [{
+    title: `终端搜索结果 ${'标题'.repeat(20)}`,
+    url: `https://example.com/${'long-path/'.repeat(8)}?q=${'值'.repeat(20)}#section`,
+    snippet: `这是一个包含宽字符的摘要。${'内容'.repeat(30)}`
+  }]);
+  const before = structuredClone(records);
+  const width = 24;
+  const lines = renderTranscriptLines(records, width);
+
+  assert.deepEqual(records, before);
+  assertSafeRenderLines(lines, width);
+  assert.equal(lines.every((line) => !stripAnsi(line).includes('\n') && !stripAnsi(line).includes('\r')), true);
+  assert.equal(lines.some((line) => stripAnsi(line).startsWith('  └─ ')), true);
+  assert.equal(lines.some((line) => stripAnsi(line).startsWith('     ')), true);
+});
+
+function createWebSearchPair(callId, query, results) {
+  return createWebSearchPairFromText(callId, query, formatWebSearchResults(results));
+}
+
+function createWebSearchPairFromText(callId, query, text, options = {}) {
+  return [
+    {
+      role: 'tool_call',
+      text: '',
+      toolCallId: callId,
+      toolName: 'web_search',
+      argumentsText: JSON.stringify({query, count: null, offset: null, market: null, safe_search: null})
+    },
+    {
+      role: 'tool_result',
+      text,
+      toolCallId: callId,
+      toolName: 'web_search',
+      ok: options.ok ?? true,
+      details: {
+        kind: 'web_search',
+        timedOut: options.timedOut ?? false,
+        truncated: options.truncated ?? false
+      }
+    }
+  ];
+}
+
+function formatWebSearchResults(results) {
+  return [
+    'results:',
+    ...results.flatMap((result, index) => [
+      `${index + 1}. ${result.title}`,
+      `   url: ${result.url}`,
+      `   snippet: ${result.snippet}`
+    ])
+  ].join('\n');
+}
+
+test('web_fetch pending preview hides arguments and successful result renders a document rail', () => {
+  const preview = renderToolCallPreviewLines('web_fetch', JSON.stringify({
+    url: 'https://example.com/docs',
+    offset: 0,
+    limit: 20
+  }), 100).map((line) => stripAnsi(line));
+  assert.deepEqual(preview, ['◆ ▌ Web fetch · example.com/docs · fetching']);
+
+  const rendered = renderTranscriptLines(createWebFetchPair(
+    'fetch-success',
+    {url: 'https://example.com/docs'},
+    formatWebFetchEnvelope({
+      firstLine: 'https://example.com/docs',
+      headers: ['status: 200 OK'],
+      body: 'Documentation\n\nReadable page content.'
+    })
+  ), 100);
+  const lines = rendered.map((line) => stripAnsi(line));
+
+  assert.deepEqual(lines, [
+    '◆ ▌ Web fetch · example.com/docs · 200 OK',
+    '  ▌ ',
+    '  ▌ Documentation',
+    '  ▌ ',
+    '  ▌ Readable page content.',
+    ''
+  ]);
+  assert.match(rendered[0], /\x1b\[38;2;0;170;0m◆\x1b\[39m/);
+  assert.match(rendered[1], /\x1b\[38;2;85;85;85m▌\x1b\[39m/);
+  assert.match(rendered[2], /\x1b\[38;2;255;255;255mDocumentation\x1b\[39m/);
+  assert.equal(lines.some((line) => /content:|status:|```/.test(line)), false);
+});
+
+test('web_fetch renders empty content inline and applies the ten-line document budget', () => {
+  const emptyLines = renderTranscriptLines(createWebFetchPair(
+    'fetch-empty',
+    {url: 'https://example.com/empty'},
+    formatWebFetchEnvelope({firstLine: 'https://example.com/empty', headers: ['status: 204 No Content'], body: ''})
+  ), 100).map((line) => stripAnsi(line));
+  assert.deepEqual(emptyLines, [
+    '◆ ▌ Web fetch · example.com/empty · 204 No Content · no readable content',
+    ''
+  ]);
+
+  const tenBody = Array.from({length: 10}, (_value, index) => `line ${index + 1}`).join('\n');
+  const tenLines = renderTranscriptLines(createWebFetchPair(
+    'fetch-ten',
+    {url: 'https://example.com/ten'},
+    formatWebFetchEnvelope({firstLine: 'https://example.com/ten', headers: ['status: 200 OK'], body: tenBody})
+  ), 80).map((line) => stripAnsi(line));
+  assert.equal(tenLines.includes('  ▌ line 10'), true);
+  assert.equal(tenLines.some((line) => line.includes('more lines')), false);
+
+  const elevenBody = `${tenBody}\nline 11`;
+  const elevenLines = renderTranscriptLines(createWebFetchPair(
+    'fetch-eleven',
+    {url: 'https://example.com/eleven'},
+    formatWebFetchEnvelope({firstLine: 'https://example.com/eleven', headers: ['status: 200 OK'], body: elevenBody})
+  ), 80).map((line) => stripAnsi(line));
+  assert.equal(elevenLines.includes('  ▌ line 9'), true);
+  assert.equal(elevenLines.includes('  ▌ line 10'), false);
+  assert.equal(elevenLines.includes('  ▌ … 2 more lines'), true);
+});
+
+test('web_fetch keeps redirect, range, more, and status metadata in the tool title', () => {
+  const redirected = formatWebFetchEnvelope({
+    firstLine: 'https://example.org/final/article',
+    headers: [
+      'url: https://example.com/start',
+      'final_url: https://example.org/final/article',
+      'status: 200 OK',
+      'has_more: true'
+    ],
+    body: 'line forty one\nline forty two'
+  });
+  const lines = renderTranscriptLines(createWebFetchPair(
+    'fetch-redirect',
+    {url: 'https://example.com/start', offset: 40, limit: 2},
+    redirected
+  ), 160).map((line) => stripAnsi(line));
+
+  assert.equal(lines[0], '◆ ▌ Web fetch · example.com/start → example.org/final/article · 200 OK · lines 41–42 · more');
+  assert.equal(lines.some((line) => /^  (200 OK|lines 41)/u.test(line)), false);
+  assert.equal(lines.some((line) => /url:|final_url:|has_more:/.test(line)), false);
+
+  const longUrl = `https://example.com/${'deep-segment/'.repeat(20)}final-page?query=value`;
+  const longLines = renderTranscriptLines(createWebFetchPair(
+    'fetch-long-url',
+    {url: longUrl},
+    formatWebFetchEnvelope({firstLine: longUrl, headers: ['status: 200 OK'], body: 'content'})
+  ), 200).map((line) => stripAnsi(line));
+  assert.match(longLines[0], /^◆ ▌ Web fetch · example\.com\/….*final-page\?query=value · 200 OK$/u);
+});
+
+test('web_fetch renders HTTP error content, timeout, network failure, and unsupported media distinctly', () => {
+  const httpRendered = renderTranscriptLines(createWebFetchPair(
+    'fetch-404',
+    {url: 'https://example.com/missing'},
+    formatWebFetchEnvelope({
+      firstLine: 'web_fetch failed.',
+      headers: ['status: 404 Not Found', 'content_type: text/plain'],
+      body: 'The requested page could not be found.'
+    }),
+    {ok: false}
+  ), 100);
+  const httpLines = httpRendered.map((line) => stripAnsi(line));
+  assert.equal(httpLines[0], '◆ ▌ Web fetch · example.com/missing · 404 Not Found');
+  assert.equal(httpLines.includes('  ▌ The requested page could not be found.'), true);
+  assert.equal(httpLines[0].includes('failed'), false);
+  assert.match(httpRendered[0], /\x1b\[38;2;170;0;0m◆\x1b\[39m/);
+
+  const timeoutLines = renderTranscriptLines(createWebFetchPair(
+    'fetch-timeout',
+    {url: 'https://example.com/slow'},
+    'web_fetch failed.\nReason: request timed out after 20000ms',
+    {ok: false, timedOut: true}
+  ), 100).map((line) => stripAnsi(line));
+  assert.deepEqual(timeoutLines, [
+    '◆ ▌ Web fetch · example.com/slow · timed out',
+    '  ▌ ',
+    '  ▌ request timed out after 20000ms',
+    ''
+  ]);
+
+  const failureLines = renderTranscriptLines(createWebFetchPair(
+    'fetch-failure',
+    {url: 'https://example.com/rejected'},
+    'web_fetch failed.\nReason: redirect target rejected',
+    {ok: false}
+  ), 100).map((line) => stripAnsi(line));
+  assert.equal(failureLines[0], '◆ ▌ Web fetch · example.com/rejected · failed');
+  assert.equal(failureLines[1], '  ▌ ');
+  assert.equal(failureLines[2], '  ▌ redirect target rejected');
+
+  const unsupportedText = [
+    'web_fetch failed.',
+    'url: https://example.com/image.png',
+    'status: 200 OK',
+    'content_type: image/png',
+    'error: unsupported media type',
+    'reason: unsupported content type: image/png'
+  ].join('\n');
+  const unsupportedLines = renderTranscriptLines(createWebFetchPair(
+    'fetch-unsupported',
+    {url: 'https://example.com/image.png'},
+    unsupportedText,
+    {ok: false}
+  ), 120).map((line) => stripAnsi(line));
+  assert.deepEqual(unsupportedLines, [
+    '◆ ▌ Web fetch · example.com/image.png · 200 OK · unsupported · image/png',
+    '  ▌ ',
+    '  ▌ unsupported content type: image/png',
+    ''
+  ]);
+});
+
+test('web_fetch distinguishes response, preview, and offloaded truncation from structured details', () => {
+  const responseTruncated = formatWebFetchEnvelope({
+    firstLine: 'https://example.com/response-cap',
+    headers: ['status: 200 OK', 'body_truncated: true'],
+    body: 'bounded response'
+  });
+  const responseLines = renderTranscriptLines(createWebFetchPair(
+    'fetch-response-cap',
+    {url: 'https://example.com/response-cap'},
+    responseTruncated,
+    {truncated: true}
+  ), 120).map((line) => stripAnsi(line));
+  assert.equal(responseLines[0], '◆ ▌ Web fetch · example.com/response-cap · 200 OK · response truncated');
+
+  const previewText = [
+    'https://example.com/preview-cap',
+    'status: 200 OK',
+    '',
+    'content:',
+    '```',
+    'first preview line',
+    'partial second line',
+    '',
+    'Output was truncated.'
+  ].join('\n');
+  const previewLines = renderTranscriptLines(createWebFetchPair(
+    'fetch-preview-cap',
+    {url: 'https://example.com/preview-cap'},
+    previewText,
+    {truncated: true}
+  ), 120).map((line) => stripAnsi(line));
+  assert.equal(previewLines[0], '◆ ▌ Web fetch · example.com/preview-cap · 200 OK · preview truncated');
+  assert.equal(previewLines.includes('  ▌ first preview line'), true);
+
+  const offloadedText = previewText.replace('Output was truncated.', '[tool result truncated: /tmp/fetch-result.txt]');
+  const offloadedLines = renderTranscriptLines(createWebFetchPair(
+    'fetch-offloaded',
+    {url: 'https://example.com/preview-cap'},
+    offloadedText,
+    {truncated: true}
+  ), 160).map((line) => stripAnsi(line));
+  assert.equal(offloadedLines[0], '◆ ▌ Web fetch · example.com/preview-cap · 200 OK · preview truncated · full result saved');
+  assert.equal(offloadedLines.some((line) => line.includes('/tmp/fetch-result.txt')), false);
+});
+
+test('web_fetch treats internal fences and marker-like body text as content without inventing status', () => {
+  const body = [
+    'first line',
+    '```',
+    'body_truncated: true',
+    'Output was truncated.',
+    '[tool result truncated: /tmp/fake.txt]',
+    'last line'
+  ].join('\n');
+  const lines = renderTranscriptLines(createWebFetchPair(
+    'fetch-body-literals',
+    {url: 'https://example.com/literals'},
+    formatWebFetchEnvelope({firstLine: 'https://example.com/literals', headers: ['status: 200 OK'], body})
+  ), 120).map((line) => stripAnsi(line));
+
+  assert.equal(lines[0], '◆ ▌ Web fetch · example.com/literals · 200 OK');
+  assert.equal(lines.includes('  ▌ ```'), true);
+  assert.equal(lines.includes('  ▌ body_truncated: true'), true);
+  assert.equal(lines.includes('  ▌ [tool result truncated: /tmp/fake.txt]'), true);
+  assert.equal(lines[0].includes('truncated'), false);
+});
+
+test('web_fetch malformed calls and result envelopes use generic fallback', () => {
+  const malformedPreview = renderToolCallPreviewLines('web_fetch', '{bad-json', 80).map((line) => stripAnsi(line));
+  assert.deepEqual(malformedPreview, ['◆ web_fetch({bad-json)']);
+
+  const malformedResult = [
+    'https://example.com/malformed',
+    'unknown_header: value',
+    'status: 200 OK',
+    '',
+    'content:',
+    '```',
+    'body',
+    '```'
+  ].join('\n');
+  const lines = renderTranscriptLines(createWebFetchPair(
+    'fetch-malformed',
+    {url: 'https://example.com/malformed'},
+    malformedResult
+  ), 100).map((line) => stripAnsi(line));
+  assert.equal(lines[0], '◆ ▌ Web fetch · example.com/malformed');
+  assert.equal(lines.includes('  ⎿ https://example.com/malformed'), true);
+  assert.equal(lines.some((line) => line.startsWith('  ▌')), false);
+});
+
+test('web_fetch document rail keeps custom color, safe width, wide characters, and records unchanged', () => {
+  const theme = createTuiTheme({
+    blocks: {
+      colors: {
+        text: [9, 8, 7],
+        toolOutput: [1, 2, 3]
+      }
+    }
+  });
+  const records = createWebFetchPair(
+    'fetch-width',
+    {url: `https://example.com/${'路径/'.repeat(20)}结尾?q=值`},
+    formatWebFetchEnvelope({
+      firstLine: `https://example.com/${'路径/'.repeat(20)}结尾?q=值`,
+      headers: ['status: 200 OK'],
+      body: `很长的网页正文${'内容'.repeat(40)}\n第二行`
+    })
+  );
+  const before = structuredClone(records);
+  const width = 24;
+  const rendered = renderTranscriptLines(records, width, theme);
+
+  assert.deepEqual(records, before);
+  assertSafeRenderLines(rendered, width);
+  assert.equal(rendered.every((line) => !stripAnsi(line).includes('\n') && !stripAnsi(line).includes('\r')), true);
+  const firstBodyLine = rendered.findIndex((line) => /\x1b\[38;2;9;8;7m/.test(line));
+  const bodyRailLines = rendered.slice(firstBodyLine).filter((line) => stripAnsi(line).startsWith('  ▌ '));
+  assert.ok(firstBodyLine > 0);
+  assert.ok(bodyRailLines.length > 2);
+  assert.ok(bodyRailLines.every((line) => /\x1b\[38;2;1;2;3m▌\x1b\[39m/.test(line)));
+  assert.ok(bodyRailLines.every((line) => /\x1b\[38;2;9;8;7m/.test(line)));
+});
+
+function createWebFetchPair(callId, args, text, options = {}) {
+  return [
+    {
+      role: 'tool_call',
+      text: '',
+      toolCallId: callId,
+      toolName: 'web_fetch',
+      argumentsText: JSON.stringify({
+        url: args.url,
+        offset: args.offset ?? null,
+        limit: args.limit ?? null
+      })
+    },
+    {
+      role: 'tool_result',
+      text,
+      toolCallId: callId,
+      toolName: 'web_fetch',
+      ok: options.ok ?? true,
+      details: {
+        kind: 'web_fetch',
+        timedOut: options.timedOut ?? false,
+        truncated: options.truncated ?? false
+      }
+    }
+  ];
+}
+
+function formatWebFetchEnvelope(options) {
+  return [
+    options.firstLine,
+    ...options.headers,
+    '',
+    'content:',
+    '```',
+    ...options.body.split('\n'),
+    '```'
+  ].join('\n');
+}

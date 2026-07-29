@@ -5,10 +5,11 @@ const { createComposer } = require('../../src/input/composer');
 const { createTuiTheme } = require('../../src/config/theme-config');
 const { ECHO_SPINNER_ACTIVE_FRAME_COUNT, ECHO_SPINNER_FRAME_INTERVAL_MS, getEchoSpinnerFrameIndex } = require('../../src/render/echo-spinner');
 const { renderDiffSurface } = require('../../src/render/footer/diff-surface');
-const { renderFooterLayout: renderRuntimeFooterLayout } = require('../../src/render/footer');
+const { createFooterRenderer, renderFooterLayout: renderRuntimeFooterLayout } = require('../../src/render/footer');
 const { humanizeTokens } = require('../../src/render/footer/usage-surface');
 const { renderStatusSurface: renderRuntimeStatusSurface } = require('../../src/render/footer/status-surface');
 const { displayWidth, safeRenderWidth, stripAnsi } = require('../../src/render/layout');
+const ansi = require('../../src/terminal/ansi');
 
 const DEFAULT_STATUS_LINE = {
   projectName: 'echo_tui',
@@ -113,6 +114,62 @@ function assertActiveBackgroundReachesRightPadding(line) {
   assert.equal(stripAnsi(line.slice(resetIndex + '\x1b[49m'.length)), ' │');
 }
 
+test('createFooterRenderer writes each complete redraw as one frame and preserves cleanup and cursor state', () => {
+  const output = {
+    writes: [],
+    write(chunk) {
+      this.writes.push(String(chunk));
+    }
+  };
+  const renderer = createFooterRenderer(output);
+  const baseState = {
+    composer: createComposer('draft'),
+    commandSurface: null,
+    pending: null,
+    working: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    rows: 24,
+    width: 80
+  };
+  const tallState = {
+    ...baseState,
+    pending: {kind: 'streaming', text: Array.from({length: 8}, (_value, index) => `line ${index + 1}`).join('\n')}
+  };
+  const tallLayout = renderFooterLayout(tallState);
+
+  renderer.render(baseState);
+  assert.equal(output.writes.length, 1);
+
+  renderer.render(tallState);
+  assert.equal(output.writes.length, 2);
+
+  const shortLayout = renderFooterLayout(baseState);
+  renderer.render(baseState);
+  assert.equal(output.writes.length, 3);
+  assert.equal((output.writes[2].match(/\x1b\[2K/g) || []).length, tallLayout.lines.length);
+  assert.ok(stripAnsi(output.writes[2]).includes('draft'));
+  assert.ok(output.writes[2].endsWith(
+    `${ansi.cursorUp(shortLayout.lines.length - 1 - shortLayout.cursorRow)}${ansi.carriageReturn()}${ansi.cursorForward(shortLayout.cursorColumn)}${ansi.showCursor()}`
+  ));
+
+  const commandState = {
+    ...baseState,
+    commandSurface: {kind: 'info', title: 'Info', lines: ['details'], dismissHint: 'Esc 关闭'}
+  };
+  const commandLayout = renderFooterLayout(commandState);
+  renderer.render(commandState);
+  assert.equal(output.writes.length, 4);
+  assert.equal(output.writes[3].includes(ansi.showCursor()), false);
+
+  renderer.clear();
+  assert.equal(output.writes.length, 5);
+  assert.equal((output.writes[4].match(/\x1b\[2K/g) || []).length, commandLayout.lines.length);
+  assert.ok(output.writes[4].endsWith(ansi.showCursor()));
+
+  renderer.clear();
+  assert.equal(output.writes.length, 5);
+});
+
 test('renderFooterLayout renders boxed composer and idle segmented status line', () => {
   const layout = renderFooterLayout({
     composer: createComposer('hello'),
@@ -160,6 +217,43 @@ test('renderFooterLayout renders empty composer placeholder without changing cur
   assert.equal(plainLines.some((line) => line.includes('Enter 发送')), false);
   assert.equal(layout.cursorRow, 2);
   assert.equal(layout.cursorColumn, 4);
+});
+
+test('renderFooterLayout renders a compact conversation reference above editable composer', () => {
+  const composer = createComposer('continue with this');
+  const layout = renderFooterLayout({
+    composer,
+    conversationReference: {projectionMode: 'summary', title: 'MCP 权限分级设计'},
+    commandSurface: null,
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    width: 80
+  });
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+
+  assert.ok(plainLines.some((line) => line.includes('引用对话 · 总结')));
+  assert.ok(plainLines.some((line) => line.includes('MCP 权限分级设计')));
+  assert.ok(plainLines.some((line) => line.includes('Esc 移除')));
+  assert.ok(plainLines.some((line) => line.startsWith('↳ 引用对话 · 总结')));
+  assert.ok(plainLines.some((line) => line.includes('> continue with this')));
+  assert.equal(plainLines.some((line) => line.includes('session-')), false);
+  assert.equal(composer.chars.join(''), 'continue with this');
+  assert.equal(layout.cursorRow, 4);
+});
+
+test('renderFooterLayout changes the reference hint while deferred summary is running', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('continue'),
+    conversationReference: {preparing: true, projectionMode: 'summary', title: 'Long history'},
+    commandSurface: null,
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    width: 80
+  });
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+
+  assert.ok(plainLines.some((line) => line.includes('Esc 取消总结')));
+  assert.equal(plainLines.some((line) => line.includes('Esc 移除')), false);
 });
 
 test('renderFooterLayout replaces the empty composer placeholder while model tuning', () => {
@@ -1237,11 +1331,13 @@ test('renderFooterLayout renders resume command surfaces with two columns and pr
     composer: createComposer('ignored'),
     commandSurface: {
       kind: 'resume',
-      title: '/resume 恢复会话 (2)',
+      title: '/resume 恢复会话 (7)',
       sessions: [
         { label: '2026-05-19 10:00 · 4 条消息' },
         { label: '2026-05-18 09:00 · 1 条消息' }
       ],
+      hiddenSessionCountAbove: 2,
+      hiddenSessionCountBelow: 3,
       focus: 'list',
       selectedIndex: 0,
       previewScroll: 0,
@@ -1264,11 +1360,13 @@ test('renderFooterLayout renders resume command surfaces with two columns and pr
   assert.equal(layout.showCursor, false);
   assert.ok(plainLines.some((line) => line.startsWith('╭')));
   assert.ok(plainLines.some((line) => line.startsWith('╰')));
-  assert.ok(plainLines.some((line) => line.includes('/resume 恢复会话 (2)')));
+  assert.ok(plainLines.some((line) => line.includes('/resume 恢复会话 (7)')));
   assert.ok(plainLines.some((line) => line.includes('▌ 会话') && line.includes('预览')));
   const headerIndex = plainLines.findIndex((line) => line.includes('▌ 会话') && line.includes('预览'));
   assert.ok(plainLines[headerIndex + 1].includes('────'));
   assert.ok(plainLines.some((line) => line.includes('▌ 2026-05-19')));
+  assert.ok(plainLines.some((line) => line.includes('↑ 2 更多')));
+  assert.ok(plainLines.some((line) => line.includes('↓ 3 更多')));
   assert.ok(!plainLines.some((line) => line.includes('● 2026-05-19') || line.includes('○ 2026-05-18')));
   assert.ok(!plainLines.some((line) => line.includes('2026-05-19') && line.includes('restored reply')));
   assert.ok(plainLines.some((line) => line.includes('USER resume me')));
@@ -1281,7 +1379,7 @@ test('renderFooterLayout renders resume command surfaces with two columns and pr
 
   const resumeFrameColor = '\x1b[38;2;40;110;125m';
   const topLine = layout.lines[plainLines.findIndex((line) => line.startsWith('╭'))];
-  const titleLine = layout.lines[plainLines.findIndex((line) => line.includes('/resume 恢复会话 (2)'))];
+  const titleLine = layout.lines[plainLines.findIndex((line) => line.includes('/resume 恢复会话 (7)'))];
   const bottomLine = layout.lines[plainLines.findIndex((line) => line.startsWith('╰'))];
   assert.ok(topLine.startsWith(`${resumeFrameColor}╭─`));
   assert.ok(titleLine.startsWith(`${resumeFrameColor}│`));
@@ -1538,6 +1636,8 @@ test('renderFooterLayout clamps resume surface on narrow width and renders empty
       sessions: [
         { label: '2026-05-19 10:00 · 0 条消息' }
       ],
+      hiddenSessionCountAbove: 0,
+      hiddenSessionCountBelow: 0,
       focus: 'list',
       selectedIndex: 0,
       previewScroll: 0,
@@ -1567,6 +1667,8 @@ test('renderFooterLayout renders scrolled single-line resume preview with previe
       sessions: [
         { label: '2026-05-19 10:00 · 12 条消息' }
       ],
+      hiddenSessionCountAbove: 0,
+      hiddenSessionCountBelow: 0,
       focus: 'preview',
       selectedIndex: 0,
       previewScroll: 3,

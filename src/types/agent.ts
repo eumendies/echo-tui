@@ -162,6 +162,7 @@ export type LlmConfig = {
 };
 
 export type ToolRuntimeConfig = {
+  autoCompressImages: boolean; // 控制 read_files 是否把超限图片缩小到最终附件上限内。
   bash: BashToolConfig;
   fileEditMode: FileEditToolMode;
 };

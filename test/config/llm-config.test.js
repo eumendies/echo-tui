@@ -12,6 +12,7 @@ const {
 } = require('../../src/config/llm-config');
 
 const DEFAULT_TOOLS = {
+  autoCompressImages: true,
   bash: {
     timeoutMs: DEFAULT_BASH_TOOL_TIMEOUT_MS,
     maxOutputBytes: DEFAULT_BASH_TOOL_MAX_OUTPUT_BYTES
@@ -469,6 +470,7 @@ test('readLlmConfig reads explicit bash tool limits without the previous 30s tim
   });
 
   assert.deepEqual(config.tools, {
+    autoCompressImages: true,
     bash: {
       timeoutMs: 120000,
       maxOutputBytes: 4096
@@ -489,6 +491,20 @@ test('readLlmConfig reads and normalizes file edit tool mode', () => {
 
   assert.equal(selected.tools.fileEditMode, 'edit_file');
   assert.equal(invalid.tools.fileEditMode, 'apply_patch');
+});
+
+test('readLlmConfig reads and normalizes image auto compression', () => {
+  const base = {
+    llm: {
+      providers: {shared: {preset: OPENAI_PRESET, apiKey: 'key'}},
+      models: [{id: 'fast', provider: 'shared', model: 'gpt-fast'}]
+    }
+  };
+  const disabled = readLlmConfig({readFile: readConfigFrom(JSON.stringify({...base, tools: {readFiles: {autoCompressImages: false}}}))});
+  const invalid = readLlmConfig({readFile: readConfigFrom(JSON.stringify({...base, tools: {readFiles: {autoCompressImages: 'no'}}}))});
+
+  assert.equal(disabled.tools.autoCompressImages, false);
+  assert.equal(invalid.tools.autoCompressImages, true);
 });
 
 test('readLlmConfig normalizes invalid bash tool settings to safe defaults', () => {

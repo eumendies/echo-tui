@@ -40,6 +40,7 @@ function createFakeTranscriptStore(initialSessions = []) {
   const sessionsByCwd = new Map();
   const saveCalls = [];
   const operations = [];
+  let listCallCount = 0;
   let nextSessionIndex = 1;
 
   for (const session of initialSessions) {
@@ -113,6 +114,7 @@ function createFakeTranscriptStore(initialSessions = []) {
   }
 
   function listSessions(cwd) {
+    listCallCount += 1;
     return getSessions(cwd)
       .map(({session}) => ({
         sessionId: session.sessionId,
@@ -121,7 +123,11 @@ function createFakeTranscriptStore(initialSessions = []) {
         cwd: session.cwd,
         messageCount: session.records.length,
         lastMessagePreview: session.records.length > 0 ? session.records.at(-1).text : '空会话',
-        previewRecords: createPreviewRecords(session.records)
+        previewRecords: createPreviewRecords(session.records),
+        sourcePath: `/tmp/${session.sessionId}.jsonl`,
+        title: session.records.find((record) => record.role === 'user')?.displayText
+          || session.records.find((record) => record.role === 'user')?.text
+          || '未命名对话'
       }))
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   }
@@ -131,11 +137,19 @@ function createFakeTranscriptStore(initialSessions = []) {
     return entry ? {session: cloneSession(entry.session), reference: {...entry.reference}} : null;
   }
 
+  function loadSessionReadOnly(cwd, sessionId) {
+    return loadSession(cwd, sessionId);
+  }
+
   return {
     createSession,
     appendSession,
     listSessions,
     loadSession,
+    loadSessionReadOnly,
+    get listCallCount() {
+      return listCallCount;
+    },
     operations,
     saveCalls
   };
@@ -651,8 +665,11 @@ test('AppContext projects tool approval allow-all state into status line', () =>
 test('AppContext snapshots app settings into render state and agent sessions', () => {
   const context = createContext({
     appSettings: {
+      agentInstructionFileName: 'AGENTS.md',
+      autoCompressImages: false,
       compactionThresholdRatio: 0.65,
       defaultInteractionMode: 'plan',
+      fileEditMode: 'apply_patch',
       skillCatalogContextRatio: 0.04,
       showReasoningSummary: false,
       slashSuggestionMaxVisible: 3
@@ -666,6 +683,7 @@ test('AppContext snapshots app settings into render state and agent sessions', (
   assert.equal(context.getAgentSession().compactionThresholdRatio, 0.65);
   assert.equal(context.getAgentSession().skillCatalogContextRatio, 0.04);
   assert.equal(context.getInteractionMode(), 'plan');
+  assert.equal(context.getAutoCompressImages(), false);
 });
 
 test('AppContext refreshes external app settings and classifies redraw impact', () => {
@@ -679,6 +697,7 @@ test('AppContext refreshes external app settings and classifies redraw impact', 
       compaction: {thresholdRatio: 0.65},
       instructions: {fileName: 'CLAUDE.md'},
       skills: {catalogContextRatio: 0.07},
+      tools: {readFiles: {autoCompressImages: false}},
       ui: {defaultInteractionMode: 'plan', showReasoningSummary: false, slashSuggestionMaxVisible: 4}
     }));
     const context = createContext();
@@ -695,11 +714,43 @@ test('AppContext refreshes external app settings and classifies redraw impact', 
     assert.equal(context.getAgentSession().compactionThresholdRatio, 0.65);
     assert.equal(context.getAgentSession().skillCatalogContextRatio, 0.07);
     assert.equal(context.getInteractionMode(), 'normal');
+    assert.equal(context.getAutoCompressImages(), false);
     assert.equal(context.getContextUsage(), null);
     assert.deepEqual(context.createRenderState().renderPreferences, {
       showReasoningSummary: false,
       slashSuggestionMaxVisible: 4
     });
+  } finally {
+    os.homedir = originalHomedir;
+    fs.rmSync(homeDir, {recursive: true, force: true});
+  }
+});
+
+test('AppContext refreshes image compression without clearing context usage or requesting redraw', () => {
+  const originalHomedir = os.homedir;
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-image-settings-'));
+  os.homedir = () => homeDir;
+
+  try {
+    fs.mkdirSync(path.join(homeDir, '.echo'), {recursive: true});
+    fs.writeFileSync(path.join(homeDir, '.echo', 'config.json'), JSON.stringify({
+      tools: {readFiles: {autoCompressImages: false}}
+    }));
+    const context = createContext();
+    const usage = {usedTokens: 100, contextWindow: 1000, source: 'provider'};
+    context.setContextUsage(usage);
+
+    assert.deepEqual(context.refreshAppSettingsFromConfig(), {
+      agentInstructionFileChanged: false,
+      fileEditModeChanged: false,
+      reasoningVisibilityChanged: false,
+      skillCatalogContextRatioChanged: false,
+      slashSuggestionLimitChanged: false
+    });
+    assert.equal(context.getAutoCompressImages(), false);
+    assert.equal(context.getContextUsage().usedTokens, usage.usedTokens);
+    assert.equal(context.getContextUsage().contextWindow, usage.contextWindow);
+    assert.equal(context.getContextUsage().source, usage.source);
   } finally {
     os.homedir = originalHomedir;
     fs.rmSync(homeDir, {recursive: true, force: true});
@@ -729,6 +780,28 @@ test('AppContext keeps plan status line mode while assistant output streams', ()
 
   assert.equal(renderState.statusLine.mode, 'plan');
   assert.deepEqual(renderState.pending, { kind: 'streaming', text: 'draft' });
+});
+
+test('TurnContext activity clock projects the latest accumulated shell output once per tick', async () => {
+  const context = createContext();
+  const renderedPending = [];
+
+  context.turnContext.configureSpinnerTimer({
+    onTick() {
+      renderedPending.push(context.createRenderState().pending);
+    }
+  });
+  context.turnContext.beginShellCommand('printf ab');
+  context.turnContext.startSpinner('working');
+  context.turnContext.appendShellOutputPending({stream: 'stdout', chunk: 'a'});
+  context.turnContext.appendShellOutputPending({stream: 'stdout', chunk: 'b'});
+
+  assert.equal(renderedPending.length, 0);
+  await new Promise((resolve) => setTimeout(resolve, 130));
+  context.turnContext.stopSpinner();
+
+  assert.ok(renderedPending.length >= 1);
+  assert.deepEqual(renderedPending.at(-1), {kind: 'shell_output', command: 'printf ab', output: 'ab'});
 });
 
 test('AppContext keeps plan status line mode while waiting for first assistant token', () => {
@@ -1894,6 +1967,46 @@ test('AppContext exposes semantic subcontexts for resume sessions and composer s
   assert.deepEqual(context.composerContext.getInputHistory(), ['previous input']);
   assert.equal(context.turnContext.isResponding(), true);
   assert.equal(context.transcriptContext.listResumeSessions()[0].sessionId, 'saved-session');
+});
+
+test('AppContext lists reference sessions without current session and clears pending references on load and clear', () => {
+  const transcriptStore = createFakeTranscriptStore([
+    {
+      sessionId: 'source-session',
+      createdAt: '2026-05-18T00:00:00.000Z',
+      updatedAt: '2026-05-18T00:00:00.000Z',
+      records: [{role: 'user', text: 'source title'}, {role: 'assistant', text: 'source answer'}]
+    },
+    {
+      sessionId: 'current-session',
+      createdAt: '2026-05-19T00:00:00.000Z',
+      updatedAt: '2026-05-19T00:00:00.000Z',
+      records: [{role: 'user', text: 'current'}]
+    }
+  ]);
+  const context = createContext({transcriptStore});
+  assert.ok(context.loadTranscriptSession('current-session'));
+  const candidates = context.transcriptContext.listReferenceSessions();
+  assert.deepEqual(candidates.map((session) => session.sessionId), ['source-session']);
+  const listCallCount = transcriptStore.listCallCount;
+  const source = context.transcriptContext.loadReferenceSession(candidates[0]);
+  assert.equal(source.title, 'source title');
+  assert.equal(source.sourcePath, '/tmp/source-session.jsonl');
+  assert.equal(context.transcriptContext.currentSessionId, 'current-session');
+  assert.equal(transcriptStore.listCallCount, listCallCount);
+
+  context.conversationReferenceContext.setPending({
+    materialText: 'source', projectionMode: 'full', sourcePath: source.sourcePath, sourceSessionId: 'source-session', title: source.title
+  });
+  assert.ok(context.conversationReferenceContext.getPending());
+  context.clearTranscriptRecords();
+  assert.equal(context.conversationReferenceContext.getPending(), null);
+
+  context.conversationReferenceContext.setPending({
+    materialText: 'source', projectionMode: 'full', sourcePath: source.sourcePath, sourceSessionId: 'source-session', title: source.title
+  });
+  assert.ok(context.loadTranscriptSession('source-session'));
+  assert.equal(context.conversationReferenceContext.getPending(), null);
 });
 
 test('AppContext browseHistory only enters history mode from an empty idle composer', () => {

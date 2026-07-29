@@ -179,6 +179,23 @@ export function renderUserBlock(text: string, width = 80, theme: TuiTheme = DEFA
 }
 
 /**
+ * 渲染已提交用户消息前的会话引用卡片；完整正文仅保存在 transcript text 中，不在终端展开。
+ */
+export function renderConversationReferenceBlock(title: string, projectionMode: 'full' | 'summary', width = 80, theme: TuiTheme = DEFAULT_TUI_THEME): string {
+  const safeWidth = safeRenderWidth(width);
+  const mode = projectionMode === 'summary' ? '总结' : '全文';
+  const header = clampToDisplayWidth(`↳ 引用对话 · ${mode}`, safeWidth);
+  const body = clampToDisplayWidth(String(title || '未命名对话'), safeWidth);
+
+  return [
+    '',
+    ansi.bold(blockText(theme, 'bannerAccent', header)),
+    ansi.dim(blockText(theme, 'bannerMuted', body)),
+    ''
+  ].join('\n');
+}
+
+/**
  * 渲染完整的 assistant 消息块。
  *
  */

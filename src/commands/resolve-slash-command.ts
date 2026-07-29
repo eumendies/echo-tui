@@ -14,6 +14,7 @@ import { MemoryCommandHandler } from './memory-command-handler';
 import { ModelCommandHandler } from './model-command-handler';
 import { ModeCommandHandler } from './mode-command-handler';
 import { ResumeCommandHandler } from './resume-command-handler';
+import { ReferenceCommandHandler } from './reference-command-handler';
 import { SkillInvocationCommandHandler } from './skill-invocation-command-handler';
 import { SkillsCommandHandler } from './skills-command-handler';
 import { StatusCommandHandler } from './status-command-handler';
@@ -40,6 +41,7 @@ export function createDefaultSlashCommandHandlers(): MatchableCommandHandler[] {
     new DiffCommandHandler(),
     new UndoCommandHandler(),
     new ResumeCommandHandler(),
+    new ReferenceCommandHandler(),
     new McpCommandHandler(),
     new MemoryCommandHandler(),
     new HooksCommandHandler(),

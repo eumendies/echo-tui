@@ -22,14 +22,15 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=20.3.0"
   },
   "license": "MIT",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.104.2",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "openai": "^6.38.0",
-    "pdfjs-dist": "5.1.91"
+    "pdfjs-dist": "5.1.91",
+    "sharp": "^0.34.5"
   },
   "devDependencies": {
     "@types/node": "^20.19.41",

@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const sharp = require('sharp');
 
 const { createApplyPatchToolHandler, APPLY_PATCH_TOOL_NAME } = require('../../src/tools/apply-patch-tool-handler');
 const { ChangeHistoryContext } = require('../../src/app/state/change-history-context');
@@ -1426,12 +1427,38 @@ test('read_files attaches supported images without exposing base64 in text', asy
 test('read_files rejects oversized images without creating partial attachments', async () => {
   const cwd = createTempWorkspace();
   fs.writeFileSync(path.join(cwd, 'large.webp'), Buffer.from([0x01, 0x02, 0x03, 0x04]));
-  const executor = createToolExecutor(createToolRegistry([createReadFilesToolHandler({ cwd, maxImageBytes: 3 })]));
+  const executor = createToolExecutor(createToolRegistry([createReadFilesToolHandler({autoCompressImages: false, cwd, maxImageBytes: 3})]));
   const result = await executor.execute(createReadFilesCall([{ path: 'large.webp' }]));
 
   assert.equal(result.ok, false);
   assert.equal(result.attachments, undefined);
   assert.match(result.text, /image exceeds max size/);
+});
+
+test('read_files automatically compresses oversized images and reports output metadata', async () => {
+  const cwd = createTempWorkspace();
+  const width = 256;
+  const height = 256;
+  const pixels = Buffer.alloc(width * height * 3);
+
+  for (let index = 0; index < pixels.length; index += 1) {
+    pixels[index] = (index * 31 + Math.floor(index / 7)) & 0xff;
+  }
+
+  const imageBytes = await sharp(pixels, {raw: {width, height, channels: 3}}).png().toBuffer();
+  fs.writeFileSync(path.join(cwd, 'large.png'), imageBytes);
+  const executor = createToolExecutor(createToolRegistry([createReadFilesToolHandler({cwd, maxImageBytes: 2_000})]));
+  const result = await executor.execute(createReadFilesCall([{path: 'large.png'}]));
+
+  assert.equal(result.ok, true);
+  assert.equal(result.attachments.length, 1);
+  assert.equal(result.attachments[0].path, 'large.png');
+  assert.equal(result.attachments[0].mediaType, 'image/png');
+  assert.ok(result.attachments[0].sizeBytes <= 2_000);
+  assert.match(result.text, new RegExp(`original_size_bytes: ${imageBytes.length}`));
+  assert.match(result.text, /image_compressed: true/);
+  assert.match(result.text, new RegExp(`size_bytes: ${result.attachments[0].sizeBytes}`));
+  assert.equal(result.text.includes(result.attachments[0].dataBase64), false);
 });
 
 test('read_files extracts PDF text without exposing binary or attachments', async () => {

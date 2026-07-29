@@ -17,6 +17,7 @@ import {createToolResultStore} from '../tools/tool-result-offloading';
 import {setupTerminal} from '../terminal/tty';
 import {createDefaultSlashCommandHandlers, createSlashCommandDescriptors, resolveSlashCommand} from '../commands/resolve-slash-command';
 import {expandFileMentionsForUserText} from './utils';
+import {expandConversationReferenceForUserText} from '../agent/context/conversation-reference';
 import {runAssistantTurn} from './assistant-turn-runner';
 import {createCommandHost} from './command/command-host';
 import {createCommandRuntime} from './command/command-runtime';
@@ -58,13 +59,11 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
   let started = false;
   let activeShellController: AbortController | null = null;
   let mcpDiagnosticSurface: CommandSurface | null = null;
+  let referenceErrorSurface: CommandSurface | null = null;
   let userConfigWatcher: UserConfigWatcher | null = null;
-  // spinner 的 timer 完全下沉到 turnContext；main 仅注入 footer 重绘回调。
+  // 活动重绘 timer 完全下沉到 turnContext；spinner 与高频 pending 共用这一刷新时钟。
   appContext.turnContext.configureSpinnerTimer({
     onTick: () => renderFooter()
-  });
-  appContext.turnContext.configureStreamingRenderTimer({
-    onRender: () => renderFooter()
   });
 
   /**
@@ -72,7 +71,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
    */
   function createRenderState(): RenderState {
     // 判断当前是否有命令 surface打开，优先级：user question -> tool approval -> file picker -> mcp diagnostic -> command runtime surface
-    const commandSurface = userQuestion.getSurface() || toolApproval.getSurface() || filePicker.getSurface() || mcpDiagnosticSurface || commandRuntime.getSurface();
+    const commandSurface = userQuestion.getSurface() || toolApproval.getSurface() || filePicker.getSurface() || referenceErrorSurface || mcpDiagnosticSurface || commandRuntime.getSurface();
     return appContext.createRenderState({commandSurface, toolApproval});
   }
 
@@ -85,10 +84,10 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
       interactionMode: appContext.getInteractionMode()
     });
     activeShellController?.abort();
+    appContext.conversationReferenceContext.clear();
     userConfigWatcher?.close();
     userConfigWatcher = null;
     void mcpManager.close();
-    appContext.turnContext.cancelStreamingRender();
     appContext.turnContext.stopSpinner();
     renderer.clearFooter();
     terminal.cleanup();
@@ -139,7 +138,6 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
    * 当列宽变化时执行 destructive full replay，并把 footer renderer 与当前可见 footer 同步。
    */
   function renderResizeRecovery(): void {
-    appContext.turnContext.cancelStreamingRender();
     debug.emit('resize_recovery', {
       recordCount: appContext.transcriptContext.records.length,
       terminalSize: terminal.getSize()
@@ -216,7 +214,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
    */
   async function submitComposer(): Promise<void> {
     // response lock 阻止重复提交；空输入也不写 transcript。
-    if (commandRuntime.hasActiveSession() || appContext.turnContext.responding || appContext.getMcpBootstrapStatus() === 'initializing' || composerOps.isEmpty(appContext.composerContext.composer)) {
+    if (commandRuntime.hasActiveSession() || appContext.turnContext.responding || appContext.conversationReferenceContext.isPreparing() || appContext.getMcpBootstrapStatus() === 'initializing' || composerOps.isEmpty(appContext.composerContext.composer)) {
       renderFooter();
       return;
     }
@@ -234,10 +232,12 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     let modelProfileId: string | undefined;
     let reasoningEffortOverride: ReasoningEffort | undefined;
 
+    // shell mode
     if (commandResult.kind === 'not_matched' && isShellInteractionMode(appContext.getInteractionMode())) {
       return submitShellCommand(userText);
     }
 
+    // workflow、skill invocation等会要求提交用户消息
     if (commandResult.kind === 'submit_user_message') {
       userText = commandResult.text;
       displayText = commandResult.displayText;
@@ -246,11 +246,47 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
       reasoningEffortOverride = commandResult.reasoningEffortOverride;
     }
 
-    const expanded = await expandFileMentionsForUserText(userText, appContext.getCurrentCwd());
+    const expanded = await expandFileMentionsForUserText(userText, appContext.getCurrentCwd(), {
+      autoCompressImages: appContext.getAutoCompressImages()
+    });
     if (expanded.text !== userText || expanded.attachments) {
       displayText = displayText || userText;
       userText = expanded.text;
       userAttachments = expanded.attachments;
+    }
+
+    // 处理会话引用
+    const pendingConversationReference = appContext.conversationReferenceContext.getPending();
+    if (pendingConversationReference) {
+      displayText = displayText || composerOps.getText(appContext.composerContext.composer);
+      // 短会话直接全部进入上下文，长会话调用模型先进行总结
+      const preparationResult = await commandHost.reference.prepareForSubmission({modelProfileId, reasoningEffortOverride});
+
+      if (!preparationResult.ok) {
+        if (preparationResult.reason === 'failed') {
+          referenceErrorSurface = {
+            kind: 'info',
+            title: '会话引用准备失败',
+            lines: [preparationResult.error || '引用总结失败'],
+            dismissHint: 'Enter/Esc 关闭'
+          };
+          renderFooter();
+        }
+        return;
+      }
+
+      const conversationReference = preparationResult.reference;
+      userText = expandConversationReferenceForUserText(conversationReference, userText);
+      userMetadata = {
+        ...(userMetadata || {}),
+        conversationReference: {
+          projectionMode: conversationReference.projectionMode,
+          sourcePath: conversationReference.sourcePath,
+          sourceSessionId: conversationReference.sourceSessionId,
+          title: conversationReference.title
+        }
+      };
+      appContext.conversationReferenceContext.clearPending();
     }
 
     debug.emit('user_submit', {
@@ -299,7 +335,6 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
         maxOutputBytes: includeInContext ? undefined : null,
         onOutput(event) {
           appContext.turnContext.appendShellOutputPending(event);
-          appContext.turnContext.scheduleStreamingRender();
         },
         timeoutMs: null,
         toolResultStore: includeInContext ? toolResultStore : undefined
@@ -330,7 +365,6 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
    * 中断当前普通 assistant turn；modal/command surface 的 Esc 消费在调用前已完成。
    */
   function interruptActiveTurn(): boolean {
-    appContext.turnContext.cancelStreamingRender();
     const result = appContext.interruptActiveAssistantTurn();
 
     if (!result.interrupted) {
@@ -373,6 +407,30 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
 
     if (commandRuntime.hasActiveSession()) {
       return commandRuntime.handleEvent(event);
+    }
+
+    // 处理针对会话引用surface的事件
+    if (appContext.conversationReferenceContext.isPreparing()) {
+      if (event.type === INPUT_EVENTS.ESCAPE) {
+        commandHost.reference.cancelPreparation();
+      } else if (event.type === INPUT_EVENTS.EXIT) {
+        exit();
+      }
+      return undefined;
+    }
+
+    if (referenceErrorSurface) {
+      if (event.type === INPUT_EVENTS.EXIT) {
+        exit();
+        return undefined;
+      }
+
+      if (event.type === INPUT_EVENTS.ESCAPE || event.type === INPUT_EVENTS.SUBMIT) {
+        referenceErrorSurface = null;
+        renderFooter();
+      }
+
+      return undefined;
     }
 
     if (mcpDiagnosticSurface) {
@@ -450,6 +508,11 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
         renderFooter();
         return undefined;
       case INPUT_EVENTS.ESCAPE:
+        if (appContext.conversationReferenceContext.getPending()) {
+          appContext.conversationReferenceContext.clearPending();
+          renderFooter();
+          return undefined;
+        }
         if (interruptActiveShellCommand()) {
           return undefined;
         }

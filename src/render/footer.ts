@@ -23,15 +23,14 @@ export function createFooterRenderer(output: NodeJS.WriteStream = process.stdout
   let previousCursorRow = 0;
 
   /**
-   * 清掉上一帧 footer，可选地保留光标隐藏状态，方便后续继续绘制。
-   *
+   * 生成清掉上一帧 footer 的定位和擦除序列，不直接写终端，供 clear 与 render 组合完整输出帧。
    */
-  function clearPrevious(keepCursorHidden = false): void {
+  function createClearPreviousSequence(): string {
     if (previousHeight === 0) {
-      return;
+      return '';
     }
 
-    let sequence = ansi.hideCursor();
+    let sequence = '';
     // 当前光标位于上一次 composer 逻辑位置，先回到上一次 footer 顶部。
     sequence += ansi.cursorUp(previousCursorRow);
     sequence += ansi.carriageReturn();
@@ -46,17 +45,17 @@ export function createFooterRenderer(output: NodeJS.WriteStream = process.stdout
 
     sequence += ansi.cursorUp(previousHeight - 1);
     sequence += ansi.carriageReturn();
-    if (!keepCursorHidden) {
-      sequence += ansi.showCursor();
-    }
-    output.write(sequence);
+    return sequence;
   }
 
   /**
    * 移除当前临时 footer，为 transcript append 或退出让出干净的终端尾部。
    */
   function clear(): void {
-    clearPrevious(false);
+    const clearSequence = createClearPreviousSequence();
+    if (clearSequence !== '') {
+      output.write(`${ansi.hideCursor()}${clearSequence}${ansi.showCursor()}`);
+    }
     previousHeight = 0;
     previousCursorRow = 0;
   }
@@ -68,9 +67,8 @@ export function createFooterRenderer(output: NodeJS.WriteStream = process.stdout
   function render(options: RenderState): void {
     const layout = renderFooterLayout(options);
 
-    clearPrevious(true);
-
     let sequence = ansi.hideCursor();
+    sequence += createClearPreviousSequence();
     sequence += layout.lines.join('\n');
     sequence += ansi.cursorUp(layout.lines.length - 1 - layout.cursorRow);
     sequence += ansi.carriageReturn();
@@ -103,7 +101,7 @@ export function createFooterRenderer(output: NodeJS.WriteStream = process.stdout
  * 根据当前状态生成 footer 的逐行布局和光标坐标。
  *
  */
-export function renderFooterLayout({ composer, commandSurface, slashSuggestions, pending, working, theme = DEFAULT_TUI_THEME, renderPreferences = DEFAULT_RENDER_PREFERENCES, statusLine, rows, width }: RenderState): FooterLayout {
+export function renderFooterLayout({ composer, conversationReference, commandSurface, slashSuggestions, pending, working, theme = DEFAULT_TUI_THEME, renderPreferences = DEFAULT_RENDER_PREFERENCES, statusLine, rows, width }: RenderState): FooterLayout {
   const footerWidth = width || 80;
   const maxFooterLines = calculateFooterMaxLines(rows);
   const transcriptComposerSpacerLine = TRANSCRIPT_COMPOSER_SPACER_LINE;
@@ -112,7 +110,7 @@ export function renderFooterLayout({ composer, commandSurface, slashSuggestions,
   const effectiveStatusLine = attachStatusLineActivity(statusLine, pending, working);
   const inputSurface = commandSurface
     ? renderCommandSurface(commandSurface, footerWidth, {maxLines: inputMaxLines, theme})
-    : renderComposerSurface(composer, effectiveStatusLine, footerWidth, slashSuggestions ?? null, inputMaxLines, theme, renderPreferences.slashSuggestionMaxVisible);
+    : renderComposerSurface(composer, effectiveStatusLine, footerWidth, slashSuggestions ?? null, inputMaxLines, theme, renderPreferences.slashSuggestionMaxVisible, conversationReference);
   const pendingMaxLines = Math.max(0, maxFooterLines - fixedLineCount - inputSurface.lines.length);
   const pendingLines = pending ? renderPendingAssistantLines(pending, footerWidth, pendingMaxLines, theme) : [];
   const layout = {

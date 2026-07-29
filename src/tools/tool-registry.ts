@@ -64,6 +64,7 @@ function createDefaultToolRegistry(config: LlmConfig, cwd: string | (() => strin
       cwd
     }),
     createReadFilesToolHandler({
+      autoCompressImages: config.tools.autoCompressImages,
       cwd,
       toolResultStore
     }),

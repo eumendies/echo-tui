@@ -4,6 +4,7 @@ import type { TranscriptRecord } from './transcript';
 import type { TuiTheme } from '../config/theme-config';
 import type { ContextUsage, ReasoningEffort } from './agent';
 import type { AppRenderPreferences } from '../config/app-settings-config';
+import type { ConversationReferenceProjectionMode } from './transcript';
 
 export type TerminalSize = {
   columns: number;
@@ -104,8 +105,15 @@ export type StatusLineState = {
 
 export type RenderPreferences = AppRenderPreferences;
 
+export type ConversationReferenceRenderState = {
+  preparing?: boolean; // 指示长引用总结正在运行，footer 会切换取消提示。
+  projectionMode: ConversationReferenceProjectionMode; // 指示引用卡片展示全文或总结标签。
+  title: string; // 引用卡片中展示的历史会话标题。
+};
+
 export type RenderState = {
   composer: ComposerState;
+  conversationReference?: ConversationReferenceRenderState | null; // composer 上方展示的瞬时历史会话引用卡片。
   commandSurface: CommandSurface | null;
   slashSuggestions?: SlashSuggestionState | null;
   pending: PendingState | null;

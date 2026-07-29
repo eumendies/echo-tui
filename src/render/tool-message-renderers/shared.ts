@@ -9,6 +9,9 @@ type ToolRecordRenderOptions = {
   callStatus?: boolean;
 };
 
+type ToolRailStyle = 'tool' | 'toolError' | 'toolOutput' | 'toolSuccess';
+type ToolRailStatusStyle = 'toolError' | 'toolOutput' | 'toolSuccess';
+
 /**
  * 根据 tool result 执行状态选择 tool_call 符号样式，历史记录缺少状态时保持中性显示。
  */
@@ -88,6 +91,27 @@ function renderFirstPrefix(prefix: string, colorizeFirstSymbol?: (symbol: string
 }
 
 /**
+ * 创建工具状态 rail 的 marker 与连续竖线；极窄终端退化为安全缩进。
+ */
+function createToolRailPrefix(
+  first: boolean,
+  width: number,
+  theme: TuiTheme,
+  railStyle: ToolRailStyle,
+  markerStyle: ToolRailStatusStyle
+): string {
+  const safeWidth = safeRenderWidth(width);
+  if (safeWidth >= 4) {
+    const marker = first ? `${blockText(theme, markerStyle, '◆')} ` : '  ';
+    return `${marker}${blockText(theme, railStyle, '▌')} `;
+  }
+  if (safeWidth >= 2) {
+    return first ? `${blockText(theme, markerStyle, '◆')} ` : '  ';
+  }
+  return '';
+}
+
+/**
  * 按 grapheme 和显示宽度换行，避免 ANSI 样式、宽字符或制表符破坏工具输出对齐。
  */
 function wrapContentLine(text: string, width: number, prefixWidth: number): string[] {
@@ -132,6 +156,7 @@ function wrapSingleContentLine(text: string, width: number, prefixWidth: number)
 export {
   TOOL_RESULT_MAX_DISPLAY_LINES,
   TOOL_RESULT_TRUNCATION_TEXT,
+  createToolRailPrefix,
   renderPrefixedLines,
   resolveToolCallPrefixStyle,
   truncateDisplayText,

@@ -1,7 +1,7 @@
 import type { InputEvent } from './input';
 import type { AgentInstructionFileName, AgentType, ContextUsage, InteractionMode, ReasoningEffort } from './agent';
 import type {DiffFile, DiffSourceInfo, DiffSourceResult} from './diff';
-import type { CompactionState, TranscriptRecord, TranscriptSessionMetadata, UserTranscriptMetadata } from './transcript';
+import type { CompactionState, PreparedConversationReference, TranscriptRecord, TranscriptSessionMetadata, UserTranscriptMetadata } from './transcript';
 import type {UndoExecuteResult, UndoSummary} from './change-history';
 import type {UsageDailyAggregate, UsageQueryOptions} from './usage';
 import type {LifecycleHookConfigDraft, LifecycleHookDraftEntry, LifecycleHookEventName, LifecycleHookTestResult} from './hooks';
@@ -63,6 +63,8 @@ export type ResumeCommandSurface = {
   focus: 'list' | 'preview';
   title: string;
   sessions: ResumeCommandSurfaceSession[];
+  hiddenSessionCountAbove: number; // 当前左栏窗口之前尚未显示的会话数量。
+  hiddenSessionCountBelow: number; // 当前左栏窗口之后尚未显示的会话数量。
   selectedIndex: number;
   previewScroll: number;
   previewRecords: ResumeCommandSurfacePreviewRecord[];
@@ -547,6 +549,32 @@ export type CommandCompactionResult = {
   compaction?: CompactionState;
 };
 
+export type CommandReferencePrepareResult =
+  | {
+      ok: true; // 表示所选历史会话已保存为 pending 引用。
+    }
+  | {
+      ok: false; // 表示选择阶段未能生成 pending 引用。
+      reason: 'failed'; // 区分可展示失败与成功结果，选择阶段不产生取消状态。
+      error?: string; // 经过脱敏、可直接展示在错误 surface 中的原因。
+    };
+
+export type CommandReferenceSubmissionOptions = {
+  modelProfileId?: string; // 当前消息通过 skill 等入口指定的本轮模型配置。
+  reasoningEffortOverride?: ReasoningEffort; // 当前消息覆盖模型配置的本轮 reasoning effort。
+};
+
+export type CommandReferenceSubmissionResult =
+  | {
+      ok: true; // 表示引用已可附加到当前用户消息。
+      reference: PreparedConversationReference; // 已完成全文或总结投影的历史会话引用。
+    }
+  | {
+      ok: false; // 表示发送前准备未产生可用引用。
+      reason: 'cancelled' | 'failed'; // 区分用户取消与可展示的准备失败。
+      error?: string; // 仅失败状态携带的脱敏展示文案。
+    };
+
 export type CommandHostApp = {
   composer: {
     reset(): void;
@@ -558,6 +586,12 @@ export type CommandHostApp = {
     append(record: TranscriptRecord): void;
     listCopyableRecords(): CopyableMessageRecord[];
     listResumeSessions(): TranscriptSessionMetadata[];
+  };
+  reference: {
+    cancelPreparation(): boolean; // 取消正在运行的引用总结，同时保留 pending 素材。
+    listSessions(): TranscriptSessionMetadata[]; // 返回当前 cwd 中除当前会话外的引用候选。
+    prepare(candidate: TranscriptSessionMetadata): Promise<CommandReferencePrepareResult>; // 只读加载候选会话并创建 pending 引用。
+    prepareForSubmission(options?: CommandReferenceSubmissionOptions): Promise<CommandReferenceSubmissionResult>; // 发送前使用本轮模型配置生成最终引用。
   };
   clipboard: {
     writeText(text: string): Promise<ClipboardWriteResult>;

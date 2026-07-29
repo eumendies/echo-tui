@@ -109,7 +109,38 @@ function createHostHarness(options = {}) {
       transcriptContext: {
         getCurrentSessionId() {
           return options.sessionId || null;
+        },
+        listReferenceSessions() {
+          return [];
+        },
+        loadReferenceSession() {
+          return null;
         }
+      },
+      conversationReferenceContext: {
+        getPending() {
+          return null;
+        },
+        setPending() {},
+        beginPreparation() {
+          return new AbortController();
+        },
+        cancelPreparation() {
+          return false;
+        },
+        completePreparation() {
+          return false;
+        },
+        failPreparation() {},
+        isPreparing() {
+          return false;
+        },
+        clear() {}
+      },
+      turnContext: {
+        startSpinner() {},
+        stopSpinner() {},
+        clearWorking() {}
       },
       setTheme(theme) {
         setThemes.push(theme);
@@ -163,6 +194,7 @@ test('createCommandHost composes the complete command protocol from domain ports
   assert.deepEqual(Object.keys(host), [
     'composer',
     'transcript',
+    'reference',
     'clipboard',
     'model',
     'config',
@@ -179,6 +211,12 @@ test('createCommandHost composes the complete command protocol from domain ports
     'undo',
     'assistant',
     'ui'
+  ]);
+  assert.deepEqual(Object.keys(host.reference), [
+    'listSessions',
+    'cancelPreparation',
+    'prepare',
+    'prepareForSubmission'
   ]);
 });
 
@@ -403,6 +441,7 @@ test('CommandHost config facade saves and refreshes skill catalog context ratio'
     const {calls, host} = createHostHarness();
     const result = host.config.saveSettings({
       agentInstructionFileName: 'CLAUDE.md',
+      autoCompressImages: false,
       compactionThresholdRatio: 0.8,
       defaultInteractionMode: 'plan',
       fileEditMode: 'edit_file',
@@ -416,6 +455,7 @@ test('CommandHost config facade saves and refreshes skill catalog context ratio'
     assert.equal(readConfig().skills.catalogContextRatio, 0.03);
     assert.equal(readConfig().ui.defaultInteractionMode, 'plan');
     assert.equal(readConfig().tools.fileEdit.mode, 'edit_file');
+    assert.equal(readConfig().tools.readFiles.autoCompressImages, false);
     assert.deepEqual(readConfig().unknown, {kept: true});
   });
 });

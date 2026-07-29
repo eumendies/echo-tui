@@ -44,7 +44,7 @@ Avoid complexity that does not pay for itself: defensive branches, fallback path
 
 When editing source modules, follow the file's existing style. Source uses `.ts`; tests use `*.test.js` and may `require(...)` compiled extensionless paths.
 
-Write code comments in Chinese. Comments should explain module responsibilities, terminal control, input parsing, rendering strategy, or other non-obvious logic—never restate the obvious. For core runtime files under `src/app/`, `src/render/`, and `src/terminal/`, add JSDoc-style method-level comments when creating or materially editing functions: describe behavior, key inputs/outputs, and terminal assumptions. Do not describe types (TS signatures are the source of truth).
+Write code comments in Chinese. Comments should explain module responsibilities, terminal control, input parsing, rendering strategy, or other non-obvious logic—never restate the obvious. For core runtime files under `src/app/`, `src/render/`, and `src/terminal/`, add JSDoc-style method-level comments when creating or materially editing functions: describe behavior, key inputs/outputs, and terminal assumptions. Do not repeat TypeScript signatures in method comments (the signatures are the source of truth). When adding a structured `type` or `interface`, add a Chinese inline `//` comment to every field that explains its domain meaning or invariant rather than merely restating its TypeScript type.
 
 Terminal behavior should remain based on ANSI control sequences and stdin raw mode; do not introduce third-party TUI libraries.
 

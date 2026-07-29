@@ -35,6 +35,7 @@ const GENERAL_CONFIG_ROW_IDS = [
   'slashSuggestionLimit',
   'reasoningSummary',
   'defaultInteractionMode',
+  'autoCompressImages',
   'fileEditMode',
   'instructionFile',
   'save'

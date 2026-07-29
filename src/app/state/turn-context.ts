@@ -24,10 +24,6 @@ type SpinnerTimerConfig = {
   onTick: () => void;
 };
 
-type StreamingRenderTimerConfig = {
-  onRender: () => void;
-};
-
 type AssistantTurnHandle = {
   id: number;
   abortSignal: AbortSignal;
@@ -45,17 +41,15 @@ type InterruptAssistantTurnResult = {
   noticeRecord?: TranscriptRecord;
 };
 
-// spinner 重绘周期；只用于在没有 token / 没有外部事件时按时间推动一帧。
+// 响应活动重绘周期；同时推进 spinner 动效并投影期间累积的最新 pending 内容。
 const SPINNER_REDRAW_INTERVAL_MS = 100;
-// streaming token footer 重绘周期；约束 onToken 高频路径到接近 20 FPS。
-const STREAMING_RENDER_INTERVAL_MS = 50;
 const ASSISTANT_INTERRUPTED_NOTICE = '已中断模型回答';
 
 /**
  * 管理响应锁、pending preview、spinner 和 turn 生命周期。
  * spinner 帧由渲染层根据 elapsedMs 推算，不再持有递增的 frame 计数。
- * spinner 重绘 timer 由本 context 持有，由 main 层在初始化时通过 configureSpinnerTimer 注入回调。
- * streaming token footer 重绘 timer 同样由本 context 持有，只服务 onToken 路径的短窗口合并。
+ * 活动重绘 timer 由本 context 持有，由 main 层在初始化时通过 configureSpinnerTimer 注入回调。
+ * token 与 shell chunk 只累积 pending 状态，由同一周期 tick 批量投影到 footer。
  */
 class TurnContext {
   composerContext: ComposerTurnBridge;
@@ -70,9 +64,6 @@ class TurnContext {
   pendingToolCall: ToolCall | null;
   spinnerTimer: unknown;
   spinnerTimerConfig: SpinnerTimerConfig | null;
-  streamingRenderTimer: unknown;
-  streamingRenderTimerConfig: StreamingRenderTimerConfig | null;
-  lastStreamingRenderAt: number | null;
   activeAssistantTurn: ActiveAssistantTurn | null;
   nextAssistantTurnId: number;
 
@@ -89,74 +80,21 @@ class TurnContext {
     this.pendingToolCall = null;
     this.spinnerTimer = null;
     this.spinnerTimerConfig = null;
-    this.streamingRenderTimer = null;
-    this.streamingRenderTimerConfig = null;
-    this.lastStreamingRenderAt = null;
     this.activeAssistantTurn = null;
     this.nextAssistantTurnId = 1;
   }
 
   /**
-   * 注入 spinner 重绘 timer 配置。main 层负责在创建 app 时调用一次，
-   * 把 footer 重绘回调交给本 context 持有；timer 实现固定使用全局 setInterval。
+   * 注入响应活动重绘 timer 配置。main 层负责在创建 app 时调用一次，
+   * 把 footer 重绘回调交给本 context 持有；timer 同时服务 spinner 和高频 pending 合并。
    */
   configureSpinnerTimer(config: SpinnerTimerConfig): void {
     this.spinnerTimerConfig = config;
   }
 
   /**
-   * 注入 streaming token footer 重绘配置。main 只提供 render 回调，调度窗口和 timer 状态由本 context 收敛。
-   */
-  configureStreamingRenderTimer(config: StreamingRenderTimerConfig): void {
-    this.streamingRenderTimerConfig = config;
-  }
-
-  /**
-   * 调度一次由 onToken 触发的 footer 重绘：首帧立即显示，窗口内后续 token 合并到 trailing render。
-   */
-  scheduleStreamingRender(): void {
-    const config = this.streamingRenderTimerConfig;
-    if (!config) {
-      return;
-    }
-
-    const now = Date.now();
-    const lastRenderAt = this.lastStreamingRenderAt;
-    const elapsedMs = lastRenderAt === null ? STREAMING_RENDER_INTERVAL_MS : now - lastRenderAt;
-
-    if (lastRenderAt === null || elapsedMs >= STREAMING_RENDER_INTERVAL_MS) {
-      this.cancelStreamingRender();
-      this.lastStreamingRenderAt = now;
-      config.onRender();
-      return;
-    }
-
-    if (this.streamingRenderTimer) {
-      return;
-    }
-
-    this.streamingRenderTimer = setTimeout(() => {
-      this.streamingRenderTimer = null;
-      this.lastStreamingRenderAt = Date.now();
-      config.onRender();
-    }, STREAMING_RENDER_INTERVAL_MS - elapsedMs);
-  }
-
-  /**
-   * 取消尚未执行的 streaming token footer 重绘，并重置窗口锚点，避免旧 timer 覆盖结构性状态。
-   */
-  cancelStreamingRender(): void {
-    if (this.streamingRenderTimer) {
-      clearTimeout(this.streamingRenderTimer as Parameters<typeof clearTimeout>[0]);
-      this.streamingRenderTimer = null;
-    }
-
-    this.lastStreamingRenderAt = null;
-  }
-
-  /**
    * 启动指定类型的 spinner：先停掉旧 timer，再更新 spinner 状态，最后注册周期重绘回调。
-   * 周期 tick 仅用于在没有 token / 工具事件时按时间推进 spinner 帧。
+   * 周期 tick 推进 spinner 帧，并投影期间累积的最新 assistant 或 shell pending 内容。
    */
   startSpinner(kind: SpinnerKind): void {
     this.stopSpinner();
@@ -318,7 +256,6 @@ class TurnContext {
     this.composerContext.recordInput(options.displayText || userText);
     this.composerContext.reset();
     this.responding = true;
-    this.cancelStreamingRender();
     this.pendingToolCall = null;
     this.clearPending();
     this.clearWorking();
@@ -338,7 +275,6 @@ class TurnContext {
    */
   beginManualCompaction(): void {
     this.responding = true;
-    this.cancelStreamingRender();
     this.pendingToolCall = null;
     this.clearPending();
     this.clearWorking();
@@ -352,7 +288,6 @@ class TurnContext {
     this.composerContext.recordInput(command);
     this.composerContext.reset();
     this.responding = true;
-    this.cancelStreamingRender();
     this.pendingToolCall = null;
     this.clearPending();
     this.clearWorking();
@@ -364,7 +299,6 @@ class TurnContext {
    * 记录 shell 执行结果并释放响应锁。
    */
   finishShellCommand(result: BashCommandRunResult, includeInContext: boolean): TranscriptRecord {
-    this.cancelStreamingRender();
     this.stopSpinner();
     this.clearPending();
     this.clearWorking();
@@ -442,7 +376,6 @@ class TurnContext {
    * 完成 assistant 响应，提交 assistant record 并释放 response lock。
    */
   finishAssistantTurn(finalText: string): TranscriptRecord | null {
-    this.cancelStreamingRender();
     this.clearPending();
     this.clearWorking();
     this.pendingToolCall = null;
@@ -535,7 +468,6 @@ class TurnContext {
    * 记录本地 error 消息，并释放 response lock。
    */
   failAssistantTurn(error: unknown): TranscriptRecord {
-    this.cancelStreamingRender();
     this.clearPending();
     this.clearWorking();
     this.pendingToolCall = null;
@@ -548,7 +480,6 @@ class TurnContext {
    * 记录 shell 执行异常消息，并释放 response lock。
    */
   failShellCommand(error: unknown): TranscriptRecord {
-    this.cancelStreamingRender();
     this.stopSpinner();
     this.clearPending();
     this.clearWorking();
@@ -562,7 +493,6 @@ class TurnContext {
    * 记录用户主动中断提示，并释放 response lock；partial assistant 由调用方先落盘。
    */
   cancelAssistantTurn(): TranscriptRecord {
-    this.cancelStreamingRender();
     this.clearPending();
     this.clearWorking();
     this.pendingToolCall = null;
@@ -586,7 +516,6 @@ class TurnContext {
 
     activeTurn.controller.abort();
     this.stopSpinner();
-    this.cancelStreamingRender();
 
     const partialRecord = this.commitPendingAssistantDraft() || undefined;
     const noticeRecord = this.cancelAssistantTurn();

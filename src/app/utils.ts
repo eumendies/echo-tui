@@ -3,6 +3,8 @@ import {
   DEFAULT_MAX_DIRECTORY_ENTRIES,
   DEFAULT_MAX_FILE_CONTENT_BYTES,
   DEFAULT_MAX_IMAGE_BYTES,
+  DEFAULT_MAX_IMAGE_PIXELS,
+  DEFAULT_MAX_SOURCE_IMAGE_BYTES,
   DEFAULT_MAX_PDF_BYTES,
   DEFAULT_MAX_PDF_OUTPUT_BYTES,
   DEFAULT_MAX_TOTAL_OUTPUT_BYTES
@@ -15,6 +17,10 @@ import type {FileReadResult} from '../tools/read-files/readers';
 type ExpandedFileContext = {
   attachments?: ToolResultAttachment[];
   text: string;
+};
+
+type ExpandFileMentionsOptions = {
+  autoCompressImages: boolean; // 控制 mention 图片超过最终附件上限时是否自动缩小。
 };
 
 /**
@@ -31,7 +37,7 @@ function moveWrappedIndex(index: number, direction: number, length: number): num
 /**
  * 展开用户输入中的路径 mention，生成模型可见的文件、目录上下文和图片附件。
  */
-async function expandFileMentionsForUserText(userText: string, cwd: string): Promise<ExpandedFileContext> {
+async function expandFileMentionsForUserText(userText: string, cwd: string, options: ExpandFileMentionsOptions = {autoCompressImages: true}): Promise<ExpandedFileContext> {
   const mentions = parseFileMentions(userText);
 
   if (mentions.length === 0) {
@@ -45,11 +51,16 @@ async function expandFileMentionsForUserText(userText: string, cwd: string): Pro
   for (const filePath of uniquePaths) {
     const result = await readOneFile({path: filePath, offset: 0}, {
       cwd,
+      imageOptions: {
+        autoCompressImages: options.autoCompressImages,
+        maxImageBytes: DEFAULT_MAX_IMAGE_BYTES,
+        maxInputPixels: DEFAULT_MAX_IMAGE_PIXELS,
+        maxSourceImageBytes: DEFAULT_MAX_SOURCE_IMAGE_BYTES
+      },
       limits: {
         maxDirectoryEntries: DEFAULT_MAX_DIRECTORY_ENTRIES,
         maxFileContentBytes: DEFAULT_MAX_FILE_CONTENT_BYTES,
         maxFiles: uniquePaths.length,
-        maxImageBytes: DEFAULT_MAX_IMAGE_BYTES,
         maxPdfBytes: DEFAULT_MAX_PDF_BYTES,
         maxPdfOutputBytes: DEFAULT_MAX_PDF_OUTPUT_BYTES,
         maxTotalOutputBytes: DEFAULT_MAX_TOTAL_OUTPUT_BYTES

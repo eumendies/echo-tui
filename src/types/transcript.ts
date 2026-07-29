@@ -34,6 +34,24 @@ export type UserTranscriptMetadata = {
     sourceKind: 'project' | 'user';
     sourcePath: string;
   };
+  conversationReference?: ConversationReferenceMetadata; // 标识该用户消息附加了一段历史会话引用。
+};
+
+export type ConversationReferenceProjectionMode = 'full' | 'summary';
+
+export type ConversationReferenceMetadata = {
+  projectionMode: ConversationReferenceProjectionMode; // 记录该引用最终使用全文还是模型总结。
+  sourcePath: string; // 指向被引用会话的源 journal，供精确细节回读。
+  sourceSessionId: string; // 标识被引用会话，但不展示在引用卡片中。
+  title: string; // 供引用卡片和 provider 上下文识别历史会话。
+};
+
+export type PendingConversationReference = ConversationReferenceMetadata & {
+  materialText: string; // 已完成角色过滤、等待在下一条消息发送前按预算处理的中立历史文本。
+};
+
+export type PreparedConversationReference = ConversationReferenceMetadata & {
+  projectionText: string; // 已按预算保留全文或生成总结的 provider-facing 文本。
 };
 
 export type UserTranscriptRecord = TranscriptRecordBase & {
@@ -195,6 +213,14 @@ export type TranscriptSessionMetadata = {
   messageCount: number;
   lastMessagePreview: string;
   previewRecords: TranscriptSessionPreviewRecord[];
+  sourcePath: string; // 当前 session 对应 journal 的绝对路径。
+  title: string; // 从首条用户消息派生的稳定会话标题。
+};
+
+export type ConversationReferenceSource = {
+  session: TranscriptSession; // 从源 journal 重放得到且不会替换当前 transcript 的会话。
+  sourcePath: string; // 供最终引用暴露给 read_files 的 journal 路径。
+  title: string; // 与候选 metadata 保持一致的会话标题。
 };
 
 export type TranscriptJournalStart = {
@@ -278,4 +304,5 @@ export type TranscriptStore = {
   getSessionFilePath: (cwd: string, sessionId: string) => string;
   listSessions: (cwd: string) => TranscriptSessionMetadata[];
   loadSession: (cwd: string, sessionId: string) => LoadedTranscriptSession | null;
+  loadSessionReadOnly: (cwd: string, sessionId: string) => LoadedTranscriptSession | null; // 重放 journal 但绝不修复或改写源文件。
 };
