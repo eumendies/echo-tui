@@ -32,6 +32,7 @@ const TEST_CONFIG = {
 const RETRYABLE_PROCESSING_ERROR = 'An error occurred while processing your request. You can retry your request';
 const RETRYABLE_OVERLOADED_ERROR = 'Our servers are currently overloaded. Please try again later.';
 const RESPONSE_STREAM_RETRY_TEST_DELAYS_MS = [1000, 2000];
+const RESPONSE_STREAM_ALL_RETRY_TEST_DELAYS_MS = [1000, 2000, 4000, 8000, 16000, 32000, 64000, 128000, 256000, 256000];
 
 async function flushPendingAsyncWork() {
   for (let index = 0; index < 20; index += 1) {
@@ -454,6 +455,30 @@ test('createOpenAiAgent can recover after two transient stream retries', async (
 
   assert.deepEqual(result, {draft: 'recovered', toolCalls: [], usageInputTokens: undefined});
   assert.equal(harness.requests.length, 3);
+});
+
+test('createOpenAiAgent caps response stream retry backoff at 256 seconds', async () => {
+  let attempts = 0;
+  const retries = [];
+  const harness = createHarness(() => {
+    attempts += 1;
+    return attempts <= RESPONSE_STREAM_ALL_RETRY_TEST_DELAYS_MS.length
+      ? [createRetryableStreamError(`retry-request-${attempts}`)]
+      : [{type: 'response.completed'}];
+  });
+
+  const result = await runWithMockedRetryTimers(
+    () => harness.runTurn([{role: 'user', text: 'hello'}], {
+      onProviderRetry(retry) {
+        retries.push(retry);
+      }
+    }),
+    RESPONSE_STREAM_ALL_RETRY_TEST_DELAYS_MS
+  );
+
+  assert.deepEqual(result, {draft: '', toolCalls: [], usageInputTokens: undefined});
+  assert.equal(attempts, 11);
+  assert.deepEqual(retries.map((retry) => retry.delayMs), RESPONSE_STREAM_ALL_RETRY_TEST_DELAYS_MS);
 });
 
 test('createOpenAiAgent keeps the final request ID after two transient stream retries', async () => {

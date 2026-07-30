@@ -55,6 +55,7 @@ type ResponseClient = {
 const OPENAI_MAX_RETRIES = 3;
 const RESPONSE_STREAM_MAX_RETRIES = 10;
 const RESPONSE_STREAM_RETRY_DELAY_MS = 1000;
+const RESPONSE_STREAM_MAX_RETRY_DELAY_MS = 256_000;
 const RETRYABLE_RESPONSE_STREAM_ERROR_TEXTS = [
   'An error occurred while processing your request. You can retry your request',
   'Our servers are currently overloaded. Please try again later'
@@ -411,7 +412,10 @@ async function readResponseStream(stream: ResponseStream, callbacks: AgentTurnCa
 }
 
 function getResponseStreamRetryDelayMs(retryCount: number): number {
-  return RESPONSE_STREAM_RETRY_DELAY_MS * 2 ** (retryCount - 1);
+  return Math.min(
+    RESPONSE_STREAM_RETRY_DELAY_MS * 2 ** (retryCount - 1),
+    RESPONSE_STREAM_MAX_RETRY_DELAY_MS
+  );
 }
 
 /**
