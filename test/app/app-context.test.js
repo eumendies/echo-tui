@@ -32,8 +32,49 @@ function createContext(overrides = {}) {
     overrides.cwd || '/tmp/echo_tui',
     overrides.nodeVersion || 'v20.0.0',
     overrides.theme,
-    overrides.appSettings
+    overrides.appSettings,
+    overrides.sessionModelSettingsStore || createFakeSessionModelSettingsStore()
   );
+}
+
+function createFakeSessionModelSettingsStore(initialSettings = []) {
+  const settings = new Map(initialSettings.map((entry) => [entry.sessionId, structuredClone(entry)]));
+
+  return {
+    getFilePath(_cwd, sessionId) {
+      return `/tmp/${sessionId}.settings.json`;
+    },
+    read(_cwd, sessionId) {
+      const value = settings.get(sessionId);
+      return value ? {kind: 'found', settings: structuredClone(value)} : {kind: 'missing'};
+    },
+    write(_cwd, input, updatedAt = '2026-05-19T00:00:00.000Z') {
+      const value = {
+        schemaVersion: 1,
+        sessionId: input.sessionId,
+        modelProfileId: input.modelProfileId,
+        ...(input.reasoningEffortOverride !== undefined ? {reasoningEffortOverride: input.reasoningEffortOverride} : {}),
+        updatedAt
+      };
+      settings.set(input.sessionId, value);
+      return structuredClone(value);
+    },
+    settings
+  };
+}
+
+function createFailingSessionModelSettingsStore(message) {
+  return {
+    getFilePath(_cwd, sessionId) {
+      return `/tmp/${sessionId}.settings.json`;
+    },
+    read() {
+      return {kind: 'missing'};
+    },
+    write() {
+      throw new Error(message);
+    }
+  };
 }
 
 function createFakeTranscriptStore(initialSessions = []) {
@@ -631,7 +672,7 @@ test('AppContext status line reads cached model state without rereading user con
 
     context.modelContext.createModelCommandInfo();
 
-    assert.equal(context.createRenderState().statusLine.model.label, 'gpt-deep');
+    assert.equal(context.createRenderState().statusLine.model.label, 'gpt-fast');
   });
 });
 
@@ -1224,7 +1265,7 @@ test('ModelContext defaults /effort selection to medium when profile has no effo
   });
 });
 
-test('ModelContext persists selectedModel atomically and preserves unknown config fields', () => {
+test('ModelContext changes the session model without rewriting global config', () => {
   const config = {
     unrelated: true,
     llm: {
@@ -1240,25 +1281,47 @@ test('ModelContext persists selectedModel atomically and preserves unknown confi
     }
   };
 
-  withTemporaryModelConfig(config, ({configPath, readConfig}) => {
+  withTemporaryModelConfig(config, ({readConfig}) => {
     const context = new ModelContext();
 
     assert.deepEqual(context.selectModel('deep'), {ok: true});
-    assert.deepEqual(readConfig(), {
-      unrelated: true,
-      llm: {
-        selectedModel: 'deep',
-        custom: { keep: true },
-        providers: {
-          default: { preset: 'openai-responses-api', apiKey: 'sk-test-key' }
-        },
-        models: [
-          { id: 'fast', provider: 'default', model: 'gpt-fast' },
-          { id: 'deep', provider: 'default', model: 'gpt-deep' }
-        ]
-      }
+    assert.deepEqual(readConfig(), config);
+    assert.deepEqual(context.getAgentSelection(), {modelProfileId: 'deep'});
+  });
+});
+
+test('ModelContext merges skill fields over session settings and ignores stale skill profiles', () => {
+  withTemporaryModelConfig({
+    llm: {
+      selectedModel: 'fast',
+      providers: {
+        default: {preset: 'openai-responses-api', apiKey: 'sk-test-key'}
+      },
+      models: [
+        {id: 'fast', provider: 'default', model: 'gpt-fast'},
+        {id: 'deep', provider: 'default', model: 'gpt-deep'}
+      ]
+    }
+  }, () => {
+    const context = new ModelContext();
+    assert.deepEqual(context.selectModelAndEffort('deep', 'high'), {ok: true, modelChanged: true});
+
+    assert.deepEqual(context.resolveAgentSelection(), {
+      modelProfileId: 'deep',
+      reasoningEffortOverride: 'high'
     });
-    assert.deepEqual(fs.readdirSync(path.dirname(configPath)).filter((name) => name.includes('.tmp-')), []);
+    assert.deepEqual(context.resolveAgentSelection({modelProfileIdOverride: 'fast'}), {
+      modelProfileId: 'fast',
+      reasoningEffortOverride: 'high'
+    });
+    assert.deepEqual(context.resolveAgentSelection({reasoningEffortOverride: 'none'}), {
+      modelProfileId: 'deep',
+      reasoningEffortOverride: 'none'
+    });
+    assert.deepEqual(context.resolveAgentSelection({modelProfileIdOverride: 'deleted'}), {
+      modelProfileId: 'deep',
+      reasoningEffortOverride: 'high'
+    });
   });
 });
 
@@ -1287,7 +1350,7 @@ test('ModelContext refreshes cached status-line label after model selection succ
   });
 });
 
-test('AppContext refreshes externally changed model state and clears stale context usage', () => {
+test('AppContext keeps the current session model when the global default changes', () => {
   const config = {
     llm: {
       selectedModel: 'fast',
@@ -1307,11 +1370,48 @@ test('AppContext refreshes externally changed model state and clears stale conte
     config.llm.selectedModel = 'deep';
     fs.writeFileSync(configPath, JSON.stringify(config), 'utf8');
 
-    assert.equal(context.refreshModelStateFromConfig(), true);
-    assert.equal(context.createRenderState().statusLine.model.label, 'gpt-deep');
-    assert.equal(context.createRenderState().statusLine.model.effort, 'high');
-    assert.equal(context.contextUsage, null);
     assert.equal(context.refreshModelStateFromConfig(), false);
+    assert.equal(context.createRenderState().statusLine.model.label, 'gpt-fast');
+    assert.equal(context.getContextUsage().usedTokens, 120);
+    assert.equal(context.refreshModelStateFromConfig(), false);
+  });
+});
+
+test('AppContext falls back and retries persistence when config removes the current session profile', () => {
+  const config = {
+    llm: {
+      selectedModel: 'fast',
+      providers: {
+        default: {preset: 'openai-responses-api', apiKey: 'sk-test-key'}
+      },
+      models: [
+        {id: 'fast', provider: 'default', model: 'gpt-fast'},
+        {id: 'deep', provider: 'default', model: 'gpt-deep'}
+      ]
+    }
+  };
+
+  withTemporaryModelConfig(config, ({configPath}) => {
+    const settingsStore = createFakeSessionModelSettingsStore();
+    const context = createContext({sessionModelSettingsStore: settingsStore});
+    assert.deepEqual(context.modelContext.selectModelAndEffort('deep', 'high'), {ok: true, modelChanged: true});
+    context.beginUserTurn('bind session');
+    context.turnContext.finishAssistantTurn('bound');
+    const sessionId = context.transcriptContext.getCurrentSessionId();
+    context.setContextUsage({usedTokens: 120, contextWindow: 1000, source: 'provider'});
+
+    config.llm.models = [config.llm.models[0]];
+    fs.writeFileSync(configPath, JSON.stringify(config), 'utf8');
+
+    assert.equal(context.refreshModelStateFromConfig(), true);
+    assert.deepEqual(context.modelContext.getAgentSelection(), {modelProfileId: 'fast'});
+    assert.equal(context.createRenderState().statusLine.model.label, 'gpt-fast');
+    assert.equal(context.getContextUsage(), null);
+    assert.equal(settingsStore.settings.get(sessionId).modelProfileId, 'deep');
+    context.turnContext.finishAssistantTurn('fallback reply');
+    context.beginUserTurn('persist fallback');
+    assert.equal(settingsStore.settings.get(sessionId).modelProfileId, 'fast');
+    assert.equal(settingsStore.settings.get(sessionId).reasoningEffortOverride, undefined);
   });
 });
 
@@ -1356,8 +1456,9 @@ test('AppContext tunes model and effort without changing composer draft or histo
     context.handleModelTuningEvent({type: INPUT_EVENTS.SUBMIT});
 
     assert.equal(context.modelTuningContext.isActive(), false);
-    assert.equal(readConfig().llm.selectedModel, 'deep');
-    assert.equal(readConfig().llm.models[1].reasoning.effort, 'xhigh');
+    assert.equal(readConfig().llm.selectedModel, 'fast');
+    assert.equal(readConfig().llm.models[1].reasoning.effort, 'high');
+    assert.deepEqual(context.modelContext.getAgentSelection(), {modelProfileId: 'deep', reasoningEffortOverride: 'xhigh'});
     assert.deepEqual(context.composerContext.inputHistory, ['older prompt']);
     assert.deepEqual(context.composerContext.composer, originalComposer);
     assert.equal(context.getContextUsage(), null);
@@ -1428,7 +1529,7 @@ test('AppContext blocks model tuning during bootstrap, response, and shell modes
   });
 });
 
-test('AppContext keeps model tuning active and renders a redacted save error', () => {
+test('AppContext applies model tuning when sidecar persistence fails', () => {
   const fakeApiKey = 'sk-tuning-secret';
   withTemporaryModelConfig({
     llm: {
@@ -1442,27 +1543,18 @@ test('AppContext keeps model tuning active and renders a redacted save error', (
       ]
     }
   }, () => {
-    const originalWriteFileSync = fs.writeFileSync;
-    const context = createContext();
+    const context = createContext({sessionModelSettingsStore: createFailingSessionModelSettingsStore(`cannot write ${fakeApiKey}`)});
+    context.transcriptContext.appendRecord({role: 'user', text: 'existing'});
     context.composerContext.setText('draft');
     context.openModelTuning();
     context.handleModelTuningEvent({type: INPUT_EVENTS.MOVE_RIGHT});
-    fs.writeFileSync = () => {
-      throw new Error(`cannot write ${fakeApiKey}`);
-    };
+    context.handleModelTuningEvent({type: INPUT_EVENTS.SUBMIT});
+    const renderState = context.createRenderState();
 
-    try {
-      context.handleModelTuningEvent({type: INPUT_EVENTS.SUBMIT});
-      const renderState = context.createRenderState();
-
-      assert.equal(context.modelTuningContext.isActive(), true);
-      assert.match(renderState.statusLine.model.error, /<redacted>/);
-      assert.doesNotMatch(renderState.statusLine.model.error, new RegExp(fakeApiKey));
-      assert.equal(context.composerContext.getText(), 'draft');
-      assert.deepEqual(context.modelContext.getStatusLineModelState(), {modelLabel: 'gpt-fast'});
-    } finally {
-      fs.writeFileSync = originalWriteFileSync;
-    }
+    assert.equal(context.modelTuningContext.isActive(), false);
+    assert.equal(renderState.statusLine.model.error, undefined);
+    assert.equal(context.composerContext.getText(), 'draft');
+    assert.equal(context.modelContext.getStatusLineModelState().modelLabel, 'gpt-deep');
   });
 });
 
@@ -1486,18 +1578,18 @@ test('AppContext pins the active turn model while the global selection changes',
     config.llm.selectedModel = 'deep';
     fs.writeFileSync(configPath, JSON.stringify(config), 'utf8');
 
-    assert.equal(context.refreshModelStateFromConfig(), true);
+    assert.equal(context.refreshModelStateFromConfig(), false);
     assert.equal(context.createRenderState().statusLine.model.label, 'gpt-fast');
 
     assert.equal(context.turnContext.setActiveStatusLineModelState(turn, {modelLabel: 'runtime-model'}), true);
     assert.equal(context.createRenderState().statusLine.model.label, 'runtime-model');
 
     context.turnContext.clearAssistantTurnIfCurrent(turn);
-    assert.equal(context.createRenderState().statusLine.model.label, 'gpt-deep');
+    assert.equal(context.createRenderState().statusLine.model.label, 'gpt-fast');
   });
 });
 
-test('ModelContext persists selectedModel without rewriting provider-backed config', () => {
+test('ModelContext session selection preserves provider-backed global config', () => {
   const config = {
     llm: {
       selectedModel: 'fast',
@@ -1516,23 +1608,12 @@ test('ModelContext persists selectedModel without rewriting provider-backed conf
     const context = new ModelContext();
 
     assert.deepEqual(context.selectModel('deep'), {ok: true});
-    assert.deepEqual(readConfig(), {
-      llm: {
-        selectedModel: 'deep',
-        providers: {
-          example: { preset: 'openai-responses-api', apiKey: 'example-api-key', baseURL: 'https://provider.example/v1' },
-          openai: { preset: 'openai-responses-api', apiKey: 'openai-api-key' }
-        },
-        models: [
-          { id: 'fast', provider: 'example', model: 'example-fast' },
-          { id: 'deep', provider: 'openai', model: 'gpt-4.1' }
-        ]
-      }
-    });
+    assert.deepEqual(readConfig(), config);
+    assert.deepEqual(context.getAgentSelection(), {modelProfileId: 'deep'});
   });
 });
 
-test('ModelContext persists selected profile effort and preserves reasoning fields', () => {
+test('ModelContext session effort preserves profile reasoning fields', () => {
   const config = {
     llm: {
       selectedModel: 'deep',
@@ -1550,10 +1631,8 @@ test('ModelContext persists selected profile effort and preserves reasoning fiel
     const context = new ModelContext();
 
     assert.deepEqual(context.selectEffort('high'), {ok: true});
-    assert.deepEqual(readConfig().llm.models, [
-      { id: 'fast', provider: 'openai', model: 'gpt-fast' },
-      { id: 'deep', provider: 'openai', model: 'gpt-deep', reasoning: { summary: 'auto', effort: 'high' } }
-    ]);
+    assert.deepEqual(readConfig(), config);
+    assert.deepEqual(context.getAgentSelection(), {modelProfileId: 'deep', reasoningEffortOverride: 'high'});
   });
 });
 
@@ -1580,7 +1659,7 @@ test('ModelContext refreshes cached status-line effort after effort selection su
   });
 });
 
-test('ModelContext creates reasoning object when persisting effort on profile without reasoning', () => {
+test('ModelContext does not create profile reasoning when selecting session effort', () => {
   withTemporaryModelConfig({
     llm: {
       selectedModel: 'fast',
@@ -1595,11 +1674,12 @@ test('ModelContext creates reasoning object when persisting effort on profile wi
     const context = new ModelContext();
 
     assert.deepEqual(context.selectEffort('minimal'), {ok: true});
-    assert.deepEqual(readConfig().llm.models[0].reasoning, {effort: 'minimal'});
+    assert.equal(readConfig().llm.models[0].reasoning, undefined);
+    assert.deepEqual(context.getAgentSelection(), {modelProfileId: 'fast', reasoningEffortOverride: 'minimal'});
   });
 });
 
-test('ModelContext atomically selects a model and its effort while preserving unrelated config', () => {
+test('ModelContext atomically selects a session model and effort while preserving global config', () => {
   withTemporaryModelConfig({
     unrelated: {keep: true},
     llm: {
@@ -1616,24 +1696,13 @@ test('ModelContext atomically selects a model and its effort while preserving un
     const context = new ModelContext();
 
     assert.deepEqual(context.selectModelAndEffort('deep', 'xhigh'), {ok: true, modelChanged: true});
-    assert.deepEqual(readConfig(), {
-      unrelated: {keep: true},
-      llm: {
-        selectedModel: 'deep',
-        providers: {
-          openai: {preset: 'openai-responses-api', apiKey: 'openai-api-key'}
-        },
-        models: [
-          {id: 'fast', provider: 'openai', model: 'gpt-fast'},
-          {id: 'deep', provider: 'openai', model: 'gpt-deep', reasoning: {summary: 'auto', effort: 'xhigh'}}
-        ]
-      }
-    });
+    assert.equal(readConfig().llm.selectedModel, 'fast');
+    assert.deepEqual(readConfig().llm.models[1].reasoning, {summary: 'auto', effort: 'low'});
     assert.deepEqual(context.getStatusLineModelState(), {modelLabel: 'gpt-deep', reasoningEffort: 'xhigh'});
   });
 });
 
-test('ModelContext writes explicit effort for previously unconfigured profiles', () => {
+test('ModelContext keeps explicit session effort outside previously unconfigured profiles', () => {
   withTemporaryModelConfig({
     llm: {
       selectedModel: 'deep',
@@ -1649,9 +1718,10 @@ test('ModelContext writes explicit effort for previously unconfigured profiles',
     const context = new ModelContext();
 
     assert.deepEqual(context.selectModelAndEffort('deep', 'medium'), {ok: true, modelChanged: false});
-    assert.deepEqual(readConfig().llm.models[0].reasoning, {summary: 'auto', effort: 'medium'});
+    assert.deepEqual(readConfig().llm.models[0].reasoning, {summary: 'auto'});
     assert.deepEqual(context.selectModelAndEffort('plain', 'none'), {ok: true, modelChanged: true});
-    assert.deepEqual(readConfig().llm.models[1].reasoning, {effort: 'none'});
+    assert.equal(readConfig().llm.models[1].reasoning, undefined);
+    assert.deepEqual(context.getAgentSelection(), {modelProfileId: 'plain', reasoningEffortOverride: 'none'});
   });
 });
 
@@ -1677,7 +1747,7 @@ test('ModelContext rejects invalid combined selection without changing config or
   });
 });
 
-test('ModelContext keeps combined selection cache unchanged and redacts write failures', () => {
+test('ModelContext keeps combined selection in memory when sidecar writes fail', () => {
   const fakeApiKey = 'sk-combined-secret';
   withTemporaryModelConfig({
     llm: {
@@ -1691,26 +1761,18 @@ test('ModelContext keeps combined selection cache unchanged and redacts write fa
       ]
     }
   }, () => {
-    const originalWriteFileSync = fs.writeFileSync;
-    const context = new ModelContext();
-    fs.writeFileSync = () => {
-      throw new Error(`cannot write ${fakeApiKey}`);
-    };
+    const context = new ModelContext({
+      getCurrentSessionId: () => 'session-1',
+      settingsStore: createFailingSessionModelSettingsStore(`cannot write ${fakeApiKey}`)
+    });
+    const result = context.selectModelAndEffort('deep', 'high');
 
-    try {
-      const result = context.selectModelAndEffort('deep', 'high');
-
-      assert.equal(result.ok, false);
-      assert.match(result.error, /<redacted>/);
-      assert.doesNotMatch(result.error, new RegExp(fakeApiKey));
-      assert.deepEqual(context.getStatusLineModelState(), {modelLabel: 'gpt-fast'});
-    } finally {
-      fs.writeFileSync = originalWriteFileSync;
-    }
+    assert.deepEqual(result, {ok: true, modelChanged: true});
+    assert.deepEqual(context.getStatusLineModelState(), {modelLabel: 'gpt-deep', reasoningEffort: 'high'});
   });
 });
 
-test('ModelContext keeps openai-chat usable after persisting effort', () => {
+test('ModelContext keeps openai-chat usable with a session effort override', () => {
   withTemporaryModelConfig({
     llm: {
       selectedModel: 'chat',
@@ -1725,7 +1787,7 @@ test('ModelContext keeps openai-chat usable after persisting effort', () => {
     const context = new ModelContext();
 
     assert.deepEqual(context.selectEffort('high'), {ok: true});
-    assert.deepEqual(readConfig().llm.models[0].reasoning, {effort: 'high'});
+    assert.equal(readConfig().llm.models[0].reasoning, undefined);
     assert.deepEqual(context.createModelCommandInfo(), {
       models: [
         { id: 'chat', model: 'gpt-chat', provider: 'chat', reasoningEffort: 'high' }
@@ -1764,7 +1826,7 @@ test('ModelContext rejects config without model profiles when selecting a model'
   });
 });
 
-test('ModelContext keeps cached status-line state when model selection write fails', () => {
+test('ModelContext updates status-line state when model selection sidecar write fails', () => {
   const fakeApiKey = 'sk-test-secret';
   withTemporaryModelConfig({
     llm: {
@@ -1778,27 +1840,18 @@ test('ModelContext keeps cached status-line state when model selection write fai
       ]
     }
   }, () => {
-    const originalWriteFileSync = fs.writeFileSync;
-    const appContext = createContext();
+    const appContext = createContext({sessionModelSettingsStore: createFailingSessionModelSettingsStore(`cannot write ${fakeApiKey}`)});
+    appContext.transcriptContext.appendRecord({role: 'user', text: 'existing'});
 
     assert.equal(appContext.createRenderState().statusLine.model.label, 'gpt-fast');
-    fs.writeFileSync = () => {
-      throw new Error(`cannot write ${fakeApiKey}`);
-    };
+    const result = appContext.modelContext.selectModel('deep');
 
-    try {
-      const result = appContext.modelContext.selectModel('deep');
-
-      assert.equal(result.ok, false);
-      assert.ok(result.error.includes('<redacted>'));
-      assert.equal(appContext.createRenderState().statusLine.model.label, 'gpt-fast');
-    } finally {
-      fs.writeFileSync = originalWriteFileSync;
-    }
+    assert.deepEqual(result, {ok: true});
+    assert.equal(appContext.createRenderState().statusLine.model.label, 'gpt-deep');
   });
 });
 
-test('ModelContext redacts write errors when model selection cannot be saved', () => {
+test('ModelContext keeps model selection usable when it cannot save a sidecar', () => {
   const fakeApiKey = 'sk-test-secret';
   withTemporaryModelConfig({
     llm: {
@@ -1812,22 +1865,14 @@ test('ModelContext redacts write errors when model selection cannot be saved', (
       ]
     }
   }, () => {
-    const originalWriteFileSync = fs.writeFileSync;
-    const context = new ModelContext();
+    const context = new ModelContext({
+      getCurrentSessionId: () => 'session-1',
+      settingsStore: createFailingSessionModelSettingsStore(`cannot write ${fakeApiKey}`)
+    });
+    const result = context.selectModel('deep');
 
-    fs.writeFileSync = () => {
-      throw new Error(`cannot write ${fakeApiKey}`);
-    };
-
-    try {
-      const result = context.selectModel('deep');
-
-      assert.equal(result.ok, false);
-      assert.ok(result.error.includes('<redacted>'));
-      assert.ok(!result.error.includes(fakeApiKey));
-    } finally {
-      fs.writeFileSync = originalWriteFileSync;
-    }
+    assert.deepEqual(result, {ok: true});
+    assert.equal(context.getStatusLineModelState().modelLabel, 'gpt-deep');
   });
 });
 
@@ -1878,6 +1923,84 @@ test('AppContext persists, clears, and reloads transcript sessions through one i
     { role: 'user', text: 'persist me', metadata: {} },
     { role: 'assistant', text: 'persisted reply' }
   ]);
+});
+
+test('AppContext isolates session settings across clear and resume', () => {
+  withTemporaryModelConfig({
+    llm: {
+      selectedModel: 'fast',
+      providers: {
+        default: {preset: 'openai-responses-api', apiKey: 'sk-test-key'}
+      },
+      models: [
+        {id: 'fast', provider: 'default', model: 'gpt-fast'},
+        {id: 'deep', provider: 'default', model: 'gpt-deep'}
+      ]
+    }
+  }, () => {
+    const transcriptStore = createFakeTranscriptStore();
+    const settingsStore = createFakeSessionModelSettingsStore();
+    const context = createContext({transcriptStore, sessionModelSettingsStore: settingsStore});
+
+    assert.deepEqual(context.modelContext.selectModelAndEffort('deep', 'high'), {ok: true, modelChanged: true});
+    context.beginUserTurn('first session');
+    context.turnContext.finishAssistantTurn('first reply');
+    const firstSessionId = context.transcriptContext.getCurrentSessionId();
+
+    context.clearTranscriptRecords();
+    assert.deepEqual(context.getAgentSession(), {
+      records: [],
+      compaction: undefined,
+      todoState: {items: [], updatedAt: ''},
+      interactionMode: 'normal',
+      compactionThresholdRatio: 0.8,
+      skillCatalogContextRatio: 0.02,
+      modelProfileId: 'fast'
+    });
+    context.beginUserTurn('second session');
+    context.turnContext.finishAssistantTurn('second reply');
+    const secondSessionId = context.transcriptContext.getCurrentSessionId();
+
+    assert.notEqual(secondSessionId, firstSessionId);
+    assert.equal(settingsStore.settings.get(firstSessionId).modelProfileId, 'deep');
+    assert.equal(settingsStore.settings.get(firstSessionId).reasoningEffortOverride, 'high');
+    assert.equal(settingsStore.settings.get(secondSessionId).modelProfileId, 'fast');
+    assert.equal(settingsStore.settings.get(secondSessionId).reasoningEffortOverride, undefined);
+
+    assert.ok(context.loadTranscriptSession(firstSessionId));
+    assert.deepEqual(context.modelContext.getAgentSelection(), {
+      modelProfileId: 'deep',
+      reasoningEffortOverride: 'high'
+    });
+    assert.equal(settingsStore.settings.get(secondSessionId).modelProfileId, 'fast');
+  });
+});
+
+test('AppContext falls back for a legacy session and backfills its settings after the next user turn', () => {
+  withTemporaryModelConfig({
+    llm: {
+      selectedModel: 'fast',
+      providers: {
+        default: {preset: 'openai-responses-api', apiKey: 'sk-test-key'}
+      },
+      models: [{id: 'fast', provider: 'default', model: 'gpt-fast'}]
+    }
+  }, () => {
+    const transcriptStore = createFakeTranscriptStore([{
+      sessionId: 'legacy-session',
+      createdAt: '2026-05-19T00:00:00.000Z',
+      updatedAt: '2026-05-19T00:00:00.000Z',
+      records: [{role: 'user', text: 'legacy'}]
+    }]);
+    const settingsStore = createFakeSessionModelSettingsStore();
+    const context = createContext({transcriptStore, sessionModelSettingsStore: settingsStore});
+
+    assert.ok(context.loadTranscriptSession('legacy-session'));
+    assert.deepEqual(context.modelContext.getAgentSelection(), {modelProfileId: 'fast'});
+    assert.equal(settingsStore.settings.has('legacy-session'), false);
+    context.beginUserTurn('continue legacy');
+    assert.equal(settingsStore.settings.get('legacy-session').modelProfileId, 'fast');
+  });
 });
 
 test('AppContext restores persisted change history for diff and undo', () => {

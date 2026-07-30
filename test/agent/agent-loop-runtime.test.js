@@ -133,7 +133,7 @@ test('createAgentLoopRuntime snapshots a budgeted skill catalog across tool cont
     let originalDescription;
     let turnCount = 0;
     const agentFactory = (_config, registry) => {
-      originalDescription = registry.listSkillCatalog()[0].description;
+      originalDescription = registry.listSkillCatalog().find((skill) => skill.name === 'large-skill').description;
       return {
         async runTurn(records) {
           requests.push(records);
@@ -981,6 +981,44 @@ test('createAgentLoopRuntime immediately denies approval-required tools in headl
   assert.equal(hooks.events[2].payload.decision, 'deny');
 });
 
+test('createAgentLoopRuntime executes a safe agent-memory script in headless deny mode', async () => {
+  await withTemporaryMemoryHome(async (homeDir) => {
+    const cwd = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'echo-headless-memory-')));
+    fs.mkdirSync(path.join(cwd, '.git'), {recursive: true});
+    const scriptPath = require.resolve('../../src/skills/builtin/agent-memory/scripts/memory');
+    const command = `HOME='${homeDir}' node '${scriptPath}' add --catalog 'rules' --description 'Project rules' --content 'Stable fact'`;
+    let turnCount = 0;
+    const results = [];
+    const agent = {
+      async runTurn() {
+        turnCount += 1;
+        return turnCount === 1
+          ? {draft: '', toolCalls: [{callId: 'memory-script', toolName: 'run_bash_command', argumentsText: JSON.stringify({command})}]}
+          : {draft: 'done', toolCalls: []};
+      }
+    };
+
+    const result = await withPatchedAgentRuntime(agent, () => {
+      const runAgent = createAgentLoopRuntime(cwd);
+      return runAgent({
+        records: [{role: 'user', text: 'remember'}],
+        executionMode: {kind: 'headless', approvalPolicy: 'deny'}
+      }, {
+        onToolApprovalRequest() {
+          throw new Error('safe memory script must not request approval');
+        },
+        onToolResult(toolResult) {
+          results.push(toolResult);
+        }
+      });
+    });
+
+    assert.equal(result, 'done');
+    assert.equal(results[0].ok, true);
+    assert.match(results[0].text, /Stable fact/);
+  });
+});
+
 test('createAgentLoopRuntime full-access executes registered patch tools without approval callback', async () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-full-access-'));
   const hooks = createHookRecorder();
@@ -1285,6 +1323,50 @@ test('createAgentLoopRuntime keeps active todo suffix after compaction removes o
 
   assert.equal(providerRecords.length, 2);
   assert.match(providerRecords[1].at(-1).text, /\[todo_1\] survive compaction/);
+});
+
+test('createAgentLoopRuntime records provider retry notices across tool continuation', async () => {
+  const providerRecords = [];
+  const retries = [];
+  const retry = {
+    retryCount: 1,
+    maxRetries: 7,
+    delayMs: 1000,
+    message: '模型响应临时失败，正在重试第 1/7 次。'
+  };
+  let turnCount = 0;
+  const agent = {
+    async runTurn(records, providerCallbacks) {
+      providerRecords.push(records);
+      turnCount += 1;
+
+      if (turnCount === 1) {
+        providerCallbacks.onProviderRetry?.(retry);
+        return {
+          draft: '',
+          toolCalls: [
+            {callId: 'call-1', toolName: 'missing_tool', argumentsText: '{"value":1}'}
+          ]
+        };
+      }
+
+      return {draft: 'done', toolCalls: []};
+    }
+  };
+
+  const result = await withPatchedAgentRuntime(agent, () => {
+    const runAgent = createAgentLoopRuntime(TEST_CWD);
+    return runAgent({records: [{role: 'user', text: 'use tool'}]}, {
+      onProviderRetry(nextRetry) {
+        retries.push(nextRetry);
+      }
+    });
+  });
+
+  assert.equal(result, 'done');
+  assert.deepEqual(retries, [retry]);
+  assert.equal(providerRecords.length, 2);
+  assert.ok(providerRecords[1].some((record) => record.role === 'local_notice' && record.text === retry.message));
 });
 
 test('createAgentLoopRuntime emits tool lifecycle hooks without changing continuation', async () => {

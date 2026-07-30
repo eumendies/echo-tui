@@ -1,5 +1,8 @@
 const assert = require('node:assert/strict');
 const {test} = require('node:test');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
 const {runOnce, stripAnsiControlSequences} = require('../../src/cli/one-shot');
 const {AgentAbortError} = require('../../src/types/agent');
@@ -109,6 +112,35 @@ test('runOnce defaults to headless denial without supplying an interactive quest
 
   assert.equal(callbacks, undefined);
   assert.deepEqual(output, ['safe\n']);
+});
+
+test('runOnce does not create or expose interactive session settings', async () => {
+  const resources = createResources();
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-once-session-settings-'));
+  const originalHomedir = os.homedir;
+  os.homedir = () => homeDir;
+
+  try {
+    await runOnce({
+      cwd: homeDir,
+      debug: resources.debug,
+      hooks: resources.hooks,
+      mcpManager: resources.mcpManager,
+      process: resources.process,
+      prompt: 'headless',
+      async runAgent(session) {
+        assert.equal(session.modelProfileId, undefined);
+        assert.equal(session.reasoningEffortOverride, undefined);
+        return 'done';
+      },
+      stdout: {write() {}}
+    });
+
+    assert.deepEqual(fs.readdirSync(homeDir), []);
+  } finally {
+    os.homedir = originalHomedir;
+    fs.rmSync(homeDir, {recursive: true, force: true});
+  }
 });
 
 test('runOnce redacts provider errors and still cleans resources', async () => {

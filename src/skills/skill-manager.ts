@@ -1,6 +1,6 @@
 import path from 'node:path';
 
-import {createSkillRegistry} from './skill-registry';
+import {createSkillRegistry, getDefaultUserSkillsDir} from './skill-registry';
 import {SKILL_STATE_SCHEMA_VERSION, createSkillStateStore} from './skill-state';
 
 import type {SkillListItem, SkillLoadResult, SkillManager} from '../types/skill';
@@ -16,6 +16,7 @@ function createSkillManager(options: SkillManagerOptions = {}): SkillManager {
   const registry = createSkillRegistry(options);
   const stateStore = createSkillStateStore(options);
   const stateByRoot = new Map<string, SkillStateFile>();
+  const userSkillsRoot = options.userSkillsDir || getDefaultUserSkillsDir();
 
   function getState(rootDir: string): SkillStateFile {
     const cached = stateByRoot.get(rootDir);
@@ -31,7 +32,7 @@ function createSkillManager(options: SkillManagerOptions = {}): SkillManager {
 
   function listSkills(): SkillListItem[] {
     return registry.listCatalog().map((entry) => {
-      const state = getState(getSkillRootFromSourcePath(entry.sourcePath));
+      const state = getState(getSkillStateRoot(entry.sourceKind, entry.sourcePath, userSkillsRoot));
 
       return {
         ...entry,
@@ -82,7 +83,7 @@ function createSkillManager(options: SkillManagerOptions = {}): SkillManager {
       const nextStateByRoot = new Map<string, Pick<SkillStateFile, 'disabled' | 'effortOverrides' | 'modelOverrides'>>();
 
       for (const skill of skills) {
-        const rootDir = getSkillRootFromSourcePath(skill.sourcePath);
+        const rootDir = getSkillStateRoot(skill.sourceKind, skill.sourcePath, userSkillsRoot);
 
         if (!nextStateByRoot.has(rootDir)) {
           nextStateByRoot.set(rootDir, {disabled: [], effortOverrides: {}, modelOverrides: {}});
@@ -116,13 +117,18 @@ function createSkillManager(options: SkillManagerOptions = {}): SkillManager {
   };
 }
 
+function getSkillStateRoot(sourceKind: SkillListItem['sourceKind'], sourcePath: string, userSkillsRoot: string): string {
+  return sourceKind === 'builtin' ? userSkillsRoot : getSkillRootFromSourcePath(sourcePath);
+}
+
 function getSkillRootFromSourcePath(sourcePath: string): string {
   return path.dirname(path.dirname(sourcePath));
 }
 
 export {
   createSkillManager,
-  getSkillRootFromSourcePath
+  getSkillRootFromSourcePath,
+  getSkillStateRoot
 };
 
 export type {SkillManagerOptions};

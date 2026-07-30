@@ -1,4 +1,6 @@
 import {DEFAULT_BASH_MAX_OUTPUT_BYTES, runBashCommand} from './bash-command-runner';
+import path from 'node:path';
+
 import {normalizePositiveInteger, resolveCwd} from './tool-handler-utils';
 import {createToolResultTruncationMarker} from './tool-result-offloading';
 
@@ -13,6 +15,7 @@ const PLAN_ALLOWED_GIT_SUBCOMMANDS = new Set(['status', 'diff', 'log', 'show', '
 const PLAN_BLOCKED_GIT_OPTIONS = new Set(['--output', '--ext-diff', '--external-diff']);
 const CHANGE_HISTORY_READONLY_COMMANDS = new Set(['pwd', 'ls', 'cat', 'head', 'tail', 'wc', 'grep', 'rg', 'echo', 'printf']);
 const CHANGE_HISTORY_BLOCKED_FIND_OPTIONS = new Set(['-delete', '-exec', '-execdir', '-ok', '-okdir']);
+const BUILTIN_AGENT_MEMORY_SCRIPT_PATH = path.resolve(__dirname, '../skills/builtin/agent-memory/scripts/memory.js');
 
 type BashToolHandlerOptions = {
   cwd?: string | (() => string);
@@ -215,6 +218,10 @@ function isPlanReadonlyBashCommand(command: string): boolean {
 }
 
 function isChangeHistoryReadonlyBashCommand(command: string): boolean {
+  if (isBuiltinAgentMemoryScriptCommand(command)) {
+    return true;
+  }
+
   const argv = parseSinglePlanCommand(command);
 
   if (!argv) {
@@ -234,6 +241,83 @@ function isChangeHistoryReadonlyBashCommand(command: string): boolean {
   }
 
   return false;
+}
+
+/**
+ * 只识别当前安装包内的固定 memory 脚本；拒绝 shell 组合与命令替换，避免任意 Node 命令绕过 workspace history 失效保护。
+ */
+function isBuiltinAgentMemoryScriptCommand(command: string): boolean {
+  const argv = parseTrustedScriptCommand(command);
+  if (!argv || argv.length < 2) return false;
+  const executable = argv[0] === 'node' || path.resolve(argv[0]) === path.resolve(process.execPath);
+  return executable && path.resolve(argv[1]) === BUILTIN_AGENT_MEMORY_SCRIPT_PATH;
+}
+
+function parseTrustedScriptCommand(command: string): string[] | null {
+  const argv: string[] = [];
+  let token = '';
+  let quote: 'single' | 'double' | null = null;
+  let tokenStarted = false;
+
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index];
+
+    if (quote === 'single') {
+      if (char === "'") quote = null;
+      else token += char;
+      tokenStarted = true;
+      continue;
+    }
+
+    if (char === '\\') {
+      const next = command[index + 1];
+      if (next === undefined || (quote === 'double' && (next === '$' || next === '`'))) return null;
+      token += next;
+      tokenStarted = true;
+      index += 1;
+      continue;
+    }
+
+    if (quote === 'double') {
+      if (char === '"') quote = null;
+      else {
+        if (char === '$' || char === '`') return null;
+        token += char;
+      }
+      tokenStarted = true;
+      continue;
+    }
+
+    if (char === "'") {
+      quote = 'single';
+      tokenStarted = true;
+      continue;
+    }
+
+    if (char === '"') {
+      quote = 'double';
+      tokenStarted = true;
+      continue;
+    }
+
+    if (/\s/u.test(char)) {
+      if (char === '\r' || char === '\n') return null;
+      if (tokenStarted) {
+        argv.push(token);
+        token = '';
+        tokenStarted = false;
+      }
+      continue;
+    }
+
+    if (';&|<>`$()'.includes(char)) return null;
+    token += char;
+    tokenStarted = true;
+  }
+
+  if (quote) return null;
+  if (tokenStarted) argv.push(token);
+  return argv.length > 0 ? argv : null;
 }
 
 function parseSinglePlanCommand(command: string): string[] | null {

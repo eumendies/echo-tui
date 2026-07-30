@@ -31,7 +31,7 @@ import {
 
 import type {TokenUsageAnchor} from './context/context-compaction';
 
-import type {AgentCallbacks, AgentExecutionMode, AgentInstruction, AgentInstructionFileName, AgentSessionInput, InteractionMode, LlmConfig, ProviderAgent, ProviderUsage, ReasoningEffort, RunAgent, ToolApprovalDecision} from '../types/agent';
+import type {AgentCallbacks, AgentExecutionMode, AgentInstruction, AgentInstructionFileName, AgentSessionInput, AgentTurnCallbacks, InteractionMode, LlmConfig, ProviderAgent, ProviderRetry, ProviderUsage, ReasoningEffort, RunAgent, ToolApprovalDecision} from '../types/agent';
 import type {DebugContext} from '../debug/debug-context';
 import type {LifecycleHookDispatcher} from '../types/hooks';
 import type {UsageStore} from '../types/usage';
@@ -457,6 +457,11 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
       recordRegion.push(...records);
     }
 
+    function commitProviderRetry(retry: ProviderRetry): void {
+      recordRegion.push({role: 'local_notice', text: retry.message});
+      callbacks.onProviderRetry?.(retry);
+    }
+
     function recordProviderUsage(usage: ProviderUsage | undefined, usageInputTokens: number | undefined): void {
       if (!usageStore || !hasRecordableProviderUsage(usage, usageInputTokens)) {
         return;
@@ -524,7 +529,11 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
         toolSchemaHash: hashValue(state.toolDefinitions)
       });
       throwIfAborted(abortSignal);
-      const {draft, providerRecords: turnProviderRecords, reasoningSummary, toolCalls, usage, usageInputTokens} = await state.agent.runTurn(providerRecords, callbacks, {abortSignal});
+      const providerTurnCallbacks: AgentTurnCallbacks = {
+        onProviderRetry: commitProviderRetry,
+        onToken: callbacks.onToken
+      };
+      const {draft, providerRecords: turnProviderRecords, reasoningSummary, toolCalls, usage, usageInputTokens} = await state.agent.runTurn(providerRecords, providerTurnCallbacks, {abortSignal});
       throwIfAborted(abortSignal);
 
       if (typeof usageInputTokens === 'number') {

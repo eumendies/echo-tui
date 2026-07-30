@@ -1,4 +1,4 @@
-export type SkillSourceKind = 'project' | 'user';
+export type SkillSourceKind = 'builtin' | 'project' | 'user';
 
 import type {ReasoningEffort} from './agent';
 

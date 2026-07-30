@@ -37,7 +37,13 @@ function createModelCommandPorts(options: ModelCommandPortOptions): Pick<Command
         return result;
       },
       selectEffort(effort) {
-        return appContext.modelContext.selectEffort(effort);
+        const result = appContext.modelContext.selectEffort(effort);
+
+        if (result.ok) {
+          appContext.clearContextUsage();
+        }
+
+        return result;
       }
     },
     config: {

@@ -5,11 +5,12 @@ import path from 'node:path';
 import type {SkillCatalogEntry, SkillDefinition, SkillLoadResult, SkillRegistry, SkillSourceKind} from '../types/skill';
 
 type SkillRegistryOptions = {
-  cwd?: string | (() => string);
-  projectSkillsDir?: string;
-  readDir?: (dirPath: string) => fs.Dirent[];
-  readFile?: (filePath: string, encoding: BufferEncoding) => string;
-  userSkillsDir?: string;
+  builtinSkillsDir?: string; // 应用包内最低优先级的 skill 根目录。
+  cwd?: string | (() => string); // 项目级 skill 解析所依据的当前工作目录。
+  projectSkillsDir?: string; // 测试或嵌入场景覆盖的项目级 skill 根目录。
+  readDir?: (dirPath: string) => fs.Dirent[]; // skill 与资源目录发现所使用的读取边界。
+  readFile?: (filePath: string, encoding: BufferEncoding) => string; // SKILL.md 内容读取边界。
+  userSkillsDir?: string; // 测试或嵌入场景覆盖的用户级 skill 根目录。
 };
 
 type ParsedSkillFile =
@@ -20,16 +21,18 @@ const SKILL_FILE_NAME = 'SKILL.md';
 const SKILL_RESOURCE_DIR_NAMES = ['reference', 'scripts'];
 
 /**
- * 创建 skill registry：扫描用户级与项目级 skill 目录，并按项目级优先生成稳定 catalog。
+ * 创建 skill registry：按 builtin、用户级、项目级顺序扫描，后写的高优先级来源覆盖同名 skill。
  */
 function createSkillRegistry(options: SkillRegistryOptions = {}): SkillRegistry {
   const readFile = options.readFile || fs.readFileSync;
   const readDir = options.readDir || ((dirPath: string) => fs.readdirSync(dirPath, {withFileTypes: true}));
+  const builtinRoot = options.builtinSkillsDir || getDefaultBuiltinSkillsDir();
   const userRoot = options.userSkillsDir || getDefaultUserSkillsDir();
   const projectRoot = options.projectSkillsDir || getDefaultProjectSkillsDir(resolveCwd(options.cwd));
   const skills = new Map<string, SkillDefinition>();
   const invalidByFolderName = new Map<string, string>();
 
+  scanSkillRoot(builtinRoot, 'builtin');
   scanSkillRoot(userRoot, 'user');
   scanSkillRoot(projectRoot, 'project');
 
@@ -224,6 +227,10 @@ function getDefaultProjectSkillsDir(cwd: string): string {
   return path.join(cwd, '.echo', 'skills');
 }
 
+function getDefaultBuiltinSkillsDir(): string {
+  return path.join(__dirname, 'builtin');
+}
+
 function getDefaultUserSkillsDir(): string {
   return path.join(os.homedir(), '.echo', 'skills');
 }
@@ -231,6 +238,7 @@ function getDefaultUserSkillsDir(): string {
 export {
   SKILL_FILE_NAME,
   createSkillRegistry,
+  getDefaultBuiltinSkillsDir,
   getDefaultProjectSkillsDir,
   getDefaultUserSkillsDir,
   parseSkillFile

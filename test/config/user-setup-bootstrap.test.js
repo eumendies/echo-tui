@@ -41,6 +41,8 @@ test('bootstrapEchoUserSetup creates default config and setup skill without real
   assert.match(skill, /name: echo-tui-setup/);
   assert.match(skill, /description: Explain how to install echo-tui skills/);
   assert.match(skill, /~\/\.echo\/skills\/<skill-name>\/SKILL\.md/);
+  assert.match(skill, /user-level skills override built-ins/);
+  assert.match(skill, /never in the npm installation directory/);
   assert.match(skill, /mcp\.servers/);
   assert.match(skill, /llm\.providers/);
   assert.match(skill, /selectedModel/);
@@ -74,7 +76,7 @@ test('bootstrap setup skill is discovered as a user skill and can be loaded thro
   const projectSkillsDir = path.join(cwd, 'project', '.echo', 'skills');
 
   bootstrapEchoUserSetup({echoDir});
-  const registry = createSkillRegistry({cwd, projectSkillsDir, userSkillsDir});
+  const registry = createSkillRegistry({builtinSkillsDir: path.join(cwd, 'missing-builtin'), cwd, projectSkillsDir, userSkillsDir});
   const catalog = registry.listCatalog();
 
   assert.deepEqual(catalog.map(({name, sourceKind}) => ({name, sourceKind})), [
@@ -103,12 +105,12 @@ test('project setup skill overrides bootstrap user setup skill and state is save
   bootstrapEchoUserSetup({echoDir});
   writeSkill(projectSkillsDir, 'echo-tui-setup', 'name: echo-tui-setup\ndescription: Project setup', '# Project Setup');
 
-  const overridden = createSkillRegistry({cwd, projectSkillsDir, userSkillsDir});
+  const overridden = createSkillRegistry({builtinSkillsDir: path.join(cwd, 'missing-builtin'), cwd, projectSkillsDir, userSkillsDir});
   assert.deepEqual(overridden.listCatalog().map(({name, sourceKind, description}) => ({name, sourceKind, description})), [
     {name: 'echo-tui-setup', sourceKind: 'project', description: 'Project setup'}
   ]);
 
-  const manager = createSkillManager({cwd, projectSkillsDir: path.join(cwd, 'missing-project'), userSkillsDir});
+  const manager = createSkillManager({builtinSkillsDir: path.join(cwd, 'missing-builtin'), cwd, projectSkillsDir: path.join(cwd, 'missing-project'), userSkillsDir});
   assert.deepEqual(manager.listSkills().map(({name, enabled, sourceKind}) => ({name, enabled, sourceKind})), [
     {name: 'echo-tui-setup', enabled: true, sourceKind: 'user'}
   ]);

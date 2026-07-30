@@ -114,9 +114,9 @@ Use this skill when the user asks how to configure echo-tui, install skills, add
 
 - User-level skills live at \`~/.echo/skills/<skill-name>/SKILL.md\`.
 - Project-level skills live at \`<project>/.echo/skills/<skill-name>/SKILL.md\`.
-- Project-level skills override user-level skills with the same \`name\`.
+- Echo TUI may ship built-in skills; user-level skills override built-ins with the same \`name\`, and project-level skills override both.
 - Each \`SKILL.md\` needs YAML frontmatter with \`name\` and \`description\`, followed by markdown instructions.
-- Skill enablement is managed by \`/skills\`; disabled user skills are recorded in \`~/.echo/skills/skills.json\`.
+- Skill enablement is managed by \`/skills\`; built-in and user-level skill state is recorded in \`~/.echo/skills/skills.json\`, never in the npm installation directory.
 
 ## MCP servers
 

@@ -53,7 +53,9 @@ type ResponseClient = {
 };
 
 const OPENAI_MAX_RETRIES = 3;
-const RESPONSE_STREAM_RETRY_DELAY_MS = 100;
+const RESPONSE_STREAM_MAX_RETRIES = 10;
+const RESPONSE_STREAM_RETRY_DELAY_MS = 1000;
+const RESPONSE_STREAM_MAX_RETRY_DELAY_MS = 256_000;
 const RETRYABLE_RESPONSE_STREAM_ERROR_TEXTS = [
   'An error occurred while processing your request. You can retry your request',
   'Our servers are currently overloaded. Please try again later'
@@ -409,11 +411,19 @@ async function readResponseStream(stream: ResponseStream, callbacks: AgentTurnCa
   };
 }
 
+function getResponseStreamRetryDelayMs(retryCount: number): number {
+  return Math.min(
+    RESPONSE_STREAM_RETRY_DELAY_MS * 2 ** (retryCount - 1),
+    RESPONSE_STREAM_MAX_RETRY_DELAY_MS
+  );
+}
+
 /**
  * 等待一次短暂重试退避，并让 turn 级取消信号立即中断等待。
  */
-function waitForResponseStreamRetry(signal?: AbortSignal): Promise<void> {
+function waitForResponseStreamRetry(retryCount: number, signal?: AbortSignal): Promise<void> {
   throwIfAborted(signal);
+  const delayMs = getResponseStreamRetryDelayMs(retryCount);
 
   return new Promise((resolve, reject) => {
     const onAbort = () => {
@@ -424,17 +434,17 @@ function waitForResponseStreamRetry(signal?: AbortSignal): Promise<void> {
     const timeout = setTimeout(() => {
       signal?.removeEventListener('abort', onAbort);
       resolve();
-    }, RESPONSE_STREAM_RETRY_DELAY_MS);
+    }, delayMs);
 
     signal?.addEventListener('abort', onAbort, {once: true});
   });
 }
 
 /**
- * 创建并消费 Responses stream，在无文本输出的指定服务端临时错误后最多重新创建一次 stream。
+ * 创建并消费 Responses stream，在无文本输出的指定服务端临时错误后按上限重试。
  */
 async function runResponseStreamWithRetry(createStream: ResponseStreamFactory, callbacks: AgentTurnCallbacks = {}, options: AgentTurnOptions = {}): Promise<AgentTurnResult> {
-  let retried = false;
+  let retryCount = 0;
 
   while (true) {
     throwIfAborted(options.abortSignal);
@@ -453,7 +463,7 @@ async function runResponseStreamWithRetry(createStream: ResponseStreamFactory, c
     try {
       return await readResponseStream(stream, attemptCallbacks, options);
     } catch (error: unknown) {
-      const canRetry = !retried &&
+      const canRetry = retryCount < RESPONSE_STREAM_MAX_RETRIES &&
         !emittedText &&
         !options.isCompaction &&
         !options.abortSignal?.aborted &&
@@ -463,8 +473,14 @@ async function runResponseStreamWithRetry(createStream: ResponseStreamFactory, c
         throw error;
       }
 
-      retried = true;
-      await waitForResponseStreamRetry(options.abortSignal);
+      retryCount += 1;
+      callbacks.onProviderRetry?.({
+        retryCount,
+        maxRetries: RESPONSE_STREAM_MAX_RETRIES,
+        delayMs: getResponseStreamRetryDelayMs(retryCount),
+        message: `模型响应临时失败，正在重试第 ${retryCount}/${RESPONSE_STREAM_MAX_RETRIES} 次。`
+      });
+      await waitForResponseStreamRetry(retryCount, options.abortSignal);
     }
   }
 }

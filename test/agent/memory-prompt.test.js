@@ -65,5 +65,7 @@ test('agent memory prompt projection folds all catalogs beyond the absolute budg
   assert.equal(projection.mode, 'catalog');
   assert.match(projection.text, /small: small rules/);
   assert.match(projection.text, /large: large rules/);
+  assert.match(projection.text, /agent-memory/);
+  assert.doesNotMatch(projection.text, /read_memory/);
   assert.doesNotMatch(projection.text, /Visible only in a small projection|xxxxx/);
 });

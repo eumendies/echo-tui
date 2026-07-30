@@ -229,7 +229,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     let displayText: string | undefined;
     let userMetadata: Record<string, unknown> | undefined;
     let userAttachments: ToolResultAttachment[] | undefined;
-    let modelProfileId: string | undefined;
+    let modelProfileIdOverride: string | undefined;
     let reasoningEffortOverride: ReasoningEffort | undefined;
 
     // shell mode
@@ -242,7 +242,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
       userText = commandResult.text;
       displayText = commandResult.displayText;
       userMetadata = commandResult.metadata;
-      modelProfileId = commandResult.modelProfileId;
+      modelProfileIdOverride = commandResult.modelProfileId;
       reasoningEffortOverride = commandResult.reasoningEffortOverride;
     }
 
@@ -260,7 +260,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     if (pendingConversationReference) {
       displayText = displayText || composerOps.getText(appContext.composerContext.composer);
       // 短会话直接全部进入上下文，长会话调用模型先进行总结
-      const preparationResult = await commandHost.reference.prepareForSubmission({modelProfileId, reasoningEffortOverride});
+      const preparationResult = await commandHost.reference.prepareForSubmission({modelProfileIdOverride, reasoningEffortOverride});
 
       if (!preparationResult.ok) {
         if (preparationResult.reason === 'failed') {
@@ -305,7 +305,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
       userText,
       displayText,
       metadata: userMetadata,
-      modelProfileId,
+      modelProfileIdOverride,
       reasoningEffortOverride,
       attachments: userAttachments,
       debug,

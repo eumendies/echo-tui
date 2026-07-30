@@ -1,6 +1,7 @@
 import type {ApplyPatchDisplayMetadata, EditFileDisplayMetadata, ToolResultAttachment} from './tool';
 import type {ChangeCheckpoint} from './change-history';
 import type {InteractionMode} from './agent';
+import type {SkillSourceKind} from './skill';
 
 export const OPENAI_REASONING_EXTENSION_KIND = 'openai_reasoning';
 export const OPENAI_CHAT_REASONING_EXTENSION_KIND = 'openai_chat_reasoning';
@@ -31,7 +32,7 @@ export type UserTranscriptMetadata = {
     skillName: string;
     argumentsText?: string;
     userRequestText?: string;
-    sourceKind: 'project' | 'user';
+    sourceKind: SkillSourceKind;
     sourcePath: string;
   };
   conversationReference?: ConversationReferenceMetadata; // 标识该用户消息附加了一段历史会话引用。

@@ -70,7 +70,7 @@ echo-tui --once --full-access "按要求修改文件并运行检查"
 
 首次启动会在缺失时创建 `~/.echo/config.json`（预置内置 fake agent，可直接进入界面）和内置 setup skill，不覆盖已有内容。
 
-进入界面后用 `/config` 打开配置中心：`常规` 管理压缩与显示偏好，`模型与 Provider` 管理真实 provider/model，`外观` 切换内置主题。Tab 循环切换页面；常规与模型草稿分别保存，主题选择立即保存并应用。也可以直接编辑 `~/.echo/config.json`：
+进入界面后用 `/config` 打开配置中心：`常规` 管理压缩与显示偏好，`模型与 Provider` 管理真实 provider/model 和新会话默认模型，`外观` 切换内置主题。Tab 循环切换页面；常规与模型草稿分别保存，主题选择立即保存并应用。也可以直接编辑 `~/.echo/config.json`：
 
 ```json
 {
@@ -99,7 +99,7 @@ echo-tui --once --full-access "按要求修改文件并运行检查"
 
 - `preset` 选择运行时协议，常用 `openai-responses-api`、`openai-chat-compatible-api`、`anthropic-compatible-api`，以及一组固定 Base URL、只需填 API key 的厂商 preset（DeepSeek、Kimi、Z.ai、Minimax、StepFun、OpenRouter、Xiaomi 等）。
 - `model` 是 provider 的 API 模型名；`contextWindow` 可选，留空时按内置模型映射或默认窗口推断。
-- `reasoning.effort` 可选，用 `/effort` 调整；`tools.bash.maxOutputBytes` 可限制 bash 工具输出上限。bash 工具默认无固定超时，可用 Esc 中断；如确实需要自动终止，可显式配置 `tools.bash.timeoutMs` 为正整数。
+- `llm.selectedModel` 和 profile 的 `reasoning.effort` 是新会话默认值。TUI 中的 `/model`、`/effort` 和 `Ctrl+T` 只修改当前 session，不改写 `~/.echo/config.json`；切换 model 会清除该 session 旧的 effort override。`tools.bash.maxOutputBytes` 可限制 bash 工具输出上限。bash 工具默认无固定超时，可用 Esc 中断；如确实需要自动终止，可显式配置 `tools.bash.timeoutMs` 为正整数。
 - `tools.fileEdit.mode` 可设为 `apply_patch`（默认）或 `edit_file`。每轮 assistant 请求只注册其中一个；在 `/config` 保存后从下一轮生效，进行中的 tool continuation 保持原 registry 快照。`edit_file`只更新已有 UTF-8 文本文件，以精确 `old_string`/`new_string` 替换；默认要求唯一匹配，只有明确设置 `replace_all` 才会替换调用前原始内容中的全部非重叠匹配。
 - `tools.readFiles.autoCompressImages` 默认为 `true`，同时作用于模型调用 `read_files` 和 File Picker／`@` mention。未超过 5 MB 的 PNG、JPEG、GIF、WebP 保持原样；超限图片会在进入 transcript 前用 Sharp 缩小到附件上限内，npm 安装已包含所需平台运行时，无需预装 ImageMagick 或 libvips。设为 `false` 后，超限图片恢复为明确的读取失败。
 - `instructions.fileName` 可设为 `AGENTS.md` 或 `CLAUDE.md`，默认读取 `AGENTS.md`。两者互斥，不会在所选文件缺失时回退到另一种文件。
@@ -216,13 +216,16 @@ skill 放在 `.echo/skills/<name>/SKILL.md`（项目级）或 `~/.echo/skills/<n
 
 ## 会话存储
 
-会话按工作目录分区保存为本地明文 append-only JSONL journal：
+会话按工作目录分区保存为本地明文 append-only JSONL journal，并在同目录保存当前 model/effort sidecar：
 
 ```text
 ~/.echo/echo_tui/projects/{cwd-hash}/sessions/{session-id}.jsonl
+~/.echo/echo_tui/projects/{cwd-hash}/sessions/{session-id}.settings.json
 ```
 
-加载时会顺序重放 journal；旧 `.json` session 不会被读取或迁移。`/undo` 截断的历史仍物理保留在 journal 中。清理历史可删除对应 session 文件或整个 `~/.echo/echo_tui/` 目录。
+普通消息先照常创建或追加 journal，再尽力同步同 ID sidecar；sidecar 写入失败不会影响当前模型选择、status line、transcript 或 provider 请求。`/resume` 在 sidecar 有效时恢复该 session 的 model/effort；旧会话缺少 sidecar、sidecar 损坏或 profile 已删除时直接使用当前全局默认。`/clear` 只解绑旧 session，以最新全局默认初始化新 session，不删除旧 journal 或 sidecar。显式 `/<skill-name>` 的 model/effort override 只作用于当前 turn，并按字段覆盖 session 值；未覆盖字段继续继承 session，tool continuation 保持本轮已解析配置。`--once` 不读取或创建这些文件，继续直接使用全局默认或命令行单轮 override。
+
+加载 transcript 时会顺序重放 journal；孤立 sidecar 不会出现在 `/resume` 候选中，旧 `.json` session 也不会被读取或迁移。`/undo` 截断的历史仍物理保留在 journal 中。清理历史可删除对应 session 文件和 sidecar，或整个 `~/.echo/echo_tui/` 目录。
 
 ## 开发命令
 

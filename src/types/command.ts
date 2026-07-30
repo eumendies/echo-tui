@@ -6,6 +6,7 @@ import type {UndoExecuteResult, UndoSummary} from './change-history';
 import type {UsageDailyAggregate, UsageQueryOptions} from './usage';
 import type {LifecycleHookConfigDraft, LifecycleHookDraftEntry, LifecycleHookEventName, LifecycleHookTestResult} from './hooks';
 import type {AgentMemoryCatalog, AgentMemoryCatalogListResult, AgentMemoryCatalogReadResult, AgentMemoryItem, AgentMemoryMutationResult, AgentMemoryScope, UserMemory, UserMemoryMutationResult, UserMemoryReadResult} from './memory';
+import type {SkillSourceKind} from './skill';
 import type {AppSettings} from '../config/app-settings-config';
 
 export type CommandSurfaceOption = {
@@ -486,7 +487,7 @@ export type CommandConfigListModelsResult =
 export type CommandSkillInfo = {
   name: string;
   description: string;
-  sourceKind: 'project' | 'user';
+  sourceKind: SkillSourceKind;
   sourcePath: string;
   enabled: boolean;
   modelProfileId?: string;
@@ -560,7 +561,7 @@ export type CommandReferencePrepareResult =
     };
 
 export type CommandReferenceSubmissionOptions = {
-  modelProfileId?: string; // 当前消息通过 skill 等入口指定的本轮模型配置。
+  modelProfileIdOverride?: string; // 当前消息通过 skill 等入口指定的本轮模型覆盖。
   reasoningEffortOverride?: ReasoningEffort; // 当前消息覆盖模型配置的本轮 reasoning effort。
 };
 

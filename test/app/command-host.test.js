@@ -396,7 +396,7 @@ test('CommandHost hooks facade creates synthetic payload and maps test result', 
   });
 });
 
-test('CommandHost config facade refreshes model status cache after successful save', () => {
+test('CommandHost config facade refreshes model catalog while preserving current session selection', () => {
   withTemporaryUserConfig(JSON.stringify({
     instructions: {fileName: 'CLAUDE.md'},
     llm: {
@@ -431,8 +431,9 @@ test('CommandHost config facade refreshes model status cache after successful sa
 
     assert.deepEqual(result, {ok: true});
     assert.equal(calls.contextUsageClears, 1);
-    assert.equal(modelContext.getStatusLineModelState().modelLabel, 'gpt-deep');
-    assert.equal(modelContext.getStatusLineModelState().reasoningEffort, 'high');
+    assert.equal(modelContext.getStatusLineModelState().modelLabel, 'gpt-fast');
+    assert.equal(modelContext.getStatusLineModelState().reasoningEffort, undefined);
+    assert.equal(readConfig().llm.selectedModel, 'deep');
   });
 });
 

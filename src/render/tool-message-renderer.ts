@@ -18,7 +18,6 @@ import {
   renderReadFilesToolCallLines,
   renderReadFilesToolResultLines
 } from './tool-message-renderers/read-files';
-import {isMemoryRenderToolName, renderMemoryToolCallLines, renderMemoryToolPairLines, renderMemoryToolResultLines} from './tool-message-renderers/memory';
 import {isTodoRenderToolName, renderTodoToolCallLines, renderTodoToolResultLines} from './tool-message-renderers/todo';
 import {
   USE_SKILL_TOOL_NAME,
@@ -94,10 +93,6 @@ function renderPairAwareToolPairLines(call: ToolCallTranscriptRecord, result: To
 
   if (call.toolName === WEB_FETCH_TOOL_NAME && result.toolName === WEB_FETCH_TOOL_NAME) {
     return renderWebFetchToolPairLines(call, result, width, theme);
-  }
-
-  if (isMemoryRenderToolName(call.toolName) && call.toolName === result.toolName) {
-    return renderMemoryToolPairLines(call, result, width, theme);
   }
 
   return null;
@@ -215,16 +210,6 @@ function renderToolRecordLines(record: ToolTranscriptRecord, width: number, opti
   if (record.toolName === WEB_FETCH_TOOL_NAME && record.role === 'tool_call') {
     return renderWebFetchToolCallLines(record, width, options.callStatus, theme)
       ?? renderGenericToolRecordLines(record, width, options, theme);
-  }
-
-  if (isMemoryRenderToolName(record.toolName)) {
-    if (record.role === 'tool_call') {
-      return renderMemoryToolCallLines(record, width, options.callStatus, theme);
-    }
-
-    if (record.role === 'tool_result') {
-      return renderMemoryToolResultLines(record, width, theme);
-    }
   }
 
   return renderGenericToolRecordLines(record, width, options, theme);
