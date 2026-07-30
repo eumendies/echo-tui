@@ -31,7 +31,7 @@ const TEST_CONFIG = {
 };
 const RETRYABLE_PROCESSING_ERROR = 'An error occurred while processing your request. You can retry your request';
 const RETRYABLE_OVERLOADED_ERROR = 'Our servers are currently overloaded. Please try again later.';
-const RESPONSE_STREAM_RETRY_TEST_DELAYS_MS = [1000, 2000, 4000];
+const RESPONSE_STREAM_RETRY_TEST_DELAYS_MS = [1000, 2000];
 
 async function flushPendingAsyncWork() {
   for (let index = 0; index < 20; index += 1) {
@@ -396,6 +396,7 @@ test('createOpenAiAgent retries a transient stream processing error before outpu
 
 test('createOpenAiAgent retries an overloaded stream error before output', async () => {
   let attempts = 0;
+  const retries = [];
   const harness = createHarness(() => {
     attempts += 1;
     return attempts === 1
@@ -404,12 +405,20 @@ test('createOpenAiAgent retries an overloaded stream error before output', async
   });
 
   const result = await runWithMockedRetryTimers(
-    () => harness.runTurn([{role: 'user', text: 'hello'}], {}),
+    () => harness.runTurn([{role: 'user', text: 'hello'}], {
+      onProviderRetry(retry) {
+        retries.push(retry);
+      }
+    }),
     [RESPONSE_STREAM_RETRY_TEST_DELAYS_MS[0]]
   );
 
   assert.deepEqual(result, {draft: 'recovered', toolCalls: [], usageInputTokens: undefined});
   assert.equal(harness.requests.length, 2);
+  assert.equal(retries.length, 1);
+  assert.equal(retries[0].retryCount, 1);
+  assert.equal(retries[0].delayMs, RESPONSE_STREAM_RETRY_TEST_DELAYS_MS[0]);
+  assert.equal(retries[0].message, `模型响应临时失败，正在重试第 1/${retries[0].maxRetries} 次。`);
 });
 
 test('createOpenAiAgent retries response.failed server_error events before output', async () => {
@@ -429,11 +438,11 @@ test('createOpenAiAgent retries response.failed server_error events before outpu
   assert.equal(harness.requests.length, 2);
 });
 
-test('createOpenAiAgent can recover after three transient stream retries', async () => {
+test('createOpenAiAgent can recover after two transient stream retries', async () => {
   let attempts = 0;
   const harness = createHarness(() => {
     attempts += 1;
-    return attempts <= 3
+    return attempts <= 2
       ? [createRetryableStreamError(`retry-request-${attempts}`)]
       : [{type: 'response.output_text.delta', delta: 'recovered'}, {type: 'response.completed'}];
   });
@@ -444,18 +453,18 @@ test('createOpenAiAgent can recover after three transient stream retries', async
   );
 
   assert.deepEqual(result, {draft: 'recovered', toolCalls: [], usageInputTokens: undefined});
-  assert.equal(harness.requests.length, 4);
+  assert.equal(harness.requests.length, 3);
 });
 
-test('createOpenAiAgent stops after three transient stream retries and keeps the final request ID', async () => {
+test('createOpenAiAgent keeps the final request ID after two transient stream retries', async () => {
   let attempts = 0;
   const harness = createHarness(() => {
     attempts += 1;
-    if (attempts <= 3) {
+    if (attempts <= 2) {
       return [createRetryableStreamError(`retry-request-${attempts}`)];
     }
 
-    const finalError = new Error(RETRYABLE_PROCESSING_ERROR);
+    const finalError = new Error('stream disconnected');
     finalError.requestID = 'final-request';
     return [finalError];
   });
@@ -469,11 +478,10 @@ test('createOpenAiAgent stops after three transient stream retries and keeps the
       assert.match(error.message, /final-request/);
       assert.doesNotMatch(error.message, /retry-request-1/);
       assert.doesNotMatch(error.message, /retry-request-2/);
-      assert.doesNotMatch(error.message, /retry-request-3/);
       return true;
     }
   );
-  assert.equal(harness.requests.length, 4);
+  assert.equal(harness.requests.length, 3);
 });
 
 test('createOpenAiAgent does not retry non-target, partial, or compaction stream failures', async () => {

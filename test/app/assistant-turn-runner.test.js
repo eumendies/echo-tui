@@ -484,6 +484,28 @@ test('runAssistantTurn emits a local model-switch notice and restores the global
   assert.equal(harness.appContext.transcriptContext.records[1].role, 'local_notice');
 });
 
+test('runAssistantTurn appends a local notice for provider retry callbacks', async () => {
+  const harness = createHarness();
+
+  await runAssistantTurn({
+    ...harness.input,
+    async runAgent(_session, callbacks) {
+      callbacks.onProviderRetry({
+        retryCount: 1,
+        maxRetries: 7,
+        delayMs: 1000,
+        message: '模型响应临时失败，正在重试第 1/7 次。'
+      });
+      callbacks.onComplete('done');
+      return 'done';
+    }
+  });
+
+  assert.deepEqual(harness.appended.map((record) => record.role), ['user', 'local_notice', 'assistant']);
+  assert.equal(harness.appended[1].text, '模型响应临时失败，正在重试第 1/7 次。');
+  assert.equal(harness.appContext.transcriptContext.records[1].role, 'local_notice');
+});
+
 test('runAssistantTurn does not emit a model-switch notice when a stale override falls back', async () => {
   const harness = createHarness();
   harness.appContext.modelContext = {

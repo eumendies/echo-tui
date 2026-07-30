@@ -115,6 +115,16 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
 
         appendRecord(appContext.transcriptContext.applyCompaction(compaction));
       },
+      onProviderRetry(retry) {
+        if (!isCurrentTurn()) {
+          return;
+        }
+
+        appendRecord(appContext.transcriptContext.appendRecord({
+          role: 'local_notice',
+          text: retry.message
+        }));
+      },
       onContextUsage(usage) {
         if (!isCurrentTurn()) {
           return;

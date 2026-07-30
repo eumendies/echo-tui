@@ -1325,6 +1325,50 @@ test('createAgentLoopRuntime keeps active todo suffix after compaction removes o
   assert.match(providerRecords[1].at(-1).text, /\[todo_1\] survive compaction/);
 });
 
+test('createAgentLoopRuntime records provider retry notices across tool continuation', async () => {
+  const providerRecords = [];
+  const retries = [];
+  const retry = {
+    retryCount: 1,
+    maxRetries: 7,
+    delayMs: 1000,
+    message: '模型响应临时失败，正在重试第 1/7 次。'
+  };
+  let turnCount = 0;
+  const agent = {
+    async runTurn(records, providerCallbacks) {
+      providerRecords.push(records);
+      turnCount += 1;
+
+      if (turnCount === 1) {
+        providerCallbacks.onProviderRetry?.(retry);
+        return {
+          draft: '',
+          toolCalls: [
+            {callId: 'call-1', toolName: 'missing_tool', argumentsText: '{"value":1}'}
+          ]
+        };
+      }
+
+      return {draft: 'done', toolCalls: []};
+    }
+  };
+
+  const result = await withPatchedAgentRuntime(agent, () => {
+    const runAgent = createAgentLoopRuntime(TEST_CWD);
+    return runAgent({records: [{role: 'user', text: 'use tool'}]}, {
+      onProviderRetry(nextRetry) {
+        retries.push(nextRetry);
+      }
+    });
+  });
+
+  assert.equal(result, 'done');
+  assert.deepEqual(retries, [retry]);
+  assert.equal(providerRecords.length, 2);
+  assert.ok(providerRecords[1].some((record) => record.role === 'local_notice' && record.text === retry.message));
+});
+
 test('createAgentLoopRuntime emits tool lifecycle hooks without changing continuation', async () => {
   const hooks = createHookRecorder();
   const callbacks = [];

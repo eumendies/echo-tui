@@ -410,12 +410,16 @@ async function readResponseStream(stream: ResponseStream, callbacks: AgentTurnCa
   };
 }
 
+function getResponseStreamRetryDelayMs(retryCount: number): number {
+  return RESPONSE_STREAM_RETRY_DELAY_MS * 2 ** (retryCount - 1);
+}
+
 /**
  * 等待一次短暂重试退避，并让 turn 级取消信号立即中断等待。
  */
 function waitForResponseStreamRetry(retryCount: number, signal?: AbortSignal): Promise<void> {
   throwIfAborted(signal);
-  const delayMs = RESPONSE_STREAM_RETRY_DELAY_MS * 2 ** (retryCount - 1);
+  const delayMs = getResponseStreamRetryDelayMs(retryCount);
 
   return new Promise((resolve, reject) => {
     const onAbort = () => {
@@ -433,7 +437,7 @@ function waitForResponseStreamRetry(retryCount: number, signal?: AbortSignal): P
 }
 
 /**
- * 创建并消费 Responses stream，在无文本输出的指定服务端临时错误后最多重试三次。
+ * 创建并消费 Responses stream，在无文本输出的指定服务端临时错误后按上限重试。
  */
 async function runResponseStreamWithRetry(createStream: ResponseStreamFactory, callbacks: AgentTurnCallbacks = {}, options: AgentTurnOptions = {}): Promise<AgentTurnResult> {
   let retryCount = 0;
@@ -466,6 +470,12 @@ async function runResponseStreamWithRetry(createStream: ResponseStreamFactory, c
       }
 
       retryCount += 1;
+      callbacks.onProviderRetry?.({
+        retryCount,
+        maxRetries: RESPONSE_STREAM_MAX_RETRIES,
+        delayMs: getResponseStreamRetryDelayMs(retryCount),
+        message: `模型响应临时失败，正在重试第 ${retryCount}/${RESPONSE_STREAM_MAX_RETRIES} 次。`
+      });
       await waitForResponseStreamRetry(retryCount, options.abortSignal);
     }
   }

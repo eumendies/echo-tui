@@ -26,6 +26,13 @@ export type ProviderUsage = {
   outputTokens?: number;
 };
 
+export type ProviderRetry = {
+  retryCount: number; // 当前重试次数，从 1 开始。
+  maxRetries: number; // 当前 provider turn 允许的最大重试次数。
+  delayMs: number; // 发起下一次请求前等待的退避毫秒数。
+  message: string; // 可直接展示给用户的本地提示文案。
+};
+
 export type ResolvedAgentModel = {
   model: string;
   reasoningEffort?: ReasoningEffort;
@@ -51,6 +58,7 @@ export type AgentCallbacks = {
   onModelResolved?: (model: ResolvedAgentModel) => void;
   onThinking?: () => void;
   onToken?: (token: string, draft: string) => void;
+  onProviderRetry?: (retry: ProviderRetry) => void;
   onReasoningSummary?: (text: string) => void;
   onProviderRecords?: (records: TranscriptRecord[]) => void;
   onAssistantSegment?: (text: string) => void;
@@ -90,7 +98,7 @@ export type AgentInstruction = {
 
 export type RunAgent = (session: AgentSessionInput, callbacks?: AgentCallbacks) => Promise<unknown>;
 
-export type AgentTurnCallbacks = Pick<AgentCallbacks, 'onToken'>;
+export type AgentTurnCallbacks = Pick<AgentCallbacks, 'onProviderRetry' | 'onToken'>;
 
 export type AgentTurnOptions = {
   abortSignal?: AbortSignal;
