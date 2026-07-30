@@ -1,8 +1,4 @@
-# agent-memory Specification
-
-## Purpose
-定义 agent memory 的独立存储、scope 过滤、provider 注入、内置 skill 脚本操作和 `/memory` 人工管理行为。
-## Requirements
+## ADDED Requirements
 
 ### Requirement: Agent memory 通过内置 skill 脚本按需操作
 系统 SHALL 提供随应用版本发布的内置 `agent-memory` skill。该 skill SHALL 指示 agent 只通过附带的固定 CommonJS 脚本读取、新增、更新、删除或校验 agent memory，并 SHALL 禁止 agent 直接修改 `~/.echo/agent-memory/` 内部文件。脚本 SHALL 复用应用的 agent memory store，提供 `read`、`add`、`update-item`、`update-catalog`、`remove-item`、`remove-catalog` 和 `validate` action，严格校验参数，并以成功 JSON 或非零退出码失败结果结束。脚本 SHALL NOT 操作 user memory 或修改 catalog/item enabled 状态。
@@ -51,6 +47,8 @@
 - **WHEN** 恢复的历史 transcript 包含旧 memory tool call/result records
 - **THEN** renderer SHALL 使用通用 tool record 路径安全显示
 - **THEN** 系统 SHALL NOT 为历史样式兼容重新注册或执行旧 memory tools
+
+## MODIFIED Requirements
 
 ### Requirement: Agent memory 使用独立的 catalog 存储
 系统 SHALL 将 agent memory 与 `~/.echo/memories.json` 中的 user memory 分离存储。Agent memory SHALL 使用一个版本化 catalog 索引文件记录稳定 id、唯一名称、描述、scope 和布尔 `enabled` 状态，并使用按 catalog id 命名的独立版本化文件保存 memory item；每个 item SHALL 包含稳定 id、非空内容、布尔 `enabled` 状态和创建/更新时间。新建 catalog 和 item SHALL 默认启用。索引和 catalog 文件 SHALL 继续使用 `version: 1`，且读取时 SHALL 严格要求 `enabled` 字段存在并为 boolean，不兼容缺少该字段的旧开发文件。所有文件写入 SHALL 使用临时文件 rename 原子替换，读取无效索引或 catalog 文件时 SHALL 返回结构化错误且 SHALL NOT 覆盖原文件。
@@ -135,3 +133,10 @@
 - **WHEN** agent memory skill 脚本或 `/memory` 成功创建、重命名、修改、启停或删除 catalog 或 item
 - **AND** agent loop 随后构造下一次真实 provider request
 - **THEN** system prompt SHALL 使用保存后的最新有效 catalogs 和 enabled items 重新选择展开或折叠模式
+
+## REMOVED Requirements
+
+### Requirement: Memory 工具提供按需读取和统一 mutation
+**Reason**: 四个低频专属 memory tools 被内置 `agent-memory` skill 和固定脚本替代，以移除每轮 provider 请求中的常驻 schema 开销。
+
+**Migration**: Agent 先调用 `use_skill("agent-memory")`，再按 skill 指令通过 `run_bash_command` 执行包内脚本；用户继续使用 `/memory` 管理相同存储。

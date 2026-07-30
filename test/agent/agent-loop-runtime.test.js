@@ -133,7 +133,7 @@ test('createAgentLoopRuntime snapshots a budgeted skill catalog across tool cont
     let originalDescription;
     let turnCount = 0;
     const agentFactory = (_config, registry) => {
-      originalDescription = registry.listSkillCatalog()[0].description;
+      originalDescription = registry.listSkillCatalog().find((skill) => skill.name === 'large-skill').description;
       return {
         async runTurn(records) {
           requests.push(records);
@@ -979,6 +979,44 @@ test('createAgentLoopRuntime immediately denies approval-required tools in headl
   ]);
   assert.equal(hooks.events[2].payload.interactionMode, 'normal');
   assert.equal(hooks.events[2].payload.decision, 'deny');
+});
+
+test('createAgentLoopRuntime executes a safe agent-memory script in headless deny mode', async () => {
+  await withTemporaryMemoryHome(async (homeDir) => {
+    const cwd = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'echo-headless-memory-')));
+    fs.mkdirSync(path.join(cwd, '.git'), {recursive: true});
+    const scriptPath = require.resolve('../../src/skills/builtin/agent-memory/scripts/memory');
+    const command = `HOME='${homeDir}' node '${scriptPath}' add --catalog 'rules' --description 'Project rules' --content 'Stable fact'`;
+    let turnCount = 0;
+    const results = [];
+    const agent = {
+      async runTurn() {
+        turnCount += 1;
+        return turnCount === 1
+          ? {draft: '', toolCalls: [{callId: 'memory-script', toolName: 'run_bash_command', argumentsText: JSON.stringify({command})}]}
+          : {draft: 'done', toolCalls: []};
+      }
+    };
+
+    const result = await withPatchedAgentRuntime(agent, () => {
+      const runAgent = createAgentLoopRuntime(cwd);
+      return runAgent({
+        records: [{role: 'user', text: 'remember'}],
+        executionMode: {kind: 'headless', approvalPolicy: 'deny'}
+      }, {
+        onToolApprovalRequest() {
+          throw new Error('safe memory script must not request approval');
+        },
+        onToolResult(toolResult) {
+          results.push(toolResult);
+        }
+      });
+    });
+
+    assert.equal(result, 'done');
+    assert.equal(results[0].ok, true);
+    assert.match(results[0].text, /Stable fact/);
+  });
 });
 
 test('createAgentLoopRuntime full-access executes registered patch tools without approval callback', async () => {

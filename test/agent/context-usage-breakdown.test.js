@@ -95,7 +95,7 @@ test('estimateContextUsageSegments includes the selected expanded agent memory p
   const agentMemoryText = '## Agent memories\n### rendering\nterminal rules\n\n- catalog item content';
   const segments = estimateContextUsageSegments([
     {role: 'system', text: `system prompt\n\n${memoryText}\n\n${agentMemoryText}`},
-    {role: 'tool_result', text: 'catalog item content', toolName: 'read_memory', toolCallId: 'call-1', ok: true, details: {kind: 'generic'}}
+    {role: 'tool_result', text: 'catalog item content', toolName: 'run_bash_command', toolCallId: 'call-1', ok: true, details: {kind: 'bash'}}
   ], [], 0, estimateTextTokens(`${memoryText}\n\n${agentMemoryText}`));
   const byCategory = Object.fromEntries(segments.map((segment) => [segment.category, segment.estimatedTokens]));
   assert.ok(byCategory.memory > 0);

@@ -1,7 +1,6 @@
 import {APPLY_PATCH_TOOL_NAME, createApplyPatchCallLabel} from './apply-patch-tool-handler';
 import {PLAN_READONLY_BASH_REJECTION, RUN_BASH_COMMAND_TOOL_NAME, isPlanReadonlyBashCommand} from './bash-tool-handler';
 import {isMcpToolName} from '../mcp/manager';
-import {isMemoryMutationToolName} from './memory-tool-handler';
 import {EDIT_FILE_TOOL_NAME, createEditFileCallLabel} from './edit-file-tool-handler';
 
 import type {InteractionMode} from '../types/agent';
@@ -29,16 +28,6 @@ const PLAN_WRITE_TOOL_REJECTION = 'In plan mode, tools that modify files or syst
  * 对 provider 产出的 tool call 做执行前策略分类：安全执行、请求审批，或按当前 mode 直接拒绝。
  */
 function classifyToolCallRisk(call: ToolCall, interactionMode: InteractionMode = 'normal', getMcpApproval?: (toolName: string) => 'always' | 'never' | undefined): ToolRiskAssessment {
-  if (isMemoryMutationToolName(call.toolName)) {
-    if (interactionMode === 'plan') return {
-      risk: 'rejected', reason: 'plan_mode', message: PLAN_WRITE_TOOL_REJECTION
-    };
-    return {
-      risk: 'approval_required', 
-      approval: {preview: createMemoryApprovalPreview(call), previewTitle: 'memory change'}
-    };
-  }
-
   if (call.toolName === APPLY_PATCH_TOOL_NAME || call.toolName === EDIT_FILE_TOOL_NAME) {
     if (interactionMode === 'plan') {
       return {risk: 'rejected', reason: 'plan_mode', message: PLAN_WRITE_TOOL_REJECTION};
@@ -100,32 +89,6 @@ function classifyToolCallRisk(call: ToolCall, interactionMode: InteractionMode =
   };
 }
 
-function createMemoryApprovalPreview(call: ToolCall): string {
-  let args: Record<string, unknown> = {};
-  try { 
-    const parsed: unknown = JSON.parse(call.argumentsText); 
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      args = parsed as Record<string, unknown>;
-    } 
-  } catch {
-    return '';
-  }
-
-  const lines: string[] = [];
-  if (args.scope === 'global') lines.push('Scope: GLOBAL');
-  else if (args.scope) lines.push(`Scope: ${String(args.scope)}`);
-
-  if (args.catalog) lines.push(`Catalog: ${String(args.catalog)}`);
-  if (args.target) lines.push(`Target: ${String(args.target)}`);
-  if (args.itemId) lines.push(`Item: ${String(args.itemId)}`);
-  
-  const content = args.content || args.description || args.name;
-  if (content) {
-    lines.push('', String(content));
-  }
-  return lines.join('\n');
-}
-
 function createMcpApprovalPreview(call: ToolCall): string {
   const [, serverName = 'unknown', ...toolNameParts] = call.toolName.split('__');
   return `Server: ${serverName}\nTool: ${toolNameParts.join('__') || 'unknown'}\nArguments:\n${call.argumentsText || '{}'}`;
@@ -156,7 +119,6 @@ function hasBashRisk(command: string): boolean {
 
 export {
   classifyToolCallRisk,
-  createMemoryApprovalPreview,
   createMcpApprovalPreview,
   parseBashCommand
 };

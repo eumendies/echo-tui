@@ -15,7 +15,7 @@ const {
   parseAskUserQuestionsArgs,
   parseAskUserQuestionsToolCall
 } = require('../../src/tools/ask-user-questions-tool-handler');
-const { createBashToolHandler, RUN_BASH_COMMAND_TOOL_NAME } = require('../../src/tools/bash-tool-handler');
+const { createBashToolHandler, isChangeHistoryReadonlyBashCommand, RUN_BASH_COMMAND_TOOL_NAME } = require('../../src/tools/bash-tool-handler');
 const { runBashCommand } = require('../../src/tools/bash-command-runner');
 const { createGlobToolHandler, DEFAULT_MAX_PATHS, GLOB_TOOL_NAME } = require('../../src/tools/glob-tool-handler');
 const { createGrepToolHandler, DEFAULT_MAX_MATCHES, GREP_TOOL_NAME } = require('../../src/tools/grep-tool-handler');
@@ -301,10 +301,10 @@ test('default tool registry exposes developed tools', () => {
   assert.equal(registry.getHandler(GLOB_TOOL_NAME) !== undefined, true);
   assert.equal(registry.getHandler(GREP_TOOL_NAME) !== undefined, true);
   assert.equal(registry.getHandler(READ_FILES_TOOL_NAME) !== undefined, true);
-  assert.equal(registry.getHandler('read_memory') !== undefined, true);
-  assert.equal(registry.getHandler('add_memory') !== undefined, true);
-  assert.equal(registry.getHandler('update_memory') !== undefined, true);
-  assert.equal(registry.getHandler('remove_memory') !== undefined, true);
+  assert.equal(registry.getHandler('read_memory'), undefined);
+  assert.equal(registry.getHandler('add_memory'), undefined);
+  assert.equal(registry.getHandler('update_memory'), undefined);
+  assert.equal(registry.getHandler('remove_memory'), undefined);
   assert.equal(registry.getHandler(CREATE_TODOS_TOOL_NAME) !== undefined, true);
   assert.equal(registry.getHandler(COMPLETE_TODO_TOOL_NAME) !== undefined, true);
   assert.equal(registry.getHandler(USE_SKILL_TOOL_NAME) !== undefined, true);
@@ -317,16 +317,52 @@ test('default tool registry exposes developed tools', () => {
     GLOB_TOOL_NAME,
     GREP_TOOL_NAME,
     READ_FILES_TOOL_NAME,
-    'read_memory',
-    'add_memory',
-    'update_memory',
-    'remove_memory',
     CREATE_TODOS_TOOL_NAME,
     COMPLETE_TODO_TOOL_NAME,
     USE_SKILL_TOOL_NAME,
     WEB_FETCH_TOOL_NAME,
     WEB_SEARCH_TOOL_NAME
   ]);
+});
+
+test('skill registry discovers builtin resources and applies builtin then user then project precedence', () => {
+  const cwd = createTempWorkspace();
+  const builtinSkillsDir = path.join(cwd, 'builtin-skills');
+  const userSkillsDir = path.join(cwd, 'user-skills');
+  const projectSkillsDir = path.join(cwd, '.echo', 'skills');
+  const builtin = writeSkill(builtinSkillsDir, 'memory', 'name: memory\ndescription: Builtin memory', '# Builtin');
+  writeSkillResource(builtin, 'reference/protocol.md');
+  writeSkillResource(builtin, 'scripts/memory.js');
+  writeSkill(userSkillsDir, 'memory', 'name: memory\ndescription: User memory', '# User');
+  writeSkill(projectSkillsDir, 'memory', 'name: memory\ndescription: Project memory', '# Project');
+
+  const registry = createSkillRegistry({builtinSkillsDir, cwd, projectSkillsDir, userSkillsDir});
+  const loaded = registry.loadSkill('memory');
+
+  assert.deepEqual(registry.listCatalog().map(({name, description, sourceKind}) => ({name, description, sourceKind})), [
+    {name: 'memory', description: 'Project memory', sourceKind: 'project'}
+  ]);
+  assert.equal(loaded.ok, true);
+  assert.equal(loaded.skill.content, '# Project');
+  assert.deepEqual(loaded.skill.resources, []);
+});
+
+test('skill manager stores builtin state in the user skill root', () => {
+  const cwd = createTempWorkspace();
+  const builtinSkillsDir = path.join(cwd, 'builtin-skills');
+  const userSkillsDir = path.join(cwd, 'user-skills');
+  const projectSkillsDir = path.join(cwd, 'missing-project');
+  writeSkill(builtinSkillsDir, 'agent-memory', 'name: agent-memory\ndescription: Memory', '# Memory');
+  fs.mkdirSync(userSkillsDir, {recursive: true});
+  fs.writeFileSync(path.join(userSkillsDir, 'skills.json'), JSON.stringify({schemaVersion: 3, disabled: ['agent-memory']}), 'utf8');
+
+  const manager = createSkillManager({builtinSkillsDir, cwd, projectSkillsDir, userSkillsDir});
+  assert.equal(manager.listSkills()[0].sourceKind, 'builtin');
+  assert.equal(manager.listSkills()[0].enabled, false);
+
+  manager.saveSkillStates(manager.listSkills().map((skill) => ({...skill, enabled: true})));
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(userSkillsDir, 'skills.json'), 'utf8')).disabled, []);
+  assert.equal(fs.existsSync(path.join(builtinSkillsDir, 'skills.json')), false);
 });
 
 test('skill registry discovers user and project skills with project override', () => {
@@ -338,7 +374,7 @@ test('skill registry discovers user and project skills with project override', (
   writeSkill(userSkillsDir, 'review', 'name: review\ndescription: User review', '# User Review');
   writeSkill(projectSkillsDir, 'review', 'name: review\ndescription: Project review', '# Project Review');
 
-  const registry = createSkillRegistry({ cwd, projectSkillsDir, userSkillsDir });
+  const registry = createSkillRegistry({ builtinSkillsDir: path.join(cwd, 'missing-builtin'), cwd, projectSkillsDir, userSkillsDir });
 
   assert.deepEqual(registry.listCatalog().map(({ name, description, sourceKind }) => ({ name, description, sourceKind })), [
     { name: 'review', description: 'Project review', sourceKind: 'project' },
@@ -357,7 +393,7 @@ test('skill registry discovers sorted resources from reference and scripts only'
   writeSkillResource(skillDir, 'notes/ignored.md');
   fs.mkdirSync(path.join(skillDir, 'reference', 'empty-dir'), { recursive: true });
 
-  const registry = createSkillRegistry({ cwd, projectSkillsDir, userSkillsDir: path.join(cwd, 'missing-user') });
+  const registry = createSkillRegistry({ builtinSkillsDir: path.join(cwd, 'missing-builtin'), cwd, projectSkillsDir, userSkillsDir: path.join(cwd, 'missing-user') });
   const result = registry.loadSkill('review');
 
   assert.equal(result.ok, true);
@@ -398,7 +434,7 @@ test('skill registry reports invalid skill when loading by folder name', () => {
   const projectSkillsDir = path.join(cwd, '.echo', 'skills');
   writeSkill(projectSkillsDir, 'broken', 'name: broken', '# Broken');
 
-  const registry = createSkillRegistry({ cwd, projectSkillsDir, userSkillsDir: path.join(cwd, 'missing-user') });
+  const registry = createSkillRegistry({ builtinSkillsDir: path.join(cwd, 'missing-builtin'), cwd, projectSkillsDir, userSkillsDir: path.join(cwd, 'missing-user') });
   const result = registry.loadSkill('broken');
 
   assert.equal(result.ok, false);
@@ -428,7 +464,7 @@ test('skill manager reads disabled state and saves by effective source root', ()
     modelOverrides: {review: 'project-profile'}
   }), 'utf8');
 
-  const manager = createSkillManager({ cwd, projectSkillsDir, userSkillsDir });
+  const manager = createSkillManager({ builtinSkillsDir: path.join(cwd, 'missing-builtin'), cwd, projectSkillsDir, userSkillsDir });
 
   assert.deepEqual(manager.listSkills().map(({ name, enabled, sourceKind, modelProfileId, reasoningEffortOverride }) => ({ name, enabled, sourceKind, modelProfileId, reasoningEffortOverride })), [
     { name: 'review', enabled: false, sourceKind: 'project', modelProfileId: 'project-profile', reasoningEffortOverride: 'high' },
@@ -867,6 +903,16 @@ test('bash tool invalidates change history only for commands outside readonly in
   assert.equal(writeLikeResult.ok, true);
   assert.equal(writeLikeChange.calls.invalidations.length, 1);
   assert.match(writeLikeChange.calls.invalidations[0], /不可追踪/);
+});
+
+test('builtin agent-memory script preserves change history without trusting composed shell commands', () => {
+  const scriptPath = require.resolve('../../src/skills/builtin/agent-memory/scripts/memory');
+
+  assert.equal(isChangeHistoryReadonlyBashCommand(`node '${scriptPath}' validate`), true);
+  assert.equal(isChangeHistoryReadonlyBashCommand(`node '${scriptPath}' add --catalog 'rules' --content 'can'\\''t; expand'`), true);
+  assert.equal(isChangeHistoryReadonlyBashCommand(`node '${scriptPath}' validate; rm file.txt`), false);
+  assert.equal(isChangeHistoryReadonlyBashCommand(`node '${scriptPath}' add --catalog rules --content "$(rm file.txt)"`), false);
+  assert.equal(isChangeHistoryReadonlyBashCommand('node other-script.js validate'), false);
 });
 
 test('shared bash runner captures stdout, stderr, and merged terminal output', async () => {

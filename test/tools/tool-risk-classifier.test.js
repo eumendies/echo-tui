@@ -262,6 +262,15 @@ test('tool risk classifier treats common observation and validation bash command
   }
 });
 
+test('agent-memory script follows generic bash risk and plan policies', () => {
+  const command = "node '/package/dist/src/skills/builtin/agent-memory/scripts/memory.js' add --catalog 'rules' --description 'Rules' --content 'Stable fact'";
+
+  assert.deepEqual(classifyToolCallRisk(createCall(command)), {risk: 'safe'});
+  const planResult = classifyToolCallRisk(createCall(command), 'plan');
+  assert.equal(planResult.risk, 'rejected');
+  assert.equal(planResult.reason, 'plan_mode');
+});
+
 test('tool risk classifier allows only readonly bash inspection commands in plan mode', () => {
   const allowedCommands = [
     'pwd',

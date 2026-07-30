@@ -6,6 +6,7 @@ import type {UndoExecuteResult, UndoSummary} from './change-history';
 import type {UsageDailyAggregate, UsageQueryOptions} from './usage';
 import type {LifecycleHookConfigDraft, LifecycleHookDraftEntry, LifecycleHookEventName, LifecycleHookTestResult} from './hooks';
 import type {AgentMemoryCatalog, AgentMemoryCatalogListResult, AgentMemoryCatalogReadResult, AgentMemoryItem, AgentMemoryMutationResult, AgentMemoryScope, UserMemory, UserMemoryMutationResult, UserMemoryReadResult} from './memory';
+import type {SkillSourceKind} from './skill';
 import type {AppSettings} from '../config/app-settings-config';
 
 export type CommandSurfaceOption = {
@@ -486,7 +487,7 @@ export type CommandConfigListModelsResult =
 export type CommandSkillInfo = {
   name: string;
   description: string;
-  sourceKind: 'project' | 'user';
+  sourceKind: SkillSourceKind;
   sourcePath: string;
   enabled: boolean;
   modelProfileId?: string;

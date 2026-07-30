@@ -13,7 +13,7 @@
   ],
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
-    "build": "npm run clean && tsc -p tsconfig.json && node scripts/copy-theme-assets.js && chmod +x dist/bin/echo-tui.js",
+    "build": "npm run clean && tsc -p tsconfig.json && node scripts/copy-theme-assets.js && node scripts/copy-skill-assets.js && chmod +x dist/bin/echo-tui.js",
     "prepack": "npm run build",
     "postinstall": "node -e \"try{require('./dist/src/config/postinstall-user-setup.js')}catch{}\"",
     "start": "npm run build && node dist/bin/echo-tui.js",
