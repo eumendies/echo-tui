@@ -58,6 +58,29 @@ function createFakeTranscriptStore() {
   };
 }
 
+function createFakeSessionModelSettingsStore() {
+  let current = null;
+
+  return {
+    getFilePath(_cwd, sessionId) {
+      return `/tmp/${sessionId}.settings.json`;
+    },
+    read(_cwd, sessionId) {
+      return current?.sessionId === sessionId ? {kind: 'found', settings: structuredClone(current)} : {kind: 'missing'};
+    },
+    write(_cwd, input, updatedAt = '2026-06-29T00:00:00.000Z') {
+      current = {
+        schemaVersion: 1,
+        sessionId: input.sessionId,
+        modelProfileId: input.modelProfileId,
+        ...(input.reasoningEffortOverride !== undefined ? {reasoningEffortOverride: input.reasoningEffortOverride} : {}),
+        updatedAt
+      };
+      return structuredClone(current);
+    }
+  };
+}
+
 function applyOperation(session, operation) {
   if (operation.op === 'batch') {
     for (const item of operation.operations) {
@@ -83,12 +106,15 @@ function applyOperation(session, operation) {
   }
 }
 
-function createHarness() {
+function createHarness(options = {}) {
   const appContext = new AppContext(
     {getSize() { return {columns: 80, rows: 24}; }},
-    createFakeTranscriptStore(),
+    options.transcriptStore || createFakeTranscriptStore(),
     '/tmp/echo_tui',
-    'v20.0.0'
+    'v20.0.0',
+    undefined,
+    undefined,
+    options.sessionModelSettingsStore || createFakeSessionModelSettingsStore()
   );
   const appended = [];
   const hookEvents = [];
@@ -128,6 +154,60 @@ function createHarness() {
     }
   };
 }
+
+test('runAssistantTurn continues with its in-memory selection when initial session settings persistence fails', async () => {
+  const harness = createHarness({
+    sessionModelSettingsStore: {
+      getFilePath() { return '/tmp/session-1.settings.json'; },
+      read() { return {kind: 'missing'}; },
+      write() { throw new Error('settings write failed sk-secret'); }
+    }
+  });
+  let agentCalls = 0;
+
+  await runAssistantTurn({
+    ...harness.input,
+    async runAgent(_session, callbacks) {
+      agentCalls += 1;
+      callbacks.onComplete('done');
+      return 'done';
+    }
+  });
+
+  assert.equal(agentCalls, 1);
+  assert.deepEqual(harness.appended.map((record) => record.role), ['user', 'assistant']);
+  assert.equal(harness.appContext.transcriptContext.getCurrentSessionId(), 'session-1');
+  assert.deepEqual(harness.hookEvents.map((event) => event.event), ['assistant_turn_start', 'assistant_turn_end']);
+  assert.equal(harness.appContext.createRenderState().statusLine.model.error, undefined);
+});
+
+test('runAssistantTurn writes initial settings after journal creation without delaying provider startup', async () => {
+  const events = [];
+  const transcriptStore = createFakeTranscriptStore();
+  const createSession = transcriptStore.createSession;
+  transcriptStore.createSession = (...args) => {
+    events.push('journal');
+    return createSession(...args);
+  };
+  const settingsStore = createFakeSessionModelSettingsStore();
+  const write = settingsStore.write;
+  settingsStore.write = (...args) => {
+    events.push('settings');
+    return write(...args);
+  };
+  const harness = createHarness({transcriptStore, sessionModelSettingsStore: settingsStore});
+
+  await runAssistantTurn({
+    ...harness.input,
+    async runAgent(_session, callbacks) {
+      events.push('provider');
+      callbacks.onComplete('done');
+      return 'done';
+    }
+  });
+
+  assert.deepEqual(events.slice(0, 3), ['journal', 'settings', 'provider']);
+});
 
 test('runAssistantTurn emits start and end hooks without adding hook records', async () => {
   const harness = createHarness();
@@ -390,15 +470,25 @@ test('runAssistantTurn passes model and effort overrides only to the current ses
   const harness = createHarness();
   const captured = [];
   harness.appContext.modelContext = {
+    persistCurrentSessionSettings() {},
+    getAgentSelection() { return null; },
+    resolveAgentSelection({modelProfileIdOverride, reasoningEffortOverride}) {
+      return modelProfileIdOverride === undefined
+        ? null
+        : {
+            modelProfileId: modelProfileIdOverride,
+            ...(reasoningEffortOverride !== undefined ? {reasoningEffortOverride} : {})
+          };
+    },
     refreshModelState() {
       return false;
     },
     getStatusLineModelState() {
       return {modelLabel: 'global-model', reasoningEffort: 'low'};
     },
-    resolveSkillOverrideStatusLineModelState({modelProfileId, reasoningEffortOverride}) {
+    resolveSkillOverrideStatusLineModelState({modelProfileIdOverride, reasoningEffortOverride}) {
       return {
-        modelLabel: modelProfileId || 'global-model',
+        modelLabel: modelProfileIdOverride || 'global-model',
         reasoningEffort: reasoningEffortOverride || 'low',
         skillOverride: true
       };
@@ -409,7 +499,7 @@ test('runAssistantTurn passes model and effort overrides only to the current ses
     await runAssistantTurn({
       ...harness.input,
       userText: `${outcome}-${modelProfileId || 'current'}`,
-      modelProfileId,
+      modelProfileIdOverride: modelProfileId,
       reasoningEffortOverride,
       async runAgent(session, callbacks) {
         captured.push([session.modelProfileId, session.reasoningEffortOverride]);
@@ -449,6 +539,14 @@ test('runAssistantTurn emits a local model-switch notice and restores the global
   const harness = createHarness();
   const renderedModels = [];
   harness.appContext.modelContext = {
+    persistCurrentSessionSettings() {},
+    getAgentSelection() { return null; },
+    resolveAgentSelection({modelProfileIdOverride, reasoningEffortOverride}) {
+      return {
+        modelProfileId: modelProfileIdOverride,
+        ...(reasoningEffortOverride !== undefined ? {reasoningEffortOverride} : {})
+      };
+    },
     refreshModelState() {
       return false;
     },
@@ -462,7 +560,7 @@ test('runAssistantTurn emits a local model-switch notice and restores the global
 
   await runAssistantTurn({
     ...harness.input,
-    modelProfileId: 'skill-model',
+    modelProfileIdOverride: 'skill-model',
     reasoningEffortOverride: 'high',
     renderFooter() {
       renderedModels.push(harness.appContext.createRenderState().statusLine);
@@ -509,6 +607,9 @@ test('runAssistantTurn appends a local notice for provider retry callbacks', asy
 test('runAssistantTurn does not emit a model-switch notice when a stale override falls back', async () => {
   const harness = createHarness();
   harness.appContext.modelContext = {
+    persistCurrentSessionSettings() {},
+    getAgentSelection() { return null; },
+    resolveAgentSelection() { return null; },
     refreshModelState() {
       return false;
     },
@@ -522,7 +623,7 @@ test('runAssistantTurn does not emit a model-switch notice when a stale override
 
   await runAssistantTurn({
     ...harness.input,
-    modelProfileId: 'deleted-profile',
+    modelProfileIdOverride: 'deleted-profile',
     async runAgent(_session, callbacks) {
       callbacks.onComplete('done');
       return 'done';
@@ -535,6 +636,9 @@ test('runAssistantTurn does not emit a model-switch notice when a stale override
 test('runAssistantTurn emits one notice for an effort-only override after stale model fallback', async () => {
   const harness = createHarness();
   harness.appContext.modelContext = {
+    persistCurrentSessionSettings() {},
+    getAgentSelection() { return null; },
+    resolveAgentSelection() { return null; },
     refreshModelState() {
       return false;
     },
@@ -548,7 +652,7 @@ test('runAssistantTurn emits one notice for an effort-only override after stale 
 
   await runAssistantTurn({
     ...harness.input,
-    modelProfileId: 'deleted-profile',
+    modelProfileIdOverride: 'deleted-profile',
     reasoningEffortOverride: 'none',
     async runAgent(_session, callbacks) {
       callbacks.onModelResolved({model: 'gpt-global', reasoningEffort: 'none'});

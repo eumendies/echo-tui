@@ -561,7 +561,7 @@ export type CommandReferencePrepareResult =
     };
 
 export type CommandReferenceSubmissionOptions = {
-  modelProfileId?: string; // 当前消息通过 skill 等入口指定的本轮模型配置。
+  modelProfileIdOverride?: string; // 当前消息通过 skill 等入口指定的本轮模型覆盖。
   reasoningEffortOverride?: ReasoningEffort; // 当前消息覆盖模型配置的本轮 reasoning effort。
 };
 

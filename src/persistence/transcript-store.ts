@@ -82,12 +82,13 @@ function createTranscriptStore(options: TranscriptStoreOptions = {}): Transcript
    * 原子创建包含首个操作的 journal，避免中断时留下只有 header 的空 session。
    */
   function createSession(cwd: string, operation: TranscriptJournalOperation, now = createTimestamp()): TranscriptSessionJournalReference {
-    const sessionId = createSessionId(now, cryptoImpl);
+    const createdAt = now;
+    const sessionId = createSessionId(createdAt, cryptoImpl);
     const normalizedCwd = String(cwd);
     const reference: TranscriptSessionJournalReference = {
       sessionId,
       cwd: normalizedCwd,
-      createdAt: now,
+      createdAt,
       updatedAt: now,
       sequence: 1
     };
@@ -96,7 +97,7 @@ function createTranscriptStore(options: TranscriptStoreOptions = {}): Transcript
     const targetPath = getSessionFilePath(normalizedCwd, sessionId);
     const tmpPath = `${targetPath}.tmp-${process.pid}-${Date.now()}`;
     const journal = [
-      serializeTranscriptJournalLine(createTranscriptJournalStart(sessionId, normalizedCwd, now)),
+      serializeTranscriptJournalLine(createTranscriptJournalStart(sessionId, normalizedCwd, createdAt)),
       serializeTranscriptJournalLine(createTranscriptJournalEntry(operation, reference.sequence, now)),
       ''
     ].join('\n');

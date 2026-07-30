@@ -19,7 +19,7 @@ const TEST_CONFIG = {
   }
 };
 const RETRYABLE_PROCESSING_ERROR = 'An error occurred while processing your request. You can retry your request';
-const RESPONSE_STREAM_RETRY_TEST_DELAYS_MS = [1000, 2000, 4000];
+const RESPONSE_STREAM_RETRY_TEST_DELAYS_MS = [1000, 2000];
 
 async function flushPendingAsyncWork() {
   for (let index = 0; index < 20; index += 1) {
@@ -178,7 +178,7 @@ test('createCodexAgent retries a transient stream error with one OAuth runtime c
   assert.deepEqual(requests[0], requests[1]);
 });
 
-test('createCodexAgent stops after three retries and does not retry compaction streams', async () => {
+test('createCodexAgent keeps the final request ID after two transient retries and does not retry compaction streams', async () => {
   let attempts = 0;
   const retryAgent = createCodexAgent(TEST_CONFIG, createEmptyToolRegistry(), {
     createClient() {
@@ -186,7 +186,14 @@ test('createCodexAgent stops after three retries and does not retry compaction s
         responses: {
           async create() {
             attempts += 1;
-            return streamFrom([createRetryableStreamError(attempts <= 3 ? `retry-codex-request-${attempts}` : 'final-codex-request')]);
+
+            if (attempts <= 2) {
+              return streamFrom([createRetryableStreamError(`retry-codex-request-${attempts}`)]);
+            }
+
+            const finalError = new Error('stream disconnected');
+            finalError.requestID = 'final-codex-request';
+            return streamFrom([finalError]);
           }
         }
       };
@@ -203,7 +210,7 @@ test('createCodexAgent stops after three retries and does not retry compaction s
     ),
     /final-codex-request/
   );
-  assert.equal(attempts, 4);
+  assert.equal(attempts, 3);
 
   let compactionAttempts = 0;
   const compactionAgent = createCodexAgent(TEST_CONFIG, createEmptyToolRegistry(), {

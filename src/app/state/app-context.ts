@@ -1,5 +1,5 @@
 import {ComposerContext} from './composer-context';
-import {ModelContext} from './model-context';
+import {ModelContext, type AgentModelSelectionOverride} from './model-context';
 import {ModelTuningContext} from './model-tuning-context';
 import {RenderContext} from './render-context';
 import {SlashSuggestionContext} from './slash-suggestion-context';
@@ -11,6 +11,7 @@ import {INPUT_EVENTS} from '../../input/event-types';
 import {createDiffSourceResult} from '../diff/source';
 import {DEFAULT_TUI_THEME, type TuiTheme} from '../../config/theme-config';
 import {DEFAULT_APP_SETTINGS, readAppSettings, type AppSettings} from '../../config/app-settings-config';
+import {createSessionModelSettingsStore} from '../../persistence/session-model-settings-store';
 import {isShellInteractionMode} from '../../types/agent';
 
 import type {TerminalController} from '../../types/app';
@@ -21,6 +22,7 @@ import type {InputEvent} from '../../types/input';
 import type {RenderState, SlashSuggestionState, StatusLineModelRenderState} from '../../types/render';
 import type {ToolExecutionResult} from '../../types/tool';
 import type {TranscriptRecord, TranscriptSession, TranscriptStore, UserTranscriptMetadata} from '../../types/transcript';
+import type {SessionModelSettingsStore} from '../../types/session-model-settings';
 import type {UndoExecuteResult} from '../../types/change-history';
 import type {ToolApprovalContext} from './tool-approval-context';
 import type {AssistantTurnHandle, InterruptAssistantTurnResult} from './turn-context';
@@ -101,14 +103,19 @@ class AppContext {
     cwd: string | (() => string),
     nodeVersion: string | (() => string),
     theme: TuiTheme = DEFAULT_TUI_THEME,
-    appSettings: AppSettings = DEFAULT_APP_SETTINGS
+    appSettings: AppSettings = DEFAULT_APP_SETTINGS,
+    sessionModelSettingsStore: SessionModelSettingsStore = createSessionModelSettingsStore(transcriptStore)
   ) {
     this.getCurrentCwdValue = cwd;
     this.getNodeVersionValue = nodeVersion;
 
     this.composerContext = new ComposerContext(() => this.turnContext.isResponding());
     this.transcriptContext = new TranscriptContext(transcriptStore, () => this.getCurrentCwd());
-    this.modelContext = new ModelContext();
+    this.modelContext = new ModelContext({
+      getCurrentCwd: () => this.getCurrentCwd(),
+      getCurrentSessionId: () => this.transcriptContext.getCurrentSessionId(),
+      settingsStore: sessionModelSettingsStore
+    });
     this.modelTuningContext = new ModelTuningContext();
     this.turnContext = new TurnContext(this.composerContext, this.transcriptContext);
     this.changeHistoryContext = new ChangeHistoryContext();
@@ -271,9 +278,7 @@ class AppContext {
       return false;
     }
 
-    if (selection.originalModelId !== selection.modelId || result.modelChanged) {
-      this.clearContextUsage();
-    }
+    this.clearContextUsage();
 
     this.modelTuningContext.cancel();
     return true;
@@ -439,6 +444,7 @@ class AppContext {
     if (loadedSession) {
       this.conversationReferenceContext.clear();
       this.changeHistoryContext.restoreHistory(this.transcriptContext.changeHistory);
+      this.modelContext.restoreSession(sessionId);
       this.rebuildLastSubmittedAgentMode();
     }
 
@@ -452,6 +458,7 @@ class AppContext {
     this.conversationReferenceContext.clear();
     this.transcriptContext.clearRecords();
     this.changeHistoryContext.restoreHistory(this.transcriptContext.changeHistory);
+    this.modelContext.resetSessionToGlobalDefaults();
     this.lastSubmittedAgentMode = 'normal';
   }
 
@@ -530,14 +537,17 @@ class AppContext {
    * 组装本次 agent 调用的会话输入：当前 transcript 快照 + 当前压缩状态。
    * records 与 compaction 同源于 transcriptContext，拼装由 app 层内聚，不外泄到 main。
    */
-  getAgentSession(): AgentSessionInput {
+  getAgentSession(skillOverride: AgentModelSelectionOverride = {}): AgentSessionInput {
+    const modelSelection = this.modelContext.resolveAgentSelection(skillOverride);
+
     return {
       records: structuredClone(this.transcriptContext.getRecords()),
       compaction: this.transcriptContext.compaction ? {...this.transcriptContext.compaction} : undefined,
       todoState: structuredClone(this.transcriptContext.todoState),
       interactionMode: this.interactionMode,
       compactionThresholdRatio: this.appSettings.compactionThresholdRatio,
-      skillCatalogContextRatio: this.appSettings.skillCatalogContextRatio
+      skillCatalogContextRatio: this.appSettings.skillCatalogContextRatio,
+      ...(modelSelection || {})
     };
   }
 
@@ -559,6 +569,7 @@ class AppContext {
       }
     });
 
+    this.modelContext.persistCurrentSessionSettings();
     this.lastSubmittedAgentMode = currentAgentMode;
     return record;
   }
@@ -582,9 +593,9 @@ class AppContext {
   /**
    * 创建当前 assistant turn 句柄，主流程只使用句柄绑定回调和 agent signal。
    */
-  beginAssistantTurn(modelProfileId?: string, reasoningEffortOverride?: ReasoningEffort): AssistantTurnHandle {
-    const statusLineModel = modelProfileId || reasoningEffortOverride
-      ? this.modelContext.resolveSkillOverrideStatusLineModelState({modelProfileId, reasoningEffortOverride})
+  beginAssistantTurn(modelProfileIdOverride?: string, reasoningEffortOverride?: ReasoningEffort): AssistantTurnHandle {
+    const statusLineModel = modelProfileIdOverride || reasoningEffortOverride
+      ? this.modelContext.resolveSkillOverrideStatusLineModelState({modelProfileIdOverride, reasoningEffortOverride})
       : this.modelContext.getStatusLineModelState();
 
     return this.turnContext.beginAssistantTurn(statusLineModel);

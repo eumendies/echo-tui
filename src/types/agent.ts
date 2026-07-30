@@ -73,16 +73,16 @@ export type AgentCallbacks = {
 };
 
 export type AgentSessionInput = {
-  records: TranscriptRecord[];
-  compaction?: CompactionState;
-  todoState?: TodoState;
-  abortSignal?: AbortSignal;
-  interactionMode?: InteractionMode;
-  executionMode?: AgentExecutionMode;
-  modelProfileId?: string;
-  reasoningEffortOverride?: ReasoningEffort;
-  compactionThresholdRatio?: number;
-  skillCatalogContextRatio?: number;
+  records: TranscriptRecord[]; // 当前回合开始时提供给 agent 的完整 transcript 快照。
+  compaction?: CompactionState; // 已持久化的上下文压缩状态，缺省时从未压缩状态开始。
+  todoState?: TodoState; // 当前会话的待办状态，供 agent 在工具调用间延续。
+  abortSignal?: AbortSignal; // 取消当前 agent 运行及其可中断下游操作的信号。
+  interactionMode?: InteractionMode; // 本回合的 normal、plan 或 shell 等交互模式。
+  executionMode?: AgentExecutionMode; // 本回合的 interactive 或 headless 执行与审批策略。
+  modelProfileId?: string; // 本回合已解析并验证的最终模型 profile，不是未验证的 skill override。
+  reasoningEffortOverride?: ReasoningEffort; // 仅本回合生效的推理强度覆盖，包含显式 none。
+  compactionThresholdRatio?: number; // 触发自动上下文压缩时占模型窗口的比例覆盖。
+  skillCatalogContextRatio?: number; // 技能目录 prompt 可占模型上下文窗口的比例覆盖。
 };
 
 export type AgentInstructionSourceKind = 'global' | 'project';

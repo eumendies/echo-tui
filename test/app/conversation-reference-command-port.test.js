@@ -43,6 +43,14 @@ test('conversation reference finalization uses the current turn model override',
       getInteractionMode() {
         return 'normal';
       },
+      getAgentSession(overrides = {}) {
+        return {
+          modelProfileId: overrides.modelProfileIdOverride || 'small',
+          ...(overrides.reasoningEffortOverride !== undefined
+            ? {reasoningEffortOverride: overrides.reasoningEffortOverride}
+            : {})
+        };
+      },
       turnContext: {
         startSpinner() {},
         stopSpinner() {},
@@ -62,7 +70,7 @@ test('conversation reference finalization uses the current turn model override',
       }
     });
 
-    const result = await port.prepareForSubmission({modelProfileId: 'large', reasoningEffortOverride: 'high'});
+    const result = await port.prepareForSubmission({modelProfileIdOverride: 'large', reasoningEffortOverride: 'high'});
 
     assert.equal(result.ok, true);
     assert.equal(result.reference.projectionMode, 'full');

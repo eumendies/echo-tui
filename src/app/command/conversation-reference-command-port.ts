@@ -49,7 +49,11 @@ function createConversationReferenceCommandPort(options: ConversationReferenceCo
       }
 
       try {
-        const config = readLlmConfig();
+        const selection = appContext.getAgentSession();
+        const config = readLlmConfig({
+          modelProfileId: selection.modelProfileId,
+          reasoningEffortOverride: selection.reasoningEffortOverride
+        });
         const pending = createPendingConversationReference({
           contextWindow: resolveContextWindow(config),
           session: source.session,
@@ -81,10 +85,14 @@ function createConversationReferenceCommandPort(options: ConversationReferenceCo
       renderFooter();
 
       try {
+        const selection = appContext.getAgentSession({
+          modelProfileIdOverride: submissionOptions.modelProfileIdOverride,
+          reasoningEffortOverride: submissionOptions.reasoningEffortOverride
+        });
         const prepared = prepareAgent({
           cwd: () => appContext.getCurrentCwd(),
-          modelProfileId: submissionOptions.modelProfileId,
-          reasoningEffortOverride: submissionOptions.reasoningEffortOverride
+          modelProfileId: selection.modelProfileId,
+          reasoningEffortOverride: selection.reasoningEffortOverride
         });
         const reference = await prepareConversationReference({
           abortSignal: controller.signal,

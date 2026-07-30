@@ -18,7 +18,7 @@ type AssistantTurnRunnerInput = {
   userText: string;
   displayText?: string;
   metadata?: UserTranscriptMetadata;
-  modelProfileId?: string;
+  modelProfileIdOverride?: string;
   reasoningEffortOverride?: ReasoningEffort;
   attachments?: ToolResultAttachment[];
   debug: DebugContext;
@@ -41,7 +41,7 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
     userText,
     displayText,
     metadata,
-    modelProfileId,
+    modelProfileIdOverride,
     reasoningEffortOverride,
     attachments,
     debug,
@@ -59,7 +59,7 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
     attachments
   });
   // thinking 和 streaming 都只进入 pending preview，完成或 partial 失败后才正式追加 assistant block。
-  const turn = appContext.beginAssistantTurn(modelProfileId, reasoningEffortOverride);
+  const turn = appContext.beginAssistantTurn(modelProfileIdOverride, reasoningEffortOverride);
   const isCurrentTurn = () => appContext.turnContext.isCurrentAssistantTurn(turn);
   appContext.turnContext.startSpinner('thinking');
   appendRecord(userRecord);
@@ -84,7 +84,11 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
   });
 
   try {
-    await runAgent({...appContext.getAgentSession(), abortSignal: turn.abortSignal, modelProfileId, reasoningEffortOverride}, {
+    const session = appContext.getAgentSession({modelProfileIdOverride, reasoningEffortOverride});
+    await runAgent({
+      ...session,
+      abortSignal: turn.abortSignal
+    }, {
       changeRecorder: appContext.changeHistoryContext.createRecorder(),
       onModelResolved(model) {
         if (!isCurrentTurn()) {

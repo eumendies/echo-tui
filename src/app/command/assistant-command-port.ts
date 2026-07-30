@@ -37,8 +37,12 @@ function createAssistantCommandPort(options: AssistantCommandPortOptions): Comma
       return true;
     },
     compactContext(compactionOptions: {force: true}) {
-      const prepared = prepareAgent({cwd: () => appContext.getCurrentCwd()});
       const session = appContext.getAgentSession();
+      const prepared = prepareAgent({
+        cwd: () => appContext.getCurrentCwd(),
+        modelProfileId: session.modelProfileId,
+        reasoningEffortOverride: session.reasoningEffortOverride
+      });
 
       return runCompaction({
         records: session.records,

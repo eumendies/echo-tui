@@ -53,7 +53,7 @@ type ResponseClient = {
 };
 
 const OPENAI_MAX_RETRIES = 3;
-const RESPONSE_STREAM_MAX_RETRIES = 7;
+const RESPONSE_STREAM_MAX_RETRIES = 10;
 const RESPONSE_STREAM_RETRY_DELAY_MS = 1000;
 const RETRYABLE_RESPONSE_STREAM_ERROR_TEXTS = [
   'An error occurred while processing your request. You can retry your request',
