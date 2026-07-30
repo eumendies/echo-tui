@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
+const { mock } = test;
 const { createCodexAgent, createCodexRequest } = require('../../src/agent/codex/agent');
 const { createPromptCacheKey } = require('../../src/agent/prompt-cache');
 
@@ -18,6 +19,30 @@ const TEST_CONFIG = {
   }
 };
 const RETRYABLE_PROCESSING_ERROR = 'An error occurred while processing your request. You can retry your request';
+const RESPONSE_STREAM_RETRY_TEST_DELAYS_MS = [1000, 2000, 4000];
+
+async function flushPendingAsyncWork() {
+  for (let index = 0; index < 20; index += 1) {
+    await Promise.resolve();
+  }
+}
+
+async function runWithMockedRetryTimers(action, retryDelaysMs) {
+  mock.timers.enable({apis: ['setTimeout']});
+
+  try {
+    const promise = action();
+
+    for (const delayMs of retryDelaysMs) {
+      await flushPendingAsyncWork();
+      mock.timers.tick(delayMs);
+    }
+
+    return await promise;
+  } finally {
+    mock.timers.reset();
+  }
+}
 
 async function* streamFrom(events) {
   for (const event of events) {
@@ -141,7 +166,10 @@ test('createCodexAgent retries a transient stream error with one OAuth runtime c
     }
   });
 
-  const result = await agent.runTurn([{role: 'user', text: 'hello'}], {});
+  const result = await runWithMockedRetryTimers(
+    () => agent.runTurn([{role: 'user', text: 'hello'}], {}),
+    [RESPONSE_STREAM_RETRY_TEST_DELAYS_MS[0]]
+  );
 
   assert.deepEqual(result, {draft: 'recovered', toolCalls: [], usageInputTokens: undefined});
   assert.equal(credentialReads, 1);
@@ -150,7 +178,7 @@ test('createCodexAgent retries a transient stream error with one OAuth runtime c
   assert.deepEqual(requests[0], requests[1]);
 });
 
-test('createCodexAgent stops after one retry and does not retry compaction streams', async () => {
+test('createCodexAgent stops after three retries and does not retry compaction streams', async () => {
   let attempts = 0;
   const retryAgent = createCodexAgent(TEST_CONFIG, createEmptyToolRegistry(), {
     createClient() {
@@ -158,7 +186,7 @@ test('createCodexAgent stops after one retry and does not retry compaction strea
         responses: {
           async create() {
             attempts += 1;
-            return streamFrom([createRetryableStreamError(attempts === 1 ? 'first-codex-request' : 'final-codex-request')]);
+            return streamFrom([createRetryableStreamError(attempts <= 3 ? `retry-codex-request-${attempts}` : 'final-codex-request')]);
           }
         }
       };
@@ -168,8 +196,14 @@ test('createCodexAgent stops after one retry and does not retry compaction strea
     }
   });
 
-  await assert.rejects(() => retryAgent.runTurn([{role: 'user', text: 'hello'}], {}), /final-codex-request/);
-  assert.equal(attempts, 2);
+  await assert.rejects(
+    () => runWithMockedRetryTimers(
+      () => retryAgent.runTurn([{role: 'user', text: 'hello'}], {}),
+      RESPONSE_STREAM_RETRY_TEST_DELAYS_MS
+    ),
+    /final-codex-request/
+  );
+  assert.equal(attempts, 4);
 
   let compactionAttempts = 0;
   const compactionAgent = createCodexAgent(TEST_CONFIG, createEmptyToolRegistry(), {
