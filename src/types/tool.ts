@@ -89,12 +89,18 @@ export type BashToolExecutionResult = ToolExecutionResultBase & {
   };
 };
 
+export type GlobDisplayMetadata = {
+  kind: 'glob'; // 标识该 metadata 只能供 glob 专属终端投影使用。
+  paths: string[]; // handler 实际保留的有序文件路径，不代表截断后的完整结果集。
+};
+
 export type GlobToolExecutionResult = ToolExecutionResultBase & {
   toolName: 'glob';
   details: {
     kind: 'glob';
     exitCode?: number | null;
     truncated: boolean;
+    display?: GlobDisplayMetadata; // 只供终端投影和会话重放使用，不进入 provider-visible 文本。
   };
 };
 

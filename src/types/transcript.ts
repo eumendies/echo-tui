@@ -1,4 +1,4 @@
-import type {ApplyPatchDisplayMetadata, EditFileDisplayMetadata, GrepDisplayMetadata, ToolResultAttachment} from './tool';
+import type {ApplyPatchDisplayMetadata, EditFileDisplayMetadata, GlobDisplayMetadata, GrepDisplayMetadata, ToolResultAttachment} from './tool';
 import type {ChangeCheckpoint} from './change-history';
 import type {InteractionMode} from './agent';
 import type {SkillSourceKind} from './skill';
@@ -96,6 +96,7 @@ export type ToolResultTranscriptDetails =
       kind: 'glob';
       exitCode?: number | null;
       truncated: boolean;
+      display?: GlobDisplayMetadata; // 持久化 glob handler 已保留的路径事实，供重放专属 renderer。
     }
   | {
       kind: 'grep';

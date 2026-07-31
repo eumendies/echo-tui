@@ -2505,6 +2505,7 @@ process.exit(0);
   assert.equal(result.ok, true);
   assert.equal(result.details.exitCode, 0);
   assert.equal(result.details.truncated, false);
+  assert.deepEqual(result.details.display, {kind: 'glob', paths: ['b.ts', 'a.ts']});
   assert.deepEqual(args, ['--files', '--hidden', '--sort', 'path', '--null', '--glob', '*.ts', '--glob', '!.git', '--glob', '!.git/**', '--', '.']);
   assert.doesNotMatch(result.text, /pattern: \*\.ts/);
   assert.doesNotMatch(result.text, /returned_paths:/);
@@ -2534,6 +2535,7 @@ test('glob limits search roots, discovers hidden files, and treats no matches as
   assert.equal(missingResult.ok, true);
   assert.equal(missingResult.details.exitCode, 1);
   assert.equal(missingResult.details.truncated, false);
+  assert.deepEqual(missingResult.details.display, {kind: 'glob', paths: []});
   assert.match(missingResult.text, /no files matched/);
 });
 
@@ -2573,6 +2575,7 @@ process.exit(2);
 
   assert.equal(errorResult.ok, false);
   assert.equal(errorResult.details.exitCode, 2);
+  assert.equal(errorResult.details.display, undefined);
   assert.match(errorResult.text, /file listing failed/);
 
   const missingExecutor = createToolExecutor(createToolRegistry([createGlobToolHandler({
@@ -2583,6 +2586,7 @@ process.exit(2);
 
   assert.equal(missingResult.ok, false);
   assert.equal(missingResult.details.exitCode, null);
+  assert.equal(missingResult.details.display, undefined);
   assert.match(missingResult.text, /ripgrep executable not found/);
 });
 
@@ -2598,6 +2602,7 @@ process.exit(0);
   assert.equal(DEFAULT_MAX_PATHS > 2, true);
   assert.equal(result.ok, true);
   assert.equal(result.details.truncated, true);
+  assert.deepEqual(result.details.display, {kind: 'glob', paths: ['one.ts', 'two.ts']});
   assert.match(result.text, /has_more: true/);
   assert.match(result.text, /More than 2 paths found/);
   assert.match(result.text, /one\.ts/);

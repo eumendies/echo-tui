@@ -144,6 +144,31 @@ test('transcript journal round-trips grep display metadata without rewriting res
   assert.deepEqual(store.loadSession(cwd, reference.sessionId).session.records, records);
 });
 
+test('transcript journal round-trips glob display metadata without rewriting result text', () => {
+  const rootDir = createTempRoot();
+  const store = createTranscriptStore({rootDir});
+  const cwd = '/tmp/example/glob-project';
+  const records = [
+    {role: 'tool_call', text: '', toolCallId: 'glob-1', toolName: 'glob', argumentsText: '{"pattern":"**/*.ts"}'},
+    {
+      role: 'tool_result',
+      text: 'src/a.ts\ntest/a.test.ts',
+      toolCallId: 'glob-1',
+      toolName: 'glob',
+      ok: true,
+      details: {
+        kind: 'glob',
+        exitCode: 0,
+        truncated: false,
+        display: {kind: 'glob', paths: ['src/a.ts', 'test/a.test.ts']}
+      }
+    }
+  ];
+  const reference = store.createSession(cwd, createAppendRecordsOperation(records), '2026-07-01T00:00:00.000Z');
+
+  assert.deepEqual(store.loadSession(cwd, reference.sessionId).session.records, records);
+});
+
 test('transcript journal persists only bounded Bash, PDF, and shell offloading previews', () => {
   const rootDir = createTempRoot();
   const cwd = '/tmp/example/offloading-project';

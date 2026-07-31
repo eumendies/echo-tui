@@ -1928,6 +1928,174 @@ test('createAppRenderer appendRecords preserves block spacing for realtime trans
   assert.match(output.writes[0], /\x1b\[38;2;0;170;0m◆\x1b\[39m/);
 });
 
+test('glob pending preview and successful pair render query, scope, and ordered flat paths', () => {
+  const args = {pattern: '**/*.ts', paths: ['src', 'test']};
+  const preview = renderToolCallPreviewLines('glob', JSON.stringify(args), 100).map(stripAnsi);
+  assert.deepEqual(preview, [
+    '◆ Glob · “**/*.ts” · searching',
+    '  in src, test'
+  ]);
+
+  const records = createGlobPair('glob-success', args, [
+    'src/app/runtime.ts',
+    'src/tools/glob-tool-handler.ts',
+    'test/render/app-renderer.test.js',
+    'test/tools/tool-execution.test.js'
+  ]);
+  const rendered = renderTranscriptLines(records, 100);
+  const lines = rendered.map(stripAnsi);
+
+  assert.deepEqual(lines, [
+    '◆ Glob · “**/*.ts” · 4 files',
+    '  in src, test',
+    '  ├─ src/app/runtime.ts',
+    '  ├─ src/tools/glob-tool-handler.ts',
+    '  ├─ test/render/app-renderer.test.js',
+    '  └─ test/tools/tool-execution.test.js',
+    ''
+  ]);
+  assert.match(rendered[0], /\x1b\[38;2;0;170;0m◆\x1b\[39m Glob/);
+  assert.match(rendered[2], /\x1b\[38;2;85;85;85m  ├─ src\/app\/runtime\.ts\x1b\[39m/);
+  assert.equal(lines.some((line) => line === '  ├─ src/' || line.includes('"pattern"')), false);
+
+  const isolated = renderTranscriptLines(records.slice(0, 1), 100).map(stripAnsi);
+  assert.deepEqual(isolated, ['◆ Glob · “**/*.ts” · searching', '  in src, test']);
+});
+
+test('glob renderer distinguishes empty, failure, handler truncation, and display omission', () => {
+  const empty = renderTranscriptLines(createGlobPair('glob-empty', {pattern: '*.missing'}, []), 80);
+  assert.deepEqual(empty.map(stripAnsi), [
+    '◆ Glob · “*.missing” · no files',
+    '  in .',
+    ''
+  ]);
+  assert.match(empty[0], /\x1b\[38;2;0;170;0m◆\x1b\[39m/);
+
+  const failure = renderTranscriptLines(createGlobPair(
+    'glob-failure',
+    {pattern: '**/*'},
+    [],
+    {ok: false, text: 'glob failed.\nReason: ripgrep executable not found'}
+  ), 80);
+  assert.deepEqual(failure.map(stripAnsi), [
+    '◆ Glob · “**/*” · failed',
+    '  in .',
+    '  ⎿ ripgrep executable not found',
+    ''
+  ]);
+  assert.match(failure[0], /\x1b\[38;2;170;0;0m◆\x1b\[39m/);
+
+  const fittingPaths = Array.from({length: 12}, (_value, index) => `src/file-${index + 1}.ts`);
+  const fitting = renderTranscriptLines(createGlobPair('glob-fitting', {pattern: '*.ts'}, fittingPaths), 80).map(stripAnsi);
+  assert.equal(fitting.some((line) => line.includes('more files')), false);
+  assert.equal(fitting.some((line) => line.includes('file-12.ts')), true);
+
+  const manyPaths = Array.from({length: 14}, (_value, index) => `src/file-${index + 1}.ts`);
+  const truncated = renderTranscriptLines(createGlobPair(
+    'glob-truncated',
+    {pattern: '*.ts'},
+    manyPaths,
+    {truncated: true}
+  ), 80).map(stripAnsi);
+  assert.equal(truncated[0], '◆ Glob · “*.ts” · 14 files shown · more available');
+  assert.ok(truncated.includes('  └─ … 3 more files'));
+  assert.equal(truncated.some((line) => line.includes('file-12.ts')), false);
+  assert.equal(truncated.some((line) => line.includes('has_more: true')), false);
+});
+
+test('glob malformed and legacy records safely fall back without inventing path trees', () => {
+  const malformedPreview = renderToolCallPreviewLines('glob', '{bad-json', 80).map(stripAnsi);
+  assert.deepEqual(malformedPreview, ['◆ glob({bad-json)']);
+
+  const legacy = createGlobPair('glob-legacy', {pattern: '*.ts'}, [], {
+    omitDisplay: true,
+    text: 'src/a.ts\ntest/a.test.ts'
+  });
+  const legacyLines = renderTranscriptLines(legacy, 80).map(stripAnsi);
+  assert.equal(legacyLines.includes('◆ Glob · “*.ts” · complete'), true);
+  assert.equal(legacyLines.includes('  ⎿ src/a.ts'), true);
+  assert.equal(legacyLines.some((line) => line.includes('├─ src/a.ts')), false);
+
+  const malformed = createGlobPair('glob-malformed', {pattern: '*.ts'}, [], {
+    display: {kind: 'glob', paths: ['']},
+    text: 'raw malformed result'
+  });
+  const malformedLines = renderTranscriptLines(malformed, 80).map(stripAnsi);
+  assert.equal(malformedLines.includes('  ⎿ raw malformed result'), true);
+  assert.equal(malformedLines.some((line) => /[├└]─/u.test(line)), false);
+});
+
+test('glob renderer preserves records and safely applies subdued theme, control normalization, and width budgets', () => {
+  const theme = createTuiTheme({
+    blocks: {
+      colors: {
+        toolOutput: [4, 5, 6]
+      }
+    },
+    syntax: {
+      keyword: {foreground: [10, 11, 12], bold: true}
+    }
+  });
+  const records = createGlobPair('glob-width', {
+    pattern: `很长的\n模式/${'目录'.repeat(30)}/**/*.ts`,
+    paths: [`src/${'深层目录/'.repeat(12)}`, 'test']
+  }, [
+    `src/${'深层目录/'.repeat(12)}\tconst-file.ts`,
+    'test/控制\r\n换行.test.ts',
+    `test/${'宽字符'.repeat(30)}.test.ts`
+  ]);
+  const before = structuredClone(records);
+  const width = 28;
+  const rendered = renderTranscriptLines(records, width, theme);
+  const plain = rendered.map(stripAnsi);
+
+  assert.deepEqual(records, before);
+  assertSafeRenderLines(rendered, width);
+  assert.equal(plain.some((line) => line.includes('\t') || line.includes('\r') || line.includes('\n')), false);
+  assert.ok(rendered.some((line) => /\x1b\[38;2;4;5;6m/.test(line) && /[├└│]/u.test(stripAnsi(line))));
+  assert.equal(rendered.some((line) => /\x1b\[38;2;10;11;12m/.test(line)), false);
+  const firstTreeLine = plain.findIndex((line) => /^  [├└]/u.test(line));
+  assert.ok(firstTreeLine >= 0);
+  assert.ok(plain.slice(firstTreeLine).filter((line) => line !== '').length <= 12);
+
+  const narrow = renderTranscriptLines(createGlobPair('glob-narrow', {pattern: '*.ts'}, [
+    `src/${'long/'.repeat(20)}file.ts`
+  ]), 12);
+  assertSafeRenderLines(narrow, 12);
+});
+
+function createGlobPair(callId, args, paths, options = {}) {
+  const text = options.text ?? (paths.length === 0
+    ? 'no files matched'
+    : paths.join('\n'));
+  const display = options.display ?? {kind: 'glob', paths};
+  return [
+    {
+      role: 'tool_call',
+      text: '',
+      toolCallId: callId,
+      toolName: 'glob',
+      argumentsText: JSON.stringify({
+        pattern: args.pattern,
+        paths: args.paths ?? null
+      })
+    },
+    {
+      role: 'tool_result',
+      text,
+      toolCallId: callId,
+      toolName: 'glob',
+      ok: options.ok ?? true,
+      details: {
+        kind: 'glob',
+        exitCode: options.ok === false ? 2 : paths.length === 0 ? 1 : 0,
+        truncated: options.truncated ?? false,
+        ...(options.omitDisplay ? {} : {display})
+      }
+    }
+  ];
+}
+
 test('grep pending preview and successful pair render query semantics, scope, and grouped matches', () => {
   const args = {
     pattern: 'needle',

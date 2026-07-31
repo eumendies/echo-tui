@@ -96,3 +96,22 @@ test('createToolResultTranscriptRecord preserves grep display metadata', () => {
     details: {kind: 'grep', exitCode: 0, truncated: false, display}
   });
 });
+
+test('createToolResultTranscriptRecord preserves glob display metadata', () => {
+  const display = {kind: 'glob', paths: ['src/a.ts', 'test/a.test.ts']};
+
+  assert.deepEqual(createToolResultTranscriptRecord({
+    callId: 'call_glob',
+    toolName: 'glob',
+    ok: true,
+    text: 'src/a.ts\ntest/a.test.ts',
+    details: {kind: 'glob', exitCode: 0, truncated: false, display}
+  }), {
+    role: 'tool_result',
+    text: 'src/a.ts\ntest/a.test.ts',
+    toolCallId: 'call_glob',
+    toolName: 'glob',
+    ok: true,
+    details: {kind: 'glob', exitCode: 0, truncated: false, display}
+  });
+});

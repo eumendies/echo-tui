@@ -13,6 +13,7 @@ import {
 } from './tool-message-renderers/apply-patch';
 import {EDIT_FILE_TOOL_NAME, renderEditFileToolCallLines} from './tool-message-renderers/edit-file';
 import {renderBashToolCallLines, renderBashToolPairLines, renderBashToolResultLines} from './tool-message-renderers/bash';
+import {GLOB_TOOL_NAME, renderGlobToolCallLines, renderGlobToolPairLines} from './tool-message-renderers/glob';
 import {GREP_TOOL_NAME, renderGrepToolCallLines, renderGrepToolPairLines} from './tool-message-renderers/grep';
 import {
   READ_FILES_TOOL_NAME,
@@ -98,6 +99,10 @@ function renderPairAwareToolPairLines(call: ToolCallTranscriptRecord, result: To
 
   if (call.toolName === GREP_TOOL_NAME && result.toolName === GREP_TOOL_NAME) {
     return renderGrepToolPairLines(call, result, width, theme);
+  }
+
+  if (call.toolName === GLOB_TOOL_NAME && result.toolName === GLOB_TOOL_NAME) {
+    return renderGlobToolPairLines(call, result, width, theme);
   }
 
   return null;
@@ -188,6 +193,11 @@ function renderToolRecordLines(record: ToolTranscriptRecord, width: number, opti
 
   if (record.toolName === GREP_TOOL_NAME && record.role === 'tool_call') {
     return renderGrepToolCallLines(record, width, options.callStatus, theme)
+      ?? renderGenericToolRecordLines(record, width, options, theme);
+  }
+
+  if (record.toolName === GLOB_TOOL_NAME && record.role === 'tool_call') {
+    return renderGlobToolCallLines(record, width, options.callStatus, theme)
       ?? renderGenericToolRecordLines(record, width, options, theme);
   }
 
