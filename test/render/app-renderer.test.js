@@ -1928,6 +1928,208 @@ test('createAppRenderer appendRecords preserves block spacing for realtime trans
   assert.match(output.writes[0], /\x1b\[38;2;0;170;0m◆\x1b\[39m/);
 });
 
+test('grep pending preview and successful pair render query semantics, scope, and grouped matches', () => {
+  const args = {
+    pattern: 'needle',
+    paths: ['src', 'test'],
+    glob: '*.ts',
+    literal: true,
+    case_sensitive: false
+  };
+  const preview = renderToolCallPreviewLines('grep', JSON.stringify(args), 100).map(stripAnsi);
+  assert.deepEqual(preview, [
+    '◆ Grep · “needle” · ignore case · searching',
+    '  in src, test · glob *.ts'
+  ]);
+
+  const rendered = renderTranscriptLines(createGrepPair('grep-success', args, [
+    {path: 'src/tool.ts', line: 7, column: 7, text: 'const needle = true;'},
+    {path: 'src/tool.ts', line: 18, column: 3, text: 'return needle;'},
+    {path: 'test/tool.test.js', line: 42, column: 5, text: 'assert.match(value, /needle/);'}
+  ]), 100);
+  const lines = rendered.map(stripAnsi);
+
+  assert.deepEqual(lines, [
+    '◆ Grep · “needle” · ignore case · 3 matches',
+    '  in src, test · glob *.ts',
+    '  ├─ src/tool.ts',
+    '  │  7:7 │ const needle = true;',
+    '  │ 18:3 │ return needle;',
+    '  └─ test/tool.test.js',
+    '    42:5 │ assert.match(value, /needle/);',
+    ''
+  ]);
+  assert.match(rendered[0], /\x1b\[38;2;0;170;0m◆\x1b\[39m Grep/);
+  assert.doesNotMatch(rendered[0], /\x1b\[[^m]*mGrep/);
+  assert.match(rendered[2], /\x1b\[38;2;85;85;85m  ├─ src\/tool\.ts\x1b\[39m/);
+  assert.doesNotMatch(rendered[2], /\x1b\[38;2;255;255;255m/);
+  assert.match(rendered[3], /\x1b\[38;2;85;85;85mconst needle = true;\x1b\[39m/);
+  assert.doesNotMatch(rendered[3], /\x1b\[(?:1m|38;2;(?:0;170;170|170;0;170)m)/);
+  assert.equal(lines.some((line) => line.includes('case_sensitive') || line.includes('src/tool.ts:7:7:')), false);
+});
+
+test('grep renderer distinguishes empty, failure, handler truncation, and display omission', () => {
+  const empty = renderTranscriptLines(createGrepPair('grep-empty', {pattern: 'missing'}, []), 80).map(stripAnsi);
+  assert.deepEqual(empty, [
+    '◆ Grep · “missing” · no matches',
+    '  in .',
+    ''
+  ]);
+
+  const failure = renderTranscriptLines(createGrepPair(
+    'grep-failure',
+    {pattern: '[', literal: false, case_sensitive: true},
+    [],
+    {ok: false, text: 'grep failed.\nReason: regex parse error'}
+  ), 80);
+  assert.deepEqual(failure.map(stripAnsi), [
+    '◆ Grep · “[” · regex · case sensitive · failed',
+    '  in .',
+    '  ⎿ regex parse error',
+    ''
+  ]);
+  assert.match(failure[0], /\x1b\[38;2;170;0;0m◆\x1b\[39m/);
+
+  const fittingMatches = Array.from({length: 10}, (_value, index) => ({
+    path: 'src/fitting.ts',
+    line: index + 1,
+    column: 1,
+    text: `const fit${index + 1} = true;`
+  }));
+  const fitting = renderTranscriptLines(createGrepPair(
+    'grep-fitting',
+    {pattern: 'fit', paths: ['src']},
+    fittingMatches
+  ), 80).map(stripAnsi);
+  assert.equal(fitting.some((line) => line.includes('more matches')), false);
+  assert.equal(fitting.some((line) => line.includes('fit10')), true);
+
+  const manyMatches = Array.from({length: 14}, (_value, index) => ({
+    path: index < 7 ? 'src/many.ts' : 'test/many.test.ts',
+    line: index + 1,
+    column: 1,
+    text: `const hit${index + 1} = true;`
+  }));
+  const truncated = renderTranscriptLines(createGrepPair(
+    'grep-truncated',
+    {pattern: 'hit', paths: ['src']},
+    manyMatches,
+    {truncated: true}
+  ), 80).map(stripAnsi);
+
+  assert.equal(truncated[0], '◆ Grep · “hit” · 14 matches shown · more available');
+  assert.ok(truncated.includes('  └─ … 5 more matches'));
+  assert.equal(truncated.some((line) => line.includes('hit10')), false);
+  assert.equal(truncated.some((line) => line.includes('has_more: true')), false);
+});
+
+test('grep malformed and legacy records safely fall back without inventing match trees', () => {
+  const malformedPreview = renderToolCallPreviewLines('grep', '{bad-json', 80).map(stripAnsi);
+  assert.deepEqual(malformedPreview, ['◆ grep({bad-json)']);
+
+  const legacy = createGrepPair('grep-legacy', {pattern: 'needle'}, [], {
+    omitDisplay: true,
+    text: 'src/a.ts:1:1: needle'
+  });
+  const legacyLines = renderTranscriptLines(legacy, 80).map(stripAnsi);
+  assert.equal(legacyLines.includes('◆ Grep · “needle” · complete'), true);
+  assert.equal(legacyLines.includes('  ⎿ src/a.ts:1:1: needle'), true);
+  assert.equal(legacyLines.some((line) => line.includes('├─ src/a.ts')), false);
+
+  const malformed = createGrepPair('grep-malformed', {pattern: 'needle'}, [], {
+    display: {kind: 'grep', matches: [{path: '', line: 0, column: 1, text: 'needle'}]},
+    text: 'raw malformed result'
+  });
+  const malformedLines = renderTranscriptLines(malformed, 80).map(stripAnsi);
+  assert.equal(malformedLines.includes('  ⎿ raw malformed result'), true);
+  assert.equal(malformedLines.some((line) => line.includes('0:1 │')), false);
+});
+
+test('grep renderer preserves records and safely applies subdued theme, tabs, and width budgets', () => {
+  const theme = createTuiTheme({
+    blocks: {
+      colors: {
+        tool: [1, 2, 3],
+        toolOutput: [4, 5, 6],
+        text: [7, 8, 9]
+      }
+    },
+    syntax: {
+      keyword: {foreground: [10, 11, 12], bold: true},
+      string: {foreground: [13, 14, 15]}
+    }
+  });
+  const records = createGrepPair('grep-width', {
+    pattern: `很长的\n查询 ${'模式'.repeat(30)}`,
+    paths: [`src/${'深层目录/'.repeat(12)}文件.ts`],
+    glob: '**/*.ts',
+    literal: false,
+    case_sensitive: false
+  }, [
+    {path: `src/${'深层目录/'.repeat(12)}文件.ts`, line: 123, column: 7, text: '\tconst value = "开始字符串但不闭合'},
+    {path: 'src/second.ts', line: 9, column: 2, text: '\tconst second = "独立高亮"; ' + '内容'.repeat(30)}
+  ]);
+  const before = structuredClone(records);
+  const width = 28;
+  const rendered = renderTranscriptLines(records, width, theme);
+  const plain = rendered.map(stripAnsi);
+
+  assert.deepEqual(records, before);
+  assertSafeRenderLines(rendered, width);
+  assert.ok(rendered.some((line) => /\x1b\[38;2;0;170;0m◆\x1b\[39m Grep/.test(line)));
+  assert.equal(/\x1b\[[^m]*mGrep/.test(rendered[0]), false);
+  assert.equal(/\x1b\[38;2;(?:1;2;3|4;5;6|7;8;9)m/.test(rendered[0]), false);
+  assert.ok(rendered.some((line) => /\x1b\[38;2;4;5;6m/.test(line) && /[├└│]/u.test(stripAnsi(line))));
+  assert.ok(rendered.filter((line) => stripAnsi(line).includes('const')).every((line) => /\x1b\[38;2;4;5;6m[^\n]*const/.test(line)));
+  assert.equal(rendered.some((line) => /\x1b\[38;2;(?:1;2;3|10;11;12|13;14;15)m/.test(line)), false);
+  assert.equal(plain.some((line) => line.includes('\t') || line.includes('\r') || line.includes('\n')), false);
+  assert.ok(plain.filter((line) => /\d+:\d+ │/u.test(line)).length <= 4);
+  const firstTreeLine = plain.findIndex((line) => /^  [├└]/u.test(line));
+  assert.ok(firstTreeLine >= 0);
+  assert.ok(plain.slice(firstTreeLine).filter((line) => line !== '').length <= 12);
+
+  const narrow = renderTranscriptLines(createGrepPair('grep-narrow-locator', {pattern: 'x'}, [
+    {path: 'a', line: 123456789, column: 123456789, text: 'x'}
+  ]), 12);
+  assertSafeRenderLines(narrow, 12);
+  assert.equal(narrow.map(stripAnsi).some((line) => line.includes('123456789:123456789 │')), false);
+});
+
+function createGrepPair(callId, args, matches, options = {}) {
+  const text = options.text ?? (matches.length === 0
+    ? 'no matches found'
+    : matches.map((match) => `${match.path}:${match.line}:${match.column}: ${match.text}`).join('\n'));
+  const display = options.display ?? {kind: 'grep', matches};
+  return [
+    {
+      role: 'tool_call',
+      text: '',
+      toolCallId: callId,
+      toolName: 'grep',
+      argumentsText: JSON.stringify({
+        pattern: args.pattern,
+        paths: args.paths ?? null,
+        glob: args.glob ?? null,
+        literal: args.literal ?? null,
+        case_sensitive: args.case_sensitive ?? null
+      })
+    },
+    {
+      role: 'tool_result',
+      text,
+      toolCallId: callId,
+      toolName: 'grep',
+      ok: options.ok ?? true,
+      details: {
+        kind: 'grep',
+        exitCode: options.ok === false ? 2 : matches.length === 0 ? 1 : 0,
+        truncated: options.truncated ?? false,
+        ...(options.omitDisplay ? {} : {display})
+      }
+    }
+  ];
+}
+
 test('web_search pending preview hides raw arguments and successful pair renders a compact result tree', () => {
   const preview = renderToolCallPreviewLines('web_search', JSON.stringify({
     query: 'Echo TUI GitHub',

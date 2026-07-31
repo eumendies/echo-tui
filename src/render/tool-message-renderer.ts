@@ -13,6 +13,7 @@ import {
 } from './tool-message-renderers/apply-patch';
 import {EDIT_FILE_TOOL_NAME, renderEditFileToolCallLines} from './tool-message-renderers/edit-file';
 import {renderBashToolCallLines, renderBashToolPairLines, renderBashToolResultLines} from './tool-message-renderers/bash';
+import {GREP_TOOL_NAME, renderGrepToolCallLines, renderGrepToolPairLines} from './tool-message-renderers/grep';
 import {
   READ_FILES_TOOL_NAME,
   renderReadFilesToolCallLines,
@@ -93,6 +94,10 @@ function renderPairAwareToolPairLines(call: ToolCallTranscriptRecord, result: To
 
   if (call.toolName === WEB_FETCH_TOOL_NAME && result.toolName === WEB_FETCH_TOOL_NAME) {
     return renderWebFetchToolPairLines(call, result, width, theme);
+  }
+
+  if (call.toolName === GREP_TOOL_NAME && result.toolName === GREP_TOOL_NAME) {
+    return renderGrepToolPairLines(call, result, width, theme);
   }
 
   return null;
@@ -179,6 +184,11 @@ function renderToolRecordLines(record: ToolTranscriptRecord, width: number, opti
       return renderReadFilesToolResultLines(record, width, theme)
         ?? renderGenericToolRecordLines(record, width, options, theme);
     }
+  }
+
+  if (record.toolName === GREP_TOOL_NAME && record.role === 'tool_call') {
+    return renderGrepToolCallLines(record, width, options.callStatus, theme)
+      ?? renderGenericToolRecordLines(record, width, options, theme);
   }
 
   if (isTodoRenderToolName(record.toolName)) {

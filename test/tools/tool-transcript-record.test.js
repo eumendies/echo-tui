@@ -74,3 +74,25 @@ test('createToolResultTranscriptRecord preserves apply patch display metadata', 
     details: {kind: 'apply_patch', display}
   });
 });
+
+test('createToolResultTranscriptRecord preserves grep display metadata', () => {
+  const display = {
+    kind: 'grep',
+    matches: [{path: 'src/a.ts', line: 3, column: 5, text: 'const needle = true;'}]
+  };
+
+  assert.deepEqual(createToolResultTranscriptRecord({
+    callId: 'call_grep',
+    toolName: 'grep',
+    ok: true,
+    text: 'src/a.ts:3:5: const needle = true;',
+    details: {kind: 'grep', exitCode: 0, truncated: false, display}
+  }), {
+    role: 'tool_result',
+    text: 'src/a.ts:3:5: const needle = true;',
+    toolCallId: 'call_grep',
+    toolName: 'grep',
+    ok: true,
+    details: {kind: 'grep', exitCode: 0, truncated: false, display}
+  });
+});

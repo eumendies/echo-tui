@@ -4,7 +4,7 @@ import {StringDecoder} from 'node:string_decoder';
 
 import {isGitPath, normalizePositiveInteger, resolveCwd} from './tool-handler-utils';
 
-import type {GrepToolExecutionResult, ToolCall, ToolHandler} from '../types/tool';
+import type {GrepDisplayMatch, GrepDisplayMetadata, GrepToolExecutionResult, ToolCall, ToolHandler} from '../types/tool';
 import type {Result} from './tool-handler-utils';
 
 const GREP_TOOL_NAME = 'grep';
@@ -24,18 +24,11 @@ type NormalizedGrepRequest = {
   pattern: string;
 };
 
-type GrepMatch = {
-  column: number;
-  line: number;
-  path: string;
-  text: string;
-};
-
 type GrepRunResult = {
   error?: string;
   exitCode: number | null;
   hasMore: boolean;
-  matches: GrepMatch[];
+  matches: GrepDisplayMatch[];
   stderr: string;
   truncated: boolean;
 };
@@ -93,14 +86,15 @@ function createGrepToolHandler(options: GrepToolHandlerOptions = {}): ToolHandle
         details: {
           kind: 'grep',
           exitCode: result.exitCode,
-          truncated: result.truncated
+          truncated: result.truncated,
+          ...(result.display ? {display: result.display} : {})
         }
       };
     }
   };
 }
 
-async function grep(args: Record<string, unknown>, options: {cwd: string; maxMatches: number; rgPath: string}): Promise<{ok: boolean; text: string; exitCode?: number | null; truncated: boolean}> {
+async function grep(args: Record<string, unknown>, options: {cwd: string; maxMatches: number; rgPath: string}): Promise<{ok: boolean; text: string; display?: GrepDisplayMetadata; exitCode?: number | null; truncated: boolean}> {
   const normalized = normalizeRequest(args, options.cwd);
 
   if (!normalized.ok) {
@@ -118,7 +112,8 @@ async function grep(args: Record<string, unknown>, options: {cwd: string; maxMat
     ok,
     exitCode: runResult.exitCode,
     text: ok ? formatGrepSuccess(normalized.value, runResult, options.maxMatches) : formatGrepFailure(runResult.error || cleanStderr(runResult.stderr) || 'ripgrep failed'),
-    truncated: runResult.truncated
+    truncated: runResult.truncated,
+    ...(ok ? {display: {kind: 'grep', matches: runResult.matches}} : {})
   };
 }
 
@@ -238,7 +233,7 @@ function runRipgrep(request: NormalizedGrepRequest, options: {cwd: string; maxMa
       matches.push(match);
     });
 
-    const matches: GrepMatch[] = [];
+    const matches: GrepDisplayMatch[] = [];
     const stderrChunks: Buffer[] = [];
     let hasMore = false;
     let truncated = false;
@@ -336,7 +331,7 @@ function createJsonLineParser(onLine: (line: string) => void): {write: (chunk: B
   };
 }
 
-function parseRipgrepMatch(line: string): GrepMatch | undefined {
+function parseRipgrepMatch(line: string): GrepDisplayMatch | undefined {
   let event: unknown;
 
   try {
