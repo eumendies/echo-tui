@@ -76,6 +76,7 @@ export type AgentSessionInput = {
   records: TranscriptRecord[]; // 当前回合开始时提供给 agent 的完整 transcript 快照。
   compaction?: CompactionState; // 已持久化的上下文压缩状态，缺省时从未压缩状态开始。
   todoState?: TodoState; // 当前会话的待办状态，供 agent 在工具调用间延续。
+  sessionJournalPath?: string; // 当前 session 的 transcript journal 文件绝对路径，供压缩后模型按需回读原始记录；headless 无 session 时缺省。
   abortSignal?: AbortSignal; // 取消当前 agent 运行及其可中断下游操作的信号。
   interactionMode?: InteractionMode; // 本回合的 normal、plan 或 shell 等交互模式。
   executionMode?: AgentExecutionMode; // 本回合的 interactive 或 headless 执行与审批策略。

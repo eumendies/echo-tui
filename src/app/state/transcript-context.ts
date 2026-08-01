@@ -68,6 +68,15 @@ class TranscriptContext {
   }
 
   /**
+   * 返回当前 session journal 的绝对路径；新会话尚未首次落盘时返回 undefined。
+   */
+  getCurrentSessionJournalPath(): string | undefined {
+    return this.currentSessionId
+      ? this.transcriptStore.getSessionFilePath(this.getCurrentCwd(), this.currentSessionId)
+      : undefined;
+  }
+
+  /**
    * 列出当前 cwd 下可恢复的 session metadata。
    */
   listResumeSessions(): TranscriptSessionMetadata[] {

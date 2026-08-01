@@ -204,7 +204,7 @@ function isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {
  * 构造 provider 请求上下文：稳定前缀 + 活跃区间记录 + 运行时 suffix。
  * system prompt、摘要和运行时状态只存在于 provider 上下文，不写回 app transcript。
  */
-function buildProviderRecords(activeRecords: TranscriptRecord[], cwd: string, compaction?: CompactionState, skillCatalog: SkillCatalogEntry[] = [], agentInstructions: AgentInstruction[] = [], todoState?: TodoState, memoryPrompts: string[] = [], basePrompt?: string): TranscriptRecord[] {
+function buildProviderRecords(activeRecords: TranscriptRecord[], cwd: string, compaction?: CompactionState, skillCatalog: SkillCatalogEntry[] = [], agentInstructions: AgentInstruction[] = [], todoState?: TodoState, memoryPrompts: string[] = [], basePrompt?: string, sessionJournalPath?: string): TranscriptRecord[] {
   const prefix: TranscriptRecord[] = [
     {
       role: 'system',
@@ -213,9 +213,18 @@ function buildProviderRecords(activeRecords: TranscriptRecord[], cwd: string, co
   ];
 
   if (compaction && compaction.summaryText.trim() !== '') {
+    const summaryText = `Here is a structured summary of the earlier conversation:\n${compaction.summaryText}`;
     prefix.push({
       role: 'user',
-      text: `Here is a structured summary of the earlier conversation:\n${compaction.summaryText}`
+      text: sessionJournalPath
+        ? [
+            summaryText,
+            '',
+            `The full original history is preserved in source_file: ${sessionJournalPath}`,
+            'If exact details are needed, use the existing read_files tool to read source_file with pagination.',
+            'source_file is an append-only JSONL journal; later truncate or set operations can supersede earlier entries.'
+          ].join('\n')
+        : summaryText
     });
   }
 
@@ -499,7 +508,7 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
       const activeStartIndex = compactionState ? compactionState.activeStartIndex : 0;
       const activeRecords = recordRegion.slice(activeStartIndex);
       const memoryPrompt = resolveMemoryPrompt(cwd, state.contextWindow);
-      const providerRecords = buildProviderRecords(activeRecords, cwd, compactionState, state.skillCatalog, state.agentInstructions, state.todoState, memoryPrompt.sections, state.basePrompt);
+      const providerRecords = buildProviderRecords(activeRecords, cwd, compactionState, state.skillCatalog, state.agentInstructions, state.todoState, memoryPrompt.sections, state.basePrompt, session.sessionJournalPath);
       state.debug.emit('provider_request_built', {
         activeRecordCount: activeRecords.length,
         activeStartIndex,
