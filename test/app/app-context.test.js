@@ -182,9 +182,14 @@ function createFakeTranscriptStore(initialSessions = []) {
     return loadSession(cwd, sessionId);
   }
 
+  function getSessionFilePath(cwd, sessionId) {
+    return `/tmp/${sessionId}.jsonl`;
+  }
+
   return {
     createSession,
     appendSession,
+    getSessionFilePath,
     listSessions,
     loadSession,
     loadSessionReadOnly,

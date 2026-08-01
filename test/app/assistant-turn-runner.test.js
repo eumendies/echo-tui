@@ -54,6 +54,9 @@ function createFakeTranscriptStore() {
     },
     loadSessionReadOnly() {
       return currentSession ? {session: structuredClone(currentSession), reference: {...currentReference}} : null;
+    },
+    getSessionFilePath(_cwd, sessionId) {
+      return `/tmp/${sessionId}.jsonl`;
     }
   };
 }

@@ -515,6 +515,33 @@ test('buildProviderRecords does not append mode context after compacted active r
   assert.equal(records.some((record) => record.text.includes('# Echo Runtime Context')), false);
 });
 
+test('buildProviderRecords injects source_file and read-back hint when source path is available', () => {
+  const records = buildProviderRecords([{role: 'user', text: 'next task'}], TEST_CWD, {
+    summaryText: 'Earlier context.',
+    activeStartIndex: 4,
+    createdAt: '2026-06-29T00:00:00.000Z'
+  }, [], [], undefined, [], undefined, '/tmp/echo_tui/session.jsonl');
+
+  assert.deepEqual(records.map((record) => record.role), ['system', 'user', 'user']);
+  assert.match(records[1].text, /Here is a structured summary of the earlier conversation:\nEarlier context\./);
+  assert.match(records[1].text, /source_file: \/tmp\/echo_tui\/session\.jsonl/);
+  assert.match(records[1].text, /use the existing read_files tool to read source_file with pagination/);
+  assert.match(records[1].text, /append-only JSONL journal/);
+  assert.equal(records[2].text, 'next task');
+});
+
+test('buildProviderRecords does not inject source hint when source path is absent', () => {
+  const records = buildProviderRecords([{role: 'user', text: 'next task'}], TEST_CWD, {
+    summaryText: 'Earlier context.',
+    activeStartIndex: 4,
+    createdAt: '2026-06-29T00:00:00.000Z'
+  });
+
+  assert.equal(records[1].text, 'Here is a structured summary of the earlier conversation:\nEarlier context.');
+  assert.equal(records[1].text.includes('source_file'), false);
+  assert.equal(records[1].text.includes('read_files'), false);
+});
+
 test('built-in system prompt keeps minimal cross-task guidance without tool routing or generic safety reminders', () => {
   const prompt = createBuiltInSystemPrompt({ cwd: TEST_CWD });
 

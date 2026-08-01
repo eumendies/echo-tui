@@ -545,6 +545,7 @@ class AppContext {
    */
   getAgentSession(skillOverride: AgentModelSelectionOverride = {}): AgentSessionInput {
     const modelSelection = this.modelContext.resolveAgentSelection(skillOverride);
+    const sessionJournalPath = this.transcriptContext.getCurrentSessionJournalPath();
 
     return {
       records: structuredClone(this.transcriptContext.getRecords()),
@@ -553,6 +554,7 @@ class AppContext {
       interactionMode: this.interactionMode,
       compactionThresholdRatio: this.appSettings.compactionThresholdRatio,
       skillCatalogContextRatio: this.appSettings.skillCatalogContextRatio,
+      ...(sessionJournalPath ? {sessionJournalPath} : {}),
       ...(modelSelection || {})
     };
   }
