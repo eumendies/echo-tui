@@ -21,17 +21,10 @@ function createInfoSurface(title) {
 function createHostAppHarness() {
   const calls = {
     exits: 0,
-    leavesHistory: 0,
     renders: 0
   };
 
   const host = {
-    composer: {
-      reset() {},
-      leaveHistoryBrowsing() {
-        calls.leavesHistory += 1;
-      }
-    },
     transcript: {
       clear() {},
       loadSession() {
@@ -173,7 +166,6 @@ test('createCommandRuntime starts matched command through CommandHost session', 
 
   assert.deepEqual(harness.runtime.startFromText('/local'), { kind: 'handled' });
   assert.equal(harness.runtime.hasActiveSession(), true);
-  assert.equal(harness.calls.leavesHistory, 1);
   assert.equal(harness.calls.renders, 1);
   assert.equal(harness.runtime.getSurface().kind, 'confirm');
 });
@@ -251,7 +243,6 @@ test('createCommandRuntime routes events to active session and can update or clo
 
   harness.runtime.handleEvent({ type: INPUT_EVENTS.ESCAPE });
   assert.equal(harness.runtime.hasActiveSession(), false);
-  assert.equal(harness.calls.leavesHistory, 2);
 });
 
 test('createCommandRuntime rerenders after async command handlers settle', async () => {

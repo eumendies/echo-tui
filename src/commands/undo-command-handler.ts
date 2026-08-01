@@ -72,7 +72,6 @@ class UndoCommandHandler implements CommandHandler<UndoCommandData> {
   }
 
   start(_text: string, host: CommandHost): void {
-    host.composer.reset();
     const view = createUndoStartSurface(host.undo.getSummary());
 
     host.session.open({
@@ -86,7 +85,6 @@ class UndoCommandHandler implements CommandHandler<UndoCommandData> {
   handleEvent(session: CommandSession<UndoCommandData>, event: InputEvent, host: CommandHost): void {
     if (event.type === INPUT_EVENTS.ESCAPE) {
       host.session.close();
-      host.composer.reset();
       return;
     }
 
@@ -96,7 +94,6 @@ class UndoCommandHandler implements CommandHandler<UndoCommandData> {
 
     if (session.data?.mode !== 'confirm') {
       host.session.close();
-      host.composer.reset();
       return;
     }
 
@@ -108,7 +105,6 @@ class UndoCommandHandler implements CommandHandler<UndoCommandData> {
     }
 
     host.session.close();
-    host.composer.reset();
     host.ui.renderResizeRecovery();
   }
 }

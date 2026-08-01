@@ -116,6 +116,36 @@ function createAskUserQuestionsResult(callId, payload, ok = true) {
   };
 }
 
+test('createAppRenderer includes the pending message card in destructive recovery without creating transcript content', () => {
+  const output = {
+    writes: [],
+    write(chunk) {
+      this.writes.push(String(chunk));
+    }
+  };
+  const renderer = createAppRenderer(output);
+
+  renderer.renderDestructive({
+    bannerContext: {cwd: '/tmp/echo_tui', nodeVersion: 'v20.0.0', terminalSize: {columns: 50, rows: 10}, mode: 'current terminal'},
+    records: [{role: 'assistant', text: 'current answer'}],
+    composer: createComposer('later draft'),
+    pendingMessage: {preview: 'queued request'},
+    commandSurface: null,
+    pending: null,
+    working: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    rows: 10,
+    width: 50
+  });
+
+  const plain = stripAnsi(output.writes[0]);
+  assert.ok(plain.includes('current answer'));
+  assert.ok(plain.includes('待发送消息'));
+  assert.ok(plain.includes('queued request'));
+  assert.ok(plain.includes('later draft'));
+  assert.equal((plain.match(/queued request/g) || []).length, 1);
+});
+
 function createMemoryToolCall(callId, toolName, args) {
   return {
     role: 'tool_call',

@@ -288,7 +288,7 @@ test('AppContext creates isolated runtime state per app instance', () => {
   firstContext.turnContext.enterSpinnerState('thinking');
 
   assert.deepEqual(firstContext.transcriptContext.records, [{ role: 'user', text: 'hello', metadata: {} }]);
-  assert.deepEqual(firstContext.composerContext.inputHistory, ['hello']);
+  assert.deepEqual(firstContext.composerContext.inputHistory, []);
   assert.equal(firstContext.turnContext.responding, true);
   const firstPending = firstContext.turnContext.getPending();
   assert.equal(firstPending.kind, 'thinking');
@@ -974,7 +974,7 @@ test('TurnContext persists shell offloading marker before the bounded terminal t
   assert.doesNotMatch(record.text, /\[output truncated\]/);
 });
 
-test('AppContext preserves display text and composer history for mode transition messages', () => {
+test('AppContext preserves display text without owning composer history for mode transition messages', () => {
   const context = createContext();
   context.setInteractionMode('plan');
 
@@ -984,7 +984,7 @@ test('AppContext preserves display text and composer history for mode transition
 
   assert.match(record.text, /\[User Request\]\nexpanded image request$/);
   assert.equal(record.displayText, '@image.png');
-  assert.deepEqual(context.composerContext.getInputHistory(), ['@image.png']);
+  assert.deepEqual(context.composerContext.getInputHistory(), []);
 });
 
 test('AppContext rebuilds model-visible mode after resume and clear', () => {
@@ -2130,6 +2130,36 @@ test('AppContext lists reference sessions without current session and clears pen
   });
   assert.ok(context.loadTranscriptSession('source-session'));
   assert.equal(context.conversationReferenceContext.getPending(), null);
+});
+
+test('AppContext clears pending messages on transcript clear and successful session load', () => {
+  const transcriptStore = createFakeTranscriptStore([
+    {
+      sessionId: 'saved-session',
+      createdAt: '2026-05-19T00:00:00.000Z',
+      updatedAt: '2026-05-19T00:00:00.000Z',
+      records: [{role: 'user', text: 'saved'}]
+    }
+  ]);
+  const context = createContext({transcriptStore});
+
+  assert.equal(context.pendingMessageContext.enqueue('clear me'), true);
+  context.clearTranscriptRecords();
+  assert.equal(context.pendingMessageContext.getPending(), null);
+
+  assert.equal(context.pendingMessageContext.enqueue('load me'), true);
+  assert.ok(context.loadTranscriptSession('saved-session'));
+  assert.equal(context.pendingMessageContext.getPending(), null);
+});
+
+test('AppContext projects only the pending message preview and updates the Esc status hint', () => {
+  const context = createContext();
+
+  context.pendingMessageContext.enqueue('queued\nrequest');
+  const state = context.createRenderState();
+
+  assert.deepEqual(state.pendingMessage, {preview: 'queued request'});
+  assert.equal(state.statusLine.keyHint, 'Esc 移除待发送');
 });
 
 test('AppContext browseHistory only enters history mode from an empty idle composer', () => {

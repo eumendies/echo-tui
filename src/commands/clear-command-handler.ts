@@ -45,7 +45,6 @@ export class ClearCommandHandler implements CommandHandler {
    *
    */
   start(_text: string, host: CommandHost): void {
-    host.composer.reset();
     host.session.open({
       commandName: 'clear',
       handler: this,
@@ -61,14 +60,12 @@ export class ClearCommandHandler implements CommandHandler {
   handleEvent(_session: CommandSession, event: InputEvent, host: CommandHost): void {
     if (event.type === INPUT_EVENTS.SUBMIT) {
       host.session.close();
-      host.composer.reset();
       host.transcript.clear();
       return;
     }
 
     if (event.type === INPUT_EVENTS.ESCAPE) {
       host.session.close();
-      host.composer.reset();
     }
   }
 }

@@ -57,7 +57,6 @@ export class McpCommandHandler implements CommandHandler<McpManageData> {
 
   start(_text: string, host: CommandHost): void {
     const data = createMcpManageData(host.mcp.listServers());
-    host.composer.reset();
     host.session.open({
       commandName: 'mcp',
       handler: this,
@@ -69,7 +68,6 @@ export class McpCommandHandler implements CommandHandler<McpManageData> {
   handleEvent(session: CommandSession<McpManageData>, event: InputEvent, host: CommandHost): void | Promise<void> {
     if (event.type === INPUT_EVENTS.ESCAPE) {
       host.session.close();
-      host.composer.reset();
       return undefined;
     }
 
@@ -78,7 +76,6 @@ export class McpCommandHandler implements CommandHandler<McpManageData> {
     if (!data) {
       if (event.type === INPUT_EVENTS.SUBMIT) {
         host.session.close();
-        host.composer.reset();
       }
 
       return undefined;
@@ -107,7 +104,6 @@ export class McpCommandHandler implements CommandHandler<McpManageData> {
     if (event.type === INPUT_EVENTS.SUBMIT) {
       const servers = data.servers.map((server) => ({...server}));
       host.session.close();
-      host.composer.reset();
 
       if (createEnabledStateKey(servers) === data.initialStateKey) {
         return undefined;

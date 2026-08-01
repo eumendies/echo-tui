@@ -165,7 +165,6 @@ export class MemoryCommandHandler implements CommandHandler<MemoryData> {
 
   start(_text: string, host: CommandHost): void {
     const data = this.loadTypeData(host);
-    host.composer.reset();
     host.session.open({
       commandName: 'memory',
       handler: this,
@@ -234,7 +233,6 @@ export class MemoryCommandHandler implements CommandHandler<MemoryData> {
     }
 
     host.session.close();
-    host.composer.reset();
   }
 
   private handleList(data: MemoryData, event: InputEvent, host: CommandHost): void {

@@ -25,7 +25,6 @@ function createCommandRuntime(dependencies: CommandRuntimeDependencies) {
     session: {
       open<TData extends object = Record<string, unknown>>(session: CommandSession<TData>): void {
         activeCommandSession = session as CommandSession;
-        dependencies.host.composer.leaveHistoryBrowsing();
         didMutateSession = true;
       },
       update<TData extends object = Record<string, unknown>>(patch: CommandSessionPatch<TData>): void {
@@ -41,7 +40,6 @@ function createCommandRuntime(dependencies: CommandRuntimeDependencies) {
       },
       close(): void {
         activeCommandSession = null;
-        dependencies.host.composer.leaveHistoryBrowsing();
         didMutateSession = true;
       },
       getActive(): CommandSession | null {

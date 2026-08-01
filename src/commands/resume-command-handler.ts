@@ -51,7 +51,6 @@ function confirmResumeSelection(session: CommandSession<ResumeData>, host: Comma
   }
 
   host.session.close();
-  host.composer.reset();
   host.transcript.loadSession(selectedSession.sessionId);
 }
 
@@ -68,7 +67,6 @@ export class ResumeCommandHandler implements CommandHandler<ResumeData> {
    */
   start(_text: string, host: CommandHost): void {
     const sessions = host.transcript.listResumeSessions().map((session) => ({...session}));
-    host.composer.reset();
 
     if (sessions.length === 0) {
       host.session.open({
@@ -104,7 +102,6 @@ export class ResumeCommandHandler implements CommandHandler<ResumeData> {
 
     if (event.type === INPUT_EVENTS.ESCAPE) {
       host.session.close();
-      host.composer.reset();
     }
   }
 }

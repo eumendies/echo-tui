@@ -241,6 +241,78 @@ test('renderFooterLayout renders a compact conversation reference above editable
   assert.equal(layout.cursorRow, 4);
 });
 
+test('renderFooterLayout renders a bounded pending message card directly above the composer', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('next draft'),
+    pendingMessage: {preview: 'queued message with details'},
+    commandSurface: null,
+    pending: {kind: 'streaming', text: 'current answer'},
+    statusLine: {...DEFAULT_STATUS_LINE, mode: 'streaming', keyHint: 'Esc 移除待发送'},
+    rows: 14,
+    width: 100
+  });
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+  const titleIndex = plainLines.findIndex((line) => line.includes('待发送消息'));
+  const previewIndex = plainLines.findIndex((line) => line.includes('queued message with details'));
+  const composerIndex = plainLines.findIndex((line) => line.includes('> next draft'));
+
+  assert.ok(titleIndex >= 0);
+  assert.equal(previewIndex, titleIndex + 1);
+  assert.ok(composerIndex > previewIndex);
+  assert.ok(plainLines[previewIndex].includes('Esc 移除'));
+  assert.ok(plainLines.at(-1).includes('Esc 移除待发送'));
+  assert.ok(layout.lines.length <= 12);
+  assert.ok(layout.lines.every((line) => displayWidth(line) <= safeRenderWidth(100)));
+});
+
+test('renderFooterLayout prioritizes a compact pending card under a constrained shared footer budget', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer(Array.from({length: 8}, (_value, index) => `draft ${index + 1}`).join('\n')),
+    conversationReference: {projectionMode: 'summary', title: 'Referenced history'},
+    pendingMessage: {preview: 'x'.repeat(200)},
+    commandSurface: null,
+    pending: {kind: 'streaming', text: Array.from({length: 30}, (_value, index) => `answer ${index + 1}`).join('\n')},
+    statusLine: {...DEFAULT_STATUS_LINE, mode: 'streaming', keyHint: 'Esc 移除待发送'},
+    rows: 9,
+    width: 34
+  });
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+
+  assert.ok(layout.lines.length <= 7);
+  assert.ok(plainLines.some((line) => line.includes('待发送消息')));
+  assert.ok(plainLines.some((line) => line.includes('draft 8')));
+  assert.ok(layout.cursorRow >= 0 && layout.cursorRow < layout.lines.length);
+  assert.ok(layout.lines.every((line) => displayWidth(line) <= safeRenderWidth(34)));
+});
+
+test('createFooterRenderer clears the remembered pending-card height when the card disappears', () => {
+  const output = {
+    writes: [],
+    write(chunk) {
+      this.writes.push(String(chunk));
+    }
+  };
+  const renderer = createFooterRenderer(output);
+  const baseState = {
+    composer: createComposer('draft'),
+    commandSurface: null,
+    pending: null,
+    working: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    rows: 12,
+    width: 60
+  };
+  const pendingState = {...baseState, pendingMessage: {preview: 'queued message'}};
+  const pendingLayout = renderFooterLayout(pendingState);
+
+  renderer.render(baseState);
+  renderer.render(pendingState);
+  renderer.render(baseState);
+
+  assert.equal((output.writes[2].match(/\x1b\[2K/g) || []).length, pendingLayout.lines.length);
+  assert.equal(stripAnsi(output.writes[2]).includes('待发送消息'), false);
+});
+
 test('renderFooterLayout changes the reference hint while deferred summary is running', () => {
   const layout = renderFooterLayout({
     composer: createComposer('continue'),

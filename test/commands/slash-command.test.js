@@ -51,7 +51,6 @@ function createFakeHost(options = {}) {
     modeSelections: [],
     listedConfigProviders: [],
     renders: 0,
-    resets: 0,
     savedConfigDrafts: [],
     savedSettingsDrafts: [],
     savedHookDrafts: [],
@@ -71,12 +70,6 @@ function createFakeHost(options = {}) {
   };
   let activeSession = null;
   const host = {
-    composer: {
-      reset() {
-        calls.resets += 1;
-      },
-      leaveHistoryBrowsing() {}
-    },
     transcript: {
       clear() {
         calls.clears += 1;
@@ -505,7 +498,6 @@ test('statusCommandHandler loads Codex usage and isolates late results', async (
 
   handler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: 'q'}, harness.host);
   assert.equal(harness.calls.sessionCloses, 1);
-  assert.equal(harness.calls.resets, 2);
 
   let resolveLate;
   const lateHarness = createFakeHost({
@@ -592,7 +584,6 @@ test('copyCommandHandler opens copy surface, toggles selection, and copies forma
   assert.equal(resolveSlashCommand('/copy', createDefaultHandlersForTest()).name, 'copy');
 
   let session = startCommand(copyCommandHandler, '/copy', host.host);
-  assert.equal(host.calls.resets, 1);
   assert.equal(session.surface.kind, 'copy');
   assert.equal(session.surface.selectedIndex, 1);
   assert.deepEqual(session.surface.selectedIds, ['message-1']);
@@ -608,7 +599,6 @@ test('copyCommandHandler opens copy surface, toggles selection, and copies forma
   await copyCommandHandler.handleEvent(session, {type: INPUT_EVENTS.SUBMIT}, host.host);
   assert.deepEqual(host.calls.clipboardWrites, ['Assistant:\nanswer\n\nUser:\nfollow up']);
   assert.equal(host.calls.sessionCloses, 1);
-  assert.equal(host.calls.resets, 2);
   assert.equal(host.calls.transcriptAppends[0].role, 'local_notice');
   assert.match(host.calls.transcriptAppends[0].text, /已复制 2 条消息/);
 });
@@ -714,15 +704,12 @@ test('usageCommandHandler opens empty state without submitting transcript', () =
   assert.equal(resolveSlashCommand('/usage today', [usageCommandHandler]), null);
 
   const session = startCommand(usageCommandHandler, '/usage', empty.host);
-
-  assert.equal(empty.calls.resets, 1);
   assert.equal(session.surface.kind, 'info');
   assert.match(session.surface.lines.join('\n'), /暂无 token usage/);
   assert.deepEqual(empty.calls.transcriptAppends, []);
 
   usageCommandHandler.handleEvent(session, {type: INPUT_EVENTS.SUBMIT}, empty.host);
   assert.equal(empty.calls.sessionCloses, 1);
-  assert.equal(empty.calls.resets, 2);
 });
 
 test('usageCommandHandler opens usage surface, navigates dates, and closes without transcript changes', () => {
@@ -781,7 +768,6 @@ test('usageCommandHandler opens usage surface, navigates dates, and closes witho
 
   usageCommandHandler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: 'q'}, selectable.host);
   assert.equal(selectable.calls.sessionCloses, 1);
-  assert.equal(selectable.calls.resets, 2);
   assert.deepEqual(selectable.calls.transcriptAppends, []);
 });
 
@@ -1021,7 +1007,6 @@ test('diffCommandHandler opens diff surface, handles focus and scroll, and close
   assert.equal(session.surface.kind, 'diff');
   assert.equal(session.surface.source.kind, 'history');
   assert.equal(session.data.selectedIndex, 0);
-  assert.equal(selectable.calls.resets, 1);
 
   diffCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_DOWN}, selectable.host);
   session = selectable.host.session.getActive();
@@ -1090,8 +1075,6 @@ test('configCommandHandler opens general tab, saves independently, and lazily op
   assert.equal(resolveSlashCommand('/config', createDefaultHandlersForTest()).name, 'config');
 
   const session = startCommand(configCommandHandler, '/config', host);
-
-  assert.equal(calls.resets, 1);
   assert.equal(session.commandName, 'config');
   assert.equal(session.surface.kind, 'config');
   assert.equal(session.surface.view, 'general');
@@ -1178,7 +1161,6 @@ test('configCommandHandler cancels without saving', () => {
   configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.ESCAPE}, host);
 
   assert.equal(calls.sessionCloses, 1);
-  assert.equal(calls.resets, 2);
   assert.equal(calls.savedConfigDrafts.length, 0);
 });
 
@@ -1387,8 +1369,6 @@ test('helpCommandHandler opens and closes help session through host', () => {
   assert.equal(helpCommandHandler.match('/help'), true);
 
   const session = startCommand(helpCommandHandler, '/help', host);
-
-  assert.equal(calls.resets, 1);
   assert.equal(session.commandName, 'help');
   assert.equal(session.surface.kind, 'info');
   assert.equal(session.surface.title, '/help');
@@ -1400,7 +1380,6 @@ test('helpCommandHandler opens and closes help session through host', () => {
 
   helpCommandHandler.handleEvent(session, { type: INPUT_EVENTS.ESCAPE }, host);
   assert.equal(calls.sessionCloses, 1);
-  assert.equal(calls.resets, 2);
 });
 
 test('modelCommandHandler opens info session for config errors', () => {
@@ -1487,7 +1466,6 @@ test('modelCommandHandler shows selectable models, confirms, cancels, and report
   const cancelSession = startCommand(modelCommandHandler, '/model', cancel.host);
   modelCommandHandler.handleEvent(cancelSession, { type: INPUT_EVENTS.ESCAPE }, cancel.host);
   assert.equal(cancel.calls.sessionCloses, 1);
-  assert.equal(cancel.calls.resets, 2);
 });
 
 test('modelCommandHandler config error submit is a no-op and escape closes', () => {
@@ -1585,7 +1563,6 @@ test('effortCommandHandler shows selectable efforts, confirms, cancels, and repo
   const cancelSession = startCommand(effortCommandHandler, '/effort', cancel.host);
   effortCommandHandler.handleEvent(cancelSession, { type: INPUT_EVENTS.ESCAPE }, cancel.host);
   assert.equal(cancel.calls.sessionCloses, 1);
-  assert.equal(cancel.calls.resets, 2);
 });
 
 test('modeCommandHandler switches modes directly, opens selector, and rejects /plan', () => {
@@ -1618,7 +1595,6 @@ test('modeCommandHandler switches modes directly, opens selector, and rejects /p
   modeCommandHandler.handleEvent(select.host.session.getActive(), { type: INPUT_EVENTS.SUBMIT }, select.host);
   assert.deepEqual(select.calls.modeSelections, ['shell-local']);
   assert.equal(select.calls.sessionCloses, 1);
-  assert.equal(select.calls.resets, 2);
 
   const invalid = createFakeHost();
   const invalidSession = startCommand(modeCommandHandler, '/mode maybe', invalid.host);
@@ -1629,7 +1605,6 @@ test('modeCommandHandler switches modes directly, opens selector, and rejects /p
 
   modeCommandHandler.handleEvent(invalidSession, { type: INPUT_EVENTS.ESCAPE }, invalid.host);
   assert.equal(invalid.calls.sessionCloses, 1);
-  assert.equal(invalid.calls.resets, 2);
 });
 
 test('contextCommandHandler opens context surface or unavailable info and closes on key', () => {
@@ -1650,7 +1625,6 @@ test('contextCommandHandler opens context surface or unavailable info and closes
   assert.equal(resolveSlashCommand('/context', createDefaultHandlersForTest()).name, 'context');
 
   const session = startCommand(contextCommandHandler, '/context', withUsage.host);
-  assert.equal(withUsage.calls.resets, 1);
   assert.equal(session.commandName, 'context');
   assert.equal(session.surface.kind, 'context');
   assert.equal(session.surface.usage.usedTokens, 1200);
@@ -1658,7 +1632,6 @@ test('contextCommandHandler opens context surface or unavailable info and closes
 
   contextCommandHandler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: 'x'}, withUsage.host);
   assert.equal(withUsage.calls.sessionCloses, 1);
-  assert.equal(withUsage.calls.resets, 2);
 
   const withoutUsage = createFakeHost();
   const missingSession = startCommand(contextCommandHandler, '/context', withoutUsage.host);
@@ -1688,8 +1661,6 @@ test('skillsCommandHandler opens skills surface, toggles drafts, saves, and canc
   assert.equal(resolveSlashCommand('/skills', createDefaultHandlersForTest()).name, 'skills');
 
   const session = startCommand(skillsCommandHandler, '/skills', host);
-
-  assert.equal(calls.resets, 1);
   assert.equal(session.commandName, 'skills');
   assert.equal(session.surface.kind, 'skills');
   assert.equal(session.surface.title, 'SKILLS');
@@ -1725,7 +1696,6 @@ test('skillsCommandHandler opens skills surface, toggles drafts, saves, and canc
 
   skillsCommandHandler.handleEvent(host.session.getActive(), { type: INPUT_EVENTS.SUBMIT }, host);
   assert.equal(calls.sessionCloses, 1);
-  assert.equal(calls.resets, 2);
   assert.deepEqual(calls.savedSkills[0].map((skill) => [skill.name, skill.enabled]), [
     ['code-review', true],
     ['unit-test', true]
@@ -1797,8 +1767,6 @@ test('mcpCommandHandler opens MCP surface, toggles drafts, saves, and cancels', 
   assert.equal(resolveSlashCommand('/mcp', createDefaultHandlersForTest()).name, 'mcp');
 
   const session = startCommand(mcpCommandHandler, '/mcp', host);
-
-  assert.equal(calls.resets, 1);
   assert.equal(session.commandName, 'mcp');
   assert.equal(session.surface.kind, 'mcp');
   assert.equal(session.surface.title, 'MCP');
@@ -1813,7 +1781,6 @@ test('mcpCommandHandler opens MCP surface, toggles drafts, saves, and cancels', 
 
   const savePromise = mcpCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
   assert.equal(calls.sessionCloses, 1);
-  assert.equal(calls.resets, 2);
   assert.equal(host.session.getActive(), null);
   await savePromise;
   assert.deepEqual(calls.savedMcpServers[0].map((server) => [server.name, server.enabled]), [
@@ -1867,8 +1834,6 @@ test('hooksCommandHandler opens, edits, saves, and cancels draft state', () => {
   assert.equal(resolveSlashCommand('/hooks', createDefaultHandlersForTest()).name, 'hooks');
 
   let session = startCommand(hooksCommandHandler, '/hooks', host);
-
-  assert.equal(calls.resets, 1);
   assert.equal(session.commandName, 'hooks');
   assert.equal(session.surface.kind, 'hooks');
   assert.equal(session.surface.mode, 'events');
@@ -1952,7 +1917,6 @@ test('hooksCommandHandler opens, edits, saves, and cancels draft state', () => {
   hooksCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
   hooksCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
   assert.equal(calls.sessionCloses, 1);
-  assert.equal(calls.resets, 2);
   assert.equal(calls.savedHookDrafts.length, 1);
   assert.equal(calls.savedHookDrafts[0].events[1].entries[0].enabled, false);
 
@@ -2097,7 +2061,6 @@ test('clearCommandHandler opens confirm session, confirms, and cancels through h
 
   clearCommandHandler.handleEvent(session, { type: INPUT_EVENTS.SUBMIT }, host);
   assert.equal(calls.sessionCloses, 1);
-  assert.equal(calls.resets, 2);
   assert.equal(calls.clears, 1);
 
   const cancel = createFakeHost();
@@ -2285,7 +2248,6 @@ test('compactCommandHandler opens confirm session, runs manual compaction throug
   compactCommandHandler.handleEvent(session, { type: INPUT_EVENTS.SUBMIT }, host);
   await Promise.resolve();
   assert.equal(calls.sessionCloses, 1);
-  assert.equal(calls.resets, 2);
   assert.deepEqual(calls.assistantCalls, [
     'beginManualCompaction',
     'compactContext',

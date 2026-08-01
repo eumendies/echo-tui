@@ -109,7 +109,6 @@ function confirmModeSelection(session: CommandSession<ModeCommandData>, host: Co
 
   host.mode.setInteractionMode(selectedMode);
   host.session.close();
-  host.composer.reset();
 }
 
 export class ModeCommandHandler implements CommandHandler<ModeCommandData> {
@@ -128,8 +127,6 @@ export class ModeCommandHandler implements CommandHandler<ModeCommandData> {
    */
   start(text: string, host: CommandHost): void {
     const action = parseModeArgument(text);
-
-    host.composer.reset();
 
     if (action === 'invalid') {
       host.session.open({
@@ -176,7 +173,6 @@ export class ModeCommandHandler implements CommandHandler<ModeCommandData> {
 
     if (event.type === INPUT_EVENTS.ESCAPE) {
       host.session.close();
-      host.composer.reset();
     }
   }
 }

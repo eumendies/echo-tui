@@ -44,7 +44,6 @@ export class ContextCommandHandler implements CommandHandler {
    * 启动 /context，读取最近 provider usage 并打开只读详情面板。
    */
   start(_text: string, host: CommandHost): void {
-    host.composer.reset();
     host.session.open({
       commandName: 'context',
       handler: this,
@@ -62,7 +61,6 @@ export class ContextCommandHandler implements CommandHandler {
     }
 
     host.session.close();
-    host.composer.reset();
   }
 }
 

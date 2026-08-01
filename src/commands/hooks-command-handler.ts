@@ -78,7 +78,6 @@ export class HooksCommandHandler implements CommandHandler<HooksManageData> {
 
   start(_text: string, host: CommandHost): void {
     const data = createHooksManageData(host.hooks.readDraft());
-    host.composer.reset();
     host.session.open({
       commandName: 'hooks',
       handler: this,
@@ -106,7 +105,6 @@ export class HooksCommandHandler implements CommandHandler<HooksManageData> {
       }
 
       host.session.close();
-      host.composer.reset();
       return undefined;
     }
 
@@ -437,7 +435,6 @@ export class HooksCommandHandler implements CommandHandler<HooksManageData> {
 
     if (result.ok) {
       host.session.close();
-      host.composer.reset();
       return;
     }
 

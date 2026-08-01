@@ -76,23 +76,25 @@ class RenderContext {
   /**
    * 组合渲染层需要的瞬时状态，避免 main.ts 反复散落访问实例字段。
    */
-  createRenderState(options: {allowAllTools?: boolean; commandSurface?: CommandSurface | null; contextUsage?: ContextUsageState | null; conversationReference?: RenderState['conversationReference']; model?: StatusLineModelRenderState; renderPreferences?: RenderPreferences; slashSuggestions?: SlashSuggestionState | null} = {}): RenderState {
+  createRenderState(options: {allowAllTools?: boolean; commandSurface?: CommandSurface | null; contextUsage?: ContextUsageState | null; conversationReference?: RenderState['conversationReference']; model?: StatusLineModelRenderState; pendingMessage?: RenderState['pendingMessage']; renderPreferences?: RenderPreferences; slashSuggestions?: SlashSuggestionState | null} = {}): RenderState {
     const terminalSize = this.terminal.getSize();
     const commandSurface = options.commandSurface ?? null;
     const slashSuggestions = options.slashSuggestions ?? null;
+    const pendingMessage = options.pendingMessage ?? null;
     const pending = this.turnContext.getPending();
     const working = this.turnContext.getWorking();
 
     return {
       composer: this.composerContext.composer,
       conversationReference: options.conversationReference ?? null,
+      pendingMessage,
       commandSurface,
       slashSuggestions,
       pending,
       working,
       theme: this.theme,
       renderPreferences: options.renderPreferences || DEFAULT_RENDER_PREFERENCES,
-      statusLine: commandSurface ? undefined : this.createStatusLineState(options.model, pending, working, slashSuggestions, options.contextUsage ?? null, options.allowAllTools || false),
+      statusLine: commandSurface ? undefined : this.createStatusLineState(options.model, pending, working, slashSuggestions, options.contextUsage ?? null, options.allowAllTools || false, Boolean(pendingMessage)),
       rows: terminalSize.rows,
       width: terminalSize.columns
     };
@@ -101,7 +103,7 @@ class RenderContext {
   /**
    * 根据当前普通 composer 上下文派生 status line；command surface 使用自身提示，不创建全局状态栏。
    */
-  private createStatusLineState(model: StatusLineModelRenderState | undefined, pending: PendingState | null, working: WorkingState | null, slashSuggestions: SlashSuggestionState | null, contextUsage: ContextUsageState | null, allowAllTools: boolean): StatusLineState {
+  private createStatusLineState(model: StatusLineModelRenderState | undefined, pending: PendingState | null, working: WorkingState | null, slashSuggestions: SlashSuggestionState | null, contextUsage: ContextUsageState | null, allowAllTools: boolean, hasPendingMessage: boolean): StatusLineState {
     const mode = this.bootstrapStateOwner.getMcpBootstrapStatus() === 'initializing'
       ? 'mcp'
       : resolveStatusLineMode(pending, slashSuggestions, this.getInteractionMode());
@@ -111,7 +113,8 @@ class RenderContext {
     const keyHint = resolveStatusLineKeyHint(
       mode,
       this.turnContext.canInterruptAssistantTurn(),
-      Boolean(working)
+      Boolean(working),
+      hasPendingMessage
     );
 
     return {
@@ -127,7 +130,11 @@ class RenderContext {
   }
 }
 
-function resolveStatusLineKeyHint(mode: StatusLineMode, canInterruptAssistantTurn: boolean, hasWorkingState: boolean): string | undefined {
+function resolveStatusLineKeyHint(mode: StatusLineMode, canInterruptAssistantTurn: boolean, hasWorkingState: boolean, hasPendingMessage: boolean): string | undefined {
+  if (hasPendingMessage) {
+    return 'Esc 移除待发送';
+  }
+
   if (mode === 'command') {
     return 'Tab 补全 · Enter 执行 · ↑/↓ 选择';
   }

@@ -35,7 +35,7 @@ import type {LifecycleHookDispatcher} from '../types/hooks';
 import type {InputEvent} from '../types/input';
 import type {ToolResultAttachment} from '../types/tool';
 import type {AppendRecordOptions, RenderState} from '../types/render';
-import type {TranscriptRecord} from '../types/transcript';
+import type {PendingConversationReference, TranscriptRecord} from '../types/transcript';
 import type {UsageStore} from '../types/usage';
 import type {UserConfigWatcher} from '../config/user-config';
 
@@ -57,6 +57,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
   const appContext = new AppContext(terminal, transcriptStore, process.cwd, process.version, theme, appSettings);
   const toolResultStore = createToolResultStore({cwd: () => appContext.getCurrentCwd()});
   let started = false;
+  let dispatchingPendingMessage = false;
   let activeShellController: AbortController | null = null;
   let mcpDiagnosticSurface: CommandSurface | null = null;
   let referenceErrorSurface: CommandSurface | null = null;
@@ -210,20 +211,16 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
   }
 
   /**
-   * 提交 composer 内容，追加 user record，并驱动 agent 的 thinking / streaming / completion 状态。
+   * 通过普通输入路由处理已从 composer 消费的文本；本函数不再修改 live composer。
+   * 返回 false 表示引用准备失败或取消，调用方可以恢复原始 composer 文本。
    */
-  async function submitComposer(): Promise<void> {
-    // response lock 阻止重复提交；空输入也不写 transcript。
-    if (commandRuntime.hasActiveSession() || appContext.turnContext.responding || appContext.conversationReferenceContext.isPreparing() || appContext.getMcpBootstrapStatus() === 'initializing' || composerOps.isEmpty(appContext.composerContext.composer)) {
-      renderFooter();
-      return;
-    }
+  async function submitDraft(userInput: string, conversationReference?: PendingConversationReference): Promise<boolean> {
+    let userText = userInput;
 
-    let userText = composerOps.getText(appContext.composerContext.composer);
     const commandResult = commandRuntime.startFromText(userText);
 
     if (commandResult.kind === 'handled') {
-      return;
+      return true;
     }
 
     let displayText: string | undefined;
@@ -234,10 +231,11 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
 
     // shell mode
     if (commandResult.kind === 'not_matched' && isShellInteractionMode(appContext.getInteractionMode())) {
-      return submitShellCommand(userText);
+      await submitShellCommand(userText);
+      return true;
     }
 
-    // workflow、skill invocation等会要求提交用户消息
+    // workflow (/init /review)、skill invocation 等会要求提交用户消息
     if (commandResult.kind === 'submit_user_message') {
       userText = commandResult.text;
       displayText = commandResult.displayText;
@@ -256,11 +254,14 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     }
 
     // 处理会话引用
-    const pendingConversationReference = appContext.conversationReferenceContext.getPending();
-    if (pendingConversationReference) {
-      displayText = displayText || composerOps.getText(appContext.composerContext.composer);
+    if (conversationReference) {
+      displayText = displayText || userInput;
       // 短会话直接全部进入上下文，长会话调用模型先进行总结
-      const preparationResult = await commandHost.reference.prepareForSubmission({modelProfileIdOverride, reasoningEffortOverride});
+      const preparationResult = await commandHost.reference.prepareForSubmission({
+        modelProfileIdOverride,
+        reference: conversationReference,
+        reasoningEffortOverride
+      });
 
       if (!preparationResult.ok) {
         if (preparationResult.reason === 'failed') {
@@ -272,18 +273,18 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
           };
           renderFooter();
         }
-        return;
+        return false;
       }
 
-      const conversationReference = preparationResult.reference;
-      userText = expandConversationReferenceForUserText(conversationReference, userText);
+      const preparedReference = preparationResult.reference;
+      userText = expandConversationReferenceForUserText(preparedReference, userText);
       userMetadata = {
         ...(userMetadata || {}),
         conversationReference: {
-          projectionMode: conversationReference.projectionMode,
-          sourcePath: conversationReference.sourcePath,
-          sourceSessionId: conversationReference.sourceSessionId,
-          title: conversationReference.title
+          projectionMode: preparedReference.projectionMode,
+          sourcePath: preparedReference.sourcePath,
+          sourceSessionId: preparedReference.sourceSessionId,
+          title: preparedReference.title
         }
       };
       appContext.conversationReferenceContext.clearPending();
@@ -297,7 +298,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
       recordCount: appContext.transcriptContext.records.length
     });
 
-    return runAssistantTurn({
+    await runAssistantTurn({
       appContext,
       runAgent,
       toolApproval,
@@ -314,6 +315,75 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
       hooks,
       renderFooter
     });
+    return true;
+  }
+
+  /** response lock 释放后原子取得并发送单槽消息。 */
+  async function dispatchPendingMessage(): Promise<void> {
+    if (dispatchingPendingMessage || appContext.turnContext.responding) {
+      return;
+    }
+
+    dispatchingPendingMessage = true;
+    try {
+      while (!appContext.turnContext.responding) {
+        const pendingMessage = appContext.pendingMessageContext.claim();
+        if (!pendingMessage) {
+          return;
+        }
+
+        await submitDraft(pendingMessage);
+      }
+    } finally {
+      dispatchingPendingMessage = false;
+    }
+  }
+
+  /**
+   * 提交 live composer；active assistant turn 中改为单槽排队，其他 response lock 仍保持阻止语义。
+   */
+  async function submitComposer(): Promise<void> {
+    if (dispatchingPendingMessage || commandRuntime.hasActiveSession() || appContext.conversationReferenceContext.isPreparing() || appContext.getMcpBootstrapStatus() === 'initializing') {
+      renderFooter();
+      return;
+    }
+
+    const hasActiveAssistantTurn = appContext.turnContext.canInterruptAssistantTurn();
+
+    if (!hasActiveAssistantTurn && !appContext.turnContext.responding && appContext.pendingMessageContext.getPending()) {
+      await dispatchPendingMessage();
+      return;
+    }
+
+    if ((!hasActiveAssistantTurn && appContext.turnContext.responding) || composerOps.isEmpty(appContext.composerContext.composer)) {
+      renderFooter();
+      return;
+    }
+
+    const userInput = composerOps.getText(appContext.composerContext.composer);
+    if (hasActiveAssistantTurn && !appContext.pendingMessageContext.enqueue(userInput)) {
+      renderFooter();
+      return;
+    }
+
+    appContext.composerContext.leaveHistoryBrowsing();
+    appContext.composerContext.recordInput(userInput);
+    appContext.composerContext.reset();
+
+    if (hasActiveAssistantTurn) {
+      renderFooter();
+      return;
+    }
+
+    const conversationReference = appContext.conversationReferenceContext.getPending();
+    if (!await submitDraft(userInput, conversationReference || undefined)) {
+      if (composerOps.isEmpty(appContext.composerContext.composer)) {
+        appContext.composerContext.setText(userInput);
+      }
+      return;
+    }
+
+    await dispatchPendingMessage();
   }
 
   /**
@@ -382,6 +452,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
       interactionMode: appContext.getInteractionMode(),
       status: 'cancelled'
     });
+    void dispatchPendingMessage();
 
     return true;
   }
@@ -508,6 +579,11 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
         renderFooter();
         return undefined;
       case INPUT_EVENTS.ESCAPE:
+        if (appContext.pendingMessageContext.getPending()) {
+          appContext.pendingMessageContext.clear();
+          renderFooter();
+          return undefined;
+        }
         if (appContext.conversationReferenceContext.getPending()) {
           appContext.conversationReferenceContext.clearPending();
           renderFooter();

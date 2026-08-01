@@ -45,7 +45,6 @@ export class HelpCommandHandler implements CommandHandler {
    *
    */
   start(_text: string, host: CommandHost): void {
-    host.composer.reset();
     host.session.open({
       commandName: 'help',
       handler: this,
@@ -64,6 +63,5 @@ export class HelpCommandHandler implements CommandHandler {
     }
 
     host.session.close();
-    host.composer.reset();
   }
 }
