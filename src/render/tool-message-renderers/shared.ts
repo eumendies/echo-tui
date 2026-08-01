@@ -1,6 +1,6 @@
 import {DEFAULT_TUI_THEME, type TuiTheme} from '../../config/theme-config';
 import {blockText} from '../colors';
-import {charWidth, displayWidth, safeRenderWidth, splitGraphemes, tabWidthAt} from '../layout';
+import {charWidth, displayWidth, safeRenderWidth, splitGraphemes, stripAnsi, tabWidthAt} from '../layout';
 
 const TOOL_RESULT_MAX_DISPLAY_LINES = 12;
 const TOOL_RESULT_TRUNCATION_TEXT = '[tool output truncated for display]';
@@ -153,10 +153,71 @@ function wrapSingleContentLine(text: string, width: number, prefixWidth: number)
   return lines;
 }
 
+/**
+ * 保留代码空白，仅消除 ANSI 控制序列和原始换行，保证一个源行对应一个逻辑行。
+ * 供 grep 匹配行与 read_files 内容预览等工具 renderer 共用。
+ */
+function normalizeContentText(value: string): string {
+  return stripAnsi(value).replace(/\r\n?/gu, '\n').replace(/\n/gu, ' ');
+}
+
+/**
+ * 按内容起始列展开 Tab，使渲染宽度与终端制表位一致。
+ */
+function expandTabs(value: string, startColumn: number): string {
+  let column = Math.max(0, startColumn);
+  let expanded = '';
+
+  for (const grapheme of splitGraphemes(value)) {
+    if (grapheme === '\t') {
+      const spaces = tabWidthAt(column);
+      expanded += ' '.repeat(spaces);
+      column += spaces;
+    } else {
+      expanded += grapheme;
+      column += charWidth(grapheme);
+    }
+  }
+
+  return expanded;
+}
+
+/**
+ * 按终端显示宽度截断纯文本，并为发生截断的内容保留省略号。
+ */
+function clampToDisplayWidth(value: string, maximumWidth: number): string {
+  const limit = Math.max(1, Math.floor(maximumWidth));
+
+  if (displayWidth(value) <= limit) {
+    return value;
+  }
+
+  const ellipsis = '…';
+  const contentLimit = Math.max(0, limit - charWidth(ellipsis));
+  let output = '';
+  let width = 0;
+
+  for (const grapheme of splitGraphemes(value)) {
+    const nextWidth = width + charWidth(grapheme);
+
+    if (nextWidth > contentLimit) {
+      break;
+    }
+
+    output += grapheme;
+    width = nextWidth;
+  }
+
+  return `${output}${ellipsis}`;
+}
+
 export {
+  clampToDisplayWidth,
   TOOL_RESULT_MAX_DISPLAY_LINES,
   TOOL_RESULT_TRUNCATION_TEXT,
   createToolRailPrefix,
+  expandTabs,
+  normalizeContentText,
   renderPrefixedLines,
   resolveToolCallPrefixStyle,
   truncateDisplayText,

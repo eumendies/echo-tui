@@ -1,7 +1,15 @@
 import {blockText} from '../colors';
-import {charWidth, displayWidth, safeRenderWidth, splitGraphemes, stripAnsi, tabWidthAt} from '../layout';
+import {displayWidth, safeRenderWidth, splitGraphemes, stripAnsi} from '../layout';
 import {renderStyledLine} from '../markdown/styled-line';
-import {TOOL_RESULT_MAX_DISPLAY_LINES, renderPrefixedLines, resolveToolCallPrefixStyle, truncateDisplayText} from './shared';
+import {
+  TOOL_RESULT_MAX_DISPLAY_LINES,
+  clampToDisplayWidth,
+  expandTabs,
+  normalizeContentText,
+  renderPrefixedLines,
+  resolveToolCallPrefixStyle,
+  truncateDisplayText
+} from './shared';
 
 import type {TuiTheme} from '../../config/theme-config';
 import type {GrepDisplayMatch, GrepDisplayMetadata} from '../../types/tool';
@@ -366,7 +374,7 @@ function renderGrepMatchLines(
   const rail = hasFollowingRoot ? '  │ ' : '    ';
   const visiblePrefix = `${rail}${paddedLocator} │ `;
   const available = Math.max(1, safeRenderWidth(width) - displayWidth(visiblePrefix));
-  const normalized = normalizeMatchText(match.text);
+  const normalized = normalizeContentText(match.text);
   const expanded = expandTabs(normalized, displayWidth(visiblePrefix));
   const bounded = clampToDisplayWidth(expanded, available * GREP_MATCH_MAX_PHYSICAL_LINES);
   const renderedRail = blockText(theme, 'toolOutput', rail);
@@ -396,28 +404,6 @@ function normalizeHeaderText(value: string): string {
   return stripAnsi(value).replace(/\s+/gu, ' ').trim();
 }
 
-/** 保留代码空白，仅消除原始换行和 ANSI 控制序列，保证一个 match 对应一个逻辑行。 */
-function normalizeMatchText(value: string): string {
-  return stripAnsi(value).replace(/\r\n?/gu, '\n').replace(/\n/gu, ' ');
-}
-
-/** 按内容起始列展开 Tab，使渲染宽度与终端制表位一致。 */
-function expandTabs(value: string, startColumn: number): string {
-  let column = Math.max(0, startColumn);
-  let expanded = '';
-  for (const grapheme of splitGraphemes(value)) {
-    if (grapheme === '\t') {
-      const spaces = tabWidthAt(column);
-      expanded += ' '.repeat(spaces);
-      column += spaces;
-    } else {
-      expanded += grapheme;
-      column += charWidth(grapheme);
-    }
-  }
-  return expanded;
-}
-
 /** 按 grapheme 数量省略长标题字段。 */
 function ellipsizeGraphemes(value: string, maximum: number): string {
   const graphemes = splitGraphemes(value);
@@ -427,27 +413,6 @@ function ellipsizeGraphemes(value: string, maximum: number): string {
   return `${graphemes.slice(0, Math.max(1, maximum - 1)).join('')}…`;
 }
 
-/** 按终端显示宽度截断纯文本，并为发生截断的内容保留省略号。 */
-function clampToDisplayWidth(value: string, maximumWidth: number): string {
-  const limit = Math.max(1, Math.floor(maximumWidth));
-  if (displayWidth(value) <= limit) {
-    return value;
-  }
-
-  const ellipsis = '…';
-  const contentLimit = Math.max(0, limit - charWidth(ellipsis));
-  let output = '';
-  let width = 0;
-  for (const grapheme of splitGraphemes(value)) {
-    const nextWidth = width + charWidth(grapheme);
-    if (nextWidth > contentLimit) {
-      break;
-    }
-    output += grapheme;
-    width = nextWidth;
-  }
-  return `${output}${ellipsis}`;
-}
 
 export {
   GREP_TOOL_NAME,

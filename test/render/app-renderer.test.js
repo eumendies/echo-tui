@@ -1087,11 +1087,13 @@ test('renderTranscriptLines keeps read_files directory entries visible before ge
   ], 80).map((line) => stripAnsi(line));
 
   assert.ok(lines.includes('◆ read_files(src/tools/read-files@0+2)'));
-  assert.ok(lines.includes('  ⎿ directory: src/tools/read-files'));
+  assert.ok(lines.includes('  └─ directory: src/tools/read-files  entries: 13'));
   assert.ok(lines.some((line) => line.includes('• src/tools/read-files/index.ts  file, size_bytes: 331')));
   assert.ok(lines.some((line) => line.includes('• src/tools/read-files/readers.ts  file, size_bytes: 18000')));
   assert.equal(lines.some((line) => line.includes('has_more')), false);
-  assert.ok(lines.includes('    [tool output truncated for display]'));
+  // 单目录 13 条 entries 在专属预算内全部展示，不再出现通用截断提示。
+  assert.ok(lines.some((line) => line.includes('• src/tools/read-files/k.ts  file, size_bytes: 1')));
+  assert.equal(lines.some((line) => line.includes('[tool output truncated for display]')), false);
 });
 
 test('renderTranscriptLines projects read_files calls without raw arguments JSON', () => {
@@ -1169,13 +1171,18 @@ test('renderTranscriptLines projects read_files text output as compact summaries
     }
   ], 100).map((line) => stripAnsi(line));
 
-  assert.ok(lines.includes('  ⎿ text: src/foo.ts  lines: 9-11 (3), content_truncated: true'));
-  assert.ok(lines.includes('  ⎿ text: src/bar.ts  lines: 1 (1)'));
-  assert.equal(lines.some((line) => line.includes('before width changes')), false);
-  assert.equal(lines.some((line) => line.includes('const value = 1')), false);
-  assert.equal(lines.some((line) => line.includes('export const bar')), false);
+  // 两个 tool_result 是独立记录，各自只含一个 envelope，因此都闭合为 └─。
+  assert.ok(lines.includes('  └─ text: src/foo.ts  lines: 9-11 (3), content_truncated: true'));
+  assert.ok(lines.includes('  └─ text: src/bar.ts  lines: 1 (1)'));
+  // 正文进入有界预览：行号 9-11 宽度 2，闭合 rail 后行号右对齐。
+  assert.ok(lines.includes('     9 │ before width changes'));
+  assert.ok(lines.includes('    10 │ const value = 1;'));
+  // content block 内的伪 header 不会打断 envelope 解析，作为普通预览行展示。
+  assert.ok(lines.includes('    11 │ // --- text: not an envelope inside content'));
+  // 单行内容行号宽度为 1，闭合 rail 后直接跟行号。
+  assert.ok(lines.includes('    1 │ export const bar = true;'));
   assert.equal(lines.some((line) => line.includes('has_more')), false);
-  assert.equal(lines.some((line) => line.startsWith('  ⎿ --- text:') || line.startsWith('    --- text:')), false);
+  assert.equal(lines.some((line) => line.startsWith('  ├─ --- text:') || line.startsWith('    --- text:')), false);
   assert.equal(lines.some((line) => line === '    content:' || line === '    ```'), false);
 });
 
@@ -1195,7 +1202,7 @@ test('renderTranscriptLines preserves semicolons in read_files directory entry p
     }
   ], 120).map((line) => stripAnsi(line));
 
-  assert.ok(lines.includes('  ⎿ directory: src/tools/read-files'));
+  assert.ok(lines.includes('  └─ directory: src/tools/read-files  entries: 2'));
   assert.ok(lines.some((line) => line.includes('• src/tools/read-files/name;with;semi.ts  file, size_bytes: 42')));
   assert.ok(lines.some((line) => line.includes('• src/tools/read-files/sub;dir  directory')));
 });
@@ -1231,12 +1238,13 @@ test('renderTranscriptLines projects read_files image, pdf summaries, and error 
     }
   ], 120).map((line) => stripAnsi(line));
 
-  assert.ok(lines.includes('  ⎿ image: assets/logo.png  size_bytes: 2048, image_attached: true'));
-  assert.ok(lines.includes('    pdf: docs/spec.pdf  pages: 3, pages_with_text: 2, content_truncated: true'));
+  assert.ok(lines.includes('  ├─ image: assets/logo.png  size_bytes: 2048, image_attached: true'));
+  assert.ok(lines.includes('  ├─ pdf: docs/spec.pdf  pages: 3, pages_with_text: 2, content_truncated: true'));
   assert.equal(lines.some((line) => line.includes('first page text')), false);
   assert.equal(lines.some((line) => line.includes('extracted_text')), false);
   assert.ok(lines.some((line) => line.includes('binary: build/app.bin  size_bytes: 4096, error: unsupported media type, reason: binary reading is not supported')));
-  assert.ok(lines.some((line) => line.includes('this version')));
+  // 超长 error header 按可用宽度尾部省略，保留省略号。
+  assert.ok(lines.some((line) => line.includes('not supported') && line.endsWith('…')));
   assert.equal(lines.some((line) => line.includes('base64-data')), false);
 });
 
