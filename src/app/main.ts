@@ -1,7 +1,4 @@
 import {createAgentLoopRuntime} from '../agent/agent-loop-runtime';
-import * as composerOps from '../input/composer';
-import {INPUT_EVENTS} from '../input/event-types';
-import {createKeyParser} from '../input/key-parser';
 import {createTranscriptStore} from '../persistence/transcript-store';
 import {createUsageStore} from '../persistence/usage-store';
 import {readTuiTheme} from '../config/theme-config';
@@ -16,9 +13,9 @@ import {runBashCommand} from '../tools/bash-command-runner';
 import {createToolResultStore} from '../tools/tool-result-offloading';
 import {setupTerminal} from '../terminal/tty';
 import {createDefaultSlashCommandHandlers, createSlashCommandDescriptors, resolveSlashCommand} from '../commands/resolve-slash-command';
-import {expandFileMentionsForUserText} from './utils';
-import {expandConversationReferenceForUserText} from '../agent/context/conversation-reference';
 import {runAssistantTurn} from './assistant-turn-runner';
+import {ComposerSubmissionController} from './composer-submission-controller';
+import {InputEventController} from './input-event-controller';
 import {createCommandHost} from './command/command-host';
 import {createCommandRuntime} from './command/command-runtime';
 import {AppContext} from './state/app-context';
@@ -26,23 +23,16 @@ import {FilePickerContext} from './state/file-picker-context';
 import {ToolApprovalContext} from './state/tool-approval-context';
 import {UserQuestionContext} from './state/user-question-context';
 
-import {isShellInteractionMode} from '../types/agent';
-import type {ReasoningEffort, RunAgent} from '../types/agent';
+import type {RunAgent} from '../types/agent';
 import type {AppController} from '../types/app';
 import type {CommandSurface} from '../types/command';
 import type {DebugContext} from '../debug/debug-context';
 import type {LifecycleHookDispatcher} from '../types/hooks';
-import type {InputEvent} from '../types/input';
-import type {ToolResultAttachment} from '../types/tool';
 import type {AppendRecordOptions, RenderState} from '../types/render';
-import type {PendingConversationReference, TranscriptRecord} from '../types/transcript';
+import type {TranscriptRecord} from '../types/transcript';
 import type {UsageStore} from '../types/usage';
 import type {UserConfigWatcher} from '../config/user-config';
-
-type SubmitDraftOptions = {
-  conversationReference?: PendingConversationReference; // 本次提交捕获的历史会话引用。
-  onAssistantTurnStarted?: () => void; // user turn 占用 response lock 后释放提交预处理锁。
-};
+import type {AssistantTurnSubmission} from './composer-submission-controller';
 
 /**
  * 创建 app 编排控制器，串联真实 terminal、input、render 和 agent runtime。
@@ -52,7 +42,6 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
   const input = process.stdin;
   const output = process.stdout;
   const terminal = setupTerminal(input, output);
-  const keyParser = createKeyParser();
   const renderer = createAppRenderer(output);
   const transcriptStore = createTranscriptStore();
   const theme = readTuiTheme();
@@ -62,7 +51,6 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
   const appContext = new AppContext(terminal, transcriptStore, process.cwd, process.version, theme, appSettings);
   const toolResultStore = createToolResultStore({cwd: () => appContext.getCurrentCwd()});
   let started = false;
-  let startingPendingMessage = false; // pending锁，防止在调度pending消息的时候用户又发送一条新的消息
   let activeShellController: AbortController | null = null;
   let mcpDiagnosticSurface: CommandSurface | null = null;
   let referenceErrorSurface: CommandSurface | null = null;
@@ -76,7 +64,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
    * 组合 AppContext 与 command runtime 的瞬时状态，交给 renderer 统一投影。
    */
   function createRenderState(): RenderState {
-    // 判断当前是否有命令 surface打开，优先级：user question -> tool approval -> file picker -> mcp diagnostic -> command runtime surface
+    // 渲染投影优先展示 modal 和本地诊断 surface；输入消费顺序由 input controller 独立维护。
     const commandSurface = userQuestion.getSurface() || toolApproval.getSurface() || filePicker.getSurface() || referenceErrorSurface || mcpDiagnosticSurface || commandRuntime.getSurface();
     return appContext.createRenderState({commandSurface, toolApproval});
   }
@@ -201,233 +189,78 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     resolveSlashCommand: (text: string) => resolveSlashCommand(text, slashCommandHandlers),
     host: commandHost
   });
+  const submissionController = new ComposerSubmissionController({
+    appContext,
+    command: {
+      hasActiveSession: commandRuntime.hasActiveSession,
+      matches: (text: string) => Boolean(resolveSlashCommand(text, slashCommandHandlers)),
+      startFromText: commandRuntime.startFromText
+    },
+    reference: commandHost.reference,
+    async startAssistantTurn(submission: AssistantTurnSubmission): Promise<void> {
+      debug.emit('user_submit', {
+        interactionMode: appContext.getInteractionMode(),
+        text: summarizeText(submission.userText, 0),
+        displayText: submission.displayText ? summarizeText(submission.displayText, 0) : undefined,
+        attachmentCount: submission.attachments?.length || 0,
+        recordCount: appContext.transcriptContext.records.length
+      });
+      await runAssistantTurn({
+        appContext,
+        runAgent,
+        toolApproval,
+        userQuestion,
+        ...submission,
+        debug,
+        appendRecord,
+        appendRecords,
+        hooks,
+        renderFooter
+      });
+    },
+    submitShellCommand,
+    showReferenceError(error: string): void {
+      referenceErrorSurface = {
+        kind: 'info',
+        title: '会话引用准备失败',
+        lines: [error],
+        dismissHint: 'Enter/Esc 关闭'
+      };
+    },
+    renderFooter
+  });
+  const inputController = new InputEventController({
+    appContext,
+    userQuestion,
+    toolApproval,
+    filePicker,
+    command: commandRuntime,
+    localSurface: {
+      hasActive: () => Boolean(referenceErrorSurface || mcpDiagnosticSurface),
+      dismiss(): void {
+        if (referenceErrorSurface) {
+          referenceErrorSurface = null;
+        } else {
+          mcpDiagnosticSurface = null;
+        }
+      }
+    },
+    cancelReferencePreparation: () => {
+      commandHost.reference.cancelPreparation();
+    },
+    dispatchPendingMessage: () => submissionController.dispatchPendingMessage(),
+    submitComposer: () => submissionController.submitComposer(),
+    interruptActiveShellCommand,
+    interruptActiveTurn,
+    exit,
+    renderFooter
+  });
 
   appContext.configureSlashSuggestions(
     () => [...createSlashCommandDescriptors(slashCommandHandlers), ...commandHost.skills.listEnabledSkillDescriptors()]
       .filter((descriptor, index, descriptors) => descriptors.findIndex((item) => item.name === descriptor.name) === index),
     () => commandRuntime.hasActiveSession()
   );
-
-  /**
-   * 按方向浏览 session 输入历史；返回是否消费了本次 Up/Down。
-   */
-  function browseHistory(direction: number): boolean {
-    return appContext.composerContext.browseHistory(direction);
-  }
-
-  /**
-   * 通过普通输入路由处理已从 composer 消费的文本；本函数不再修改 live composer。
-   * 返回 false 表示引用准备失败或取消，调用方可以恢复原始 composer 文本。
-   */
-  async function submitDraft(userInput: string, options: SubmitDraftOptions = {}): Promise<boolean> {
-    const conversationReference = options.conversationReference;
-    let userText = userInput;
-
-    const commandResult = commandRuntime.startFromText(userText);
-
-    if (commandResult.kind === 'handled') {
-      return true;
-    }
-
-    let displayText: string | undefined;
-    let userMetadata: Record<string, unknown> | undefined;
-    let userAttachments: ToolResultAttachment[] | undefined;
-    let modelProfileIdOverride: string | undefined;
-    let reasoningEffortOverride: ReasoningEffort | undefined;
-
-    // shell mode
-    if (commandResult.kind === 'not_matched' && isShellInteractionMode(appContext.getInteractionMode())) {
-      await submitShellCommand(userText);
-      return true;
-    }
-
-    // workflow (/init /review)、skill invocation 等会要求提交用户消息
-    if (commandResult.kind === 'submit_user_message') {
-      userText = commandResult.text;
-      displayText = commandResult.displayText;
-      userMetadata = commandResult.metadata;
-      modelProfileIdOverride = commandResult.modelProfileId;
-      reasoningEffortOverride = commandResult.reasoningEffortOverride;
-    }
-
-    const expanded = await expandFileMentionsForUserText(userText, appContext.getCurrentCwd(), {
-      autoCompressImages: appContext.getAutoCompressImages()
-    });
-    if (expanded.text !== userText || expanded.attachments) {
-      displayText = displayText || userText;
-      userText = expanded.text;
-      userAttachments = expanded.attachments;
-    }
-
-    // 处理会话引用
-    if (conversationReference) {
-      displayText = displayText || userInput;
-      // 短会话直接全部进入上下文，长会话调用模型先进行总结
-      const preparationResult = await commandHost.reference.prepareForSubmission({
-        modelProfileIdOverride,
-        reference: conversationReference,
-        reasoningEffortOverride
-      });
-
-      if (!preparationResult.ok) {
-        if (preparationResult.reason === 'failed') {
-          referenceErrorSurface = {
-            kind: 'info',
-            title: '会话引用准备失败',
-            lines: [preparationResult.error || '引用总结失败'],
-            dismissHint: 'Enter/Esc 关闭'
-          };
-          renderFooter();
-        }
-        return false;
-      }
-
-      const preparedReference = preparationResult.reference;
-      userText = expandConversationReferenceForUserText(preparedReference, userText);
-      userMetadata = {
-        ...(userMetadata || {}),
-        conversationReference: {
-          projectionMode: preparedReference.projectionMode,
-          sourcePath: preparedReference.sourcePath,
-          sourceSessionId: preparedReference.sourceSessionId,
-          title: preparedReference.title
-        }
-      };
-      appContext.conversationReferenceContext.clearPending();
-    }
-
-    debug.emit('user_submit', {
-      interactionMode: appContext.getInteractionMode(),
-      text: summarizeText(userText, 0),
-      displayText: displayText ? summarizeText(displayText, 0) : undefined,
-      attachmentCount: userAttachments?.length || 0,
-      recordCount: appContext.transcriptContext.records.length
-    });
-
-    const assistantTurn = runAssistantTurn({
-      appContext,
-      runAgent,
-      toolApproval,
-      userQuestion,
-      userText,
-      displayText,
-      metadata: userMetadata,
-      modelProfileIdOverride,
-      reasoningEffortOverride,
-      attachments: userAttachments,
-      debug,
-      appendRecord,
-      appendRecords,
-      hooks,
-      renderFooter
-    });
-    options.onAssistantTurnStarted?.();
-    await assistantTurn;
-    return true;
-  }
-
-  /** response lock 释放后原子取得并发送单槽消息。 */
-  async function dispatchPendingMessage(): Promise<void> {
-    if (startingPendingMessage || appContext.turnContext.responding) {
-      return;
-    }
-
-    startingPendingMessage = true;
-    try {
-      while (!appContext.turnContext.responding) {
-        const pendingText = appContext.pendingMessageContext.getPending();
-        if (commandRuntime.hasActiveSession() && pendingText && resolveSlashCommand(pendingText, slashCommandHandlers)) {
-          // 当前打开了另一个command surface，且当pending消息也是一个command时，直接返回，等待当前command退出之后再执行pending command
-          return;
-        }
-
-        const pendingMessage = appContext.pendingMessageContext.claim();
-        if (!pendingMessage) {
-          return;
-        }
-
-        await submitDraft(pendingMessage, {
-          onAssistantTurnStarted() {
-            startingPendingMessage = false;
-          }
-        });
-      }
-    } finally {
-      startingPendingMessage = false;
-    }
-  }
-
-  /**
-   * 提交 live composer；active assistant turn 中改为单槽排队，其他 response lock 仍保持阻止语义。
-   */
-  async function submitComposer(): Promise<void> {
-    // pending 正在抢占下一轮，或其他交互 surface/初始化流程已接管输入，此次 Enter 不提交 composer。
-    if (startingPendingMessage || commandRuntime.hasActiveSession() || appContext.conversationReferenceContext.isPreparing() || appContext.getMcpBootstrapStatus() === 'initializing') {
-      renderFooter();
-      return;
-    }
-
-    const hasActiveAssistantTurn = appContext.turnContext.canInterruptAssistantTurn();
-
-    // response lock 已释放但单槽仍有消息时，优先发送旧 pending，避免当前草稿越过它。
-    if (!hasActiveAssistantTurn && !appContext.turnContext.responding && appContext.pendingMessageContext.getPending()) {
-      await dispatchPendingMessage();
-      return;
-    }
-
-    // 非 assistant 流程仍占用 response lock，或 composer 没有内容时，不创建新提交。
-    if ((!hasActiveAssistantTurn && appContext.turnContext.responding) || composerOps.isEmpty(appContext.composerContext.composer)) {
-      renderFooter();
-      return;
-    }
-
-    const userInput = composerOps.getText(appContext.composerContext.composer);
-
-    // assistant turn 运行期间先尝试响应期命令，未处理的输入才进入 pending 单槽。
-    if (hasActiveAssistantTurn) {
-      const commandResult = commandRuntime.startFromText(userInput, {duringAssistantTurn: true});
-
-      // 已允许的响应期命令已立即启动，只消费本次 composer，不改动已有 pending。
-      if (commandResult.kind === 'handled') {
-        consumeComposerInput(userInput);
-        renderFooter();
-        return;
-      }
-    }
-
-    // active turn 的 pending 单槽已被占用时，保留当前 composer 草稿，避免覆盖旧消息。
-    if (hasActiveAssistantTurn && !appContext.pendingMessageContext.enqueue(userInput)) {
-      renderFooter();
-      return;
-    }
-
-    consumeComposerInput(userInput);
-
-    // active turn 中的普通输入已成功排队，本次不启动新的 assistant turn。
-    if (hasActiveAssistantTurn) {
-      renderFooter();
-      return;
-    }
-
-    const conversationReference = appContext.conversationReferenceContext.getPending();
-    // 空闲提交在引用准备失败或取消时恢复尚未被新输入占用的 composer。
-    if (!await submitDraft(userInput, {conversationReference: conversationReference || undefined})) {
-      // 用户已在异步准备期间输入新草稿时，不用旧输入覆盖它。
-      if (composerOps.isEmpty(appContext.composerContext.composer)) {
-        appContext.composerContext.setText(userInput);
-      }
-      return;
-    }
-
-    await dispatchPendingMessage();
-  }
-
-  /** 消费一次已接受的 live composer 输入，并保证 history 只记录一次。 */
-  function consumeComposerInput(userInput: string): void {
-    appContext.composerContext.leaveHistoryBrowsing();
-    appContext.composerContext.recordInput(userInput);
-    appContext.composerContext.reset();
-  }
 
   /**
    * shell 模式执行 composer 命令；普通 shell 保留 bounded context，shell-local 把完整结果写入本地 transcript。
@@ -495,187 +328,9 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
       interactionMode: appContext.getInteractionMode(),
       status: 'cancelled'
     });
-    void dispatchPendingMessage();
+    void submissionController.dispatchPendingMessage();
 
     return true;
-  }
-
-  /**
-   * 分发输入事件到对应的 composer 编辑、提交或退出逻辑。
-   */
-  function handleEvent(event: InputEvent): Promise<void> | void {
-    if (userQuestion.hasActiveRequest()) {
-      userQuestion.handleEvent(event);
-      return undefined;
-    }
-
-    if (toolApproval.hasActiveRequest()) {
-      toolApproval.handleEvent(event);
-      return undefined;
-    }
-
-    if (filePicker.hasActiveRequest()) {
-      filePicker.handleEvent(event);
-      return undefined;
-    }
-
-    if (commandRuntime.hasActiveSession()) {
-      const result = commandRuntime.handleEvent(event);
-      const dispatchAfterClose = (): void => {
-        // 当command surface关闭时，调度pending command执行
-        if (!commandRuntime.hasActiveSession()) {
-          void dispatchPendingMessage();
-        }
-      };
-
-      if (result) {
-        return result.then(dispatchAfterClose);
-      }
-
-      dispatchAfterClose();
-      return undefined;
-    }
-
-    // 处理针对会话引用surface的事件
-    if (appContext.conversationReferenceContext.isPreparing()) {
-      if (event.type === INPUT_EVENTS.ESCAPE) {
-        commandHost.reference.cancelPreparation();
-      } else if (event.type === INPUT_EVENTS.EXIT) {
-        exit();
-      }
-      return undefined;
-    }
-
-    if (referenceErrorSurface) {
-      if (event.type === INPUT_EVENTS.EXIT) {
-        exit();
-        return undefined;
-      }
-
-      if (event.type === INPUT_EVENTS.ESCAPE || event.type === INPUT_EVENTS.SUBMIT) {
-        referenceErrorSurface = null;
-        renderFooter();
-      }
-
-      return undefined;
-    }
-
-    if (mcpDiagnosticSurface) {
-      if (event.type === INPUT_EVENTS.EXIT) {
-        exit();
-        return undefined;
-      }
-
-      if (event.type === INPUT_EVENTS.ESCAPE || event.type === INPUT_EVENTS.SUBMIT) {
-        mcpDiagnosticSurface = null;
-        renderFooter();
-      }
-
-      return undefined;
-    }
-
-    if (appContext.handleModelTuningEvent(event)) {
-      renderFooter();
-      return undefined;
-    }
-
-    if (event.type === INPUT_EVENTS.TOGGLE_MODEL_TUNING) {
-      appContext.openModelTuning();
-      renderFooter();
-      return undefined;
-    }
-
-    if (event.type === INPUT_EVENTS.SHIFT_TAB) {
-      toolApproval.toggleAllowAllForSession();
-      return undefined;
-    }
-
-    if (event.type === INPUT_EVENTS.TEXT && event.value === '@' && !isShellInteractionMode(appContext.getInteractionMode())) {
-      appContext.composerContext.leaveHistoryBrowsing();
-      composerOps.insertText(appContext.composerContext.composer, '@');
-      filePicker.open(appContext.composerContext.composer.cursor - 1);
-      return undefined;
-    }
-
-    if (appContext.getMcpBootstrapStatus() !== 'initializing' && appContext.handleSlashSuggestionEvent(event)) {
-      renderFooter();
-      return undefined;
-    }
-
-    if (event.type === INPUT_EVENTS.TAB) {
-      if (!appContext.turnContext.responding && appContext.getMcpBootstrapStatus() !== 'initializing') {
-        appContext.cycleInteractionMode();
-      }
-      renderFooter();
-      return undefined;
-    }
-
-    if (composerOps.applyComposerEditEvent(appContext.composerContext.composer, event)) {
-      appContext.composerContext.leaveHistoryBrowsing();
-      renderFooter();
-      return undefined;
-    }
-
-    switch (event.type) {
-      case INPUT_EVENTS.MOVE_UP:
-        if (!browseHistory(-1)) {
-          composerOps.moveUp(appContext.composerContext.composer);
-        }
-        renderFooter();
-        return undefined;
-      case INPUT_EVENTS.MOVE_DOWN:
-        if (!browseHistory(1)) {
-          composerOps.moveDown(appContext.composerContext.composer);
-        }
-        renderFooter();
-        return undefined;
-      case INPUT_EVENTS.INSERT_NEWLINE:
-        appContext.composerContext.leaveHistoryBrowsing();
-        composerOps.insertNewline(appContext.composerContext.composer);
-        renderFooter();
-        return undefined;
-      case INPUT_EVENTS.ESCAPE:
-        if (appContext.pendingMessageContext.getPending()) {
-          appContext.pendingMessageContext.clear();
-          renderFooter();
-          return undefined;
-        }
-        if (appContext.conversationReferenceContext.getPending()) {
-          appContext.conversationReferenceContext.clearPending();
-          renderFooter();
-          return undefined;
-        }
-        if (interruptActiveShellCommand()) {
-          return undefined;
-        }
-
-        if (interruptActiveTurn()) {
-          return undefined;
-        }
-
-        return undefined;
-      case INPUT_EVENTS.SUBMIT:
-        return submitComposer();
-      case INPUT_EVENTS.EXIT:
-        exit();
-        return undefined;
-      default:
-        return undefined;
-    }
-  }
-
-  function handleChunk(chunk: string | Buffer): Promise<void> {
-    const pendingWork: Array<Promise<void>> = [];
-
-    for (const event of keyParser.parse(chunk)) {
-      const result = handleEvent(event);
-
-      if (result) {
-        pendingWork.push(result);
-      }
-    }
-
-    return Promise.all(pendingWork).then(() => undefined);
   }
 
   /**
@@ -745,7 +400,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     }
 
     if (typeof input.on === 'function') {
-      input.on('data', handleChunk);
+      input.on('data', inputController.handleChunk);
     }
 
     if (typeof output.on === 'function') {
@@ -755,8 +410,8 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
 
   return {
     exit,
-    handleChunk,
-    handleEvent,
+    handleChunk: inputController.handleChunk,
+    handleEvent: inputController.handleEvent,
     renderFooter,
     renderResizeRecovery,
     start
