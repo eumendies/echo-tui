@@ -29,6 +29,7 @@ function createStatusSurface(snapshot: CommandStatusSnapshot, usage: StatusComma
 export class StatusCommandHandler implements CommandHandler<StatusCommandData> {
   name = 'status';
   description = '查看运行状态与 Codex 用量';
+  allowDuringAssistantTurn = true;
   private nextRequestId = 0;
 
   /**

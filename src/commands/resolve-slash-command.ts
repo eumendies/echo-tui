@@ -62,7 +62,8 @@ export function createSlashCommandDescriptors(handlers: MatchableCommandHandler[
     .filter((handler): handler is MatchableCommandHandler & SlashCommandDescriptor => Boolean(handler.name && handler.description))
     .map((handler) => ({
       name: handler.name,
-      description: handler.description
+      description: handler.description,
+      ...(handler.allowDuringAssistantTurn ? {allowDuringAssistantTurn: true} : {})
     }));
 }
 

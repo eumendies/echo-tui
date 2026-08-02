@@ -528,6 +528,44 @@ test('AppContext completes selected slash suggestion before submit', () => {
   assert.equal(composerOps.getText(context.composerContext.composer), '/model');
 });
 
+test('AppContext filters slash suggestions by active assistant turn instead of broad response lock', () => {
+  let activeCommandSession = false;
+  const context = createContext();
+  context.configureSlashSuggestions([
+    {name: 'help', description: '查看帮助', allowDuringAssistantTurn: true},
+    {name: 'status', description: '查看状态', allowDuringAssistantTurn: true},
+    {name: 'model', description: '切换模型'},
+    {name: 'review', description: '审查变更'}
+  ], () => activeCommandSession);
+  context.beginUserTurn('question');
+  context.beginAssistantTurn();
+
+  composerOps.setText(context.composerContext.composer, '/');
+  assert.deepEqual(context.createRenderState().slashSuggestions.options, [
+    {label: '/help', description: '查看帮助'},
+    {label: '/status', description: '查看状态'}
+  ]);
+  assert.equal(context.handleSlashSuggestionEvent({type: INPUT_EVENTS.MOVE_DOWN}), true);
+  assert.equal(context.handleSlashSuggestionEvent({type: INPUT_EVENTS.TAB}), true);
+  assert.equal(composerOps.getText(context.composerContext.composer), '/status ');
+
+  composerOps.setText(context.composerContext.composer, '/he');
+  assert.equal(context.handleSlashSuggestionEvent({type: INPUT_EVENTS.SUBMIT}), false);
+  assert.equal(composerOps.getText(context.composerContext.composer), '/help');
+
+  activeCommandSession = true;
+  assert.equal(context.createRenderState().slashSuggestions, null);
+
+  const nonAssistantBusy = createContext();
+  nonAssistantBusy.configureSlashSuggestions([
+    {name: 'help', description: '查看帮助', allowDuringAssistantTurn: true},
+    {name: 'model', description: '切换模型'}
+  ], () => false);
+  nonAssistantBusy.turnContext.beginManualCompaction();
+  composerOps.setText(nonAssistantBusy.composerContext.composer, '/');
+  assert.deepEqual(nonAssistantBusy.createRenderState().slashSuggestions.options.map((option) => option.label), ['/help', '/model']);
+});
+
 test('AppContext status line includes explicit reasoning effort', () => {
   const context = createContext();
   context.modelContext = {

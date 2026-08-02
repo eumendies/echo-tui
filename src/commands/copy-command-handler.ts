@@ -171,6 +171,7 @@ function findLastIndex<T>(items: T[], predicate: (item: T) => boolean): number {
 export class CopyCommandHandler implements CommandHandler<CopyCommandData> {
   name = 'copy';
   description = '复制会话消息';
+  allowDuringAssistantTurn = true;
 
   /**
    * 只匹配 /copy 和尾随空白，避免带参数时误消费普通消息。

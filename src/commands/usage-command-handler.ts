@@ -55,6 +55,7 @@ function moveOffset(data: UsageCommandData, delta: number, maxOffset: number): U
 export class UsageCommandHandler implements CommandHandler {
   name = 'usage';
   description = '查看每日 token 用量';
+  allowDuringAssistantTurn = true;
 
   /**
    * 只匹配 /usage 和尾随空白，避免带参数输入被误消费。

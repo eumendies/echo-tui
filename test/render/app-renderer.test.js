@@ -13,6 +13,7 @@ const DEFAULT_STATUS_LINE = {
 const ASK_USER_QUESTIONS_TOOL_NAME = 'ask_user_questions';
 const appRenderer = require('../../src/render/app-renderer');
 const { renderToolCallPreviewLines } = require('../../src/render/tool-message-renderer');
+const ansi = require('../../src/terminal/ansi');
 
 function normalizeTranscriptRecord(record, index = 0) {
   if (record.role === 'user') {
@@ -144,6 +145,52 @@ test('createAppRenderer includes the pending message card in destructive recover
   assert.ok(plain.includes('queued request'));
   assert.ok(plain.includes('later draft'));
   assert.equal((plain.match(/queued request/g) || []).length, 1);
+});
+
+test('createAppRenderer replays a response-time command surface while appending stable transcript', () => {
+  const output = {
+    writes: [],
+    write(chunk) {
+      this.writes.push(String(chunk));
+    }
+  };
+  const renderer = createAppRenderer(output);
+  const state = {
+    composer: createComposer(''),
+    commandSurface: {
+      kind: 'info',
+      title: '/status',
+      lines: ['当前状态'],
+      dismissHint: 'Esc 关闭'
+    },
+    pending: {kind: 'streaming', text: 'background draft'},
+    working: {elapsedMs: 900},
+    statusLine: undefined,
+    rows: 12,
+    width: 60
+  };
+
+  renderer.renderDestructive({
+    bannerContext: {cwd: '/tmp/echo_tui', nodeVersion: 'v20.0.0', terminalSize: {columns: 60, rows: 12}, mode: 'current terminal'},
+    records: [{role: 'assistant', text: 'stable answer'}],
+    ...state
+  });
+
+  const replay = stripAnsi(output.writes[0]);
+  assert.ok(output.writes[0].includes(ansi.clearVisibleScreen()));
+  assert.ok(output.writes[0].includes(ansi.clearScrollback()));
+  assert.equal((replay.match(/stable answer/g) || []).length, 1);
+  assert.equal((replay.match(/\/status/g) || []).length, 1);
+
+  renderer.appendRecord({
+    record: {role: 'local_notice', text: 'stable notice'},
+    ...state
+  });
+
+  const appendFrame = stripAnsi(output.writes.slice(1).join(''));
+  assert.equal((appendFrame.match(/stable notice/g) || []).length, 1);
+  assert.equal((appendFrame.match(/\/status/g) || []).length, 1);
+  assert.equal(appendFrame.includes('stable answer'), false);
 });
 
 function createMemoryToolCall(callId, toolName, args) {

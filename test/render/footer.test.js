@@ -170,6 +170,68 @@ test('createFooterRenderer writes each complete redraw as one frame and preserve
   assert.equal(output.writes.length, 5);
 });
 
+test('createFooterRenderer safely transitions from response suggestions through a command surface and back to latest streaming', () => {
+  const output = {
+    writes: [],
+    write(chunk) {
+      this.writes.push(String(chunk));
+    }
+  };
+  const renderer = createFooterRenderer(output);
+  const suggestionState = {
+    composer: createComposer('/'),
+    commandSurface: null,
+    slashSuggestions: {
+      selectedIndex: 0,
+      options: [
+        {label: '/help', description: '查看帮助'},
+        {label: '/status', description: '查看状态'}
+      ]
+    },
+    pending: {kind: 'streaming', text: 'older streaming draft'},
+    working: {elapsedMs: 1200},
+    statusLine: {...DEFAULT_STATUS_LINE, mode: 'streaming', keyHint: 'Esc 中断'},
+    rows: 10,
+    width: 60
+  };
+  const suggestionLayout = renderFooterLayout(suggestionState);
+  renderer.render(suggestionState);
+
+  const surfaceState = {
+    ...suggestionState,
+    composer: createComposer(''),
+    commandSurface: {
+      kind: 'info',
+      title: '/help',
+      lines: Array.from({length: 20}, (_value, index) => `帮助 ${index + 1}`),
+      dismissHint: 'Esc 关闭帮助'
+    },
+    slashSuggestions: null,
+    pending: {kind: 'streaming', text: 'newest streaming draft while surface is open'}
+  };
+  const surfaceLayout = renderFooterLayout(surfaceState);
+  renderer.render(surfaceState);
+
+  assert.equal(surfaceLayout.lines.length <= surfaceState.rows - 2, true);
+  assert.equal((output.writes[1].match(/\x1b\[2K/g) || []).length, suggestionLayout.lines.length);
+  assert.ok(stripAnsi(output.writes[1]).includes('/help'));
+
+  const restoredState = {
+    ...surfaceState,
+    commandSurface: null,
+    pending: {kind: 'streaming', text: 'latest restored draft'}
+  };
+  const restoredLayout = renderFooterLayout(restoredState);
+  renderer.render(restoredState);
+
+  assert.equal((output.writes[2].match(/\x1b\[2K/g) || []).length, surfaceLayout.lines.length);
+  assert.ok(stripAnsi(output.writes[2]).includes('latest restored draft'));
+  assert.equal(restoredLayout.lines.length <= restoredState.rows - 2, true);
+  assert.ok(output.writes[2].endsWith(
+    `${ansi.cursorUp(restoredLayout.lines.length - 1 - restoredLayout.cursorRow)}${ansi.carriageReturn()}${ansi.cursorForward(restoredLayout.cursorColumn)}${ansi.showCursor()}`
+  ));
+});
+
 test('renderFooterLayout renders boxed composer and idle segmented status line', () => {
   const layout = renderFooterLayout({
     composer: createComposer('hello'),

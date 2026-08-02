@@ -153,12 +153,13 @@ slash runtime 通过三类稳定边界协调本地命令：
 handler 协议保持最小：
 
 - `match(text)`：判断当前提交文本是否命中该命令；只返回布尔命中结果
+- `allowDuringAssistantTurn`：可选、默认关闭；声明命令可在 active assistant turn 期间出现在 suggestion 并立即启动
 - `start(text, host)`：在确认命中后启动该命令，必要时由 handler 自己解析原始文本，并通过 `CommandHost` 打开 surface、读取信息或读取可恢复 session；可返回 `not_matched` / `handled` / `submit_user_message`
 - `handleEvent(session, event, host)`：可选；当命令 session 活跃时消费后续输入事件，并通过 `CommandHost` 更新 session、清空 transcript、恢复 session 或触发 assistant 侧动作；异步 handler 可先同步更新 loading surface，Promise 完成后由 command runtime 再次触发 footer redraw
 
 这让“无交互命令”和“有交互命令”共享同一套总线，而不是拆成两套 app 分支。
 
-默认 handlers 在 app 装配阶段无参实例化：`createDefaultSlashCommandHandlers()` 创建 `/help`、`/config`、`/model`、`/effort`、`/mode`、`/status`、`/context`、`/usage`、`/memory`、`/clear`、`/compact`、`/diff`、`/undo`、`/fork`、`/resume`、`/reference`、`/mcp`、`/hooks`、`/skills`、内置 agent workflow（`/init`、`/review`）和 direct skill invocation handler。命令需要的 app 能力在运行时由 `CommandHost` 提供。`createSlashCommandDescriptors()` 从同一组 handlers 派生命令 `{name, description}`，再与 enabled skill descriptors 合并去重，供普通 composer 输入态下的 slash suggestion 使用，避免维护第二份命令/skill 清单。
+默认 handlers 在 app 装配阶段无参实例化：`createDefaultSlashCommandHandlers()` 创建 `/help`、`/config`、`/model`、`/effort`、`/mode`、`/status`、`/context`、`/usage`、`/memory`、`/clear`、`/compact`、`/diff`、`/undo`、`/fork`、`/resume`、`/reference`、`/mcp`、`/hooks`、`/skills`、内置 agent workflow（`/init`、`/review`）和 direct skill invocation handler。命令需要的 app 能力在运行时由 `CommandHost` 提供。`createSlashCommandDescriptors()` 从同一组 handlers 派生 `{name, description, allowDuringAssistantTurn}`，再与 enabled skill descriptors 合并去重，供 composer 的 slash suggestion 使用，避免维护第二份命令/skill 清单。空闲时显示完整候选；active assistant turn 期间只显示并立即启动显式允许的 `/help`、`/status`、`/context`、`/usage` 和 `/copy`，其余输入继续使用单槽 pending message。
 
 direct skill invocation 的模型策略通过独立 typed 字段沿 `CommandStartResult` → `AssistantTurnRunnerInput` → `AgentSessionInput` 传递，不从 transcript metadata 反推。model 与 effort 各自缺失时继承当前 session 对应字段；显式字段只作用于当前 slash turn，陈旧 model profile 回退 session model。
 

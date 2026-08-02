@@ -131,7 +131,7 @@ class AppContext {
     this.mcpBootstrapStatus = 'idle';
     this.slashSuggestionContext = new SlashSuggestionContext([], {
       hasActiveCommandSession: () => false,
-      isResponding: () => this.turnContext.responding
+      isAssistantTurnActive: () => this.turnContext.canInterruptAssistantTurn()
     });
     this.renderContext = new RenderContext(
       terminal,
@@ -393,7 +393,7 @@ class AppContext {
   configureSlashSuggestions(commands: SlashCommandDescriptor[] | (() => SlashCommandDescriptor[]), hasActiveCommandSession: () => boolean): void {
     this.slashSuggestionContext = new SlashSuggestionContext(commands, {
       hasActiveCommandSession,
-      isResponding: () => this.turnContext.responding
+      isAssistantTurnActive: () => this.turnContext.canInterruptAssistantTurn()
     });
   }
 

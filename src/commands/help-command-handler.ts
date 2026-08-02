@@ -30,6 +30,7 @@ export function createHelpSurface(): InfoCommandSurface {
 export class HelpCommandHandler implements CommandHandler {
   name = 'help';
   description = '查看帮助';
+  allowDuringAssistantTurn = true;
 
   /**
    * 只匹配 /help 和尾随空白，保持当前最小行为不变。

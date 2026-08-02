@@ -32,6 +32,7 @@ export type ChoiceCommandSurfaceTab = {
 export type SlashCommandDescriptor = {
   name: string;
   description: string;
+  allowDuringAssistantTurn?: boolean; // 指示 active assistant turn 期间是否允许展示并立即启动该命令。
 };
 
 export type InfoCommandSurface = {
@@ -693,6 +694,7 @@ export type CommandHost = CommandHostApp & {
 export type CommandHandler<TData extends object = Record<string, unknown>> = {
   name?: string;
   description?: string;
+  allowDuringAssistantTurn?: boolean; // 指示该 handler 是否可与 active assistant turn 并行启动。
   match?(text: string): boolean;
   start(text: string, host: CommandHost): void | CommandStartResult;
   handleEvent?(session: CommandSession<TData>, event: InputEvent, host: CommandHost): void | Promise<void>;
@@ -702,6 +704,10 @@ export type CommandStartResult =
   | {kind: 'not_matched'}
   | {kind: 'handled'}
   | {kind: 'submit_user_message'; text: string; displayText?: string; metadata?: UserTranscriptMetadata; modelProfileId?: string; reasoningEffortOverride?: ReasoningEffort};
+
+export type CommandStartOptions = {
+  duringAssistantTurn?: boolean; // 指示本次启动发生于仍可中断的 active assistant turn。
+};
 
 export type MatchableCommandHandler<TData extends object = Record<string, unknown>> =
   CommandHandler<TData> & {

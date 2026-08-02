@@ -39,6 +39,11 @@ import type {PendingConversationReference, TranscriptRecord} from '../types/tran
 import type {UsageStore} from '../types/usage';
 import type {UserConfigWatcher} from '../config/user-config';
 
+type SubmitDraftOptions = {
+  conversationReference?: PendingConversationReference; // 本次提交捕获的历史会话引用。
+  onAssistantTurnStarted?: () => void; // user turn 占用 response lock 后释放提交预处理锁。
+};
+
 /**
  * 创建 app 编排控制器，串联真实 terminal、input、render 和 agent runtime。
  */
@@ -57,7 +62,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
   const appContext = new AppContext(terminal, transcriptStore, process.cwd, process.version, theme, appSettings);
   const toolResultStore = createToolResultStore({cwd: () => appContext.getCurrentCwd()});
   let started = false;
-  let dispatchingPendingMessage = false;
+  let startingPendingMessage = false; // pending锁，防止在调度pending消息的时候用户又发送一条新的消息
   let activeShellController: AbortController | null = null;
   let mcpDiagnosticSurface: CommandSurface | null = null;
   let referenceErrorSurface: CommandSurface | null = null;
@@ -214,7 +219,8 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
    * 通过普通输入路由处理已从 composer 消费的文本；本函数不再修改 live composer。
    * 返回 false 表示引用准备失败或取消，调用方可以恢复原始 composer 文本。
    */
-  async function submitDraft(userInput: string, conversationReference?: PendingConversationReference): Promise<boolean> {
+  async function submitDraft(userInput: string, options: SubmitDraftOptions = {}): Promise<boolean> {
+    const conversationReference = options.conversationReference;
     let userText = userInput;
 
     const commandResult = commandRuntime.startFromText(userText);
@@ -298,7 +304,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
       recordCount: appContext.transcriptContext.records.length
     });
 
-    await runAssistantTurn({
+    const assistantTurn = runAssistantTurn({
       appContext,
       runAgent,
       toolApproval,
@@ -315,27 +321,39 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
       hooks,
       renderFooter
     });
+    options.onAssistantTurnStarted?.();
+    await assistantTurn;
     return true;
   }
 
   /** response lock 释放后原子取得并发送单槽消息。 */
   async function dispatchPendingMessage(): Promise<void> {
-    if (dispatchingPendingMessage || appContext.turnContext.responding) {
+    if (startingPendingMessage || appContext.turnContext.responding) {
       return;
     }
 
-    dispatchingPendingMessage = true;
+    startingPendingMessage = true;
     try {
       while (!appContext.turnContext.responding) {
+        const pendingText = appContext.pendingMessageContext.getPending();
+        if (commandRuntime.hasActiveSession() && pendingText && resolveSlashCommand(pendingText, slashCommandHandlers)) {
+          // 当前打开了另一个command surface，且当pending消息也是一个command时，直接返回，等待当前command退出之后再执行pending command
+          return;
+        }
+
         const pendingMessage = appContext.pendingMessageContext.claim();
         if (!pendingMessage) {
           return;
         }
 
-        await submitDraft(pendingMessage);
+        await submitDraft(pendingMessage, {
+          onAssistantTurnStarted() {
+            startingPendingMessage = false;
+          }
+        });
       }
     } finally {
-      dispatchingPendingMessage = false;
+      startingPendingMessage = false;
     }
   }
 
@@ -343,40 +361,58 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
    * 提交 live composer；active assistant turn 中改为单槽排队，其他 response lock 仍保持阻止语义。
    */
   async function submitComposer(): Promise<void> {
-    if (dispatchingPendingMessage || commandRuntime.hasActiveSession() || appContext.conversationReferenceContext.isPreparing() || appContext.getMcpBootstrapStatus() === 'initializing') {
+    // pending 正在抢占下一轮，或其他交互 surface/初始化流程已接管输入，此次 Enter 不提交 composer。
+    if (startingPendingMessage || commandRuntime.hasActiveSession() || appContext.conversationReferenceContext.isPreparing() || appContext.getMcpBootstrapStatus() === 'initializing') {
       renderFooter();
       return;
     }
 
     const hasActiveAssistantTurn = appContext.turnContext.canInterruptAssistantTurn();
 
+    // response lock 已释放但单槽仍有消息时，优先发送旧 pending，避免当前草稿越过它。
     if (!hasActiveAssistantTurn && !appContext.turnContext.responding && appContext.pendingMessageContext.getPending()) {
       await dispatchPendingMessage();
       return;
     }
 
+    // 非 assistant 流程仍占用 response lock，或 composer 没有内容时，不创建新提交。
     if ((!hasActiveAssistantTurn && appContext.turnContext.responding) || composerOps.isEmpty(appContext.composerContext.composer)) {
       renderFooter();
       return;
     }
 
     const userInput = composerOps.getText(appContext.composerContext.composer);
+
+    // assistant turn 运行期间先尝试响应期命令，未处理的输入才进入 pending 单槽。
+    if (hasActiveAssistantTurn) {
+      const commandResult = commandRuntime.startFromText(userInput, {duringAssistantTurn: true});
+
+      // 已允许的响应期命令已立即启动，只消费本次 composer，不改动已有 pending。
+      if (commandResult.kind === 'handled') {
+        consumeComposerInput(userInput);
+        renderFooter();
+        return;
+      }
+    }
+
+    // active turn 的 pending 单槽已被占用时，保留当前 composer 草稿，避免覆盖旧消息。
     if (hasActiveAssistantTurn && !appContext.pendingMessageContext.enqueue(userInput)) {
       renderFooter();
       return;
     }
 
-    appContext.composerContext.leaveHistoryBrowsing();
-    appContext.composerContext.recordInput(userInput);
-    appContext.composerContext.reset();
+    consumeComposerInput(userInput);
 
+    // active turn 中的普通输入已成功排队，本次不启动新的 assistant turn。
     if (hasActiveAssistantTurn) {
       renderFooter();
       return;
     }
 
     const conversationReference = appContext.conversationReferenceContext.getPending();
-    if (!await submitDraft(userInput, conversationReference || undefined)) {
+    // 空闲提交在引用准备失败或取消时恢复尚未被新输入占用的 composer。
+    if (!await submitDraft(userInput, {conversationReference: conversationReference || undefined})) {
+      // 用户已在异步准备期间输入新草稿时，不用旧输入覆盖它。
       if (composerOps.isEmpty(appContext.composerContext.composer)) {
         appContext.composerContext.setText(userInput);
       }
@@ -384,6 +420,13 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     }
 
     await dispatchPendingMessage();
+  }
+
+  /** 消费一次已接受的 live composer 输入，并保证 history 只记录一次。 */
+  function consumeComposerInput(userInput: string): void {
+    appContext.composerContext.leaveHistoryBrowsing();
+    appContext.composerContext.recordInput(userInput);
+    appContext.composerContext.reset();
   }
 
   /**
@@ -477,7 +520,20 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     }
 
     if (commandRuntime.hasActiveSession()) {
-      return commandRuntime.handleEvent(event);
+      const result = commandRuntime.handleEvent(event);
+      const dispatchAfterClose = (): void => {
+        // 当command surface关闭时，调度pending command执行
+        if (!commandRuntime.hasActiveSession()) {
+          void dispatchPendingMessage();
+        }
+      };
+
+      if (result) {
+        return result.then(dispatchAfterClose);
+      }
+
+      dispatchAfterClose();
+      return undefined;
     }
 
     // 处理针对会话引用surface的事件

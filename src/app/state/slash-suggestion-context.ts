@@ -5,7 +5,7 @@ import type {SlashSuggestionState} from '../../types/render';
 
 type SlashSuggestionOptions = {
   hasActiveCommandSession: () => boolean;
-  isResponding: () => boolean;
+  isAssistantTurnActive: () => boolean;
 };
 
 type SlashCommandDescriptorProvider = () => SlashCommandDescriptor[];
@@ -16,13 +16,13 @@ type SlashCommandDescriptorProvider = () => SlashCommandDescriptor[];
 class SlashSuggestionContext {
   private readonly getCommands: SlashCommandDescriptorProvider;
   private readonly hasActiveCommandSession: () => boolean;
-  private readonly isResponding: () => boolean;
+  private readonly isAssistantTurnActive: () => boolean;
   private selectedIndex = 0;
 
   constructor(commands: SlashCommandDescriptor[] | SlashCommandDescriptorProvider, options: SlashSuggestionOptions) {
     this.getCommands = Array.isArray(commands) ? () => commands : commands;
     this.hasActiveCommandSession = options.hasActiveCommandSession;
-    this.isResponding = options.isResponding;
+    this.isAssistantTurnActive = options.isAssistantTurnActive;
   }
 
   /**
@@ -97,13 +97,15 @@ class SlashSuggestionContext {
     }
 
     const prefix = composerText.slice(1);
+    const assistantTurnActive = this.isAssistantTurnActive();
     return this.getCommands()
+      .filter((command) => !assistantTurnActive || command.allowDuringAssistantTurn === true)
       .filter((command) => command.name.startsWith(prefix))
       .sort((left, right) => Number(right.name === prefix) - Number(left.name === prefix));
   }
 
   private canShowSuggestions(composerText: string): boolean {
-    if (this.hasActiveCommandSession() || this.isResponding()) {
+    if (this.hasActiveCommandSession()) {
       return false;
     }
 

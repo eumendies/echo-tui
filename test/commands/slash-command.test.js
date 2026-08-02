@@ -1323,15 +1323,15 @@ test('createSlashCommandDescriptors derives display metadata from handlers', () 
 
   assert.equal(descriptors.some((descriptor) => descriptor.name === 'skill'), false);
   assert.deepEqual(descriptors, [
-    { name: 'help', description: '查看帮助' },
+    { name: 'help', description: '查看帮助', allowDuringAssistantTurn: true },
     { name: 'config', description: '配置常规设置、指令文件、模型和主题' },
     { name: 'model', description: '切换模型' },
     { name: 'effort', description: '调整推理等级' },
     { name: 'mode', description: '切换交互模式' },
-    { name: 'status', description: '查看运行状态与 Codex 用量' },
-    { name: 'context', description: '查看 context 占用详情' },
-    { name: 'usage', description: '查看每日 token 用量' },
-    { name: 'copy', description: '复制会话消息' },
+    { name: 'status', description: '查看运行状态与 Codex 用量', allowDuringAssistantTurn: true },
+    { name: 'context', description: '查看 context 占用详情', allowDuringAssistantTurn: true },
+    { name: 'usage', description: '查看每日 token 用量', allowDuringAssistantTurn: true },
+    { name: 'copy', description: '复制会话消息', allowDuringAssistantTurn: true },
     { name: 'clear', description: '清空当前会话' },
     { name: 'compact', description: '手动压缩当前会话上下文' },
     { name: 'diff', description: '查看当前文件差异' },
@@ -1346,6 +1346,17 @@ test('createSlashCommandDescriptors derives display metadata from handlers', () 
     { name: 'init', description: '分析项目并生成或评审当前指令文件' },
     { name: 'review', description: '审查当前代码变更' }
   ]);
+});
+
+test('default slash command handlers expose only the audited assistant-turn commands', () => {
+  const handlers = createDefaultHandlersForTest();
+  const allowed = createSlashCommandDescriptors(handlers)
+    .filter((descriptor) => descriptor.allowDuringAssistantTurn)
+    .map((descriptor) => descriptor.name);
+
+  assert.deepEqual(allowed, ['help', 'status', 'context', 'usage', 'copy']);
+  assert.equal(handlers.at(-1) instanceof SkillInvocationCommandHandler, true);
+  assert.equal(handlers.at(-1).allowDuringAssistantTurn, undefined);
 });
 
 test('default slash command handlers accept tab-completed trailing whitespace', () => {

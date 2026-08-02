@@ -3,6 +3,7 @@ import {INPUT_EVENTS} from '../../input/event-types';
 import type {
   CommandHost,
   CommandRuntimeDependencies,
+  CommandStartOptions,
   CommandStartResult,
   CommandSession,
   CommandSessionPatch,
@@ -59,12 +60,20 @@ function createCommandRuntime(dependencies: CommandRuntimeDependencies) {
   }
 
   /**
-   * 尝试从提交文本启动 slash 命令；未命中时返回 false 让 app 继续普通提交。
+   * 尝试从提交文本启动 slash 命令；未命中或当前不可启动时交还 app 继续既有路由。
    */
-  function startFromText(text: string): CommandStartResult {
+  function startFromText(text: string, options: CommandStartOptions = {}): CommandStartResult {
     const matchedSlashHandler = resolveSlashCommand(text);
 
     if (!matchedSlashHandler) {
+      return {kind: 'not_matched'};
+    }
+
+    if (activeCommandSession) {
+      return {kind: 'not_matched'};
+    }
+
+    if (options.duringAssistantTurn && !matchedSlashHandler.allowDuringAssistantTurn) {
       return {kind: 'not_matched'};
     }
 
