@@ -158,11 +158,11 @@ handler 协议保持最小：
 
 这让“无交互命令”和“有交互命令”共享同一套总线，而不是拆成两套 app 分支。
 
-默认 handlers 在 app 装配阶段无参实例化：`createDefaultSlashCommandHandlers()` 创建 `/help`、`/config`、`/model`、`/effort`、`/mode`、`/status`、`/context`、`/usage`、`/memory`、`/clear`、`/compact`、`/diff`、`/undo`、`/resume`、`/reference`、`/mcp`、`/hooks`、`/skills`、内置 agent workflow（`/init`、`/review`）和 direct skill invocation handler。命令需要的 app 能力在运行时由 `CommandHost` 提供。`createSlashCommandDescriptors()` 从同一组 handlers 派生命令 `{name, description}`，再与 enabled skill descriptors 合并去重，供普通 composer 输入态下的 slash suggestion 使用，避免维护第二份命令/skill 清单。
+默认 handlers 在 app 装配阶段无参实例化：`createDefaultSlashCommandHandlers()` 创建 `/help`、`/config`、`/model`、`/effort`、`/mode`、`/status`、`/context`、`/usage`、`/memory`、`/clear`、`/compact`、`/diff`、`/undo`、`/fork`、`/resume`、`/reference`、`/mcp`、`/hooks`、`/skills`、内置 agent workflow（`/init`、`/review`）和 direct skill invocation handler。命令需要的 app 能力在运行时由 `CommandHost` 提供。`createSlashCommandDescriptors()` 从同一组 handlers 派生命令 `{name, description}`，再与 enabled skill descriptors 合并去重，供普通 composer 输入态下的 slash suggestion 使用，避免维护第二份命令/skill 清单。
 
 direct skill invocation 的模型策略通过独立 typed 字段沿 `CommandStartResult` → `AssistantTurnRunnerInput` → `AgentSessionInput` 传递，不从 transcript metadata 反推。model 与 effort 各自缺失时继承当前 session 对应字段；显式字段只作用于当前 slash turn，陈旧 model profile 回退 session model。
 
-`AppContext` 是实例级组合根和跨 context 事务协调器。构造期创建 `ComposerContext`、`TranscriptContext`、`ModelContext`、`TurnContext`、`RenderContext`、`SlashSuggestionContext`、`ChangeHistoryContext` 和 `ConversationReferenceContext`；其中主要子 context 以只读引用提供给 app 编排层，interaction mode、context usage、MCP bootstrap 状态和 mode transition 跟踪由 `AppContext` 私有持有。普通提交先创建或追加 journal，再对该真实 session id 尽力同步 settings sidecar；sidecar 失败只影响未来恢复，不影响本轮模型请求。`/resume` 在 sidecar 有效时恢复它，否则使用全局默认；`/clear` 解绑旧 session 并从当下全局默认初始化新草稿。对话引用独立于 composer 字符数组保存；确认选择时只加载目标 journal 并保存 replay 后的中立素材，长会话总结延后到下一次普通消息提交，再扩展为 provider-facing user text，并通过 user metadata 重放简洁卡片。render state、agent session、session 恢复、transcript 清理、change checkpoint、undo 和 turn 边界由 `AppContext` 组合或协调。`ToolApprovalContext`、`UserQuestionContext` 和 `FilePickerContext` 由 `main.ts` 持有。
+`AppContext` 是实例级组合根和跨 context 事务协调器。构造期创建 `ComposerContext`、`TranscriptContext`、`ModelContext`、`TurnContext`、`RenderContext`、`SlashSuggestionContext`、`ChangeHistoryContext` 和 `ConversationReferenceContext`；其中主要子 context 以只读引用提供给 app 编排层，interaction mode、context usage、MCP bootstrap 状态和 mode transition 跟踪由 `AppContext` 私有持有。普通提交先创建或追加 journal，再对该真实 session id 尽力同步 settings sidecar；sidecar 失败只影响未来恢复，不影响本轮模型请求。`/resume` 在 sidecar 有效时恢复它，否则使用全局默认；`/clear` 解绑旧 session 并从当下全局默认初始化新草稿；`/fork` 由 `TranscriptContext` 用单个 batch 创建 records/compaction/todo/change history 的自包含 journal，成功后由 `AppContext` 强制把当前 model/effort 绑定到新 sidecar 并清空旧 context usage。对话引用独立于 composer 字符数组保存；确认选择时只加载目标 journal 并保存 replay 后的中立素材，长会话总结延后到下一次普通消息提交，再扩展为 provider-facing user text，并通过 user metadata 重放简洁卡片。render state、agent session、session 恢复、transcript 清理、session 分叉、change checkpoint、undo 和 turn 边界由 `AppContext` 组合或协调。`ToolApprovalContext`、`UserQuestionContext` 和 `FilePickerContext` 由 `main.ts` 持有。
 
 ### CommandHost 能力
 
@@ -171,7 +171,7 @@ direct skill invocation 的模型策略通过独立 typed 字段沿 `CommandStar
 | domain | 用途 |
 | --- | --- |
 | `session` | 打开、更新、关闭当前 command session，并提供 active session 读取 |
-| `transcript` | 清空当前 transcript、加载历史 session、追加本地 record、列出可复制 records 和可恢复 session metadata |
+| `transcript` | 清空当前 transcript、加载或分叉 session、追加本地 record、列出可复制 records 和可恢复 session metadata |
 | `clipboard` | 把格式化后的命令结果写入系统剪贴板，并返回结构化成功或失败结果 |
 | `model` | 为 `/model` 读取模型命令信息并持久化当前 session profile（同时清除旧 effort override）；为 `/effort` 保存当前 session effort，不改写用户级 LLM 配置 |
 | `config` | 为 `/config` 的常规与模型 Tab 分别读取/保存草稿，基于 provider 草稿列出远端模型；设置保存后按变化类型执行 footer redraw 或 destructive replay |
@@ -437,6 +437,7 @@ renderer 只理解这些 surface kind，不理解具体命令、tool approval、
 | `src/commands/compact-command-handler.ts` | `CompactCommandHandler` | `/compact` confirm surface，经 host assistant 能力手动压缩 |
 | `src/commands/diff-command-handler.ts` | `DiffCommandHandler`、`createDiffSurface` | `/diff` 读取 diff source、方向键焦点/滚动和关闭 |
 | `src/commands/undo-command-handler.ts` | `UndoCommandHandler`、`createUndoConfirmSurface` | `/undo` 读取摘要、确认回退、失败/不可用信息 |
+| `src/commands/fork-command-handler.ts` | `ForkCommandHandler`、`createForkSurface` | `/fork` 立即创建独立 session，并用 info surface 展示结果和文件系统边界 |
 | `src/commands/resume-command-handler.ts` | `ResumeCommandHandler`、`createResumeSurface` | `/resume` 最多 5 条窗口、消息预览、确认恢复 |
 | `src/commands/mcp-command-handler.ts` | `McpCommandHandler`、`createMcpSurface` | `/mcp` 列出 server、Space 切换、Enter 保存并重载 |
 | `src/commands/skills-command-handler.ts` | `SkillsCommandHandler`、`createSkillsSurface` | `/skills` skill 列表、Space 切换启停、Left/Right 循环模型策略、Enter 统一保存 |

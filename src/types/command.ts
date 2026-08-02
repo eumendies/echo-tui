@@ -1,7 +1,7 @@
 import type { InputEvent } from './input';
 import type { AgentInstructionFileName, AgentType, ContextUsage, InteractionMode, ReasoningEffort } from './agent';
 import type {DiffFile, DiffSourceInfo, DiffSourceResult} from './diff';
-import type { CompactionState, PendingConversationReference, PreparedConversationReference, TranscriptRecord, TranscriptSessionMetadata, UserTranscriptMetadata } from './transcript';
+import type { CompactionState, PendingConversationReference, PreparedConversationReference, TranscriptForkResult, TranscriptRecord, TranscriptSessionMetadata, UserTranscriptMetadata } from './transcript';
 import type {UndoExecuteResult, UndoSummary} from './change-history';
 import type {UsageDailyAggregate, UsageQueryOptions} from './usage';
 import type {LifecycleHookConfigDraft, LifecycleHookDraftEntry, LifecycleHookEventName, LifecycleHookTestResult} from './hooks';
@@ -580,6 +580,7 @@ export type CommandReferenceSubmissionResult =
 export type CommandHostApp = {
   transcript: {
     clear(): void;
+    forkSession(): TranscriptForkResult;
     loadSession(sessionId: string): boolean;
     append(record: TranscriptRecord): void;
     listCopyableRecords(): CopyableMessageRecord[];

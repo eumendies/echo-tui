@@ -22,7 +22,7 @@ import type {CommandSurface, SlashCommandDescriptor} from '../../types/command';
 import type {InputEvent} from '../../types/input';
 import type {RenderState, SlashSuggestionState, StatusLineModelRenderState} from '../../types/render';
 import type {ToolExecutionResult} from '../../types/tool';
-import type {TranscriptRecord, TranscriptSession, TranscriptStore, UserTranscriptMetadata} from '../../types/transcript';
+import type {TranscriptForkResult, TranscriptRecord, TranscriptSession, TranscriptStore, UserTranscriptMetadata} from '../../types/transcript';
 import type {SessionModelSettingsStore} from '../../types/session-model-settings';
 import type {UndoExecuteResult} from '../../types/change-history';
 import type {ToolApprovalContext} from './tool-approval-context';
@@ -454,6 +454,24 @@ class AppContext {
     }
 
     return loadedSession;
+  }
+
+  /**
+   * 从当前稳定 transcript 创建独立 session，并协调新 sidecar 与失效的 provider usage。
+   */
+  forkTranscriptSession(): TranscriptForkResult {
+    try {
+      const result = this.transcriptContext.forkSession();
+
+      if (result.ok) {
+        this.modelContext.rebindCurrentSelectionToSession();
+        this.clearContextUsage();
+      }
+
+      return result;
+    } catch {
+      return {ok: false, reason: 'failed', error: '无法创建分叉会话'};
+    }
   }
 
   /**

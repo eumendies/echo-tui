@@ -16,6 +16,7 @@ import type {
   TodoState,
   TranscriptJournalOperation,
   TranscriptJournalSubOperation,
+  TranscriptForkResult,
   TranscriptRecord,
   TranscriptSession,
   TranscriptSessionJournalReference,
@@ -119,6 +120,35 @@ class TranscriptContext {
    */
   persistCurrentSession(): void {
     this.persistOperation([]);
+  }
+
+  /**
+   * 将当前稳定会话保存为自包含快照，并在新 journal 原子创建成功后切换持久化指针。
+   */
+  forkSession(): TranscriptForkResult {
+    if (!this.currentSession || this.records.length === 0) {
+      return {ok: false, reason: 'empty'};
+    }
+
+    this.persistCurrentSession();
+    const sourceSessionId = this.currentSession.sessionId;
+    const operation = createBatchOperation([
+      createAppendRecordsOperation(structuredClone(this.records)),
+      createSetChangeHistoryOperation(cloneChangeHistory(this.changeHistory)),
+      createSetCompactionOperation(this.compaction ? {...this.compaction} : null),
+      createSetTodoStateOperation(cloneTodoState(this.todoState))
+    ]);
+    const nextSession = this.transcriptStore.createSession(this.getCurrentCwd(), operation);
+
+    this.currentSession = nextSession;
+    this.currentSessionId = nextSession.sessionId;
+    this.clearPendingState();
+
+    return {
+      ok: true,
+      sessionId: nextSession.sessionId,
+      sourceSessionId
+    };
   }
 
   /**

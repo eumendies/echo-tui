@@ -1930,6 +1930,170 @@ test('AppContext persists, clears, and reloads transcript sessions through one i
   ]);
 });
 
+test('AppContext forks the complete session state and keeps later records isolated', () => {
+  const sourceSession = {
+    sessionId: 'session-1',
+    cwd: '/tmp/echo_tui',
+    createdAt: '2026-05-19T00:00:00.000Z',
+    updatedAt: '2026-05-19T00:00:01.000Z',
+    records: [{role: 'user', text: 'branch me'}, {role: 'assistant', text: 'baseline'}],
+    compaction: {summaryText: 'earlier context', activeStartIndex: 1, createdAt: '2026-05-19T00:00:01.000Z'},
+    todoState: {updatedAt: '2026-05-19T00:00:01.000Z', items: [{id: 'todo_1', text: 'continue branch', status: 'open'}]},
+    changeHistory: [{
+      id: 'checkpoint-1',
+      createdAt: '2026-05-19T00:00:01.000Z',
+      cwd: '/tmp/echo_tui',
+      transcriptStartIndex: 0,
+      status: 'ready',
+      files: []
+    }]
+  };
+  const transcriptStore = createFakeTranscriptStore([sourceSession]);
+  const context = createContext({transcriptStore});
+
+  assert.ok(context.loadTranscriptSession('session-1'));
+  context.setContextUsage({usedTokens: 800, contextWindow: 1000, source: 'provider'});
+  const result = context.forkTranscriptSession();
+
+  assert.deepEqual(result, {ok: true, sourceSessionId: 'session-1', sessionId: 'session-2'});
+  assert.equal(context.transcriptContext.getCurrentSessionId(), 'session-2');
+  assert.equal(context.getContextUsage(), null);
+  assert.deepEqual(transcriptStore.loadSession('/tmp/echo_tui', 'session-2').session, {
+    ...sourceSession,
+    schemaVersion: 1,
+    sessionId: 'session-2',
+    createdAt: '2026-05-19T00:00:02.000Z',
+    updatedAt: '2026-05-19T00:00:02.000Z'
+  });
+
+  context.transcriptContext.appendRecord({role: 'user', text: 'child only'});
+  assert.deepEqual(transcriptStore.loadSession('/tmp/echo_tui', 'session-1').session.records, sourceSession.records);
+  assert.deepEqual(transcriptStore.loadSession('/tmp/echo_tui', 'session-2').session.records.map((record) => record.text), [
+    'branch me',
+    'baseline',
+    'child only'
+  ]);
+});
+
+test('AppContext rejects empty forks and preserves the source session when journal creation fails', () => {
+  const emptyStore = createFakeTranscriptStore();
+  const empty = createContext({transcriptStore: emptyStore});
+
+  assert.deepEqual(empty.forkTranscriptSession(), {ok: false, reason: 'empty'});
+  assert.equal(emptyStore.saveCalls.length, 0);
+
+  const transcriptStore = createFakeTranscriptStore();
+  const context = createContext({transcriptStore});
+  context.beginUserTurn('keep source');
+  context.turnContext.finishAssistantTurn('source reply');
+  const sourceSessionId = context.transcriptContext.getCurrentSessionId();
+  const recordsBefore = structuredClone(context.transcriptContext.records);
+  transcriptStore.createSession = () => {
+    throw new Error('disk contains sk-secret-value');
+  };
+
+  assert.deepEqual(context.forkTranscriptSession(), {ok: false, reason: 'failed', error: '无法创建分叉会话'});
+  assert.equal(context.transcriptContext.getCurrentSessionId(), sourceSessionId);
+  assert.deepEqual(context.transcriptContext.records, recordsBefore);
+  assert.deepEqual(transcriptStore.loadSession('/tmp/echo_tui', sourceSessionId).session.records, recordsBefore);
+});
+
+test('AppContext forks current model settings without rewriting source settings', () => {
+  withTemporaryModelConfig({
+    llm: {
+      selectedModel: 'fast',
+      providers: {default: {preset: 'openai-responses-api', apiKey: 'sk-test-key'}},
+      models: [
+        {id: 'fast', provider: 'default', model: 'gpt-fast'},
+        {id: 'deep', provider: 'default', model: 'gpt-deep'}
+      ]
+    }
+  }, () => {
+    const transcriptStore = createFakeTranscriptStore([{
+      sessionId: 'session-1',
+      createdAt: '2026-05-19T00:00:00.000Z',
+      updatedAt: '2026-05-19T00:00:00.000Z',
+      records: [{role: 'user', text: 'configured'}]
+    }]);
+    const settingsStore = createFakeSessionModelSettingsStore([{
+      schemaVersion: 1,
+      sessionId: 'session-1',
+      modelProfileId: 'deep',
+      reasoningEffortOverride: 'high',
+      updatedAt: '2026-05-19T00:00:00.000Z'
+    }]);
+    const context = createContext({transcriptStore, sessionModelSettingsStore: settingsStore});
+
+    assert.ok(context.loadTranscriptSession('session-1'));
+    assert.equal(context.forkTranscriptSession().sessionId, 'session-2');
+    assert.deepEqual(context.modelContext.getAgentSelection(), {modelProfileId: 'deep', reasoningEffortOverride: 'high'});
+    assert.equal(settingsStore.settings.get('session-1').updatedAt, '2026-05-19T00:00:00.000Z');
+    assert.equal(settingsStore.settings.get('session-2').modelProfileId, 'deep');
+    assert.equal(settingsStore.settings.get('session-2').reasoningEffortOverride, 'high');
+  });
+});
+
+test('AppContext keeps a fork usable and retries settings after sidecar writes fail', () => {
+  withTemporaryModelConfig({
+    llm: {
+      selectedModel: 'fast',
+      providers: {default: {preset: 'openai-responses-api', apiKey: 'sk-test-key'}},
+      models: [{id: 'fast', provider: 'default', model: 'gpt-fast'}]
+    }
+  }, () => {
+    let writeCount = 0;
+    const settingsStore = {
+      getFilePath(_cwd, sessionId) {
+        return `/tmp/${sessionId}.settings.json`;
+      },
+      read() {
+        return {kind: 'missing'};
+      },
+      write() {
+        writeCount += 1;
+        throw new Error('sidecar unavailable');
+      }
+    };
+    const context = createContext({sessionModelSettingsStore: settingsStore});
+    context.beginUserTurn('source');
+    context.turnContext.finishAssistantTurn('reply');
+    const writesBeforeFork = writeCount;
+
+    const result = context.forkTranscriptSession();
+    assert.equal(result.ok, true);
+    assert.equal(writeCount, writesBeforeFork + 1);
+    assert.deepEqual(context.modelContext.getAgentSelection(), {modelProfileId: 'fast'});
+
+    context.beginUserTurn('retry in child');
+    assert.equal(writeCount, writesBeforeFork + 2);
+  });
+});
+
+test('AppContext forks into a self-contained real journal', () => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-fork-store-'));
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-fork-workspace-'));
+  const transcriptStore = createTranscriptStore({rootDir});
+  const context = createContext({cwd, transcriptStore});
+
+  context.beginUserTurn('real source');
+  context.turnContext.finishAssistantTurn('real reply');
+  context.transcriptContext.updateTodoState({
+    updatedAt: '2026-05-19T00:00:01.000Z',
+    items: [{id: 'todo_1', text: 'persisted in child', status: 'open'}]
+  });
+  const sourceSessionId = context.transcriptContext.getCurrentSessionId();
+  const result = context.forkTranscriptSession();
+  assert.equal(result.ok, true);
+
+  context.transcriptContext.appendRecord({role: 'user', text: 'child continuation'});
+  const childBeforeSourceRemoval = transcriptStore.loadSession(cwd, result.sessionId).session;
+  assert.deepEqual(childBeforeSourceRemoval.records.map((record) => record.text), ['real source', 'real reply', 'child continuation']);
+  assert.deepEqual(childBeforeSourceRemoval.todoState.items, [{id: 'todo_1', text: 'persisted in child', status: 'open'}]);
+
+  fs.unlinkSync(transcriptStore.getSessionFilePath(cwd, sourceSessionId));
+  assert.deepEqual(transcriptStore.loadSession(cwd, result.sessionId).session.records, childBeforeSourceRemoval.records);
+});
+
 test('AppContext isolates session settings across clear and resume', () => {
   withTemporaryModelConfig({
     llm: {

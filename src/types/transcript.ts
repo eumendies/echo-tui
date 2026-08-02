@@ -297,6 +297,18 @@ export type LoadedTranscriptSession = {
   reference: TranscriptSessionJournalReference;
 };
 
+export type TranscriptForkResult =
+  | {
+      ok: true; // 标识新 journal 已创建且当前 session 已切换。
+      sessionId: string; // 新分叉 session 的持久化 id。
+      sourceSessionId: string; // 分叉前源 session 的持久化 id。
+    }
+  | {
+      ok: false; // 标识当前 session 未发生切换。
+      reason: 'empty' | 'failed'; // 区分无可分叉会话与持久化失败。
+      error?: string; // 可直接展示给用户的脱敏失败说明。
+    };
+
 export type TranscriptProjectMetadata = {
   schemaVersion: number;
   cwd: string;
