@@ -62,7 +62,7 @@ export function renderBanner(context: BannerRenderContext = {}, theme: TuiTheme 
 
     return [
       '',
-        ...TITLE_ART.map((line) => ansi.bold(blockText(theme, 'bannerAccent', centerToDisplayWidth(line, width)))),
+        ...TITLE_ART.map((line) => ansi.bold(blockText(theme, 'bannerAccent', centerToDisplayWidth(padToDisplayWidth(line, TITLE_ART_WIDTH), width)))),
         blockText(theme, 'bannerMuted', centerToDisplayWidth('─'.repeat(accentWidth), width)),
         ansi.dim(blockText(theme, 'bannerMuted', centerToDisplayWidth(clampToDisplayWidth(`cwd  ${cwd}`, width), width))),
         ansi.dim(blockText(theme, 'bannerMuted', centerToDisplayWidth(clampToDisplayWidth(runtimeInfo, width), width))),

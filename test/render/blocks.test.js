@@ -25,6 +25,19 @@ test('renderBanner returns a large startup header at wide widths', () => {
   assert.equal(plainLines.some((line) => line.includes('records append-only')), false);
 });
 
+test('renderBanner keeps uneven title rows aligned when safe width is even', () => {
+  const lines = renderBanner({
+    cwd: '/tmp/echo_tui',
+    nodeVersion: 'v20.0.0',
+    terminalSize: { columns: 81, rows: 24 },
+    mode: 'current terminal'
+  }).split('\n').map((line) => stripAnsi(line));
+
+  const titleOffsets = lines.slice(1, 7).map((line) => line.search(/\S/));
+
+  assert.deepEqual(titleOffsets, Array(6).fill(titleOffsets[0]));
+});
+
 test('renderBanner falls back to a compact boxed header on narrower terminals', () => {
   const lines = renderBanner({
     cwd: '/tmp/echo_tui',
