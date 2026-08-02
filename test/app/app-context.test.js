@@ -625,11 +625,11 @@ test('AppContext applies skill effort independently from a fixed or stale model 
 
   withTemporaryModelConfig(config, () => {
     const context = createContext();
-    const fixedTurn = context.beginAssistantTurn('deep', 'minimal');
+    const fixedTurn = context.beginAssistantTurn('deep', 'max');
     const fixedStatus = context.createRenderState().statusLine;
 
     assert.equal(fixedStatus.model.label, 'gpt-deep');
-    assert.equal(fixedStatus.model.effort, 'minimal');
+    assert.equal(fixedStatus.model.effort, 'max');
     assert.equal(fixedStatus.model.skillOverride, true);
     context.turnContext.clearAssistantTurnIfCurrent(fixedTurn);
 
@@ -1242,8 +1242,8 @@ test('ModelContext reads provider-backed model profiles and current selection', 
 
     assert.deepEqual(context.createEffortCommandInfo(), {
       currentModelLabel: 'gpt-4.1',
-      efforts: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'],
-      selectedIndex: 4
+      efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
+      selectedIndex: 3
     });
   });
 });
@@ -1264,8 +1264,8 @@ test('ModelContext defaults /effort selection to medium when profile has no effo
 
     assert.deepEqual(context.createEffortCommandInfo(), {
       currentModelLabel: 'gpt-fast',
-      efforts: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'],
-      selectedIndex: 3
+      efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
+      selectedIndex: 2
     });
   });
 });
@@ -1657,10 +1657,10 @@ test('ModelContext refreshes cached status-line effort after effort selection su
 
     assert.equal(appContext.createRenderState().statusLine.model.effort, 'low');
 
-    assert.deepEqual(appContext.modelContext.selectEffort('xhigh'), {ok: true});
+    assert.deepEqual(appContext.modelContext.selectEffort('max'), {ok: true});
 
     assert.equal(appContext.createRenderState().statusLine.model.label, 'gpt-deep');
-    assert.equal(appContext.createRenderState().statusLine.model.effort, 'xhigh');
+    assert.equal(appContext.createRenderState().statusLine.model.effort, 'max');
   });
 });
 
@@ -1678,9 +1678,9 @@ test('ModelContext does not create profile reasoning when selecting session effo
   }, ({readConfig}) => {
     const context = new ModelContext();
 
-    assert.deepEqual(context.selectEffort('minimal'), {ok: true});
+    assert.deepEqual(context.selectEffort('max'), {ok: true});
     assert.equal(readConfig().llm.models[0].reasoning, undefined);
-    assert.deepEqual(context.getAgentSelection(), {modelProfileId: 'fast', reasoningEffortOverride: 'minimal'});
+    assert.deepEqual(context.getAgentSelection(), {modelProfileId: 'fast', reasoningEffortOverride: 'max'});
   });
 });
 
@@ -1801,8 +1801,8 @@ test('ModelContext keeps openai-chat usable with a session effort override', () 
     });
     assert.deepEqual(context.createEffortCommandInfo(), {
       currentModelLabel: 'gpt-chat',
-      efforts: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'],
-      selectedIndex: 4
+      efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
+      selectedIndex: 3
     });
   });
 });

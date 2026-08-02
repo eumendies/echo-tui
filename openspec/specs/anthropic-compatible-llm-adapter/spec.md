@@ -151,7 +151,7 @@
 - **THEN** provider SHALL NOT 将该用户主动中断包装为普通模型服务失败或 stream incomplete 失败
 
 ### Requirement: Anthropic reasoning effort 请求
-系统 SHALL 在 `anthropic` provider 边界内支持 model profile 的 `reasoning.effort`。当 effort 非 `none` 时，adapter SHALL 启用 Anthropic adaptive thinking，并 SHALL 将 Echo TUI 的 effort 等级映射为 Anthropic `output_config.effort` 后发送；请求 SHALL NOT 使用 OpenAI Responses-only `reasoning` 字段。
+系统 SHALL 在 `anthropic` provider 边界内支持 model profile 的 `reasoning.effort`。当 effort 非 `none` 时，adapter SHALL 启用 Anthropic adaptive thinking，并 SHALL 将 Echo TUI 的 effort 等级原样作为 Anthropic `output_config.effort` 发送；请求 SHALL NOT 使用 OpenAI Responses-only `reasoning` 字段。
 
 #### Scenario: 启用 Anthropic adaptive thinking
 - **WHEN** 当前 provider agent type 为 `anthropic` 且当前模型配置包含非 `none` 的 `reasoning.effort`
@@ -159,13 +159,9 @@
 - **THEN** `thinking.display` SHALL 为 `summarized` 或等价的可展示默认行为
 - **THEN** Anthropic request SHALL 包含 `output_config.effort`
 
-#### Scenario: 映射 Echo effort 到 Anthropic effort
+#### Scenario: 原样发送 Echo effort 到 Anthropic effort
 - **WHEN** Anthropic request 根据 Echo TUI `reasoning.effort` 构造 `output_config.effort`
-- **THEN** `minimal` SHALL 映射为 `low`
-- **THEN** `low` SHALL 映射为 `medium`
-- **THEN** `medium` SHALL 映射为 `high`
-- **THEN** `high` SHALL 映射为 `xhigh`
-- **THEN** `xhigh` SHALL 映射为 `max`
+- **THEN** `low`、`medium`、`high`、`xhigh` 与 `max` SHALL 原样发送
 
 #### Scenario: none effort 不启用 Anthropic reasoning
 - **WHEN** 当前 Anthropic 模型配置未设置 `reasoning.effort` 或设置为 `none`

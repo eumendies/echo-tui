@@ -36,8 +36,8 @@ test('skill state normalizes disabled, model, and effort fields independently', 
     disabled: 'invalid',
     effortOverrides: {
       review: 'none',
-      deep: ' high ',
-      unknown: 'extreme',
+      deep: 'max',
+      unknown: 'minimal',
       broken: 42
     },
     modelOverrides: {
@@ -48,7 +48,7 @@ test('skill state normalizes disabled, model, and effort fields independently', 
   })), {
     schemaVersion: 3,
     disabled: [],
-    effortOverrides: {review: 'none'},
+    effortOverrides: {deep: 'max', review: 'none'},
     modelOverrides: {review: 'fast'}
   });
 });

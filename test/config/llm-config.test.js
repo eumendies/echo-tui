@@ -299,7 +299,7 @@ test('readLlmConfig applies effort override after resolving the per-run model pr
   const fixed = readLlmConfig({
     configPath: '/tmp/echo-config.json',
     modelProfileId: 'fast',
-    reasoningEffortOverride: 'minimal',
+    reasoningEffortOverride: 'max',
     readFile: readConfigFrom(source)
   });
   const staleModel = readLlmConfig({
@@ -310,7 +310,7 @@ test('readLlmConfig applies effort override after resolving the per-run model pr
   });
 
   assert.equal(fixed.model, 'gpt-fast');
-  assert.equal(fixed.reasoningEffort, 'minimal');
+  assert.equal(fixed.reasoningEffort, 'max');
   assert.equal(staleModel.model, 'gpt-deep');
   assert.equal(staleModel.reasoningEffort, 'none');
 });
@@ -580,14 +580,14 @@ test('readLlmConfig resolves selected model reasoning effort', () => {
             id: 'deep',
             provider: 'openai',
             model: 'gpt-deep',
-            reasoning: { effort: 'high' }
+            reasoning: { effort: 'max' }
           }
         ]
       }
     }))
   });
 
-  assert.equal(config.reasoningEffort, 'high');
+  assert.equal(config.reasoningEffort, 'max');
 });
 
 test('readLlmConfig resolves selected model reasoning summary', () => {
@@ -1013,7 +1013,7 @@ test('readLlmConfig reports provider-backed configuration errors safely', () => 
         llm: {
           providers: { openai: { preset: OPENAI_PRESET, apiKey: 'secret-value' } },
           models: [
-            { id: 'default', provider: 'openai', model: 'test-model', reasoning: { effort: 'extreme' } }
+            { id: 'default', provider: 'openai', model: 'test-model', reasoning: { effort: 'minimal' } }
           ]
         }
       }))

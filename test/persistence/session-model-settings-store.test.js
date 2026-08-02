@@ -32,6 +32,15 @@ test('session model settings store distinguishes missing and invalid sidecars', 
     updatedAt: '2026-07-01T00:00:00.000Z'
   }), 'utf8');
   assert.deepEqual(store.read(cwd, 'session-1'), {kind: 'invalid'});
+
+  fs.writeFileSync(filePath, JSON.stringify({
+    schemaVersion: 1,
+    sessionId: 'session-1',
+    modelProfileId: 'fast',
+    reasoningEffortOverride: 'minimal',
+    updatedAt: '2026-07-01T00:00:00.000Z'
+  }), 'utf8');
+  assert.deepEqual(store.read(cwd, 'session-1'), {kind: 'invalid'});
 });
 
 test('session model settings store atomically round-trips current values including none', () => {

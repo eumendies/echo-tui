@@ -149,7 +149,7 @@ export type AgentType = 'openai' | 'openai-chat' | 'anthropic' | 'codex' | 'fake
 
 export type FileEditToolMode = 'apply_patch' | 'edit_file';
 
-export const REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const;
+export const REASONING_EFFORTS = ['none', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 
 export type ReasoningEffort = typeof REASONING_EFFORTS[number];
 

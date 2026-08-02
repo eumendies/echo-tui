@@ -2122,13 +2122,13 @@ test('renderFooterLayout renders scale command surfaces', () => {
       rightLabel: 'deep',
       options: [
         { label: 'none', description: 'NONE' },
-        { label: 'minimal', description: 'MIN' },
         { label: 'low', description: 'LOW' },
         { label: 'medium', description: 'MED' },
         { label: 'high', description: 'HIGH' },
-        { label: 'xhigh', description: 'XHIGH' }
+        { label: 'xhigh', description: 'XHIGH' },
+        { label: 'max', description: 'MAX' }
       ],
-      selectedIndex: 3,
+      selectedIndex: 2,
       dismissHint: 'Enter 选择 · ←/→ 移动 · Esc 取消'
     },
     pending: null,
@@ -2142,7 +2142,7 @@ test('renderFooterLayout renders scale command surfaces', () => {
   assert.ok(plainLines.some((line) => line.startsWith('╭')));
   assert.ok(plainLines.some((line) => line.startsWith('╰')));
   assert.ok(plainLines.some((line) => line.includes('/effort · LLMBox GPT5.5')));
-  assert.ok(plainLines.some((line) => line.includes('[实时]')));
+  assert.ok(!plainLines.some((line) => line.includes('[实时]')));
   assert.ok(plainLines.some((line) => line.includes('◂')));
   assert.ok(plainLines.some((line) => line.includes('▸')));
   assert.ok(plainLines.some((line) => line.includes('●')));

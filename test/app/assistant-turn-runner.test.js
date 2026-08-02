@@ -548,13 +548,13 @@ test('runAssistantTurn passes model and effort overrides only to the current ses
   await run(undefined, undefined, 'complete');
   await run('fixed-error', 'none', 'error');
   await run(undefined, undefined, 'complete');
-  await run('fixed-abort', 'minimal', 'abort');
+  await run('fixed-abort', 'xhigh', 'abort');
   await run(undefined, undefined, 'complete');
 
   assert.deepEqual(captured, [
     ['fixed-complete', 'high'], [undefined, undefined],
     ['fixed-error', 'none'], [undefined, undefined],
-    ['fixed-abort', 'minimal'], [undefined, undefined]
+    ['fixed-abort', 'xhigh'], [undefined, undefined]
   ]);
 });
 

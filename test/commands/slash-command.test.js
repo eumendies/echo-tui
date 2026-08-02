@@ -9,7 +9,7 @@ const { ContextCommandHandler } = require('../../src/commands/context-command-ha
 const { CopyCommandHandler } = require('../../src/commands/copy-command-handler');
 const { DiffCommandHandler } = require('../../src/commands/diff-command-handler');
 const { EffortCommandHandler } = require('../../src/commands/effort-command-handler');
-const { ForkCommandHandler, createForkSurface } = require('../../src/commands/fork-command-handler');
+const { ForkCommandHandler } = require('../../src/commands/fork-command-handler');
 const { HelpCommandHandler } = require('../../src/commands/help-command-handler');
 const { HooksCommandHandler } = require('../../src/commands/hooks-command-handler');
 const { McpCommandHandler } = require('../../src/commands/mcp-command-handler');
@@ -1517,8 +1517,8 @@ test('effortCommandHandler shows selectable efforts, confirms, cancels, and repo
   const { calls, host } = createFakeHost({
     effortCommandInfo: {
       currentModelLabel: 'gpt-deep',
-      efforts: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'],
-      selectedIndex: 3
+      efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
+      selectedIndex: 2
     }
   });
   const session = startCommand(effortCommandHandler, '/effort', host);
@@ -1527,19 +1527,19 @@ test('effortCommandHandler shows selectable efforts, confirms, cancels, and repo
   assert.equal(session.surface.title, '/effort · gpt-deep');
   assert.equal(session.surface.leftLabel, 'fast');
   assert.equal(session.surface.rightLabel, 'deep');
-  assert.equal(session.surface.selectedIndex, 3);
-  assert.deepEqual(session.surface.options.map((option) => option.label), ['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
-  assert.deepEqual(session.surface.options.map((option) => option.description), ['NONE', 'MIN', 'LOW', 'MED', 'HIGH', 'XHIGH']);
+  assert.equal(session.surface.selectedIndex, 2);
+  assert.deepEqual(session.surface.options.map((option) => option.label), ['none', 'low', 'medium', 'high', 'xhigh', 'max']);
+  assert.deepEqual(session.surface.options.map((option) => option.description), ['NONE', 'LOW', 'MED', 'HIGH', 'XHIGH', 'MAX']);
 
   assert.equal(session.surface.dismissHint, 'Enter 选择 · ←/→ 移动 · Esc 取消');
 
   effortCommandHandler.handleEvent(session, { type: INPUT_EVENTS.MOVE_RIGHT }, host);
-  assert.equal(calls.sessionUpdates[0].surface.selectedIndex, 4);
-  assert.equal(calls.sessionUpdates[0].data.selectedIndex, 4);
+  assert.equal(calls.sessionUpdates[0].surface.selectedIndex, 3);
+  assert.equal(calls.sessionUpdates[0].data.selectedIndex, 3);
 
   effortCommandHandler.handleEvent(host.session.getActive(), { type: INPUT_EVENTS.MOVE_LEFT }, host);
-  assert.equal(calls.sessionUpdates[1].surface.selectedIndex, 3);
-  assert.equal(calls.sessionUpdates[1].data.selectedIndex, 3);
+  assert.equal(calls.sessionUpdates[1].surface.selectedIndex, 2);
+  assert.equal(calls.sessionUpdates[1].data.selectedIndex, 2);
 
   effortCommandHandler.handleEvent(host.session.getActive(), { type: INPUT_EVENTS.MOVE_RIGHT }, host);
 
@@ -1550,8 +1550,8 @@ test('effortCommandHandler shows selectable efforts, confirms, cancels, and repo
   const failing = createFakeHost({
     effortCommandInfo: {
       currentModelLabel: 'gpt-fast',
-      efforts: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'],
-      selectedIndex: 4
+      efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
+      selectedIndex: 3
     },
     selectEffort() {
       return { ok: false, error: 'cannot write <redacted>' };
@@ -1565,8 +1565,8 @@ test('effortCommandHandler shows selectable efforts, confirms, cancels, and repo
   const cancel = createFakeHost({
     effortCommandInfo: {
       currentModelLabel: 'gpt-fast',
-      efforts: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'],
-      selectedIndex: 4
+      efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
+      selectedIndex: 3
     }
   });
   const cancelSession = startCommand(effortCommandHandler, '/effort', cancel.host);
@@ -2093,9 +2093,11 @@ test('forkCommandHandler matches no-argument commands and shows structured trans
   assert.equal(success.calls.forkCalls, 1);
   assert.equal(successSession.surface.kind, 'info');
   assert.equal(successSession.surface.title, '/fork 分叉成功');
-  assert.ok(successSession.surface.lines.some((line) => line.includes('session-child')));
-  assert.ok(successSession.surface.lines.some((line) => line.includes('session-source')));
-  assert.ok(successSession.surface.lines.some((line) => line.includes('Git')));
+  assert.deepEqual(successSession.surface.lines, [
+    '新会话：session-child',
+    '源会话 session-source 仍可通过 /resume 恢复。',
+    '后续对话将写入新会话。'
+  ]);
   assert.equal(success.calls.transcriptAppends.length, 0);
   handler.handleEvent(successSession, {type: INPUT_EVENTS.SUBMIT}, success.host);
   assert.equal(success.calls.sessionCloses, 1);
@@ -2111,8 +2113,6 @@ test('forkCommandHandler matches no-argument commands and shows structured trans
   assert.deepEqual(failedSession.surface.lines, ['无法创建分叉会话']);
   handler.handleEvent(failedSession, {type: INPUT_EVENTS.ESCAPE}, failed.host);
   assert.equal(failed.calls.sessionCloses, 1);
-
-  assert.match(createForkSurface({ok: true, sourceSessionId: 'a', sessionId: 'b'}).lines.at(-1), /文件系统不会被复制/);
 });
 
 test('resumeCommandHandler opens empty state, selectable sessions, moves, confirms, and cancels', () => {
