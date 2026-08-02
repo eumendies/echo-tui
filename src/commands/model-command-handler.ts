@@ -115,7 +115,6 @@ function confirmModelSelection(
   }
 
   host.session.close();
-  host.composer.reset();
 }
 
 export class ModelCommandHandler implements CommandHandler<ModelCommandInfo> {
@@ -139,8 +138,6 @@ export class ModelCommandHandler implements CommandHandler<ModelCommandInfo> {
     const data = 'models' in modelCommandInfo && modelCommandInfo.models.length > 0
       ? modelCommandInfo
       : null;
-
-    host.composer.reset();
     host.session.open({
       commandName: 'model',
       handler: this,
@@ -171,7 +168,6 @@ export class ModelCommandHandler implements CommandHandler<ModelCommandInfo> {
 
     if (event.type === INPUT_EVENTS.ESCAPE) {
       host.session.close();
-      host.composer.reset();
     }
   }
 }

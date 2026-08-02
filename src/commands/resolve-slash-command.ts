@@ -7,6 +7,7 @@ import { ContextCommandHandler } from './context-command-handler';
 import { CopyCommandHandler } from './copy-command-handler';
 import { DiffCommandHandler } from './diff-command-handler';
 import { EffortCommandHandler } from './effort-command-handler';
+import { ForkCommandHandler } from './fork-command-handler';
 import { HelpCommandHandler } from './help-command-handler';
 import { HooksCommandHandler } from './hooks-command-handler';
 import { McpCommandHandler } from './mcp-command-handler';
@@ -40,6 +41,7 @@ export function createDefaultSlashCommandHandlers(): MatchableCommandHandler[] {
     new CompactCommandHandler(),
     new DiffCommandHandler(),
     new UndoCommandHandler(),
+    new ForkCommandHandler(),
     new ResumeCommandHandler(),
     new ReferenceCommandHandler(),
     new McpCommandHandler(),

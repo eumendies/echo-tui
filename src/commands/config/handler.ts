@@ -58,7 +58,6 @@ class ConfigCommandHandler implements CommandHandler<ConfigCommandData> {
   }
 
   start(_text: string, host: CommandHost): void {
-    host.composer.reset();
     const data = initializeTab({activeTab: 'general'}, 'general', host);
     host.session.open({
       commandName: 'config',
@@ -251,7 +250,6 @@ class ConfigCommandHandler implements CommandHandler<ConfigCommandData> {
     }
 
     host.session.close();
-    host.composer.reset();
   }
 
   private handleDiscardConfirm(data: ConfigCommandData, event: InputEvent, host: CommandHost): void {
@@ -274,7 +272,6 @@ class ConfigCommandHandler implements CommandHandler<ConfigCommandData> {
     if (event.type === INPUT_EVENTS.SUBMIT) {
       if (confirm.selectedIndex === 1) {
         host.session.close();
-        host.composer.reset();
       } else {
         this.update({...data, discardConfirm: undefined}, host);
       }

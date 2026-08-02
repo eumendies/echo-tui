@@ -7,7 +7,7 @@ This repository is a Node.js terminal TUI prototype with a real LLM adapter.
 - `bin/echo-tui.ts`: source CLI entry shim; compiled output runs from `dist/bin/echo-tui.js`.
 - `src/cli/`: command-line argument parsing for `echo-tui`, user setup bootstrap, help/version output, TUI startup handoff, and the non-interactive `--once` runner.
 - `src/app/`: application orchestration, runtime state contexts, command host/runtime, tool approval, and user-question flows.
-- `src/commands/`: slash command handlers for `/help`, `/config`, `/model`, `/effort`, `/mode`, `/status`, `/context`, `/usage`, `/clear`, `/compact`, `/diff`, `/undo`, `/resume`, `/mcp`, `/skills`, `/init`, `/review`, and direct skill invocation.
+- `src/commands/`: slash command handlers for `/help`, `/config`, `/model`, `/effort`, `/mode`, `/status`, `/context`, `/usage`, `/clear`, `/compact`, `/diff`, `/undo`, `/fork`, `/resume`, `/mcp`, `/skills`, `/init`, `/review`, and direct skill invocation.
 - `src/agent/`: provider-neutral agent loop, context compaction, AGENTS.md instruction loading, reasoning summaries, OpenAI Responses/OpenAI Chat/Anthropic adapters, and fake agent fixture.
 - `src/tools/`: built-in tool registry, executors, risk classification, local shell/file/web tools, web fetch/search, patching, skill loading, and user-question tool support.
 - `src/skills/`: project/user skill discovery, enablement state, and skill instruction loading.
@@ -67,7 +67,7 @@ For interactive TUI changes, also do targeted manual verification:
 1. `npm start`
 2. Input editing, `Ctrl+J` newline insertion, Enter submit, and real/fake streaming response
 3. Colored role prefixes, Markdown/table/code rendering, tool call/result rendering, footer status line, footer redraw, resize behavior, and `Ctrl+C` / `Ctrl+D` cleanup
-4. Slash commands and surfaces: `/help`, `/config`, `/model`, `/effort`, `/mode`, `/status`, `/context`, `/usage`, `/clear`, `/compact`, `/diff`, `/undo`, `/resume`, `/mcp`, `/skills`, `/init`, `/review`, slash suggestions, Tab completion, direct `/<skill-name>` invocation, and theme switching through `/config` → 外观
+4. Slash commands and surfaces: `/help`, `/config`, `/model`, `/effort`, `/mode`, `/status`, `/context`, `/usage`, `/clear`, `/compact`, `/diff`, `/undo`, `/fork`, `/resume`, `/mcp`, `/skills`, `/init`, `/review`, slash suggestions, Tab completion, direct `/<skill-name>` invocation, and theme switching through `/config` → 外观；对 `/fork` 额外验证空会话提示、session id 切换、新旧分支独立恢复，以及共享工作目录边界
 5. Interaction modes and local flows: Tab mode cycling, `/mode normal|plan|shell|shell-local`, shell/shell-local execution, `@` file picker selection, and Esc cancellation/interruption where supported
 6. Tool/user interaction flows: apply-patch approval, high-risk bash approval, MCP approval where configured, `ask_user_questions` choice/inline input, `/skills` checkbox state changes, and Esc cancellation where supported
 7. Response lifecycle edges: response lock blocking Enter, Esc interrupting an active assistant turn, partial assistant persistence, local notices, and late callback isolation

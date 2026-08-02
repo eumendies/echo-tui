@@ -1,4 +1,4 @@
-import type {ApplyPatchDisplayMetadata, EditFileDisplayMetadata, ToolResultAttachment} from './tool';
+import type {ApplyPatchDisplayMetadata, EditFileDisplayMetadata, GlobDisplayMetadata, GrepDisplayMetadata, ToolResultAttachment} from './tool';
 import type {ChangeCheckpoint} from './change-history';
 import type {InteractionMode} from './agent';
 import type {SkillSourceKind} from './skill';
@@ -93,9 +93,16 @@ export type ToolResultTranscriptDetails =
       durationMs?: number;
     }
   | {
-      kind: 'glob' | 'grep';
+      kind: 'glob';
       exitCode?: number | null;
       truncated: boolean;
+      display?: GlobDisplayMetadata; // 持久化 glob handler 已保留的路径事实，供重放专属 renderer。
+    }
+  | {
+      kind: 'grep';
+      exitCode?: number | null;
+      truncated: boolean;
+      display?: GrepDisplayMetadata; // 持久化 grep handler 已保留的匹配事实，供重放专属 renderer。
     }
   | {
       kind: 'read_files';
@@ -289,6 +296,18 @@ export type LoadedTranscriptSession = {
   session: TranscriptSession;
   reference: TranscriptSessionJournalReference;
 };
+
+export type TranscriptForkResult =
+  | {
+      ok: true; // 标识新 journal 已创建且当前 session 已切换。
+      sessionId: string; // 新分叉 session 的持久化 id。
+      sourceSessionId: string; // 分叉前源 session 的持久化 id。
+    }
+  | {
+      ok: false; // 标识当前 session 未发生切换。
+      reason: 'empty' | 'failed'; // 区分无可分叉会话与持久化失败。
+      error?: string; // 可直接展示给用户的脱敏失败说明。
+    };
 
 export type TranscriptProjectMetadata = {
   schemaVersion: number;

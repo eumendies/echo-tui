@@ -44,13 +44,17 @@ export function renderComposerSurface(
   maxLines = Number.POSITIVE_INFINITY,
   tuiTheme?: TuiTheme,
   slashSuggestionMaxVisible = Number.POSITIVE_INFINITY,
-  conversationReference: RenderState['conversationReference'] = null
+  conversationReference: RenderState['conversationReference'] = null,
+  pendingMessage: RenderState['pendingMessage'] = null
 ): FooterLayout {
   const theme = resolveFooterTheme(tuiTheme);
   const normalizedMaxLines = normalizeLineLimit(maxLines);
   const statusLineText = renderStatusLineText(statusLine, width, theme);
-  const referenceLines = renderConversationReferenceLines(conversationReference, width, theme);
-  const contentBudget = Math.max(1, normalizedMaxLines - 1 - referenceLines.length);
+  const attachmentBudget = Math.max(0, normalizedMaxLines - 2);
+  const pendingMessageLines = renderPendingMessageLines(pendingMessage, width, theme, Math.min(2, attachmentBudget));
+  const referenceBudget = Math.max(0, attachmentBudget - pendingMessageLines.length);
+  const referenceLines = renderConversationReferenceLines(conversationReference, width, theme).slice(0, referenceBudget);
+  const contentBudget = Math.max(1, normalizedMaxLines - 1 - referenceLines.length - pendingMessageLines.length);
   const suggestionItemBudget = slashSuggestions ? Math.min(slashSuggestions.options.length, slashSuggestionMaxVisible, Math.max(0, contentBudget - 3)) : 0;
   const suggestionLines = slashSuggestions && suggestionItemBudget > 0
     ? renderSlashSuggestionLines(slashSuggestions, width, suggestionItemBudget, Math.max(0, contentBudget - 3), theme)
@@ -65,11 +69,31 @@ export function renderComposerSurface(
   );
 
   return {
-    lines: [...referenceLines, ...composerLayout.lines, ...suggestionLines, statusLineText],
-    cursorRow: referenceLines.length + composerLayout.cursorRow,
+    lines: [...referenceLines, ...pendingMessageLines, ...composerLayout.lines, ...suggestionLines, statusLineText],
+    cursorRow: referenceLines.length + pendingMessageLines.length + composerLayout.cursorRow,
     cursorColumn: composerLayout.cursorColumn,
     showCursor: statusLine?.model.kind !== 'tuning'
   };
+}
+
+/**
+ * 渲染固定高度的待发送卡片；紧张空间退化为单行，正文永不按自然换行扩张。
+ */
+function renderPendingMessageLines(message: RenderState['pendingMessage'], width: number, theme: FooterTheme, maxLines: number): string[] {
+  if (!message || maxLines <= 0) {
+    return [];
+  }
+
+  const safeWidth = safeRenderWidth(width);
+  const preview = message.preview;
+  if (maxLines === 1) {
+    return [tokenText(theme, 'accentStrong', ansi.bold(clampPlainText(`↳ 待发送 · ${preview} · Esc 移除`, safeWidth)))];
+  }
+
+  return [
+    tokenText(theme, 'accentStrong', ansi.bold(clampPlainText('↳ 待发送消息 · 当前回答结束后发送', safeWidth))),
+    tokenText(theme, 'muted', clampPlainText(`  ${preview} · Esc 移除`, safeWidth))
+  ];
 }
 
 /**

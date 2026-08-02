@@ -106,7 +106,6 @@ function confirmEffortSelection(session: CommandSession<EffortCommandInfo>, host
   }
 
   host.session.close();
-  host.composer.reset();
 }
 
 export class EffortCommandHandler implements CommandHandler<EffortCommandInfo> {
@@ -122,8 +121,6 @@ export class EffortCommandHandler implements CommandHandler<EffortCommandInfo> {
     const data = 'efforts' in effortCommandInfo && effortCommandInfo.efforts.length > 0
       ? effortCommandInfo
       : null;
-
-    host.composer.reset();
     host.session.open({
       commandName: 'effort',
       handler: this,
@@ -150,7 +147,6 @@ export class EffortCommandHandler implements CommandHandler<EffortCommandInfo> {
 
     if (event.type === INPUT_EVENTS.ESCAPE) {
       host.session.close();
-      host.composer.reset();
     }
   }
 }

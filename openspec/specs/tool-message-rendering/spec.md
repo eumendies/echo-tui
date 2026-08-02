@@ -22,14 +22,15 @@
 - **THEN** 当路径过多或行宽不足时，renderer SHALL 使用省略形式而不是输出不可读的完整 JSON
 
 ### Requirement: read_files result projection
-系统 SHALL 为 `read_files` tool result 提供专属终端投影。该投影 SHALL 解析 `read_files` 现有文本 envelope，并 SHALL 按结果类型显示清晰的路径头部、状态和关键内容，同时保持原始 transcript record 和 provider-visible result 文本不变。
+系统 SHALL 为 `read_files` tool result 提供专属终端投影。该投影 SHALL 解析 `read_files` 现有文本 envelope，并 SHALL 按结果类型显示树状路径头部、状态和受展示预算约束的内容预览，同时保持原始 transcript record 和 provider-visible result 文本不变。
 
-#### Scenario: 文本文件结果
+#### Scenario: 文本文件结果显示有界预览
 - **WHEN** `read_files` result 包含 `--- text: <path>` envelope 和 `content:` fenced block
 - **THEN** renderer SHALL 显示包含 `<path>` 和 `text` 类型的结果头部
 - **THEN** renderer SHALL 显示紧凑读取摘要，例如读取行号范围或行数
-- **THEN** renderer SHALL NOT 常态显示 fenced block 内的正文内容
-- **THEN** renderer SHALL NOT 常态显示 `--- text:`、`content:` 或 fence marker 作为可见噪音
+- **THEN** renderer SHALL 显示 `content:` fenced block 内的前若干带行号正文行作为有界预览
+- **THEN** 预览行数 SHALL 由 read_files 专属展示预算决定，且 SHALL NOT 常态显示完整正文
+- **THEN** renderer SHALL NOT 显示 `--- text:`、`content:` 或 fence marker 作为可见噪音
 
 #### Scenario: 文本文件分页或截断状态
 - **WHEN** 文本结果 envelope 包含 `has_more: true` 或 `content_truncated: true`
@@ -37,11 +38,12 @@
 - **THEN** renderer SHALL 在该文件结果头部或等价位置显示 `content_truncated` 截断状态
 - **THEN** renderer SHALL 保留可见读取摘要
 
-#### Scenario: 目录结果
+#### Scenario: 目录结果展示预算内子项
 - **WHEN** `read_files` result 包含 `--- directory: <path>` envelope 和 `entries:` 列表
-- **THEN** renderer SHALL 显示包含 `<path>` 和 `directory` 类型的结果头部
-- **THEN** renderer SHALL 以易读列表展示目录直接子项
+- **THEN** renderer SHALL 显示包含 `<path>`、`directory` 类型和 entries 计数的结果头部
+- **THEN** renderer SHALL 以易读列表展示展示预算内的目录直接子项
 - **THEN** 子项 SHALL 保留名称或路径、类型，以及存在时的文件大小信息
+- **THEN** 当 entries 超出展示预算时，renderer SHALL 显示可计数省略提示，如 `… +N more`
 
 #### Scenario: 图片结果
 - **WHEN** `read_files` result 包含 `--- image: <path>` envelope、`size_bytes` 和 `image_attached: true`
@@ -57,6 +59,62 @@
 - **WHEN** `read_files` result envelope 包含 `error:` 或 `reason:` 字段
 - **THEN** renderer SHALL 显示失败路径、类型和错误原因
 - **THEN** renderer SHALL 让用户能区分是单个路径失败还是整个工具调用失败
+
+### Requirement: read_files tree projection structure
+系统 SHALL 将 `read_files` result 投影为使用 box-drawing 字符的树状结构。每个 envelope header SHALL 使用 `├─` 前缀，最后一个 envelope SHALL 使用 `└─` 闭合；内容行 SHALL 使用与 header 竖线同列的 `│` rail，最后一个 envelope 的内容行 rail SHALL 闭合为空格。树线、行号 gutter 与正文 SHALL 统一使用 `toolOutput` 或等价低强调语义色，且 SHALL NOT 应用语法高亮或固定 ANSI 调色板。
+
+#### Scenario: 多 envelope 树状连接
+- **WHEN** result 包含多个可解析 envelope
+- **THEN** 非最后一个 envelope 的 header SHALL 使用 `├─` 前缀
+- **THEN** 最后一个 envelope 的 header SHALL 使用 `└─` 前缀
+- **THEN** 非最后一个 envelope 的内容行 SHALL 使用与 header 竖线同列的 `│` rail
+- **THEN** 最后一个 envelope 的内容行 SHALL 使用空白闭合 rail
+- **THEN** 树线、行号 gutter 与正文 SHALL 保持层级与列对齐
+
+#### Scenario: 单一 envelope 闭合
+- **WHEN** result 只包含一个可解析 envelope
+- **THEN** 该 header SHALL 使用 `└─` 前缀
+- **THEN** 该 envelope 的内容行 SHALL 使用空白闭合 rail
+
+#### Scenario: 低强调单色样式
+- **WHEN** renderer 显示 envelope header、行号 gutter 或正文预览
+- **THEN** renderer SHALL 使用当前主题的 `toolOutput` 或等价低强调语义样式
+- **THEN** renderer SHALL NOT 对预览正文应用 syntax theme、markdown 样式或固定 RGB/256 色值
+
+### Requirement: read_files content display budget
+系统 SHALL 使用 read_files 专属总展示预算 30 个物理行，且 SHALL 不影响共享的 `TOOL_RESULT_MAX_DISPLAY_LINES` 常量（grep 等其他 renderer 保持现状）。每个 envelope header SHALL 固定占用 1 行；剩余预算 SHALL 由所有内容型 envelope（成功 text 与 directory）等分，单文件场景占满剩余预算，多文件场景按请求顺序均分，总投影行数 SHALL NOT 超过预算。所有内容行 SHALL 在输出前按可用宽度做尾部省略，保证 1 源行对应 1 个物理行。
+
+#### Scenario: 单文本文件占满预算
+- **WHEN** result 只包含一个成功 text envelope 且无 `output_truncated` 标记
+- **THEN** renderer SHALL 显示 1 行 header，并将剩余预算全部用于该文件的预览
+- **THEN** 当文件内容行数足够时，总投影行数 SHALL 等于 30
+
+#### Scenario: 多文本文件等分预算
+- **WHEN** result 包含 N 个成功 text envelope
+- **THEN** 每个 envelope SHALL 获得 `floor(剩余预算 / N)` 行预览
+- **THEN** 总投影行数 SHALL NOT 超过 30
+
+#### Scenario: 混合 text 与 directory 等分
+- **WHEN** result 同时包含成功 text 与 directory envelope
+- **THEN** text 与 directory SHALL 按内容型 envelope 总数等分剩余预算
+- **THEN** 每个 directory SHALL 在分配行数内显示 entries，超出时显示可计数省略提示
+- **THEN** 总投影行数 SHALL NOT 超过 30
+
+#### Scenario: text 内容超出预算显示省略提示
+- **WHEN** 成功 text envelope 的 `content:` 行数超过其分配的行数预算
+- **THEN** renderer SHALL 显示预算内前若干行，并将最后一行替换为可计数省略提示，如 `… +N more`
+- **THEN** 分配行数不足 2 行时 SHALL 只显示 1 行预览且不加省略提示
+- **THEN** 省略 SHALL 只影响终端可见投影，不得删除原始 result 文本中的内容行
+
+#### Scenario: output_truncated 提示计入预算
+- **WHEN** result 包含 `output_truncated` 标记
+- **THEN** renderer SHALL 在整块末尾保留一行截断提示，且该行 SHALL 计入总预算
+- **THEN** 内容行分配 SHALL 在扣除提示行后计算，总投影行数 SHALL NOT 超过 30
+
+#### Scenario: 内容行宽度省略
+- **WHEN** 预览行或 directory entries 行超过可用显示宽度
+- **THEN** renderer SHALL 按当前 safe render width 做尾部省略
+- **THEN** 每个 renderer 返回行 SHALL NOT 包含原始换行或回车，也 SHALL NOT 超过 safe render width
 
 ### Requirement: read_files renderer safety and fallback
 `read_files` 专属 renderer SHALL 只影响终端可见投影，不改变 transcript、tool execution result、附件或 agent continuation 语义。无法安全解析的记录 SHALL 降级到通用 tool renderer。
@@ -469,3 +527,206 @@ bash 专属 renderer SHALL 只改变终端可见投影，不得改变 transcript
 - **THEN** 原始 `toolName`、`argumentsText`、`text`、`ok`、`toolCallId`、`timedOut`、`truncated` 和 attachments SHALL 保持不变
 - **THEN** provider continuation SHALL 接收原始 tool result 文本而不是渲染后的标题或文档 rail
 - **THEN** 已写入的完整 offloading artifact SHALL 保持不变且继续可由模型通过现有工具读取
+
+### Requirement: grep query and lifecycle projection
+系统 SHALL 为 `grep` pending call、孤立 call 和相邻且 call id 匹配的 call/result pair 提供专属终端投影。投影 SHALL 使用 `Grep · “<pattern>”` 或等价的人类可读标题替代完整 arguments JSON，并 SHALL 通过调用标记或标题让 pending、成功、无匹配和失败状态清晰可辨。
+
+#### Scenario: Pending grep 显示查询摘要
+- **WHEN** footer pending preview 或孤立 transcript call 的 `toolName` 为 `grep`
+- **AND** arguments 包含非空 pattern `needle`
+- **THEN** renderer SHALL 显示 `Grep · “needle” · searching` 或等价查询和 pending 状态
+- **THEN** renderer SHALL NOT 显示完整 arguments JSON
+
+#### Scenario: 查询语义选项显示在第一行
+- **WHEN** 合法 `grep` arguments 包含 `literal: false` 或显式 case_sensitive
+- **THEN** renderer SHALL 在第一行查询标题中显示 `regex`、`case sensitive` 或 `ignore case` 等对应查询语义
+- **THEN** 查询语义 SHALL 位于生命周期或结果状态之前，或者以等价顺序保持与 pattern 的直接关联
+- **THEN** renderer SHALL NOT 将 regex 或大小写语义混入第二行搜索范围 metadata
+
+#### Scenario: 搜索范围显示在第二行
+- **WHEN** 合法 `grep` arguments 包含 paths 或 glob，或者使用默认当前目录搜索范围
+- **THEN** renderer SHALL 在标题下方显示有界的搜索范围 metadata
+- **THEN** metadata SHALL 表达 paths，并在存在时表达 glob 文件过滤条件
+- **THEN** renderer SHALL NOT 把字段名和值以原始 JSON 形式展示
+
+#### Scenario: 查询标题过长时安全换行
+- **WHEN** pattern、regex、显式大小写语义和生命周期或结果状态无法放入一个 safe render width
+- **THEN** renderer SHALL 使用与第一行标题一致的 continuation prefix 安全换行
+- **THEN** renderer SHALL 保持查询语义与 pattern 的标题层级
+- **THEN** 第二行 SHALL 继续只表达搜索范围和 glob 文件过滤条件
+
+#### Scenario: 完成 pair 使用共享标题和结果状态
+- **WHEN** transcript 包含相邻且 call id 匹配的 `grep` call 与 result
+- **THEN** renderer SHALL 将二者投影为一个共享查询标题的工具块
+- **THEN** 成功调用标记 SHALL 使用 success 语义状态，失败调用标记 SHALL 使用 error 语义状态
+- **THEN** 完成态 SHALL NOT 继续显示 searching 状态
+
+### Requirement: grep grouped match tree projection
+系统 SHALL 在成功 `grep` result 包含合法结构化 display metadata 时，将匹配项按原始顺序投影为有界文件树。renderer SHALL 用文件节点、1-based 行列 gutter 和代码片段表达每个可见匹配，并 SHALL 使用当前主题的低强调语义色，而不是 syntax theme 或固定 ANSI 调色板。
+
+#### Scenario: 单文件多个匹配使用文件节点和 gutter
+- **WHEN** 成功 result 的 display metadata 包含同一路径下多个相邻匹配
+- **THEN** renderer SHALL 只为该连续文件组显示一个文件节点
+- **THEN** 每个可见匹配 SHALL 显示 metadata 中的 1-based line、1-based column 和行文本
+- **THEN** 行列 gutter、树线和代码正文 SHALL 保持层级与列对齐
+
+#### Scenario: 多文件匹配形成有序结果树
+- **WHEN** 成功 result 的 display metadata 包含多个路径的匹配
+- **THEN** renderer SHALL 按 metadata 原始顺序显示文件组和组内匹配
+- **THEN** renderer SHALL 使用 `├─`、`└─`、`│` 或等价树形元素区分文件层级
+- **THEN** renderer SHALL NOT 从 provider-visible `path:line:column: text` 结果文本反向推断文件分组
+
+#### Scenario: 结果树保持低强调样式
+- **WHEN** renderer 显示一个或多个匹配行文本
+- **THEN** renderer SHALL 使用当前主题的 `toolOutput` 或等价低强调语义样式投影树线、文件路径、行列 gutter 和代码片段
+- **THEN** renderer SHALL NOT 对匹配正文应用 syntax theme 或跨行语法扫描状态
+- **THEN** renderer SHALL NOT 为 grep 写死 RGB 或 256 色值
+
+#### Scenario: 无匹配显示紧凑空状态
+- **WHEN** 成功 result 的合法 display metadata 包含空 matches 数组
+- **THEN** 标题 SHALL 显示 `no matches` 或等价空状态
+- **THEN** renderer SHALL NOT 显示空文件树或重复的无匹配正文
+
+### Requirement: grep result count and display budget
+系统 SHALL 区分 `grep` handler 的结构化截断事实与 renderer 为控制终端占用而执行的展示省略。结果数量、more-available 状态和可见省略数量 SHALL 从结构化 result details 与 display metadata 得出，不得从匹配正文中的同名字面量推断。
+
+#### Scenario: 未截断结果显示捕获数量
+- **WHEN** 成功 result 的 `details.truncated` 为 false 且 display metadata 包含 N 个匹配
+- **THEN** 标题 SHALL 显示 N 个 match 的数量语义
+- **THEN** renderer SHALL NOT 把 TUI 自身未展示的行误报为 handler 截断
+
+#### Scenario: Handler 截断显示 more available
+- **WHEN** 成功 result 的 `details.truncated` 为 true
+- **THEN** 标题 SHALL 将 metadata 中的匹配数量表达为已捕获或已显示数量，并 SHALL 表达 more available
+- **THEN** renderer SHALL NOT 将该数量表述为完整搜索总数
+
+#### Scenario: 超出 renderer 预算时显示可计数省略
+- **WHEN** 合法匹配树在当前 terminal width 下超过专属 renderer 的最终物理行预算
+- **THEN** renderer SHALL 只投影预算内的匹配内容
+- **THEN** 结果树末尾 SHALL 显示被 renderer 省略的 metadata 匹配数量
+- **THEN** 省略 SHALL NOT 删除或修改 result text、display metadata 或 `details.truncated`
+
+### Requirement: grep renderer safety and record preservation
+`grep` 专属 renderer SHALL 只改变终端可见投影，不得改变 tool execution、transcript record、provider continuation 或 session 持久化事实。失败诊断 SHALL 有界显示；无法安全解析的 arguments 或 display metadata SHALL 降级到通用 tool renderer。所有可见行 SHALL 遵守 safe render width、grapheme 和 Tab 展开规则。
+
+#### Scenario: grep 失败显示短诊断
+- **WHEN** 相邻匹配的 `grep` result 标记失败且包含非空失败原因
+- **THEN** renderer SHALL 显示带 failed 状态的查询标题和有界诊断
+- **THEN** renderer SHALL NOT 把失败文本伪装为匹配树
+
+#### Scenario: 非标准调用参数安全降级
+- **WHEN** `grep` call arguments 不是预期 JSON object，或 pattern、paths、glob、literal、case_sensitive 的类型不可信
+- **THEN** renderer SHALL 使用通用 tool call renderer
+- **THEN** renderer SHALL NOT 抛出异常或中断 footer/transcript 渲染
+
+#### Scenario: 缺失或非法 display metadata 安全降级
+- **WHEN** 成功 `grep` result 缺少 display metadata，或者 metadata 中的 kind、matches、path、line、column、text 任一必要字段非法
+- **THEN** renderer SHALL 使用通用 tool result renderer 展示有界原始文本
+- **THEN** renderer SHALL NOT 部分构造、伪造或重排匹配树
+
+#### Scenario: 窄终端、宽字符和 Tab 安全投影
+- **WHEN** terminal width 较窄，或 pattern、path、匹配正文包含长文本、宽字符或 Tab
+- **THEN** renderer SHALL 按当前可见列展开 Tab，并按 safe render width 换行或截断内容
+- **THEN** 每个 renderer 返回行 SHALL NOT 包含原始换行或回车，也 SHALL NOT 超过 safe render width
+- **THEN** tree prefix、行列 gutter 和 continuation prefix SHALL 保持层级可辨认
+
+#### Scenario: 原始 grep 事实保持不变
+- **WHEN** `grep` call 或 result 被专属 renderer 投影
+- **THEN** 原始 `toolName`、`argumentsText`、result text、`ok`、`toolCallId`、`exitCode`、`truncated` 和 display metadata SHALL 保持不变
+- **THEN** provider continuation SHALL 接收原始 tool result 文本而不是渲染后的标题、scope 或匹配树
+- **THEN** session 重放 SHALL 使用持久化 metadata 产生等价投影，历史缺少 metadata 的记录 SHALL 无需迁移并安全降级
+
+### Requirement: glob query and lifecycle projection
+系统 SHALL 为 `glob` pending call、孤立 call 和相邻且 call id 匹配的 call/result pair 提供专属终端投影。投影 SHALL 使用 `Glob · “<pattern>”` 或等价的人类可读标题替代完整 arguments JSON，并 SHALL 通过调用标记或标题让 pending、成功、无文件和失败状态清晰可辨。
+
+#### Scenario: Pending glob 显示查询摘要
+- **WHEN** footer pending preview 或孤立 transcript call 的 `toolName` 为 `glob`
+- **AND** arguments 包含非空 pattern `**/*.ts`
+- **THEN** renderer SHALL 显示 `Glob · “**/*.ts” · searching` 或等价查询和 pending 状态
+- **THEN** renderer SHALL NOT 显示完整 arguments JSON
+
+#### Scenario: 搜索范围显示在第二行
+- **WHEN** 合法 `glob` arguments 包含 paths，或者使用默认当前目录搜索范围
+- **THEN** renderer SHALL 在标题下方显示有界的搜索范围 metadata
+- **THEN** metadata SHALL 表达 paths，且 SHALL NOT 把字段名和值以原始 JSON 形式展示
+
+#### Scenario: 查询标题过长时安全换行
+- **WHEN** pattern 和生命周期或结果状态无法放入一个 safe render width
+- **THEN** renderer SHALL 使用与第一行标题一致的 continuation prefix 安全换行
+- **THEN** 第二行 SHALL 继续只表达搜索范围
+
+#### Scenario: 完成 pair 使用共享标题和结果状态
+- **WHEN** transcript 包含相邻且 call id 匹配的 `glob` call 与 result
+- **THEN** renderer SHALL 将二者投影为一个共享查询标题的工具块
+- **THEN** 成功和无文件调用的 `◆` SHALL 使用 `toolSuccess` 语义状态，失败调用的 `◆` SHALL 使用 `toolError` 语义状态
+- **THEN** pending 调用 SHALL 保持中性 marker，完成态 SHALL NOT 继续显示 searching 状态
+
+### Requirement: glob flat path tree projection
+系统 SHALL 在成功 `glob` result 包含合法结构化 display metadata 时，将路径按 metadata 原始顺序投影为有界的扁平文件路径树。每个可见文件 SHALL 使用一条完整路径而不重建目录节点，并 SHALL 使用当前主题的低强调语义色，而不是 syntax theme 或固定 ANSI 调色板。
+
+#### Scenario: 多个文件形成扁平路径树
+- **WHEN** 成功 result 的 display metadata 包含多个文件路径
+- **THEN** renderer SHALL 按 metadata 原始顺序显示路径
+- **THEN** renderer SHALL 使用 `├─`、`└─` 或等价树形元素区分列表项
+- **THEN** 每个文件 SHALL 常态占用一个逻辑节点，renderer SHALL NOT 为路径中的目录段额外生成层级节点
+
+#### Scenario: 路径树保持低强调样式
+- **WHEN** renderer 显示一个或多个文件路径
+- **THEN** renderer SHALL 使用当前主题的 `toolOutput` 或等价低强调语义样式投影树线、路径和省略提示
+- **THEN** renderer SHALL NOT 对路径应用 syntax theme
+- **THEN** renderer SHALL NOT 为 glob 写死 RGB 或 256 色值
+
+#### Scenario: 无匹配显示紧凑空状态
+- **WHEN** 成功 result 的合法 display metadata 包含空 paths 数组
+- **THEN** 标题 SHALL 显示 `no files` 或等价空状态
+- **THEN** renderer SHALL NOT 显示空路径树或重复的无匹配正文
+
+### Requirement: glob result count and display budget
+系统 SHALL 区分 `glob` handler 的结构化截断事实与 renderer 为控制终端占用而执行的展示省略。结果数量、more-available 状态和可见省略数量 SHALL 从结构化 result details 与 display metadata 得出，不得从路径文本中的同名字面量推断。
+
+#### Scenario: 未截断结果显示捕获数量
+- **WHEN** 成功 result 的 `details.truncated` 为 false 且 display metadata 包含 N 个路径
+- **THEN** 标题 SHALL 显示 N 个 file 的数量语义
+- **THEN** renderer SHALL NOT 把 TUI 自身未展示的路径误报为 handler 截断
+
+#### Scenario: Handler 截断显示 more available
+- **WHEN** 成功 result 的 `details.truncated` 为 true
+- **THEN** 标题 SHALL 将 metadata 中的路径数量表达为已捕获或已显示数量，并 SHALL 表达 more available
+- **THEN** renderer SHALL NOT 将该数量表述为完整发现总数
+
+#### Scenario: 超出 renderer 预算时显示可计数省略
+- **WHEN** 合法路径树在当前 terminal width 下超过专属 renderer 的最终物理行预算
+- **THEN** renderer SHALL 只投影预算内的文件路径
+- **THEN** 路径树末尾 SHALL 显示被 renderer 省略的 metadata 路径数量
+- **THEN** 省略 SHALL NOT 删除或修改 result text、display metadata 或 `details.truncated`
+
+### Requirement: glob renderer safety and record preservation
+`glob` 专属 renderer SHALL 只改变终端可见投影，不得改变 tool execution、transcript record、provider continuation 或 session 持久化事实。失败诊断 SHALL 有界显示；无法安全解析的 arguments 或 display metadata SHALL 降级到通用 tool renderer。所有可见行 SHALL 遵守 safe render width、grapheme 和 Tab 展开规则。
+
+#### Scenario: glob 失败显示短诊断
+- **WHEN** 相邻匹配的 `glob` result 标记失败且包含非空失败原因
+- **THEN** renderer SHALL 显示带 failed 状态的查询标题和有界诊断
+- **THEN** renderer SHALL NOT 把失败文本伪装为路径树
+
+#### Scenario: 非标准调用参数安全降级
+- **WHEN** `glob` call arguments 不是预期 JSON object，或 pattern、paths 的类型不可信
+- **THEN** renderer SHALL 使用通用 tool call renderer
+- **THEN** renderer SHALL NOT 抛出异常或中断 footer/transcript 渲染
+
+#### Scenario: 缺失或非法 display metadata 安全降级
+- **WHEN** 成功 `glob` result 缺少 display metadata，或者 metadata 中的 kind、paths 或任一路径类型非法
+- **THEN** renderer SHALL 使用通用 tool result renderer 展示有界原始文本
+- **THEN** renderer SHALL NOT 部分构造、伪造或重排路径树
+
+#### Scenario: 窄终端、宽字符、Tab 和控制换行安全投影
+- **WHEN** terminal width 较窄，或 pattern、scope、文件路径包含长文本、宽字符、Tab、CR 或 LF
+- **THEN** renderer SHALL 折叠标题和路径中的控制换行，按当前可见列展开 Tab，并按 safe render width 换行或截断内容
+- **THEN** 每个 renderer 返回行 SHALL NOT 包含原始换行或回车，也 SHALL NOT 超过 safe render width
+- **THEN** tree prefix 和 continuation prefix SHALL 保持层级可辨认；固定树结构无法适配时 SHALL 安全降级
+
+#### Scenario: 原始 glob 事实保持不变
+- **WHEN** `glob` call 或 result 被专属 renderer 投影
+- **THEN** 原始 `toolName`、`argumentsText`、result text、`ok`、`toolCallId`、`exitCode`、`truncated` 和 display metadata SHALL 保持不变
+- **THEN** provider continuation SHALL 接收原始 tool result 文本而不是渲染后的标题、scope 或路径树
+- **THEN** session 重放 SHALL 使用持久化 metadata 产生等价投影，历史缺少 metadata 的记录 SHALL 无需迁移并安全降级
+

@@ -4,7 +4,7 @@ import {StringDecoder} from 'node:string_decoder';
 
 import {isGitPath, normalizePositiveInteger, resolveCwd} from './tool-handler-utils';
 
-import type {GlobToolExecutionResult, ToolCall, ToolHandler} from '../types/tool';
+import type {GlobDisplayMetadata, GlobToolExecutionResult, ToolCall, ToolHandler} from '../types/tool';
 import type {Result} from './tool-handler-utils';
 
 const GLOB_TOOL_NAME = 'glob';
@@ -73,14 +73,15 @@ function createGlobToolHandler(options: GlobToolHandlerOptions = {}): ToolHandle
         details: {
           kind: 'glob',
           exitCode: result.exitCode,
-          truncated: result.truncated
+          truncated: result.truncated,
+          ...(result.display ? {display: result.display} : {})
         }
       };
     }
   };
 }
 
-async function glob(args: Record<string, unknown>, options: {cwd: string; maxPaths: number; rgPath: string}): Promise<{ok: boolean; text: string; exitCode?: number | null; truncated: boolean}> {
+async function glob(args: Record<string, unknown>, options: {cwd: string; maxPaths: number; rgPath: string}): Promise<{ok: boolean; text: string; display?: GlobDisplayMetadata; exitCode?: number | null; truncated: boolean}> {
   const normalized = normalizeRequest(args, options.cwd);
 
   if (!normalized.ok) {
@@ -98,7 +99,8 @@ async function glob(args: Record<string, unknown>, options: {cwd: string; maxPat
     ok,
     exitCode: runResult.exitCode,
     text: ok ? formatGlobSuccess(normalized.value, runResult, options.maxPaths) : formatGlobFailure(runResult.error || cleanStderr(runResult.stderr) || 'ripgrep file listing failed'),
-    truncated: runResult.truncated
+    truncated: runResult.truncated,
+    ...(ok ? {display: {kind: 'glob', paths: runResult.paths}} : {})
   };
 }
 

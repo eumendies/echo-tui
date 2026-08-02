@@ -42,7 +42,6 @@ export class StatusCommandHandler implements CommandHandler<StatusCommandData> {
    * 立即打开本地状态面板；Codex provider 的远端用量随后异步填充。
    */
   start(_text: string, host: CommandHost): void {
-    host.composer.reset();
     const snapshot = host.status.createSnapshot();
     const requestId = ++this.nextRequestId;
     const data = {requestId, snapshot};
@@ -68,7 +67,6 @@ export class StatusCommandHandler implements CommandHandler<StatusCommandData> {
 
     if (event.type === INPUT_EVENTS.ESCAPE || event.type === INPUT_EVENTS.SUBMIT || (event.type === INPUT_EVENTS.TEXT && event.value === 'q')) {
       host.session.close();
-      host.composer.reset();
     }
   }
 

@@ -89,13 +89,31 @@ export type BashToolExecutionResult = ToolExecutionResultBase & {
   };
 };
 
+export type GlobDisplayMetadata = {
+  kind: 'glob'; // 标识该 metadata 只能供 glob 专属终端投影使用。
+  paths: string[]; // handler 实际保留的有序文件路径，不代表截断后的完整结果集。
+};
+
 export type GlobToolExecutionResult = ToolExecutionResultBase & {
   toolName: 'glob';
   details: {
     kind: 'glob';
     exitCode?: number | null;
     truncated: boolean;
+    display?: GlobDisplayMetadata; // 只供终端投影和会话重放使用，不进入 provider-visible 文本。
   };
+};
+
+export type GrepDisplayMatch = {
+  column: number; // ripgrep 返回的 1-based 首个命中列号。
+  line: number; // 命中所在文件的 1-based 行号。
+  path: string; // 相对或绝对命中文件路径，保持 handler 返回顺序中的原值。
+  text: string; // 去除末尾换行后的完整命中逻辑行文本。
+};
+
+export type GrepDisplayMetadata = {
+  kind: 'grep'; // 标识该 metadata 只能供 grep 专属终端投影使用。
+  matches: GrepDisplayMatch[]; // handler 实际保留的有序匹配项，不代表截断后的完整总数。
 };
 
 export type GrepToolExecutionResult = ToolExecutionResultBase & {
@@ -104,6 +122,7 @@ export type GrepToolExecutionResult = ToolExecutionResultBase & {
     kind: 'grep';
     exitCode?: number | null;
     truncated: boolean;
+    display?: GrepDisplayMetadata; // 只供终端投影和会话重放使用，不进入 provider-visible 文本。
   };
 };
 

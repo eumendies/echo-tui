@@ -54,6 +54,9 @@ function createFakeTranscriptStore() {
     },
     loadSessionReadOnly() {
       return currentSession ? {session: structuredClone(currentSession), reference: {...currentReference}} : null;
+    },
+    getSessionFilePath(_cwd, sessionId) {
+      return `/tmp/${sessionId}.jsonl`;
     }
   };
 }
@@ -234,6 +237,26 @@ test('runAssistantTurn emits start and end hooks without adding hook records', a
   assert.equal(harness.appContext.turnContext.responding, false);
 });
 
+test('runAssistantTurn does not own live composer consumption', async () => {
+  const harness = createHarness();
+  harness.appContext.composerContext.setText('later draft');
+  harness.appContext.composerContext.inputHistory.push('queued message');
+
+  await runAssistantTurn({
+    ...harness.input,
+    userText: 'queued message',
+    async runAgent(_session, callbacks) {
+      callbacks.onComplete('done');
+      return 'done';
+    }
+  });
+
+  assert.equal(harness.appContext.composerContext.getText(), 'later draft');
+  assert.deepEqual(harness.appContext.composerContext.getInputHistory(), ['queued message']);
+  assert.deepEqual(harness.appended.map((record) => record.role), ['user', 'assistant']);
+  assert.equal(harness.appended[0].text, 'queued message');
+});
+
 test('runAssistantTurn coalesces token renders on the activity clock and redraws structural events immediately', async () => {
   const harness = createHarness();
   const renderedStates = [];
@@ -294,7 +317,7 @@ test('runAssistantTurn preserves final streamed text when completion precedes th
   assert.equal(harness.appended.at(-1).text, 'ok');
 });
 
-test('runAssistantTurn stores plan transition prompt while preserving display, history, metadata, and attachments', async () => {
+test('runAssistantTurn stores plan transition prompt, display, metadata, and attachments without owning composer history', async () => {
   const harness = createHarness();
   harness.appContext.setInteractionMode('plan');
   const attachments = [{kind: 'image', mediaType: 'image/png', dataBase64: 'aGVsbG8=', sizeBytes: 5}];
@@ -330,7 +353,7 @@ test('runAssistantTurn stores plan transition prompt while preserving display, h
   assert.deepEqual(userRecord.attachments, attachments);
   assert.equal(capturedSession.interactionMode, 'plan');
   assert.equal(capturedSession.records[0].text, userRecord.text);
-  assert.deepEqual(harness.appContext.composerContext.getInputHistory(), ['@request.png']);
+  assert.deepEqual(harness.appContext.composerContext.getInputHistory(), []);
 });
 
 test('runAssistantTurn injects only effective mode transitions across turns', async () => {

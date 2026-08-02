@@ -111,9 +111,14 @@ export type ConversationReferenceRenderState = {
   title: string; // 引用卡片中展示的历史会话标题。
 };
 
+export type PendingMessageRenderState = {
+  preview: string; // 已压成单行但尚未按终端宽度裁剪的待发送文本。
+};
+
 export type RenderState = {
   composer: ComposerState;
   conversationReference?: ConversationReferenceRenderState | null; // composer 上方展示的瞬时历史会话引用卡片。
+  pendingMessage?: PendingMessageRenderState | null; // composer 上方展示的单条 transient 待发送消息。
   commandSurface: CommandSurface | null;
   slashSuggestions?: SlashSuggestionState | null;
   pending: PendingState | null;

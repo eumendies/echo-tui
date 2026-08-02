@@ -1,10 +1,12 @@
 import {type TuiTheme} from '../../config/theme-config';
 import {blockText} from '../colors';
+import {displayWidth, safeRenderWidth} from '../layout';
 import {
-  TOOL_RESULT_MAX_DISPLAY_LINES,
+  clampToDisplayWidth,
+  expandTabs,
+  normalizeContentText,
   renderPrefixedLines,
-  resolveToolCallPrefixStyle,
-  truncateDisplayText
+  resolveToolCallPrefixStyle
 } from './shared';
 
 import type {ToolCallTranscriptRecord, ToolResultTranscriptRecord} from '../../types/transcript';
@@ -12,8 +14,18 @@ import type {ToolCallTranscriptRecord, ToolResultTranscriptRecord} from '../../t
 /**
  * read_files 的专属终端投影层只消费现有文本 envelope，不改写 transcript、tool result 或附件。
  * 解析保持保守：只要形状偏离预期就返回 null，由上层分发回退到通用 renderer。
+ * 结果投影使用专属预算 READ_FILES_MAX_DISPLAY_LINES（大于共享的 TOOL_RESULT_MAX_DISPLAY_LINES），
+ * 因为结果区要展示有界内容预览；其他工具 renderer 仍使用共享 12 行预算。
  */
 const READ_FILES_TOOL_NAME = 'read_files';
+// read_files 结果投影总预算：header 行、内容行与 output_truncated 提示行合计恒不超过此值。
+const READ_FILES_MAX_DISPLAY_LINES = 30;
+// 树状投影字符与 grep 结果树同族，保证 header 竖线与内容行 rail 在同一列对齐。
+const TREE_HEADER_PREFIX = '  ├─ ';
+const TREE_HEADER_LAST_PREFIX = '  └─ ';
+const TREE_CONTENT_RAIL = '  │ ';
+const TREE_CONTENT_CLOSED_RAIL = '    ';
+const OUTPUT_TRUNCATED_LINE = 'output_truncated: true';
 const MAX_CALL_PATHS = 3;
 const MAX_CALL_SEGMENT_LENGTH = 48;
 // 路径本身允许分号，因此目录项从右侧已知后缀识别类型和大小，不能直接按分号切分。
@@ -64,6 +76,7 @@ function renderReadFilesToolCallLines(
 
 /**
  * 渲染 read_files 结果 envelope；解析失败返回 null 交给通用 renderer。
+ * 先解析全部 envelope，再按专属预算分配每个内容型 envelope 的行数，最后逐 envelope 树状渲染合并。
  */
 function renderReadFilesToolResultLines(record: ToolResultTranscriptRecord, width: number, theme: TuiTheme): string[] | null {
   const parsed = parseReadFilesResult(record.text);
@@ -72,21 +85,46 @@ function renderReadFilesToolResultLines(record: ToolResultTranscriptRecord, widt
     return null;
   }
 
-  const renderedLines = parsed.envelopes.flatMap(renderReadFilesEnvelope);
+  const perEnvelopeLines = allocateContentLineBudget(parsed.envelopes, parsed.outputTruncated);
+  const lines = parsed.envelopes.flatMap((envelope, index) =>
+    renderReadFilesEnvelopeLines(envelope, {
+      isLast: index === parsed.envelopes.length - 1,
+      perEnvelopeLines,
+      width,
+      theme
+    })
+  );
 
   if (parsed.outputTruncated) {
-    renderedLines.push('output_truncated: true');
+    lines.push(renderBoundedLine('  ', OUTPUT_TRUNCATED_LINE, width, theme));
   }
 
-  const displayText = truncateDisplayText(renderedLines.join('\n'), TOOL_RESULT_MAX_DISPLAY_LINES);
+  return lines;
+}
 
-  return renderPrefixedLines({
-    text: displayText,
-    width,
-    firstPrefix: '  ⎿ ',
-    continuationPrefix: '    ',
-    colorizeLine: (line) => blockText(theme, 'toolOutput', line)
-  });
+/**
+ * 内容行预算：总预算先扣除每个 envelope 的 header 行与 output_truncated 提示行，
+ * 剩余行数由所有内容型 envelope（成功 text 与 directory）等分，余数留白。
+ */
+function allocateContentLineBudget(envelopes: ReadFilesEnvelope[], outputTruncated: boolean): number {
+  const headerLines = envelopes.length;
+  const markerLines = outputTruncated ? 1 : 0;
+  const contentCount = envelopes.filter(isContentEnvelope).length;
+  const remaining = READ_FILES_MAX_DISPLAY_LINES - headerLines - markerLines;
+  const perEnvelopeLines = contentCount > 0 ? Math.max(0, Math.floor(remaining / contentCount)) : 0;
+
+  return perEnvelopeLines;
+}
+
+/**
+ * 内容型 envelope 指成功 text 与 directory；错误 envelope 和 image/pdf 只占 header 行。
+ */
+function isContentEnvelope(envelope: ReadFilesEnvelope): boolean {
+  if (envelope.fields.has('error') || envelope.fields.has('reason')) {
+    return false;
+  }
+
+  return envelope.kind === 'text' || envelope.kind === 'directory';
 }
 
 /**
@@ -392,65 +430,154 @@ function isSupportedEnvelopeShape(
 }
 
 /**
- * 根据 envelope 类型选择展示策略：正文密集型内容只展示摘要，目录和错误保留可操作信息。
+ * 渲染单个 envelope 的树状行：header 节点 + 预算内的内容行。
+ * 非最后一个 envelope 使用 ├─ 节点和 │ rail，最后一个使用 └─ 闭合，竖线不悬空。
  */
-function renderReadFilesEnvelope(envelope: ReadFilesEnvelope): string[] {
-  if (envelope.fields.has('error') || envelope.fields.has('reason')) {
-    return renderErrorEnvelope(envelope);
+function renderReadFilesEnvelopeLines(
+  envelope: ReadFilesEnvelope,
+  options: {isLast: boolean; perEnvelopeLines: number; width: number; theme: TuiTheme}
+): string[] {
+  const headerPrefix = options.isLast ? TREE_HEADER_LAST_PREFIX : TREE_HEADER_PREFIX;
+  const rail = options.isLast ? TREE_CONTENT_CLOSED_RAIL : TREE_CONTENT_RAIL;
+  const lines = [renderBoundedLine(headerPrefix, createEnvelopeHeaderText(envelope), options.width, options.theme)];
+
+  if (!isContentEnvelope(envelope)) {
+    return lines;
   }
 
   if (envelope.kind === 'text') {
-    return renderTextEnvelope(envelope);
+    lines.push(...renderTextPreviewLines(envelope, rail, options.perEnvelopeLines, options.width, options.theme));
+  } else if (envelope.kind === 'directory') {
+    lines.push(...renderDirectoryEntryLines(envelope, rail, options.perEnvelopeLines, options.width, options.theme));
+  }
+
+  return lines;
+}
+
+/**
+ * 生成 envelope header 的纯文本；metadata 白名单按类型选择，错误 envelope 保留原因。
+ */
+function createEnvelopeHeaderText(envelope: ReadFilesEnvelope): string {
+  if (envelope.fields.has('error') || envelope.fields.has('reason')) {
+    return createEnvelopeHeader(envelope, formatMetadata(envelope, ['size_bytes', 'error', 'reason']) || 'error');
+  }
+
+  if (envelope.kind === 'text') {
+    return createEnvelopeHeader(envelope, formatTextMetadata(envelope));
   }
 
   if (envelope.kind === 'directory') {
-    return renderDirectoryEnvelope(envelope);
+    return createEnvelopeHeader(envelope, formatDirectoryMetadata(envelope));
   }
 
   if (envelope.kind === 'image') {
-    return [createEnvelopeHeader(envelope, formatMetadata(envelope, ['size_bytes', 'image_attached']))];
+    return createEnvelopeHeader(envelope, formatMetadata(envelope, ['size_bytes', 'image_attached']));
   }
 
   if (envelope.kind === 'pdf') {
-    return renderPdfEnvelope(envelope);
+    return createEnvelopeHeader(envelope, formatMetadata(envelope, ['pages', 'pages_with_text', 'content_truncated']));
   }
 
-  return renderUnsupportedEnvelope(envelope);
-}
-
-function renderTextEnvelope(envelope: ReadFilesEnvelope): string[] {
-  return [createEnvelopeHeader(envelope, formatTextMetadata(envelope))];
+  return createEnvelopeHeader(envelope, formatMetadata(envelope, ['size_bytes', 'error', 'reason']));
 }
 
 /**
- * 目录读取的用户价值在直接子项，因此保留列表；分页内部状态 has_more 不进入终端投影。
+ * 目录 header 展示已解析的直接子项数量；(empty) 哨兵表示空目录，计数为 0。
  */
-function renderDirectoryEnvelope(envelope: ReadFilesEnvelope): string[] {
+function formatDirectoryMetadata(envelope: ReadFilesEnvelope): string {
+  const entries = envelope.lists.get('entries') || [];
+  const count = entries.length > 0 && entries[0] === '(empty)' ? 0 : entries.length;
+
+  return `entries: ${count}`;
+}
+
+/**
+ * 展示 content block 前若干带行号源行；内容超出预算时最后一行换成可计数省略提示。
+ * 行号在该文件预览内右对齐，内容行数不足预算时按实际行数显示，空文件保持 header 的 lines: empty 摘要。
+ */
+function renderTextPreviewLines(
+  envelope: ReadFilesEnvelope,
+  rail: string,
+  budget: number,
+  width: number,
+  theme: TuiTheme
+): string[] {
+  const contentLines = envelope.blocks.get('content') || [];
+  const {visible: visibleLines, omitted} = sliceWithOmissionHint(contentLines, budget);
+
+  if (visibleLines.length === 0) {
+    return [];
+  }
+
+  const parsedLines = visibleLines.map(parseNumberedTextLine);
+  const maxLineNumberWidth = parsedLines.reduce(
+    (maximum, item) => Math.max(maximum, item === null ? 0 : displayWidth(item.lineNumber)),
+    1
+  );
+  const lines = visibleLines.map((rawLine, index) => {
+    const item = parsedLines[index];
+    const gutter = item === null
+      ? `${' '.repeat(maxLineNumberWidth)} │ `
+      : `${' '.repeat(maxLineNumberWidth - displayWidth(item.lineNumber))}${item.lineNumber} │ `;
+    const content = item === null ? rawLine : item.content;
+
+    return renderBoundedLine(`${rail}${gutter}`, content, width, theme);
+  });
+
+  if (omitted > 0) {
+    lines.push(renderBoundedLine(rail, `… +${omitted} more`, width, theme));
+  }
+
+  return lines;
+}
+
+/**
+ * 按预算切出可见项并计算被省略数量，text 预览与 directory entries 共用同一省略规则：
+ * budget<=0 或空列表返回空；数量不超预算全部显示；预算为 1 只显示 1 项不加提示；
+ * 其余情况显示前 budget-1 项，由调用方追加省略提示行。
+ */
+function sliceWithOmissionHint<T>(items: T[], budget: number): {visible: T[]; omitted: number} {
+  if (budget <= 0 || items.length === 0) {
+    return {visible: [], omitted: 0};
+  }
+
+  if (items.length <= budget) {
+    return {visible: items, omitted: 0};
+  }
+
+  if (budget === 1) {
+    return {visible: items.slice(0, 1), omitted: 0};
+  }
+
+  const visibleCount = budget - 1;
+
+  return {visible: items.slice(0, visibleCount), omitted: items.length - visibleCount};
+}
+
+/**
+ * 展示预算内的目录直接子项；entries 超出预算时最后一行换成可计数省略提示。
+ */
+function renderDirectoryEntryLines(
+  envelope: ReadFilesEnvelope,
+  rail: string,
+  budget: number,
+  width: number,
+  theme: TuiTheme
+): string[] {
   const entries = envelope.lists.get('entries') || [];
 
-  return [
-    createEnvelopeHeader(envelope, ''),
-    ...entries.map(formatDirectoryEntry)
-  ];
-}
+  if (entries.length > 0 && entries[0] === '(empty)') {
+    return [];
+  }
 
-/**
- * PDF 提取文本会很长，终端只保留页数和截断状态，正文继续留在原始 tool result 中供模型使用。
- */
-function renderPdfEnvelope(envelope: ReadFilesEnvelope): string[] {
-  return [createEnvelopeHeader(envelope, formatMetadata(envelope, ['pages', 'pages_with_text', 'content_truncated']))];
-}
+  const {visible: visibleEntries, omitted} = sliceWithOmissionHint(entries, budget);
+  const lines = visibleEntries.map((entry) => renderBoundedLine(rail, `  • ${formatDirectoryEntryText(entry)}`, width, theme));
 
-/**
- * 单路径失败需要保留媒体类型、路径和原因，便于用户判断是局部失败还是整次工具失败。
- */
-function renderErrorEnvelope(envelope: ReadFilesEnvelope): string[] {
-  const metadata = formatMetadata(envelope, ['size_bytes', 'error', 'reason']);
-  return [createEnvelopeHeader(envelope, metadata.length > 0 ? metadata : 'error')];
-}
+  if (omitted > 0) {
+    lines.push(renderBoundedLine(rail, `… +${omitted} more`, width, theme));
+  }
 
-function renderUnsupportedEnvelope(envelope: ReadFilesEnvelope): string[] {
-  return [createEnvelopeHeader(envelope, formatMetadata(envelope, ['size_bytes', 'error', 'reason']))];
+  return lines;
 }
 
 /**
@@ -481,7 +608,7 @@ function formatTextMetadata(envelope: ReadFilesEnvelope): string {
 }
 
 /**
- * 文本内容主要供模型继续推理使用，终端只展示读取范围，避免源码正文挤占多文件结果预算。
+ * 文本内容主要供模型继续推理使用，header 摘要展示读取范围；正文预览行数由专属预算另行约束。
  */
 function summarizeTextContent(lines: string[] | undefined): string {
   if (!lines || lines.length === 0) {
@@ -502,7 +629,7 @@ function summarizeTextContent(lines: string[] | undefined): string {
 }
 
 /**
- * 解析 read_files 文本内容中的行号前缀，用于生成紧凑读取摘要；正文不进入终端投影。
+ * 解析 read_files 文本内容中的行号前缀，用于生成紧凑读取摘要和预览行的行号 gutter。
  */
 function parseNumberedTextLine(line: string): {content: string; lineNumber: string} | null {
   const match = /^(\d+) │ (.*)$/u.exec(line);
@@ -511,27 +638,34 @@ function parseNumberedTextLine(line: string): {content: string; lineNumber: stri
 }
 
 /**
- * 将目录 envelope 的原始列表项投影成 bullet 行；只从右侧识别已知元数据，避免路径里的分号被误切分。
+ * 将目录 envelope 的原始列表项投影成裸条目文本；只从右侧识别已知元数据，避免路径里的分号被误切分。
  */
-function formatDirectoryEntry(entry: string): string {
-  if (entry === '(empty)') {
-    return '  (empty)';
-  }
-
+function formatDirectoryEntryText(entry: string): string {
   if (!entry.startsWith('- ')) {
-    return `  ${entry}`;
+    return entry;
   }
 
   const parsed = DIRECTORY_ENTRY_PATTERN.exec(entry);
 
   if (!parsed) {
-    return `  • ${entry.slice(2)}`;
+    return entry.slice(2);
   }
 
   const path = parsed[1];
   const metadata = [parsed[2], parsed[3]].filter((part) => part !== undefined).join(', ');
 
-  return `  • ${path}${metadata.length > 0 ? `  ${metadata}` : ''}`;
+  return metadata.length > 0 ? `${path}  ${metadata}` : path;
+}
+
+/**
+ * 渲染带固定前缀的单物理行：前缀后文本按可用宽度尾部省略，保证 1 源行 = 1 物理行。
+ * header、预览行、目录条目与省略提示行统一走此函数，保持 toolOutput 单色、宽度安全。
+ */
+function renderBoundedLine(prefix: string, text: string, width: number, theme: TuiTheme): string {
+  const available = Math.max(1, safeRenderWidth(width) - displayWidth(prefix));
+  const bounded = clampToDisplayWidth(expandTabs(normalizeContentText(text), displayWidth(prefix)), available);
+
+  return blockText(theme, 'toolOutput', `${prefix}${bounded}`);
 }
 
 /**
@@ -571,6 +705,7 @@ function ellipsizeSingleLine(value: string, maxLength: number): string {
 }
 
 export {
+  READ_FILES_MAX_DISPLAY_LINES,
   READ_FILES_TOOL_NAME,
   renderReadFilesToolCallLines,
   renderReadFilesToolResultLines

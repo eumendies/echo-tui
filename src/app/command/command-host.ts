@@ -1,5 +1,5 @@
 import {createAssistantCommandPort} from './assistant-command-port';
-import {createCoreCommandPorts} from './core-command-ports';
+import {writeClipboardText} from '../clipboard';
 import {createConversationReferenceCommandPort} from './conversation-reference-command-port';
 import {createHistoryCommandPorts} from './history-command-ports';
 import {createHooksCommandPort} from './hooks-command-port';
@@ -34,12 +34,6 @@ type CommandHostOptions = {
  */
 function createCommandHost(options: CommandHostOptions): CommandHostApp {
   const {appContext, appendRecord, exit, hooks, mcpManager, renderFooter, renderResizeRecovery, usageStore} = options;
-  const corePorts = createCoreCommandPorts({
-    composerContext: appContext.composerContext,
-    exit,
-    renderFooter,
-    renderResizeRecovery
-  });
   const modelPorts = createModelCommandPorts({appContext, renderFooter, renderResizeRecovery});
   const settingsPorts = createSettingsCommandPorts({appContext, renderFooter, renderResizeRecovery});
   const statusPorts = createStatusCommandPorts({
@@ -50,10 +44,9 @@ function createCommandHost(options: CommandHostOptions): CommandHostApp {
   const cwd = () => appContext.getCurrentCwd();
 
   return {
-    composer: corePorts.composer,
     transcript: createTranscriptCommandPort({appContext, appendRecord, renderResizeRecovery}),
     reference: createConversationReferenceCommandPort({appContext, renderFooter, usageStore}),
-    clipboard: corePorts.clipboard,
+    clipboard: {writeText: writeClipboardText},
     model: modelPorts.model,
     config: modelPorts.config,
     skills: createSkillsCommandPort({cwd, clearContextUsage: () => appContext.clearContextUsage()}),
@@ -72,7 +65,7 @@ function createCommandHost(options: CommandHostOptions): CommandHostApp {
     diff: historyPorts.diff,
     undo: historyPorts.undo,
     assistant: createAssistantCommandPort({appContext, appendRecord, renderFooter}),
-    ui: corePorts.ui
+    ui: {exit, renderFooter, renderResizeRecovery}
   };
 }
 

@@ -12,16 +12,10 @@ function createMemory(id, content) {
 }
 
 function createHost(initialMemories = [], options = {}) {
-  const calls = {created: [], updated: [], deleted: [], resets: 0};
+  const calls = {created: [], updated: [], deleted: []};
   let memories = initialMemories.map((memory) => ({...memory}));
   let activeSession = null;
   const host = {
-    composer: {
-      reset() {
-        calls.resets += 1;
-      },
-      leaveHistoryBrowsing() {}
-    },
     memory: {
       list() {
         return options.listResult || {ok: true, memories: memories.map((memory) => ({...memory}))};

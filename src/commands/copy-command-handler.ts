@@ -152,7 +152,6 @@ async function confirmCopy(session: CommandSession<CopyCommandData>, host: Comma
   }
 
   host.session.close();
-  host.composer.reset();
   host.transcript.append({
     role: 'local_notice',
     text: `已复制 ${selectedCount} 条消息到剪贴板。`
@@ -184,7 +183,6 @@ export class CopyCommandHandler implements CommandHandler<CopyCommandData> {
    * 启动消息复制面板，使用当前 transcript 的 user/assistant 快照。
    */
   start(_text: string, host: CommandHost): void {
-    host.composer.reset();
     const messages = host.transcript.listCopyableRecords();
 
     if (messages.length === 0) {
@@ -213,7 +211,6 @@ export class CopyCommandHandler implements CommandHandler<CopyCommandData> {
     if (!session.data) {
       if (event.type === INPUT_EVENTS.ESCAPE) {
         host.session.close();
-        host.composer.reset();
       }
       return;
     }
@@ -259,7 +256,6 @@ export class CopyCommandHandler implements CommandHandler<CopyCommandData> {
 
     if (event.type === INPUT_EVENTS.ESCAPE) {
       host.session.close();
-      host.composer.reset();
     }
   }
 }

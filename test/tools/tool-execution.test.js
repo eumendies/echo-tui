@@ -2505,6 +2505,7 @@ process.exit(0);
   assert.equal(result.ok, true);
   assert.equal(result.details.exitCode, 0);
   assert.equal(result.details.truncated, false);
+  assert.deepEqual(result.details.display, {kind: 'glob', paths: ['b.ts', 'a.ts']});
   assert.deepEqual(args, ['--files', '--hidden', '--sort', 'path', '--null', '--glob', '*.ts', '--glob', '!.git', '--glob', '!.git/**', '--', '.']);
   assert.doesNotMatch(result.text, /pattern: \*\.ts/);
   assert.doesNotMatch(result.text, /returned_paths:/);
@@ -2534,6 +2535,7 @@ test('glob limits search roots, discovers hidden files, and treats no matches as
   assert.equal(missingResult.ok, true);
   assert.equal(missingResult.details.exitCode, 1);
   assert.equal(missingResult.details.truncated, false);
+  assert.deepEqual(missingResult.details.display, {kind: 'glob', paths: []});
   assert.match(missingResult.text, /no files matched/);
 });
 
@@ -2573,6 +2575,7 @@ process.exit(2);
 
   assert.equal(errorResult.ok, false);
   assert.equal(errorResult.details.exitCode, 2);
+  assert.equal(errorResult.details.display, undefined);
   assert.match(errorResult.text, /file listing failed/);
 
   const missingExecutor = createToolExecutor(createToolRegistry([createGlobToolHandler({
@@ -2583,6 +2586,7 @@ process.exit(2);
 
   assert.equal(missingResult.ok, false);
   assert.equal(missingResult.details.exitCode, null);
+  assert.equal(missingResult.details.display, undefined);
   assert.match(missingResult.text, /ripgrep executable not found/);
 });
 
@@ -2598,6 +2602,7 @@ process.exit(0);
   assert.equal(DEFAULT_MAX_PATHS > 2, true);
   assert.equal(result.ok, true);
   assert.equal(result.details.truncated, true);
+  assert.deepEqual(result.details.display, {kind: 'glob', paths: ['one.ts', 'two.ts']});
   assert.match(result.text, /has_more: true/);
   assert.match(result.text, /More than 2 paths found/);
   assert.match(result.text, /one\.ts/);
@@ -2636,6 +2641,10 @@ process.exit(0);
   assert.equal(result.ok, true);
   assert.equal(result.details.exitCode, 0);
   assert.equal(result.details.truncated, false);
+  assert.deepEqual(result.details.display, {
+    kind: 'grep',
+    matches: [{path: 'src/tool.ts', line: 7, column: 7, text: 'const needle = true;'}]
+  });
   assert.deepEqual(args, ['--json', '--line-number', '--column', '--fixed-strings', '--ignore-case', '--glob', '*.ts', '--', 'needle', 'src', 'test']);
   assert.doesNotMatch(result.text, /pattern: needle/);
   assert.doesNotMatch(result.text, /returned_matches:/);
@@ -2669,6 +2678,10 @@ process.exit(0);
   const regexArgs = JSON.parse(fs.readFileSync(path.join(cwd, 'regex-args.json'), 'utf8'));
 
   assert.equal(regexResult.ok, true);
+  assert.deepEqual(regexResult.details.display, {
+    kind: 'grep',
+    matches: [{path: 'src/a.ts', line: 3, column: 1, text: 'alpha42'}]
+  });
   assert.deepEqual(regexArgs, ['--json', '--line-number', '--column', '--case-sensitive', '--', 'alpha[0-9]+', '.']);
   assert.doesNotMatch(regexResult.text, /literal: false/);
   assert.doesNotMatch(regexResult.text, /case_sensitive: true/);
@@ -2687,6 +2700,7 @@ process.exit(0);
   assert.equal(noMatchResult.ok, true);
   assert.equal(noMatchResult.details.exitCode, 1);
   assert.equal(noMatchResult.details.truncated, false);
+  assert.deepEqual(noMatchResult.details.display, {kind: 'grep', matches: []});
   assert.match(noMatchResult.text, /no matches found/);
 });
 
@@ -2722,6 +2736,7 @@ process.exit(2);
 
   assert.equal(errorResult.ok, false);
   assert.equal(errorResult.details.exitCode, 2);
+  assert.equal(errorResult.details.display, undefined);
   assert.match(errorResult.text, /regex parse error/);
 
   const missingExecutor = createToolExecutor(createToolRegistry([createGrepToolHandler({
@@ -2738,6 +2753,7 @@ process.exit(2);
 
   assert.equal(missingResult.ok, false);
   assert.equal(missingResult.details.exitCode, null);
+  assert.equal(missingResult.details.display, undefined);
   assert.match(missingResult.text, /ripgrep executable not found/);
 });
 
@@ -2769,6 +2785,13 @@ process.exit(0);
   assert.equal(DEFAULT_MAX_MATCHES > 2, true);
   assert.equal(result.ok, true);
   assert.equal(result.details.truncated, true);
+  assert.deepEqual(result.details.display, {
+    kind: 'grep',
+    matches: [
+      {path: 'src/many.ts', line: 1, column: 1, text: 'hit-0'},
+      {path: 'src/many.ts', line: 2, column: 1, text: 'hit-1'}
+    ]
+  });
   assert.match(result.text, /has_more: true/);
   assert.match(result.text, /More than 2 matches found/);
   assert.match(result.text, /hit-0/);

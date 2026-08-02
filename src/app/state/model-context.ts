@@ -376,6 +376,14 @@ class ModelContext {
     }
   }
 
+  /**
+   * 将当前内存选择重新绑定到刚创建的 session；即使源 session 已同步也强制尝试新 sidecar。
+   */
+  rebindCurrentSelectionToSession(): void {
+    this.sessionSettingsDirty = true;
+    this.persistCurrentSessionSettings();
+  }
+
   private commitSelection(modelId: string, effort: ReasoningEffort | undefined): SelectModelResult {
     this.refreshModelState();
 

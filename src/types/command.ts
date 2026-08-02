@@ -1,7 +1,7 @@
 import type { InputEvent } from './input';
 import type { AgentInstructionFileName, AgentType, ContextUsage, InteractionMode, ReasoningEffort } from './agent';
 import type {DiffFile, DiffSourceInfo, DiffSourceResult} from './diff';
-import type { CompactionState, PreparedConversationReference, TranscriptRecord, TranscriptSessionMetadata, UserTranscriptMetadata } from './transcript';
+import type { CompactionState, PendingConversationReference, PreparedConversationReference, TranscriptForkResult, TranscriptRecord, TranscriptSessionMetadata, UserTranscriptMetadata } from './transcript';
 import type {UndoExecuteResult, UndoSummary} from './change-history';
 import type {UsageDailyAggregate, UsageQueryOptions} from './usage';
 import type {LifecycleHookConfigDraft, LifecycleHookDraftEntry, LifecycleHookEventName, LifecycleHookTestResult} from './hooks';
@@ -562,6 +562,7 @@ export type CommandReferencePrepareResult =
 
 export type CommandReferenceSubmissionOptions = {
   modelProfileIdOverride?: string; // 当前消息通过 skill 等入口指定的本轮模型覆盖。
+  reference?: PendingConversationReference; // 普通 composer 提交时捕获的引用素材；省略时读取当前 live composer 附件。
   reasoningEffortOverride?: ReasoningEffort; // 当前消息覆盖模型配置的本轮 reasoning effort。
 };
 
@@ -577,12 +578,9 @@ export type CommandReferenceSubmissionResult =
     };
 
 export type CommandHostApp = {
-  composer: {
-    reset(): void;
-    leaveHistoryBrowsing(): void;
-  };
   transcript: {
     clear(): void;
+    forkSession(): TranscriptForkResult;
     loadSession(sessionId: string): boolean;
     append(record: TranscriptRecord): void;
     listCopyableRecords(): CopyableMessageRecord[];

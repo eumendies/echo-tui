@@ -7,6 +7,7 @@ import {TranscriptContext} from './transcript-context';
 import {TurnContext} from './turn-context';
 import {ChangeHistoryContext} from './change-history-context';
 import {ConversationReferenceContext} from './conversation-reference-context';
+import {PendingMessageContext} from './pending-message-context';
 import {INPUT_EVENTS} from '../../input/event-types';
 import {createDiffSourceResult} from '../diff/source';
 import {DEFAULT_TUI_THEME, type TuiTheme} from '../../config/theme-config';
@@ -21,7 +22,7 @@ import type {CommandSurface, SlashCommandDescriptor} from '../../types/command';
 import type {InputEvent} from '../../types/input';
 import type {RenderState, SlashSuggestionState, StatusLineModelRenderState} from '../../types/render';
 import type {ToolExecutionResult} from '../../types/tool';
-import type {TranscriptRecord, TranscriptSession, TranscriptStore, UserTranscriptMetadata} from '../../types/transcript';
+import type {TranscriptForkResult, TranscriptRecord, TranscriptSession, TranscriptStore, UserTranscriptMetadata} from '../../types/transcript';
 import type {SessionModelSettingsStore} from '../../types/session-model-settings';
 import type {UndoExecuteResult} from '../../types/change-history';
 import type {ToolApprovalContext} from './tool-approval-context';
@@ -88,6 +89,7 @@ class AppContext {
   readonly turnContext: TurnContext;
   readonly changeHistoryContext: ChangeHistoryContext;
   readonly conversationReferenceContext: ConversationReferenceContext;
+  readonly pendingMessageContext: PendingMessageContext;
   readonly renderContext: RenderContext;
   private theme: TuiTheme;
   private appSettings: AppSettings;
@@ -117,9 +119,10 @@ class AppContext {
       settingsStore: sessionModelSettingsStore
     });
     this.modelTuningContext = new ModelTuningContext();
-    this.turnContext = new TurnContext(this.composerContext, this.transcriptContext);
+    this.turnContext = new TurnContext(this.transcriptContext);
     this.changeHistoryContext = new ChangeHistoryContext();
     this.conversationReferenceContext = new ConversationReferenceContext();
+    this.pendingMessageContext = new PendingMessageContext();
     this.theme = theme;
     this.appSettings = structuredClone(appSettings) as AppSettings;
     this.interactionMode = appSettings.defaultInteractionMode;
@@ -241,6 +244,7 @@ class AppContext {
       conversationReference: this.conversationReferenceContext.getRenderState(),
       contextUsage: this.contextUsage,
       model,
+      pendingMessage: this.pendingMessageContext.getRenderState(),
       renderPreferences: {
         showReasoningSummary: this.appSettings.showReasoningSummary,
         slashSuggestionMaxVisible: this.appSettings.slashSuggestionMaxVisible
@@ -443,6 +447,7 @@ class AppContext {
 
     if (loadedSession) {
       this.conversationReferenceContext.clear();
+      this.pendingMessageContext.clear();
       this.changeHistoryContext.restoreHistory(this.transcriptContext.changeHistory);
       this.modelContext.restoreSession(sessionId);
       this.rebuildLastSubmittedAgentMode();
@@ -452,10 +457,29 @@ class AppContext {
   }
 
   /**
+   * 从当前稳定 transcript 创建独立 session，并协调新 sidecar 与失效的 provider usage。
+   */
+  forkTranscriptSession(): TranscriptForkResult {
+    try {
+      const result = this.transcriptContext.forkSession();
+
+      if (result.ok) {
+        this.modelContext.rebindCurrentSelectionToSession();
+        this.clearContextUsage();
+      }
+
+      return result;
+    } catch {
+      return {ok: false, reason: 'failed', error: '无法创建分叉会话'};
+    }
+  }
+
+  /**
    * 清空当前 transcript records，并把当前持久化 session 指针从实例上解绑。
    */
   clearTranscriptRecords(): void {
     this.conversationReferenceContext.clear();
+    this.pendingMessageContext.clear();
     this.transcriptContext.clearRecords();
     this.changeHistoryContext.restoreHistory(this.transcriptContext.changeHistory);
     this.modelContext.resetSessionToGlobalDefaults();
@@ -539,6 +563,7 @@ class AppContext {
    */
   getAgentSession(skillOverride: AgentModelSelectionOverride = {}): AgentSessionInput {
     const modelSelection = this.modelContext.resolveAgentSelection(skillOverride);
+    const sessionJournalPath = this.transcriptContext.getCurrentSessionJournalPath();
 
     return {
       records: structuredClone(this.transcriptContext.getRecords()),
@@ -547,6 +572,7 @@ class AppContext {
       interactionMode: this.interactionMode,
       compactionThresholdRatio: this.appSettings.compactionThresholdRatio,
       skillCatalogContextRatio: this.appSettings.skillCatalogContextRatio,
+      ...(sessionJournalPath ? {sessionJournalPath} : {}),
       ...(modelSelection || {})
     };
   }

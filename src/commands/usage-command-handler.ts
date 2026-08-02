@@ -67,7 +67,6 @@ export class UsageCommandHandler implements CommandHandler {
    * 启动 /usage，读取本地 usage 账本并打开只读每日用量面板。
    */
   start(_text: string, host: CommandHost): void {
-    host.composer.reset();
     const dailyUsage = host.usage.listDailyUsage();
 
     if (dailyUsage.length === 0) {
@@ -102,14 +101,12 @@ export class UsageCommandHandler implements CommandHandler {
     if (!data) {
       if (event.type === INPUT_EVENTS.ESCAPE || event.type === INPUT_EVENTS.SUBMIT || event.type === INPUT_EVENTS.TEXT) {
         host.session.close();
-        host.composer.reset();
       }
       return;
     }
 
     if (event.type === INPUT_EVENTS.ESCAPE || event.type === INPUT_EVENTS.SUBMIT || (event.type === INPUT_EVENTS.TEXT && event.value === 'q')) {
       host.session.close();
-      host.composer.reset();
       return;
     }
 

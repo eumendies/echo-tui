@@ -192,7 +192,6 @@ test('createCommandHost composes the complete command protocol from domain ports
   const {host} = createHostHarness();
 
   assert.deepEqual(Object.keys(host), [
-    'composer',
     'transcript',
     'reference',
     'clipboard',

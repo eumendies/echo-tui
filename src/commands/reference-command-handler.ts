@@ -45,7 +45,6 @@ async function confirmReference(session: CommandSession<ReferenceData>, host: Co
   }
 
   host.session.close();
-  host.composer.reset();
   const result = await host.reference.prepare(selected);
 
   if (result.ok) {
@@ -78,7 +77,6 @@ export class ReferenceCommandHandler implements CommandHandler<ReferenceData> {
    * 打开整会话选择器；只读取当前 cwd 的历史 metadata，不改变当前 transcript。
    */
   start(_text: string, host: CommandHost): void {
-    host.composer.reset();
     const sessions = host.reference.listSessions();
 
     if (sessions.length === 0) {
@@ -97,7 +95,6 @@ export class ReferenceCommandHandler implements CommandHandler<ReferenceData> {
     if (!session.data) {
       if (event.type === INPUT_EVENTS.ESCAPE) {
         host.session.close();
-        host.composer.reset();
       }
       return;
     }
@@ -116,7 +113,6 @@ export class ReferenceCommandHandler implements CommandHandler<ReferenceData> {
 
     if (event.type === INPUT_EVENTS.ESCAPE) {
       host.session.close();
-      host.composer.reset();
     }
   }
 }

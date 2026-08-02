@@ -159,6 +159,8 @@ normal 与 plan 之间发生模型可见切换时，模式说明只会加入切�
 | Esc | 关闭面板、隐藏建议、中断 shell 命令或回答 |
 | Ctrl+C / Ctrl+D | 退出 |
 
+assistant 回答期间 composer 仍可编辑。此时按 Enter 会把当前非空输入保存为一条待发送消息，并在当前回答完成或失败后自动按普通输入规则处理；待发送消息不会提前进入当前模型请求或 transcript。队列最多一条，排队后可以继续编辑下一份草稿；已有待发送消息时再次按 Enter 不会覆盖它。卡片显示期间第一次 Esc 只移除待发送消息，第二次 Esc 才中断当前回答。待发送状态只存在于当前进程，`/clear`、成功 `/resume`、退出或重启都会清理它。
+
 ## Slash 命令
 
 | 命令 | 行为 |
@@ -169,6 +171,7 @@ normal 与 plan 之间发生模型可见切换时，模式说明只会加入切�
 | `/status` | 查看目录、AGENTS、memory、model/provider、session，以及 Codex OAuth 5 小时/每周配额进度 |
 | `/context` `/usage` | 查看 provider 上下文占用、本地每日 token 用量 |
 | `/clear` `/compact` `/resume` | 清屏、压缩上下文、恢复历史会话 |
+| `/fork` | 从当前最新状态创建并切换到独立会话分支 |
 | `/reference` | 选择一个历史会话，作为下一条消息的参考上下文 |
 | `/diff` `/undo` | 查看文件差异、回退上一轮文件修改与会话记录 |
 | `/mcp` `/hooks` `/skills` | 管理 MCP server、lifecycle hooks 和 skills |
@@ -224,6 +227,8 @@ skill 放在 `.echo/skills/<name>/SKILL.md`（项目级）或 `~/.echo/skills/<n
 ```
 
 普通消息先照常创建或追加 journal，再尽力同步同 ID sidecar；sidecar 写入失败不会影响当前模型选择、status line、transcript 或 provider 请求。`/resume` 在 sidecar 有效时恢复该 session 的 model/effort；旧会话缺少 sidecar、sidecar 损坏或 profile 已删除时直接使用当前全局默认。`/clear` 只解绑旧 session，以最新全局默认初始化新 session，不删除旧 journal 或 sidecar。显式 `/<skill-name>` 的 model/effort override 只作用于当前 turn，并按字段覆盖 session 值；未覆盖字段继续继承 session，tool continuation 保持本轮已解析配置。`--once` 不读取或创建这些文件，继续直接使用全局默认或命令行单轮 override。
+
+`/fork` 会把当前非空 session 的 records、compaction、todo、change history 和 model/effort 保存为一个使用新 ID 的自包含会话，并立即将后续消息写入新 journal；源 session 保持可通过 `/resume` 恢复。分叉只复制会话状态，不创建 Git branch、worktree 或文件快照，两个分支仍共享当前工作目录；因此从任一分支执行 `/undo` 仍可能覆盖另一分支或用户后续产生的文件修改。分叉反馈只存在于 command surface，不写入 transcript。
 
 加载 transcript 时会顺序重放 journal；孤立 sidecar 不会出现在 `/resume` 候选中，旧 `.json` session 也不会被读取或迁移。`/undo` 截断的历史仍物理保留在 journal 中。清理历史可删除对应 session 文件和 sidecar，或整个 `~/.echo/echo_tui/` 目录。
 

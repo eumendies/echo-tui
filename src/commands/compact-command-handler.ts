@@ -62,7 +62,6 @@ export class CompactCommandHandler implements CommandHandler {
    *
    */
   start(_text: string, host: CommandHost): void {
-    host.composer.reset();
     host.session.open({
       commandName: 'compact',
       handler: this,
@@ -78,14 +77,12 @@ export class CompactCommandHandler implements CommandHandler {
   handleEvent(_session: CommandSession, event: InputEvent, host: CommandHost): void {
     if (event.type === INPUT_EVENTS.SUBMIT) {
       host.session.close();
-      host.composer.reset();
       void runManualCompaction(host);
       return;
     }
 
     if (event.type === INPUT_EVENTS.ESCAPE) {
       host.session.close();
-      host.composer.reset();
     }
   }
 }

@@ -144,7 +144,6 @@ export class SkillsCommandHandler implements CommandHandler<SkillsManageData> {
 
   start(_text: string, host: CommandHost): void {
     const data = createSkillsManageData(host.skills.listSkills(), createModelOptions(host));
-    host.composer.reset();
     host.session.open({
       commandName: 'skills',
       handler: this,
@@ -156,7 +155,6 @@ export class SkillsCommandHandler implements CommandHandler<SkillsManageData> {
   handleEvent(session: CommandSession<SkillsManageData>, event: InputEvent, host: CommandHost): void {
     if (event.type === INPUT_EVENTS.ESCAPE) {
       host.session.close();
-      host.composer.reset();
       return;
     }
 
@@ -206,7 +204,6 @@ export class SkillsCommandHandler implements CommandHandler<SkillsManageData> {
     if (event.type === INPUT_EVENTS.SUBMIT) {
       host.skills.saveSkillStates(data.skills.map(({modelLabel: _modelLabel, ...skill}) => skill));
       host.session.close();
-      host.composer.reset();
     }
   }
 }

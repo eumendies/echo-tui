@@ -99,7 +99,6 @@ class DiffCommandHandler implements CommandHandler<DiffCommandData> {
   }
 
   start(_text: string, host: CommandHost): void {
-    host.composer.reset();
     const result = host.diff.getSource();
 
     if (result.status === 'empty') {
@@ -124,7 +123,6 @@ class DiffCommandHandler implements CommandHandler<DiffCommandData> {
   handleEvent(session: CommandSession<DiffCommandData>, event: InputEvent, host: CommandHost): void {
     if (event.type === INPUT_EVENTS.ESCAPE || event.type === INPUT_EVENTS.SUBMIT) {
       host.session.close();
-      host.composer.reset();
       return;
     }
 

@@ -43,7 +43,6 @@ export class SkillInvocationCommandHandler implements CommandHandler {
     }
 
     if (result.reason === 'disabled') {
-      host.composer.reset();
       host.session.open({
         commandName: 'skill-invocation',
         handler: this,

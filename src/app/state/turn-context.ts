@@ -8,12 +8,6 @@ import type {ToolCall, ToolExecutionResult} from '../../types/tool';
 import type {ShellTranscriptRecord, TranscriptRecord, UserTranscriptMetadata} from '../../types/transcript';
 import type {BashCommandOutputEvent, BashCommandRunResult} from '../../tools/bash-command-runner';
 
-type ComposerTurnBridge = {
-  recordInput: (text: string) => void;
-  reset: () => void;
-  leaveHistoryBrowsing: () => void;
-};
-
 type TranscriptTurnBridge = {
   appendRecord: (record: TranscriptRecord) => TranscriptRecord;
 };
@@ -52,7 +46,6 @@ const ASSISTANT_INTERRUPTED_NOTICE = '已中断模型回答';
  * token 与 shell chunk 只累积 pending 状态，由同一周期 tick 批量投影到 footer。
  */
 class TurnContext {
-  composerContext: ComposerTurnBridge;
   transcriptContext: TranscriptTurnBridge;
   responding: boolean;
   pendingKind: 'thinking' | 'streaming' | 'tool_call' | 'shell_output' | null;
@@ -67,8 +60,7 @@ class TurnContext {
   activeAssistantTurn: ActiveAssistantTurn | null;
   nextAssistantTurnId: number;
 
-  constructor(composerContext: ComposerTurnBridge, transcriptContext: TranscriptTurnBridge) {
-    this.composerContext = composerContext;
+  constructor(transcriptContext: TranscriptTurnBridge) {
     this.transcriptContext = transcriptContext;
     this.responding = false;
     this.pendingKind = null;
@@ -252,9 +244,6 @@ class TurnContext {
    * 提交用户消息并进入响应中状态。
    */
   beginUserTurn(userText: string, options: {displayText?: string; metadata?: UserTranscriptMetadata; attachments?: ToolExecutionResult['attachments']} = {}): TranscriptRecord {
-    this.composerContext.leaveHistoryBrowsing();
-    this.composerContext.recordInput(options.displayText || userText);
-    this.composerContext.reset();
     this.responding = true;
     this.pendingToolCall = null;
     this.clearPending();
@@ -280,13 +269,8 @@ class TurnContext {
     this.clearWorking();
   }
 
-  /**
-   * 进入用户 shell 命令执行态：记录输入历史、清空 composer，并用 working spinner 表示本地执行中。
-   */
+  /** 进入用户 shell 命令执行态，并用 working spinner 表示本地执行中。 */
   beginShellCommand(command: string): void {
-    this.composerContext.leaveHistoryBrowsing();
-    this.composerContext.recordInput(command);
-    this.composerContext.reset();
     this.responding = true;
     this.pendingToolCall = null;
     this.clearPending();

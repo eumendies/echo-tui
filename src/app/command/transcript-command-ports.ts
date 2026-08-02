@@ -5,6 +5,7 @@ import type {AppContext} from '../state/app-context';
 type TranscriptCommandContext = Pick<AppContext,
   'clearContextUsage' |
   'clearTranscriptRecords' |
+  'forkTranscriptSession' |
   'loadTranscriptSession' |
   'transcriptContext'
 >;
@@ -26,6 +27,9 @@ function createTranscriptCommandPort(options: TranscriptCommandPortOptions): Com
       appContext.clearTranscriptRecords();
       appContext.clearContextUsage();
       renderResizeRecovery();
+    },
+    forkSession() {
+      return appContext.forkTranscriptSession();
     },
     loadSession(sessionId: string): boolean {
       const didLoad = Boolean(appContext.loadTranscriptSession(sessionId));

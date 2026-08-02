@@ -74,7 +74,7 @@ function createConversationReferenceCommandPort(options: ConversationReferenceCo
     },
     /** 发送前使用本轮生效模型生成最终引用；长引用在此发起可取消的总结请求。 */
     async prepareForSubmission(submissionOptions = {}) {
-      const pending = appContext.conversationReferenceContext.getPending();
+      const pending = submissionOptions.reference || appContext.conversationReferenceContext.getPending();
 
       if (!pending) {
         return {ok: false as const, reason: 'failed' as const, error: '没有待发送的会话引用'};

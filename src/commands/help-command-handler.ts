@@ -10,7 +10,6 @@ const HELP_SURFACE: InfoCommandSurface & { title: string; lines: string[]; dismi
     '编辑：Ctrl+A/E 行首/行尾 · Ctrl+U/K/W 快速删除',
     '控制：Ctrl+T 调节 model/effort · Shift+Tab 工具授权 · Esc 中断 response 或关闭当前面板 · Ctrl+C/Ctrl+D 退出',
     '提示：输入 / 显示命令/skill 候选 · Tab 补全 · Up/Down 选择',
-    '命令：/config /model /mode /status /context /usage /memory /clear /compact /resume /reference /skills /init /review',
     '工作流：/init 生成或评审当前指令文件 · /review 审查当前代码变更',
     'Skills：/<skill-name> [arguments] 调用已启用 skill'
   ],
@@ -45,7 +44,6 @@ export class HelpCommandHandler implements CommandHandler {
    *
    */
   start(_text: string, host: CommandHost): void {
-    host.composer.reset();
     host.session.open({
       commandName: 'help',
       handler: this,
@@ -64,6 +62,5 @@ export class HelpCommandHandler implements CommandHandler {
     }
 
     host.session.close();
-    host.composer.reset();
   }
 }

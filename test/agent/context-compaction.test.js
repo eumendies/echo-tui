@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 
 const {
   computeCompactionBoundary,
+  createCompactionNoticeRecord,
   estimateContextTokens,
   estimateTextTokens,
   exceedsCompactionThreshold,
@@ -41,6 +42,17 @@ test('exceedsCompactionThreshold compares against window * ratio', () => {
   assert.equal(exceedsCompactionThreshold(80001, 100000), true);
   assert.equal(exceedsCompactionThreshold(60000, 100000, 0.6), false);
   assert.equal(exceedsCompactionThreshold(60001, 100000, 0.6), true);
+});
+
+test('createCompactionNoticeRecord renders compacted count only', () => {
+  const record = createCompactionNoticeRecord({
+    summaryText: 'summary',
+    activeStartIndex: 7,
+    createdAt: '2026-06-29T00:00:00.000Z'
+  });
+
+  assert.equal(record.role, 'compaction_notice');
+  assert.equal(record.text, '已将较早的 7 条历史压缩为摘要');
 });
 
 test('runCompaction uses a custom threshold while force bypasses it', async () => {
