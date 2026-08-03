@@ -22,6 +22,7 @@ import {AppContext} from './state/app-context';
 import {FilePickerContext} from './state/file-picker-context';
 import {ToolApprovalContext} from './state/tool-approval-context';
 import {UserQuestionContext} from './state/user-question-context';
+import {BtwConversationController} from './btw-conversation-controller';
 
 import type {RunAgent} from '../types/agent';
 import type {AppController} from '../types/app';
@@ -55,6 +56,17 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
   let mcpDiagnosticSurface: CommandSurface | null = null;
   let referenceErrorSurface: CommandSurface | null = null;
   let userConfigWatcher: UserConfigWatcher | null = null;
+  const btwConversation = new BtwConversationController({
+    runAgent,
+    getParentSession: () => appContext.getAgentSession(),
+    getParentTurnState: () => ({
+      pending: appContext.turnContext.getPending(),
+      responding: appContext.turnContext.responding
+    }),
+    appendVisible: appendBtwRecords,
+    renderFooter,
+    repaint: renderResizeRecovery
+  });
   // 活动重绘 timer 完全下沉到 turnContext；spinner 与高频 pending 共用这一刷新时钟。
   appContext.turnContext.configureSpinnerTimer({
     onTick: () => renderFooter()
@@ -65,8 +77,12 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
    */
   function createRenderState(): RenderState {
     // 渲染投影优先展示 modal 和本地诊断 surface；输入消费顺序由 input controller 独立维护。
-    const commandSurface = userQuestion.getSurface() || toolApproval.getSurface() || filePicker.getSurface() || referenceErrorSurface || mcpDiagnosticSurface || commandRuntime.getSurface();
-    return appContext.createRenderState({commandSurface, toolApproval});
+    const highPrioritySurface = userQuestion.getSurface() || toolApproval.getSurface() || filePicker.getSurface();
+    // 本地诊断 surface 的输入优先级低于 command session；BTW 活跃时先隐藏，避免显示与输入所有者错位。
+    const modalSurface = highPrioritySurface || (btwConversation.isActive() ? null : referenceErrorSurface || mcpDiagnosticSurface);
+    const commandSurface = modalSurface || (btwConversation.isActive() ? null : commandRuntime.getSurface());
+    const base = appContext.createRenderState({commandSurface, toolApproval});
+    return btwConversation.isActive() ? btwConversation.createRenderState(base) : base;
   }
 
   /**
@@ -78,6 +94,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
       interactionMode: appContext.getInteractionMode()
     });
     activeShellController?.abort();
+    btwConversation.close();
     appContext.conversationReferenceContext.clear();
     userConfigWatcher?.close();
     userConfigWatcher = null;
@@ -106,6 +123,11 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
       role: record.role,
       text: summarizeText(record.text, 0)
     });
+    if (btwConversation.isActive()) {
+      // BTW 活跃时，只重绘 footer，不添加会话记录到主 transcript。
+      renderFooter();
+      return;
+    }
     renderer.appendRecord({
       record,
       ...createRenderState()
@@ -121,10 +143,22 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
       count: records.length,
       roles: records.map((record) => record.role)
     });
+    if (btwConversation.isActive()) {
+      // BTW 活跃时，只重绘 footer，不添加会话记录到主 transcript。
+      renderFooter();
+      return;
+    }
     renderer.appendRecords({
       records,
       ...createRenderState()
     });
+    rememberTerminalSize();
+  }
+
+  /** 仅把 BTW 临时 records 追加到当前 BTW 投影，不触碰主 transcript。 */
+  function appendBtwRecords(records: TranscriptRecord[]): void {
+    if (!btwConversation.isActive() || records.length === 0) return;
+    renderer.appendRecords({records, ...createRenderState()});
     rememberTerminalSize();
   }
 
@@ -136,9 +170,12 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
       recordCount: appContext.transcriptContext.records.length,
       terminalSize: terminal.getSize()
     });
+    // 进入btw时使用destructive render，效果类似于新开了一个窗口，同时使用btw controller内存中保存的records
     renderer.renderDestructive({
-      bannerContext: appContext.renderContext.createBannerContext(),
-      records: appContext.transcriptContext.records,
+      bannerContext: btwConversation.isActive()
+        ? {...appContext.renderContext.createBannerContext(), variant: 'btw', parentActivity: btwConversation.getParentActivity()}
+        : appContext.renderContext.createBannerContext(),
+      records: btwConversation.isActive() ? btwConversation.getRecords() : appContext.transcriptContext.records,
       ...createRenderState()
     });
     rememberTerminalSize();
@@ -170,6 +207,11 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
   const commandHost = createCommandHost({
     appContext,
     appendRecord,
+    btw: {
+      open: (initialQuestion) => btwConversation.open(initialQuestion),
+      handleEvent: (event) => btwConversation.handleEvent(event),
+      close: () => btwConversation.close()
+    },
     exit,
     hooks,
     mcpManager,

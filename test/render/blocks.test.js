@@ -25,6 +25,22 @@ test('renderBanner returns a large startup header at wide widths', () => {
   assert.equal(plainLines.some((line) => line.includes('records append-only')), false);
 });
 
+test('renderBanner uses a compact BTW workspace header without the main title art', () => {
+  const lines = renderBanner({
+    cwd: '/tmp/echo_tui',
+    nodeVersion: 'v20.0.0',
+    terminalSize: {columns: 80, rows: 24},
+    mode: 'current terminal',
+    variant: 'btw',
+    parentActivity: 'MAIN streaming'
+  }).split('\n').map((line) => stripAnsi(line));
+
+  assert.ok(lines.some((line) => line.includes('BTW · 临时只读会话')));
+  assert.ok(lines.some((line) => line.includes('MAIN streaming')));
+  assert.equal(lines.some((line) => line.includes('███████╗')), false);
+  for (const line of lines) assert.ok(displayWidth(line) <= safeRenderWidth(80));
+});
+
 test('renderBanner keeps uneven title rows aligned when safe width is even', () => {
   const lines = renderBanner({
     cwd: '/tmp/echo_tui',

@@ -78,6 +78,11 @@ function createHostHarness(options = {}) {
     settingsRefreshes: 0
   };
   const host = createCommandHost({
+    btw: {
+      open() {},
+      handleEvent() {},
+      close() {}
+    },
     appContext: {
       clearContextUsage() {
         calls.contextUsageClears += 1;
@@ -192,6 +197,7 @@ test('createCommandHost composes the complete command protocol from domain ports
   const {host} = createHostHarness();
 
   assert.deepEqual(Object.keys(host), [
+    'btw',
     'transcript',
     'reference',
     'clipboard',

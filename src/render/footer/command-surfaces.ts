@@ -104,6 +104,10 @@ export function renderCommandSurface(commandSurface: CommandSurface, width: numb
     return renderDiffSurface(commandSurface, width, options.maxLines, theme);
   }
 
+  if (commandSurface.kind === 'btw') {
+    return renderInfoSurface({kind: 'info', title: commandSurface.title, lines: [], dismissHint: commandSurface.dismissHint}, width, options.maxLines, theme);
+  }
+
   const unsupported: never = commandSurface;
   return unsupported;
 }

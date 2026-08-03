@@ -12,6 +12,7 @@ const PLAN_COMPOSER_PLACEHOLDER = '计划问题 · @ 路径 · TAB 切换 mode �
 const SHELL_CONTEXT_COMPOSER_PLACEHOLDER = 'bash 命令 · TAB 切换 mode · 结果进上下文 · Enter 执行';
 const SHELL_LOCAL_COMPOSER_PLACEHOLDER = 'bash 命令 · TAB 切换 mode · 仅本地显示 · Enter 执行';
 const MODEL_TUNING_PLACEHOLDER = 'Tab 切换字段 · ←/→ 调整 · Enter 应用 · Esc 取消';
+const BTW_COMPOSER_PLACEHOLDER = '临时只读旁路问题 · Ctrl+J 换行 · Esc 返回主会话';
 const COMPOSER_MAX_VISIBLE_LINES = 8;
 const STATUS_SEPARATOR = '│';
 const COMPOSER_BOX_SIDE_BORDER = '│';
@@ -190,6 +191,10 @@ function cropBoxedComposerToCursor(layout: FooterLayout, cursorContentRow: numbe
 }
 
 function resolveComposerTheme(statusLine: StatusLineState | undefined, theme: FooterTheme): ComposerTheme {
+  if (statusLine?.mode === 'btw') {
+    return {border: (text) => tokenText(theme, 'btw', text), placeholder: BTW_COMPOSER_PLACEHOLDER, prefix: 'btw ›'};
+  }
+
   if (statusLine?.mode === 'plan') {
     return {border: (text) => tokenText(theme, 'plan', text), placeholder: PLAN_COMPOSER_PLACEHOLDER, prefix: '?'};
   }
@@ -312,7 +317,10 @@ function createRightStatusSegments(statusLine: StatusLineState, theme: FooterThe
     });
   }
 
-  if ((statusLine.mode === 'shell' || statusLine.mode === 'shell-local') && statusLine.activity) {
+  if (statusLine.mode === 'btw') {
+    segments.push(createModeSegment({...statusLine, activity: undefined}, theme));
+    if (statusLine.activity) segments.push(createActivitySegment(statusLine.activity, theme));
+  } else if ((statusLine.mode === 'shell' || statusLine.mode === 'shell-local') && statusLine.activity) {
     segments.push(createShellModeSegment(statusLine, theme), createActivitySegment(statusLine.activity, theme));
   } else {
     segments.push(createModeSegment(statusLine, theme));

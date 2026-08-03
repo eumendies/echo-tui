@@ -56,6 +56,10 @@ export function renderBanner(context: BannerRenderContext = {}, theme: TuiTheme 
   const width = safeRenderWidth(terminalSize.columns);
   const runtimeInfo = `node ${nodeVersion}`;
 
+  if (context.variant === 'btw') {
+    return renderBtwBanner(width, context.parentActivity || 'MAIN idle', theme);
+  }
+
   // 宽度足够时优先显示大字标题，让启动 banner 具备类似 Spring Boot 的 splash 感。
   if (width >= TITLE_ART_WIDTH + 4) {
     const accentWidth = Math.min(width, TITLE_ART_WIDTH + 8);
@@ -91,6 +95,27 @@ export function renderBanner(context: BannerRenderContext = {}, theme: TuiTheme 
       renderBannerBoxLine(' echo_tui', innerWidth, (text) => ansi.inverse(ansi.bold(text)), theme),
       renderBannerBoxLine(` cwd  ${cwd}`, innerWidth, (text) => blockText(theme, 'bannerMuted', text), theme),
       renderBannerBoxLine(` ${runtimeInfo}`, innerWidth, (text) => ansi.dim(blockText(theme, 'bannerMuted', text)), theme),
+    footerBorder,
+    ''
+  ].join('\n');
+}
+
+/**
+ * 渲染 BTW 临时工作区的紧凑标题，避免模式切换时重复主界面大字 banner。
+ */
+function renderBtwBanner(width: number, parentActivity: string, theme: TuiTheme): string {
+  if (width < 12) {
+    return ['', ansi.bold(blockText(theme, 'bannerAccent', 'BTW')), ansi.dim(clampToDisplayWidth(parentActivity, width)), ''].join('\n');
+  }
+
+  const innerWidth = width - 2;
+  const border = ansi.bold(blockText(theme, 'bannerAccent', `╭${'─'.repeat(innerWidth)}╮`));
+  const footerBorder = ansi.bold(blockText(theme, 'bannerAccent', `╰${'─'.repeat(innerWidth)}╯`));
+  return [
+    '',
+    border,
+    renderBannerBoxLine(' BTW · 临时只读会话 · Esc 返回主会话', innerWidth, (text) => ansi.bold(text), theme),
+    renderBannerBoxLine(` ${parentActivity}`, innerWidth, (text) => ansi.dim(text), theme),
     footerBorder,
     ''
   ].join('\n');

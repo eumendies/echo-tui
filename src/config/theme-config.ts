@@ -30,6 +30,7 @@ type FooterThemeColors = {
   accent: ThemeColor;
   accentDeep: ThemeColor;
   accentStrong: ThemeColor;
+  btw: ThemeColor; // BTW composer 边框与前缀的独立强调色。
   usageInput: ThemeColor;
   usageCached: ThemeColor;
   usageOutput: ThemeColor;
@@ -179,6 +180,7 @@ const DEFAULT_TUI_THEME: TuiTheme = {
       accent: rgb(0, 200, 220),
       accentDeep: rgb(0, 120, 150),
       accentStrong: rgb(90, 230, 245),
+      btw: rgb(255, 170, 80),
       usageInput: rgb(90, 230, 245),
       usageCached: rgb(0, 120, 150),
       usageOutput: rgb(96, 210, 165),

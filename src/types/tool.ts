@@ -29,7 +29,7 @@ export type ToolApprovalRequest = {
 export type ToolRiskAssessment =
   | {risk: 'safe'}
   | {risk: 'approval_required'; approval?: ToolApprovalRequest}
-  | {risk: 'rejected'; message: string; reason?: 'plan_mode'};
+  | {risk: 'rejected'; message: string; reason?: 'plan_mode' | 'readonly_policy'};
 
 export type FileEditDisplayLine = {
   kind: 'context' | 'removed' | 'added';

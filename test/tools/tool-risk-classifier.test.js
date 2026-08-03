@@ -1,7 +1,24 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { classifyToolCallRisk, parseBashCommand } = require('../../src/tools/tool-risk-classifier');
+const { classifyReadonlyToolCall, classifyToolCallRisk, parseBashCommand } = require('../../src/tools/tool-risk-classifier');
+
+test('readonly tool policy keeps explicit observations and rejects all other tools', () => {
+  const call = (toolName, argumentsText = '{}') => ({callId: `call-${toolName}`, toolName, argumentsText});
+
+  for (const toolName of ['read_files', 'glob', 'grep', 'web_fetch', 'web_search', 'use_skill', 'create_todos', 'complete_todo']) {
+    assert.deepEqual(classifyReadonlyToolCall(call(toolName)), {risk: 'safe'});
+  }
+  assert.deepEqual(classifyReadonlyToolCall(call('run_bash_command', '{"command":"git status --short"}')), {risk: 'safe'});
+
+  for (const toolName of ['apply_patch', 'edit_file', 'ask_user_questions', 'mcp__server__read', 'unknown']) {
+    const result = classifyReadonlyToolCall(call(toolName));
+    assert.equal(result.risk, 'rejected');
+    assert.equal(result.reason, 'readonly_policy');
+  }
+  assert.equal(classifyReadonlyToolCall(call('run_bash_command', '{"command":"npm test"}')).risk, 'rejected');
+  assert.equal(classifyReadonlyToolCall(call('run_bash_command', 'not-json')).risk, 'rejected');
+});
 
 function createCall(command) {
   return {

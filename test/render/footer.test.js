@@ -17,6 +17,35 @@ const DEFAULT_STATUS_LINE = {
   mode: 'idle'
 };
 
+test('renderFooterLayout renders BTW composer and keeps MAIN activity beside side activity', () => {
+  const theme = createTuiTheme({footer: {colors: {btw: [11, 12, 13], plan: [41, 42, 43]}}});
+  const layout = renderFooterLayout({
+    composer: createComposer('follow up'),
+    commandSurface: null,
+    slashSuggestions: null,
+    pending: {kind: 'thinking', elapsedMs: 1000},
+    working: null,
+    statusLine: {
+      projectName: 'echo_tui',
+      model: {kind: 'default', label: 'GPT-4o'},
+      mode: 'btw',
+      detail: 'readonly · MAIN streaming',
+      keyHint: 'Esc 返回主会话'
+    },
+    width: 100,
+    rows: 24,
+    theme
+  });
+  const plain = layout.lines.map(stripAnsi).join('\n');
+
+  assert.match(plain, /btw › follow up/);
+  assert.match(plain, /btw readonly · MAIN streaming/);
+  assert.match(plain, /Esc 返回主会话/);
+  assert.match(layout.lines.join('\n'), /\x1b\[38;2;11;12;13m/);
+  assert.doesNotMatch(layout.lines.join('\n'), /\x1b\[38;2;41;42;43m/);
+  assert.equal(layout.showCursor, true);
+});
+
 function completeCommandSurfaceFixture(surface) {
   if (!surface) {
     return surface;
@@ -79,6 +108,7 @@ const CUSTOM_THEME = createTuiTheme({
       accent: [4, 5, 6],
       accentDeep: [10, 11, 12],
       accentStrong: [1, 2, 3],
+      btw: [16, 17, 18],
       usageInput: [1, 2, 3],
       usageCached: [10, 11, 12],
       usageOutput: [7, 8, 9],

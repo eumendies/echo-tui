@@ -80,6 +80,29 @@ test('InputEventController gives active modals and command sessions priority', a
   assert.deepEqual(command.calls, ['command-start', 'command-end']);
 });
 
+test('InputEventController lets a modal consume Esc before an active BTW command session', () => {
+  let questionActive = true;
+  const harness = createHarness({
+    userQuestion: {
+      hasActiveRequest: () => questionActive,
+      handleEvent() {
+        harness.calls.push('question');
+        questionActive = false;
+      }
+    },
+    command: {
+      hasActiveSession: () => true,
+      handleEvent() {
+        harness.calls.push('btw');
+      }
+    }
+  });
+
+  harness.controller.handleEvent({type: INPUT_EVENTS.ESCAPE});
+  harness.controller.handleEvent({type: INPUT_EVENTS.ESCAPE});
+  assert.deepEqual(harness.calls, ['question', 'btw']);
+});
+
 test('InputEventController retries pending dispatch after a command session closes', async () => {
   let active = true;
   const harness = createHarness({

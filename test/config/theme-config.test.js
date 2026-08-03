@@ -44,6 +44,7 @@ test('createTuiTheme merges valid render theme overrides and ignores invalid tok
       colors: {
         accent: '#010203',
         accentStrong: [4, 5, 6],
+        btw: '#101112',
         selectionBackground: {ansi256: 99},
         codeForeground: {ansi256: 117},
         danger: 'not-a-color',
@@ -65,6 +66,7 @@ test('createTuiTheme merges valid render theme overrides and ignores invalid tok
   assert.deepEqual(theme.blocks.colors.assistantPrefix, {kind: 'rgb', value: [7, 8, 9]});
   assert.deepEqual(theme.footer.colors.accent, {kind: 'rgb', value: [1, 2, 3]});
   assert.deepEqual(theme.footer.colors.accentStrong, {kind: 'rgb', value: [4, 5, 6]});
+  assert.deepEqual(theme.footer.colors.btw, {kind: 'rgb', value: [16, 17, 18]});
   assert.deepEqual(theme.footer.colors.selectionBackground, {kind: 'ansi256', ansi256: 99});
   assert.deepEqual(theme.footer.colors.codeForeground, {kind: 'ansi256', ansi256: 117});
   assert.deepEqual(theme.footer.colors.danger, DEFAULT_TUI_THEME.footer.colors.danger);
@@ -86,6 +88,7 @@ test('builtin themes are listed and code default stays aligned with bundled JSON
   const amberTheme = readBuiltinTheme('amber');
   const defaultThemePath = getBuiltinThemeConfigPath('default');
   const bundledDefaultTheme = createTuiTheme(JSON.parse(fs.readFileSync(defaultThemePath, 'utf8')));
+  const bundledThemeConfigs = themes.map((theme) => JSON.parse(fs.readFileSync(theme.path, 'utf8')));
 
   assert.deepEqual(ids, ['acid-lime', 'amber', 'aurora', 'crimson', 'default', 'default-light', 'desert', 'evergreen', 'frost', 'graphite', 'ink-wash', 'lagoon', 'lavender', 'macaron', 'monochrome', 'paper-dark', 'paper-light', 'plum-gold', 'porcelain', 'rose-dusk', 'solarized-light', 'spring-mist', 'sunbeam', 'violet']);
   assert.ok(themes.every((theme) => theme.label.length > 0));
@@ -95,6 +98,8 @@ test('builtin themes are listed and code default stays aligned with bundled JSON
   assert.equal(DEFAULT_TUI_THEME.blocks.colors.assistantPrefix.kind, 'rgb');
   assert.equal(DEFAULT_TUI_THEME.syntax.keyword.bold, true);
   assert.equal(amberTheme.footer.colors.accent.kind, 'rgb');
+  assert.ok(bundledThemeConfigs.every((theme) => Object.hasOwn(theme.footer.colors, 'btw')));
+  assert.ok(bundledThemeConfigs.every((theme) => JSON.stringify(theme.footer.colors.btw) !== JSON.stringify(theme.footer.colors.plan)));
   assert.equal(readBuiltinTheme('../default'), null);
   assert.equal(getBuiltinThemeConfigPath('../default'), null);
 });

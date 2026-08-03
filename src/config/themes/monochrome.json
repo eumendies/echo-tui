@@ -45,6 +45,7 @@
       "muted": "#a3a3a3",
       "off": "#737373",
       "plan": "#d4d4d4",
+      "btw": "#a3a3a3",
       "rail": "#404040",
       "railOff": "#525252",
       "selectionBackground": {

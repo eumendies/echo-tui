@@ -438,7 +438,13 @@ export type DiffCommandSurface = {
   title: string;
 };
 
-export type CommandSurface = InfoCommandSurface | SelectCommandSurface | ResumeCommandSurface | SkillsCommandSurface | McpCommandSurface | MemoryCommandSurface | HooksCommandSurface | ScaleCommandSurface | ChoiceCommandSurface | ConfirmCommandSurface | ConfigCommandSurface | ContextUsageCommandSurface | UsageCommandSurface | StatusCommandSurface | CopyCommandSurface | FilePickerCommandSurface | DiffCommandSurface;
+export type BtwCommandSurface = {
+  kind: 'btw'; // 标识 command session 当前拥有 BTW 全视图输入。
+  title: string; // BTW command runtime 的可读标题，仅用于兜底 surface。
+  dismissHint: string; // BTW surface 意外直接渲染时的退出提示。
+};
+
+export type CommandSurface = InfoCommandSurface | SelectCommandSurface | ResumeCommandSurface | SkillsCommandSurface | McpCommandSurface | MemoryCommandSurface | HooksCommandSurface | ScaleCommandSurface | ChoiceCommandSurface | ConfirmCommandSurface | ConfigCommandSurface | ContextUsageCommandSurface | UsageCommandSurface | StatusCommandSurface | CopyCommandSurface | FilePickerCommandSurface | DiffCommandSurface | BtwCommandSurface;
 
 export type CommandModelProfile = {
   id: string;
@@ -579,6 +585,11 @@ export type CommandReferenceSubmissionResult =
     };
 
 export type CommandHostApp = {
+  btw: {
+    open(initialQuestion?: string): void; // 捕获主会话快照并切换到 BTW 投影。
+    handleEvent(event: InputEvent): Promise<void> | void; // 把 BTW composer 输入交给临时会话 controller。
+    close(): void; // 中断并丢弃 BTW 后恢复主投影。
+  };
   transcript: {
     clear(): void;
     forkSession(): TranscriptForkResult;
