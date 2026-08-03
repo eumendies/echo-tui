@@ -2995,6 +2995,24 @@ test('renderFooterLayout renders slash suggestions below composer while keeping 
   assert.ok(layout.lines.some((line) => line.includes('\x1b[48;5;23m') && stripAnsi(line).includes('▌ /model')));
 });
 
+test('renderFooterLayout flattens multiline slash suggestion descriptions', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('/multi'),
+    slashSuggestions: {
+      options: [{label: '/multi', description: '第一行\n  第二行\r\n第三行'}],
+      selectedIndex: 0
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    width: 80
+  });
+  const plainLines = layout.lines.map(stripAnsi);
+  const suggestionLines = plainLines.filter((line) => line.includes('/multi —'));
+
+  assert.equal(suggestionLines.length, 1);
+  assert.equal(suggestionLines[0].trimEnd(), '▌ /multi — 第一行 第二行 第三行');
+});
+
 test('renderFooterLayout applies the configured slash suggestion visible limit without truncating state', () => {
   const options = Array.from({length: 10}, (_value, index) => ({label: `/command-${index}`, description: `item ${index}`}));
   const slashSuggestions = {options, selectedIndex: 7};
