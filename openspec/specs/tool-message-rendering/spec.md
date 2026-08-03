@@ -4,12 +4,13 @@
 定义工具调用和工具结果在终端 transcript 中的专属可见投影行为。渲染层只改变 TUI 输出，不改变 transcript、tool result、附件、provider continuation 或持久化事实内容。
 ## Requirements
 ### Requirement: read_files tool call projection
-系统 SHALL 为 `read_files` tool call 提供专属终端投影。该投影 SHALL 使用原始 snake_case 工具名 `read_files`，并 SHALL 用路径摘要替代完整 arguments JSON，以减少 transcript 噪音。
+系统 SHALL 为 `read_files` tool call 提供专属终端投影。该投影 SHALL 使用 sentence case 工具名 `Read files`，并 SHALL 用 `·` 分隔的路径摘要替代完整 arguments JSON，以减少 transcript 噪音。
 
 #### Scenario: 单路径读取调用
 - **WHEN** transcript 包含 `toolName` 为 `read_files` 且 arguments 包含单个 `{ "path": "src/foo.ts" }` 的 tool call
-- **THEN** renderer SHALL 显示 `read_files(src/foo.ts)` 或等价的单路径摘要
+- **THEN** renderer SHALL 显示 `Read files · src/foo.ts` 或等价的单路径摘要
 - **THEN** renderer SHALL NOT 在调用行展示完整 JSON arguments
+- **THEN** renderer SHALL NOT 使用 `read_files(src/foo.ts)` 函数调用形式
 
 #### Scenario: 带 offset 和 limit 的读取调用
 - **WHEN** `read_files` tool call 的单个文件参数包含 `offset` 或 `limit`
@@ -285,8 +286,10 @@ bash 专属 renderer SHALL 只改变终端可见投影，不得改变 transcript
 
 #### Scenario: edit_file 调用使用路径摘要
 - **WHEN** footer pending preview、孤立 call 或完成 call/result pair 包含参数合法的 `edit_file` 调用
-- **THEN** 调用行 SHALL 显示 `edit_file(<path>)` 或等价路径摘要
+- **THEN** 调用行 SHALL 显示 `Edit file · <path>` 或等价路径摘要
+- **THEN** `replace_all` 为 true 时调用行 SHALL 追加 `· replace all` 或等价 modifier
 - **THEN** 调用行 SHALL NOT 显示完整 `old_string`、`new_string` 或原始 arguments JSON
+- **THEN** 调用行 SHALL NOT 使用 `edit_file(<path>)` 函数调用形式
 - **THEN** 完成调用前缀 SHALL 按相邻 result 的成功或失败状态着色
 
 #### Scenario: edit_file 成功结果使用共享 diff renderer
@@ -729,4 +732,58 @@ bash 专属 renderer SHALL 只改变终端可见投影，不得改变 transcript
 - **THEN** 原始 `toolName`、`argumentsText`、result text、`ok`、`toolCallId`、`exitCode`、`truncated` 和 display metadata SHALL 保持不变
 - **THEN** provider continuation SHALL 接收原始 tool result 文本而不是渲染后的标题、scope 或路径树
 - **THEN** session 重放 SHALL 使用持久化 metadata 产生等价投影，历史缺少 metadata 的记录 SHALL 无需迁移并安全降级
+
+### Requirement: 统一的 tool call sentence case 标题
+系统 SHALL 在 transcript 和 footer pending preview 中使用 sentence case 的用户可读 tool call 标题。可见标题 SHALL NOT 直接使用 snake_case、camelCase 或 PascalCase 协议标识符；工具名称、可信参数摘要和生命周期或结果状态 SHALL 使用 ` · ` 或等价的自然语言层级分隔，且 SHALL NOT 使用 `Tool name(arguments)` 函数调用语法。
+
+#### Scenario: 内置工具名称统一为 sentence case
+- **WHEN** renderer 投影 `ask_user_questions`、`read_files`、`apply_patch`、`edit_file`、`create_todos` 或 `complete_todo` tool call
+- **THEN** 可见标题 SHALL 分别使用 `Ask user questions`、`Read files`、`Apply patch`、`Edit file`、`Create todos` 或 `Complete todo`
+- **THEN** 可见标题 SHALL NOT 包含对应的 snake_case、camelCase 或 PascalCase 名称
+
+#### Scenario: 参数摘要使用 middle dot 分隔
+- **WHEN** 专属 renderer 能从 tool call arguments 中安全生成有界参数摘要
+- **THEN** renderer SHALL 使用 `Tool name · <summary>` 或等价自然语言结构显示标题
+- **THEN** renderer SHALL NOT 将参数摘要包裹在紧跟工具名的小括号中
+- **THEN** 现有生命周期或结果状态 SHALL 继续作为独立语义片段显示
+
+#### Scenario: 无需参数摘要的调用只显示工具名
+- **WHEN** tool call 不需要向用户展示参数摘要，例如 todo 状态操作
+- **THEN** renderer SHALL 只显示 sentence case 工具名或已有自然语言动作摘要
+- **THEN** renderer SHALL NOT 追加空小括号
+
+#### Scenario: 已符合自然语言规范的专属标题保持语义
+- **WHEN** renderer 投影 `Bash`、`Glob`、`Grep`、`Web search`、`Web fetch` 或 `Using skill` 标题
+- **THEN** renderer SHALL 保留这些既有自然语言工具身份、参数摘要和状态语义
+- **THEN** renderer SHALL 继续使用现有 safe render width、rail、tree 或结果预算规则
+
+### Requirement: 通用与 MCP tool call 标题 fallback
+系统 SHALL 为没有专属投影或专属参数解析失败的 tool call 提供 sentence case 通用标题。通用 fallback SHALL 在首行显示工具身份，并 SHALL 将非空原始 arguments 作为后续低强调、有界内容显示，而不是将其拼入函数调用式标题。标准 MCP tool name SHALL 保留 MCP、server 和具体工具三层身份。
+
+#### Scenario: 通用 snake_case 或驼峰名称转为 sentence case
+- **WHEN** 通用 renderer 收到名称为 `generic_tool`、`readMemory` 或 `AskUserQuestions` 的 tool call
+- **THEN** 首行 SHALL 显示 `Generic tool`、`Read memory` 或 `Ask user questions`
+- **THEN** 原始 `toolName` SHALL 保持不变
+
+#### Scenario: 通用 arguments 分层显示
+- **WHEN** 通用 tool call 包含非空 `argumentsText`
+- **THEN** renderer SHALL 在工具标题后的低强调行中有界显示原始 arguments
+- **THEN** arguments 行 SHALL 遵守 safe render width、Tab 展开和单物理行安全规则
+- **THEN** 标题 SHALL NOT 使用 `Tool name(arguments)` 形式
+
+#### Scenario: 标准 MCP 工具保留来源身份
+- **WHEN** 通用 renderer 收到 `mcp__<server>__<tool>` 形式的 tool name
+- **THEN** 标题 SHALL 显示 `MCP · <server> · <tool display name>` 或等价三层身份
+- **THEN** tool display name SHALL 使用 sentence case
+- **THEN** 非空 arguments SHALL 按通用 arguments 分层规则显示
+
+#### Scenario: 专属参数解析失败时安全降级
+- **WHEN** 内置工具的专属 renderer 无法安全解析 arguments
+- **THEN** renderer SHALL 使用统一通用标题和 arguments fallback
+- **THEN** renderer SHALL NOT 伪造参数摘要、抛出异常或中断 transcript/footer 渲染
+
+#### Scenario: pending 与 transcript 使用一致标题
+- **WHEN** 同一个 tool call 先出现在 footer pending preview，随后成为 transcript tool call
+- **THEN** 两处 SHALL 使用相同的 sentence case 工具身份和参数摘要结构
+- **THEN** 格式化 SHALL NOT 修改 `toolName`、`argumentsText`、tool result、provider continuation 或持久化事实
 

@@ -3,6 +3,7 @@ import {blockText} from '../colors';
 import {displayWidth, safeRenderWidth} from '../layout';
 import {
   clampToDisplayWidth,
+  createToolCallTitle,
   expandTabs,
   normalizeContentText,
   renderPrefixedLines,
@@ -164,7 +165,7 @@ function createReadFilesCallLabel(argumentsText: unknown): string | null {
     });
   }
 
-  return `read_files(${summarizeReadFilesRequests(requests)})`;
+  return createToolCallTitle(READ_FILES_TOOL_NAME, [summarizeReadFilesRequests(requests)]);
 }
 
 /**
