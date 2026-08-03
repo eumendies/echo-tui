@@ -335,7 +335,7 @@ test('config surface windows long form and model lists within max lines', () => 
   assertUniformLineWidths(modelListLines);
 });
 
-test('config surface masks custom headers and renders model details without reasoning fields', () => {
+test('config surface masks custom headers and renders model effort without exposing other reasoning fields', () => {
   let state = createInitialConfigState(createDraft());
   state = nextState(state, {type: INPUT_EVENTS.SUBMIT});
   const headerRowIndex = getConfigRows(state).findIndex((row) => row.kind === 'headers');
@@ -355,8 +355,25 @@ test('config surface masks custom headers and renders model details without reas
   const modelText = stripAnsi(renderConfigPanel(state, 100, {rows: getConfigRows(state)}).join('\n'));
   assert.match(modelText, /Context window/);
   assert.match(modelText, /64,000/);
-  assert.doesNotMatch(modelText, /effort|summary|reasoning|high|auto/);
+  assert.match(modelText, /默认 Effort/);
+  assert.match(modelText, /high/);
+  assert.doesNotMatch(modelText, /summary|reasoning|auto/);
   assertUniformLineWidths(renderConfigPanel(state, 30, {rows: getConfigRows(state)}));
+});
+
+test('config surface hides model effort for fake agent', () => {
+  const state = {
+    ...createInitialConfigState({
+      providers: [{id: 'default', label: 'Fake Agent', preset: 'fake-agent', apiKey: '', models: [{id: 'default', model: 'echo-fake-agent'}]}],
+      selectedModelId: 'default',
+      rootConfig: {}
+    }),
+    mode: 'modelDetail'
+  };
+  const text = stripAnsi(renderConfigPanel(state, 100, {rows: getConfigRows(state)}).join('\n'));
+
+  assert.doesNotMatch(text, /Effort/);
+  assert.match(text, /设为默认 model|当前默认 model/);
 });
 
 function assertUniformLineWidths(lines) {

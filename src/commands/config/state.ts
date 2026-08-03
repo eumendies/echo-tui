@@ -1,17 +1,21 @@
 import {getProviderPreset, providerRequiresApiKey} from '../../config/provider-presets';
 import {normalizeConfigDraft} from '../../config/llm-config-editor';
+import {REASONING_EFFORTS} from '../../types/agent';
 
 import type {
   AppearanceConfigState,
   ConfigCommandState,
   ConfigCommandSurface,
   ConfigFormRow,
+  ConfigModelDraft,
+  ConfigProviderDraft,
   ConfigSurfaceTab,
   ConfigTabId,
   GeneralConfigState,
   LlmConfigDraft
 } from '../../types/command';
 import type {AppSettings} from '../../config/app-settings-config';
+import type {ReasoningEffort} from '../../types/agent';
 
 type ConfigStateSlot<T> = {
   error?: string;
@@ -46,6 +50,38 @@ const CONFIG_TABS: ReadonlyArray<{id: ConfigTabId; label: string}> = [
   {id: 'models', label: '模型与 Provider'},
   {id: 'appearance', label: '外观'}
 ];
+
+const CONFIG_MODEL_EFFORT_OPTIONS: readonly (ReasoningEffort | undefined)[] = [undefined, ...REASONING_EFFORTS];
+
+/**
+ * 读取模型草稿中的有效默认 effort；未知手写值按未设置展示，等待用户重新选择。
+ */
+function getConfigModelReasoningEffort(model: ConfigModelDraft | undefined): ReasoningEffort | undefined {
+  const effort = model?.reasoning?.effort;
+  return typeof effort === 'string' && (REASONING_EFFORTS as readonly string[]).includes(effort)
+    ? effort as ReasoningEffort
+    : undefined;
+}
+
+/**
+ * 更新单个模型的默认 effort，同时保留 summary 等其它 reasoning 配置。
+ */
+function setConfigModelReasoningEffort(model: ConfigModelDraft, effort: ReasoningEffort | undefined): void {
+  const reasoning = {...(model.reasoning || {})};
+
+  if (effort === undefined) {
+    delete reasoning.effort;
+  } else {
+    reasoning.effort = effort;
+  }
+
+  model.reasoning = Object.keys(reasoning).length > 0 ? reasoning : undefined;
+}
+
+function configProviderSupportsReasoningEffort(provider: ConfigProviderDraft | undefined): boolean {
+  const preset = provider ? getProviderPreset(provider.preset) : undefined;
+  return Boolean(preset && preset.agentType !== 'fake');
+}
 
 /**
  * 把配置中心 command data 投影为当前 Tab 的只读 surface 快照。
@@ -221,19 +257,23 @@ function getActiveSlot(data: ConfigCommandData): ConfigStateSlot<unknown> | unde
 }
 
 export {
+  CONFIG_MODEL_EFFORT_OPTIONS,
   GENERAL_CONFIG_ROW_IDS,
   CONFIG_TABS,
   cloneConfigState,
+  configProviderSupportsReasoningEffort,
   createConfigSurface,
   createDraftFingerprint,
   createInitialAppearanceConfigState,
   createInitialConfigState,
   createInitialGeneralConfigState,
   getConfigRows,
+  getConfigModelReasoningEffort,
   isGeneralConfigDirty,
   isModelConfigDirty,
   markGeneralConfigSaved,
-  markModelConfigSaved
+  markModelConfigSaved,
+  setConfigModelReasoningEffort
 };
 
 export type {

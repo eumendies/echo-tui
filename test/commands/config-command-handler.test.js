@@ -125,6 +125,51 @@ test('config command state opens model details and edits context window', () => 
   assert.equal(driver.getState().draft.providers[0].models[0].reasoning, undefined);
 });
 
+test('config command state configures model effort and preserves other reasoning settings', () => {
+  const draft = createDraft();
+  draft.providers[0].models[0].reasoning = {summary: 'auto'};
+  const driver = createStateDriver(draft);
+
+  openForm(driver);
+  moveFormToRow(driver, 'model');
+  driver.handle({type: INPUT_EVENTS.SUBMIT});
+  driver.handle({type: INPUT_EVENTS.MOVE_DOWN});
+  driver.handle({type: INPUT_EVENTS.MOVE_DOWN});
+
+  driver.handle({type: INPUT_EVENTS.MOVE_RIGHT});
+  assert.deepEqual(driver.getState().draft.providers[0].models[0].reasoning, {summary: 'auto', effort: 'none'});
+
+  driver.handle({type: INPUT_EVENTS.MOVE_RIGHT});
+  assert.deepEqual(driver.getState().draft.providers[0].models[0].reasoning, {summary: 'auto', effort: 'low'});
+
+  driver.handle({type: INPUT_EVENTS.MOVE_LEFT});
+  driver.handle({type: INPUT_EVENTS.MOVE_LEFT});
+  assert.deepEqual(driver.getState().draft.providers[0].models[0].reasoning, {summary: 'auto'});
+
+  driver.handle({type: INPUT_EVENTS.MOVE_RIGHT});
+  driver.handle({type: INPUT_EVENTS.ESCAPE});
+  const saveResult = submitFormSave(driver);
+  assert.equal(saveResult.kind, 'save');
+  assert.deepEqual(saveResult.draft.providers[0].models[0].reasoning, {summary: 'auto', effort: 'none'});
+});
+
+test('config command state does not offer model effort for fake agent', () => {
+  const driver = createStateDriver({
+    providers: [{id: 'default', label: 'Fake Agent', preset: 'fake-agent', apiKey: '', models: [{id: 'default', model: 'echo-fake-agent'}]}],
+    selectedModelId: 'default',
+    rootConfig: {}
+  });
+
+  openForm(driver);
+  moveFormToRow(driver, 'model');
+  driver.handle({type: INPUT_EVENTS.SUBMIT});
+  driver.handle({type: INPUT_EVENTS.MOVE_DOWN});
+  driver.handle({type: INPUT_EVENTS.MOVE_DOWN});
+  driver.handle({type: INPUT_EVENTS.MOVE_RIGHT});
+
+  assert.equal(driver.getState().draft.providers[0].models[0].reasoning, undefined);
+});
+
 test('config command state adds, edits, and deletes custom headers', () => {
   const driver = createStateDriver();
 

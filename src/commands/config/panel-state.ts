@@ -2,8 +2,12 @@ import {INPUT_EVENTS} from '../../input/event-types';
 import {getProviderPreset, listProviderPresets, providerRequiresApiKey} from '../../config/provider-presets';
 import {normalizeConfigDraft, validateConfigDraft} from '../../config/llm-config-editor';
 import {
+  CONFIG_MODEL_EFFORT_OPTIONS,
   cloneConfigState,
-  getConfigRows
+  configProviderSupportsReasoningEffort,
+  getConfigModelReasoningEffort,
+  getConfigRows,
+  setConfigModelReasoningEffort
 } from './state';
 import type {
   ConfigCommandState,
@@ -421,33 +425,57 @@ class ConfigPanelController {
   }
 
   private handleModelDetailEvent(): ConfigCommandEventResult {
-    if (!this.activeModel()) {
+    const provider = this.activeProvider();
+    const model = this.activeModel();
+
+    if (!model) {
       this.state = {...this.state, mode: 'form'};
       return {kind: 'continue', state: this.getState()};
     }
+
+    const supportsEffort = configProviderSupportsReasoningEffort(provider);
+    const defaultModelIndex = supportsEffort ? 3 : 2;
+    const deleteModelIndex = supportsEffort ? 4 : 3;
 
     if (this.event.type === INPUT_EVENTS.ESCAPE) {
       this.cleanupBlankModel();
       this.state = {...this.state, error: undefined, mode: 'form'};
     } else if (this.event.type === INPUT_EVENTS.MOVE_UP || this.event.type === INPUT_EVENTS.MOVE_DOWN) {
       const delta = this.event.type === INPUT_EVENTS.MOVE_UP ? -1 : 1;
-      this.state = {...this.state, error: undefined, modelDetailIndex: clamp(this.state.modelDetailIndex + delta, 0, 3)};
+      this.state = {...this.state, error: undefined, modelDetailIndex: clamp(this.state.modelDetailIndex + delta, 0, deleteModelIndex)};
+    } else if (supportsEffort && (this.event.type === INPUT_EVENTS.MOVE_LEFT || this.event.type === INPUT_EVENTS.MOVE_RIGHT) && this.state.modelDetailIndex === 2) {
+      this.cycleModelReasoningEffort(this.event.type === INPUT_EVENTS.MOVE_LEFT ? -1 : 1);
     } else if (this.event.type === INPUT_EVENTS.SUBMIT) {
       if (this.state.modelDetailIndex === 0) {
-        const current = this.activeModel()?.model || '';
+        const current = model.model || '';
         this.startEdit({kind: 'modelName'}, current, current !== '');
       } else if (this.state.modelDetailIndex === 1) {
-        const current = this.activeModel()?.contextWindow?.toString() || '';
+        const current = model.contextWindow?.toString() || '';
         this.startEdit({kind: 'contextWindow'}, current, current !== '');
-      } else if (this.state.modelDetailIndex === 2) {
+      } else if (supportsEffort && this.state.modelDetailIndex === 2) {
+        this.cycleModelReasoningEffort(1);
+      } else if (this.state.modelDetailIndex === defaultModelIndex) {
         this.selectModel(this.state.modelIndex);
-      } else {
+      } else if (this.state.modelDetailIndex === deleteModelIndex) {
         this.deleteModel(this.state.modelIndex);
         this.state = {...this.state, mode: 'form'};
       }
     }
 
     return {kind: 'continue', state: this.getState()};
+  }
+
+  private cycleModelReasoningEffort(direction: number): void {
+    const model = this.activeModel();
+
+    if (!model) {
+      return;
+    }
+
+    const currentIndex = CONFIG_MODEL_EFFORT_OPTIONS.indexOf(getConfigModelReasoningEffort(model));
+    const nextIndex = (Math.max(0, currentIndex) + direction + CONFIG_MODEL_EFFORT_OPTIONS.length) % CONFIG_MODEL_EFFORT_OPTIONS.length;
+    setConfigModelReasoningEffort(model, CONFIG_MODEL_EFFORT_OPTIONS[nextIndex]);
+    this.state = {...this.state, error: undefined};
   }
 
   private selectModel(modelIndex: number): void {
