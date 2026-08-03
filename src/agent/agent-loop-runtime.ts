@@ -6,7 +6,7 @@ import {
   createAskUserQuestionsFailureResult,
   parseAskUserQuestionsToolCall
 } from '../tools/ask-user-questions-tool-handler';
-import {classifyToolCallRisk} from '../tools/tool-risk-classifier';
+import {classifyReadonlyToolCall, classifyToolCallRisk} from '../tools/tool-risk-classifier';
 import {createToolExecutor} from '../tools/tool-executor';
 import {createToolCallTranscriptRecord, createToolResultTranscriptRecord} from '../tools/tool-transcript-record';
 import {executeTodoToolCall, isTodoToolName} from '../tools/todo-tool-handler';
@@ -31,7 +31,7 @@ import {
 
 import type {TokenUsageAnchor} from './context/context-compaction';
 
-import type {AgentCallbacks, AgentExecutionMode, AgentInstruction, AgentInstructionFileName, AgentSessionInput, AgentTurnCallbacks, InteractionMode, LlmConfig, ProviderAgent, ProviderRetry, ProviderUsage, ReasoningEffort, RunAgent, ToolApprovalDecision} from '../types/agent';
+import type {AgentCallbacks, AgentConversationKind, AgentExecutionMode, AgentInstruction, AgentInstructionFileName, AgentSessionInput, AgentToolPolicy, AgentTurnCallbacks, InteractionMode, LlmConfig, ProviderAgent, ProviderRetry, ProviderUsage, ReasoningEffort, RunAgent, ToolApprovalDecision} from '../types/agent';
 import type {DebugContext} from '../debug/debug-context';
 import type {LifecycleHookDispatcher} from '../types/hooks';
 import type {UsageStore} from '../types/usage';
@@ -85,6 +85,20 @@ type ToolApprovalResolution = {
  */
 async function executeToolCall(toolCall: ToolCall, state: AgentLoopRunState, callbacks: AgentCallbacks): Promise<ToolExecutionResult> {
   throwIfAborted(state.abortSignal);
+
+  if (state.toolPolicy === 'readonly') {
+    const readonlyAssessment = classifyReadonlyToolCall(toolCall);
+    if (readonlyAssessment.risk === 'rejected') {
+      state.debug.emit('tool_call_risk', {
+        conversationKind: state.conversationKind,
+        reason: readonlyAssessment.reason,
+        risk: readonlyAssessment.risk,
+        toolCallId: toolCall.callId,
+        toolName: toolCall.toolName
+      });
+      return createRejectedToolResult(toolCall, readonlyAssessment.message);
+    }
+  }
 
   if (isTodoToolName(toolCall.toolName)) {
     const todoResult = executeTodoToolCall(toolCall, state.todoState);
@@ -292,6 +306,8 @@ type AgentLoopRunState = {
   executionMode: AgentExecutionMode;
   hooks?: LifecycleHookDispatcher;
   debug: DebugContext;
+  toolPolicy: AgentToolPolicy;
+  conversationKind: AgentConversationKind;
 };
 
 function createProviderUsageDebugPayload(usage: ProviderUsage | undefined, usageInputTokens: number | undefined): ProviderUsage | null {
@@ -342,7 +358,7 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
   /**
    * 初始化单次调用的 loop 状态；provider、配置和 registry 由统一装配入口提供。
    */
-  function initializeRunState(interactionMode: InteractionMode, abortSignal: AbortSignal | undefined, executionMode: AgentExecutionMode, compactionThresholdRatio: number, skillCatalogContextRatio: number, agentInstructionFileName: AgentInstructionFileName, modelProfileId?: string, reasoningEffortOverride?: ReasoningEffort): AgentLoopRunState {
+  function initializeRunState(interactionMode: InteractionMode, abortSignal: AbortSignal | undefined, executionMode: AgentExecutionMode, compactionThresholdRatio: number, skillCatalogContextRatio: number, agentInstructionFileName: AgentInstructionFileName, toolPolicy: AgentToolPolicy, conversationKind: AgentConversationKind, modelProfileId?: string, reasoningEffortOverride?: ReasoningEffort): AgentLoopRunState {
     const {agent, config, registry} = prepareAgent({cwd, mcpManager, modelProfileId, reasoningEffortOverride});
     const contextWindow = resolveContextWindow(config);
     const skillCatalogProjection = createSkillCatalogPromptProjection(registry.listSkillCatalog?.() || [], contextWindow, skillCatalogContextRatio);
@@ -373,7 +389,9 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
       abortSignal,
       executionMode,
       hooks,
-      debug
+      debug,
+      toolPolicy,
+      conversationKind
     };
   }
 
@@ -381,6 +399,8 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
     const abortSignal = session.abortSignal;
     const interactionMode = session.interactionMode || 'normal';
     const executionMode = session.executionMode || INTERACTIVE_EXECUTION_MODE;
+    const toolPolicy = session.toolPolicy || 'default';
+    const conversationKind = session.conversationKind || 'primary';
     const appSettings = readAppSettings();
     // 单次 assistant run 固定使用启动时设置，运行中配置变化只影响后续 turn。
     const compactionThresholdRatio = session.compactionThresholdRatio ?? appSettings.compactionThresholdRatio;
@@ -390,7 +410,7 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
     let state: AgentLoopRunState;
 
     try {
-      state = initializeRunState(interactionMode, abortSignal, executionMode, compactionThresholdRatio, skillCatalogContextRatio, appSettings.agentInstructionFileName, session.modelProfileId, session.reasoningEffortOverride);
+      state = initializeRunState(interactionMode, abortSignal, executionMode, compactionThresholdRatio, skillCatalogContextRatio, appSettings.agentInstructionFileName, toolPolicy, conversationKind, session.modelProfileId, session.reasoningEffortOverride);
     } catch (error: unknown) {
       throw normalizeError(error, '无法加载 LLM 配置');
     }

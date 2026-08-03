@@ -44,7 +44,7 @@
 - **THEN** 系统 SHALL 让模型服务端决定默认推理行为
 
 #### Scenario: 无效 reasoning effort 明确失败
-- **WHEN** 当前生效模型 profile 的 `reasoning.effort` 不是 `none`、`minimal`、`low`、`medium`、`high` 或 `xhigh`
+- **WHEN** 当前生效模型 profile 的 `reasoning.effort` 不是 `none`、`low`、`medium`、`high`、`xhigh` 或 `max`
 - **THEN** 系统 SHALL 明确提示 reasoning effort 配置无效
 - **THEN** 系统 SHALL NOT 发起真实模型请求
 

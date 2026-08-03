@@ -170,6 +170,65 @@ test('createCommandRuntime starts matched command through CommandHost session', 
   assert.equal(harness.runtime.getSurface().kind, 'confirm');
 });
 
+test('createCommandRuntime enforces assistant-turn availability at startup', () => {
+  let blockedStarts = 0;
+  let allowedStarts = 0;
+  const blockedHandler = {
+    name: 'blocked',
+    start() {
+      blockedStarts += 1;
+    }
+  };
+  const allowedHandler = {
+    name: 'allowed',
+    allowDuringAssistantTurn: true,
+    start() {
+      allowedStarts += 1;
+    }
+  };
+  const harness = createRuntimeHarness({
+    resolveSlashCommand(text) {
+      return text === '/blocked' ? blockedHandler : text === '/allowed' ? allowedHandler : null;
+    }
+  });
+
+  assert.deepEqual(harness.runtime.startFromText('/blocked', {duringAssistantTurn: true}), {kind: 'not_matched'});
+  assert.equal(blockedStarts, 0);
+  assert.deepEqual(harness.runtime.startFromText('/allowed', {duringAssistantTurn: true}), {kind: 'handled'});
+  assert.equal(allowedStarts, 1);
+});
+
+test('createCommandRuntime does not replace an active command session', () => {
+  let replacementStarts = 0;
+  const firstHandler = {
+    name: 'first',
+    start(_text, host) {
+      host.session.open({
+        commandName: 'first',
+        handler: firstHandler,
+        surface: createInfoSurface('/first'),
+        data: null
+      });
+    }
+  };
+  const replacementHandler = {
+    name: 'replacement',
+    start() {
+      replacementStarts += 1;
+    }
+  };
+  const harness = createRuntimeHarness({
+    resolveSlashCommand(text) {
+      return text === '/first' ? firstHandler : text === '/replacement' ? replacementHandler : null;
+    }
+  });
+
+  harness.runtime.startFromText('/first');
+  assert.deepEqual(harness.runtime.startFromText('/replacement'), {kind: 'not_matched'});
+  assert.equal(replacementStarts, 0);
+  assert.equal(harness.runtime.getSurface().title, '/first');
+});
+
 test('createCommandRuntime returns submit_user_message command result', () => {
   const localHandler = {
     name: 'skill',

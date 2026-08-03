@@ -432,12 +432,12 @@ test('createChatRequest sends messages and tools without Responses-only fields',
 
 test('createChatRequest sends reasoning_effort when configured', () => {
   assert.deepEqual(
-    createChatRequest([{ role: 'user', text: 'hello' }], { ...TEST_CONFIG, reasoningEffort: 'xhigh' }),
+    createChatRequest([{ role: 'user', text: 'hello' }], { ...TEST_CONFIG, reasoningEffort: 'max' }),
     {
       messages: [{ role: 'user', content: 'hello' }],
       model: 'test-chat-model',
       prompt_cache_key: createPromptCacheKey([{ role: 'user', text: 'hello' }], TEST_CONFIG),
-      reasoning_effort: 'xhigh',
+      reasoning_effort: 'max',
       stream: true,
       stream_options: {include_usage: true}
     }

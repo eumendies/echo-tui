@@ -17,6 +17,35 @@ const DEFAULT_STATUS_LINE = {
   mode: 'idle'
 };
 
+test('renderFooterLayout renders BTW composer and keeps MAIN activity beside side activity', () => {
+  const theme = createTuiTheme({footer: {colors: {btw: [11, 12, 13], plan: [41, 42, 43]}}});
+  const layout = renderFooterLayout({
+    composer: createComposer('follow up'),
+    commandSurface: null,
+    slashSuggestions: null,
+    pending: {kind: 'thinking', elapsedMs: 1000},
+    working: null,
+    statusLine: {
+      projectName: 'echo_tui',
+      model: {kind: 'default', label: 'GPT-4o'},
+      mode: 'btw',
+      detail: 'readonly · MAIN streaming',
+      keyHint: 'Esc 返回主会话'
+    },
+    width: 100,
+    rows: 24,
+    theme
+  });
+  const plain = layout.lines.map(stripAnsi).join('\n');
+
+  assert.match(plain, /btw › follow up/);
+  assert.match(plain, /btw readonly · MAIN streaming/);
+  assert.match(plain, /Esc 返回主会话/);
+  assert.match(layout.lines.join('\n'), /\x1b\[38;2;11;12;13m/);
+  assert.doesNotMatch(layout.lines.join('\n'), /\x1b\[38;2;41;42;43m/);
+  assert.equal(layout.showCursor, true);
+});
+
 function completeCommandSurfaceFixture(surface) {
   if (!surface) {
     return surface;
@@ -79,6 +108,7 @@ const CUSTOM_THEME = createTuiTheme({
       accent: [4, 5, 6],
       accentDeep: [10, 11, 12],
       accentStrong: [1, 2, 3],
+      btw: [16, 17, 18],
       usageInput: [1, 2, 3],
       usageCached: [10, 11, 12],
       usageOutput: [7, 8, 9],
@@ -168,6 +198,68 @@ test('createFooterRenderer writes each complete redraw as one frame and preserve
 
   renderer.clear();
   assert.equal(output.writes.length, 5);
+});
+
+test('createFooterRenderer safely transitions from response suggestions through a command surface and back to latest streaming', () => {
+  const output = {
+    writes: [],
+    write(chunk) {
+      this.writes.push(String(chunk));
+    }
+  };
+  const renderer = createFooterRenderer(output);
+  const suggestionState = {
+    composer: createComposer('/'),
+    commandSurface: null,
+    slashSuggestions: {
+      selectedIndex: 0,
+      options: [
+        {label: '/help', description: '查看帮助'},
+        {label: '/status', description: '查看状态'}
+      ]
+    },
+    pending: {kind: 'streaming', text: 'older streaming draft'},
+    working: {elapsedMs: 1200},
+    statusLine: {...DEFAULT_STATUS_LINE, mode: 'streaming', keyHint: 'Esc 中断'},
+    rows: 10,
+    width: 60
+  };
+  const suggestionLayout = renderFooterLayout(suggestionState);
+  renderer.render(suggestionState);
+
+  const surfaceState = {
+    ...suggestionState,
+    composer: createComposer(''),
+    commandSurface: {
+      kind: 'info',
+      title: '/help',
+      lines: Array.from({length: 20}, (_value, index) => `帮助 ${index + 1}`),
+      dismissHint: 'Esc 关闭帮助'
+    },
+    slashSuggestions: null,
+    pending: {kind: 'streaming', text: 'newest streaming draft while surface is open'}
+  };
+  const surfaceLayout = renderFooterLayout(surfaceState);
+  renderer.render(surfaceState);
+
+  assert.equal(surfaceLayout.lines.length <= surfaceState.rows - 2, true);
+  assert.equal((output.writes[1].match(/\x1b\[2K/g) || []).length, suggestionLayout.lines.length);
+  assert.ok(stripAnsi(output.writes[1]).includes('/help'));
+
+  const restoredState = {
+    ...surfaceState,
+    commandSurface: null,
+    pending: {kind: 'streaming', text: 'latest restored draft'}
+  };
+  const restoredLayout = renderFooterLayout(restoredState);
+  renderer.render(restoredState);
+
+  assert.equal((output.writes[2].match(/\x1b\[2K/g) || []).length, surfaceLayout.lines.length);
+  assert.ok(stripAnsi(output.writes[2]).includes('latest restored draft'));
+  assert.equal(restoredLayout.lines.length <= restoredState.rows - 2, true);
+  assert.ok(output.writes[2].endsWith(
+    `${ansi.cursorUp(restoredLayout.lines.length - 1 - restoredLayout.cursorRow)}${ansi.carriageReturn()}${ansi.cursorForward(restoredLayout.cursorColumn)}${ansi.showCursor()}`
+  ));
 });
 
 test('renderFooterLayout renders boxed composer and idle segmented status line', () => {
@@ -2122,13 +2214,13 @@ test('renderFooterLayout renders scale command surfaces', () => {
       rightLabel: 'deep',
       options: [
         { label: 'none', description: 'NONE' },
-        { label: 'minimal', description: 'MIN' },
         { label: 'low', description: 'LOW' },
         { label: 'medium', description: 'MED' },
         { label: 'high', description: 'HIGH' },
-        { label: 'xhigh', description: 'XHIGH' }
+        { label: 'xhigh', description: 'XHIGH' },
+        { label: 'max', description: 'MAX' }
       ],
-      selectedIndex: 3,
+      selectedIndex: 2,
       dismissHint: 'Enter 选择 · ←/→ 移动 · Esc 取消'
     },
     pending: null,
@@ -2142,7 +2234,7 @@ test('renderFooterLayout renders scale command surfaces', () => {
   assert.ok(plainLines.some((line) => line.startsWith('╭')));
   assert.ok(plainLines.some((line) => line.startsWith('╰')));
   assert.ok(plainLines.some((line) => line.includes('/effort · LLMBox GPT5.5')));
-  assert.ok(plainLines.some((line) => line.includes('[实时]')));
+  assert.ok(!plainLines.some((line) => line.includes('[实时]')));
   assert.ok(plainLines.some((line) => line.includes('◂')));
   assert.ok(plainLines.some((line) => line.includes('▸')));
   assert.ok(plainLines.some((line) => line.includes('●')));

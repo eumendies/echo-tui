@@ -283,12 +283,12 @@ test('createRequest sends tools only when registry is non-empty', () => {
 
 test('createRequest sends reasoning effort only when configured', () => {
   assert.deepEqual(
-    createRequest([{ role: 'user', text: 'hello' }], { ...TEST_CONFIG, reasoningEffort: 'high' }),
+    createRequest([{ role: 'user', text: 'hello' }], { ...TEST_CONFIG, reasoningEffort: 'max' }),
     {
       input: [{ role: 'user', content: 'hello' }],
       model: 'test-model',
       prompt_cache_key: createPromptCacheKey([{ role: 'user', text: 'hello' }], TEST_CONFIG),
-      reasoning: { effort: 'high' },
+      reasoning: { effort: 'max' },
       stream: true
     }
   );

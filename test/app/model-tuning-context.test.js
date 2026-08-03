@@ -74,7 +74,7 @@ test('ModelTuningContext toggles fields and cycles all explicit efforts', () => 
     context.cycle(1);
     efforts.push(context.getSelection().effort);
   }
-  assert.deepEqual(efforts, ['high', 'xhigh', 'none', 'minimal', 'low', 'medium']);
+  assert.deepEqual(efforts, ['high', 'xhigh', 'max', 'none', 'low', 'medium']);
 });
 
 test('ModelTuningContext clears transient errors when selection changes', () => {

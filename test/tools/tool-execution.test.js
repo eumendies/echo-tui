@@ -476,13 +476,13 @@ test('skill manager reads disabled state and saves by effective source root', ()
   assert.equal(disabled.reason, 'disabled');
 
   manager.saveSkillStates(manager.listSkills().map((skill) => skill.name === 'review'
-    ? { ...skill, enabled: true, modelProfileId: undefined, reasoningEffortOverride: 'minimal' }
+    ? { ...skill, enabled: true, modelProfileId: undefined, reasoningEffortOverride: 'low' }
     : { ...skill, enabled: false, modelProfileId: 'user-profile', reasoningEffortOverride: undefined }));
 
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(projectSkillsDir, 'skills.json'), 'utf8')), {
     schemaVersion: 3,
     disabled: [],
-    effortOverrides: {review: 'minimal'},
+    effortOverrides: {review: 'low'},
     modelOverrides: {}
   });
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(userSkillsDir, 'skills.json'), 'utf8')), {

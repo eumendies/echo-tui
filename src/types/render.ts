@@ -16,6 +16,8 @@ export type BannerContext = {
   nodeVersion: string;
   terminalSize: TerminalSize;
   mode: string;
+  variant?: 'main' | 'btw'; // 选择主启动 banner 或 BTW 紧凑 workspace banner。
+  parentActivity?: string; // BTW banner 展示的后台主 turn 有界状态摘要。
 };
 
 /**
@@ -64,7 +66,7 @@ export type SlashSuggestionState = {
   selectedIndex: number;
 };
 
-export type StatusLineMode = 'idle' | 'command' | 'thinking' | 'streaming' | 'tool' | 'plan' | 'shell' | 'shell-local' | 'mcp';
+export type StatusLineMode = 'idle' | 'command' | 'thinking' | 'streaming' | 'tool' | 'plan' | 'shell' | 'shell-local' | 'mcp' | 'btw';
 
 export type StatusLineModelState = {
   modelLabel: string;

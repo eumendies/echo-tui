@@ -31,7 +31,7 @@ type AnthropicCreateRequest = {
   tools?: AnthropicTool[];
 };
 
-type AnthropicEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+type AnthropicEffort = Exclude<ReasoningEffort, 'none'>;
 
 type AnthropicStream = AsyncIterable<unknown>;
 
@@ -95,24 +95,6 @@ type AnthropicStreamState = {
 const ANTHROPIC_MAX_RETRIES = 3;
 const ANTHROPIC_DEFAULT_MAX_TOKENS = 32768;
 
-function mapReasoningEffortToAnthropicEffort(effort: ReasoningEffort | undefined): AnthropicEffort | undefined {
-  switch (effort) {
-    case 'minimal':
-      return 'low';
-    case 'low':
-      return 'medium';
-    case 'medium':
-      return 'high';
-    case 'high':
-      return 'xhigh';
-    case 'xhigh':
-      return 'max';
-    case 'none':
-    default:
-      return undefined;
-  }
-}
-
 function createClient(config: LlmConfig, AnthropicClient: new (options: {apiKey: string; baseURL?: string; defaultHeaders?: Record<string, string>; maxRetries?: number}) => unknown): unknown {
   return new AnthropicClient({
     apiKey: config.apiKey,
@@ -127,7 +109,7 @@ function createClient(config: LlmConfig, AnthropicClient: new (options: {apiKey:
  */
 function createAnthropicRequest(records: TranscriptRecord[], config: LlmConfig, registry?: ToolRegistry, options: AgentTurnOptions = {}): AnthropicCreateRequest {
   const projection = convertTranscriptToAnthropicMessages(records);
-  const effort = options.isCompaction ? undefined : mapReasoningEffortToAnthropicEffort(config.reasoningEffort);
+  const effort = options.isCompaction || config.reasoningEffort === 'none' ? undefined : config.reasoningEffort;
   const request: AnthropicCreateRequest = {
     cache_control: {type: 'ephemeral'},
     max_tokens: ANTHROPIC_DEFAULT_MAX_TOKENS,

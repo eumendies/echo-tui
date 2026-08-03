@@ -272,17 +272,17 @@ test('createCodexRequest sends reasoning effort when configured', () => {
   const records = [{role: 'user', text: 'hello'}];
 
   assert.deepEqual(
-    createCodexRequest(records, {...TEST_CONFIG, reasoningEffort: 'high'}, createEmptyToolRegistry()),
+    createCodexRequest(records, {...TEST_CONFIG, reasoningEffort: 'max'}, createEmptyToolRegistry()),
     {
       input: [{role: 'user', content: 'hello'}],
       model: 'test-model',
-      prompt_cache_key: createPromptCacheKey(records, {...TEST_CONFIG, reasoningEffort: 'high'}, []),
+      prompt_cache_key: createPromptCacheKey(records, {...TEST_CONFIG, reasoningEffort: 'max'}, []),
       stream: true,
       store: false,
       instructions: 'You are a helpful assistant.',
       text: {verbosity: 'low'},
       include: ['reasoning.encrypted_content'],
-      reasoning: {effort: 'high'}
+      reasoning: {effort: 'max'}
     }
   );
 });

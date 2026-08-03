@@ -32,6 +32,7 @@ export type ChoiceCommandSurfaceTab = {
 export type SlashCommandDescriptor = {
   name: string;
   description: string;
+  allowDuringAssistantTurn?: boolean; // 指示 active assistant turn 期间是否允许展示并立即启动该命令。
 };
 
 export type InfoCommandSurface = {
@@ -437,7 +438,13 @@ export type DiffCommandSurface = {
   title: string;
 };
 
-export type CommandSurface = InfoCommandSurface | SelectCommandSurface | ResumeCommandSurface | SkillsCommandSurface | McpCommandSurface | MemoryCommandSurface | HooksCommandSurface | ScaleCommandSurface | ChoiceCommandSurface | ConfirmCommandSurface | ConfigCommandSurface | ContextUsageCommandSurface | UsageCommandSurface | StatusCommandSurface | CopyCommandSurface | FilePickerCommandSurface | DiffCommandSurface;
+export type BtwCommandSurface = {
+  kind: 'btw'; // 标识 command session 当前拥有 BTW 全视图输入。
+  title: string; // BTW command runtime 的可读标题，仅用于兜底 surface。
+  dismissHint: string; // BTW surface 意外直接渲染时的退出提示。
+};
+
+export type CommandSurface = InfoCommandSurface | SelectCommandSurface | ResumeCommandSurface | SkillsCommandSurface | McpCommandSurface | MemoryCommandSurface | HooksCommandSurface | ScaleCommandSurface | ChoiceCommandSurface | ConfirmCommandSurface | ConfigCommandSurface | ContextUsageCommandSurface | UsageCommandSurface | StatusCommandSurface | CopyCommandSurface | FilePickerCommandSurface | DiffCommandSurface | BtwCommandSurface;
 
 export type CommandModelProfile = {
   id: string;
@@ -578,6 +585,11 @@ export type CommandReferenceSubmissionResult =
     };
 
 export type CommandHostApp = {
+  btw: {
+    open(initialQuestion?: string): void; // 捕获主会话快照并切换到 BTW 投影。
+    handleEvent(event: InputEvent): Promise<void> | void; // 把 BTW composer 输入交给临时会话 controller。
+    close(): void; // 中断并丢弃 BTW 后恢复主投影。
+  };
   transcript: {
     clear(): void;
     forkSession(): TranscriptForkResult;
@@ -693,6 +705,7 @@ export type CommandHost = CommandHostApp & {
 export type CommandHandler<TData extends object = Record<string, unknown>> = {
   name?: string;
   description?: string;
+  allowDuringAssistantTurn?: boolean; // 指示该 handler 是否可与 active assistant turn 并行启动。
   match?(text: string): boolean;
   start(text: string, host: CommandHost): void | CommandStartResult;
   handleEvent?(session: CommandSession<TData>, event: InputEvent, host: CommandHost): void | Promise<void>;
@@ -702,6 +715,10 @@ export type CommandStartResult =
   | {kind: 'not_matched'}
   | {kind: 'handled'}
   | {kind: 'submit_user_message'; text: string; displayText?: string; metadata?: UserTranscriptMetadata; modelProfileId?: string; reasoningEffortOverride?: ReasoningEffort};
+
+export type CommandStartOptions = {
+  duringAssistantTurn?: boolean; // 指示本次启动发生于仍可中断的 active assistant turn。
+};
 
 export type MatchableCommandHandler<TData extends object = Record<string, unknown>> =
   CommandHandler<TData> & {

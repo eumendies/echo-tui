@@ -99,7 +99,7 @@ echo-tui --once --full-access "按要求修改文件并运行检查"
 
 - `preset` 选择运行时协议，常用 `openai-responses-api`、`openai-chat-compatible-api`、`anthropic-compatible-api`，以及一组固定 Base URL、只需填 API key 的厂商 preset（DeepSeek、Kimi、Z.ai、Minimax、StepFun、OpenRouter、Xiaomi 等）。
 - `model` 是 provider 的 API 模型名；`contextWindow` 可选，留空时按内置模型映射或默认窗口推断。
-- `llm.selectedModel` 和 profile 的 `reasoning.effort` 是新会话默认值。TUI 中的 `/model`、`/effort` 和 `Ctrl+T` 只修改当前 session，不改写 `~/.echo/config.json`；切换 model 会清除该 session 旧的 effort override。`tools.bash.maxOutputBytes` 可限制 bash 工具输出上限。bash 工具默认无固定超时，可用 Esc 中断；如确实需要自动终止，可显式配置 `tools.bash.timeoutMs` 为正整数。
+- `llm.selectedModel` 和 profile 的 `reasoning.effort` 是新会话默认值；effort 可设为 `none`、`low`、`medium`、`high`、`xhigh` 或 `max`，具体档位是否可用仍由所选模型服务决定。TUI 中的 `/model`、`/effort` 和 `Ctrl+T` 只修改当前 session，不改写 `~/.echo/config.json`；切换 model 会清除该 session 旧的 effort override。`tools.bash.maxOutputBytes` 可限制 bash 工具输出上限。bash 工具默认无固定超时，可用 Esc 中断；如确实需要自动终止，可显式配置 `tools.bash.timeoutMs` 为正整数。
 - `tools.fileEdit.mode` 可设为 `apply_patch`（默认）或 `edit_file`。每轮 assistant 请求只注册其中一个；在 `/config` 保存后从下一轮生效，进行中的 tool continuation 保持原 registry 快照。`edit_file`只更新已有 UTF-8 文本文件，以精确 `old_string`/`new_string` 替换；默认要求唯一匹配，只有明确设置 `replace_all` 才会替换调用前原始内容中的全部非重叠匹配。
 - `tools.readFiles.autoCompressImages` 默认为 `true`，同时作用于模型调用 `read_files` 和 File Picker／`@` mention。未超过 5 MB 的 PNG、JPEG、GIF、WebP 保持原样；超限图片会在进入 transcript 前用 Sharp 缩小到附件上限内，npm 安装已包含所需平台运行时，无需预装 ImageMagick 或 libvips。设为 `false` 后，超限图片恢复为明确的读取失败。
 - `instructions.fileName` 可设为 `AGENTS.md` 或 `CLAUDE.md`，默认读取 `AGENTS.md`。两者互斥，不会在所选文件缺失时回退到另一种文件。
@@ -159,7 +159,9 @@ normal 与 plan 之间发生模型可见切换时，模式说明只会加入切�
 | Esc | 关闭面板、隐藏建议、中断 shell 命令或回答 |
 | Ctrl+C / Ctrl+D | 退出 |
 
-assistant 回答期间 composer 仍可编辑。此时按 Enter 会把当前非空输入保存为一条待发送消息，并在当前回答完成或失败后自动按普通输入规则处理；待发送消息不会提前进入当前模型请求或 transcript。队列最多一条，排队后可以继续编辑下一份草稿；已有待发送消息时再次按 Enter 不会覆盖它。卡片显示期间第一次 Esc 只移除待发送消息，第二次 Esc 才中断当前回答。待发送状态只存在于当前进程，`/clear`、成功 `/resume`、退出或重启都会清理它。
+assistant 回答期间 composer 仍可编辑。输入 `/` 时只建议可安全并行的 `/help`、`/status`、`/context`、`/usage` 和 `/copy`；这些命令会立即打开并允许交互，后台回答继续运行，Esc 优先关闭当前面板而不是中断回答。
+
+其他非空输入按 Enter 后保存为一条待发送消息，并在当前回答完成或失败后自动按普通输入规则处理；待发送消息不会提前进入当前模型请求或 transcript。队列最多一条，排队后可以继续编辑下一份草稿；已有待发送消息时再次按 Enter 不会覆盖它，但仍可立即调用上述响应期命令。卡片显示期间第一次 Esc 只移除待发送消息，第二次 Esc 才中断当前回答。待发送状态只存在于当前进程，`/clear`、成功 `/resume`、退出或重启都会清理它。
 
 ## Slash 命令
 

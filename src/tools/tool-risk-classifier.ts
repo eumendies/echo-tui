@@ -2,6 +2,7 @@ import {APPLY_PATCH_TOOL_NAME, createApplyPatchCallLabel} from './apply-patch-to
 import {PLAN_READONLY_BASH_REJECTION, RUN_BASH_COMMAND_TOOL_NAME, isPlanReadonlyBashCommand} from './bash-tool-handler';
 import {isMcpToolName} from '../mcp/manager';
 import {EDIT_FILE_TOOL_NAME, createEditFileCallLabel} from './edit-file-tool-handler';
+import {isTodoToolName} from './todo-tool-handler';
 
 import type {InteractionMode} from '../types/agent';
 import type {ToolCall, ToolRiskAssessment} from '../types/tool';
@@ -23,6 +24,26 @@ const BASH_RISK_PATTERNS: RegExp[] = [
   /\b(?:curl|wget)\b[^|]*\|\s*(?:sudo\s+)?(?:sh|bash|zsh)\b/
 ];
 const PLAN_WRITE_TOOL_REJECTION = 'In plan mode, tools that modify files or system state are not available. To make changes, exit plan mode first.';
+const READONLY_TOOL_REJECTION = 'This BTW conversation only allows read-only tools. The requested tool was not executed.';
+const READONLY_TOOL_NAMES = new Set(['read_files', 'glob', 'grep', 'web_fetch', 'web_search', 'use_skill']);
+
+/**
+ * 对 BTW 等单次 readonly run 做 fail-closed 分类；工具 schema 保持不变，执行边界在本地强制。
+ */
+function classifyReadonlyToolCall(call: ToolCall): ToolRiskAssessment {
+  if (isTodoToolName(call.toolName) || READONLY_TOOL_NAMES.has(call.toolName)) {
+    return {risk: 'safe'};
+  }
+
+  if (call.toolName === RUN_BASH_COMMAND_TOOL_NAME) {
+    const command = parseBashCommand(call.argumentsText);
+    return command && isPlanReadonlyBashCommand(command)
+      ? {risk: 'safe'}
+      : {risk: 'rejected', reason: 'readonly_policy', message: READONLY_TOOL_REJECTION};
+  }
+
+  return {risk: 'rejected', reason: 'readonly_policy', message: READONLY_TOOL_REJECTION};
+}
 
 /**
  * 对 provider 产出的 tool call 做执行前策略分类：安全执行、请求审批，或按当前 mode 直接拒绝。
@@ -118,6 +139,8 @@ function hasBashRisk(command: string): boolean {
 }
 
 export {
+  READONLY_TOOL_REJECTION,
+  classifyReadonlyToolCall,
   classifyToolCallRisk,
   createMcpApprovalPreview,
   parseBashCommand

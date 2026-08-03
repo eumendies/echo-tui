@@ -387,7 +387,7 @@ test('createAnthropicRequest sends messages, max tokens, and tools without OpenA
   assert.equal('max_output_tokens' in request, false);
 });
 
-test('createAnthropicRequest maps reasoning effort to adaptive thinking config', () => {
+test('createAnthropicRequest forwards reasoning effort to adaptive thinking config', () => {
   const baseRequest = {
     cache_control: {type: 'ephemeral'},
     max_tokens: ANTHROPIC_DEFAULT_MAX_TOKENS,
@@ -397,15 +397,9 @@ test('createAnthropicRequest maps reasoning effort to adaptive thinking config',
     thinking: { type: 'adaptive', display: 'summarized' }
   };
 
-  for (const [reasoningEffort, effort] of [
-    ['minimal', 'low'],
-    ['low', 'medium'],
-    ['medium', 'high'],
-    ['high', 'xhigh'],
-    ['xhigh', 'max']
-  ]) {
+  for (const effort of ['low', 'medium', 'high', 'xhigh', 'max']) {
     assert.deepEqual(
-      createAnthropicRequest([{ role: 'user', text: 'hello' }], { ...TEST_CONFIG, reasoningEffort }),
+      createAnthropicRequest([{ role: 'user', text: 'hello' }], { ...TEST_CONFIG, reasoningEffort: effort }),
       { ...baseRequest, output_config: { effort } }
     );
   }

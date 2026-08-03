@@ -14,11 +14,11 @@ import type { ReasoningEffort } from '../types/agent';
 const EFFORT_CONFIG_PATH_HINT = '~/.echo/config.json';
 const EFFORT_DISPLAY_LABELS: Record<ReasoningEffort, string> = {
   none: 'NONE',
-  minimal: 'MIN',
   low: 'LOW',
   medium: 'MED',
   high: 'HIGH',
-  xhigh: 'XHIGH'
+  xhigh: 'XHIGH',
+  max: 'MAX'
 };
 
 type EffortCommandInfo = HostEffortInfo;

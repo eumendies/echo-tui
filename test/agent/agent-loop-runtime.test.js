@@ -123,6 +123,62 @@ test('buildProviderRecords includes skill catalog without skill body', () => {
   assert.deepEqual(records.slice(1), [{ role: 'user', text: 'review this' }]);
 });
 
+test('BTW readonly metadata keeps system and tool cache materials unchanged', async () => {
+  const primaryDebug = createDebugRecorder();
+  const btwDebug = createDebugRecorder();
+  const agent = {async runTurn() { return {draft: 'done', toolCalls: []}; }};
+
+  await withPatchedAgentRuntime(agent, async () => {
+    await createAgentLoopRuntime(TEST_CWD, undefined, undefined, primaryDebug.context)({records: [{role: 'user', text: 'question'}]});
+    await createAgentLoopRuntime(TEST_CWD, undefined, undefined, btwDebug.context)({
+      records: [{role: 'user', text: '[BTW]\nquestion'}],
+      conversationKind: 'btw',
+      toolPolicy: 'readonly'
+    });
+  });
+
+  const primary = primaryDebug.events.find((event) => event.event === 'provider_request_built').payload;
+  const btw = btwDebug.events.find((event) => event.event === 'provider_request_built').payload;
+  assert.equal(btw.systemPromptHash, primary.systemPromptHash);
+  assert.equal(btw.toolSchemaHash, primary.toolSchemaHash);
+  assert.deepEqual(btw.toolNames, primary.toolNames);
+});
+
+test('readonly runtime rejects write tools before approval and executor callbacks', async () => {
+  let turn = 0;
+  let approvals = 0;
+  const results = [];
+  const agent = {
+    async runTurn() {
+      turn += 1;
+      return turn === 1
+        ? {draft: '', toolCalls: [{callId: 'write-1', toolName: 'apply_patch', argumentsText: '{"patch":"bad"}'}]}
+        : {draft: 'done', toolCalls: []};
+    }
+  };
+
+  await withPatchedAgentRuntime(agent, () => createAgentLoopRuntime(TEST_CWD)({
+    records: [{role: 'user', text: 'BTW question'}],
+    toolPolicy: 'readonly',
+    conversationKind: 'btw'
+  }, {
+    onToolApprovalRequest() {
+      approvals += 1;
+      return {kind: 'allow_once'};
+    },
+    onToolResult(result) {
+      results.push(result);
+    }
+  }));
+
+  assert.equal(approvals, 0);
+  assert.equal(results.length, 1);
+  assert.equal(results[0].callId, 'write-1');
+  assert.equal(results[0].toolName, 'apply_patch');
+  assert.equal(results[0].ok, false);
+  assert.match(results[0].text, /read-only/);
+});
+
 test('createAgentLoopRuntime snapshots a budgeted skill catalog across tool continuation', async () => {
   await withTemporaryMemoryHome(async (homeDir) => {
     const description = `BEGIN ${'routing details '.repeat(100)} END`;

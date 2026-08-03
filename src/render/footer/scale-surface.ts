@@ -21,7 +21,7 @@ export function renderScaleSurface(commandSurface: ScaleCommandSurface, width: n
   const positions = calculateScalePositions(options.length, trackWidth);
   const lines = [
     renderScaleBoxTop(boxWidth, theme),
-    renderScaleBoxLine(renderScaleTitle(commandSurface.title, contentWidth, theme), contentWidth, theme),
+    renderScaleBoxLine(ansi.bold(tokenText(theme, 'accentStrong', clampPlainText(commandSurface.title, contentWidth))), contentWidth, theme),
     renderScaleBoxLine('', contentWidth, theme),
     renderScaleBoxLine(renderScaleTrack(positions, selectedIndex, trackWidth, theme), contentWidth, theme),
     renderScaleBoxLine(renderScaleLabels(options, positions, selectedIndex, trackWidth, theme), contentWidth, theme),
@@ -46,7 +46,7 @@ function calculateScaleBoxWidth(commandSurface: ScaleCommandSurface, width: numb
   const safeWidth = safeRenderWidth(width);
   const labelWidth = commandSurface.options.reduce((sum, option) => sum + displayWidth(option.description || option.label) + 2, 0);
   const minContentWidth = Math.max(
-    displayWidth(`${commandSurface.title} [实时]`),
+    displayWidth(commandSurface.title),
     labelWidth,
     displayWidth(commandSurface.dismissHint),
     34
@@ -54,15 +54,6 @@ function calculateScaleBoxWidth(commandSurface: ScaleCommandSurface, width: numb
   const availableWidth = Math.max(SCALE_SURFACE_MIN_WIDTH, safeWidth - 8);
 
   return Math.min(safeWidth, SCALE_SURFACE_MAX_WIDTH, Math.max(SCALE_SURFACE_MIN_WIDTH, minContentWidth, availableWidth));
-}
-
-/**
- * 渲染 slider 标题和 live 状态，标题过长时优先保留状态标记。
- */
-function renderScaleTitle(title: string, width: number, theme: FooterTheme): string {
-  const liveText = ' [实时]';
-  const titleText = clampPlainText(title, Math.max(1, width - displayWidth(liveText)));
-  return `${ansi.bold(tokenText(theme, 'accentStrong', titleText))}${ansi.dim(liveText)}`;
 }
 
 /**

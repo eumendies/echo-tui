@@ -32,6 +32,7 @@ function createContextUsageSurface(host: CommandHost): ContextUsageCommandSurfac
 export class ContextCommandHandler implements CommandHandler {
   name = 'context';
   description = '查看 context 占用详情';
+  allowDuringAssistantTurn = true;
 
   /**
    * 只匹配 /context 和尾随空白，避免带参数内容被误消费。

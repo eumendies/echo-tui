@@ -21,11 +21,15 @@ flowchart LR
     cli_main --> one_shot["src/cli/one-shot.ts"]
     app_main --> app_context["src/app/state/app-context.ts"]
     app_main --> terminal_tty["src/terminal/tty.ts"]
-    app_main --> input_parser["src/input/key-parser.ts"]
+    app_main --> submission_controller["src/app/composer-submission-controller.ts"]
+    app_main --> input_controller["src/app/input-event-controller.ts"]
+    input_controller --> input_parser["src/input/key-parser.ts"]
     app_main --> app_renderer["src/render/app-renderer.ts"]
     app_main --> mcp_manager["src/mcp/manager.ts"]
     app_main --> hooks["src/hooks/*"]
     app_main --> turn_runner["src/app/assistant-turn-runner.ts"]
+    submission_controller --> turn_runner
+    input_controller --> submission_controller
     app_main --> bash_runner["src/tools/bash-command-runner.ts"]
     app_main --> agent_loop["src/agent/agent-loop-runtime.ts"]
     agent_loop --> agent_setup["src/agent/agent-setup.ts"]
@@ -85,7 +89,7 @@ flowchart LR
 
 `npm start` 通过 `tsc` 生成 `dist/`，再运行 `dist/bin/echo-tui.js`；编译产物使用 CommonJS。`package.json#bin` 指向 `bin/echo-tui.ts`，对应编译产物解析并加载 `dist/src/cli/main.js`；未生成 `dist/` 时给出明确 build 提示并退出。`src/cli/main.ts` 是普通命令行入口：解析 `--help` / `--version` / `--once`，有效启动前执行用户目录初始化（`bootstrapEchoUserSetup`）；无参数时调用 `src/app/main.ts` 的 `run()` 进入 TUI raw mode，`--once` 则交给不创建 terminal、renderer 或 stdin listener 的 `src/cli/one-shot.ts`。`src/types/` 中的纯 TypeScript 文件描述 input、composer、transcript、command、render、app、agent、tool、diff、change-history、mcp 和 skill 的跨层协议。
 
-`src/app/main.ts` 是顶层编排层，面向一个 `AppContext` 组合根；`AppContext` 创建并以只读引用公开 `ComposerContext`、`TranscriptContext`、`ModelContext`、`TurnContext`、`RenderContext`、`ChangeHistoryContext`、`ConversationReferenceContext` 和 `PendingMessageContext`，内部持有 `SlashSuggestionContext` 以及 interaction mode、context usage、MCP bootstrap 状态等进程级标量状态。调用方直接使用状态所属的子 context；`AppContext` 负责派生 render/agent 组合状态，并协调 session 加载与清空、change checkpoint、undo、user/assistant turn 等跨 context 事务。`ToolApprovalContext`、`UserQuestionContext` 和 `FilePickerContext` 由 `main.ts` 直接持有。composer、transcript records、session 指针、response lock、assistant pending、单槽待发送消息、working spinner、输入历史、slash suggestion、change history、status line 和 previous terminal size 由对应 context 或 render state 持有；boxed composer 的 placeholder 只在 render 层生成。`main.ts` 负责依赖装配、通过 `createKeyParser()` 保持跨 stdin chunk 的输入解析状态、输入事件分发、LLM agent lifecycle、shell 命令执行、工具授权/用户问题/文件选择 callback 接入、MCP 初始化和 destructive replay 等顶层编排；普通 assistant turn 的回调到状态翻译由 `src/app/assistant-turn-runner.ts` 承载。具体走 footer-only redraw、transcript append 还是 destructive replay，由 `app-renderer` 门面统一编排。slash command session 和会话内事件分发由 `src/app/command/command-runtime.ts` 承载；`src/app/command/command-host.ts` 在组合根装配领域 command ports，handler 通过统一的 `CommandHost` 协议触达 transcript、clipboard、model、config、skills、mcp、memory、hooks、mode、theme、context、status、usage、diff、undo、assistant 和 ui 语义操作。
+`src/app/main.ts` 是生产 composition root，面向一个 `AppContext` 组合根；`AppContext` 创建并以只读引用公开 `ComposerContext`、`TranscriptContext`、`ModelContext`、`TurnContext`、`RenderContext`、`ChangeHistoryContext`、`ConversationReferenceContext` 和 `PendingMessageContext`，内部持有 `SlashSuggestionContext` 以及 interaction mode、context usage、MCP bootstrap 状态等进程级标量状态。调用方直接使用状态所属的子 context；`AppContext` 负责派生 render/agent 组合状态，并协调 session 加载与清空、change checkpoint、undo、user/assistant turn 等跨 context 事务。`ToolApprovalContext`、`UserQuestionContext` 和 `FilePickerContext` 由 `main.ts` 直接持有。composer、transcript records、session 指针、response lock、assistant pending、单槽待发送消息、working spinner、输入历史、slash suggestion、change history、status line 和 previous terminal size 由对应 context 或 render state 持有；boxed composer 的 placeholder 只在 render 层生成。`main.ts` 显式装配 terminal、renderer、stores、command runtime、agent runtime 和两个粗粒度 controller，并保留 render/append、shell execution、assistant interruption、MCP/config lifecycle、resize、start 与 exit。`ComposerSubmissionController` 负责 composer 消费、pending dispatch 以及 command/skill/shell/file mention/reference 提交路由；它只把最终 `AssistantTurnSubmission` 交回 main 装配的真实运行边界。`InputEventController` 持有 stateful key parser，按固定优先级协调 modal、local surface、快捷键、composer 和 Esc/Submit/Exit 动作。普通 assistant turn 的 callback 到状态翻译仍由 `src/app/assistant-turn-runner.ts` 承载。具体走 footer-only redraw、transcript append 还是 destructive replay，由 `app-renderer` 门面统一编排。slash command session 和会话内事件分发由 `src/app/command/command-runtime.ts` 承载；`src/app/command/command-host.ts` 在组合根装配领域 command ports。
 
 slash runtime 通过三类稳定边界协调本地命令：
 
@@ -100,6 +104,8 @@ slash runtime 通过三类稳定边界协调本地命令：
 | CLI 入口 | 普通命令行入口。解析 `--help` / `--version` / `--once`，有效启动时执行用户目录初始化；无参数进入 TUI，`--once` 进入 headless runner；bin shim 只负责定位编译产物 | `src/cli/main.ts`、`src/cli/one-shot.ts`、`bin/echo-tui.ts` |
 | 用户目录初始化 | 首次启动 bootstrap，只在缺失时创建 `~/.echo/config.json`（预置内置 fake agent provider/model）和内置 `echo-tui-setup` skill，不覆盖已有内容 | `src/config/user-setup-bootstrap.ts` |
 | interaction mode | 当前进程内的交互模式，含 `normal`、`plan`、`shell`、`shell-local`。Tab 在四者间循环，`/mode` 也可切换；normal/plan 的模型可见切换只包装到切换后首条 user record，plan 同时影响工具风险边界，shell/shell-local 把输入作为本地 bash 命令执行 | `src/app/state/app-context.ts`、`src/types/agent.ts` |
+| composer submission controller | 消费 live composer，保护 pending 单槽 claim/dispatch 锁，并依次执行 command、shell、file mention、conversation reference 和 assistant submission 路由；不拥有 agent、renderer 或 shell 进程生命周期 | `src/app/composer-submission-controller.ts` |
+| input event controller | 持有跨 stdin chunk 的 key parser，按固定优先级分发 modal、command/local surface、快捷键、composer、Esc、Submit 和 Exit；业务收尾通过 main 装配的必填 action 调用 | `src/app/input-event-controller.ts` |
 | slash resolver | 统一的 slash 路由入口。对一段已提交文本按顺序询问 handlers 的 `match()`，命中后直接返回该 handler；未命中则返回 `null` 并回退为普通消息或 shell 命令 | `src/commands/resolve-slash-command.ts` |
 | slash handler | 每个本地命令的实例协议对象。至少实现 `match(text)` 和 `start(text, host)`，并暴露用户可见 `name` / `description` 供 slash 提示；交互式命令额外实现 `handleEvent(session, event, host)`。handler 只通过 `CommandHost` 调用受控 app 能力 | `src/commands/*-command-handler.ts` |
 | agent workflow | `/init` 和 `/review` 内置工作流。handler 把固定 prompt 通过 `submit_user_message` 交回普通用户消息流程，plan 模式下提交时自动切回 normal；后续走正常 agent lifecycle | `src/commands/agent-workflows/*` |
@@ -110,7 +116,7 @@ slash runtime 通过三类稳定边界协调本地命令：
 | tool approval context | agent 请求写文件、高风险 shell 或需授权 MCP 工具前的阻塞式授权状态。把授权请求投影为 `choice` surface，支持 Allow once、Allow tool/session、Allow command/session、Allow all/session、Deny 和 Tell model what to do；会话授权缓存由它持有，bash 只按完全相同 command 文本复用授权 | `src/app/state/tool-approval-context.ts`、`src/tools/tool-risk-classifier.ts` |
 | user question context | `ask_user_questions` tool 的阻塞式用户问题状态。逐题投影为 `choice` surface，支持预设选项、Other inline 输入和 Esc 取消，最终构造 tool result 交回 agent continuation | `src/app/state/user-question-context.ts`、`src/tools/ask-user-questions-tool-handler.ts` |
 | file picker context | composer 内 `@` 文件选择器的 transient 状态。展示当前目录直接子项、查询过滤、文本/代码预览，支持方向键移动、进入/返回目录、Space 多选、Enter 插入 mention，复用 read_files 的资源分类 | `src/app/state/file-picker-context.ts`、`src/input/file-mentions.ts` |
-| pending message context | active assistant turn 期间保存一条用户原始文本。`submitComposer()` 在接受 Enter 时统一记录输入历史并清空 composer，pending 自动处理和 turn/command handler 不再修改后来输入的 live 草稿；响应期间输入的 `/reference` 会排队为 command 文本，当前实现不让 pending 携带引用附件。卡片属于有界 footer input surface，第一次 Esc 只移除待发送消息；状态不持久化 | `src/app/state/pending-message-context.ts`、`src/app/main.ts`、`src/render/footer/composer-surface.ts` |
+| pending message context | active assistant turn 期间保存一条用户原始文本。`submitComposer()` 在接受 Enter 时统一记录输入历史并清空 composer，pending 自动处理和 turn/command handler 不再修改后来输入的 live 草稿；响应期间输入的 `/reference` 会排队为 command 文本，当前实现不让 pending 携带引用附件。卡片属于有界 footer input surface，第一次 Esc 只移除待发送消息；状态不持久化 | `src/app/state/pending-message-context.ts`、`src/app/composer-submission-controller.ts`、`src/render/footer/composer-surface.ts` |
 | status line | 普通输入 footer 底部的一行 segmented 状态。左侧展示当前 session 内存模型、有效推理等级和项目名，右侧展示最近一次真实 provider context usage 与输入/工作模式；普通 redraw/render path 只读 `ModelContext` 缓存。`/model`、`/effort` 和 `Ctrl+T` 立即刷新该缓存并清除旧 usage；sidecar 同步只是静默恢复优化，失败不改变 status line 或阻断请求。`/config` 或 watcher 只刷新全局 catalog/default，当前 profile 仍有效时保持 session 选择，profile 被删除时回退全局默认并清理旧 usage。显式 slash skill 在 active assistant turn 内按字段覆盖 session 展示为 `<model> (SKILL override)`，完成、失败或中断后恢复 session 状态；无效 skill profile 回退 session model。command/approval/user-question/file-picker surface 会替换普通输入区域 | `src/render/footer.ts`、`src/types/render.ts`、`src/app/state/model-context.ts`、`src/app/state/turn-context.ts` |
 | transcript store | 按 cwd hash 分区的本地 append-only JSONL session journal。默认根目录是 `~/.echo/echo_tui/`；每个 session 以 `session_start` 首行建立身份，随后逐行追加 records、compaction、todo 和 `/undo` / `/diff` 共用的 change history 操作。同目录 `{session-id}.settings.json` sidecar 原子覆盖当前 model profile ID 和可选 effort override，不保存 profile 定义或历史值；孤立 sidecar 不进入 session 枚举。journal 重放校验 envelope、record role 和下游依赖的关键身份字段，但保留未知扩展字段；display metadata 等可选 payload 由消费端自行校验。重放忽略末尾未完成写入，真正恢复 session 时会原子移除无效尾部后再允许续写，但拒绝中间损坏；不保存 composer、pending、command session 或输入历史 | `src/persistence/transcript-store.ts`、`src/persistence/transcript-journal.ts`、`src/persistence/session-model-settings-store.ts` |
 | tool result offloading | 支持大结果的工具把完整已采集文本写入 `~/.echo/echo_tui/projects/<cwd-hash>/tool-results/`，文件先写临时路径再原子落位，单 artifact 默认硬上限 8 MiB。transcript、provider 和 renderer 只接收 bounded preview 与单一 `[tool result truncated: <absolute-path>]` marker；Bash/shell 保留尾部并把 marker 放在输出前，Web Fetch、PDF 已提取文本和 MCP 保留开头并把 marker 放在结果后。PDF 在 `read_files` 最终格式化边界使用独立的 65,536-byte 默认阈值落盘，artifact 保留路径、页数、提取状态和完整已提取文本；普通 `read_files` 结果仍使用 256,000-byte 默认总输出上限，源 PDF 大小与提取内容硬上限保持不变。文件可由现有 `read_files` / `grep` 回读，不写工作区；写入失败退回无路径的既有 bounded 截断。offloading 不取消网络 body、PDF 提取、进程输出、timeout、取消或搜索数量边界；第一版不自动 GC，避免删除历史 transcript 仍引用的文件 | `src/tools/tool-result-offloading.ts`、`src/tools/bash-command-runner.ts`、`src/tools/read-files/tool-handler.ts` |
@@ -153,12 +159,13 @@ slash runtime 通过三类稳定边界协调本地命令：
 handler 协议保持最小：
 
 - `match(text)`：判断当前提交文本是否命中该命令；只返回布尔命中结果
+- `allowDuringAssistantTurn`：可选、默认关闭；声明命令可在 active assistant turn 期间出现在 suggestion 并立即启动
 - `start(text, host)`：在确认命中后启动该命令，必要时由 handler 自己解析原始文本，并通过 `CommandHost` 打开 surface、读取信息或读取可恢复 session；可返回 `not_matched` / `handled` / `submit_user_message`
 - `handleEvent(session, event, host)`：可选；当命令 session 活跃时消费后续输入事件，并通过 `CommandHost` 更新 session、清空 transcript、恢复 session 或触发 assistant 侧动作；异步 handler 可先同步更新 loading surface，Promise 完成后由 command runtime 再次触发 footer redraw
 
 这让“无交互命令”和“有交互命令”共享同一套总线，而不是拆成两套 app 分支。
 
-默认 handlers 在 app 装配阶段无参实例化：`createDefaultSlashCommandHandlers()` 创建 `/help`、`/config`、`/model`、`/effort`、`/mode`、`/status`、`/context`、`/usage`、`/memory`、`/clear`、`/compact`、`/diff`、`/undo`、`/fork`、`/resume`、`/reference`、`/mcp`、`/hooks`、`/skills`、内置 agent workflow（`/init`、`/review`）和 direct skill invocation handler。命令需要的 app 能力在运行时由 `CommandHost` 提供。`createSlashCommandDescriptors()` 从同一组 handlers 派生命令 `{name, description}`，再与 enabled skill descriptors 合并去重，供普通 composer 输入态下的 slash suggestion 使用，避免维护第二份命令/skill 清单。
+默认 handlers 在 app 装配阶段无参实例化：`createDefaultSlashCommandHandlers()` 创建 `/help`、`/config`、`/model`、`/effort`、`/mode`、`/status`、`/context`、`/usage`、`/memory`、`/clear`、`/compact`、`/diff`、`/undo`、`/fork`、`/resume`、`/reference`、`/mcp`、`/hooks`、`/skills`、内置 agent workflow（`/init`、`/review`）和 direct skill invocation handler。命令需要的 app 能力在运行时由 `CommandHost` 提供。`createSlashCommandDescriptors()` 从同一组 handlers 派生 `{name, description, allowDuringAssistantTurn}`，再与 enabled skill descriptors 合并去重，供 composer 的 slash suggestion 使用，避免维护第二份命令/skill 清单。空闲时显示完整候选；active assistant turn 期间只显示并立即启动显式允许的 `/help`、`/status`、`/context`、`/usage` 和 `/copy`，其余输入继续使用单槽 pending message。
 
 direct skill invocation 的模型策略通过独立 typed 字段沿 `CommandStartResult` → `AssistantTurnRunnerInput` → `AgentSessionInput` 传递，不从 transcript metadata 反推。model 与 effort 各自缺失时继承当前 session 对应字段；显式字段只作用于当前 slash turn，陈旧 model profile 回退 session model。
 
@@ -204,7 +211,7 @@ flowchart TB
     setup --> initial_draw["app-renderer: 启动 banner + footer"]
     initial_draw --> mcp_init["有 MCP 配置时后台 bootstrap servers"]
     mcp_init --> wait_input{"等待 stdin data"}
-    wait_input --> parse["keyParser.parse(chunk)"]
+    wait_input --> parse["InputEventController: keyParser.parse(chunk)"]
     parse --> modal{"approval / question / file picker / mcp 诊断活跃?"}
     modal -->|是| modal_event["对应 context 消费事件"]
     modal_event --> redraw["按当前状态重绘 footer 或 app snapshot"]
@@ -227,7 +234,7 @@ flowchart TB
     edit -->|否| submit{"是否 Enter 提交"}
     submit -->|否| esc_exit["Esc 中断 / Ctrl+C/D 退出等"]
     esc_exit --> wait_input
-    submit -->|是| route["commandRuntime.startFromText(text)"]
+    submit -->|是| route["ComposerSubmissionController: commandRuntime.startFromText(text)"]
     route --> matched{"命中 handler?"}
     matched -->|是| command_start["handler.start(text, host)"]
     command_start --> host_calls
@@ -239,7 +246,7 @@ flowchart TB
 
 流程的关键约束是 transcript content records append-only。`TranscriptRecord` 是按 `role` 区分的封闭 union：user 的 mode、workflow 与 skill 信息收敛在 `metadata`；tool result 的通用身份和状态字段位于顶层，工具专属结果放入按 `kind` 区分的 `details`；provider-private reasoning/thinking 统一使用 `extension` role 和 extension kind，未知 extension 不进入 provider 上下文。应用只追加 user/assistant/error/local_notice/compaction_notice/reasoning_summary/shell/tool_call/tool_result/extension record，不修改已提交 record 内容；普通 user record commit 后立即保存 session，assistant 完成、本地 notice/error、reasoning summary、shell、tool result 或 provider-private extension commit 后再次保存同一个 session。普通 agent 请求不在 `main.ts` 维护另一份 history，而是读取当前 `TranscriptRecord[]` 快照传入 agent。具体渲染路径由 `app-renderer` 统一选择：普通更新只重绘 footer，transcript 新增时执行“clear footer → append block → redraw footer”，列宽变化或行数压缩则切到 destructive recovery。
 
-输入分发的优先级是：user question → tool approval → file picker → active command session → MCP 诊断面板 → `@` 触发 file picker → slash suggestion → Tab 模式循环 → composer 编辑 → 历史浏览 / 换行 / Esc 中断 / 提交 / 退出。运行时使用 `createKeyParser()` 创建的 stateful parser 解析 stdin chunk：普通按键仍复用 `parseKeyChunk()` 的无状态解析，bracketed paste 则跨 chunk 缓存起止标记和 payload，把 CR/CRLF 归一为 LF 后作为单个 `TEXT` 事件交给 composer，避免粘贴中的换行被误判为提交。提交时若未命中命令且处于 shell/shell-local 模式，则按本地 bash 命令执行而不是发给模型。
+输入分发的优先级是：user question → tool approval → file picker → active command session → conversation reference preparation → reference/MCP 本地 info surface → model tuning → 全局快捷键 → `@` 触发 file picker → slash suggestion → Tab 模式循环 → composer 编辑 → 历史浏览 / 换行 / Esc 中断 / 提交 / 退出。`InputEventController` 使用 `createKeyParser()` 创建的 stateful parser 解析 stdin chunk：普通按键仍复用 `parseKeyChunk()` 的无状态解析，bracketed paste 则跨 chunk 缓存起止标记和 payload，把 CR/CRLF 归一为 LF 后作为单个 `TEXT` 事件交给 composer，避免粘贴中的换行被误判为提交。提交由 `ComposerSubmissionController` 统一消费；若未命中命令且处于 shell/shell-local 模式，则通过 main 的 shell action 执行，而不是发给模型。Esc 在普通输入层依次清理 pending message、conversation reference，再尝试中断 shell 和 assistant turn。
 
 ## assistant 响应子流程
 

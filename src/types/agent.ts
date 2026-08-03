@@ -8,6 +8,9 @@ export type AgentExecutionMode =
   | {kind: 'interactive'}
   | {kind: 'headless'; approvalPolicy: 'deny' | 'full-access'};
 
+export type AgentToolPolicy = 'default' | 'readonly';
+export type AgentConversationKind = 'primary' | 'btw';
+
 export function isShellInteractionMode(mode: InteractionMode): boolean {
   return mode === 'shell' || mode === 'shell-local';
 }
@@ -84,6 +87,8 @@ export type AgentSessionInput = {
   reasoningEffortOverride?: ReasoningEffort; // 仅本回合生效的推理强度覆盖，包含显式 none。
   compactionThresholdRatio?: number; // 触发自动上下文压缩时占模型窗口的比例覆盖。
   skillCatalogContextRatio?: number; // 技能目录 prompt 可占模型上下文窗口的比例覆盖。
+  toolPolicy?: AgentToolPolicy; // 本次运行的工具执行边界；readonly 保持 schema 但拒绝副作用调用。
+  conversationKind?: AgentConversationKind; // 本地生命周期标识，不得改变 built-in system prompt。
 };
 
 export type AgentInstructionSourceKind = 'global' | 'project';
@@ -149,7 +154,7 @@ export type AgentType = 'openai' | 'openai-chat' | 'anthropic' | 'codex' | 'fake
 
 export type FileEditToolMode = 'apply_patch' | 'edit_file';
 
-export const REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const;
+export const REASONING_EFFORTS = ['none', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 
 export type ReasoningEffort = typeof REASONING_EFFORTS[number];
 
