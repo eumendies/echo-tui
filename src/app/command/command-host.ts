@@ -17,6 +17,7 @@ import type {TranscriptRecord} from '../../types/transcript';
 import type {UsageStore} from '../../types/usage';
 import type {McpManager} from '../../mcp/manager';
 import type {AppContext} from '../state/app-context';
+import type {InputEvent} from '../../types/input';
 
 type CommandHostOptions = {
   appContext: AppContext;
@@ -27,13 +28,18 @@ type CommandHostOptions = {
   renderFooter: () => void;
   renderResizeRecovery: () => void;
   usageStore: UsageStore;
+  btw: {
+    open(initialQuestion?: string): void; // 打开 BTW 临时会话。
+    handleEvent(event: InputEvent): Promise<void> | void; // 转发 BTW composer 输入。
+    close(): void; // 丢弃 BTW 并退出临时视图。
+  };
 };
 
 /**
  * 在 app 组合根装配 command handler 可用的受控领域端口。
  */
 function createCommandHost(options: CommandHostOptions): CommandHostApp {
-  const {appContext, appendRecord, exit, hooks, mcpManager, renderFooter, renderResizeRecovery, usageStore} = options;
+  const {appContext, appendRecord, btw, exit, hooks, mcpManager, renderFooter, renderResizeRecovery, usageStore} = options;
   const modelPorts = createModelCommandPorts({appContext, renderFooter, renderResizeRecovery});
   const settingsPorts = createSettingsCommandPorts({appContext, renderFooter, renderResizeRecovery});
   const statusPorts = createStatusCommandPorts({
@@ -44,6 +50,7 @@ function createCommandHost(options: CommandHostOptions): CommandHostApp {
   const cwd = () => appContext.getCurrentCwd();
 
   return {
+    btw,
     transcript: createTranscriptCommandPort({appContext, appendRecord, renderResizeRecovery}),
     reference: createConversationReferenceCommandPort({appContext, renderFooter, usageStore}),
     clipboard: {writeText: writeClipboardText},

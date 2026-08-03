@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const { AgentWorkflowCommandHandler } = require('../../src/commands/agent-workflows/agent-workflow-command-handler');
+const {BtwCommandHandler} = require('../../src/commands/btw-command-handler');
 const { ClearCommandHandler } = require('../../src/commands/clear-command-handler');
 const { CompactCommandHandler } = require('../../src/commands/compact-command-handler');
 const { ConfigCommandHandler } = require('../../src/commands/config/handler');
@@ -44,6 +45,9 @@ function createResumeSessions(count) {
 
 function createFakeHost(options = {}) {
   const calls = {
+    btwOpens: [],
+    btwEvents: [],
+    btwCloses: 0,
     clears: 0,
     assistantCalls: [],
     effortSelections: [],
@@ -72,6 +76,17 @@ function createFakeHost(options = {}) {
   };
   let activeSession = null;
   const host = {
+    btw: {
+      open(initialQuestion) {
+        calls.btwOpens.push(initialQuestion);
+      },
+      handleEvent(event) {
+        calls.btwEvents.push(event);
+      },
+      close() {
+        calls.btwCloses += 1;
+      }
+    },
     transcript: {
       clear() {
         calls.clears += 1;
@@ -414,54 +429,56 @@ test('resolveSlashCommand asks handlers in order and returns the first match', (
 test('createDefaultSlashCommandHandlers wires handlers in order', () => {
   const handlers = createDefaultHandlersForTest();
 
-  assert.equal(handlers.length, 23);
+  assert.equal(handlers.length, 24);
   assert.equal(handlers.some((handler) => handler.name === 'skill'), false);
   assert.equal(handlers[0].name, 'help');
-  assert.equal(handlers[1].name, 'config');
-  assert.equal(handlers[2].name, 'model');
-  assert.equal(handlers[3].name, 'effort');
-  assert.equal(handlers[4].name, 'mode');
-  assert.equal(handlers[5].name, 'status');
-  assert.equal(handlers[6].name, 'context');
-  assert.equal(handlers[7].name, 'usage');
-  assert.equal(handlers[8].name, 'copy');
-  assert.equal(handlers[9].name, 'clear');
-  assert.equal(handlers[10].name, 'compact');
-  assert.equal(handlers[11].name, 'diff');
-  assert.equal(handlers[12].name, 'undo');
-  assert.equal(handlers[13].name, 'fork');
-  assert.equal(handlers[14].name, 'resume');
-  assert.equal(handlers[15].name, 'reference');
-  assert.equal(handlers[16].name, 'mcp');
-  assert.equal(handlers[17].name, 'memory');
-  assert.equal(handlers[18].name, 'hooks');
-  assert.equal(handlers[19].name, 'skills');
-  assert.equal(handlers[20].name, 'init');
-  assert.equal(handlers[21].name, 'review');
-  assert.equal(handlers[22].name, undefined);
+  assert.equal(handlers[1].name, 'btw');
+  assert.equal(handlers[2].name, 'config');
+  assert.equal(handlers[3].name, 'model');
+  assert.equal(handlers[4].name, 'effort');
+  assert.equal(handlers[5].name, 'mode');
+  assert.equal(handlers[6].name, 'status');
+  assert.equal(handlers[7].name, 'context');
+  assert.equal(handlers[8].name, 'usage');
+  assert.equal(handlers[9].name, 'copy');
+  assert.equal(handlers[10].name, 'clear');
+  assert.equal(handlers[11].name, 'compact');
+  assert.equal(handlers[12].name, 'diff');
+  assert.equal(handlers[13].name, 'undo');
+  assert.equal(handlers[14].name, 'fork');
+  assert.equal(handlers[15].name, 'resume');
+  assert.equal(handlers[16].name, 'reference');
+  assert.equal(handlers[17].name, 'mcp');
+  assert.equal(handlers[18].name, 'memory');
+  assert.equal(handlers[19].name, 'hooks');
+  assert.equal(handlers[20].name, 'skills');
+  assert.equal(handlers[21].name, 'init');
+  assert.equal(handlers[22].name, 'review');
+  assert.equal(handlers[23].name, undefined);
   assert.equal(handlers[0] instanceof HelpCommandHandler, true);
-  assert.equal(handlers[1] instanceof ConfigCommandHandler, true);
-  assert.equal(handlers[2] instanceof ModelCommandHandler, true);
-  assert.equal(handlers[3] instanceof EffortCommandHandler, true);
-  assert.equal(handlers[4] instanceof ModeCommandHandler, true);
-  assert.equal(handlers[5] instanceof StatusCommandHandler, true);
-  assert.equal(handlers[6] instanceof ContextCommandHandler, true);
-  assert.equal(handlers[7] instanceof UsageCommandHandler, true);
-  assert.equal(handlers[8] instanceof CopyCommandHandler, true);
-  assert.equal(handlers[9] instanceof ClearCommandHandler, true);
-  assert.equal(handlers[10] instanceof CompactCommandHandler, true);
-  assert.equal(handlers[11] instanceof DiffCommandHandler, true);
-  assert.equal(handlers[12] instanceof UndoCommandHandler, true);
-  assert.equal(handlers[13] instanceof ForkCommandHandler, true);
-  assert.equal(handlers[14] instanceof ResumeCommandHandler, true);
-  assert.equal(handlers[15] instanceof ReferenceCommandHandler, true);
-  assert.equal(handlers[16] instanceof McpCommandHandler, true);
-  assert.equal(handlers[17] instanceof MemoryCommandHandler, true);
-  assert.equal(handlers[18] instanceof HooksCommandHandler, true);
-  assert.equal(handlers[19] instanceof SkillsCommandHandler, true);
-  assert.equal(handlers[20] instanceof AgentWorkflowCommandHandler, true);
+  assert.equal(handlers[1] instanceof BtwCommandHandler, true);
+  assert.equal(handlers[2] instanceof ConfigCommandHandler, true);
+  assert.equal(handlers[3] instanceof ModelCommandHandler, true);
+  assert.equal(handlers[4] instanceof EffortCommandHandler, true);
+  assert.equal(handlers[5] instanceof ModeCommandHandler, true);
+  assert.equal(handlers[6] instanceof StatusCommandHandler, true);
+  assert.equal(handlers[7] instanceof ContextCommandHandler, true);
+  assert.equal(handlers[8] instanceof UsageCommandHandler, true);
+  assert.equal(handlers[9] instanceof CopyCommandHandler, true);
+  assert.equal(handlers[10] instanceof ClearCommandHandler, true);
+  assert.equal(handlers[11] instanceof CompactCommandHandler, true);
+  assert.equal(handlers[12] instanceof DiffCommandHandler, true);
+  assert.equal(handlers[13] instanceof UndoCommandHandler, true);
+  assert.equal(handlers[14] instanceof ForkCommandHandler, true);
+  assert.equal(handlers[15] instanceof ResumeCommandHandler, true);
+  assert.equal(handlers[16] instanceof ReferenceCommandHandler, true);
+  assert.equal(handlers[17] instanceof McpCommandHandler, true);
+  assert.equal(handlers[18] instanceof MemoryCommandHandler, true);
+  assert.equal(handlers[19] instanceof HooksCommandHandler, true);
+  assert.equal(handlers[20] instanceof SkillsCommandHandler, true);
   assert.equal(handlers[21] instanceof AgentWorkflowCommandHandler, true);
-  assert.equal(handlers[22] instanceof SkillInvocationCommandHandler, true);
+  assert.equal(handlers[22] instanceof AgentWorkflowCommandHandler, true);
+  assert.equal(handlers[23] instanceof SkillInvocationCommandHandler, true);
 });
 
 test('statusCommandHandler loads Codex usage and isolates late results', async () => {
@@ -1324,6 +1341,7 @@ test('createSlashCommandDescriptors derives display metadata from handlers', () 
   assert.equal(descriptors.some((descriptor) => descriptor.name === 'skill'), false);
   assert.deepEqual(descriptors, [
     { name: 'help', description: '查看帮助', allowDuringAssistantTurn: true },
+    { name: 'btw', description: '打开临时只读旁路会话', allowDuringAssistantTurn: true },
     { name: 'config', description: '配置常规设置、指令文件、模型和主题' },
     { name: 'model', description: '切换模型' },
     { name: 'effort', description: '调整推理等级' },
@@ -1354,7 +1372,7 @@ test('default slash command handlers expose only the audited assistant-turn comm
     .filter((descriptor) => descriptor.allowDuringAssistantTurn)
     .map((descriptor) => descriptor.name);
 
-  assert.deepEqual(allowed, ['help', 'status', 'context', 'usage', 'copy']);
+  assert.deepEqual(allowed, ['help', 'btw', 'status', 'context', 'usage', 'copy']);
   assert.equal(handlers.at(-1) instanceof SkillInvocationCommandHandler, true);
   assert.equal(handlers.at(-1).allowDuringAssistantTurn, undefined);
 });
@@ -1400,6 +1418,33 @@ test('helpCommandHandler opens and closes help session through host', () => {
 
   helpCommandHandler.handleEvent(session, { type: INPUT_EVENTS.ESCAPE }, host);
   assert.equal(calls.sessionCloses, 1);
+});
+
+test('btwCommandHandler opens a response-time side session and delegates all side input', () => {
+  const handler = new BtwCommandHandler();
+  const {calls, host} = createFakeHost();
+
+  assert.equal(handler.allowDuringAssistantTurn, true);
+  assert.equal(handler.match('/btw'), true);
+  assert.equal(handler.match('/btw why'), true);
+  assert.equal(handler.match('/btw2'), false);
+  const session = startCommand(handler, '/btw why', host);
+  assert.equal(session.commandName, 'btw');
+  assert.equal(session.surface.kind, 'btw');
+  assert.deepEqual(calls.btwOpens, ['why']);
+
+  const slashEvent = {type: INPUT_EVENTS.TEXT, value: '/status'};
+  handler.handleEvent(session, slashEvent, host);
+  assert.deepEqual(calls.btwEvents, [slashEvent]);
+
+  handler.handleEvent(session, {type: INPUT_EVENTS.ESCAPE}, host);
+  assert.equal(calls.btwCloses, 1);
+  assert.equal(calls.sessionCloses, 1);
+  assert.equal(calls.resizeRecoveries, 1);
+
+  const empty = createFakeHost();
+  startCommand(handler, '/btw', empty.host);
+  assert.deepEqual(empty.calls.btwOpens, [undefined]);
 });
 
 test('modelCommandHandler opens info session for config errors', () => {

@@ -147,6 +147,40 @@ test('createAppRenderer includes the pending message card in destructive recover
   assert.equal((plain.match(/queued request/g) || []).length, 1);
 });
 
+test('createAppRenderer destructively switches between BTW side records and latest main records', () => {
+  const chunks = [];
+  const renderer = createAppRenderer({write(chunk) { chunks.push(String(chunk)); }});
+  const base = {
+    composer: createComposer(),
+    commandSurface: null,
+    slashSuggestions: null,
+    pending: null,
+    working: null,
+    width: 80,
+    rows: 24,
+    statusLine: DEFAULT_STATUS_LINE
+  };
+
+  renderer.renderDestructive({
+    ...base,
+    bannerContext: {cwd: '/tmp/project', nodeVersion: 'v20', terminalSize: {columns: 80, rows: 24}, mode: 'current terminal', variant: 'btw', parentActivity: 'MAIN streaming'},
+    records: [{role: 'assistant', text: 'side-only answer'}]
+  });
+  renderer.renderDestructive({
+    ...base,
+    bannerContext: {cwd: '/tmp/project', nodeVersion: 'v20', terminalSize: {columns: 80, rows: 24}, mode: 'current terminal'},
+    records: [{role: 'assistant', text: 'latest main answer'}]
+  });
+
+  const sideFrame = stripAnsi(chunks.at(-2));
+  const mainFrame = stripAnsi(chunks.at(-1));
+  assert.match(sideFrame, /BTW · 临时只读会话/);
+  assert.match(sideFrame, /side-only answer/);
+  assert.doesNotMatch(sideFrame, /latest main answer/);
+  assert.match(mainFrame, /latest main answer/);
+  assert.doesNotMatch(mainFrame, /side-only answer/);
+});
+
 test('createAppRenderer replays a response-time command surface while appending stable transcript', () => {
   const output = {
     writes: [],

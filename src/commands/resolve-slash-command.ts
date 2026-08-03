@@ -1,6 +1,7 @@
 import type { MatchableCommandHandler, SlashCommandDescriptor } from '../types/command';
 import { createBuiltInAgentWorkflowHandlers } from './agent-workflows/agent-workflow-command-handler';
 import { ClearCommandHandler } from './clear-command-handler';
+import { BtwCommandHandler } from './btw-command-handler';
 import { CompactCommandHandler } from './compact-command-handler';
 import { ConfigCommandHandler } from './config/handler';
 import { ContextCommandHandler } from './context-command-handler';
@@ -29,6 +30,7 @@ import { UsageCommandHandler } from './usage-command-handler';
 export function createDefaultSlashCommandHandlers(): MatchableCommandHandler[] {
   return [
     new HelpCommandHandler(),
+    new BtwCommandHandler(),
     new ConfigCommandHandler(),
     new ModelCommandHandler(),
     new EffortCommandHandler(),
