@@ -383,6 +383,37 @@ test('skill registry discovers user and project skills with project override', (
   assert.equal(registry.loadSkill('review').skill.content, '# Project Review');
 });
 
+test('skill registry flattens literal and folded block descriptions', () => {
+  const cwd = createTempWorkspace();
+  const projectSkillsDir = path.join(cwd, '.echo', 'skills');
+  writeSkill(projectSkillsDir, 'literal', [
+    'name: literal',
+    'description: |',
+    '  First literal line.',
+    '  Second literal line.',
+    'metadata:',
+    '  trigger: ignored'
+  ].join('\n'));
+  writeSkill(projectSkillsDir, 'folded', [
+    'name: folded',
+    'description: >',
+    '  First folded line.',
+    '  Second folded line.'
+  ].join('\n'));
+
+  const registry = createSkillRegistry({
+    builtinSkillsDir: path.join(cwd, 'missing-builtin'),
+    cwd,
+    projectSkillsDir,
+    userSkillsDir: path.join(cwd, 'missing-user')
+  });
+
+  assert.deepEqual(registry.listCatalog().map(({name, description}) => ({name, description})), [
+    {name: 'folded', description: 'First folded line. Second folded line.'},
+    {name: 'literal', description: 'First literal line. Second literal line.'}
+  ]);
+});
+
 test('skill registry discovers sorted resources from reference and scripts only', () => {
   const cwd = createTempWorkspace();
   const projectSkillsDir = path.join(cwd, '.echo', 'skills');

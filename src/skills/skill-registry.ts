@@ -151,7 +151,7 @@ function normalizeResourcePath(resourcePath: string): string {
 }
 
 /**
- * 解析第一版 SKILL.md：只支持顶层 frontmatter 中简单的 name/description 字符串字段。
+ * 解析 SKILL.md 顶层 frontmatter；name 支持简单字符串，description 额外支持 YAML block scalar。
  */
 function parseSkillFile(rawContent: string): ParsedSkillFile {
   const normalized = rawContent.replace(/\r\n/g, '\n');
@@ -190,7 +190,13 @@ function parseSkillFile(rawContent: string): ParsedSkillFile {
 function parseFrontmatterFields(lines: string[]): Map<string, string> {
   const fields = new Map<string, string>();
 
-  for (const line of lines) {
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+
+    if (/^\s/u.test(line)) {
+      continue;
+    }
+
     const separatorIndex = line.indexOf(':');
 
     if (separatorIndex < 0) {
@@ -198,7 +204,26 @@ function parseFrontmatterFields(lines: string[]): Map<string, string> {
     }
 
     const key = line.slice(0, separatorIndex).trim();
-    const value = normalizeFrontmatterValue(line.slice(separatorIndex + 1).trim());
+    const rawValue = line.slice(separatorIndex + 1).trim();
+    let value = normalizeFrontmatterValue(rawValue);
+
+    // 处理 block scalar 值
+    if (/^[|>][+-]?$/u.test(rawValue)) {
+      const blockLines: string[] = [];
+
+      while (index + 1 < lines.length) {
+        const nextLine = lines[index + 1];
+
+        if (nextLine !== '' && !/^\s/u.test(nextLine)) {
+          break;
+        }
+
+        blockLines.push(nextLine);
+        index += 1;
+      }
+
+      value = blockLines.map((blockLine) => blockLine.trim()).filter(Boolean).join(' ');
+    }
 
     if (key !== '') {
       fields.set(key, value);

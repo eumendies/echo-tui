@@ -4,11 +4,13 @@ import { charWidth, displayWidth, safeRenderWidth, splitGraphemes } from '../lay
  * 将 select 或 slash suggestion 的 label 和 description 压成单行展示文本。
  */
 export function formatSelectOptionText(label: string, description: string | undefined): string {
-  if (!description) {
+  const normalizedDescription = description?.replace(/\s+/gu, ' ').trim();
+
+  if (!normalizedDescription) {
     return label;
   }
 
-  return `${label} — ${description}`;
+  return `${label} — ${normalizedDescription}`;
 }
 
 /**
