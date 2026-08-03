@@ -629,7 +629,8 @@ test('renderTranscriptLines expands tabs in bash rails and generic tool fallback
   assert.ok(lines.includes('  ▌     echo tabbed'));
   assert.ok(lines.includes('  ▌ out one'));
   assert.ok(lines.includes('  ▌ err one'));
-  assert.ok(lines.some((line) => line.startsWith('◆ tab_tool(raw') && line.endsWith('argument)')));
+  assert.ok(lines.includes('◆ Tab tool'));
+  assert.ok(lines.some((line) => line.startsWith('  raw') && line.endsWith('argument')));
   assert.ok(lines.includes('  ⎿ generic    result'));
   assert.deepEqual(records, snapshot);
 });
@@ -700,7 +701,8 @@ test('renderTranscriptLines handles inline scripts, stderr channels, fallback, n
   assert.ok(lines.includes('  ▌ failed'));
   assert.ok(lines.includes('  ▌ success'));
   assert.ok(lines.includes('  ▌ Output was truncate'));
-  assert.ok(lines.some((line) => line.includes('run_bash_command({})')));
+  assert.ok(lines.includes('◆ Bash'));
+  assert.ok(lines.includes('  {}'));
   assert.ok(lines.some((line) => line.includes('python3 -c "print($')));
   assert.ok(rendered.some((line) => line.includes('\x1b[38;2;1;2;3m▌\x1b[39m')));
   assert.ok(rendered.some((line) => line.includes('\x1b[38;2;4;5;6m▌\x1b[39m')));
@@ -759,9 +761,9 @@ test('renderTranscriptLines colors tool call prefix by adjacent result state wit
     80
   );
 
-  assert.match(renderedLines.find((line) => stripAnsi(line).includes('ok_tool')), /\x1b\[38;2;0;170;0m◆\x1b\[39m/);
-    assert.match(renderedLines.find((line) => stripAnsi(line).includes('failed_tool')), /\x1b\[38;2;170;0;0m◆\x1b\[39m/);
-  assert.doesNotMatch(renderedLines.find((line) => stripAnsi(line).includes('legacy_tool')), /\x1b\[(31|32)m◆/);
+  assert.match(renderedLines.find((line) => stripAnsi(line).includes('Ok tool')), /\x1b\[38;2;0;170;0m◆\x1b\[39m/);
+    assert.match(renderedLines.find((line) => stripAnsi(line).includes('Failed tool')), /\x1b\[38;2;170;0;0m◆\x1b\[39m/);
+  assert.doesNotMatch(renderedLines.find((line) => stripAnsi(line).includes('Legacy tool')), /\x1b\[(31|32)m◆/);
   assert.match(renderedLines.find((line) => stripAnsi(line).includes('⎿ ok')), /\x1b\[38;2;85;85;85m/);
 });
 
@@ -779,9 +781,9 @@ test('renderTranscriptLines only groups adjacent matching tool records', () => {
     80
   );
 
-  assert.doesNotMatch(renderedLines.find((line) => stripAnsi(line).includes('first_tool')), /\x1b\[(31|32)m◆/);
-  assert.doesNotMatch(renderedLines.find((line) => stripAnsi(line).includes('second_tool')), /\x1b\[(31|32)m◆/);
-    assert.match(renderedLines.find((line) => stripAnsi(line).includes('paired_tool')), /\x1b\[38;2;170;0;0m◆\x1b\[39m/);
+  assert.doesNotMatch(renderedLines.find((line) => stripAnsi(line).includes('First tool')), /\x1b\[(31|32)m◆/);
+  assert.doesNotMatch(renderedLines.find((line) => stripAnsi(line).includes('Second tool')), /\x1b\[(31|32)m◆/);
+    assert.match(renderedLines.find((line) => stripAnsi(line).includes('Paired tool')), /\x1b\[38;2;170;0;0m◆\x1b\[39m/);
 });
 
 test('renderTranscriptLines wraps bash tool result and hides execution summary', () => {
@@ -856,8 +858,25 @@ test('renderTranscriptLines displays stderr, no output, timeout, truncation, and
   assert.ok(lines.includes('  ⎿ (no output)'));
   assert.ok(lines.includes('  ⎿ Command timed out.'));
   assert.ok(lines.includes('    [tool output truncated for display]'));
-  assert.ok(lines.includes('◆ generic_tool(legacy call)'));
+  assert.ok(lines.includes('◆ Generic tool'));
+  assert.ok(lines.includes('  legacy call'));
   assert.ok(lines.includes('  ⎿ legacy result'));
+});
+
+test('renderTranscriptLines renders generic MCP calls with source identity and layered arguments', () => {
+  const record = {
+    role: 'tool_call',
+    text: '',
+    toolCallId: 'mcp-call',
+    toolName: 'mcp__github_server__createIssue',
+    argumentsText: '{"title":"Fix rendering"}'
+  };
+  const snapshot = structuredClone(record);
+  const lines = renderTranscriptLines([record], 80).map(stripAnsi);
+
+  assert.ok(lines.includes('◆ MCP · github server · create issue'));
+  assert.ok(lines.includes('  {"title":"Fix rendering"}'));
+  assert.deepEqual(record, snapshot);
 });
 
 test('renderTranscriptLines projects todo tool results with dedicated state display', () => {
@@ -893,7 +912,7 @@ test('renderTranscriptLines projects todo tool results with dedicated state disp
   const plainLines = renderedLines.map((line) => stripAnsi(line));
 
   assert.deepEqual(plainLines, [
-    '◆ create_todos()',
+    '◆ Create todos',
     '  ⎿ ○ first open',
     '    ○ second open',
     ''
@@ -972,7 +991,7 @@ test('renderTranscriptLines projects ask_user_questions single and multi answers
   const lines = renderedLines.map((line) => stripAnsi(line));
 
   assert.deepEqual(lines, [
-    '◆ AskUserQuestions(2)',
+    '◆ Ask user questions · 2 questions',
     '  ⎿ 1. Pick one?（单选）',
     '       ● No',
     '    2. Pick many?（多选）',
@@ -981,7 +1000,7 @@ test('renderTranscriptLines projects ask_user_questions single and multi answers
     ''
   ]);
   assert.equal(lines.some((line) => /answers|index|selected|selectedOptions|multiSelect/.test(line)), false);
-  assert.match(renderedLines[0], /\x1b\[38;2;0;170;0m◆\x1b\[39m AskUserQuestions/);
+  assert.match(renderedLines[0], /\x1b\[38;2;0;170;0m◆\x1b\[39m Ask user questions/);
   assert.match(renderedLines[1], /\x1b\[38;2;85;85;85m/);
 });
 
@@ -993,8 +1012,8 @@ test('renderTranscriptLines and pending preview summarize valid unpaired ask_use
   const callLines = renderTranscriptLines([call], 80).map((line) => stripAnsi(line));
   const previewLines = renderToolCallPreviewLines(ASK_USER_QUESTIONS_TOOL_NAME, call.argumentsText, 80).map((line) => stripAnsi(line));
 
-  assert.ok(callLines.includes('◆ AskUserQuestions(2)'));
-  assert.ok(previewLines.includes('◆ AskUserQuestions(2)'));
+  assert.ok(callLines.includes('◆ Ask user questions · 2 questions'));
+  assert.ok(previewLines.includes('◆ Ask user questions · 2 questions'));
   assert.equal(callLines.some((line) => line.includes('"questions"')), false);
   assert.equal(previewLines.some((line) => line.includes('"questions"')), false);
 });
@@ -1005,8 +1024,8 @@ test('renderTranscriptLines keeps malformed unpaired ask_user_questions calls co
     argumentsText: '{not-json'
   }], 80).map((line) => stripAnsi(line));
 
-  assert.ok(lines.includes('◆ AskUserQuestions'));
-  assert.equal(lines.some((line) => line.includes('{not-json')), false);
+  assert.ok(lines.includes('◆ Ask user questions'));
+  assert.equal(lines.some((line) => line.includes('{not-json')), true);
 });
 
 test('renderTranscriptLines projects ask_user_questions Other and cancelled receipts', () => {
@@ -1041,12 +1060,12 @@ test('renderTranscriptLines projects ask_user_questions Other and cancelled rece
   const cancelledLines = cancelledRenderedLines.map((line) => stripAnsi(line));
 
   assert.deepEqual(cancelledLines, [
-    '◆ AskUserQuestions(1)',
+    '◆ Ask user questions · 1 question',
     '  ⎿ 已取消：User dismissed dialog',
     ''
   ]);
   assert.equal(cancelledLines.some((line) => /cancelled|reason/.test(line)), false);
-  assert.match(cancelledRenderedLines[0], /\x1b\[38;2;170;0;0m◆\x1b\[39m AskUserQuestions/);
+  assert.match(cancelledRenderedLines[0], /\x1b\[38;2;170;0;0m◆\x1b\[39m Ask user questions/);
 });
 
 test('renderTranscriptLines falls back for invalid ask_user_questions pair shapes', () => {
@@ -1086,10 +1105,10 @@ test('renderTranscriptLines falls back for invalid ask_user_questions pair shape
     const renderedLines = renderTranscriptLines([call, result], 80);
     const lines = renderedLines.map((line) => stripAnsi(line));
 
-    assert.ok(lines.some((line) => line.startsWith('◆ AskUserQuestions')));
+    assert.ok(lines.some((line) => line.startsWith('◆ Ask user questions')));
     assert.ok(lines.some((line) => line.includes(expected)));
     assert.equal(lines.some((line) => line.includes('ask_user_questions(')), false);
-    assert.match(renderedLines[0], /\x1b\[38;2;0;170;0m◆\x1b\[39m AskUserQuestions/);
+    assert.match(renderedLines[0], /\x1b\[38;2;0;170;0m◆\x1b\[39m Ask user questions/);
   }
 });
 
@@ -1167,7 +1186,7 @@ test('renderTranscriptLines keeps read_files directory entries visible before ge
     }
   ], 80).map((line) => stripAnsi(line));
 
-  assert.ok(lines.includes('◆ read_files(src/tools/read-files@0+2)'));
+  assert.ok(lines.includes('◆ Read files · src/tools/read-files@0+2'));
   assert.ok(lines.includes('  └─ directory: src/tools/read-files  entries: 13'));
   assert.ok(lines.some((line) => line.includes('• src/tools/read-files/index.ts  file, size_bytes: 331')));
   assert.ok(lines.some((line) => line.includes('• src/tools/read-files/readers.ts  file, size_bytes: 18000')));
@@ -1209,8 +1228,8 @@ test('renderTranscriptLines projects read_files calls without raw arguments JSON
     }
   ], 120).map((line) => stripAnsi(line));
 
-  assert.ok(lines.includes('◆ read_files(src/foo.ts@5+20)'));
-  assert.ok(lines.some((line) => line.startsWith('◆ read_files(src/very/long/path/that/should/be/ellipsized/')));
+  assert.ok(lines.includes('◆ Read files · src/foo.ts@5+20'));
+  assert.ok(lines.some((line) => line.startsWith('◆ Read files · src/very/long/path/that/should/be/ellipsized/')));
   assert.ok(lines.some((line) => line.includes('…')));
   assert.ok(lines.some((line) => line.includes('… +1 more')));
   assert.equal(lines.some((line) => line.includes('"files"')), false);
@@ -1355,7 +1374,8 @@ test('renderTranscriptLines falls back for malformed read_files calls and result
     }
   ], 100).map((line) => stripAnsi(line));
 
-  assert.ok(lines.includes('◆ read_files({not-json)'));
+  assert.ok(lines.includes('◆ Read files'));
+  assert.ok(lines.includes('  {not-json'));
   assert.ok(lines.some((line) => line.includes('--- text: src/foo.ts')));
   assert.ok(lines.some((line) => line.includes('missing closing fence')));
   assert.ok(lines.includes('  ⎿ read_files failed.'));
@@ -1539,7 +1559,8 @@ test('legacy memory tool records use the generic renderer', () => {
     ok: true
   }], 100).map((line) => stripAnsi(line));
 
-  assert.ok(lines.includes('◆ read_memory({"catalog":"rendering"})'));
+  assert.ok(lines.includes('◆ Read memory'));
+  assert.ok(lines.includes('  {"catalog":"rendering"}'));
   assert.ok(lines.includes('  ⎿ {"memories":[{"content":"Use real cursors"}]}'));
   assert.equal(lines.some((line) => /Recalling|Remembering/.test(line)), false);
 });
@@ -1580,7 +1601,7 @@ test('renderTranscriptLines renders current apply_patch metadata with file group
   const lines = renderedLines.map((line) => stripAnsi(line));
 
   assert.deepEqual(lines.map((line) => line.trimEnd()), [
-    '◆ apply_patch(src.txt)',
+    '◆ Apply patch · src.txt',
     '  ⎿ src.txt  +1 -1',
     '    1 │ alpha',
     '    - │ beta',
@@ -1590,7 +1611,7 @@ test('renderTranscriptLines renders current apply_patch metadata with file group
   ]);
   assert.ok(!lines.some((line) => line.includes('diff --git')));
   assert.ok(!lines.some((line) => line.includes('Applied patch')));
-  assert.match(renderedLines[0], /\x1b\[38;2;0;170;0m◆\x1b\[39m apply_patch/);
+  assert.match(renderedLines[0], /\x1b\[38;2;0;170;0m◆\x1b\[39m Apply patch/);
   assert.match(renderedLines.find((line) => stripAnsi(line).includes('- │ beta')), /\x1b\[97m\x1b\[48;5;52m- │ beta/);
   assert.match(renderedLines.find((line) => stripAnsi(line).includes('+ │ BETA')), /\x1b\[97m\x1b\[48;5;22m\+ │ BETA/);
   assert.doesNotMatch(renderedLines.find((line) => stripAnsi(line).includes('alpha')), /\x1b\[48;5;(52|22)m/);
@@ -1632,7 +1653,7 @@ test('renderTranscriptLines renders edit_file with the shared diff projection an
   ], 48);
   const text = rendered.map(stripAnsi).join('\n');
 
-  assert.match(text, /◆ edit_file\(src\/edit\.ts, replace all\)/);
+  assert.match(text, /◆ Edit file · src\/edit\.ts · replace all/);
   assert.match(text, /src\/edit\.ts  \+2 -2/);
   assert.match(text, /- │ const first = false;/);
   assert.match(text, /\+ │ const second = true;/);
@@ -1709,7 +1730,7 @@ test('renderTranscriptLines renders deleted apply_patch metadata as removed file
   const lines = renderedLines.map((line) => stripAnsi(line));
 
   assert.deepEqual(lines.map((line) => line.trimEnd()), [
-    '◆ apply_patch(delete old.txt)',
+    '◆ Apply patch · delete old.txt',
     '  ⎿ deleted old.txt  +0 -2',
     '    - │ alpha',
     '    - │ beta',
@@ -1776,7 +1797,7 @@ test('renderTranscriptLines renders apply_patch failures without previews and re
   );
   const lines = renderedLines.map((line) => stripAnsi(line));
 
-  assert.ok(lines.includes('◆ apply_patch(src.txt)'));
+  assert.ok(lines.includes('◆ Apply patch · src.txt'));
   assert.ok(lines.includes('  ⎿ Patch failed.'));
   assert.ok(lines.some((line) => line.includes('Reason: hunk matched 0 locations')));
   assert.ok(!lines.some((line) => line.includes('src.txt  +70 -0')));
@@ -1784,10 +1805,10 @@ test('renderTranscriptLines renders apply_patch failures without previews and re
   assert.ok(!lines.some((line) => line.includes('+ │ line 1')));
   assert.ok(!lines.some((line) => line.includes('+ │ later 70')));
   assert.ok(!lines.some((line) => line.includes('[patch display truncated]')));
-  assert.ok(lines.some((line) => line.includes('◆ apply_patch(fallback.txt)')));
+  assert.ok(lines.some((line) => line.includes('◆ Apply patch · fallback.txt')));
   assert.ok(lines.some((line) => line.includes('Applied patch.')));
   assert.ok(!lines.some((line) => line.includes('legacy')));
-    assert.match(renderedLines.find((line) => stripAnsi(line).includes('apply_patch(src.txt)')), /\x1b\[38;2;170;0;0m◆\x1b\[39m/);
+    assert.match(renderedLines.find((line) => stripAnsi(line).includes('Apply patch · src.txt')), /\x1b\[38;2;170;0;0m◆\x1b\[39m/);
 });
 
 test('renderTranscriptLines keeps apply_patch added and removed backgrounds fixed under custom theme', () => {
@@ -1827,7 +1848,7 @@ test('renderTranscriptLines keeps apply_patch added and removed backgrounds fixe
     }
   ], 80, theme);
 
-  assert.match(renderedLines[0], /\x1b\[38;2;4;5;6m◆\x1b\[39m apply_patch/);
+  assert.match(renderedLines[0], /\x1b\[38;2;4;5;6m◆\x1b\[39m Apply patch/);
   assert.match(renderedLines.find((line) => stripAnsi(line).includes('- │ old')), /\x1b\[97m\x1b\[48;5;52m- │ old/);
   assert.match(renderedLines.find((line) => stripAnsi(line).includes('+ │ new')), /\x1b\[97m\x1b\[48;5;22m\+ │ new/);
 });
@@ -2124,7 +2145,7 @@ test('glob renderer distinguishes empty, failure, handler truncation, and displa
 
 test('glob malformed and legacy records safely fall back without inventing path trees', () => {
   const malformedPreview = renderToolCallPreviewLines('glob', '{bad-json', 80).map(stripAnsi);
-  assert.deepEqual(malformedPreview, ['◆ glob({bad-json)']);
+  assert.deepEqual(malformedPreview, ['◆ Glob', '  {bad-json']);
 
   const legacy = createGlobPair('glob-legacy', {pattern: '*.ts'}, [], {
     omitDisplay: true,
@@ -2312,7 +2333,7 @@ test('grep renderer distinguishes empty, failure, handler truncation, and displa
 
 test('grep malformed and legacy records safely fall back without inventing match trees', () => {
   const malformedPreview = renderToolCallPreviewLines('grep', '{bad-json', 80).map(stripAnsi);
-  assert.deepEqual(malformedPreview, ['◆ grep({bad-json)']);
+  assert.deepEqual(malformedPreview, ['◆ Grep', '  {bad-json']);
 
   const legacy = createGrepPair('grep-legacy', {pattern: 'needle'}, [], {
     omitDisplay: true,
@@ -2566,7 +2587,7 @@ test('web_search only projects truncated status from structured result details',
 
 test('web_search malformed arguments and result text fall back without inventing result items', () => {
   const malformedPreview = renderToolCallPreviewLines('web_search', '{bad-json', 80).map((line) => stripAnsi(line));
-  assert.deepEqual(malformedPreview, ['◆ web_search({bad-json)']);
+  assert.deepEqual(malformedPreview, ['◆ Web search', '  {bad-json']);
 
   const malformedText = [
     'results:',
@@ -2866,7 +2887,7 @@ test('web_fetch treats internal fences and marker-like body text as content with
 
 test('web_fetch malformed calls and result envelopes use generic fallback', () => {
   const malformedPreview = renderToolCallPreviewLines('web_fetch', '{bad-json', 80).map((line) => stripAnsi(line));
-  assert.deepEqual(malformedPreview, ['◆ web_fetch({bad-json)']);
+  assert.deepEqual(malformedPreview, ['◆ Web fetch', '  {bad-json']);
 
   const malformedResult = [
     'https://example.com/malformed',

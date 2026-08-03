@@ -3289,6 +3289,32 @@ test('renderFooterLayout renders tool call pending preview in footer', () => {
   assert.match(layout.lines.at(-1), /\x1b\[38;2;/);
 });
 
+test('renderFooterLayout renders generic MCP pending calls with a safe layered title', () => {
+  const width = 48;
+  const layout = renderFooterLayout({
+    composer: createComposer(''),
+    pending: {
+      kind: 'tool_call',
+      toolName: 'mcp__github_server__createIssue',
+      argumentsText: JSON.stringify({title: '修复工具标题', body: 'x'.repeat(80)})
+    },
+    working: {elapsedMs: 0},
+    statusLine: {
+      ...DEFAULT_STATUS_LINE,
+      mode: 'tool',
+      detail: 'mcp__github_server__createIssue',
+      keyHint: 'Esc 中断'
+    },
+    rows: 12,
+    width
+  });
+  const plainLines = layout.lines.map(stripAnsi);
+
+  assert.equal(plainLines[0], '◆ MCP · github server · create issue');
+  assert.ok(plainLines.some((line) => line.startsWith('  {"title":"修复工具标题"')));
+  assert.ok(layout.lines.every((line) => displayWidth(line) <= safeRenderWidth(width)));
+});
+
 test('renderFooterLayout keeps multiline bash inline-script pending preview line safe', () => {
   const width = 140;
   const command = [

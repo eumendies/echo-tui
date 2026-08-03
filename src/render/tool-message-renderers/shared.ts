@@ -5,12 +5,115 @@ import {charWidth, displayWidth, safeRenderWidth, splitGraphemes, stripAnsi, tab
 const TOOL_RESULT_MAX_DISPLAY_LINES = 12;
 const TOOL_RESULT_TRUNCATION_TEXT = '[tool output truncated for display]';
 
+const TOOL_DISPLAY_NAMES = new Map<string, string>([
+  ['apply_patch', 'Apply patch'],
+  ['ask_user_questions', 'Ask user questions'],
+  ['complete_todo', 'Complete todo'],
+  ['create_todos', 'Create todos'],
+  ['edit_file', 'Edit file'],
+  ['glob', 'Glob'],
+  ['grep', 'Grep'],
+  ['read_files', 'Read files'],
+  ['run_bash_command', 'Bash'],
+  ['use_skill', 'Use skill'],
+  ['web_fetch', 'Web fetch'],
+  ['web_search', 'Web search']
+]);
+
 type ToolRecordRenderOptions = {
   callStatus?: boolean;
 };
 
 type ToolRailStyle = 'tool' | 'toolError' | 'toolOutput' | 'toolSuccess';
 type ToolRailStatusStyle = 'toolError' | 'toolOutput' | 'toolSuccess';
+
+/**
+ * 将协议层工具标识符投影为 sentence case 标题；标准 MCP 名称保留 server/tool 来源层级。
+ */
+function formatToolDisplayName(toolName: unknown): string {
+  const normalizedName = typeof toolName === 'string' ? toolName.trim() : '';
+
+  if (normalizedName === '') {
+    return 'Tool';
+  }
+
+  const knownName = TOOL_DISPLAY_NAMES.get(normalizedName);
+
+  if (knownName) {
+    return knownName;
+  }
+
+  const mcpSegments = normalizedName.split('__');
+
+  if (mcpSegments.length === 3 && mcpSegments[0] === 'mcp' && mcpSegments[1] && mcpSegments[2]) {
+    return `MCP · ${formatMcpServerName(mcpSegments[1])} · ${formatMcpToolName(mcpSegments[2])}`;
+  }
+
+  return formatIdentifierSentenceCase(normalizedName);
+}
+
+/**
+ * 使用统一分隔符组合工具身份和可信摘要，过滤空片段以避免残留装饰符。
+ */
+function createToolCallTitle(toolName: unknown, segments: Array<string | null | undefined> = []): string {
+  return [
+    formatToolDisplayName(toolName),
+    ...segments.map((segment) => segment?.trim()).filter((segment): segment is string => Boolean(segment))
+  ].join(' · ');
+}
+
+/**
+ * 按常见标识符边界拆词并生成 sentence case，同时保留全大写缩写。
+ */
+function formatIdentifierSentenceCase(identifier: string): string {
+  const words = splitIdentifierWords(identifier);
+
+  if (words.length === 0) {
+    return 'Tool';
+  }
+
+  return words.map((word, index) => {
+    if (/^[A-Z0-9]{2,}$/u.test(word)) {
+      return word;
+    }
+
+    const lower = word.toLocaleLowerCase('en-US');
+    return index === 0 ? `${lower.charAt(0).toLocaleUpperCase('en-US')}${lower.slice(1)}` : lower;
+  }).join(' ');
+}
+
+/**
+ * MCP server 只折叠技术分隔符，保留原有品牌大小写以维持来源可辨认性。
+ */
+function formatMcpServerName(serverName: string): string {
+  return serverName.replace(/[_-]+/gu, ' ').replace(/\s+/gu, ' ').trim();
+}
+
+/**
+ * MCP tool 是完整标题的后续语义片段，除稳定缩写外使用小写句首。
+ */
+function formatMcpToolName(toolName: string): string {
+  const displayName = formatIdentifierSentenceCase(toolName);
+
+  if (/^[A-Z0-9]{2,}(?:\s|$)/u.test(displayName)) {
+    return displayName;
+  }
+
+  return `${displayName.charAt(0).toLocaleLowerCase('en-US')}${displayName.slice(1)}`;
+}
+
+/**
+ * 识别 acronym、camel/Pascal 边界和 snake/kebab 分隔符，供可见标题统一拆词。
+ */
+function splitIdentifierWords(identifier: string): string[] {
+  return identifier
+    .replace(/([A-Z]+)([A-Z][a-z])/gu, '$1 $2')
+    .replace(/([a-z0-9])([A-Z])/gu, '$1 $2')
+    .replace(/[_-]+/gu, ' ')
+    .trim()
+    .split(/\s+/u)
+    .filter(Boolean);
+}
 
 /**
  * 根据 tool result 执行状态选择 tool_call 符号样式，历史记录缺少状态时保持中性显示。
@@ -213,10 +316,12 @@ function clampToDisplayWidth(value: string, maximumWidth: number): string {
 
 export {
   clampToDisplayWidth,
+  createToolCallTitle,
   TOOL_RESULT_MAX_DISPLAY_LINES,
   TOOL_RESULT_TRUNCATION_TEXT,
   createToolRailPrefix,
   expandTabs,
+  formatToolDisplayName,
   normalizeContentText,
   renderPrefixedLines,
   resolveToolCallPrefixStyle,

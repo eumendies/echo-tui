@@ -66,8 +66,13 @@ function renderAskUserQuestionsToolCallLines(
   resultStatus: unknown,
   width: number,
   theme: TuiTheme
-): string[] {
+): string[] | null {
   const payload = parseAskUserQuestionsArguments(call.argumentsText);
+
+  if (!payload) {
+    return null;
+  }
+
   return renderAskUserQuestionsCallLines(payload, resultStatus, width, theme);
 }
 
@@ -78,7 +83,7 @@ function renderAskUserQuestionsCallLines(
   theme: TuiTheme
 ): string[] {
   return renderPrefixedLines({
-    text: payload ? `AskUserQuestions(${payload.questions.length})` : 'AskUserQuestions',
+    text: payload ? `Ask user questions · ${payload.questions.length} ${payload.questions.length === 1 ? 'question' : 'questions'}` : 'Ask user questions',
     width,
     firstPrefix: '◆ ',
     continuationPrefix: '  ',
