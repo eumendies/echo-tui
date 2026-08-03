@@ -1,243 +1,148 @@
 # echo-tui
 
-`@eumendies/echo-tui` 是一个运行在终端里的 Node.js LLM TUI，也支持无需 TTY 的单轮 CLI 对话。它支持流式回答、Markdown/代码高亮、会话恢复、slash 命令、skills、MCP 工具和受控本地工具调用，并提供普通对话、只读规划和 shell 执行多种模式。
-
-实现细节见 [docs/tui-architecture.md](./docs/tui-architecture.md)。
+`@eumendies/echo-tui` 是一个运行在终端里的 AI 助手，支持流式回答、Markdown 与代码高亮、会话恢复、Skills、MCP 和本地工具调用。除了日常对话，还可以用它阅读项目、制定方案、修改代码或直接执行 shell 命令。
 
 ## 前置要求
 
 - Node.js >= 20.3
-- 支持 ANSI 控制序列和 stdin raw mode 的终端
-- Windows 下建议在 Windows Terminal + WSL2 中使用；终端需较完整支持 ANSI 控制序列，否则可能出现渲染错位、颜色残留或按键处理异常。
-- `rg`（ripgrep），供 `glob` / `grep` 工具使用
-- 一个兼容 OpenAI Responses / OpenAI Chat Completions / Anthropic Messages 的模型服务（首次启动可先用内置 fake agent，无需 API key）
+- macOS、Linux，或 Windows Terminal + WSL2
+- 建议安装 [ripgrep](https://github.com/BurntSushi/ripgrep)，用于文件搜索
+- 使用真实模型时，需要相应服务的 API key；未配置时可先使用内置的 fake agent 体验界面
 
-## 安装与运行
-
-全局安装后可在任意目录用 `echo-tui` 启动：
+## 快速开始
 
 ```bash
 npm install -g @eumendies/echo-tui
-echo-tui --help
+cd your-project
+echo-tui
 ```
 
-更新到最新版：
+首次启动后，输入 `/config` 配置模型和界面偏好。Echo TUI 支持 OpenAI Responses、OpenAI Chat Completions、Anthropic Messages 兼容服务，以及 DeepSeek、Kimi、Z.ai、Minimax、StepFun、OpenRouter、Xiaomi 等内置 Provider 预设。
+
+如果希望使用 Codex 订阅模型，也可以选择 `openai-codex-oauth`。该方式会使用本机已有的 Codex/ChatGPT 登录状态；Echo TUI 不负责发起登录，登录失效时需要通过 Codex 或 OpenAI 重新登录。
+
+配置保存在 `~/.echo/config.json`。请勿把 API key 提交到代码仓库。需要手动配置 Provider、模型或 MCP 时，可在 Echo TUI 中调用内置的 `echo-tui-setup` Skill 获取说明。
+
+更新或查看当前版本：
 
 ```bash
 npm install -g @eumendies/echo-tui@latest
 echo-tui --version
 ```
 
-卸载程序：
+## 单轮 CLI 对话
 
-```bash
-npm uninstall -g @eumendies/echo-tui
-```
-
-卸载只会移除全局安装的程序本体，不会自动删除 `~/.echo` 下的配置和会话数据。如需彻底清理，可先备份再删除：
-
-```bash
-cp -R ~/.echo ~/.echo.backup
-rm -rf ~/.echo
-```
-
-从源码开发运行：
-
-```bash
-npm install
-npm run build
-npm start        # 等价于 build 后 node dist/bin/echo-tui.js
-```
-
-### 单轮 CLI 对话
-
-使用 `--once` 执行一次非交互 assistant turn；命令会等待最终文本后退出，stdout 只输出纯文本结果，不进入 raw mode、不监听 stdin，也不创建可恢复 transcript session：
+`--once` 适合脚本或命令行管道。它只输出本次回答，不进入交互界面，也不会保存为可恢复会话：
 
 ```bash
 echo-tui --once "解释当前项目"
 echo-tui --once explain this project
 ```
 
-默认情况下，单轮模式会继续执行安全的只读工具，但会立即拒绝需要审批的 patch、高风险 bash、memory mutation 和未信任 MCP 工具；`ask_user_questions` 会立即返回取消结果，不会等待输入。若明确允许本次运行修改工作区或系统状态，可使用：
+单轮模式默认只允许无需审批的安全操作。如果明确允许本次任务修改文件或执行其他受控工具，可以使用：
 
 ```bash
 echo-tui --once --full-access "按要求修改文件并运行检查"
 ```
 
-`--full-access` 只作用于当前单轮，可能执行破坏性操作；单轮不建立 TUI 的 change checkpoint，因此不提供 transcript session 或 `/undo` 回滚。配置、provider、网络、工具或清理错误写入 stderr 并返回非零退出码。
-
-## 配置模型
-
-首次启动会在缺失时创建 `~/.echo/config.json`（预置内置 fake agent，可直接进入界面）和内置 setup skill，不覆盖已有内容。
-
-进入界面后用 `/config` 打开配置中心：`常规` 管理压缩与显示偏好，`模型与 Provider` 管理真实 provider/model 和新会话默认模型，`外观` 切换内置主题。Tab 循环切换页面；常规与模型草稿分别保存，主题选择立即保存并应用。也可以直接编辑 `~/.echo/config.json`：
-
-```json
-{
-  "llm": {
-    "providers": {
-      "default": { "preset": "openai-responses-api", "apiKey": "<your-api-key>" }
-    },
-    "selectedModel": "fast",
-    "models": [
-      { "id": "fast", "provider": "default", "model": "<model-name>" }
-    ]
-  },
-  "instructions": { "fileName": "AGENTS.md" },
-  "compaction": { "thresholdRatio": 0.8 },
-  "tools": {
-    "fileEdit": { "mode": "apply_patch" },
-    "readFiles": { "autoCompressImages": true }
-  },
-  "ui": {
-    "defaultInteractionMode": "normal",
-    "slashSuggestionMaxVisible": 8,
-    "showReasoningSummary": true
-  }
-}
-```
-
-- `preset` 选择运行时协议，常用 `openai-responses-api`、`openai-chat-compatible-api`、`anthropic-compatible-api`，以及一组固定 Base URL、只需填 API key 的厂商 preset（DeepSeek、Kimi、Z.ai、Minimax、StepFun、OpenRouter、Xiaomi 等）。
-- `model` 是 provider 的 API 模型名；`contextWindow` 可选，留空时按内置模型映射或默认窗口推断。
-- `llm.selectedModel` 和 profile 的 `reasoning.effort` 是新会话默认值；effort 可设为 `none`、`low`、`medium`、`high`、`xhigh` 或 `max`，具体档位是否可用仍由所选模型服务决定。TUI 中的 `/model`、`/effort` 和 `Ctrl+T` 只修改当前 session，不改写 `~/.echo/config.json`；切换 model 会清除该 session 旧的 effort override。`tools.bash.maxOutputBytes` 可限制 bash 工具输出上限。bash 工具默认无固定超时，可用 Esc 中断；如确实需要自动终止，可显式配置 `tools.bash.timeoutMs` 为正整数。
-- `tools.fileEdit.mode` 可设为 `apply_patch`（默认）或 `edit_file`。每轮 assistant 请求只注册其中一个；在 `/config` 保存后从下一轮生效，进行中的 tool continuation 保持原 registry 快照。`edit_file`只更新已有 UTF-8 文本文件，以精确 `old_string`/`new_string` 替换；默认要求唯一匹配，只有明确设置 `replace_all` 才会替换调用前原始内容中的全部非重叠匹配。
-- `tools.readFiles.autoCompressImages` 默认为 `true`，同时作用于模型调用 `read_files` 和 File Picker／`@` mention。未超过 5 MB 的 PNG、JPEG、GIF、WebP 保持原样；超限图片会在进入 transcript 前用 Sharp 缩小到附件上限内，npm 安装已包含所需平台运行时，无需预装 ImageMagick 或 libvips。设为 `false` 后，超限图片恢复为明确的读取失败。
-- `instructions.fileName` 可设为 `AGENTS.md` 或 `CLAUDE.md`，默认读取 `AGENTS.md`。两者互斥，不会在所选文件缺失时回退到另一种文件。
-- `compaction.thresholdRatio` 范围为 `0.5–0.95`；`ui.defaultInteractionMode` 可设为 `normal` 或 `plan`，只影响新启动的 TUI，不会切换当前运行中的模式或改变 `--once`；`ui.slashSuggestionMaxVisible` 范围为 `1–20`。`ui.showReasoningSummary` 只控制显示，摘要仍会完整写入会话记录。
-
-也可以选择 `openai-codex-oauth` preset，通过本机已有 Codex/ChatGPT OAuth 登录态使用 Codex 订阅模型。本项目不会发起 OpenAI 登录流程，只读取现有 auth cache：优先使用 provider 的 `codexAuthFile`，其次是 `CODEX_HOME/auth.json`，最后是 `~/.codex/auth.json`。示例：
-
-```json
-{
-  "llm": {
-    "providers": {
-      "codex": { "preset": "openai-codex-oauth" }
-    },
-    "selectedModel": "codex-gpt",
-    "models": [
-      { "id": "codex-gpt", "provider": "codex", "model": "gpt-5.5" }
-    ]
-  }
-}
-```
-
-Codex OAuth access token 过期时，echo-tui 会用 auth cache 中的 refresh token 请求刷新接口，并只在当前进程内使用新的 token；不会回写或更新 Codex 的 `auth.json`。如果 Codex 登录态失效，需要用户用 Codex/OpenAI 自己的登录流程重新生成 auth cache。
-
-API key 不要提交到仓库。更多配置说明见内置 `echo-tui-setup` skill。
-
-## System prompt 覆盖
-
-可用 `~/.echo/SYSTEM.md` 设置用户级基础 system prompt，或在项目根目录放置 `SYSTEM.md` 进行项目级覆盖；项目级文件优先。没有 Git/`.echo` 项目标记时，Echo TUI 查找启动 cwd 下的 `SYSTEM.md`。
-
-`SYSTEM.md` 只替换 Echo TUI 默认的身份与通用行为文本。当前 cwd、所选项目指令文件、skills 和 memory 仍会继续加入 provider system context。缺失、不可读、非普通文件或空文件会自动回退到下一优先级，最终回退到源码内置 prompt。
-
-## 项目指令文件
-
-在 `/config` → `常规` 中可以选择读取 `AGENTS.md` 或 `CLAUDE.md`。用户级文件分别位于 `~/.echo/AGENTS.md` 和 `~/.echo/CLAUDE.md`；项目文件均从项目根目录到当前 cwd 逐级加载，更具体的目录优先。配置和文件变化从下一次 agent 请求开始生效，当前 tool continuation 保持启动时的快照。
+`--full-access` 仅对当前命令生效，可能执行破坏性操作，并且不提供 `/undo` 回滚。请只在信任当前项目和任务内容时使用。
 
 ## 交互模式
 
-底部状态行显示当前模式。Tab 在四种模式间循环，也可用 `/mode` 切换：
+底部状态行会显示当前模式。按 Tab 可以循环切换，也可以使用 `/mode`：
 
-| 模式 | 行为 |
+| 模式 | 用途 |
 | --- | --- |
-| `normal` | 普通对话，模型可使用全部默认工具和 MCP 工具 |
-| `plan` | 只读规划，模型只能探索和制定方案 |
-| `shell` | 本地执行输入的 bash 命令，结果进入模型上下文 |
-| `shell-local` | 本地执行 bash 命令，结果只在本地显示 |
-
-normal 与 plan 之间发生模型可见切换时，模式说明只会加入切换后的第一条 user message；终端和输入历史仍显示用户原文。plan 写操作同时由运行时工具策略拒绝，todo 状态则继续按每次请求的当前值动态同步。
+| `normal` | 普通对话，允许模型按授权使用工具 |
+| `plan` | 只读分析和制定方案，不修改文件 |
+| `shell` | 执行 shell 命令，并把结果提供给模型 |
+| `shell-local` | 只在本地执行和显示 shell 命令 |
 
 ## 常用按键
 
 | 按键 | 行为 |
 | --- | --- |
 | Enter / Ctrl+J | 发送 / 插入换行 |
-| Up / Down | 历史、多行移动或选择候选 |
-| Tab | 补全 slash/skill 候选；无候选时循环交互模式 |
-| `@` | 打开文件选择器，把文件/PDF/图片加入输入 |
-| Esc | 关闭面板、隐藏建议、中断 shell 命令或回答 |
+| Up / Down | 浏览历史、移动光标或选择候选 |
+| Tab | 补全命令或 Skill；无候选时切换模式 |
+| `@` | 选择文件、PDF 或图片并加入输入 |
+| Esc | 关闭当前面板或中断正在执行的任务 |
 | Ctrl+C / Ctrl+D | 退出 |
 
-assistant 回答期间 composer 仍可编辑。输入 `/` 时只建议可安全并行的 `/help`、`/status`、`/context`、`/usage` 和 `/copy`；这些命令会立即打开并允许交互，后台回答继续运行，Esc 优先关闭当前面板而不是中断回答。
+模型回答期间仍可编辑下一条消息，也可以使用 `/help`、`/status`、`/context`、`/usage` 和 `/copy`。提交的新消息会在当前回答结束后自动发送；同一时间最多保留一条待发送消息。
 
-其他非空输入按 Enter 后保存为一条待发送消息，并在当前回答完成或失败后自动按普通输入规则处理；待发送消息不会提前进入当前模型请求或 transcript。队列最多一条，排队后可以继续编辑下一份草稿；已有待发送消息时再次按 Enter 不会覆盖它，但仍可立即调用上述响应期命令。卡片显示期间第一次 Esc 只移除待发送消息，第二次 Esc 才中断当前回答。待发送状态只存在于当前进程，`/clear`、成功 `/resume`、退出或重启都会清理它。
-
-## Slash 命令
+## 常用命令
 
 | 命令 | 行为 |
 | --- | --- |
 | `/help` | 查看帮助 |
-| `/config` `/model` `/effort` | 配置常规偏好、provider/model 与主题；切换模型和推理等级 |
+| `/config` | 配置模型、常规偏好和主题 |
+| `/model` `/effort` | 切换当前会话的模型和推理等级 |
 | `/mode` | 切换交互模式 |
-| `/status` | 查看目录、AGENTS、memory、model/provider、session，以及 Codex OAuth 5 小时/每周配额进度 |
-| `/context` `/usage` | 查看 provider 上下文占用、本地每日 token 用量 |
-| `/clear` `/compact` `/resume` | 清屏、压缩上下文、恢复历史会话 |
-| `/fork` | 从当前最新状态创建并切换到独立会话分支 |
-| `/reference` | 选择一个历史会话，作为下一条消息的参考上下文 |
-| `/diff` `/undo` | 查看文件差异、回退上一轮文件修改与会话记录 |
-| `/mcp` `/hooks` `/skills` | 管理 MCP server、lifecycle hooks 和 skills |
-| `/init` `/review` | 生成或评审当前选择的项目指令文件、审查当前 Git 变更 |
-| `/<skill-name> [args]` | 调用已启用 skill |
+| `/status` | 查看当前项目、模型和会话状态 |
+| `/context` `/usage` | 查看上下文占用和本地 Token 用量 |
+| `/clear` `/compact` `/resume` | 开始新会话、压缩上下文、恢复历史会话 |
+| `/fork` | 从当前会话创建一个独立的对话分支 |
+| `/reference` | 把一个历史会话作为下一条消息的参考 |
+| `/diff` `/undo` | 查看文件改动、回退上一轮改动 |
+| `/mcp` `/hooks` `/skills` | 启停已配置的 MCP Server，管理 Hooks 和 Skills |
+| `/init` `/review` | 初始化项目指令、审查当前 Git 改动 |
+| `/<skill-name> [args]` | 调用已启用的 Skill |
 
-`/reference` 只引用一个完整历史会话，不提供单条消息勾选，也不会自动搜索历史。较短会话会以中立文本全量加入下一条 user message；超过当前模型引用预算的长会话会在发送下一条消息时由当前 provider 生成结构化总结，选择会话本身不会发起模型请求。总结期间可按 Esc 取消并保留引用和输入，再次发送即可重试；发送前按 Esc 可移除待提交引用，再次执行 `/reference` 会替换已有引用。provider 可见内容只包含标题、源 journal 的 `source_file`、全量正文或总结，以及当前请求，不包含独立 session id 或时间；总结模式会提示模型在确有需要时复用现有 `read_files` 读取 `source_file`，不会注册专用会话读取工具。
+## 项目指令与扩展
 
-## Skills
+### 项目指令
 
-skill 放在 `.echo/skills/<name>/SKILL.md`（项目级）或 `~/.echo/skills/<name>/SKILL.md`（用户级），同名时项目级覆盖用户级。每个 `SKILL.md` 需要 `name` / `description` frontmatter 加 Markdown 指令。用 `/skills` 管理启停状态：Space 切换启停，Left/Right 在“当前模型”和已配置 model profiles 之间循环，Enter 统一保存，Esc 放弃草稿。
+Echo TUI 默认读取 `AGENTS.md`，也可以在 `/config` 中改为 `CLAUDE.md`。把文件放在项目目录中，可以告诉助手项目结构、编码规范和验证方式；把文件放在 `~/.echo/` 下，则可以设置个人通用习惯。
 
-“当前模型”会在每次显式 `/<skill-name>` 调用开始时动态跟随全局当前模型；固定 profile 只覆盖这一次显式 slash turn，开始时追加一条仅本地可见的模型切换 notice，执行期间 status line 显示为 `<model> (SKILL override)`，结束后恢复全局模型。覆盖不修改 `/model` 的全局选择，也不影响后续普通 turn。模型在普通 turn 中自主调用 `use_skill` 时不会应用该 skill 的模型策略；profile 已删除时自动回退到全局当前模型，且不显示 override 标记或切换 notice。
+如需完全替换默认的基础 System Prompt，可在项目中或 `~/.echo/` 下创建 `SYSTEM.md`。项目中的配置优先于用户级配置。
+
+### Skills
+
+项目级 Skill 放在 `.echo/skills/<name>/SKILL.md`，个人 Skill 放在 `~/.echo/skills/<name>/SKILL.md`。使用 `/skills` 可以启用、停用 Skill，并为显式调用选择模型。
+
+### MCP、Hooks 与主题
+
+- 使用 `/mcp` 启停已配置的 MCP Server。
+- 使用 `/hooks` 在回答、工具调用或上下文压缩等事件发生时运行本地命令 (比如使用terminal-notifier在完成回答、需要审批时发送通知)。
+- 使用 `/config` 的“外观”页面切换主题；自定义主题保存在 `~/.echo/theme.json`。
 
 ## 工具与授权
 
-默认工具包括文件发现/搜索/读取、网页读取与搜索、bash 执行、所选文件编辑工具（`apply_patch` 或 `edit_file`）、skill 加载和用户提问；配置并启用后还有 MCP 工具。文件编辑工具、高风险 bash 和 `approval: "always"` 的 MCP 工具在 TUI 中执行前请求授权；plan 模式拒绝写工具。单轮模式默认拒绝审批工具，只有显式 `--once --full-access` 才会自动允许当前已注册工具。`replace_all` 可能一次修改多处文本，授权前应检查路径与意图。工具没有沙箱，请只在信任当前工作区、模型和授权提示时允许执行。
+Echo TUI 可以读取和搜索文件、访问公开网页、执行 shell 命令、修改文件，并调用已配置的 MCP 工具。涉及文件修改、高风险命令或需要确认的 MCP 工具时，交互模式会先请求授权；`plan` 模式始终拒绝写操作。
 
-## Lifecycle hooks
+这些工具不在沙箱中运行。授权前请检查操作内容，并确保你信任当前工作目录、模型服务和 MCP Server。
 
-可在 `~/.echo/config.json` 的 `hooks` 节点为生命周期事件配置本地命令，也可用 `/hooks` 在 TUI 内查看、添加、编辑、启停、删除、保存并即时 reload。hooks 是 best-effort 旁路观察者：不能拦截或修改对话、工具、审批、压缩或模型请求；stdout/stderr、退出码和失败默认不显示到 TUI，不写入 transcript，不保存到 session，也不回传模型。
+## 会话与本地数据
 
-```json
-{
-  "hooks": {
-    "assistant_turn_end": [
-      {"command": "node ~/.echo/hooks/log-turn.js", "timeoutMs": 5000}
-    ],
-    "tool_call_end": [
-      "node ~/.echo/hooks/tool-audit.js",
-      {"command": "node ~/.echo/hooks/debug.js", "timeoutMs": 3000, "enabled": false}
-    ]
-  }
-}
+交互会话会按工作目录保存在 `~/.echo/echo_tui/` 下，方便通过 `/resume` 继续之前的对话。会话内容是本地明文，请不要在对话中输入不希望保存在磁盘上的敏感信息。
+
+- `/clear` 会开始新会话，但不会删除历史会话。
+- `/fork` 只创建对话分支，不会创建 Git 分支、worktree 或文件快照；不同对话分支仍共享同一个工作目录。
+- `--once` 不保存可恢复会话。
+- 如需清理全部配置和历史数据，请先备份，再删除 `~/.echo`。
+
+## 卸载
+
+```bash
+npm uninstall -g @eumendies/echo-tui
 ```
 
-支持事件：`assistant_turn_start`、`assistant_turn_end`、`assistant_turn_error`、`assistant_turn_cancelled`、`tool_call_start`、`tool_call_end`、`compaction_end`。每个 hook 以当前工作目录运行，stdin 收到 JSON payload，并带有 `ECHO_HOOK_EVENT` 与 `ECHO_HOOK_CWD` 环境变量。对象格式 entry 可设置 `timeoutMs` 和 `enabled`；`enabled: false` 会保留在配置中供 `/hooks` 管理，但不会参与后续 lifecycle hook 执行。无效 hook 配置会被忽略，不影响 TUI 启动或对话。
+卸载只移除程序，不会删除 `~/.echo` 下的配置和会话。
 
-`/hooks` 的 Test 动作用系统构造的 synthetic payload 验证单条命令的 cwd/env/stdin/timeout 契约；它不会提交消息、启动 assistant turn、触发真实 tool call/approval/tool execution、执行 compaction 或派发额外 lifecycle hook event。测试结果只在当前 `/hooks` 面板中显示 bounded stdout/stderr、exit code/timeout 和耗时，不进入 transcript/session/provider request/tool result。Synthetic payload 只用于测试契约，不能代表真实事件 payload 的完整业务覆盖。
+## 从源码运行
 
-## 主题与 MCP
-
-- 主题配置仍在 `~/.echo/theme.json`，根字段 `theme` 选择内置主题，其余字段作为 override；可从 `/config` 的“外观”Tab 切换。浅色终端可优先试 `default-light`、`macaron`、`paper-light`、`porcelain`、`rose-dusk`、`solarized-light` 或 `spring-mist`。
-- MCP 配置在 `~/.echo/config.json` 的 `mcp` 节点（`enabled` 加按名组织的 `servers`，支持 stdio / http），用 `/mcp` 查看和管理。
-
-## 会话存储
-
-会话按工作目录分区保存为本地明文 append-only JSONL journal，并在同目录保存当前 model/effort sidecar：
-
-```text
-~/.echo/echo_tui/projects/{cwd-hash}/sessions/{session-id}.jsonl
-~/.echo/echo_tui/projects/{cwd-hash}/sessions/{session-id}.settings.json
+```bash
+npm install
+npm run build
+npm start
 ```
 
-普通消息先照常创建或追加 journal，再尽力同步同 ID sidecar；sidecar 写入失败不会影响当前模型选择、status line、transcript 或 provider 请求。`/resume` 在 sidecar 有效时恢复该 session 的 model/effort；旧会话缺少 sidecar、sidecar 损坏或 profile 已删除时直接使用当前全局默认。`/clear` 只解绑旧 session，以最新全局默认初始化新 session，不删除旧 journal 或 sidecar。显式 `/<skill-name>` 的 model/effort override 只作用于当前 turn，并按字段覆盖 session 值；未覆盖字段继续继承 session，tool continuation 保持本轮已解析配置。`--once` 不读取或创建这些文件，继续直接使用全局默认或命令行单轮 override。
-
-`/fork` 会把当前非空 session 的 records、compaction、todo、change history 和 model/effort 保存为一个使用新 ID 的自包含会话，并立即将后续消息写入新 journal；源 session 保持可通过 `/resume` 恢复。分叉只复制会话状态，不创建 Git branch、worktree 或文件快照，两个分支仍共享当前工作目录；因此从任一分支执行 `/undo` 仍可能覆盖另一分支或用户后续产生的文件修改。分叉反馈只存在于 command surface，不写入 transcript。
-
-加载 transcript 时会顺序重放 journal；孤立 sidecar 不会出现在 `/resume` 候选中，旧 `.json` session 也不会被读取或迁移。`/undo` 截断的历史仍物理保留在 journal 中。清理历史可删除对应 session 文件和 sidecar，或整个 `~/.echo/echo_tui/` 目录。
-
-## 开发命令
+开发检查：
 
 ```bash
 npm run typecheck
 npm test
-npm run clean
 ```
+
+实现与架构说明见 [docs/tui-architecture.md](./docs/tui-architecture.md)。
