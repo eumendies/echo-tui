@@ -3,6 +3,7 @@ import {type TuiTheme} from '../../config/theme-config';
 import {blockText} from '../colors';
 import {displayWidth} from '../layout';
 import {
+  createToolCallTitle,
   renderPrefixedLines,
   resolveToolCallPrefixStyle,
   wrapContentLine
@@ -34,7 +35,7 @@ function renderTodoToolCallLines(
   theme: TuiTheme
 ): string[] {
   return renderPrefixedLines({
-    text: `${record.toolName}()`,
+    text: createToolCallTitle(record.toolName),
     width,
     firstPrefix: '◆ ',
     continuationPrefix: '  ',

@@ -3,7 +3,7 @@ import {type TuiTheme} from '../../config/theme-config';
 import {createApplyPatchCallLabel} from '../../tools/apply-patch-tool-handler';
 import {blockText} from '../colors';
 import {displayWidth, safeRenderWidth} from '../layout';
-import {renderPrefixedLines, resolveToolCallPrefixStyle, wrapContentLine} from './shared';
+import {createToolCallTitle, renderPrefixedLines, resolveToolCallPrefixStyle, wrapContentLine} from './shared';
 
 import type {FileEditDisplayFile, FileEditDisplayKind, FileEditDisplayLine, FileEditDisplayMetadata, ToolResultDisplayMetadata} from '../../types/tool';
 import type {ToolCallTranscriptRecord, ToolResultTranscriptRecord} from '../../types/transcript';
@@ -38,13 +38,22 @@ function renderApplyPatchToolCallLines(
   callStatus: boolean | undefined,
   theme: TuiTheme
 ): string[] {
+  const label = createApplyPatchCallLabel(record.argumentsText);
   return renderPrefixedLines({
-    text: createApplyPatchCallLabel(record.argumentsText),
+    text: createToolCallTitle(APPLY_PATCH_TOOL_NAME, [extractCallLabelSummary(label, APPLY_PATCH_TOOL_NAME)]),
     width,
     firstPrefix: '◆ ',
     continuationPrefix: '  ',
       colorizeFirstSymbol: resolveToolCallPrefixStyle(callStatus, theme)
   });
+}
+
+/**
+ * 从既有审批摘要中只提取括号内的可信路径片段，审批层输出本身保持不变。
+ */
+function extractCallLabelSummary(label: string, toolName: string): string | null {
+  const prefix = `${toolName}(`;
+  return label.startsWith(prefix) && label.endsWith(')') ? label.slice(prefix.length, -1) : null;
 }
 
 /**

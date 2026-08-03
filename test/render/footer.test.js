@@ -2995,6 +2995,24 @@ test('renderFooterLayout renders slash suggestions below composer while keeping 
   assert.ok(layout.lines.some((line) => line.includes('\x1b[48;5;23m') && stripAnsi(line).includes('▌ /model')));
 });
 
+test('renderFooterLayout flattens multiline slash suggestion descriptions', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('/multi'),
+    slashSuggestions: {
+      options: [{label: '/multi', description: '第一行\n  第二行\r\n第三行'}],
+      selectedIndex: 0
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    width: 80
+  });
+  const plainLines = layout.lines.map(stripAnsi);
+  const suggestionLines = plainLines.filter((line) => line.includes('/multi —'));
+
+  assert.equal(suggestionLines.length, 1);
+  assert.equal(suggestionLines[0].trimEnd(), '▌ /multi — 第一行 第二行 第三行');
+});
+
 test('renderFooterLayout applies the configured slash suggestion visible limit without truncating state', () => {
   const options = Array.from({length: 10}, (_value, index) => ({label: `/command-${index}`, description: `item ${index}`}));
   const slashSuggestions = {options, selectedIndex: 7};
@@ -3269,6 +3287,32 @@ test('renderFooterLayout renders tool call pending preview in footer', () => {
   assert.equal(plainLines[1], '  ▌ pwd');
   assert.ok(plainLines.at(-1).includes('   ▒█▒    working 00:00'));
   assert.match(layout.lines.at(-1), /\x1b\[38;2;/);
+});
+
+test('renderFooterLayout renders generic MCP pending calls with a safe layered title', () => {
+  const width = 48;
+  const layout = renderFooterLayout({
+    composer: createComposer(''),
+    pending: {
+      kind: 'tool_call',
+      toolName: 'mcp__github_server__createIssue',
+      argumentsText: JSON.stringify({title: '修复工具标题', body: 'x'.repeat(80)})
+    },
+    working: {elapsedMs: 0},
+    statusLine: {
+      ...DEFAULT_STATUS_LINE,
+      mode: 'tool',
+      detail: 'mcp__github_server__createIssue',
+      keyHint: 'Esc 中断'
+    },
+    rows: 12,
+    width
+  });
+  const plainLines = layout.lines.map(stripAnsi);
+
+  assert.equal(plainLines[0], '◆ MCP · github server · create issue');
+  assert.ok(plainLines.some((line) => line.startsWith('  {"title":"修复工具标题"')));
+  assert.ok(layout.lines.every((line) => displayWidth(line) <= safeRenderWidth(width)));
 });
 
 test('renderFooterLayout keeps multiline bash inline-script pending preview line safe', () => {

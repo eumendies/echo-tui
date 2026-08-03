@@ -4,7 +4,7 @@ import {activeBackground, renderFocusBar, resolveFooterTheme, tokenText, type Fo
 import {clampPlainText, padVisibleText} from './text';
 import {constrainLayoutTail, createSelectedWindowRows} from './window';
 import {getProviderPreset, listProviderPresets, providerRequiresApiKey} from '../../config/provider-presets';
-import {GENERAL_CONFIG_ROW_IDS} from '../../commands/config/state';
+import {GENERAL_CONFIG_ROW_IDS, configProviderSupportsReasoningEffort, getConfigModelReasoningEffort} from '../../commands/config/state';
 import type {AppearanceConfigState, ConfigCommandState, ConfigCommandSurface, ConfigFormRow, ConfigSurfaceTab, ConfigTabId, GeneralConfigState} from '../../types/command';
 import type {FooterLayout} from '../../types/render';
 
@@ -468,9 +468,15 @@ function renderHeaderDetailView(state: ConfigCommandState, width: number, theme:
   return lines;
 }
 
+/**
+ * 渲染单个模型的可编辑配置；真实 provider 显示默认 effort，fake agent 保持精简字段。
+ */
 function renderModelDetailView(state: ConfigCommandState, width: number, theme: FooterTheme): string[] {
   const provider = state.draft.providers[state.providerIndex];
   const model = provider?.models[state.modelIndex];
+  const supportsEffort = configProviderSupportsReasoningEffort(provider);
+  const defaultModelIndex = supportsEffort ? 3 : 2;
+  const deleteModelIndex = supportsEffort ? 4 : 3;
   const title = ` ${model?.model || '新 model'} `;
   const lines = [top(width, title, 'accentStrong', theme, ansi.dim('model')), line(width, '', theme)];
   const modelName = state.editTarget?.kind === 'modelName' ? `${state.editBuffer}█` : model?.model || '未设置';
@@ -482,18 +488,21 @@ function renderModelDetailView(state: ConfigCommandState, width: number, theme: 
 
   lines.push(kvRow(width, 'Model API id', modelName, state.modelDetailIndex === 0, theme));
   lines.push(kvRow(width, 'Context window', contextWindow, state.modelDetailIndex === 1, theme));
+  if (supportsEffort) {
+    lines.push(kvRow(width, '默认 Effort', getConfigModelReasoningEffort(model) || 'Provider 默认', state.modelDetailIndex === 2, theme));
+  }
   lines.push(actionRow(
     width,
     model?.id === state.draft.selectedModelId ? '当前默认 model' : '设为默认 model',
     model?.id === state.draft.selectedModelId ? '已选择' : '后续请求使用',
-    state.modelDetailIndex === 2,
+    state.modelDetailIndex === defaultModelIndex,
     false,
     theme
   ));
-  lines.push(actionRow(width, '删除 model', '从 provider 草稿移除', state.modelDetailIndex === 3, true, theme));
+  lines.push(actionRow(width, '删除 model', '从 provider 草稿移除', state.modelDetailIndex === deleteModelIndex, true, theme));
   appendError(lines, state, width, theme);
   lines.push(line(width, '', theme));
-  lines.push(line(width, dimHint(width, '↑/↓ 移动 · Enter 编辑/执行 · Esc 返回'), theme));
+  lines.push(line(width, dimHint(width, '↑/↓ 移动 · ←/→ 调整 · Enter 编辑/执行 · Esc 返回'), theme));
   lines.push(bottom(width, theme));
   return lines;
 }

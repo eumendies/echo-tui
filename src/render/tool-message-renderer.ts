@@ -39,6 +39,7 @@ import {
 } from './tool-message-renderers/web-fetch';
 import {
   TOOL_RESULT_MAX_DISPLAY_LINES,
+  formatToolDisplayName,
   renderPrefixedLines,
   resolveToolCallPrefixStyle,
   truncateDisplayText
@@ -147,7 +148,8 @@ export function renderToolCallPreviewLines(toolName: string, argumentsText: stri
  */
 function renderToolRecordLines(record: ToolTranscriptRecord, width: number, options: ToolRecordRenderOptions = {}, theme: TuiTheme): string[] {
   if (record.toolName === ASK_USER_QUESTIONS_TOOL_NAME && record.role === 'tool_call') {
-    return renderAskUserQuestionsToolCallLines(record, options.callStatus, width, theme);
+    return renderAskUserQuestionsToolCallLines(record, options.callStatus, width, theme)
+      ?? renderGenericToolRecordLines(record, width, options, theme);
   }
 
   if (record.toolName === APPLY_PATCH_TOOL_NAME) {
@@ -245,16 +247,25 @@ function renderGenericToolRecordLines(
   theme: TuiTheme
 ): string[] {
   if (record.role === 'tool_call') {
-    const toolName = record.toolName || 'Tool';
-    const text = `${toolName}(${record.argumentsText})`;
-
-    return renderPrefixedLines({
-      text,
+    const lines = renderPrefixedLines({
+      text: formatToolDisplayName(record.toolName),
       width,
       firstPrefix: '◆ ',
       continuationPrefix: '  ',
         colorizeFirstSymbol: resolveToolCallPrefixStyle(options.callStatus, theme)
     });
+
+    if (record.argumentsText.trim() !== '') {
+      lines.push(...renderPrefixedLines({
+        text: truncateDisplayText(record.argumentsText, TOOL_RESULT_MAX_DISPLAY_LINES),
+        width,
+        firstPrefix: '  ',
+        continuationPrefix: '  ',
+        colorizeLine: (line) => blockText(theme, 'toolOutput', line)
+      }));
+    }
+
+    return lines;
   }
 
   return renderPrefixedLines({

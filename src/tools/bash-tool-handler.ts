@@ -1,21 +1,15 @@
 import {DEFAULT_BASH_MAX_OUTPUT_BYTES, runBashCommand} from './bash-command-runner';
-import path from 'node:path';
 
 import {normalizePositiveInteger, resolveCwd} from './tool-handler-utils';
 import {createToolResultTruncationMarker} from './tool-result-offloading';
+import {isChangeHistoryReadonlyBashCommand, isPlanReadonlyBashCommand} from './readonly-bash-command';
 
 import type {BashToolExecutionResult, ToolCall, ToolExecutionOptions, ToolHandler} from '../types/tool';
 import type {BashCommandRunResult} from './bash-command-runner';
 import type {ToolResultStore} from './tool-result-offloading';
 
 const RUN_BASH_COMMAND_TOOL_NAME = 'run_bash_command';
-const PLAN_READONLY_BASH_REJECTION = 'In plan mode, run_bash_command may only run readonly inspection commands such as pwd, git status, git diff, git log, git show, git rev-parse, git branch --show-current, git ls-files, and git merge-base. This command may modify the workspace or system state, so it was rejected. To run it, exit plan mode first.';
-const SHELL_META_PATTERN = /[\r\n;&|<>`$()]/u;
-const PLAN_ALLOWED_GIT_SUBCOMMANDS = new Set(['status', 'diff', 'log', 'show', 'rev-parse', 'ls-files', 'merge-base']);
-const PLAN_BLOCKED_GIT_OPTIONS = new Set(['--output', '--ext-diff', '--external-diff']);
-const CHANGE_HISTORY_READONLY_COMMANDS = new Set(['pwd', 'ls', 'cat', 'head', 'tail', 'wc', 'grep', 'rg', 'echo', 'printf']);
-const CHANGE_HISTORY_BLOCKED_FIND_OPTIONS = new Set(['-delete', '-exec', '-execdir', '-ok', '-okdir']);
-const BUILTIN_AGENT_MEMORY_SCRIPT_PATH = path.resolve(__dirname, '../skills/builtin/agent-memory/scripts/memory.js');
+const PLAN_READONLY_BASH_REJECTION = 'In plan mode, run_bash_command may only run readonly inspection commands: pwd; file inspection commands such as ls, cat, head, tail, wc, grep, rg, echo, printf, and find without write options; readonly git inspection commands such as git status, git diff, git log, git show, git branch -a, git grep, git config --get, and git stash list; and combinations of readonly commands with |, &&, ;, ||, or newlines. This command may modify the workspace or system state, so it was rejected. To run it, exit plan mode first.';
 
 type BashToolHandlerOptions = {
   cwd?: string | (() => string);
@@ -189,201 +183,6 @@ function appendLabeledOutput(lines: string[], label: string, output: string): vo
   }
 
   lines.push('', `${label}:`, output.replace(/\n$/, ''));
-}
-
-function isPlanReadonlyBashCommand(command: string): boolean {
-  const argv = parseSinglePlanCommand(command);
-
-  if (!argv) {
-    return false;
-  }
-
-  if (argv[0] === 'pwd') {
-    return argv.length === 1;
-  }
-
-  if (argv[0] !== 'git' || argv.length < 2) {
-    return false;
-  }
-
-  if (argv[1] === 'branch') {
-    return argv.length === 3 && argv[2] === '--show-current';
-  }
-
-  if (!PLAN_ALLOWED_GIT_SUBCOMMANDS.has(argv[1])) {
-    return false;
-  }
-
-  return !argv.slice(2).some(isBlockedPlanGitOption);
-}
-
-function isChangeHistoryReadonlyBashCommand(command: string): boolean {
-  if (isBuiltinAgentMemoryScriptCommand(command)) {
-    return true;
-  }
-
-  const argv = parseSinglePlanCommand(command);
-
-  if (!argv) {
-    return false;
-  }
-
-  if (isPlanReadonlyBashCommand(command)) {
-    return true;
-  }
-
-  if (CHANGE_HISTORY_READONLY_COMMANDS.has(argv[0])) {
-    return true;
-  }
-
-  if (argv[0] === 'find') {
-    return !argv.slice(1).some((arg) => CHANGE_HISTORY_BLOCKED_FIND_OPTIONS.has(arg));
-  }
-
-  return false;
-}
-
-/**
- * 只识别当前安装包内的固定 memory 脚本；拒绝 shell 组合与命令替换，避免任意 Node 命令绕过 workspace history 失效保护。
- */
-function isBuiltinAgentMemoryScriptCommand(command: string): boolean {
-  const argv = parseTrustedScriptCommand(command);
-  if (!argv || argv.length < 2) return false;
-  const executable = argv[0] === 'node' || path.resolve(argv[0]) === path.resolve(process.execPath);
-  return executable && path.resolve(argv[1]) === BUILTIN_AGENT_MEMORY_SCRIPT_PATH;
-}
-
-function parseTrustedScriptCommand(command: string): string[] | null {
-  const argv: string[] = [];
-  let token = '';
-  let quote: 'single' | 'double' | null = null;
-  let tokenStarted = false;
-
-  for (let index = 0; index < command.length; index += 1) {
-    const char = command[index];
-
-    if (quote === 'single') {
-      if (char === "'") quote = null;
-      else token += char;
-      tokenStarted = true;
-      continue;
-    }
-
-    if (char === '\\') {
-      const next = command[index + 1];
-      if (next === undefined || (quote === 'double' && (next === '$' || next === '`'))) return null;
-      token += next;
-      tokenStarted = true;
-      index += 1;
-      continue;
-    }
-
-    if (quote === 'double') {
-      if (char === '"') quote = null;
-      else {
-        if (char === '$' || char === '`') return null;
-        token += char;
-      }
-      tokenStarted = true;
-      continue;
-    }
-
-    if (char === "'") {
-      quote = 'single';
-      tokenStarted = true;
-      continue;
-    }
-
-    if (char === '"') {
-      quote = 'double';
-      tokenStarted = true;
-      continue;
-    }
-
-    if (/\s/u.test(char)) {
-      if (char === '\r' || char === '\n') return null;
-      if (tokenStarted) {
-        argv.push(token);
-        token = '';
-        tokenStarted = false;
-      }
-      continue;
-    }
-
-    if (';&|<>`$()'.includes(char)) return null;
-    token += char;
-    tokenStarted = true;
-  }
-
-  if (quote) return null;
-  if (tokenStarted) argv.push(token);
-  return argv.length > 0 ? argv : null;
-}
-
-function parseSinglePlanCommand(command: string): string[] | null {
-  const trimmed = command.trim();
-
-  if (trimmed === '' || SHELL_META_PATTERN.test(trimmed)) {
-    return null;
-  }
-
-  const argv: string[] = [];
-  let token = '';
-  let quote: 'single' | 'double' | null = null;
-
-  for (const char of trimmed) {
-    if (quote === 'single') {
-      if (char === "'") {
-        quote = null;
-      } else {
-        token += char;
-      }
-      continue;
-    }
-
-    if (quote === 'double') {
-      if (char === '"') {
-        quote = null;
-      } else {
-        token += char;
-      }
-      continue;
-    }
-
-    if (char === "'") {
-      quote = 'single';
-      continue;
-    }
-
-    if (char === '"') {
-      quote = 'double';
-      continue;
-    }
-
-    if (/\s/u.test(char)) {
-      if (token !== '') {
-        argv.push(token);
-        token = '';
-      }
-      continue;
-    }
-
-    token += char;
-  }
-
-  if (quote) {
-    return null;
-  }
-
-  if (token !== '') {
-    argv.push(token);
-  }
-
-  return argv.length > 0 ? argv : null;
-}
-
-function isBlockedPlanGitOption(arg: string): boolean {
-  return PLAN_BLOCKED_GIT_OPTIONS.has(arg) || arg.startsWith('--output=');
 }
 
 export {

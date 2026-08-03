@@ -383,6 +383,37 @@ test('skill registry discovers user and project skills with project override', (
   assert.equal(registry.loadSkill('review').skill.content, '# Project Review');
 });
 
+test('skill registry flattens literal and folded block descriptions', () => {
+  const cwd = createTempWorkspace();
+  const projectSkillsDir = path.join(cwd, '.echo', 'skills');
+  writeSkill(projectSkillsDir, 'literal', [
+    'name: literal',
+    'description: |',
+    '  First literal line.',
+    '  Second literal line.',
+    'metadata:',
+    '  trigger: ignored'
+  ].join('\n'));
+  writeSkill(projectSkillsDir, 'folded', [
+    'name: folded',
+    'description: >',
+    '  First folded line.',
+    '  Second folded line.'
+  ].join('\n'));
+
+  const registry = createSkillRegistry({
+    builtinSkillsDir: path.join(cwd, 'missing-builtin'),
+    cwd,
+    projectSkillsDir,
+    userSkillsDir: path.join(cwd, 'missing-user')
+  });
+
+  assert.deepEqual(registry.listCatalog().map(({name, description}) => ({name, description})), [
+    {name: 'folded', description: 'First folded line. Second folded line.'},
+    {name: 'literal', description: 'First literal line. Second literal line.'}
+  ]);
+});
+
 test('skill registry discovers sorted resources from reference and scripts only', () => {
   const cwd = createTempWorkspace();
   const projectSkillsDir = path.join(cwd, '.echo', 'skills');
@@ -913,6 +944,62 @@ test('builtin agent-memory script preserves change history without trusting comp
   assert.equal(isChangeHistoryReadonlyBashCommand(`node '${scriptPath}' validate; rm file.txt`), false);
   assert.equal(isChangeHistoryReadonlyBashCommand(`node '${scriptPath}' add --catalog rules --content "$(rm file.txt)"`), false);
   assert.equal(isChangeHistoryReadonlyBashCommand('node other-script.js validate'), false);
+});
+
+test('change history readonly check follows extended git subcommand allowlist', () => {
+  const readonlyGitCommands = [
+    'git branch -a',
+    'git tag -l',
+    'git stash list',
+    'git config --get user.name',
+    'git remote -v',
+    'git grep todo src',
+    'git blame src/app/main.ts'
+  ];
+
+  for (const command of readonlyGitCommands) {
+    assert.equal(isChangeHistoryReadonlyBashCommand(command), true, command);
+  }
+
+  const writeLikeGitCommands = [
+    'git branch feature',
+    'git tag v1',
+    'git stash push',
+    'git config user.email x',
+    'git remote add origin https://example.com/repo.git',
+    'git status "$(rm file.txt)"',
+    'git status "`rm file.txt`"'
+  ];
+
+  for (const command of writeLikeGitCommands) {
+    assert.equal(isChangeHistoryReadonlyBashCommand(command), false, command);
+  }
+});
+
+test('change history readonly check splits readonly composed commands', () => {
+  const readonlyComposedCommands = [
+    'git status && git diff',
+    'git log --oneline | head -3',
+    'pwd; ls src; git status --short',
+    'cat package.json | grep version'
+  ];
+
+  for (const command of readonlyComposedCommands) {
+    assert.equal(isChangeHistoryReadonlyBashCommand(command), true, command);
+  }
+
+  const writeLikeComposedCommands = [
+    'git status && rm file.txt',
+    'git log --oneline && touch x',
+    'ls | xargs rm',
+    'echo hi > file',
+    'git status "$(rm x)"',
+    'node other-script.js validate; echo hi'
+  ];
+
+  for (const command of writeLikeComposedCommands) {
+    assert.equal(isChangeHistoryReadonlyBashCommand(command), false, command);
+  }
 });
 
 test('shared bash runner captures stdout, stderr, and merged terminal output', async () => {
