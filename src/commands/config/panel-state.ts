@@ -452,8 +452,6 @@ class ConfigPanelController {
       } else if (this.state.modelDetailIndex === 1) {
         const current = model.contextWindow?.toString() || '';
         this.startEdit({kind: 'contextWindow'}, current, current !== '');
-      } else if (supportsEffort && this.state.modelDetailIndex === 2) {
-        this.cycleModelReasoningEffort(1);
       } else if (this.state.modelDetailIndex === defaultModelIndex) {
         this.selectModel(this.state.modelIndex);
       } else if (this.state.modelDetailIndex === deleteModelIndex) {
