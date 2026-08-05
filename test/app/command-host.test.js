@@ -94,6 +94,9 @@ function createHostHarness(options = {}) {
         return 'plan';
       },
       modelContext: options.modelContext || {
+        createActiveLlmConfig() {
+          return {error: 'LLM 配置缺少 models'};
+        },
         createStatusInfo() {
           return {error: 'LLM 配置缺少 models'};
         },
@@ -528,6 +531,7 @@ test('CommandHost status facade preserves empty state and reports local read fai
 
     const snapshot = host.status.createSnapshot();
     const usage = await host.status.queryCodexUsage();
+    const balance = await host.status.queryDeepseekBalance();
 
     assert.equal(snapshot.model, null);
     assert.equal(snapshot.sessionId, null);
@@ -535,6 +539,7 @@ test('CommandHost status facade preserves empty state and reports local read fai
     assert.equal(snapshot.agentMemoryCatalogs.length, 0);
     assert.equal(snapshot.diagnostics.length >= 2, true);
     assert.equal(usage.status, 'unavailable');
+    assert.equal(balance.status, 'unavailable');
   });
 });
 
@@ -556,6 +561,117 @@ test('CommandHost status facade skips Codex request for non-Codex provider', asy
 
     assert.deepEqual(await host.status.queryCodexUsage(), {status: 'not_applicable'});
     assert.equal(didQuery, false);
+  });
+});
+
+test('CommandHost status facade skips DeepSeek balance for non-DeepSeek provider', async () => {
+  await withTemporaryUserConfig(JSON.stringify({
+    llm: {
+      providers: {chat: {preset: 'openai-chat-compatible-api', apiKey: 'secret'}},
+      models: [{id: 'chat', provider: 'chat', model: 'gpt-chat'}]
+    }
+  }), async () => {
+    const {host} = createHostHarness({modelContext: new ModelContext()});
+
+    assert.deepEqual(await host.status.queryDeepseekBalance(), {status: 'not_applicable'});
+  });
+});
+
+test('CommandHost status facade queries DeepSeek balance with the configured api key', async () => {
+  await withTemporaryUserConfig(JSON.stringify({
+    llm: {
+      providers: {deepseek: {preset: 'deepseek-api', apiKey: 'ds-secret'}},
+      models: [{id: 'deepseek-main', provider: 'deepseek', model: 'deepseek-chat'}]
+    }
+  }), async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (url, options) => {
+      assert.equal(url, 'https://api.deepseek.com/user/balance');
+      assert.equal(options.method, 'GET');
+      assert.equal(options.headers.Authorization, 'Bearer ds-secret');
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          is_available: true,
+          balance_infos: [
+            {currency: 'CNY', total_balance: '110.00', granted_balance: '10.00', topped_up_balance: '100.00'}
+          ]
+        })
+      };
+    };
+
+    try {
+      const {host} = createHostHarness({modelContext: new ModelContext()});
+
+      assert.deepEqual(await host.status.queryDeepseekBalance(), {
+        status: 'available',
+        isAvailable: true,
+        balanceInfos: [
+          {currency: 'CNY', totalBalance: '110.00', grantedBalance: '10.00', toppedUpBalance: '100.00'}
+        ]
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+test('CommandHost status facade follows the active session model selection', async () => {
+  await withTemporaryUserConfig(JSON.stringify({
+    llm: {
+      selectedModel: 'codex-main',
+      providers: {
+        codex: {preset: 'openai-codex-oauth', codexAuthFile: '/tmp/missing-codex-auth.json'},
+        deepseek: {preset: 'deepseek-api', apiKey: 'ds-secret'}
+      },
+      models: [
+        {id: 'codex-main', provider: 'codex', model: 'gpt-codex'},
+        {id: 'deepseek-main', provider: 'deepseek', model: 'deepseek-chat'}
+      ]
+    }
+  }), async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (url, options) => {
+      assert.equal(url, 'https://api.deepseek.com/user/balance');
+      assert.equal(options.headers.Authorization, 'Bearer ds-secret');
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          is_available: true,
+          balance_infos: [
+            {currency: 'CNY', total_balance: '110.00', granted_balance: '10.00', topped_up_balance: '100.00'}
+          ]
+        })
+      };
+    };
+
+    try {
+      const modelContext = new ModelContext();
+      const {host} = createHostHarness({modelContext});
+
+      // 配置默认是 codex：只尝试 Codex 用量（auth 文件缺失 → unavailable），余额不适用。
+      assert.equal((await host.status.queryCodexUsage()).status, 'unavailable');
+      assert.deepEqual(await host.status.queryDeepseekBalance(), {status: 'not_applicable'});
+
+      // /model 切到 deepseek：Codex 用量不再查询，余额查询跟随当前模型。
+      assert.deepEqual(modelContext.selectModel('deepseek-main'), {ok: true});
+      assert.deepEqual(await host.status.queryCodexUsage(), {status: 'not_applicable'});
+      assert.deepEqual(await host.status.queryDeepseekBalance(), {
+        status: 'available',
+        isAvailable: true,
+        balanceInfos: [
+          {currency: 'CNY', totalBalance: '110.00', grantedBalance: '10.00', toppedUpBalance: '100.00'}
+        ]
+      });
+
+      // 切回 codex：余额查询隐藏。
+      assert.deepEqual(modelContext.selectModel('codex-main'), {ok: true});
+      assert.deepEqual(await host.status.queryDeepseekBalance(), {status: 'not_applicable'});
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });
 

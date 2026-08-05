@@ -79,7 +79,7 @@ function completeCommandSurfaceFixture(surface) {
     case 'usage':
       return {title: 'Token 用量', offset: 0, dismissHint: 'Esc 关闭', ...surface};
     case 'status':
-      return {title: 'Status', dismissHint: 'Esc 关闭', ...surface};
+      return {title: 'Status', dismissHint: 'Esc 关闭', deepseekBalance: {status: 'not_applicable'}, ...surface};
     case 'copy':
       return {title: '/copy', focus: 'list', previewScroll: 0, dismissHint: 'Esc 关闭', ...surface};
     case 'file_picker':
@@ -977,6 +977,7 @@ test('renderStatusSurface handles loading, unavailable, not-applicable, and empt
   const notApplicablePlain = notApplicable.lines.map((line) => stripAnsi(line)).join('\n');
   assert.doesNotMatch(notApplicablePlain, /Codex/);
   assert.doesNotMatch(notApplicablePlain, /5 小时|每周/);
+  assert.doesNotMatch(notApplicablePlain, /DeepSeek 账户余额/);
 });
 
 test('renderStatusSurface preserves both quota labels, bars, and percentages in narrow terminal', () => {
@@ -1030,6 +1031,65 @@ test('renderStatusSurface keeps primary progress when Codex omits weekly window'
 
   assert.match(plain, /5 小时.*12%/);
   assert.match(plain, /每周\s+暂无数据/);
+});
+
+test('renderStatusSurface renders DeepSeek balance section and its state variants', () => {
+  const snapshot = {
+    agentInstructionFileName: 'AGENTS.md',
+    cwd: '/tmp/project',
+    sessionId: null,
+    model: {agentType: 'openai-chat', model: 'deepseek-chat', provider: 'deepseek'},
+    agentInstructions: [],
+    userMemoryCount: 0,
+    agentMemoryCatalogs: [],
+    diagnostics: []
+  };
+  const available = renderStatusSurface({
+    kind: 'status',
+    snapshot,
+    usage: {status: 'not_applicable'},
+    deepseekBalance: {
+      status: 'available',
+      isAvailable: true,
+      balanceInfos: [
+        {currency: 'CNY', totalBalance: '110.00', grantedBalance: '10.00', toppedUpBalance: '100.00'},
+        {currency: 'USD', totalBalance: '0.50', grantedBalance: '0.00', toppedUpBalance: '0.50'}
+      ]
+    }
+  }, 70, 20, CUSTOM_THEME.footer);
+  const plain = available.lines.map((line) => stripAnsi(line)).join('\n');
+
+  assert.match(plain, /DeepSeek 账户余额/);
+  assert.match(plain, /CNY\s+总额 110\.00 · 充值 100\.00 · 赠送 10\.00/);
+  assert.match(plain, /USD\s+总额 0\.50 · 充值 0\.50 · 赠送 0\.00/);
+  assert.doesNotMatch(plain, /Codex/);
+  assert.ok(available.lines.every((line) => displayWidth(line) <= safeRenderWidth(70)));
+
+  const unavailableAccount = renderStatusSurface({
+    kind: 'status',
+    snapshot,
+    usage: {status: 'not_applicable'},
+    deepseekBalance: {status: 'available', isAvailable: false, balanceInfos: []}
+  }, 70, 20, CUSTOM_THEME.footer);
+  const unavailablePlain = unavailableAccount.lines.map((line) => stripAnsi(line)).join('\n');
+  assert.match(unavailablePlain, /暂无余额数据/);
+  assert.match(unavailablePlain, /账户不可用/);
+
+  const loading = renderStatusSurface({
+    kind: 'status',
+    snapshot,
+    usage: {status: 'not_applicable'},
+    deepseekBalance: {status: 'loading'}
+  }, 70, 20, CUSTOM_THEME.footer);
+  assert.match(loading.lines.map((line) => stripAnsi(line)).join('\n'), /正在查询/);
+
+  const failed = renderStatusSurface({
+    kind: 'status',
+    snapshot,
+    usage: {status: 'not_applicable'},
+    deepseekBalance: {status: 'unavailable', error: 'DeepSeek 余额不可用'}
+  }, 70, 20, CUSTOM_THEME.footer);
+  assert.match(failed.lines.map((line) => stripAnsi(line)).join('\n'), /不可用\s+DeepSeek 余额不可用/);
 });
 
 test('renderFooterLayout renders usage surface with totals, hidden days, and daily rows', () => {

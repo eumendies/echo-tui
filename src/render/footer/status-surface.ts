@@ -4,14 +4,14 @@ import {tokenText, type FooterTheme} from '../colors';
 import {clampPlainText, padVisibleText} from './text';
 import {constrainLayoutTail} from './window';
 
-import type {CommandCodexUsageWindow, StatusCommandSurface} from '../../types/command';
+import type {CommandCodexUsageWindow, CommandDeepseekBalanceInfo, StatusCommandSurface} from '../../types/command';
 import type {FooterLayout} from '../../types/render';
 
 const FILL = '█';
 const TRACK = '░';
 
 /**
- * 渲染 `/status` 只读卡片；低行数时从头部裁剪，优先保留底部的 Codex 配额进度。
+ * 渲染 `/status` 只读卡片；低行数时从头部裁剪，优先保留底部的配额与余额进度。
  */
 function renderStatusSurface(surface: StatusCommandSurface, width: number, maxLines: number | undefined, theme: FooterTheme): FooterLayout {
   const safeWidth = safeRenderWidth(width);
@@ -53,6 +53,29 @@ function renderStatusSurface(surface: StatusCommandSurface, width: number, maxLi
     }
   }
 
+  if (surface.deepseekBalance.status !== 'not_applicable') {
+    lines.push(dividerLine(cardWidth, theme));
+    lines.push(plainRow(cardWidth, 'DeepSeek 账户余额', theme, 'accentStrong', true));
+
+    if (surface.deepseekBalance.status === 'available') {
+      if (surface.deepseekBalance.balanceInfos.length === 0) {
+        lines.push(plainRow(cardWidth, '暂无余额数据', theme, 'muted'));
+      } else {
+        for (const info of surface.deepseekBalance.balanceInfos) {
+          lines.push(plainRow(cardWidth, balanceRowText(info), theme));
+        }
+      }
+
+      if (!surface.deepseekBalance.isAvailable) {
+        lines.push(plainRow(cardWidth, '账户不可用，请检查余额或充值', theme, 'warning'));
+      }
+    } else if (surface.deepseekBalance.status === 'loading') {
+      lines.push(plainRow(cardWidth, '正在查询…', theme, 'accent'));
+    } else {
+      lines.push(plainRow(cardWidth, `不可用  ${surface.deepseekBalance.error}`, theme, 'warning'));
+    }
+  }
+
   lines.push(dividerLine(cardWidth, theme));
   lines.push(plainRow(cardWidth, surface.dismissHint, theme, 'muted'));
   lines.push(bottomLine(cardWidth, theme));
@@ -63,6 +86,10 @@ function renderStatusSurface(surface: StatusCommandSurface, width: number, maxLi
     cursorColumn: 0,
     showCursor: false
   }, maxLines);
+}
+
+function balanceRowText(info: CommandDeepseekBalanceInfo): string {
+  return `${info.currency}  总额 ${info.totalBalance} · 充值 ${info.toppedUpBalance} · 赠送 ${info.grantedBalance}`;
 }
 
 function usageWindowLines(label: string, usage: CommandCodexUsageWindow, cardWidth: number, inner: number, theme: FooterTheme): string[] {
