@@ -317,3 +317,21 @@ test('renderPendingAssistantLines collapses long shell output preview to a bound
   assert.ok(lines.includes('line 11'));
   assert.ok(lines.includes('line 14'));
 });
+
+test('message blocks pad and wrap composite emoji at grapheme width', () => {
+  // 家庭 emoji 整体 2 列；宽度统计与 padding 必须与 displayWidth 一致。
+  const family = '👨‍👩‍👧‍👦';
+  const lines = renderUserMessageLines(`${family}${family}${family}`, 6).map((line) => stripAnsi(line));
+
+  for (const line of lines) {
+    assert.ok(displayWidth(line) <= 5, `line width ${displayWidth(line)} exceeds safe width`);
+    // 家族 emoji 自身含 ZWJ；行首/行尾不应出现悬挂的 ZWJ 或半个 emoji。
+    const plain = line.trim();
+    assert.ok(!plain.startsWith('\u200d') && !plain.endsWith('\u200d'), 'dangling ZWJ at line boundary');
+  }
+
+  // 组合字符序列（e + 组合音标）不撑大行宽，padding 后总宽等于 safe width。
+  const composed = 'e\u0301';
+  const padded = renderUserMessageLines(`${composed}a`, 10).map((line) => stripAnsi(line))[0];
+  assert.equal(displayWidth(padded), 9);
+});

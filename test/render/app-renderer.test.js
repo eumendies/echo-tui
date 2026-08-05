@@ -631,7 +631,7 @@ test('renderTranscriptLines expands tabs in bash rails and generic tool fallback
   assert.ok(lines.includes('  ▌ err one'));
   assert.ok(lines.includes('◆ Tab tool'));
   assert.ok(lines.some((line) => line.startsWith('  raw') && line.endsWith('argument')));
-  assert.ok(lines.includes('  ⎿ generic    result'));
+  assert.ok(lines.includes('  ⎿ generic     result'));
   assert.deepEqual(records, snapshot);
 });
 
@@ -800,9 +800,9 @@ test('renderTranscriptLines wraps bash tool result and hides execution summary',
   ).map((line) => stripAnsi(line));
 
   assert.deepEqual(lines, [
-    '  ⎿ abcd',
-    '    efgh',
-    '    ijkl',
+    '  ⎿ abcde',
+    '    fghij',
+    '    kl',
     ''
   ]);
   assert.ok(lines.every((line) => !line.includes('exit_code')));

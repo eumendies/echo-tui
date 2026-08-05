@@ -1,7 +1,7 @@
 import * as ansi from '../terminal/ansi';
 import {DEFAULT_TUI_THEME, type ThemeColor, type TuiTheme} from '../config/theme-config';
 import {blockBackground, blockText, colorText} from './colors';
-import { charWidth, displayWidth, safeRenderWidth, tabWidthAt } from './layout';
+import { charWidth, displayWidth, safeRenderWidth, splitGraphemes, tabWidthAt } from './layout';
 import { renderMarkdownLinesWithOptions } from './markdown';
 import { renderToolCallPreviewLines } from './tool-message-renderer';
 import type { BannerContext, PendingState, TerminalSize } from '../types/render';
@@ -178,7 +178,7 @@ function clampToDisplayWidth(text: string, width: number): string {
   let result = '';
   let currentWidth = 0;
 
-  for (const char of Array.from(text)) {
+  for (const char of splitGraphemes(text)) {
     const widthOfChar = charWidth(char);
 
     if (currentWidth + widthOfChar > normalizedWidth - 3) {
@@ -574,7 +574,7 @@ function wrapContentLine(text: string, width: number, prefixWidth: number): stri
   const lines = [''];
   let column = prefixWidth;
 
-  for (const char of Array.from(text)) {
+  for (const char of splitGraphemes(text)) {
     let widthOfChar = char === '\t' ? tabWidthAt(column) : charWidth(char);
 
     if (column + widthOfChar > width && column > prefixWidth) {

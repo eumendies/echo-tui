@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import * as composerOps from '../../input/composer';
 import {INPUT_EVENTS} from '../../input/event-types';
 import {formatFileMention} from '../../input/file-mentions';
+import {splitGraphemes} from '../../input/graphemes';
 import {capUtf8Text} from '../../tools/tool-handler-utils';
 
 import type {ComposerState} from '../../types/composer';
@@ -229,7 +230,7 @@ class FilePickerContext {
       notice: undefined,
       previewScroll: 0,
       query: this.state.query + value,
-      triggerEnd: this.state.triggerEnd + Array.from(value).length
+      triggerEnd: this.state.triggerEnd + splitGraphemes(value).length
     };
     this.options.onChange();
   }
