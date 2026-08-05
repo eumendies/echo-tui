@@ -6,7 +6,7 @@ import {redactSensitiveText} from '../../agent/agent-errors';
 import {REASONING_EFFORTS} from '../../types/agent';
 
 import type {LlmModelConfigInfo} from '../../config/llm-config';
-import type {AgentType, ReasoningEffort} from '../../types/agent';
+import type {AgentType, LlmConfig, ReasoningEffort} from '../../types/agent';
 import type {StatusLineModelState} from '../../types/render';
 import type {SessionModelSettingsStore} from '../../types/session-model-settings';
 
@@ -63,6 +63,8 @@ type ModelStatusInfo = {
 };
 
 type ModelStatusInfoResult = ModelStatusInfo | {error: string};
+
+type ActiveLlmConfigResult = LlmConfig | {error: string};
 
 type ModelContextOptions = {
   getCurrentCwd?: () => string; // 返回 sidecar 所属 cwd，与 transcript 分区保持一致。
@@ -266,6 +268,28 @@ class ModelContext {
   }
 
   /**
+   * 返回当前 session 实际选中模型的完整 LLM 配置（含凭据），供 /status 的远端用量与余额查询使用；
+   * 与 createStatusInfo 同源，跟随 /model 切换和恢复会话的模型选择，而不是用户级默认配置。
+   */
+  createActiveLlmConfig(): ActiveLlmConfigResult {
+    try {
+      this.refreshModelState();
+      const selected = this.getSelectedModel();
+
+      if (!selected || !this.selectedModelId) {
+        return {error: this.modelConfigError || 'LLM 配置缺少 models'};
+      }
+
+      return readLlmConfig({
+        modelProfileId: this.selectedModelId,
+        ...(this.reasoningEffortOverride !== undefined ? {reasoningEffortOverride: this.reasoningEffortOverride} : {})
+      });
+    } catch (error: unknown) {
+      return {error: sanitizeModelConfigError(error, '无法读取当前模型配置')};
+    }
+  }
+
+  /**
    * 读取 /effort 候选，优先使用当前 session override，否则使用 profile 默认或 medium。
    */
   createEffortCommandInfo(): EffortCommandInfoResult {
@@ -442,6 +466,7 @@ export {
 };
 
 export type {
+  ActiveLlmConfigResult,
   AgentModelSelection,
   AgentModelSelectionOverride,
   EffortCommandInfo,
