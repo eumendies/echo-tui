@@ -173,6 +173,42 @@ test('renderMarkdownLines keeps table separators aligned with emoji cells', () =
   }
 });
 
+test('renderMarkdownLines aligns tables with supplementary-plane and VS16 chars', () => {
+  const lines = renderMarkdownLines(
+    ['| Char | Width |', '| --- | --- |', '| 𠀀 | 2 |', '| ⚠ | 1 |', '| ⚠️ | 2 |', '| ♠ | 1 |', '| ♠️ | 2 |'].join('\n'),
+    80,
+    '◆ '
+  );
+  const plainLines = lines.map((line) => stripAnsi(line));
+  const firstColumnWidths = [plainLines[0], plainLines[2], plainLines[3], plainLines[4], plainLines[5], plainLines[6]]
+    .map((line) => displayWidth(line.slice(0, line.indexOf('│'))));
+
+  // 所有行的第一列边界必须落在同一列：CJK 扩展 B 与 VS16 emoji 按 2 列、文本呈现符号按 1 列。
+  assert.deepEqual(firstColumnWidths, [7, 7, 7, 7, 7, 7]);
+
+  for (const line of lines) {
+    assert.ok(displayWidth(line) <= safeRenderWidth(80));
+  }
+});
+
+test('renderMarkdownLines keeps zero-width chars from shifting table borders', () => {
+  const lines = renderMarkdownLines(
+    ['| Word | Note |', '| --- | --- |', '| c\u0301afe | combining |', '| a\u200bb | zwsp |'].join('\n'),
+    80,
+    '◆ '
+  );
+  const plainLines = lines.map((line) => stripAnsi(line));
+  const firstColumnWidths = [plainLines[0], plainLines[2], plainLines[3]]
+    .map((line) => displayWidth(line.slice(0, line.indexOf('│'))));
+
+  // 组合音标与 ZWSP 不占列：cafe 视觉宽度 4（c+组合音标=1），列宽 4，边界一致。
+  assert.deepEqual(firstColumnWidths, [7, 7, 7]);
+
+  for (const line of lines) {
+    assert.ok(displayWidth(line) <= safeRenderWidth(80));
+  }
+});
+
 test('renderMarkdownLines falls back safely when table is too narrow', () => {
   const width = 8;
   const lines = renderMarkdownLines(['| A | B | C |', '|---|---|---|', '| 1 | 2 | 3 |'].join('\n'), width, '◆ ');

@@ -1,3 +1,5 @@
+import {splitGraphemes} from './graphemes';
+
 type FileMention = {
   end: number;
   path: string;
@@ -22,7 +24,8 @@ function formatFileMention(filePath: string): string {
  * 从 composer 文本中解析文件 mention，返回普通字符串下标范围。
  */
 function parseFileMentions(text: string): FileMention[] {
-  const chars = Array.from(text);
+  // 使用与 composer 编辑模型一致的 grapheme 下标，避免 emoji/组合字符造成高亮错位。
+  const chars = splitGraphemes(text);
   const mentions: FileMention[] = [];
   let index = 0;
 

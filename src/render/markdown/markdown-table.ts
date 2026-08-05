@@ -240,7 +240,7 @@ function computeColumnWidths(table: MarkdownTable, availableContentWidth: number
  */
 function computeColumnWidthStats(rows: string[][], columnIndex: number): ColumnWidthStats {
   const cells = rows.map((row) => row[columnIndex] ?? '');
-  const natural = Math.max(...cells.map(displayWidth), MIN_COLUMN_WIDTH);
+  const natural = Math.max(...cells.map((cell) => displayWidth(cell)), MIN_COLUMN_WIDTH);
   const preferredMinimum = isLongTextColumn(cells) ? Math.min(natural, READABLE_TEXT_COLUMN_WIDTH) : natural;
 
   return {
