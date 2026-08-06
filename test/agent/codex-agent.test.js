@@ -140,6 +140,55 @@ test('createCodexAgent resolves OAuth credential for each provider turn', async 
   assert.deepEqual(requests[0].include, ['reasoning.encrypted_content']);
 });
 
+test('createCodexAgent completes accumulated reasoning only after the shared response boundary', async () => {
+  const callbackEvents = [];
+  const agent = createCodexAgent(TEST_CONFIG, createEmptyToolRegistry(), {
+    createClient() {
+      return {
+        responses: {
+          async create() {
+            return streamFrom([
+              {type: 'response.reasoning_summary_text.delta', item_id: 'rs_1', output_index: 0, summary_index: 0, delta: 'partial'},
+              {
+                type: 'response.output_item.done',
+                output_index: 0,
+                item: {
+                  id: 'rs_1',
+                  type: 'reasoning',
+                  status: 'completed',
+                  summary: [{type: 'summary_text', text: 'complete reasoning'}]
+                }
+              },
+              {type: 'response.output_text.delta', delta: 'answer'},
+              {type: 'response.completed'}
+            ]);
+          }
+        }
+      };
+    },
+    async resolveCodexOAuthCredential() {
+      return {accessToken: 'access-token'};
+    }
+  });
+
+  const result = await agent.runTurn([{role: 'user', text: 'hello'}], {
+    onReasoningUpdate(update) {
+      callbackEvents.push(['reasoning', update]);
+    },
+    onToken(_delta, draft) {
+      callbackEvents.push(['token', draft]);
+    }
+  });
+
+  assert.deepEqual(result, {draft: 'answer', toolCalls: [], usageInputTokens: undefined});
+  assert.deepEqual(callbackEvents, [
+    ['reasoning', {kind: 'draft', text: 'partial'}],
+    ['reasoning', {kind: 'draft', text: 'complete reasoning'}],
+    ['token', 'answer'],
+    ['reasoning', {kind: 'complete', text: 'complete reasoning'}]
+  ]);
+});
+
 test('createCodexAgent retries a transient stream error with one OAuth runtime client', async () => {
   let attempts = 0;
   let credentialReads = 0;

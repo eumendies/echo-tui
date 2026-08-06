@@ -497,6 +497,32 @@ test('runAssistantTurn emits error hook while preserving error transcript behavi
   assert.equal(harness.appContext.turnContext.responding, false);
 });
 
+test('runAssistantTurn commits completed reasoning without clearing an active assistant draft', async () => {
+  const harness = createHarness();
+
+  await runAssistantTurn({
+    ...harness.input,
+    async runAgent(_session, callbacks) {
+      callbacks.onReasoningUpdate({kind: 'draft', text: 'thinking'});
+      callbacks.onToken('d', 'draft');
+      assert.deepEqual(harness.appContext.turnContext.getPending(), {kind: 'streaming', text: 'draft'});
+
+      callbacks.onReasoningUpdate({kind: 'complete', text: 'thinking'});
+      assert.deepEqual(harness.appContext.turnContext.getPending(), {kind: 'streaming', text: 'draft'});
+      callbacks.onComplete('draft');
+      return 'draft';
+    }
+  });
+
+  assert.deepEqual(harness.appended.map((record) => record.role), [
+    'user',
+    'reasoning_summary',
+    'assistant'
+  ]);
+  assert.equal(harness.appended[1].text, 'thinking');
+  assert.equal(harness.appended[2].text, 'draft');
+});
+
 test('runAssistantTurn preserves completed reasoning and partial assistant text when the later stream fails', async () => {
   const harness = createHarness();
 

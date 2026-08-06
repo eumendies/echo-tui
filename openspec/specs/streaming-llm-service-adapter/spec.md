@@ -1438,10 +1438,8 @@ Codex OAuth provider SHALL 使用独立 Codex adapter 调用 Codex backend Respo
 - **THEN** provider adapter SHALL 继续按其既有 transcript 转换规则保留历史匹配 call/result
 - **THEN** 当前 request 的可调用工具 definition SHALL 只包含当前模式选中的文件编辑工具
 
-
-
 ### Requirement: 可读 reasoning draft/complete 事件
-真实 LLM adapter SHALL 在 provider stream 返回可读 reasoning、reasoning summary 或 thinking 增量时，通过 provider-neutral reasoning 更新回调提供当前 provider turn 的最新可见 reasoning draft。adapter 在协议能够确认可读 reasoning 已完成时 SHALL 通过同一回调提供且只提供一次 complete 事件及权威全文。该回调 SHALL 与 assistant 正文文本增量回调分离，SHALL NOT 将 reasoning 内容混入 assistant draft，且 SHALL NOT 暴露 encrypted、redacted、raw 或 provider-private reasoning 数据。`AgentTurnResult` SHALL NOT 重复返回同一可见 reasoning summary。
+真实 LLM adapter SHALL 在 provider stream 返回可读 reasoning、reasoning summary 或 thinking 增量时，通过 provider-neutral reasoning 更新回调提供当前 provider turn 的最新可见 reasoning draft。adapter 在各自协议能够确认当前 provider turn 的可读 reasoning 已完成时 SHALL 通过同一回调提供且只提供一次 complete 事件及权威全文；OpenAI Responses SHALL 仅将 `response.completed` 视为该 provider turn 的完成边界。该回调 SHALL 与 assistant 正文文本增量回调分离，SHALL NOT 将 reasoning 内容混入 assistant draft，且 SHALL NOT 暴露 encrypted、redacted、raw 或 provider-private reasoning 数据。`AgentTurnResult` SHALL NOT 重复返回同一可见 reasoning summary。
 
 #### Scenario: OpenAI Responses reasoning summary delta 实时回调
 - **WHEN** OpenAI Responses stream 产生 `response.reasoning_summary_text.delta` 事件
@@ -1454,11 +1452,26 @@ Codex OAuth provider SHALL 使用独立 Codex adapter 调用 Codex backend Respo
 - **THEN** adapter SHALL 使用事件中的完整 `text` 作为对应 summary part 的权威内容
 - **THEN** adapter SHALL 通过 reasoning 更新回调提供重新合并后的 reasoning draft
 
-#### Scenario: OpenAI Responses reasoning item 完成
+#### Scenario: OpenAI Responses reasoning item 完成时校正预览
 - **WHEN** OpenAI Responses stream 产生 `response.output_item.done`
 - **AND** 完成 item 的 `type` 为 `reasoning`
-- **THEN** adapter SHALL 使用 item 的完整可读 summary 触发 reasoning complete
+- **THEN** adapter SHALL 使用 item 的完整可读 summary 校正对应 output item 的 reasoning draft
+- **THEN** adapter SHALL 通过 reasoning 更新回调提供重新合并后的 draft
+- **THEN** adapter SHALL NOT 因单个 reasoning item 完成而触发 reasoning complete
 - **THEN** encrypted content SHALL 继续只作为 provider continuation record 保存
+
+#### Scenario: OpenAI Responses 完成后唯一提交累计摘要
+- **WHEN** OpenAI Responses stream 产生 `response.completed`
+- **AND** 当前 provider turn 已累计非空可读 reasoning summary
+- **THEN** adapter SHALL 按 output index 和 summary index 合并当前 provider turn 的完整 reasoning summary
+- **THEN** adapter SHALL 触发且只触发一次 reasoning complete
+- **THEN** 重复的 `response.output_item.done` SHALL NOT 导致重复 complete
+
+#### Scenario: OpenAI Responses 完成前失败不提交 reasoning
+- **WHEN** OpenAI Responses stream 已产生 reasoning draft
+- **AND** stream 在 `response.completed` 前失败、取消、不完整结束或异常终止
+- **THEN** adapter SHALL NOT 触发 reasoning complete
+- **THEN** 已提供的 reasoning draft SHALL 保持 transient，且 SHALL NOT 写入 transcript
 
 #### Scenario: OpenAI Chat compatible reasoning_content 实时回调
 - **WHEN** Chat compatible stream 返回 `choices[].delta.reasoning_content` 字符串增量

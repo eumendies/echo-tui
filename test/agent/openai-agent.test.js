@@ -1050,8 +1050,117 @@ test('OpenAI provider agent streams reasoning completion and returns private rea
     ['reasoning', {kind: 'draft', text: 'second'}],
     ['reasoning', {kind: 'draft', text: 'fir\n\nsecond'}],
     ['reasoning', {kind: 'draft', text: 'first\n\nsecond'}],
+    ['reasoning', {kind: 'draft', text: 'first\n\nsecond'}],
     ['reasoning', {kind: 'complete', text: 'first\n\nsecond'}]
   ]);
+});
+
+test('OpenAI provider agent commits accumulated reasoning once after response completion', async () => {
+  const callbackEvents = [];
+  const firstReasoningItem = {
+    id: 'rs_1',
+    type: 'reasoning',
+    status: 'completed',
+    summary: [{type: 'summary_text', text: 'first'}]
+  };
+  const secondReasoningItem = {
+    id: 'rs_2',
+    type: 'reasoning',
+    status: 'completed',
+    summary: [{type: 'summary_text', text: 'second'}]
+  };
+  const harness = createHarness([
+    {type: 'response.reasoning_summary_text.delta', item_id: 'rs_1', output_index: 0, summary_index: 0, delta: 'first'},
+    {type: 'response.output_item.done', output_index: 0, item: firstReasoningItem},
+    {type: 'response.output_text.delta', delta: 'still streaming'},
+    {type: 'response.reasoning_summary_text.delta', item_id: 'rs_2', output_index: 1, summary_index: 0, delta: 'second'},
+    {type: 'response.output_item.done', output_index: 1, item: secondReasoningItem},
+    {type: 'response.output_item.done', output_index: 1, item: secondReasoningItem},
+    {type: 'response.completed'}
+  ]);
+
+  await harness.runTurn([{role: 'user', text: 'hello'}], {
+    onReasoningUpdate(update) {
+      callbackEvents.push(['reasoning', update]);
+    },
+    onToken(_delta, draft) {
+      callbackEvents.push(['token', draft]);
+    }
+  });
+
+  const completedUpdates = callbackEvents.filter(([kind, update]) => kind === 'reasoning' && update.kind === 'complete');
+  const tokenIndex = callbackEvents.findIndex(([kind]) => kind === 'token');
+  const completeIndex = callbackEvents.findIndex(([kind, update]) => kind === 'reasoning' && update.kind === 'complete');
+
+  assert.deepEqual(completedUpdates, [['reasoning', {kind: 'complete', text: 'first\n\nsecond'}]]);
+  assert.ok(tokenIndex >= 0);
+  assert.ok(completeIndex > tokenIndex);
+  assert.equal(callbackEvents.at(-1)[1].kind, 'complete');
+});
+
+test('OpenAI provider agent does not complete reasoning before a successful response completion', async (context) => {
+  const cases = [
+    {
+      name: 'failed response',
+      events: [
+        {type: 'response.reasoning_summary_text.delta', item_id: 'rs_1', output_index: 0, summary_index: 0, delta: 'partial'},
+        {type: 'response.failed', response: {error: {code: 'invalid_request_error', message: 'failed'}}}
+      ],
+      pattern: /模型服务响应失败/
+    },
+    {
+      name: 'incomplete response',
+      events: [
+        {type: 'response.reasoning_summary_text.delta', item_id: 'rs_1', output_index: 0, summary_index: 0, delta: 'partial'},
+        {type: 'response.incomplete', response: {incomplete_details: {reason: 'max_output_tokens'}}}
+      ],
+      pattern: /服务端未完整结束响应/
+    },
+    {
+      name: 'stream without response.completed',
+      events: [
+        {type: 'response.reasoning_summary_text.delta', item_id: 'rs_1', output_index: 0, summary_index: 0, delta: 'partial'}
+      ],
+      pattern: /模型响应流未完成/
+    }
+  ];
+
+  for (const item of cases) {
+    await context.test(item.name, async () => {
+      const updates = [];
+      const harness = createHarness(item.events);
+
+      await assert.rejects(
+        () => harness.runTurn([{role: 'user', text: 'hello'}], {
+          onReasoningUpdate(update) {
+            updates.push(update);
+          }
+        }),
+        item.pattern
+      );
+      assert.deepEqual(updates, [{kind: 'draft', text: 'partial'}]);
+    });
+  }
+
+  await context.test('aborted response', async () => {
+    const controller = new AbortController();
+    const updates = [];
+    const harness = createHarness([
+      {type: 'response.reasoning_summary_text.delta', item_id: 'rs_1', output_index: 0, summary_index: 0, delta: 'partial'},
+      {type: 'response.completed'}
+    ]);
+
+    await assert.rejects(
+      () => harness.runTurn([{role: 'user', text: 'hello'}], {
+        onReasoningUpdate(update) {
+          updates.push(update);
+          controller.abort();
+        }
+      }, {abortSignal: controller.signal}),
+      (error) => error.name === 'AgentAbortError'
+    );
+    assert.deepEqual(updates, [{kind: 'draft', text: 'partial'}]);
+  });
 });
 
 test('OpenAI provider agent does not continue non-portable reasoning ids', async () => {
