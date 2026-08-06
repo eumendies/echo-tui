@@ -620,6 +620,28 @@ function readLlmConfig(options: ReadLlmConfigOptions = {}): LlmConfig {
   };
 }
 
+/**
+ * 严格解析指定模型 profile；profile 缺失时拒绝而不是回退全局 selectedModel。
+ */
+function readLlmConfigForProfile(modelProfileId: string, options: Omit<ReadLlmConfigOptions, 'modelProfileId' | 'reasoningEffortOverride'> = {}): LlmConfig {
+  const rootConfig = readParsedConfig(options);
+  assertPlainObject(rootConfig.llm, 'llm');
+  const providers = parseProviderProfiles(rootConfig.llm);
+  const models = parseModelProfiles(rootConfig.llm, providers);
+  const selectedProfile = models.find((profile) => profile.id === modelProfileId);
+
+  if (!selectedProfile) {
+    throw new LlmConfigError(`LLM 模型 profile 不存在：${modelProfileId}`);
+  }
+
+  return {
+    ...resolveSelectedProviderConfig(selectedProfile, providers),
+    model: selectedProfile.model,
+    contextWindow: selectedProfile.contextWindow,
+    tools: readToolRuntimeConfig(rootConfig)
+  };
+}
+
 export {
   COMPACTION_RECENT_KEEP_COUNT,
   COMPACTION_THRESHOLD_RATIO,
@@ -629,6 +651,7 @@ export {
   LlmConfigError,
   getDefaultConfigPath,
   readLlmConfig,
+  readLlmConfigForProfile,
   readLlmModelConfigInfo,
   readToolRuntimeConfig,
   resolveContextWindow

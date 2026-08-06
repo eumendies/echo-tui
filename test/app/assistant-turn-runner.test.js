@@ -116,7 +116,7 @@ function createHarness(options = {}) {
     '/tmp/echo_tui',
     'v20.0.0',
     undefined,
-    undefined,
+    options.appSettings,
     options.sessionModelSettingsStore || createFakeSessionModelSettingsStore()
   );
   const appended = [];
@@ -157,6 +157,128 @@ function createHarness(options = {}) {
     }
   };
 }
+
+test('runAssistantTurn keeps manual approval unchanged and does not call auto reviewer', async () => {
+  const harness = createHarness({appSettings: {
+    agentInstructionFileName: 'AGENTS.md', autoCompressImages: true, compactionThresholdRatio: 0.8,
+    defaultInteractionMode: 'normal', fileEditMode: 'apply_patch', skillCatalogContextRatio: 0.02,
+    showReasoningSummary: true, slashSuggestionMaxVisible: 8, toolApprovalMode: 'manual'
+  }});
+  let reviews = 0;
+
+  await runAssistantTurn({
+    ...harness.input,
+    toolApprovalReviewer: async () => { reviews += 1; return true; },
+    async runAgent(_session, callbacks) {
+      const pending = callbacks.onToolApprovalRequest({callId: 'patch-1', toolName: 'apply_patch', argumentsText: '*** patch'});
+      assert.equal(harness.input.toolApproval.hasActiveRequest(), true);
+      harness.input.toolApproval.handleEvent({type: 'submit'});
+      assert.deepEqual(await pending, {kind: 'allow_once'});
+      callbacks.onComplete('done');
+    }
+  });
+
+  assert.equal(reviews, 0);
+});
+
+test('runAssistantTurn auto approval allows once for file, bash, and MCP calls without opening modal', async () => {
+  for (const call of [
+    {callId: 'patch-1', toolName: 'apply_patch', argumentsText: '*** patch'},
+    {callId: 'bash-1', toolName: 'run_bash_command', argumentsText: '{"command":"rm -rf tmp"}'},
+    {callId: 'mcp-1', toolName: 'mcp__docs__write', argumentsText: '{"id":"1"}'}
+  ]) {
+    const harness = createHarness({appSettings: {
+      agentInstructionFileName: 'AGENTS.md', autoCompressImages: true, compactionThresholdRatio: 0.8,
+      defaultInteractionMode: 'normal', fileEditMode: 'apply_patch', skillCatalogContextRatio: 0.02,
+      showReasoningSummary: true, slashSuggestionMaxVisible: 8, toolApprovalMode: 'auto', toolApprovalModelProfileId: 'reviewer'
+    }});
+    let reviews = 0;
+    await runAssistantTurn({
+      ...harness.input,
+      toolApprovalReviewer: async (input) => { reviews += 1; assert.equal(input.call.toolName, call.toolName); return true; },
+      async runAgent(_session, callbacks) {
+        assert.deepEqual(await callbacks.onToolApprovalRequest(call), {kind: 'allow_once'});
+        assert.equal(harness.input.toolApproval.hasActiveRequest(), false);
+        callbacks.onComplete('done');
+      }
+    });
+    assert.equal(reviews, 1);
+  }
+});
+
+test('runAssistantTurn auto no falls back to the existing manual surface and session cache bypasses review', async () => {
+  const harness = createHarness({appSettings: {
+    agentInstructionFileName: 'AGENTS.md', autoCompressImages: true, compactionThresholdRatio: 0.8,
+    defaultInteractionMode: 'normal', fileEditMode: 'apply_patch', skillCatalogContextRatio: 0.02,
+    showReasoningSummary: true, slashSuggestionMaxVisible: 8, toolApprovalMode: 'auto', toolApprovalModelProfileId: 'reviewer'
+  }});
+  let reviews = 0;
+
+  await runAssistantTurn({
+    ...harness.input,
+    toolApprovalReviewer: async () => { reviews += 1; return false; },
+    async runAgent(_session, callbacks) {
+      const firstPending = callbacks.onToolApprovalRequest({callId: 'mcp-1', toolName: 'mcp__docs__write', argumentsText: '{}'}, {preview: 'server docs'});
+      await new Promise((resolve) => setImmediate(resolve));
+      const surface = harness.input.toolApproval.getSurface();
+      assert.equal(surface.title, 'PERMISSION');
+      assert.equal(surface.message, 'server docs');
+      harness.input.toolApproval.handleEvent({type: 'move_down'});
+      harness.input.toolApproval.handleEvent({type: 'submit'});
+      assert.deepEqual(await firstPending, {kind: 'allow_tool_for_session', toolName: 'mcp__docs__write'});
+
+      assert.deepEqual(await callbacks.onToolApprovalRequest({callId: 'mcp-2', toolName: 'mcp__docs__write', argumentsText: '{}'}), {
+        kind: 'allow_tool_for_session', toolName: 'mcp__docs__write'
+      });
+      callbacks.onComplete('done');
+    }
+  });
+
+  assert.equal(reviews, 1);
+});
+
+test('runAssistantTurn propagates reviewer abort without opening a late manual surface', async () => {
+  const harness = createHarness({appSettings: {
+    agentInstructionFileName: 'AGENTS.md', autoCompressImages: true, compactionThresholdRatio: 0.8,
+    defaultInteractionMode: 'normal', fileEditMode: 'apply_patch', skillCatalogContextRatio: 0.02,
+    showReasoningSummary: true, slashSuggestionMaxVisible: 8, toolApprovalMode: 'auto', toolApprovalModelProfileId: 'reviewer'
+  }});
+
+  await runAssistantTurn({
+    ...harness.input,
+    toolApprovalReviewer: async () => { throw new AgentAbortError(); },
+    async runAgent(_session, callbacks) {
+      await callbacks.onToolApprovalRequest({callId: 'patch-1', toolName: 'apply_patch', argumentsText: 'patch'});
+    }
+  });
+
+  assert.equal(harness.input.toolApproval.hasActiveRequest(), false);
+  assert.equal(harness.appended.some((record) => record.role === 'local_notice' && /中断/.test(record.text)), true);
+});
+
+test('runAssistantTurn ignores a late auto no after the turn is interrupted', async () => {
+  const harness = createHarness({appSettings: {
+    agentInstructionFileName: 'AGENTS.md', autoCompressImages: true, compactionThresholdRatio: 0.8,
+    defaultInteractionMode: 'normal', fileEditMode: 'apply_patch', skillCatalogContextRatio: 0.02,
+    showReasoningSummary: true, slashSuggestionMaxVisible: 8, toolApprovalMode: 'auto', toolApprovalModelProfileId: 'reviewer'
+  }});
+  let resolveReview;
+  const reviewer = () => new Promise((resolve) => { resolveReview = resolve; });
+  const running = runAssistantTurn({
+    ...harness.input,
+    toolApprovalReviewer: reviewer,
+    async runAgent(_session, callbacks) {
+      const decision = await callbacks.onToolApprovalRequest({callId: 'patch-1', toolName: 'apply_patch', argumentsText: 'patch'});
+      assert.equal(decision.kind, 'deny');
+    }
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(harness.appContext.interruptActiveAssistantTurn().interrupted, true);
+  resolveReview(false);
+  await running;
+  assert.equal(harness.input.toolApproval.hasActiveRequest(), false);
+});
 
 test('runAssistantTurn continues with its in-memory selection when initial session settings persistence fails', async () => {
   const harness = createHarness({

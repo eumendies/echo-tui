@@ -7,6 +7,7 @@ const {
   DEFAULT_CONTEXT_WINDOW,
   LlmConfigError,
   readLlmConfig,
+  readLlmConfigForProfile,
   readLlmModelConfigInfo,
   resolveContextWindow
 } = require('../../src/config/llm-config');
@@ -283,6 +284,28 @@ test('readLlmConfig falls back to the configured current profile for a stale per
   });
 
   assert.equal(config.model, 'gpt-deep');
+});
+
+test('readLlmConfigForProfile strictly resolves the requested profile without reasoning settings', () => {
+  const source = JSON.stringify({
+    llm: {
+      selectedModel: 'deep',
+      providers: {shared: {preset: OPENAI_PRESET, apiKey: 'shared-key'}},
+      models: [
+        {id: 'fast', provider: 'shared', model: 'gpt-fast', reasoning: {effort: 'low', summary: 'detailed'}},
+        {id: 'deep', provider: 'shared', model: 'gpt-deep', reasoning: {effort: 'high'}}
+      ]
+    }
+  });
+  const config = readLlmConfigForProfile('fast', {configPath: '/tmp/echo-config.json', readFile: readConfigFrom(source)});
+
+  assert.equal(config.model, 'gpt-fast');
+  assert.equal(config.reasoningEffort, undefined);
+  assert.equal(config.reasoningSummary, undefined);
+  assert.throws(
+    () => readLlmConfigForProfile('deleted', {configPath: '/tmp/echo-config.json', readFile: readConfigFrom(source)}),
+    /profile 不存在：deleted/
+  );
 });
 
 test('readLlmConfig applies effort override after resolving the per-run model profile', () => {

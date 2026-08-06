@@ -227,6 +227,27 @@ Configure model profiles under \`llm.models\` and choose one with \`llm.selected
 - \`contextWindow\` is optional and controls context usage calculations.
 - \`selectedModel\` must reference an existing model profile id.
 
+## Tool approval
+
+Interactive tool approval is configured independently from interaction mode under \`tools.approval\`:
+
+\`\`\`json
+{
+  "tools": {
+    "approval": {
+      "mode": "auto",
+      "modelProfileId": "default"
+    }
+  }
+}
+\`\`\`
+
+- \`mode\` is \`manual\` or \`auto\`; missing or invalid values default to \`manual\`.
+- \`modelProfileId\` must exactly reference an existing \`llm.models[].id\` when saving auto mode.
+- Auto review uses a separate request with no tools or reasoning configuration. Only an exact \`yes\` response (ignoring surrounding whitespace and case) allows that call once.
+- \`no\`, invalid output, missing configuration, and provider failures fall back to the existing manual approval choices. Session grants still bypass review.
+- This setting does not change normal/plan/shell modes and does not affect headless \`--once\` deny/full-access policy.
+
 Use \`/config\` inside echo-tui to edit providers and models interactively.
 `;
 

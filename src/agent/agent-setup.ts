@@ -25,7 +25,7 @@ type PreparedAgent = {
   registry: ToolRegistry;
 };
 
-function createConfiguredAgent(config: LlmConfig, registry: ToolRegistry): ProviderAgent {
+function createConfiguredAgent(config: LlmConfig, registry?: ToolRegistry): ProviderAgent {
   switch (config.agentType) {
     case 'fake':
       return createFakeAgent();
@@ -60,6 +60,6 @@ function prepareAgent(options: PrepareAgentOptions = {}): PreparedAgent {
   return {agent, config, registry};
 }
 
-export {prepareAgent};
+export {createConfiguredAgent, prepareAgent};
 
 export type {PrepareAgentOptions, PreparedAgent};

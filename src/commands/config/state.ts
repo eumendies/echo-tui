@@ -12,7 +12,8 @@ import type {
   ConfigSurfaceTab,
   ConfigTabId,
   GeneralConfigState,
-  LlmConfigDraft
+  LlmConfigDraft,
+  ToolApprovalModelProfile
 } from '../../types/command';
 import type {AppSettings} from '../../config/app-settings-config';
 import type {ReasoningEffort} from '../../types/agent';
@@ -33,7 +34,7 @@ type ConfigCommandData = {
   models?: ConfigStateSlot<ConfigCommandState>;
 };
 
-const GENERAL_CONFIG_ROW_IDS = [
+const GENERAL_CONFIG_BASE_ROW_IDS = [
   'compactionThreshold',
   'skillCatalogRatio',
   'slashSuggestionLimit',
@@ -41,9 +42,23 @@ const GENERAL_CONFIG_ROW_IDS = [
   'defaultInteractionMode',
   'autoCompressImages',
   'fileEditMode',
+  'toolApprovalMode',
   'instructionFile',
   'save'
 ] as const;
+
+type GeneralConfigRowId = typeof GENERAL_CONFIG_BASE_ROW_IDS[number] | 'toolApprovalModel';
+
+/**
+ * 根据常规草稿投影当前真实行集合；handler 和 renderer 必须共享该结果以避免动态焦点错位。
+ */
+function getGeneralConfigRowIds(state: Pick<GeneralConfigState, 'draft'>): GeneralConfigRowId[] {
+  const rows = [...GENERAL_CONFIG_BASE_ROW_IDS] as GeneralConfigRowId[];
+  if (state.draft.toolApprovalMode === 'auto') {
+    rows.splice(rows.indexOf('toolApprovalMode') + 1, 0, 'toolApprovalModel');
+  }
+  return rows;
+}
 
 const CONFIG_TABS: ReadonlyArray<{id: ConfigTabId; label: string}> = [
   {id: 'general', label: '常规'},
@@ -146,9 +161,10 @@ function createInitialConfigState(initialDraft: LlmConfigDraft): ConfigCommandSt
   };
 }
 
-function createInitialGeneralConfigState(settings: AppSettings): GeneralConfigState {
+function createInitialGeneralConfigState(settings: AppSettings, approvalModelProfiles: ToolApprovalModelProfile[] = []): GeneralConfigState {
   const draft = structuredClone(settings) as AppSettings;
   return {
+    approvalModelProfiles: approvalModelProfiles.map((profile) => ({...profile})),
     draft,
     initialDraftFingerprint: createGeneralDraftFingerprint(draft),
     selectedIndex: 0
@@ -258,7 +274,7 @@ function getActiveSlot(data: ConfigCommandData): ConfigStateSlot<unknown> | unde
 
 export {
   CONFIG_MODEL_EFFORT_OPTIONS,
-  GENERAL_CONFIG_ROW_IDS,
+  getGeneralConfigRowIds,
   CONFIG_TABS,
   cloneConfigState,
   configProviderSupportsReasoningEffort,

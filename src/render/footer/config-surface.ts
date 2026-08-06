@@ -4,7 +4,7 @@ import {activeBackground, renderFocusBar, resolveFooterTheme, tokenText, type Fo
 import {clampPlainText, padVisibleText} from './text';
 import {constrainLayoutTail, createSelectedWindowRows} from './window';
 import {getProviderPreset, listProviderPresets, providerRequiresApiKey} from '../../config/provider-presets';
-import {GENERAL_CONFIG_ROW_IDS, configProviderSupportsReasoningEffort, getConfigModelReasoningEffort} from '../../commands/config/state';
+import {getGeneralConfigRowIds, configProviderSupportsReasoningEffort, getConfigModelReasoningEffort} from '../../commands/config/state';
 import type {AppearanceConfigState, ConfigCommandState, ConfigCommandSurface, ConfigFormRow, ConfigSurfaceTab, ConfigTabId, GeneralConfigState} from '../../types/command';
 import type {FooterLayout} from '../../types/render';
 
@@ -69,7 +69,7 @@ function renderConfigSurface(commandSurface: ConfigCommandSurface, width: number
  */
 function renderGeneralView(state: GeneralConfigState, tabs: ConfigSurfaceTab[], activeTab: ConfigTabId, columns: number, maxLines: number | undefined, theme: FooterTheme): string[] {
   const width = calculateBoxWidth(columns);
-  const rows = GENERAL_CONFIG_ROW_IDS.map((rowId) => {
+  const rows = getGeneralConfigRowIds(state).map((rowId) => {
     if (rowId === 'compactionThreshold') return {label: '自动压缩阈值', value: `${Math.round(state.draft.compactionThresholdRatio * 100)}%`};
     if (rowId === 'skillCatalogRatio') return {label: '技能列表上下文占比上限', value: `${Math.round(state.draft.skillCatalogContextRatio * 100)}%`};
     if (rowId === 'slashSuggestionLimit') return {label: 'Slash 建议最多显示', value: `${state.draft.slashSuggestionMaxVisible} 条`};
@@ -77,6 +77,11 @@ function renderGeneralView(state: GeneralConfigState, tabs: ConfigSurfaceTab[], 
     if (rowId === 'defaultInteractionMode') return {label: '默认启动模式', value: state.draft.defaultInteractionMode};
     if (rowId === 'autoCompressImages') return {label: '超限图片自动压缩', value: state.draft.autoCompressImages ? '开' : '关'};
     if (rowId === 'fileEditMode') return {label: '文件编辑工具', value: state.draft.fileEditMode};
+    if (rowId === 'toolApprovalMode') return {label: '工具审批模式', value: state.draft.toolApprovalMode};
+    if (rowId === 'toolApprovalModel') {
+      const profile = state.approvalModelProfiles.find((candidate) => candidate.id === state.draft.toolApprovalModelProfileId);
+      return {label: '自动审批模型', value: profile ? `${profile.model} (${profile.provider})` : '未配置（无法保存 auto）'};
+    }
     if (rowId === 'instructionFile') return {label: '项目指令文件', value: state.draft.agentInstructionFileName};
     return {label: '保存常规设置', value: '写入 ~/.echo/config.json', action: true};
   });
@@ -598,13 +603,23 @@ function kvRow(width: number, key: string, rawValue: string, active: boolean, th
   return splitRow(width, key, rawValue || '未设置', active, theme);
 }
 
+/**
+ * 渲染左右两列设置行；优先保留完整标签和列间隔，长值使用剩余宽度安全截断。
+ */
 function splitRow(width: number, leftText: string, rightText: string, active: boolean, theme: FooterTheme): string {
   const inner = contentWidth(width);
   const bodyWidth = activeBodyWidth(inner, active);
-  const left = `${active ? ' ' : '  '}${tokenText(theme, active ? 'accentStrong' : 'accent', active ? ansi.bold(leftText) : leftText)}`;
-  const right = tokenText(theme, active ? 'accentStrong' : 'accent', rightText);
-  const rightWidth = Math.min(displayWidth(right), Math.max(0, Math.floor(bodyWidth * 0.48)));
-  const body = `${padVisibleText(clampInnerText(left, bodyWidth - rightWidth), bodyWidth - rightWidth)}${padVisibleText(clampInnerText(right, rightWidth), rightWidth)}`;
+  const prefix = active ? ' ' : '  ';
+  const leftNaturalWidth = Math.min(displayWidth(prefix) + displayWidth(leftText), bodyWidth);
+  // 标签和值始终留出可辨识的列间隔，避免长模型名称占满时与标签粘连。
+  const columnGap = Math.min(2, Math.max(0, bodyWidth - leftNaturalWidth));
+  const rightWidth = Math.min(displayWidth(rightText), Math.max(0, bodyWidth - leftNaturalWidth - columnGap));
+  const leftWidth = Math.max(0, bodyWidth - rightWidth);
+  // 必须先截断纯文本再着色；否则 ANSI 转义字节会被逐字符截断逻辑误算，造成右列提前结束。
+  const visibleLeftText = clampInnerText(leftText, Math.max(0, leftWidth - displayWidth(prefix)));
+  const left = `${prefix}${tokenText(theme, active ? 'accentStrong' : 'accent', active ? ansi.bold(visibleLeftText) : visibleLeftText)}`;
+  const right = tokenText(theme, active ? 'accentStrong' : 'accent', clampInnerText(rightText, rightWidth));
+  const body = `${padVisibleText(left, leftWidth)}${padVisibleText(right, rightWidth)}`;
   return line(width, renderSelectableBody(inner, body, active, theme), theme);
 }
 

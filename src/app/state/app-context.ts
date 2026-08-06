@@ -17,6 +17,7 @@ import {isShellInteractionMode} from '../../types/agent';
 
 import type {TerminalController} from '../../types/app';
 import type {AgentSessionInput, ContextUsage, InteractionMode, ReasoningEffort} from '../../types/agent';
+import type {ToolApprovalSettings} from '../../config/app-settings-config';
 import type {DiffSourceResult} from '../../types/diff';
 import type {CommandSurface, SlashCommandDescriptor} from '../../types/command';
 import type {InputEvent} from '../../types/input';
@@ -36,6 +37,7 @@ type AppSettingsRefreshResult = {
   reasoningVisibilityChanged: boolean;
   skillCatalogContextRatioChanged: boolean;
   slashSuggestionLimitChanged: boolean;
+  toolApprovalChanged: boolean; // 审批模式或 reviewer profile 是否变化，不代表需要 transcript 重绘。
 };
 
 const PLAN_MODE_INSTRUCTIONS = 'Plan mode is active. Discuss and inspect only; do not modify files, run mutating commands, run tests or builds, install dependencies, change branch or repository state, or use MCP tools. Ask the user to switch to /mode normal before implementing.';
@@ -165,6 +167,16 @@ class AppContext {
    */
   getAutoCompressImages(): boolean {
     return this.appSettings.autoCompressImages;
+  }
+
+  /**
+   * 返回工具审批设置副本，供 assistant turn 在启动时固定策略与模型引用。
+   */
+  getToolApprovalSettings(): ToolApprovalSettings {
+    return {
+      mode: this.appSettings.toolApprovalMode,
+      ...(this.appSettings.toolApprovalModelProfileId ? {modelProfileId: this.appSettings.toolApprovalModelProfileId} : {})
+    };
   }
 
   /**
@@ -365,12 +377,14 @@ class AppContext {
     const reasoningVisibilityChanged = next.showReasoningSummary !== this.appSettings.showReasoningSummary;
     const skillCatalogContextRatioChanged = next.skillCatalogContextRatio !== this.appSettings.skillCatalogContextRatio;
     const slashSuggestionLimitChanged = next.slashSuggestionMaxVisible !== this.appSettings.slashSuggestionMaxVisible;
+    const toolApprovalChanged = next.toolApprovalMode !== this.appSettings.toolApprovalMode
+      || next.toolApprovalModelProfileId !== this.appSettings.toolApprovalModelProfileId;
 
     this.appSettings = structuredClone(next) as AppSettings;
     if (agentInstructionFileChanged || fileEditModeChanged || skillCatalogContextRatioChanged) {
       this.clearContextUsage();
     }
-    return {agentInstructionFileChanged, fileEditModeChanged, reasoningVisibilityChanged, skillCatalogContextRatioChanged, slashSuggestionLimitChanged};
+    return {agentInstructionFileChanged, fileEditModeChanged, reasoningVisibilityChanged, skillCatalogContextRatioChanged, slashSuggestionLimitChanged, toolApprovalChanged};
   }
 
   /**

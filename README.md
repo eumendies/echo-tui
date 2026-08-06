@@ -111,6 +111,24 @@ Echo TUI 默认读取 `AGENTS.md`，也可以在 `/config` 中改为 `CLAUDE.md`
 
 Echo TUI 可以读取和搜索文件、访问公开网页、执行 shell 命令、修改文件，并调用已配置的 MCP 工具。涉及文件修改、高风险命令或需要确认的 MCP 工具时，交互模式会先请求授权；`plan` 模式始终拒绝写操作。
 
+工具审批策略独立于 interaction mode，配置在 `~/.echo/config.json` 的 `tools.approval`：
+
+```json
+{
+  "tools": {
+    "approval": {
+      "mode": "auto",
+      "modelProfileId": "fast-reviewer"
+    }
+  }
+}
+```
+
+- `manual` 是默认值，保持现有人工审批。
+- `auto` 使用指定的现有 `llm.models[].id` 发起无工具、无 reasoning 的独立判断；只有去除首尾空白并忽略大小写后精确为 `yes` 才允许当前一次。
+- `no`、其他输出、配置错误或 Provider 错误都会回退现有人工审批。人工授予的当前会话权限优先，不会重复调用审批模型。
+- `--once` 仍按默认 deny 或显式 `--full-access` 执行，不调用自动审批模型。
+
 这些工具不在沙箱中运行。授权前请检查操作内容，并确保你信任当前工作目录、模型服务和 MCP Server。
 
 ## 会话与本地数据

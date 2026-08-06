@@ -1,5 +1,6 @@
 import {isAbortError} from '../types/agent';
 import {summarizeText} from '../debug/debug-context';
+import {createToolApprovalResolver} from './tool-approval-resolver';
 
 import type {AgentCallbacks, ReasoningEffort, RunAgent} from '../types/agent';
 import type {DebugContext} from '../debug/debug-context';
@@ -8,6 +9,7 @@ import type {ToolResultAttachment} from '../types/tool';
 import type {TranscriptRecord, UserTranscriptMetadata} from '../types/transcript';
 import type {AppContext} from './state/app-context';
 import type {ToolApprovalContext} from './state/tool-approval-context';
+import type {ToolApprovalReviewer} from './tool-approval-resolver';
 import type {UserQuestionContext} from './state/user-question-context';
 
 type AssistantTurnRunnerInput = {
@@ -26,6 +28,7 @@ type AssistantTurnRunnerInput = {
   appendRecords: (records: TranscriptRecord[]) => void;
   hooks: LifecycleHookDispatcher;
   renderFooter: () => void;
+  toolApprovalReviewer?: ToolApprovalReviewer; // 仅交互式 auto 审批使用的独立模型判断器。
 };
 
 /**
@@ -53,6 +56,7 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
 
   appContext.beginChangeCheckpoint();
   const interactionMode = appContext.getInteractionMode();
+  const toolApprovalSettings = appContext.getToolApprovalSettings();
   const userRecord = appContext.beginUserTurn(userText, {
     displayText,
     metadata: {...metadata, interactionMode},
@@ -61,6 +65,15 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
   // thinking 和 streaming 都只进入 pending preview，完成或 partial 失败后才正式追加 assistant block。
   const turn = appContext.beginAssistantTurn(modelProfileIdOverride, reasoningEffortOverride);
   const isCurrentTurn = () => appContext.turnContext.isCurrentAssistantTurn(turn);
+  const toolApprovalResolver = createToolApprovalResolver({
+    abortSignal: turn.abortSignal,
+    getRecords: () => appContext.transcriptContext.getRecords(),
+    interactionMode,
+    isCurrentTurn,
+    reviewer: input.toolApprovalReviewer,
+    settings: toolApprovalSettings,
+    toolApproval
+  });
   appContext.turnContext.startSpinner('thinking');
   appendRecord(userRecord);
   const activeStatusLineModel = appContext.turnContext.getActiveStatusLineModelState();
@@ -193,11 +206,7 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
         renderFooter();
       },
       onToolApprovalRequest(call, request) {
-        if (!isCurrentTurn()) {
-          return {kind: 'deny', message: 'Tool execution was interrupted.'};
-        }
-
-        return toolApproval.request(call, request);
+        return toolApprovalResolver.request(call, request);
       },
       onUserQuestionRequest(call, request) {
         if (!isCurrentTurn()) {
@@ -249,6 +258,7 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
         });
       }
     } as AgentCallbacks);
+
   } catch (error: unknown) {
     if (!isCurrentTurn()) {
       return;

@@ -69,6 +69,7 @@ function createCodexRequest(records: TranscriptRecord[], config: LlmConfig, regi
   const toolDefinitions = !options.isCompaction && registry && !registry.isEmpty() ? registry.listDefinitions() : [];
   const input = convertTranscriptToOpenAiInput(records).filter((item) => !('role' in item) || item.role !== 'system');
   const instructions = records.find((record) => record.role === 'system')?.text.trim();
+  const reasoningEnabled = !options.isCompaction && config.reasoningEffort !== 'none';
   const request: CodexCreateRequest = {
     input,
     model: config.model,
@@ -77,10 +78,10 @@ function createCodexRequest(records: TranscriptRecord[], config: LlmConfig, regi
     store: false,
     instructions: instructions || 'You are a helpful assistant.',
     text: {verbosity: 'low'},
-    ...(options.isCompaction ? {} : {include: ['reasoning.encrypted_content']})
+    ...(reasoningEnabled ? {include: ['reasoning.encrypted_content']} : {})
   };
 
-  if (!options.isCompaction && config.reasoningEffort) {
+  if (reasoningEnabled && config.reasoningEffort) {
     request.reasoning = {effort: config.reasoningEffort};
   }
 
@@ -99,10 +100,10 @@ function createCodexRequest(records: TranscriptRecord[], config: LlmConfig, regi
 class CodexAgent implements ProviderAgent {
   private readonly config: LlmConfig;
   private readonly makeClient: (config: LlmConfig) => unknown;
-  private readonly registry: ToolRegistry;
+  private readonly registry?: ToolRegistry;
   private readonly resolveCredential: (config: CodexOAuthRuntimeConfig) => Promise<CodexOAuthCredential>;
 
-  constructor(config: LlmConfig, registry: ToolRegistry, dependencies: CodexAgentDependencies = {}) {
+  constructor(config: LlmConfig, registry: ToolRegistry | undefined, dependencies: CodexAgentDependencies = {}) {
     const OpenAIClient = dependencies.OpenAIClient || OpenAI;
     this.config = config;
     this.makeClient = dependencies.createClient || ((config: LlmConfig) => createClient(config, OpenAIClient));
@@ -155,7 +156,7 @@ class CodexAgent implements ProviderAgent {
   }
 }
 
-function createCodexAgent(config: LlmConfig, registry: ToolRegistry, dependencies: CodexAgentDependencies = {}): ProviderAgent {
+function createCodexAgent(config: LlmConfig, registry?: ToolRegistry, dependencies: CodexAgentDependencies = {}): ProviderAgent {
   return new CodexAgent(config, registry, dependencies);
 }
 

@@ -23,6 +23,7 @@ import {FilePickerContext} from './state/file-picker-context';
 import {ToolApprovalContext} from './state/tool-approval-context';
 import {UserQuestionContext} from './state/user-question-context';
 import {BtwConversationController} from './btw-conversation-controller';
+import {createToolApprovalReviewer} from './tool-approval-resolver';
 
 import type {RunAgent} from '../types/agent';
 import type {AppController} from '../types/app';
@@ -220,6 +221,11 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     usageStore
   });
   const toolApproval = new ToolApprovalContext(() => renderFooter());
+  const toolApprovalReviewer = createToolApprovalReviewer({
+    cwd: () => appContext.getCurrentCwd(),
+    debug,
+    usageStore
+  });
   const userQuestion = new UserQuestionContext(() => renderFooter());
   const filePicker = new FilePickerContext(appContext.composerContext.composer, {
     cwd: () => appContext.getCurrentCwd(),
@@ -251,6 +257,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
         appContext,
         runAgent,
         toolApproval,
+        toolApprovalReviewer,
         userQuestion,
         ...submission,
         debug,

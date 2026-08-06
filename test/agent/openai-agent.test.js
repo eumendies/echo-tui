@@ -294,6 +294,11 @@ test('createRequest sends reasoning effort only when configured', () => {
   );
 
   assert.equal('reasoning' in createRequest([{ role: 'user', text: 'hello' }], TEST_CONFIG), false);
+  assert.equal('reasoning' in createRequest([{ role: 'user', text: 'hello' }], {
+    ...TEST_CONFIG,
+    reasoningEffort: 'none',
+    reasoningSummary: 'detailed'
+  }), false);
 });
 
 test('createRequest sends reasoning summary with optional effort', () => {

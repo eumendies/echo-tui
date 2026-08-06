@@ -292,9 +292,9 @@ async function readChatCompletionStream(
 class OpenAiChatAgent implements ProviderAgent {
   private readonly client: ChatClient;
   private readonly config: LlmConfig;
-  private readonly registry: ToolRegistry;
+  private readonly registry?: ToolRegistry;
 
-  constructor(config: LlmConfig, registry: ToolRegistry, dependencies: OpenAiChatAgentDependencies = {}) {
+  constructor(config: LlmConfig, registry: ToolRegistry | undefined, dependencies: OpenAiChatAgentDependencies = {}) {
     const OpenAIClient = dependencies.OpenAIClient || OpenAI;
     const makeClient = dependencies.createClient || ((clientConfig: LlmConfig) => createClient(clientConfig, OpenAIClient));
     const client = makeClient(config);
@@ -325,7 +325,7 @@ class OpenAiChatAgent implements ProviderAgent {
   }
 }
 
-function createOpenAiChatAgent(config: LlmConfig, registry: ToolRegistry, dependencies: OpenAiChatAgentDependencies = {}): ProviderAgent {
+function createOpenAiChatAgent(config: LlmConfig, registry?: ToolRegistry, dependencies: OpenAiChatAgentDependencies = {}): ProviderAgent {
   return new OpenAiChatAgent(config, registry, dependencies);
 }
 

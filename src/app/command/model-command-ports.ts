@@ -47,6 +47,17 @@ function createModelCommandPorts(options: ModelCommandPortOptions): Pick<Command
       }
     },
     config: {
+      listApprovalModelProfiles() {
+        try {
+          return readLlmConfigDraft().providers.flatMap((provider) => provider.models.map((model) => ({
+            id: model.id,
+            model: model.model,
+            provider: provider.id
+          })));
+        } catch {
+          return [];
+        }
+      },
       readSettings() {
         return readAppSettingsDraft();
       },

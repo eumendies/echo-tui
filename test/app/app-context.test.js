@@ -756,7 +756,9 @@ test('AppContext snapshots app settings into render state and agent sessions', (
       fileEditMode: 'apply_patch',
       skillCatalogContextRatio: 0.04,
       showReasoningSummary: false,
-      slashSuggestionMaxVisible: 3
+      slashSuggestionMaxVisible: 3,
+      toolApprovalMode: 'auto',
+      toolApprovalModelProfileId: 'reviewer'
     }
   });
 
@@ -768,6 +770,7 @@ test('AppContext snapshots app settings into render state and agent sessions', (
   assert.equal(context.getAgentSession().skillCatalogContextRatio, 0.04);
   assert.equal(context.getInteractionMode(), 'plan');
   assert.equal(context.getAutoCompressImages(), false);
+  assert.deepEqual(context.getToolApprovalSettings(), {mode: 'auto', modelProfileId: 'reviewer'});
 });
 
 test('AppContext refreshes external app settings and classifies redraw impact', () => {
@@ -793,7 +796,8 @@ test('AppContext refreshes external app settings and classifies redraw impact', 
       fileEditModeChanged: false,
       reasoningVisibilityChanged: true,
       skillCatalogContextRatioChanged: true,
-      slashSuggestionLimitChanged: true
+      slashSuggestionLimitChanged: true,
+      toolApprovalChanged: false
     });
     assert.equal(context.getAgentSession().compactionThresholdRatio, 0.65);
     assert.equal(context.getAgentSession().skillCatalogContextRatio, 0.07);
@@ -829,7 +833,8 @@ test('AppContext refreshes image compression without clearing context usage or r
       fileEditModeChanged: false,
       reasoningVisibilityChanged: false,
       skillCatalogContextRatioChanged: false,
-      slashSuggestionLimitChanged: false
+      slashSuggestionLimitChanged: false,
+      toolApprovalChanged: false
     });
     assert.equal(context.getAutoCompressImages(), false);
     assert.equal(context.getContextUsage().usedTokens, usage.usedTokens);

@@ -1190,6 +1190,88 @@ test('createAgentLoopRuntime full-access executes registered patch tools without
   }
 });
 
+test('createAgentLoopRuntime executes high-risk bash once after approval callback', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-auto-bash-'));
+  let turnCount = 0;
+  let approvals = 0;
+  const results = [];
+  const agent = {
+    async runTurn() {
+      turnCount += 1;
+      return turnCount === 1
+        ? {draft: '', toolCalls: [{callId: 'bash-write', toolName: 'run_bash_command', argumentsText: JSON.stringify({command: 'touch approved.txt'})}]}
+        : {draft: 'done', toolCalls: []};
+    }
+  };
+
+  try {
+    await withPatchedAgentRuntime(agent, () => createAgentLoopRuntime(cwd)(
+      {records: [{role: 'user', text: 'create it'}]},
+      {
+        onToolApprovalRequest(_call, request) {
+          approvals += 1;
+          assert.equal(request.preview, 'touch approved.txt');
+          return {kind: 'allow_once'};
+        },
+        onToolResult(result) { results.push(result); }
+      }
+    ));
+
+    assert.equal(approvals, 1);
+    assert.equal(results[0].ok, true);
+    assert.equal(fs.existsSync(path.join(cwd, 'approved.txt')), true);
+  } finally {
+    fs.rmSync(cwd, {recursive: true, force: true});
+  }
+});
+
+test('createAgentLoopRuntime applies MCP always and never approval policies before proxy execution', async () => {
+  for (const approval of ['always', 'never']) {
+    let turnCount = 0;
+    let approvals = 0;
+    let calls = 0;
+    const namespacedName = `mcp__docs__${approval}`;
+    const mcpManager = {
+      listTools() {
+        return [{serverName: 'docs', toolName: approval, namespacedName, approval, description: 'MCP test', inputSchema: {type: 'object'}}];
+      },
+      getToolReference(toolName) {
+        return toolName === namespacedName ? {serverName: 'docs', toolName: approval, namespacedName, approval} : null;
+      },
+      async callTool() {
+        calls += 1;
+        return {content: [{type: 'text', text: 'mcp done'}]};
+      }
+    };
+    const agent = {
+      async runTurn() {
+        turnCount += 1;
+        return turnCount === 1
+          ? {draft: '', toolCalls: [{callId: `mcp-${approval}`, toolName: namespacedName, argumentsText: '{}'}]}
+          : {draft: 'done', toolCalls: []};
+      }
+    };
+    const results = [];
+
+    await withPatchedAgentRuntime(agent, () => createAgentLoopRuntime(TEST_CWD, mcpManager)(
+      {records: [{role: 'user', text: 'call MCP'}]},
+      {
+        onToolApprovalRequest(_call, request) {
+          approvals += 1;
+          assert.match(request.preview, /Server: docs/);
+          return {kind: 'allow_once'};
+        },
+        onToolResult(result) { results.push(result); }
+      }
+    ));
+
+    assert.equal(approvals, approval === 'always' ? 1 : 0);
+    assert.equal(calls, 1);
+    assert.equal(results[0].ok, true);
+    assert.match(results[0].text, /mcp done/);
+  }
+});
+
 test('createAgentLoopRuntime applies edit_file approvals across tool continuation', async () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-edit-session-'));
   const target = path.join(cwd, 'value.txt');

@@ -84,7 +84,7 @@ function createRequest(records: TranscriptRecord[], config: LlmConfig, registry?
     stream: true
   };
 
-  if (!options.isCompaction && (config.reasoningEffort || config.reasoningSummary)) {
+  if (!options.isCompaction && config.reasoningEffort !== 'none' && (config.reasoningEffort || config.reasoningSummary)) {
     request.reasoning = {
       ...(config.reasoningEffort ? {effort: config.reasoningEffort} : {}),
       ...(config.reasoningSummary ? {summary: config.reasoningSummary} : {})
@@ -562,9 +562,9 @@ async function runResponseStreamWithRetry(createStream: ResponseStreamFactory, c
 class OpenAiAgent implements ProviderAgent {
   private readonly client: ResponseClient;
   private readonly config: LlmConfig;
-  private readonly registry: ToolRegistry;
+  private readonly registry?: ToolRegistry;
 
-  constructor(config: LlmConfig, registry: ToolRegistry, dependencies: OpenAiAgentDependencies = {}) {
+  constructor(config: LlmConfig, registry: ToolRegistry | undefined, dependencies: OpenAiAgentDependencies = {}) {
     const OpenAIClient = dependencies.OpenAIClient || OpenAI;
     const makeClient = dependencies.createClient || ((clientConfig: LlmConfig) => createClient(clientConfig, OpenAIClient));
     const client = makeClient(config);
@@ -597,7 +597,7 @@ class OpenAiAgent implements ProviderAgent {
   }
 }
 
-function createOpenAiAgent(config: LlmConfig, registry: ToolRegistry, dependencies: OpenAiAgentDependencies = {}): ProviderAgent {
+function createOpenAiAgent(config: LlmConfig, registry?: ToolRegistry, dependencies: OpenAiAgentDependencies = {}): ProviderAgent {
   return new OpenAiAgent(config, registry, dependencies);
 }
 

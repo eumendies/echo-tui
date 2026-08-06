@@ -16,7 +16,7 @@ test('readAppSettings reads valid fields and falls back invalid fields independe
         compaction: {thresholdRatio: 0.65},
         instructions: {fileName: 'CLAUDE.md'},
         skills: {catalogContextRatio: 0.05},
-        tools: {fileEdit: {mode: 'edit_file'}, readFiles: {autoCompressImages: false}},
+        tools: {approval: {mode: 'auto', modelProfileId: 'reviewer'}, fileEdit: {mode: 'edit_file'}, readFiles: {autoCompressImages: false}},
         ui: {defaultInteractionMode: 'plan', slashSuggestionMaxVisible: 12, showReasoningSummary: false}
       });
     }
@@ -26,6 +26,7 @@ test('readAppSettings reads valid fields and falls back invalid fields independe
       return JSON.stringify({
         compaction: {thresholdRatio: Number.NaN},
         skills: {catalogContextRatio: 0.5},
+        tools: {approval: {mode: 'unexpected'}},
         ui: {defaultInteractionMode: 'invalid', slashSuggestionMaxVisible: 30, showReasoningSummary: false}
       });
     }
@@ -39,7 +40,9 @@ test('readAppSettings reads valid fields and falls back invalid fields independe
     fileEditMode: 'edit_file',
     skillCatalogContextRatio: 0.05,
     slashSuggestionMaxVisible: 12,
-    showReasoningSummary: false
+    showReasoningSummary: false,
+    toolApprovalMode: 'auto',
+    toolApprovalModelProfileId: 'reviewer'
   });
   assert.deepEqual(partial, {
     ...DEFAULT_APP_SETTINGS,
@@ -59,7 +62,8 @@ test('readAppSettings uses defaults for missing and malformed optional config', 
     fileEditMode: 'apply_patch',
     skillCatalogContextRatio: 0.1,
     slashSuggestionMaxVisible: 20,
-    showReasoningSummary: true
+    showReasoningSummary: true,
+    toolApprovalMode: 'manual'
   });
 });
 
@@ -81,7 +85,8 @@ test('saveAppSettingsDraft patches owned fields and writes atomically', () => {
     fileEditMode: 'edit_file',
     skillCatalogContextRatio: 0.04,
     slashSuggestionMaxVisible: 5,
-    showReasoningSummary: false
+    showReasoningSummary: false,
+    toolApprovalMode: 'manual'
   }, {
     configPath: '/tmp/echo/config.json',
     createTempPath: (targetPath) => `${targetPath}.tmp-test`,
@@ -149,7 +154,7 @@ test('saveAppSettingsDraft creates missing config and rejects invalid drafts bef
     instructions: {fileName: 'AGENTS.md'},
     skills: {catalogContextRatio: 0.02},
     ui: {defaultInteractionMode: 'normal', slashSuggestionMaxVisible: 8, showReasoningSummary: true},
-    tools: {fileEdit: {mode: 'apply_patch'}, readFiles: {autoCompressImages: true}}
+    tools: {approval: {mode: 'manual'}, fileEdit: {mode: 'apply_patch'}, readFiles: {autoCompressImages: true}}
   });
   assert.deepEqual(validateAppSettingsDraft({...DEFAULT_APP_SETTINGS, compactionThresholdRatio: 0.49}), {ok: false, error: '自动压缩阈值必须在 50% 到 95% 之间'});
   assert.deepEqual(validateAppSettingsDraft({...DEFAULT_APP_SETTINGS, skillCatalogContextRatio: 0.11}), {ok: false, error: '技能列表上下文占比上限必须在 1% 到 10% 之间'});
@@ -158,9 +163,35 @@ test('saveAppSettingsDraft creates missing config and rejects invalid drafts bef
   assert.deepEqual(validateAppSettingsDraft({...DEFAULT_APP_SETTINGS, agentInstructionFileName: 'OTHER.md'}), {ok: false, error: '项目指令文件必须是 AGENTS.md 或 CLAUDE.md'});
   assert.deepEqual(validateAppSettingsDraft({...DEFAULT_APP_SETTINGS, fileEditMode: 'other'}), {ok: false, error: '文件编辑工具必须是 apply_patch 或 edit_file'});
   assert.deepEqual(validateAppSettingsDraft({...DEFAULT_APP_SETTINGS, autoCompressImages: 'yes'}), {ok: false, error: '超限图片自动压缩设置必须是布尔值'});
+  assert.deepEqual(validateAppSettingsDraft({...DEFAULT_APP_SETTINGS, toolApprovalMode: 'invalid'}), {ok: false, error: '工具审批模式必须是 manual 或 auto'});
   assert.throws(() => saveAppSettingsDraft({...DEFAULT_APP_SETTINGS, slashSuggestionMaxVisible: 0}, {
     writeFile() {
       throw new Error('should not write');
     }
   }), /1 到 20/);
+});
+
+test('auto approval settings require an existing model profile and preserve approval siblings', () => {
+  const writes = [];
+  const base = {
+    llm: {
+      providers: {openai: {preset: 'openai-responses-api', apiKey: 'key'}},
+      models: [{id: 'reviewer', provider: 'openai', model: 'gpt-review'}]
+    },
+    tools: {approval: {mode: 'manual', modelProfileId: 'old', kept: true}}
+  };
+  const options = {
+    configPath: '/tmp/echo/config.json',
+    mkdir() {},
+    readFile() { return JSON.stringify(base); },
+    writeFile(_path, data) { writes.push(JSON.parse(data)); },
+    rename() {}
+  };
+
+  saveAppSettingsDraft({...DEFAULT_APP_SETTINGS, toolApprovalMode: 'auto', toolApprovalModelProfileId: 'reviewer'}, options);
+  assert.deepEqual(writes[0].tools.approval, {mode: 'auto', modelProfileId: 'reviewer', kept: true});
+  assert.throws(() => saveAppSettingsDraft({...DEFAULT_APP_SETTINGS, toolApprovalMode: 'auto', toolApprovalModelProfileId: 'deleted'}, options), /已保存的有效模型 profile/);
+
+  saveAppSettingsDraft({...DEFAULT_APP_SETTINGS, toolApprovalModelProfileId: 'deleted'}, options);
+  assert.equal(writes[1].tools.approval.modelProfileId, 'deleted');
 });
