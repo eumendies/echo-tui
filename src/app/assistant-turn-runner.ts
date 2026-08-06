@@ -147,12 +147,21 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
         }
         appContext.turnContext.setStreamingPending(draft);
       },
-      onReasoningSummary(text: string) {
+      onReasoningUpdate(update) {
         if (!isCurrentTurn()) {
           return;
         }
 
-        appendRecord(appContext.turnContext.appendReasoningSummary(text));
+        if (!appContext.turnContext.getWorking()) {
+          appContext.turnContext.startSpinner('working');
+        }
+
+        if (update.kind === 'draft') {
+          appContext.turnContext.setReasoningStreamingPending(update.text);
+          return;
+        }
+
+        appendRecord(appContext.turnContext.appendReasoningSummary(update.text));
       },
       onProviderRecords(records: TranscriptRecord[]) {
         if (!isCurrentTurn() || records.length === 0) {

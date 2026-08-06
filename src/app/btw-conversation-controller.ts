@@ -86,6 +86,7 @@ class BtwConversationController {
   getParentActivity(): string {
     const parent = this.dependencies.getParentTurnState();
     if (parent.pending?.kind === 'tool_call') return `MAIN tool ${parent.pending.toolName}`;
+    if (parent.pending?.kind === 'reasoning_streaming') return 'MAIN reasoning';
     if (parent.pending?.kind === 'streaming') return 'MAIN streaming';
     if (parent.pending?.kind === 'thinking') return 'MAIN thinking';
     return parent.responding ? 'MAIN working' : 'MAIN idle';
@@ -219,8 +220,24 @@ class BtwConversationController {
         this.state!.working = {elapsedMs: 0};
         this.dependencies.renderFooter();
       },
+      onReasoningUpdate: (update) => {
+        if (!isCurrent()) return;
+        this.state!.working = {elapsedMs: 0};
+
+        if (update.kind === 'draft') {
+          this.state!.pending = {kind: 'reasoning_streaming', text: update.text};
+          this.dependencies.renderFooter();
+          return;
+        }
+
+        const pending = this.state!.pending;
+        if (pending?.kind === 'thinking' || pending?.kind === 'reasoning_streaming') {
+          this.state!.pending = null;
+        }
+
+        append([{role: 'reasoning_summary', text: update.text}]);
+      },
       onProviderRetry: (retry) => append([{role: 'local_notice', text: retry.message}]),
-      onReasoningSummary: (text) => append([{role: 'reasoning_summary', text}]),
       onProviderRecords: (records) => append(records),
       onAssistantSegment: (text) => append(text.trim() ? [{role: 'assistant', text}] : []),
       onToolCall: (call) => {

@@ -48,8 +48,9 @@ const ASSISTANT_INTERRUPTED_NOTICE = '已中断模型回答';
 class TurnContext {
   transcriptContext: TranscriptTurnBridge;
   responding: boolean;
-  pendingKind: 'thinking' | 'streaming' | 'tool_call' | 'shell_output' | null;
+  pendingKind: 'thinking' | 'reasoning_streaming' | 'streaming' | 'tool_call' | 'shell_output' | null;
   streamingDraft: string;
+  reasoningDraft: string;
   shellOutputDraft: {command: string; output: string} | null;
   pendingTool: {toolName: string; argumentsText: string} | null;
   thinkingStartedAt: number | null;
@@ -65,6 +66,7 @@ class TurnContext {
     this.responding = false;
     this.pendingKind = null;
     this.streamingDraft = '';
+    this.reasoningDraft = '';
     this.shellOutputDraft = null;
     this.pendingTool = null;
     this.thinkingStartedAt = null;
@@ -195,6 +197,10 @@ class TurnContext {
       return {kind: 'thinking', elapsedMs};
     }
 
+    if (this.pendingKind === 'reasoning_streaming') {
+      return {kind: 'reasoning_streaming', text: this.reasoningDraft};
+    }
+
     if (this.pendingKind === 'streaming') {
       return {kind: 'streaming', text: this.streamingDraft};
     }
@@ -310,11 +316,20 @@ class TurnContext {
   }
 
   /**
-   * 更新 streaming pending 文本草稿。
+   * 更新 assistant 正文 streaming 草稿，并结束 transient reasoning pending 阶段。
    */
   setStreamingPending(draft: string): void {
     this.pendingKind = 'streaming';
     this.streamingDraft = draft;
+    this.reasoningDraft = '';
+  }
+
+  /**
+   * 更新可读 reasoning streaming 草稿；完成后由 summary transcript 切换到正文或工具阶段。
+   */
+  setReasoningStreamingPending(draft: string): void {
+    this.pendingKind = 'reasoning_streaming';
+    this.reasoningDraft = draft;
   }
 
   /**
@@ -351,6 +366,7 @@ class TurnContext {
   clearPending(): void {
     this.pendingKind = null;
     this.streamingDraft = '';
+    this.reasoningDraft = '';
     this.shellOutputDraft = null;
     this.pendingTool = null;
     this.thinkingStartedAt = null;
@@ -399,10 +415,16 @@ class TurnContext {
   }
 
   /**
-   * 记录 provider 返回的 reasoning summary；它是可见事实，但不是 assistant 正文。
+   * 记录 provider 已确认完成的 reasoning summary，并清理 reasoning pending。
+   * turn-end fallback 可能发生在正文 streaming 之后，此时保留正文 pending。
    */
   appendReasoningSummary(text: string): TranscriptRecord {
-    this.clearPending();
+    this.reasoningDraft = '';
+    this.thinkingStartedAt = null;
+
+    if (this.pendingKind === 'thinking' || this.pendingKind === 'reasoning_streaming') {
+      this.pendingKind = null;
+    }
 
     return this.transcriptContext.appendRecord({
       role: 'reasoning_summary',

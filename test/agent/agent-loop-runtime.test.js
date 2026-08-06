@@ -752,7 +752,7 @@ test('buildProviderRecords keeps chat reasoning content records', () => {
   ]);
 });
 
-test('createAgentLoopRuntime emits provider records callback before visible completion', async () => {
+test('createAgentLoopRuntime commits the provider reasoning completion before the turn returns', async () => {
   const callbackEvents = [];
   const reasoningContentRecord = {
     role: 'extension',
@@ -760,11 +760,12 @@ test('createAgentLoopRuntime emits provider records callback before visible comp
     extension: {kind: 'openai_chat_reasoning', reasoningContent: 'hidden'}
   };
   const agent = {
-    async runTurn() {
+    async runTurn(_records, callbacks) {
+      callbacks.onReasoningUpdate?.({kind: 'draft', text: 'preview'});
+      callbacks.onReasoningUpdate?.({kind: 'complete', text: 'visible'});
       return {
         draft: 'done',
         providerRecords: [reasoningContentRecord],
-        reasoningSummary: 'visible',
         toolCalls: []
       };
     }
@@ -776,8 +777,8 @@ test('createAgentLoopRuntime emits provider records callback before visible comp
       onProviderRecords(records) {
         callbackEvents.push(['providerRecords', records]);
       },
-      onReasoningSummary(text) {
-        callbackEvents.push(['summary', text]);
+      onReasoningUpdate(update) {
+        callbackEvents.push([update.kind === 'draft' ? 'preview' : 'summary', update.text]);
       },
       onComplete(text) {
         callbackEvents.push(['complete', text]);
@@ -786,8 +787,39 @@ test('createAgentLoopRuntime emits provider records callback before visible comp
   });
 
   assert.deepEqual(callbackEvents, [
-    ['providerRecords', [reasoningContentRecord]],
+    ['preview', 'preview'],
     ['summary', 'visible'],
+    ['providerRecords', [reasoningContentRecord]],
+    ['complete', 'done']
+  ]);
+});
+
+test('createAgentLoopRuntime does not synthesize reasoning completion from a draft-only provider turn', async () => {
+  const callbackEvents = [];
+  const agent = {
+    async runTurn(_records, callbacks) {
+      callbacks.onReasoningUpdate?.({kind: 'draft', text: 'preview'});
+      return {
+        draft: 'done',
+        toolCalls: []
+      };
+    }
+  };
+
+  await withPatchedAgentRuntime(agent, async () => {
+    const runAgent = createAgentLoopRuntime(TEST_CWD);
+    await runAgent({records: [{role: 'user', text: 'hello'}]}, {
+      onReasoningUpdate(update) {
+        callbackEvents.push([update.kind === 'draft' ? 'preview' : 'summary', update.text]);
+      },
+      onComplete(text) {
+        callbackEvents.push(['complete', text]);
+      }
+    });
+  });
+
+  assert.deepEqual(callbackEvents, [
+    ['preview', 'preview'],
     ['complete', 'done']
   ]);
 });

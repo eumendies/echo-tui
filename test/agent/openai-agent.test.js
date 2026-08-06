@@ -422,6 +422,50 @@ test('createOpenAiAgent retries an overloaded stream error before output', async
   assert.equal(retries[0].message, `模型响应临时失败，正在重试第 1/${retries[0].maxRetries} 次。`);
 });
 
+test('createOpenAiAgent retries reasoning-only stream failures when no preview callback consumes them', async () => {
+  let attempts = 0;
+  const harness = createHarness(() => {
+    attempts += 1;
+    return attempts === 1
+      ? [
+          {type: 'response.reasoning_summary_text.delta', item_id: 'rs_1', output_index: 0, summary_index: 0, delta: 'partial'},
+          createRetryableStreamError('reasoning-request')
+        ]
+      : [{type: 'response.completed'}];
+  });
+
+  await runWithMockedRetryTimers(
+    () => harness.runTurn([{role: 'user', text: 'hello'}], {}),
+    [RESPONSE_STREAM_RETRY_TEST_DELAYS_MS[0]]
+  );
+
+  assert.equal(harness.requests.length, 2);
+});
+
+test('createOpenAiAgent does not retry after exposing a reasoning preview', async () => {
+  let attempts = 0;
+  const updates = [];
+  const harness = createHarness(() => {
+    attempts += 1;
+    return [
+      {type: 'response.reasoning_summary_text.delta', item_id: 'rs_1', output_index: 0, summary_index: 0, delta: 'partial'},
+      createRetryableStreamError('reasoning-request')
+    ];
+  });
+
+  await assert.rejects(
+    () => harness.runTurn([{role: 'user', text: 'hello'}], {
+      onReasoningUpdate(update) {
+        updates.push(update);
+      }
+    }),
+    /模型响应流异常/
+  );
+
+  assert.equal(attempts, 1);
+  assert.deepEqual(updates, [{kind: 'draft', text: 'partial'}]);
+});
+
 test('createOpenAiAgent retries response.failed server_error events before output', async () => {
   let attempts = 0;
   const harness = createHarness(() => {
@@ -690,6 +734,7 @@ test('convertTranscriptToOpenAiInput maps OpenAI private reasoning records', () 
   const reasoningItem = {
     id: 'rs_1',
     type: 'reasoning',
+    status: 'completed',
     encrypted_content: 'encrypted-reasoning',
     summary: [{ type: 'summary_text', text: 'checked plan' }]
   };
@@ -960,21 +1005,25 @@ test('OpenAI provider agent reports function tool calls without executing tools'
   });
 });
 
-test('OpenAI provider agent returns reasoning summary and private reasoning records', async () => {
+test('OpenAI provider agent streams reasoning completion and returns private reasoning records', async () => {
   const reasoningItem = {
     id: 'rs_1',
     type: 'reasoning',
     encrypted_content: 'encrypted-reasoning',
-    summary: [{ type: 'summary_text', text: 'I need a shell check.' }]
+    summary: [
+      { type: 'summary_text', text: 'first' },
+      { type: 'summary_text', text: 'second' }
+    ]
   };
   const harness = createHarness([
-    { type: 'response.reasoning_summary_text.delta', output_index: 0, summary_index: 1, delta: 'second' },
-    { type: 'response.reasoning_summary_text.delta', output_index: 0, summary_index: 0, delta: 'fir' },
-    { type: 'response.reasoning_summary_text.done', output_index: 0, summary_index: 0, text: 'first' },
+    { type: 'response.reasoning_summary_text.delta', item_id: 'rs_1', output_index: 0, summary_index: 1, delta: 'second' },
+    { type: 'response.reasoning_summary_text.delta', item_id: 'rs_1', output_index: 0, summary_index: 0, delta: 'fir' },
+    { type: 'response.reasoning_summary_text.done', item_id: 'rs_1', output_index: 0, summary_index: 0, text: 'first' },
     { type: 'response.reasoning_text.delta', delta: 'raw hidden reasoning' },
-    { type: 'response.output_item.done', item: reasoningItem },
+    { type: 'response.output_item.done', output_index: 0, item: reasoningItem },
     {
       type: 'response.output_item.done',
+      output_index: 1,
       item: {
         type: 'function_call',
         call_id: 'call_1',
@@ -985,24 +1034,35 @@ test('OpenAI provider agent returns reasoning summary and private reasoning reco
     { type: 'response.completed' }
   ]);
 
-  const result = await harness.runTurn([{ role: 'user', text: 'where am I?' }], {});
+  const result = await harness.runTurn([{ role: 'user', text: 'where am I?' }], {
+    onReasoningUpdate(update) {
+      harness.callbacks.push(['reasoning', update]);
+    }
+  });
 
   assert.deepEqual(result, {
     draft: '',
     providerRecords: [createOpenAiReasoningTranscriptRecord(reasoningItem)],
-    reasoningSummary: 'first\n\nsecond',
     toolCalls: [{ callId: 'call_1', toolName: 'run_bash_command', argumentsText: '{"command":"pwd"}' }],
     usageInputTokens: undefined
   });
+  assert.deepEqual(harness.callbacks, [
+    ['reasoning', {kind: 'draft', text: 'second'}],
+    ['reasoning', {kind: 'draft', text: 'fir\n\nsecond'}],
+    ['reasoning', {kind: 'draft', text: 'first\n\nsecond'}],
+    ['reasoning', {kind: 'complete', text: 'first\n\nsecond'}]
+  ]);
 });
 
 test('OpenAI provider agent does not continue non-portable reasoning ids', async () => {
   const harness = createHarness([
     {
       type: 'response.output_item.done',
+      output_index: 0,
       item: {
         id: 'rs_missing_later',
         type: 'reasoning',
+        status: 'completed',
         summary: [{ type: 'summary_text', text: 'No encrypted payload.' }]
       }
     },

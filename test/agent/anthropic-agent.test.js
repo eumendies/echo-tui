@@ -536,34 +536,47 @@ test('createAnthropicAgent aggregates streaming tool_use chunks', async () => {
   assert.deepEqual(harness.callbacks, [['token', 'I will inspect.', 'I will inspect.']]);
 });
 
-test('createAnthropicAgent returns Anthropic thinking summary and provider records', async () => {
+test('createAnthropicAgent streams Anthropic thinking completion and returns provider records', async () => {
   const harness = createHarness([
     { type: 'content_block_start', index: 0, content_block: { type: 'thinking' } },
     { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'I will ' } },
     { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'inspect.' } },
     { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 'sig-1' } },
+    { type: 'content_block_stop', index: 0 },
+    { type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } },
     { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'Done.' } },
+    { type: 'content_block_stop', index: 1 },
     { type: 'message_delta', delta: { stop_reason: 'end_turn' } },
     { type: 'message_stop' }
   ]);
 
-  const result = await harness.runTurn([{ role: 'user', text: 'think' }]);
+  const result = await harness.runTurn([{ role: 'user', text: 'think' }], {
+    onReasoningUpdate(update) {
+      harness.callbacks.push(['reasoning', update]);
+    }
+  });
 
   assert.equal(result.draft, 'Done.');
-  assert.equal(result.reasoningSummary, 'I will inspect.');
   assert.deepEqual(result.providerRecords, [createAnthropicThinkingProviderRecord({ type: 'thinking', thinking: 'I will inspect.', signature: 'sig-1' })]);
+  assert.deepEqual(harness.callbacks, [
+    ['reasoning', {kind: 'draft', text: 'I will'}],
+    ['reasoning', {kind: 'draft', text: 'I will inspect.'}],
+    ['reasoning', {kind: 'complete', text: 'I will inspect.'}]
+  ]);
 });
 
 test('createAnthropicAgent preserves thinking records for tool continuation', async () => {
   const harness = createHarness([
     { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: 'Need a tool.' } },
     { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 'sig-tool' } },
+    { type: 'content_block_stop', index: 0 },
     {
       type: 'content_block_start',
       index: 1,
       content_block: { type: 'tool_use', id: 'call_1', name: 'run_bash_command', input: {} }
     },
     { type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '{"command":"pwd"}' } },
+    { type: 'content_block_stop', index: 1 },
     { type: 'message_delta', delta: { stop_reason: 'tool_use' } },
     { type: 'message_stop' }
   ], createToolRegistry());
@@ -571,21 +584,26 @@ test('createAnthropicAgent preserves thinking records for tool continuation', as
   const result = await harness.runTurn([{ role: 'user', text: 'inspect' }]);
 
   assert.deepEqual(result.toolCalls, [{ callId: 'call_1', toolName: 'run_bash_command', argumentsText: '{"command":"pwd"}' }]);
-  assert.equal(result.reasoningSummary, 'Need a tool.');
   assert.deepEqual(result.providerRecords, [createAnthropicThinkingProviderRecord({ type: 'thinking', thinking: 'Need a tool.', signature: 'sig-tool' })]);
 });
 
 test('createAnthropicAgent preserves redacted thinking without visible summary', async () => {
   const harness = createHarness([
     { type: 'content_block_start', index: 0, content_block: { type: 'redacted_thinking', data: 'redacted-data' } },
+    { type: 'content_block_stop', index: 0 },
     { type: 'message_delta', delta: { stop_reason: 'end_turn' } },
     { type: 'message_stop' }
   ]);
 
-  const result = await harness.runTurn([{ role: 'user', text: 'think' }]);
+  const result = await harness.runTurn([{ role: 'user', text: 'think' }], {
+    onReasoningUpdate(update) {
+      harness.callbacks.push(['reasoning', update]);
+    }
+  });
 
-  assert.equal(result.reasoningSummary, undefined);
+  assert.equal(Object.hasOwn(result, 'reasoningSummary'), false);
   assert.deepEqual(result.providerRecords, [createAnthropicThinkingProviderRecord({ type: 'redacted_thinking', data: 'redacted-data' })]);
+  assert.deepEqual(harness.callbacks, []);
 });
 
 test('createAnthropicAgent preserves partial tool input for runtime validation', async () => {
@@ -674,6 +692,7 @@ test('createAnthropicAgent rejects create errors, stream errors, service errors,
     { type: 'content_block_start', index: 0, content_block: { type: 'thinking' } },
     { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'I will inspect.' } },
     { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 'sig-max' } },
+    { type: 'content_block_stop', index: 0 },
     { type: 'message_delta', delta: { stop_reason: 'max_tokens' } },
     { type: 'message_stop' }
   ]);

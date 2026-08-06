@@ -306,6 +306,23 @@ test('renderPendingAssistantLines collapses long streaming preview to a bounded 
   assert.ok(lines.some((line) => line.includes('line 14')));
 });
 
+
+test('renderPendingAssistantLines renders reasoning streaming preview', () => {
+  const lines = renderPendingAssistantLines({ kind: 'reasoning_streaming', text: 'thinking\nmore' }, 80).map((line) => stripAnsi(line).trimEnd());
+
+  assert.deepEqual(lines, ['◇ thinking', '  more']);
+});
+
+test('renderPendingAssistantLines bounds reasoning streaming preview', () => {
+  const reasoningText = Array.from({ length: 6 }, (_value, index) => `thought ${index + 1}`).join('\n');
+  const lines = renderPendingAssistantLines({ kind: 'reasoning_streaming', text: reasoningText }, 80, 5).map((line) => stripAnsi(line).trimEnd());
+
+  assert.equal(lines.length, 5);
+  assert.equal(lines[0], '◇ …已生成 6 行 reasoning，显示最新 4 行');
+  assert.ok(lines.some((line) => line.includes('thought 6')));
+  assert.ok(!lines.some((line) => line.includes('thought 1')));
+});
+
 test('renderPendingAssistantLines collapses long shell output preview to a bounded tail', () => {
   const output = Array.from({ length: 14 }, (_value, index) => `line ${index + 1}`).join('\n');
   const lines = renderPendingAssistantLines({ kind: 'shell_output', command: 'long', output }, 80, 5).map((line) => stripAnsi(line).trimEnd());

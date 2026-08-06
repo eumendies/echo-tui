@@ -270,12 +270,18 @@ test('runAssistantTurn coalesces token renders on the activity clock and redraws
     ...harness.input,
     renderFooter,
     async runAgent(_session, callbacks) {
-      callbacks.onToken('a', 'a');
-      callbacks.onToken('b', 'ab');
+      callbacks.onReasoningUpdate({kind: 'draft', text: 'thinking'});
+      callbacks.onReasoningUpdate({kind: 'draft', text: 'thinking more'});
 
       assert.equal(renderedStates.length, 0);
       await new Promise((resolve) => setTimeout(resolve, 130));
-      assert.equal(renderedStates.at(-1).pending.text, 'ab');
+      assert.deepEqual(renderedStates.at(-1).pending, {kind: 'reasoning_streaming', text: 'thinking more'});
+
+      callbacks.onReasoningUpdate({kind: 'complete', text: 'thinking more'});
+      assert.equal(harness.appContext.turnContext.getPending(), null);
+      callbacks.onToken('a', 'a');
+      callbacks.onToken('b', 'ab');
+      assert.deepEqual(harness.appContext.turnContext.getPending(), {kind: 'streaming', text: 'ab'});
 
       const renderCountBeforeToolCall = renderedStates.length;
       callbacks.onToolCall({callId: 'call-1', toolName: 'grep', argumentsText: '{"pattern":"ab"}'});
@@ -288,8 +294,8 @@ test('runAssistantTurn coalesces token renders on the activity clock and redraws
   });
 
   assert.equal(harness.appContext.turnContext.spinnerTimer, null);
-  assert.deepEqual(harness.appended.map((record) => record.role), ['user', 'assistant']);
-  assert.equal(harness.appended[1].text, 'ab');
+  assert.deepEqual(harness.appended.map((record) => record.role), ['user', 'reasoning_summary', 'assistant']);
+  assert.equal(harness.appended[2].text, 'ab');
 });
 
 test('runAssistantTurn preserves final streamed text when completion precedes the first activity tick', async () => {
@@ -469,7 +475,8 @@ test('runAssistantTurn emits error hook while preserving error transcript behavi
 
   await runAssistantTurn({
     ...harness.input,
-    async runAgent() {
+    async runAgent(_session, callbacks) {
+      callbacks.onReasoningUpdate({kind: 'draft', text: 'partial reasoning'});
       throw new Error('upstream failed');
     }
   });
@@ -486,7 +493,52 @@ test('runAssistantTurn emits error hook while preserving error transcript behavi
   ]);
   assert.equal(harness.debugEvents[1].payload.errorMessage, 'upstream failed');
   assert.match(harness.appended.at(-1).text, /upstream failed/);
+  assert.equal(harness.appContext.turnContext.getPending(), null);
   assert.equal(harness.appContext.turnContext.responding, false);
+});
+
+test('runAssistantTurn preserves completed reasoning and partial assistant text when the later stream fails', async () => {
+  const harness = createHarness();
+
+  await runAssistantTurn({
+    ...harness.input,
+    async runAgent(_session, callbacks) {
+      callbacks.onReasoningUpdate({kind: 'complete', text: 'complete reasoning'});
+      assert.ok(harness.appContext.turnContext.getWorking());
+      callbacks.onToken('p', 'partial');
+      throw new Error('upstream failed');
+    }
+  });
+
+  assert.deepEqual(harness.appended.map((record) => record.role), [
+    'user',
+    'reasoning_summary',
+    'assistant',
+    'error'
+  ]);
+  assert.equal(harness.appended[1].text, 'complete reasoning');
+  assert.equal(harness.appended[2].text, 'partial');
+});
+
+test('runAssistantTurn ignores late reasoning update callbacks after completion', async () => {
+  const harness = createHarness();
+  let capturedCallbacks;
+
+  await runAssistantTurn({
+    ...harness.input,
+    async runAgent(_session, callbacks) {
+      capturedCallbacks = callbacks;
+      callbacks.onReasoningUpdate({kind: 'draft', text: 'live reasoning'});
+      assert.deepEqual(harness.appContext.turnContext.getPending(), {kind: 'reasoning_streaming', text: 'live reasoning'});
+      callbacks.onComplete('done');
+      return 'done';
+    }
+  });
+
+  capturedCallbacks.onReasoningUpdate({kind: 'draft', text: 'late reasoning'});
+
+  assert.equal(harness.appContext.turnContext.getPending(), null);
+  assert.deepEqual(harness.appended.map((record) => record.role), ['user', 'assistant']);
 });
 
 test('runAssistantTurn passes model and effort overrides only to the current session across all outcomes', async () => {

@@ -61,8 +61,8 @@ export type AgentCallbacks = {
   onModelResolved?: (model: ResolvedAgentModel) => void;
   onThinking?: () => void;
   onToken?: (token: string, draft: string) => void;
+  onReasoningUpdate?: (update: ReasoningUpdate) => void; // provider turn 的可读 reasoning 草稿与完成边界。
   onProviderRetry?: (retry: ProviderRetry) => void;
-  onReasoningSummary?: (text: string) => void;
   onProviderRecords?: (records: TranscriptRecord[]) => void;
   onAssistantSegment?: (text: string) => void;
   onToolCall?: (call: ToolCall) => void;
@@ -104,7 +104,17 @@ export type AgentInstruction = {
 
 export type RunAgent = (session: AgentSessionInput, callbacks?: AgentCallbacks) => Promise<unknown>;
 
-export type AgentTurnCallbacks = Pick<AgentCallbacks, 'onProviderRetry' | 'onToken'>;
+export type ReasoningUpdate =
+  | {
+      kind: 'draft'; // 表示当前文本仍是可变的 transient reasoning preview。
+      text: string; // provider turn 内按协议顺序合并后的最新可见 reasoning 全文。
+    }
+  | {
+      kind: 'complete'; // 表示 provider 已确认当前可见 reasoning 不会再被后续事件修改。
+      text: string; // 可以立即提交为 reasoning_summary transcript 的权威全文。
+    };
+
+export type AgentTurnCallbacks = Pick<AgentCallbacks, 'onProviderRetry' | 'onReasoningUpdate' | 'onToken'>;
 
 export type AgentTurnOptions = {
   abortSignal?: AbortSignal;
@@ -114,7 +124,6 @@ export type AgentTurnOptions = {
 export type AgentTurnResult = {
   draft: string;
   providerRecords?: TranscriptRecord[];
-  reasoningSummary?: string;
   toolCalls: ToolCall[];
   usage?: ProviderUsage;
   usageInputTokens?: number;

@@ -3195,6 +3195,29 @@ test('renderFooterLayout keeps long streaming pending preview bounded above comp
   assert.ok(plainLines.some((line) => line.includes('streaming')));
 });
 
+
+test('renderFooterLayout keeps reasoning streaming preview bounded above composer', () => {
+  const reasoningText = Array.from({ length: 6 }, (_value, index) => `thought ${index + 1}`).join('\n');
+  const layout = renderFooterLayout({
+    composer: createComposer('draft input'),
+    pending: { kind: 'reasoning_streaming', text: reasoningText },
+    statusLine: {
+      ...DEFAULT_STATUS_LINE,
+      mode: 'streaming',
+      keyHint: 'Esc 中断'
+    },
+    rows: 12,
+    width: 80
+  });
+  const plainLines = layout.lines.map((line) => stripAnsi(line).trimEnd());
+
+  assert.equal(layout.lines.length <= 10, true);
+  assert.equal(plainLines[0], '◇ …已生成 6 行 reasoning，显示最新 4 行');
+  assert.ok(plainLines.some((line) => line.includes('thought 6')));
+  assert.ok(!plainLines.some((line) => line.includes('thought 1')));
+  assert.ok(plainLines.some((line) => line.includes('> draft input')));
+});
+
 test('renderFooterLayout keeps shell live output bounded and status in shell working mode', () => {
   const output = Array.from({ length: 20 }, (_value, index) => `line ${index + 1}`).join('\n');
   const layout = renderFooterLayout({

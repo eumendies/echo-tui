@@ -57,7 +57,7 @@ const runFakeAgent: RunAgent = async (
   // fake agent 只模拟生命周期；真实模型接入时可以替换这一层。
   callbacks.onThinking?.();
 
-  const draft = await streamFakeDraft(session.records, callbacks, {abortSignal: session.abortSignal});
+  const draft = await streamFakeDraft(session.records, {onToken: callbacks.onToken}, {abortSignal: session.abortSignal});
 
   callbacks.onComplete?.(draft);
 

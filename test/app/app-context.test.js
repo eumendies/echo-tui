@@ -854,16 +854,30 @@ test('AppContext status line shows plan mode without exit hint', () => {
   assert.equal(context.getAgentSession().interactionMode, 'plan');
 });
 
-test('AppContext keeps plan status line mode while assistant output streams', () => {
+test('AppContext keeps plan status line mode while reasoning streams', () => {
   const context = createContext();
 
   context.setInteractionMode('plan');
-  context.turnContext.setStreamingPending('draft');
+  context.turnContext.setReasoningStreamingPending('thinking');
 
   const renderState = context.createRenderState();
 
   assert.equal(renderState.statusLine.mode, 'plan');
-  assert.deepEqual(renderState.pending, { kind: 'streaming', text: 'draft' });
+  assert.deepEqual(renderState.pending, {kind: 'reasoning_streaming', text: 'thinking'});
+});
+
+test('TurnContext commits completed reasoning without clearing assistant streaming draft', () => {
+  const context = createContext();
+
+  context.turnContext.setReasoningStreamingPending('thinking');
+  assert.deepEqual(context.turnContext.getPending(), {kind: 'reasoning_streaming', text: 'thinking'});
+  context.turnContext.appendReasoningSummary('thinking');
+  assert.equal(context.turnContext.getPending(), null);
+
+  context.turnContext.setStreamingPending('draft');
+  const fallbackRecord = context.turnContext.appendReasoningSummary('fallback reasoning');
+  assert.equal(fallbackRecord.role, 'reasoning_summary');
+  assert.deepEqual(context.turnContext.getPending(), {kind: 'streaming', text: 'draft'});
 });
 
 test('TurnContext activity clock projects the latest accumulated shell output once per tick', async () => {

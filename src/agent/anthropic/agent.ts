@@ -270,6 +270,11 @@ function mergeContentBlockDelta(state: AnthropicStreamState, event: AnthropicStr
   if (event.delta?.type === 'thinking_delta' && typeof event.delta.thinking === 'string') {
     const current = getOrCreateThinkingPart(state.thinkingParts, getEventIndex(event));
     current.thinking += event.delta.thinking;
+    const reasoningDraft = readReasoningSummaryFromMap(state.thinkingParts);
+
+    if (reasoningDraft) {
+      callbacks.onReasoningUpdate?.({kind: 'draft', text: reasoningDraft});
+    }
     return;
   }
 
@@ -286,6 +291,20 @@ function mergeContentBlockDelta(state: AnthropicStreamState, event: AnthropicStr
   const current = getOrCreateToolCallPart(state.toolCallParts, getEventIndex(event));
 
   current.argumentsText += event.delta.partial_json;
+}
+
+function completeThinkingBlock(state: AnthropicStreamState, event: AnthropicStreamEvent, callbacks: AgentTurnCallbacks): void {
+  const current = state.thinkingParts.get(getEventIndex(event));
+
+  if (current?.type !== 'thinking') {
+    return;
+  }
+
+  const reasoningSummary = readReasoningSummaryFromMap(state.thinkingParts);
+
+  if (reasoningSummary) {
+    callbacks.onReasoningUpdate?.({kind: 'complete', text: reasoningSummary});
+  }
 }
 
 function mergeMessageDelta(state: AnthropicStreamState, event: AnthropicStreamEvent): void {
@@ -342,6 +361,10 @@ function readReasoningSummary(parts: PartialThinkingBlock[]): string | undefined
     .trim();
 
   return summary === '' ? undefined : summary;
+}
+
+function readReasoningSummaryFromMap(parts: Map<number, PartialThinkingBlock>): string | undefined {
+  return readReasoningSummary(orderedThinkingParts(parts));
 }
 
 function finalizeThinkingRecords(parts: PartialThinkingBlock[]): TranscriptRecord[] {
@@ -403,6 +426,11 @@ async function readAnthropicStream(stream: AnthropicStream, callbacks: AgentTurn
         continue;
       }
 
+      if (event.type === 'content_block_stop') {
+        completeThinkingBlock(state, event, callbacks);
+        continue;
+      }
+
       if (event.type === 'message_delta') {
         mergeMessageDelta(state, event);
         continue;
@@ -428,12 +456,10 @@ async function readAnthropicStream(stream: AnthropicStream, callbacks: AgentTurn
 
   const thinkingParts = orderedThinkingParts(state.thinkingParts);
   const providerRecords = finalizeThinkingRecords(thinkingParts);
-  const reasoningSummary = readReasoningSummary(thinkingParts);
 
   return {
     draft: state.draft,
     ...(providerRecords.length > 0 ? {providerRecords} : {}),
-    ...(reasoningSummary ? {reasoningSummary} : {}),
     toolCalls: finalizeToolCalls(state.toolCallParts),
     ...(usage ? {usage} : {}),
     usageInputTokens
