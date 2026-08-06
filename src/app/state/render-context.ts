@@ -155,7 +155,7 @@ function resolveStatusLineMode(pending: PendingState | null, slashSuggestions: S
     return 'thinking';
   }
 
-  if (pending?.kind === 'streaming') {
+  if (pending?.kind === 'reasoning_streaming' || pending?.kind === 'streaming') {
     if (interactionMode !== 'normal') {
       return interactionMode;
     }

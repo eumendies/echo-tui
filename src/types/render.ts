@@ -30,11 +30,19 @@ export type ThinkingPendingState = {
 };
 
 /**
- * 流式输出状态，用于展示模型响应
+ * Reasoning 流式状态，仅在完成边界到达前展示可读推理摘要。
+ */
+export type ReasoningStreamingPendingState = {
+  kind: 'reasoning_streaming'; // 表示当前 assistant turn 正在输出可见 reasoning preview。
+  text: string; // 当前可读 reasoning 全文 draft。
+};
+
+/**
+ * 正文流式输出状态，用于展示模型响应。
  */
 export type StreamingPendingState = {
-  kind: 'streaming';
-  text: string;
+  kind: 'streaming'; // 表示当前 assistant turn 已进入可见流式 preview。
+  text: string; // 当前 assistant 正文 draft。
 };
 
 /**
@@ -55,7 +63,7 @@ export type ShellOutputPendingState = {
   output: string;
 };
 
-export type PendingState = ThinkingPendingState | StreamingPendingState | ToolCallPendingState | ShellOutputPendingState;
+export type PendingState = ThinkingPendingState | ReasoningStreamingPendingState | StreamingPendingState | ToolCallPendingState | ShellOutputPendingState;
 
 export type WorkingState = {
   elapsedMs: number;

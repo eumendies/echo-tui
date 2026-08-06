@@ -1,11 +1,11 @@
 import {INPUT_EVENTS} from '../input/event-types';
 
 import type {
-  CommandCodexUsageResult,
   CommandHandler,
   CommandHost,
   CommandSession,
   CommandStatusSnapshot,
+  StatusCommandDeepseekBalanceState,
   StatusCommandSurface,
   StatusCommandUsageState
 } from '../types/command';
@@ -14,21 +14,24 @@ import type {InputEvent} from '../types/input';
 type StatusCommandData = {
   requestId: number;
   snapshot: CommandStatusSnapshot;
+  usage: StatusCommandUsageState;
+  deepseekBalance: StatusCommandDeepseekBalanceState;
 };
 
-function createStatusSurface(snapshot: CommandStatusSnapshot, usage: StatusCommandUsageState): StatusCommandSurface {
+function createStatusSurface(snapshot: CommandStatusSnapshot, usage: StatusCommandUsageState, deepseekBalance: StatusCommandDeepseekBalanceState): StatusCommandSurface {
   return {
     kind: 'status',
     title: 'Status',
     snapshot,
     usage,
+    deepseekBalance,
     dismissHint: 'Esc / Enter / q 关闭'
   };
 }
 
 export class StatusCommandHandler implements CommandHandler<StatusCommandData> {
   name = 'status';
-  description = '查看运行状态与 Codex 用量';
+  description = '查看运行状态与账户用量';
   allowDuringAssistantTurn = true;
   private nextRequestId = 0;
 
@@ -40,22 +43,27 @@ export class StatusCommandHandler implements CommandHandler<StatusCommandData> {
   }
 
   /**
-   * 立即打开本地状态面板；Codex provider 的远端用量随后异步填充。
+   * 立即打开本地状态面板；Codex 用量与 DeepSeek 余额随后异步填充。
    */
   start(_text: string, host: CommandHost): void {
     const snapshot = host.status.createSnapshot();
     const requestId = ++this.nextRequestId;
-    const data = {requestId, snapshot};
-    const usage: StatusCommandUsageState = {status: 'loading'};
+    const data: StatusCommandData = {
+      requestId,
+      snapshot,
+      usage: {status: 'loading'},
+      deepseekBalance: {status: 'loading'}
+    };
 
     host.session.open({
       commandName: 'status',
       handler: this,
-      surface: createStatusSurface(snapshot, usage),
+      surface: createStatusSurface(snapshot, data.usage, data.deepseekBalance),
       data
     });
 
     void this.loadCodexUsage(data, host);
+    void this.loadDeepseekBalance(data, host);
   }
 
   /**
@@ -72,17 +80,35 @@ export class StatusCommandHandler implements CommandHandler<StatusCommandData> {
   }
 
   private async loadCodexUsage(data: StatusCommandData, host: CommandHost): Promise<void> {
-    let usage: CommandCodexUsageResult;
-
     try {
-      usage = await host.status.queryCodexUsage();
+      data.usage = await host.status.queryCodexUsage();
     } catch (error: unknown) {
-      usage = {
+      data.usage = {
         status: 'unavailable',
         error: error instanceof Error && error.message.trim() !== '' ? error.message : 'Codex 用量不可用'
       };
     }
 
+    this.updateSurface(data, host);
+  }
+
+  private async loadDeepseekBalance(data: StatusCommandData, host: CommandHost): Promise<void> {
+    try {
+      data.deepseekBalance = await host.status.queryDeepseekBalance();
+    } catch (error: unknown) {
+      data.deepseekBalance = {
+        status: 'unavailable',
+        error: error instanceof Error && error.message.trim() !== '' ? error.message : 'DeepSeek 余额不可用'
+      };
+    }
+
+    this.updateSurface(data, host);
+  }
+
+  /**
+   * 把最新用量/余额写入仍处于激活状态的 surface；会话关闭或 requestId 过期时丢弃结果。
+   */
+  private updateSurface(data: StatusCommandData, host: CommandHost): void {
     const active = host.session.getActive() as CommandSession<StatusCommandData> | null;
 
     if (active?.handler !== this || active.commandName !== 'status' || active.data?.requestId !== data.requestId) {
@@ -91,7 +117,7 @@ export class StatusCommandHandler implements CommandHandler<StatusCommandData> {
 
     host.session.update({
       data,
-      surface: createStatusSurface(data.snapshot, usage)
+      surface: createStatusSurface(data.snapshot, data.usage, data.deepseekBalance)
     });
     host.ui.renderFooter();
   }

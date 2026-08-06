@@ -212,7 +212,7 @@ const DEFAULT_TUI_THEME: TuiTheme = {
       italic: {dim: true},
       link: {foreground: rgb(0, 170, 170)},
       listMarker: {foreground: rgb(0, 170, 170)},
-      quote: {dim: true, foreground: rgb(85, 85, 85)},
+      quote: {foreground: rgb(0, 170, 170)},
       rolePrefix: {foreground: rgb(0, 170, 170)},
       rule: {foreground: rgb(85, 85, 85)},
       tableHeader: {bold: true},

@@ -187,13 +187,24 @@ function finalizeToolCalls(parts: Map<number, PartialToolCall>): ToolCall[] {
 /**
  * 消费一次 Chat Completions stream：累积 assistant 文本，同时聚合工具调用参数分片。
  */
-async function readChatCompletionStream(stream: ChatStream, callbacks: AgentTurnCallbacks = {}, options: AgentTurnOptions = {}): Promise<AgentTurnResult> {
+async function readChatCompletionStream(
+  stream: ChatStream,
+  callbacks: AgentTurnCallbacks = {},
+  options: AgentTurnOptions = {}
+): Promise<AgentTurnResult> {
   let completed = false;
   let draft = '';
   let reasoningSummary = '';
   let usage: ProviderUsage | undefined;
   let usageInputTokens: number | undefined;
   const toolCallParts = new Map<number, PartialToolCall>();
+  const completeReasoning = () => {
+    const summary = reasoningSummary.trim();
+
+    if (summary !== '') {
+      callbacks.onReasoningUpdate?.({kind: 'complete', text: summary});
+    }
+  };
 
   try {
     for await (const chunk of stream) {
@@ -215,23 +226,39 @@ async function readChatCompletionStream(stream: ChatStream, callbacks: AgentTurn
       }
 
       chunk.choices.forEach((choice) => {
+        const hadAssistantOutput = draft !== '' || toolCallParts.size > 0;
         const content = choice.delta?.content;
         const reasoningContent = choice.delta?.reasoning_content;
+
+        if (!hadAssistantOutput && typeof reasoningContent === 'string' && reasoningContent !== '') {
+          reasoningSummary += reasoningContent;
+          const reasoningDraft = reasoningSummary.trim();
+
+          if (reasoningDraft !== '') {
+            callbacks.onReasoningUpdate?.({kind: 'draft', text: reasoningDraft});
+          }
+        }
+
+        const toolDeltas = readToolCallDeltas(choice.delta?.tool_calls);
+        const hasAssistantOutput = typeof content === 'string' && content !== '' || toolDeltas.length > 0;
+
+        if (!hadAssistantOutput && hasAssistantOutput) {
+          completeReasoning();
+        }
 
         if (typeof content === 'string' && content !== '') {
           draft += content;
           callbacks.onToken?.(content, draft);
         }
 
-        if (typeof reasoningContent === 'string' && reasoningContent !== '') {
-          reasoningSummary += reasoningContent;
-        }
-
-        for (const toolDelta of readToolCallDeltas(choice.delta?.tool_calls)) {
+        for (const toolDelta of toolDeltas) {
           mergeToolCallDelta(toolCallParts, toolDelta);
         }
 
         if (choice.finish_reason === 'stop' || choice.finish_reason === 'tool_calls') {
+          if (draft === '' && toolCallParts.size === 0) {
+            completeReasoning();
+          }
           completed = true;
         }
       });
@@ -253,7 +280,6 @@ async function readChatCompletionStream(stream: ChatStream, callbacks: AgentTurn
   return {
     draft,
     ...(normalizedReasoningSummary !== '' ? {providerRecords: [createOpenAiChatReasoningRecord(normalizedReasoningSummary)]} : {}),
-    ...(normalizedReasoningSummary !== '' ? {reasoningSummary: normalizedReasoningSummary} : {}),
     toolCalls: finalizeToolCalls(toolCallParts),
     ...(usage ? {usage} : {}),
     usageInputTokens

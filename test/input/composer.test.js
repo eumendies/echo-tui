@@ -112,3 +112,35 @@ test('insertNewline and reset update the composer shape', () => {
     cursor: 0
   });
 });
+
+test('composer treats grapheme clusters as single edit units', () => {
+  const family = '👨‍👩‍👧‍👦';
+  const composer = composerOps.createComposer(`a${family}b`);
+
+  // 光标初始在末尾；向左移动一次应越过整个 ZWJ 家族，而不是停在中间。
+  composerOps.moveLeft(composer);
+  assert.equal(composer.cursor, 2);
+  composerOps.moveLeft(composer);
+  assert.equal(composer.cursor, 1);
+
+  // 退格一次删除整个 cluster，不残留半个 emoji 或孤立 ZWJ。
+  composerOps.moveRight(composer);
+  composerOps.backspace(composer);
+  assert.deepEqual(snapshot(composer), { text: 'ab', cursor: 1 });
+
+  // 插入复合 emoji 也只占一个编辑单元。
+  composerOps.insertText(composer, '🇨🇳');
+  assert.equal(composer.chars.length, 3);
+  assert.deepEqual(snapshot(composer), { text: 'a🇨🇳b', cursor: 2 });
+});
+
+test('replaceRange and setText slice along grapheme boundaries', () => {
+  const composer = composerOps.createComposer('a👨‍👩‍👧‍👦b');
+
+  composerOps.replaceRange(composer, 1, 2, '✅');
+  assert.deepEqual(snapshot(composer), { text: 'a✅b', cursor: 2 });
+
+  composerOps.setText(composer, '👍🏽x');
+  assert.equal(composer.chars.length, 2);
+  assert.deepEqual(snapshot(composer), { text: '👍🏽x', cursor: 2 });
+});

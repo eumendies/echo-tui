@@ -1,13 +1,14 @@
 import {redactSensitiveText} from '../../agent/agent-errors';
 import {loadAgentInstructions} from '../../agent/agent-instructions';
 import {queryCodexUsage} from '../../config/codex-oauth';
-import {readLlmConfig} from '../../config/llm-config';
+import {isDeepseekBaseUrl, queryDeepseekBalance as fetchDeepseekBalance} from '../../config/deepseek-balance';
 import {readAppSettings} from '../../config/app-settings-config';
 import {listEffectiveAgentMemoryCatalogs} from '../../memory/agent-memory-store';
 import {readUserMemories} from '../../memory/memory-store';
 import {createCommandViewport} from './command-viewport';
 
 import type {CodexUsage} from '../../config/codex-oauth';
+import type {DeepseekBalance} from '../../config/deepseek-balance';
 import type {CommandHostApp, CommandStatusSnapshot} from '../../types/command';
 import type {UsageStore} from '../../types/usage';
 import type {AppContext} from '../state/app-context';
@@ -41,13 +42,28 @@ function createStatusCommandPorts(options: StatusCommandPortOptions): Pick<Comma
       createSnapshot() {
         return createStatusSnapshot(appContext);
       },
-      async queryCodexUsage() {
-        let config;
+      async queryDeepseekBalance() {
+        const config = appContext.modelContext.createActiveLlmConfig();
+
+        if ('error' in config) {
+          return {status: 'unavailable' as const, error: config.error};
+        }
+
+        if (!isDeepseekBaseUrl(config.baseURL)) {
+          return {status: 'not_applicable' as const};
+        }
 
         try {
-          config = readLlmConfig();
+          return createAvailableDeepseekBalance(await fetchDeepseekBalance(config.apiKey));
         } catch (error: unknown) {
-          return {status: 'unavailable' as const, error: formatStatusError(error, '无法读取当前模型配置')};
+          return {status: 'unavailable' as const, error: formatStatusError(error, 'DeepSeek 余额不可用')};
+        }
+      },
+      async queryCodexUsage() {
+        const config = appContext.modelContext.createActiveLlmConfig();
+
+        if ('error' in config) {
+          return {status: 'unavailable' as const, error: config.error};
         }
 
         if (config.agentType !== 'codex') {
@@ -120,6 +136,14 @@ function createAvailableCodexUsage(usage: CodexUsage) {
     status: 'available' as const,
     primary: {...usage.primary},
     ...(usage.secondary ? {secondary: {...usage.secondary}} : {})
+  };
+}
+
+function createAvailableDeepseekBalance(balance: DeepseekBalance) {
+  return {
+    status: 'available' as const,
+    isAvailable: balance.isAvailable,
+    balanceInfos: balance.balanceInfos.map((info) => ({...info}))
   };
 }
 

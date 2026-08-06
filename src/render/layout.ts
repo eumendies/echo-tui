@@ -1,51 +1,88 @@
 import * as ansi from '../terminal/ansi';
 import {parseFileMentions} from '../input/file-mentions';
+import {splitGraphemes} from '../input/graphemes';
+import {
+  EMOJI_BASE_RANGES,
+  EMOJI_PRESENTATION_RANGES,
+  WIDE_RANGES,
+  ZERO_WIDTH_RANGES
+} from './width-data';
 
 import type { ComposerState } from '../types/composer';
 import type { ComposerLayout } from '../types/render';
 
-const TEXT_PRESENTATION_WIDTH_1_CODEPOINTS = new Set([
-  0x26a0, // ⚠
-  0x2713, // ✓
-  0x2715  // ✕
-]);
 const TAB_STOP_WIDTH = 8;
 
+// 变体选择符与组合记号：参与 grapheme 级宽度决策的特殊码点。
+const VS15 = 0xfe0e;
+const VS16 = 0xfe0f;
+const ZWJ = 0x200d;
+const KEYCAP = 0x20e3;
+
 /**
- * 计算单个字符的终端显示宽度，兼容换行、组合字符、emoji 和常见东亚宽字符。
+ * 计算单个 grapheme cluster 的终端显示宽度。
  *
+ * 决策顺序（依据 design.md D2）：
+ * 1. 含 VS15：强制文本呈现，按码点求和；
+ * 2. 含 VS16 且含 Emoji base：按 2 列（emoji 呈现）；
+ * 3. 含 ZWJ 且含 Emoji base：按 2 列（单字形序列）；
+ * 4. 含 keycap 组合圈：按 2 列（keycap 序列）；
+ * 5. 含 Emoji_Presentation 码点：按 2 列（旗帜的双 regional indicator 也在该区间内）；
+ * 6. 其余按码点求和：零宽 0 / 宽字符 2 / 其余 1（East Asian Ambiguous 一律按 1 列，
+ *    避免框线等布局字符在宽度计算与终端实际渲染之间错位）。
  */
 export function charWidth(char: string): number {
-  // 这里实现一个原型级 display width：emoji/中文等宽字符按 2，普通字符按 1。
   if (char === '\n' || char === '\r') {
     return 0;
   }
 
-  const codePoint = char.codePointAt(0) ?? 0;
-
-  if (codePoint >= 0x300 && codePoint <= 0x36f) {
-    // 组合音标本身不占列宽。
-    return 0;
-  }
-
-  if (isZeroWidthEmojiComponent(codePoint)) {
-    return 0;
-  }
-
-  if (TEXT_PRESENTATION_WIDTH_1_CODEPOINTS.has(codePoint)) {
-    // 这些未带 emoji variation selector 的符号在常见终端里按文本符号显示为 1 列；按 2 列会让边框补齐错位。
+  // ASCII 单码点没有零宽或宽字符变体，直接按 1 列返回，跳过区间查找。
+  if (char.length === 1 && char.charCodeAt(0) < 0x80) {
     return 1;
   }
 
-  if (isEmojiCluster(char)) {
+  // 单次遍历收集哨兵标志与 emoji 属性，避免对多码点 cluster 反复扫描数组。
+  const codePoints = Array.from(char, (value) => value.codePointAt(0) ?? 0);
+  let hasVS15 = false;
+  let hasVS16 = false;
+  let hasZWJ = false;
+  let hasKeycap = false;
+  let hasEmojiBase = false;
+  let hasEmojiPresentation = false;
+
+  for (const codePoint of codePoints) {
+    hasVS15 ||= codePoint === VS15;
+    hasVS16 ||= codePoint === VS16;
+    hasZWJ ||= codePoint === ZWJ;
+    hasKeycap ||= codePoint === KEYCAP;
+    hasEmojiBase ||= isInRanges(codePoint, EMOJI_BASE_RANGES);
+    hasEmojiPresentation ||= isInRanges(codePoint, EMOJI_PRESENTATION_RANGES);
+  }
+
+  if (hasVS15) {
+    // VS15 强制文本呈现：忽略 emoji 规则，仅按码点求和。
+    return sumCodePointWidths(codePoints);
+  }
+
+  if (hasVS16 && hasEmojiBase) {
     return 2;
   }
 
-  if (isWideCodePoint(codePoint) || isEmojiCodePoint(codePoint)) {
+  if (hasZWJ && hasEmojiBase) {
+    // ZWJ 序列整体渲染为单个字形，常见终端按 2 列显示。
     return 2;
   }
 
-  return 1;
+  if (hasKeycap) {
+    // keycap 序列（如 1️⃣）整体渲染为单个 2 列字形。
+    return 2;
+  }
+
+  if (hasEmojiPresentation) {
+    return 2;
+  }
+
+  return sumCodePointWidths(codePoints);
 }
 
 /**
@@ -97,68 +134,54 @@ export function stripAnsi(text: string): string {
   return text.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
 }
 
-/**
- * 判断一个 code point 是否应当按宽字符处理。
- *
- */
-function isWideCodePoint(codePoint: number): boolean {
-  return (
-    (codePoint >= 0x1100 && codePoint <= 0x115f) ||
-    (codePoint >= 0x2e80 && codePoint <= 0xa4cf) ||
-    (codePoint >= 0xac00 && codePoint <= 0xd7a3) ||
-    (codePoint >= 0xf900 && codePoint <= 0xfaff) ||
-    (codePoint >= 0xfe10 && codePoint <= 0xfe19) ||
-    (codePoint >= 0xfe30 && codePoint <= 0xfe6f) ||
-    (codePoint >= 0xff00 && codePoint <= 0xff60) ||
-    (codePoint >= 0xffe0 && codePoint <= 0xffe6)
-  );
-}
+// grapheme 切分是 input 编辑层与 render 宽度层共用口径，从 input/graphemes 再导出保持既有调用点不变。
+export {splitGraphemes};
 
 /**
- * 判断 emoji 序列中的组合成分是否不应单独占终端列宽。
+ * 判断码点是否落在排序区间表内，二分查找。
  *
  */
-function isZeroWidthEmojiComponent(codePoint: number): boolean {
-  return (
-    codePoint === 0x200d ||
-    (codePoint >= 0xfe00 && codePoint <= 0xfe0f) ||
-    (codePoint >= 0x1f3fb && codePoint <= 0x1f3ff)
-  );
-}
+function isInRanges(codePoint: number, ranges: readonly (readonly [number, number])[]): boolean {
+  let low = 0;
+  let high = ranges.length - 1;
 
-/**
- * 判断常见 emoji code point 是否通常按 2 列显示。
- *
- */
-function isEmojiCodePoint(codePoint: number): boolean {
-  return (
-    (codePoint >= 0x1f000 && codePoint <= 0x1faff) ||
-    (codePoint >= 0x2600 && codePoint <= 0x27bf) ||
-    (codePoint >= 0x2b00 && codePoint <= 0x2bff) ||
-    (codePoint >= 0x2300 && codePoint <= 0x23ff)
-  );
-}
+  while (low <= high) {
+    const mid = (low + high) >>> 1;
+    const [start, end] = ranges[mid];
 
-/**
- * 按 grapheme cluster 切分文本，避免把复合 emoji 拆成多个显示单元。
- *
- */
-export function splitGraphemes(text: string): string[] {
-  const Segmenter = Intl.Segmenter;
-  if (typeof Segmenter === 'function') {
-    const segmenter = new Segmenter(undefined, { granularity: 'grapheme' });
-    return Array.from(segmenter.segment(text), (segment) => segment.segment);
+    if (codePoint < start) {
+      high = mid - 1;
+    } else if (codePoint > end) {
+      low = mid + 1;
+    } else {
+      return true;
+    }
   }
 
-  return Array.from(text);
+  return false;
 }
 
-function isEmojiCluster(value: string): boolean {
-  return splitCodePoints(value).some(isEmojiCodePoint);
-}
+/**
+ * 按码点求和 cluster 宽度：零宽 0 / 宽字符 2 / 其余 1（Ambiguous 一律按 1）。
+ *
+ */
+function sumCodePointWidths(codePoints: number[]): number {
+  let width = 0;
 
-function splitCodePoints(value: string): number[] {
-  return Array.from(value).map((char) => char.codePointAt(0) ?? 0);
+  for (const codePoint of codePoints) {
+    if (isInRanges(codePoint, ZERO_WIDTH_RANGES)) {
+      continue;
+    }
+
+    if (isInRanges(codePoint, WIDE_RANGES)) {
+      width += 2;
+      continue;
+    }
+
+    width += 1;
+  }
+
+  return width;
 }
 
 /**
@@ -169,17 +192,18 @@ export function wrapText(text: string, width: number, prefix = ''): string[] {
   // pending preview 使用同一个 prefix 包装；换行后继续保留 role 前缀。
   const safeWidth = safeRenderWidth(width);
   const lines: string[] = [];
+  const prefixWidth = displayWidth(prefix);
 
   for (const sourceLine of text.split('\n')) {
     let line = prefix;
-    let column = displayWidth(prefix);
+    let column = prefixWidth;
 
     for (const char of splitGraphemes(sourceLine)) {
       let widthOfChar = char === '\t' ? tabWidthAt(column) : charWidth(char);
-      if (column + widthOfChar > safeWidth && column > displayWidth(prefix)) {
+      if (column + widthOfChar > safeWidth && column > prefixWidth) {
         lines.push(line);
         line = prefix;
-        column = displayWidth(prefix);
+        column = prefixWidth;
         widthOfChar = char === '\t' ? tabWidthAt(column) : charWidth(char);
       }
 

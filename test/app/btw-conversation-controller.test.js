@@ -118,6 +118,8 @@ test('BTW derives parent activity labels inside the side controller', () => {
   assert.equal(controller.getParentActivity(), 'MAIN streaming');
   parentTurnState.pending = {kind: 'tool_call', toolName: 'grep', argumentsText: '{}'};
   assert.equal(controller.getParentActivity(), 'MAIN tool grep');
+  parentTurnState.pending = {kind: 'reasoning_streaming', text: 'thinking'};
+  assert.equal(controller.getParentActivity(), 'MAIN reasoning');
   parentTurnState.pending = {kind: 'thinking', elapsedMs: 0};
   assert.equal(controller.getParentActivity(), 'MAIN thinking');
   parentTurnState.pending = null;
@@ -148,6 +150,31 @@ test('BTW close aborts the active side signal and ignores late callbacks', async
   assert.equal(controller.isActive(), false);
 });
 
+test('BTW commits completed reasoning before entering assistant streaming', async () => {
+  let stateAfterSummary;
+  let stateAfterToken;
+  const {controller} = createHarness(async (_session, callbacks) => {
+    callbacks.onReasoningUpdate?.({kind: 'draft', text: 'thinking'});
+    callbacks.onReasoningUpdate?.({kind: 'complete', text: 'thinking'});
+    stateAfterSummary = controller.createRenderState(createBaseRenderState());
+    callbacks.onToken?.('d', 'draft');
+    stateAfterToken = controller.createRenderState(createBaseRenderState());
+    callbacks.onComplete?.('draft');
+  });
+
+  controller.open('inspect');
+  await flush();
+
+  assert.equal(stateAfterSummary.pending, null);
+  assert.deepEqual(stateAfterToken.pending, {kind: 'streaming', text: 'draft'});
+  assert.deepEqual(controller.getRecords().map((record) => record.role), [
+    'user',
+    'reasoning_summary',
+    'assistant'
+  ]);
+  controller.close();
+});
+
 test('BTW keeps tool pairs, todo, compaction, and provider-private records in side state only', async () => {
   const sessions = [];
   let runCount = 0;
@@ -156,7 +183,7 @@ test('BTW keeps tool pairs, todo, compaction, and provider-private records in si
     runCount += 1;
     if (runCount === 1) {
       callbacks.onProviderRecords?.([{role: 'extension', text: '', extension: {kind: 'unknown', name: 'private', payload: {id: 1}}}]);
-      callbacks.onReasoningSummary?.('side reasoning');
+      callbacks.onReasoningUpdate?.({kind: 'complete', text: 'side reasoning'});
       callbacks.onToolCall?.({callId: 'read-1', toolName: 'read_files', argumentsText: '{"files":[]}'});
       callbacks.onToolResult?.({callId: 'read-1', toolName: 'read_files', ok: true, text: 'files: empty', details: {kind: 'read_files', truncated: false}});
       callbacks.onTodoStateChange?.({updatedAt: 'side', items: [{id: 'side', text: 'follow up', status: 'open'}]});

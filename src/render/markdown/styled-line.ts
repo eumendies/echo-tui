@@ -20,7 +20,8 @@ function renderStyledLine(options: RenderStyledLineOptions): string[] {
   const theme = options.theme || DEFAULT_TUI_THEME;
   const safeWidth = safeRenderWidth(options.width);
   const visibleContentPrefix = stripAnsi(options.contentPrefix ?? '');
-  const visibleContinuationPrefix = options.continuationPrefix ?? ' '.repeat(displayWidth(visibleContentPrefix));
+  // continuationPrefix 允许携带 ANSI 样式（如引用竖线着色），宽度计算只取可见字符。
+  const visibleContinuationPrefix = stripAnsi(options.continuationPrefix ?? ' '.repeat(displayWidth(visibleContentPrefix)));
   const roleContinuationPrefix = ' '.repeat(displayWidth(options.prefix));
   const firstPrefixWidth = displayWidth(options.prefix) + displayWidth(visibleContentPrefix);
   const continuationPrefixWidth = displayWidth(roleContinuationPrefix) + displayWidth(visibleContinuationPrefix);
@@ -31,7 +32,8 @@ function renderStyledLine(options: RenderStyledLineOptions): string[] {
 
   function flushLine(): void {
     const rolePrefix = lineIndex === 0 ? options.prefix : roleContinuationPrefix;
-    const contentPrefix = lineIndex === 0 ? options.contentPrefix ?? '' : visibleContinuationPrefix;
+    // 续行优先使用原始 continuationPrefix（可带样式），无则退回纯空白对齐。
+    const contentPrefix = lineIndex === 0 ? options.contentPrefix ?? '' : options.continuationPrefix ?? visibleContinuationPrefix;
     lines.push(renderPhysicalLine(rolePrefix, contentPrefix, currentSpans, theme, options.lineStyle));
     currentSpans = [];
     currentWidth = continuationPrefixWidth;

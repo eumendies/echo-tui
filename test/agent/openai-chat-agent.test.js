@@ -503,13 +503,17 @@ test('createOpenAiChatAgent streams text chunks and returns prompt usage', async
   ]);
 });
 
-test('createOpenAiChatAgent returns reasoning summary without mixing it into draft', async () => {
+test('createOpenAiChatAgent streams reasoning completion without mixing it into draft', async () => {
   const harness = createHarness([
     { choices: [{ delta: { reasoning_content: 'I should ' } }] },
-    { choices: [{ delta: { reasoning_content: 'think.', content: 'Done.' }, finish_reason: 'stop' }] }
+    { choices: [{ delta: { reasoning_content: 'think.' } }] },
+    { choices: [{ delta: { content: 'Done.' }, finish_reason: 'stop' }] }
   ]);
 
   const result = await harness.runTurn([{ role: 'user', text: 'think' }], {
+    onReasoningUpdate(update) {
+      harness.callbacks.push(['reasoning', update]);
+    },
     onToken(delta, draft) {
       harness.callbacks.push(['token', delta, draft]);
     }
@@ -518,11 +522,61 @@ test('createOpenAiChatAgent returns reasoning summary without mixing it into dra
   assert.deepEqual(result, {
     draft: 'Done.',
     providerRecords: [createOpenAiChatReasoningTranscriptRecord('I should think.')],
-    reasoningSummary: 'I should think.',
     toolCalls: [],
     usageInputTokens: undefined
   });
-  assert.deepEqual(harness.callbacks, [['token', 'Done.', 'Done.']]);
+  assert.deepEqual(harness.callbacks, [
+    ['reasoning', {kind: 'draft', text: 'I should'}],
+    ['reasoning', {kind: 'draft', text: 'I should think.'}],
+    ['reasoning', {kind: 'complete', text: 'I should think.'}],
+    ['token', 'Done.', 'Done.']
+  ]);
+});
+
+test('createOpenAiChatAgent completes compatible reasoning before the first assistant token', async () => {
+  const harness = createHarness([
+    { choices: [{ delta: { reasoning_content: 'I should think.' } }] },
+    { choices: [{ delta: { content: 'Done.' }, finish_reason: 'stop' }] }
+  ]);
+
+  await harness.runTurn([{ role: 'user', text: 'think' }], {
+    onReasoningUpdate(update) {
+      harness.callbacks.push(['reasoning', update]);
+    },
+    onToken(delta, draft) {
+      harness.callbacks.push(['token', delta, draft]);
+    }
+  });
+
+  assert.deepEqual(harness.callbacks, [
+    ['reasoning', {kind: 'draft', text: 'I should think.'}],
+    ['reasoning', {kind: 'complete', text: 'I should think.'}],
+    ['token', 'Done.', 'Done.']
+  ]);
+});
+
+test('createOpenAiChatAgent ignores reasoning_content after assistant streaming begins', async () => {
+  const harness = createHarness([
+    {choices: [{delta: {reasoning_content: 'initial reasoning'}}]},
+    {choices: [{delta: {content: 'Done.'}}]},
+    {choices: [{delta: {reasoning_content: 'late reasoning'}, finish_reason: 'stop'}]}
+  ]);
+
+  const result = await harness.runTurn([{role: 'user', text: 'think'}], {
+    onReasoningUpdate(update) {
+      harness.callbacks.push(['reasoning', update]);
+    },
+    onToken(delta, draft) {
+      harness.callbacks.push(['token', delta, draft]);
+    }
+  });
+
+  assert.deepEqual(result.providerRecords, [createOpenAiChatReasoningTranscriptRecord('initial reasoning')]);
+  assert.deepEqual(harness.callbacks, [
+    ['reasoning', {kind: 'draft', text: 'initial reasoning'}],
+    ['reasoning', {kind: 'complete', text: 'initial reasoning'}],
+    ['token', 'Done.', 'Done.']
+  ]);
 });
 
 test('createOpenAiChatAgent configures SDK client and passes abort signal', async () => {
@@ -621,15 +675,22 @@ test('createOpenAiChatAgent preserves reasoning summary with tool calls', async 
     }
   ], createToolRegistry());
 
-  const result = await harness.runTurn([{ role: 'user', text: 'inspect' }]);
+  const result = await harness.runTurn([{ role: 'user', text: 'inspect' }], {
+    onReasoningUpdate(update) {
+      harness.callbacks.push(['reasoning', update]);
+    }
+  });
 
   assert.deepEqual(result, {
     draft: '',
     providerRecords: [createOpenAiChatReasoningTranscriptRecord('Need a tool.')],
-    reasoningSummary: 'Need a tool.',
     toolCalls: [{ callId: 'call_1', toolName: 'run_bash_command', argumentsText: '{"command":"pwd"}' }],
     usageInputTokens: undefined
   });
+  assert.deepEqual(harness.callbacks, [
+    ['reasoning', {kind: 'draft', text: 'Need a tool.'}],
+    ['reasoning', {kind: 'complete', text: 'Need a tool.'}]
+  ]);
 });
 
 test('createOpenAiChatAgent returns chat reasoning content record by default', async () => {
@@ -650,7 +711,7 @@ test('createOpenAiChatAgent returns chat reasoning content record by default', a
   const result = await harness.runTurn([{ role: 'user', text: 'inspect' }]);
 
   assert.deepEqual(result.providerRecords, [createOpenAiChatReasoningTranscriptRecord('Need a tool.')]);
-  assert.equal(result.reasoningSummary, 'Need a tool.');
+  assert.equal(Object.hasOwn(result, 'reasoningSummary'), false);
   assert.deepEqual(result.toolCalls, [{ callId: 'call_1', toolName: 'run_bash_command', argumentsText: '{"command":"pwd"}' }]);
 });
 

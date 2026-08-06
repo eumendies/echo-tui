@@ -26,13 +26,16 @@ test('renderMarkdownLines projects headings, paragraphs, lists, quotes, and rule
   }
 });
 
-test('renderMarkdownLines keeps quote style active across a wrapped first quote line', () => {
+test('renderMarkdownLines keeps quote gutter styled across wrapped quote lines', () => {
   const lines = renderMarkdownLines('> quoted text that is long enough to wrap onto another terminal line', 28, '◆ ');
-  const quoteColor = '\x1b[38;2;85;85;85m';
+  const quoteColor = '\x1b[38;2;0;170;170m';
 
   assert.ok(lines.length > 1);
+  // 首行与换行后的续行竖线都使用 quote 样式作为引用边界。
   assert.ok(lines.every((line) => line.includes(`${quoteColor}│ `)));
-  assert.equal(lines[0].includes('│\x1b[39m\x1b[22m'), false);
+  // 竖线样式在其自身作用域内闭合，正文保持默认前景色。
+  assert.ok(lines.every((line) => line.includes('│ \x1b[39m')));
+  assert.ok(lines.every((line) => !line.slice(line.lastIndexOf('│ ') + 2).includes(quoteColor)));
 });
 
 test('renderMarkdownLines highlights fenced code directly without drawing a box', () => {
@@ -167,6 +170,42 @@ test('renderMarkdownLines keeps table separators aligned with emoji cells', () =
   assert.ok(plainLines.some((line) => line.includes('✅')));
   assert.ok(plainLines.some((line) => line.includes('🙂')));
   assert.ok(plainLines.some((line) => line.includes('👨‍👩‍👧‍👦')));
+
+  for (const line of lines) {
+    assert.ok(displayWidth(line) <= safeRenderWidth(80));
+  }
+});
+
+test('renderMarkdownLines aligns tables with supplementary-plane and VS16 chars', () => {
+  const lines = renderMarkdownLines(
+    ['| Char | Width |', '| --- | --- |', '| 𠀀 | 2 |', '| ⚠ | 1 |', '| ⚠️ | 2 |', '| ♠ | 1 |', '| ♠️ | 2 |'].join('\n'),
+    80,
+    '◆ '
+  );
+  const plainLines = lines.map((line) => stripAnsi(line));
+  const firstColumnWidths = [plainLines[0], plainLines[2], plainLines[3], plainLines[4], plainLines[5], plainLines[6]]
+    .map((line) => displayWidth(line.slice(0, line.indexOf('│'))));
+
+  // 所有行的第一列边界必须落在同一列：CJK 扩展 B 与 VS16 emoji 按 2 列、文本呈现符号按 1 列。
+  assert.deepEqual(firstColumnWidths, [7, 7, 7, 7, 7, 7]);
+
+  for (const line of lines) {
+    assert.ok(displayWidth(line) <= safeRenderWidth(80));
+  }
+});
+
+test('renderMarkdownLines keeps zero-width chars from shifting table borders', () => {
+  const lines = renderMarkdownLines(
+    ['| Word | Note |', '| --- | --- |', '| c\u0301afe | combining |', '| a\u200bb | zwsp |'].join('\n'),
+    80,
+    '◆ '
+  );
+  const plainLines = lines.map((line) => stripAnsi(line));
+  const firstColumnWidths = [plainLines[0], plainLines[2], plainLines[3]]
+    .map((line) => displayWidth(line.slice(0, line.indexOf('│'))));
+
+  // 组合音标与 ZWSP 不占列：cafe 视觉宽度 4（c+组合音标=1），列宽 4，边界一致。
+  assert.deepEqual(firstColumnWidths, [7, 7, 7]);
 
   for (const line of lines) {
     assert.ok(displayWidth(line) <= safeRenderWidth(80));

@@ -367,7 +367,26 @@ export type CommandCodexUsageResult =
 
 export type StatusCommandUsageState = CommandCodexUsageResult | {status: 'loading'};
 
+export type CommandDeepseekBalanceInfo = {
+  currency: string; // 币种代码，如 CNY / USD。
+  grantedBalance: string; // 赠送余额。
+  totalBalance: string; // 账户总余额。
+  toppedUpBalance: string; // 充值余额。
+};
+
+export type CommandDeepseekBalanceResult =
+  | {
+      status: 'available';
+      isAvailable: boolean; // 余额是否足以继续调用 API。
+      balanceInfos: CommandDeepseekBalanceInfo[];
+    }
+  | {status: 'not_applicable'}
+  | {status: 'unavailable'; error: string};
+
+export type StatusCommandDeepseekBalanceState = CommandDeepseekBalanceResult | {status: 'loading'};
+
 export type StatusCommandSurface = {
+  deepseekBalance: StatusCommandDeepseekBalanceState;
   dismissHint: string;
   kind: 'status';
   snapshot: CommandStatusSnapshot;
@@ -664,6 +683,7 @@ export type CommandHostApp = {
   };
   status: {
     createSnapshot(): CommandStatusSnapshot;
+    queryDeepseekBalance(): Promise<CommandDeepseekBalanceResult>;
     queryCodexUsage(): Promise<CommandCodexUsageResult>;
   };
   usage: {

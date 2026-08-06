@@ -66,6 +66,7 @@ function createFakeHost(options = {}) {
     sessionCloses: 0,
     sessionOpens: [],
     sessionUpdates: [],
+    deepseekBalanceQueries: 0,
     statusQueries: 0,
     clipboardWrites: [],
     transcriptAppends: [],
@@ -293,6 +294,12 @@ function createFakeHost(options = {}) {
           diagnostics: []
         });
       },
+      queryDeepseekBalance() {
+        calls.deepseekBalanceQueries += 1;
+        return options.queryDeepseekBalance
+          ? options.queryDeepseekBalance()
+          : Promise.resolve({status: 'not_applicable'});
+      },
       queryCodexUsage() {
         calls.statusQueries += 1;
         return options.queryStatusUsage
@@ -506,7 +513,9 @@ test('statusCommandHandler loads Codex usage and isolates late results', async (
   let session = startCommand(handler, '/status', harness.host);
   assert.equal(session.surface.kind, 'status');
   assert.equal(session.surface.usage.status, 'loading');
+  assert.equal(session.surface.deepseekBalance.status, 'loading');
   assert.equal(harness.calls.statusQueries, 1);
+  assert.equal(harness.calls.deepseekBalanceQueries, 1);
   assert.deepEqual(harness.calls.transcriptAppends, []);
 
   resolveUsage({
@@ -518,8 +527,9 @@ test('statusCommandHandler loads Codex usage and isolates late results', async (
   session = harness.host.session.getActive();
   assert.equal(session.surface.usage.status, 'available');
   assert.equal(session.surface.usage.primary.usedPercent, 25);
-  assert.equal(harness.calls.sessionUpdates.length, 1);
-  assert.equal(harness.calls.renders, 1);
+  assert.equal(session.surface.deepseekBalance.status, 'not_applicable');
+  assert.equal(harness.calls.sessionUpdates.length, 2);
+  assert.equal(harness.calls.renders, 2);
 
   handler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: 'q'}, harness.host);
   assert.equal(harness.calls.sessionCloses, 1);
@@ -551,6 +561,7 @@ test('statusCommandHandler resolves non-Codex usage and maps query rejection', a
   await new Promise((resolve) => setImmediate(resolve));
   session = local.host.session.getActive();
   assert.equal(session.surface.usage.status, 'not_applicable');
+  assert.equal(session.surface.deepseekBalance.status, 'not_applicable');
   handler.handleEvent(session, {type: INPUT_EVENTS.SUBMIT}, local.host);
   assert.equal(local.calls.sessionCloses, 1);
 
@@ -592,6 +603,41 @@ test('statusCommandHandler resolves non-Codex usage and maps query rejection', a
   session = missingModel.host.session.getActive();
   assert.equal(session.surface.usage.status, 'unavailable');
   assert.match(session.surface.usage.error, /无法读取当前模型配置/);
+});
+
+test('statusCommandHandler loads DeepSeek balance and maps query rejection', async () => {
+  const handler = new StatusCommandHandler();
+  let resolveBalance;
+  const balancePromise = new Promise((resolve) => {
+    resolveBalance = resolve;
+  });
+  const harness = createFakeHost({queryDeepseekBalance: () => balancePromise});
+  let session = startCommand(handler, '/status', harness.host);
+
+  assert.equal(session.surface.deepseekBalance.status, 'loading');
+  assert.equal(harness.calls.deepseekBalanceQueries, 1);
+
+  resolveBalance({
+    status: 'available',
+    isAvailable: true,
+    balanceInfos: [
+      {currency: 'CNY', totalBalance: '110.00', grantedBalance: '10.00', toppedUpBalance: '100.00'}
+    ]
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  session = harness.host.session.getActive();
+  assert.equal(session.surface.deepseekBalance.status, 'available');
+  assert.equal(session.surface.deepseekBalance.balanceInfos[0].currency, 'CNY');
+  assert.equal(session.surface.deepseekBalance.balanceInfos[0].totalBalance, '110.00');
+
+  const rejected = createFakeHost({
+    queryDeepseekBalance: () => Promise.reject(new Error('balance failed'))
+  });
+  startCommand(handler, '/status', rejected.host);
+  await new Promise((resolve) => setImmediate(resolve));
+  session = rejected.host.session.getActive();
+  assert.equal(session.surface.deepseekBalance.status, 'unavailable');
+  assert.match(session.surface.deepseekBalance.error, /balance failed/);
 });
 
 test('copyCommandHandler opens copy surface, toggles selection, and copies formatted text', async () => {
@@ -1346,7 +1392,7 @@ test('createSlashCommandDescriptors derives display metadata from handlers', () 
     { name: 'model', description: '切换模型' },
     { name: 'effort', description: '调整推理等级' },
     { name: 'mode', description: '切换交互模式' },
-    { name: 'status', description: '查看运行状态与 Codex 用量', allowDuringAssistantTurn: true },
+    { name: 'status', description: '查看运行状态与账户用量', allowDuringAssistantTurn: true },
     { name: 'context', description: '查看 context 占用详情', allowDuringAssistantTurn: true },
     { name: 'usage', description: '查看每日 token 用量', allowDuringAssistantTurn: true },
     { name: 'copy', description: '复制会话消息', allowDuringAssistantTurn: true },

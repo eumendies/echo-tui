@@ -1,4 +1,5 @@
 import {INPUT_EVENTS} from './event-types';
+import {splitGraphemes} from './graphemes';
 
 import type { ComposerState } from '../types/composer';
 import type { InputEvent } from '../types/input';
@@ -8,8 +9,8 @@ import type { InputEvent } from '../types/input';
  *
  */
 export function createComposer(initialValue = ''): ComposerState {
-  // composer 用字符数组作为编辑模型，不用 string.length 管理光标。
-  const chars = Array.from(initialValue);
+  // composer 用 grapheme 数组作为编辑模型，光标按 cluster 边界移动，避免拆散复合 emoji。
+  const chars = splitGraphemes(initialValue);
 
   return {
     chars,
@@ -79,8 +80,8 @@ export function applyComposerEditEvent(composer: ComposerState, event: InputEven
  *
  */
 export function insertText(composer: ComposerState, text: string): void {
-  // Array.from 让中文字符按一个编辑单元插入和移动。
-  const incoming = Array.from(text);
+  // grapheme 切分让中文和复合 emoji 都按一个编辑单元插入和移动。
+  const incoming = splitGraphemes(text);
   composer.chars.splice(composer.cursor, 0, ...incoming);
   composer.cursor += incoming.length;
 }
@@ -92,7 +93,7 @@ export function insertText(composer: ComposerState, text: string): void {
 export function replaceRange(composer: ComposerState, start: number, end: number, text: string): void {
   const normalizedStart = Math.min(Math.max(0, Math.floor(start)), composer.chars.length);
   const normalizedEnd = Math.min(Math.max(normalizedStart, Math.floor(end)), composer.chars.length);
-  const incoming = Array.from(text);
+  const incoming = splitGraphemes(text);
   composer.chars.splice(normalizedStart, normalizedEnd - normalizedStart, ...incoming);
   composer.cursor = normalizedStart + incoming.length;
 }
@@ -254,7 +255,7 @@ export function moveEnd(composer: ComposerState): void {
  *
  */
 export function setText(composer: ComposerState, text: string): void {
-  composer.chars = Array.from(text);
+  composer.chars = splitGraphemes(text);
   composer.cursor = composer.chars.length;
 }
 

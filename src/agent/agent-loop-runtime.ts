@@ -468,15 +468,6 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
       });
     }
 
-    function commitReasoningSummary(summary?: string): void {
-      if (!summary) {
-        return;
-      }
-
-      callbacks.onReasoningSummary?.(summary);
-      recordRegion.push({role: 'reasoning_summary', text: summary});
-    }
-
     function commitProviderRecords(records?: TranscriptRecord[]): void {
       if (!records || records.length === 0) {
         return;
@@ -560,9 +551,18 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
       throwIfAborted(abortSignal);
       const providerTurnCallbacks: AgentTurnCallbacks = {
         onProviderRetry: commitProviderRetry,
+        ...(callbacks.onReasoningUpdate ? {
+          onReasoningUpdate(update) {
+            callbacks.onReasoningUpdate?.(update);
+
+            if (update.kind === 'complete') {
+              recordRegion.push({role: 'reasoning_summary', text: update.text});
+            }
+          }
+        } : {}),
         onToken: callbacks.onToken
       };
-      const {draft, providerRecords: turnProviderRecords, reasoningSummary, toolCalls, usage, usageInputTokens} = await state.agent.runTurn(providerRecords, providerTurnCallbacks, {abortSignal});
+      const {draft, providerRecords: turnProviderRecords, toolCalls, usage, usageInputTokens} = await state.agent.runTurn(providerRecords, providerTurnCallbacks, {abortSignal});
       throwIfAborted(abortSignal);
 
       if (typeof usageInputTokens === 'number') {
@@ -586,7 +586,6 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
       if (toolCalls.length === 0) {
         // 没有 tool call 表示模型已经给出本轮最终 assistant 回复。
         commitProviderRecords(turnProviderRecords);
-        commitReasoningSummary(reasoningSummary);
 
         throwIfAborted(abortSignal);
         callbacks.onComplete?.(draft);
@@ -594,8 +593,6 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
       }
 
       commitProviderRecords(turnProviderRecords);
-
-      commitReasoningSummary(reasoningSummary);
 
       if (draft.trim() !== '') {
         // tool call 前的文本是已完成 assistant segment，需要先交给 app 落盘但不释放响应锁。

@@ -241,11 +241,10 @@
       },
       "quote": {
         "foreground": [
-          85,
-          85,
-          85
-        ],
-        "dim": true
+          0,
+          170,
+          170
+        ]
       },
       "rolePrefix": {
         "foreground": [

@@ -168,6 +168,45 @@ function readReasoningSummaryText(parts: Map<string, {order: [number, number]; t
   return text === '' ? undefined : text;
 }
 
+function extractCompletedReasoningSummary(event: unknown): {outputIndex: number; texts: string[]} | null {
+  if (!isStreamEvent(event) || event.type !== 'response.output_item.done') {
+    return null;
+  }
+
+  const candidate = event as {item?: {status?: unknown; summary?: unknown; type?: unknown}; output_index?: unknown};
+
+  if (candidate.item?.type !== 'reasoning' ||
+    candidate.item.status === 'incomplete' ||
+    !Array.isArray(candidate.item.summary) ||
+    typeof candidate.output_index !== 'number') {
+    return null;
+  }
+
+  const texts = candidate.item.summary
+    .map((part) => {
+      const summaryPart = part as {text?: unknown; type?: unknown};
+      return summaryPart?.type === 'summary_text' && typeof summaryPart.text === 'string' ? summaryPart.text : null;
+    })
+    .filter((text): text is string => text !== null);
+
+  return {outputIndex: candidate.output_index, texts};
+}
+
+function replaceCompletedReasoningParts(parts: Map<string, {order: [number, number]; text: string}>, completed: {outputIndex: number; texts: string[]}): string | undefined {
+  for (const [key, part] of parts) {
+    if (part.order[0] === completed.outputIndex) {
+      parts.delete(key);
+    }
+  }
+
+  completed.texts.forEach((text, summaryIndex) => {
+    const order: [number, number] = [completed.outputIndex, summaryIndex];
+    parts.set(createReasoningSummaryKey(order), {order, text});
+  });
+
+  return readReasoningSummaryText(parts);
+}
+
 function extractReasoningOutputItem(event: unknown): TranscriptRecord | null {
   if (!isStreamEvent(event) || event.type !== 'response.output_item.done') {
     return null;
@@ -355,6 +394,11 @@ async function readResponseStream(stream: ResponseStream, callbacks: AgentTurnCa
           order: reasoningSummaryDelta.order,
           text: `${current?.text || ''}${reasoningSummaryDelta.delta}`
         });
+        const reasoningDraft = readReasoningSummaryText(reasoningSummaryParts);
+
+        if (reasoningDraft) {
+          callbacks.onReasoningUpdate?.({kind: 'draft', text: reasoningDraft});
+        }
       }
 
       const reasoningSummaryDone = extractReasoningSummaryDone(event);
@@ -364,6 +408,21 @@ async function readResponseStream(stream: ResponseStream, callbacks: AgentTurnCa
           order: reasoningSummaryDone.order,
           text: reasoningSummaryDone.text
         });
+        const reasoningDraft = readReasoningSummaryText(reasoningSummaryParts);
+
+        if (reasoningDraft) {
+          callbacks.onReasoningUpdate?.({kind: 'draft', text: reasoningDraft});
+        }
+      }
+
+      const completedReasoning = extractCompletedReasoningSummary(event);
+
+      if (completedReasoning) {
+        const reasoningSummary = replaceCompletedReasoningParts(reasoningSummaryParts, completedReasoning);
+
+        if (reasoningSummary) {
+          callbacks.onReasoningUpdate?.({kind: 'complete', text: reasoningSummary});
+        }
       }
 
       const reasoningRecord = extractReasoningOutputItem(event);
@@ -399,12 +458,9 @@ async function readResponseStream(stream: ResponseStream, callbacks: AgentTurnCa
     throw new LlmAgentError('模型响应流未完成');
   }
 
-  const reasoningSummary = readReasoningSummaryText(reasoningSummaryParts);
-
   return {
     draft,
     ...(providerRecords.length > 0 ? {providerRecords} : {}),
-    ...(reasoningSummary ? {reasoningSummary} : {}),
     toolCalls,
     ...(usage ? {usage} : {}),
     usageInputTokens
@@ -451,6 +507,13 @@ async function runResponseStreamWithRetry(createStream: ResponseStreamFactory, c
     const stream = await createStream();
     let emittedText = false;
     const attemptCallbacks: AgentTurnCallbacks = {
+      onReasoningUpdate(update) {
+        if (callbacks.onReasoningUpdate && update.text.trim() !== '') {
+          emittedText = true;
+        }
+
+        callbacks.onReasoningUpdate?.(update);
+      },
       onToken(delta, draft) {
         if (delta !== '') {
           emittedText = true;

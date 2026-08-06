@@ -1,7 +1,7 @@
 import * as ansi from '../terminal/ansi';
 import {DEFAULT_TUI_THEME, type ThemeColor, type TuiTheme} from '../config/theme-config';
 import {blockBackground, blockText, colorText} from './colors';
-import { charWidth, displayWidth, safeRenderWidth, tabWidthAt } from './layout';
+import { charWidth, displayWidth, safeRenderWidth, splitGraphemes, tabWidthAt } from './layout';
 import { renderMarkdownLinesWithOptions } from './markdown';
 import { renderToolCallPreviewLines } from './tool-message-renderer';
 import type { BannerContext, PendingState, TerminalSize } from '../types/render';
@@ -178,7 +178,7 @@ function clampToDisplayWidth(text: string, width: number): string {
   let result = '';
   let currentWidth = 0;
 
-  for (const char of Array.from(text)) {
+  for (const char of splitGraphemes(text)) {
     const widthOfChar = charWidth(char);
 
     if (currentWidth + widthOfChar > normalizedWidth - 3) {
@@ -365,9 +365,10 @@ function renderShellMessageLines(text: string, width = 80, theme: TuiTheme): str
 
 /**
  * 把 pending assistant 状态投影为逐行字符串。
- * pending 包括 thinking、streaming、tool_call、shell_output 四种状态
+ * pending 包括 thinking、reasoning_streaming、streaming、tool_call、shell_output 状态
  * thinking状态：由 status line 展示，pending preview 不再占独立行
- * streaming状态：展示模型流式输出内容
+ * reasoning_streaming状态：展示有界的可读 reasoning preview
+ * streaming状态：展示模型正文流式输出内容
  * tool_call状态：展示模型调用的工具
  *
  */
@@ -395,8 +396,38 @@ export function renderPendingAssistantLines(
     return renderShellOutputPendingLines(pending.command, pending.output, width, normalizedMaxLines, theme);
   }
 
-  // 渲染流式输出内容
+  if (pending.kind === 'reasoning_streaming') {
+    return renderReasoningPendingLines(pending.text, width, normalizedMaxLines, theme);
+  }
+
   return renderStreamingPendingLines(pending.text, width, normalizedMaxLines, theme);
+}
+
+/**
+ * 渲染 reasoning streaming preview；它是 transient 可见推理摘要，不走 Markdown，长文本只保留尾部。
+ */
+function renderReasoningPendingLines(text: string, width: number, maxLines: number, theme: TuiTheme): string[] {
+  const lines = renderReasoningSummaryLines(text, width, theme);
+  const normalizedMaxLines = normalizePreviewMaxLines(maxLines);
+
+  if (normalizedMaxLines === 0) {
+    return [];
+  }
+
+  if (lines.length <= normalizedMaxLines) {
+    return lines;
+  }
+
+  const safeTextWidth = Math.max(1, safeRenderWidth(width) - displayWidth('◇ '));
+
+  if (normalizedMaxLines === 1) {
+    const summaryText = clampToDisplayWidth(`…已生成 ${lines.length} 行 reasoning`, safeTextWidth);
+    return renderReasoningSummaryLines(summaryText, width, theme);
+  }
+
+  const tailLineCount = normalizedMaxLines - 1;
+  const summaryText = clampToDisplayWidth(`…已生成 ${lines.length} 行 reasoning，显示最新 ${tailLineCount} 行`, safeTextWidth);
+  return [renderReasoningSummaryLines(summaryText, width, theme)[0], ...lines.slice(-tailLineCount)];
 }
 
 /**
@@ -574,7 +605,7 @@ function wrapContentLine(text: string, width: number, prefixWidth: number): stri
   const lines = [''];
   let column = prefixWidth;
 
-  for (const char of Array.from(text)) {
+  for (const char of splitGraphemes(text)) {
     let widthOfChar = char === '\t' ? tabWidthAt(column) : charWidth(char);
 
     if (column + widthOfChar > width && column > prefixWidth) {

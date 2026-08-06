@@ -153,6 +153,22 @@ test('config command state configures model effort and preserves other reasoning
   assert.deepEqual(saveResult.draft.providers[0].models[0].reasoning, {summary: 'auto', effort: 'none'});
 });
 
+test('config command state ignores submit on the effort row', () => {
+  const draft = createDraft();
+  draft.providers[0].models[0].reasoning = {effort: 'low'};
+  const driver = createStateDriver(draft);
+
+  openForm(driver);
+  moveFormToRow(driver, 'model');
+  driver.handle({type: INPUT_EVENTS.SUBMIT});
+  driver.handle({type: INPUT_EVENTS.MOVE_DOWN});
+  driver.handle({type: INPUT_EVENTS.MOVE_DOWN});
+
+  driver.handle({type: INPUT_EVENTS.SUBMIT});
+  assert.equal(driver.getState().mode, 'modelDetail');
+  assert.deepEqual(driver.getState().draft.providers[0].models[0].reasoning, {effort: 'low'});
+});
+
 test('config command state does not offer model effort for fake agent', () => {
   const driver = createStateDriver({
     providers: [{id: 'default', label: 'Fake Agent', preset: 'fake-agent', apiKey: '', models: [{id: 'default', model: 'echo-fake-agent'}]}],
