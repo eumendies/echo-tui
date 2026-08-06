@@ -88,8 +88,7 @@
         "foreground": "#facc15"
       },
       "quote": {
-        "foreground": "#a8a29e",
-        "dim": true
+        "foreground": "#facc15"
       },
       "rolePrefix": {
         "foreground": "#fde047"

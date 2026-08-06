@@ -26,13 +26,16 @@ test('renderMarkdownLines projects headings, paragraphs, lists, quotes, and rule
   }
 });
 
-test('renderMarkdownLines keeps quote style active across a wrapped first quote line', () => {
+test('renderMarkdownLines keeps quote gutter styled across wrapped quote lines', () => {
   const lines = renderMarkdownLines('> quoted text that is long enough to wrap onto another terminal line', 28, '◆ ');
-  const quoteColor = '\x1b[38;2;85;85;85m';
+  const quoteColor = '\x1b[38;2;0;170;170m';
 
   assert.ok(lines.length > 1);
+  // 首行与换行后的续行竖线都使用 quote 样式作为引用边界。
   assert.ok(lines.every((line) => line.includes(`${quoteColor}│ `)));
-  assert.equal(lines[0].includes('│\x1b[39m\x1b[22m'), false);
+  // 竖线样式在其自身作用域内闭合，正文保持默认前景色。
+  assert.ok(lines.every((line) => line.includes('│ \x1b[39m')));
+  assert.ok(lines.every((line) => !line.slice(line.lastIndexOf('│ ') + 2).includes(quoteColor)));
 });
 
 test('renderMarkdownLines highlights fenced code directly without drawing a box', () => {

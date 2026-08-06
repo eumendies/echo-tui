@@ -196,14 +196,14 @@ function renderMarkdownBlock(block: MarkdownBlock, width: number, prefix: string
         width
       });
     case 'blockquote':
+      // 引用竖线用 quote 样式着色作为视觉边界，正文保持默认前景色以保证可读性。
       return renderStyledLine({
         prefix,
-        contentPrefix: '│ ',
-        continuationPrefix: '│ ',
+        contentPrefix: markdownStyle(theme, 'quote', '│ '),
+        continuationPrefix: markdownStyle(theme, 'quote', '│ '),
         spans: parseInlineSpans(block.text, theme),
         theme,
-        width,
-        lineStyle: (text) => markdownStyle(theme, 'quote', text)
+        width
       });
     case 'rule':
       return [`${styleRolePrefix(prefix, theme)}${markdownStyle(theme, 'rule', '─'.repeat(Math.max(1, safeRenderWidth(width) - displayWidth(prefix))))}`];
