@@ -35,6 +35,27 @@ test('listProviderModels lists OpenAI-compatible models with baseURL and headers
   assert.deepEqual(clientOptions.defaultHeaders, {'x-source': 'echo-tui'});
 });
 
+test('listProviderModels uses fixed Ollama local endpoint with placeholder api key', async () => {
+  let clientOptions;
+  class FakeOpenAIClient {
+    constructor(options) {
+      clientOptions = options;
+      this.models = {list: async () => ({data: [{id: 'llama3.1:8b'}, {id: 'qwen2.5-coder:7b'}]})};
+    }
+  }
+
+  const result = await listProviderModels(createProvider({
+    preset: 'ollama',
+    apiKey: '',
+    baseURL: undefined,
+    headers: undefined
+  }), {OpenAIClient: FakeOpenAIClient});
+
+  assert.deepEqual(result, {ok: true, models: [{id: 'llama3.1:8b'}, {id: 'qwen2.5-coder:7b'}]});
+  assert.equal(clientOptions.apiKey, 'ollama');
+  assert.equal(clientOptions.baseURL, 'http://localhost:11434/v1');
+});
+
 test('listProviderModels uses fixed Xiaomi Mimo baseURL', async () => {
   let clientOptions;
   class FakeOpenAIClient {
