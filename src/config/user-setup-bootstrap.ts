@@ -195,8 +195,9 @@ Configure providers under \`llm.providers\`:
 }
 \`\`\`
 
-- \`preset\` selects the runtime protocol, such as \`fake-agent\`, \`openai-responses-api\`, \`openai-chat-compatible-api\`, \`anthropic-compatible-api\`, or \`openai-codex-oauth\`.
-- \`apiKey\` is required for most real remote providers; \`fake-agent\` and \`openai-codex-oauth\` do not need a configured API key.
+- \`preset\` selects the runtime protocol, such as \`fake-agent\`, \`openai-responses-api\`, \`openai-chat-compatible-api\`, \`anthropic-compatible-api\`, \`openai-codex-oauth\`, or \`ollama\`.
+- \`apiKey\` is required for most real remote providers; \`fake-agent\`, \`openai-codex-oauth\`, and \`ollama\` do not need a configured API key.
+- \`ollama\` calls a local Ollama server through its OpenAI-compatible endpoint at \`http://localhost:11434/v1\`; leave \`apiKey\` empty. For a custom Ollama endpoint, use \`openai-chat-compatible-api\` instead.
 - \`baseURL\` is optional, required, fixed, or hidden depending on the preset.
 - \`openai-codex-oauth\` requires an existing Codex/ChatGPT OAuth auth cache. echo-tui does not start a login flow; it reads \`codexAuthFile\`, then \`CODEX_HOME/auth.json\`, then \`~/.codex/auth.json\`. Expired access tokens are refreshed in memory only and are not written back to the Codex auth file.
 - \`headers\` can hold provider-specific string headers; never expose secret values in chat unless explicitly needed.

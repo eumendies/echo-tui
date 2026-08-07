@@ -76,7 +76,7 @@ function resolveProviderConnection(provider: ConfigProviderDraft): CommandConfig
   };
 
   return {
-    apiKey: provider.apiKey,
+    apiKey: provider.apiKey || preset.defaultApiKey || '',
     baseURL: preset.baseURLMode === 'fixed' ? preset.baseURL : provider.baseURL,
     codexAuthFile: provider.codexAuthFile,
     ...(Object.keys(headers).length > 0 ? {headers} : {}),

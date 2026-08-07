@@ -247,7 +247,7 @@ function readRequiredProviderString(source: ConfigSource, fieldName: string, pro
 
 function readProviderApiKey(source: ConfigSource, providerId: string, preset: ProviderPreset): string {
   if (!providerRequiresApiKey(preset)) {
-    return readOptionalProviderString(source, 'apiKey', providerId) || '';
+    return readOptionalProviderString(source, 'apiKey', providerId) || preset.defaultApiKey || '';
   }
 
   return readRequiredProviderString(source, 'apiKey', providerId);

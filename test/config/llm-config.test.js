@@ -718,6 +718,32 @@ test('readLlmConfig resolves openai-chat provider-backed model config', () => {
   });
 });
 
+test('readLlmConfig resolves ollama provider with fixed local base URL and placeholder api key', () => {
+  const config = readLlmConfig({
+    configPath: '/tmp/echo-config.json',
+    readFile: readConfigFrom(JSON.stringify({
+      llm: {
+        selectedModel: 'local',
+        providers: {
+          local: { preset: 'ollama' }
+        },
+        models: [
+          { id: 'local', provider: 'local', model: 'qwen2.5-coder:7b', contextWindow: 128000 }
+        ]
+      }
+    }))
+  });
+
+  assert.deepEqual(config, {
+    apiKey: 'ollama',
+    agentType: 'openai-chat',
+    baseURL: 'http://localhost:11434/v1',
+    model: 'qwen2.5-coder:7b',
+    contextWindow: 128000,
+    tools: DEFAULT_TOOLS
+  });
+});
+
 test('readLlmConfig resolves Xiaomi Mimo token plan preset with fixed OpenAI Chat base URL', () => {
   const config = readLlmConfig({
     configPath: '/tmp/echo-config.json',
