@@ -1,4 +1,3 @@
-import {readMcpConfig} from '../config/mcp-config';
 import {redactSensitiveText} from '../agent/agent-errors';
 import {createSdkMcpClient} from './client';
 
@@ -12,7 +11,7 @@ type InitializedMcpServer = {
 };
 
 type McpManagerDependencies = {
-  loadConfig?: () => McpConfig;
+  loadConfig: () => McpConfig;
   createClient?: CreateMcpClient;
 };
 
@@ -24,8 +23,11 @@ class McpManager {
   private diagnostics: McpBootstrapDiagnostic[];
   private bootstrapped: boolean;
 
-  constructor(dependencies: McpManagerDependencies = {}) {
-    this.loadConfig = dependencies.loadConfig || (() => readMcpConfig());
+  constructor(dependencies: McpManagerDependencies) {
+    if (!dependencies?.loadConfig) {
+      throw new Error('McpManager 必须注入配置加载器');
+    }
+    this.loadConfig = dependencies.loadConfig;
     this.createClient = dependencies.createClient || createSdkMcpClient;
     this.servers = new Map();
     this.namespacedToolNames = new Set();

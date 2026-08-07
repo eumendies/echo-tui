@@ -4,10 +4,26 @@ const assert = require('node:assert/strict');
 const {
   LlmConfigEditorError,
   normalizeConfigDraft,
-  readLlmConfigDraft,
-  saveLlmConfigDraft,
   validateConfigDraft
 } = require('../../src/config/llm-config-editor');
+const {UserConfigContext} = require('../../src/config/user-config-context');
+
+function withContext(options, read) {
+  const context = new UserConfigContext(options);
+  try {
+    return read(context);
+  } finally {
+    context.close();
+  }
+}
+
+function readLlmConfigDraft(options = {}) {
+  return withContext(options, (context) => context.capture().getLlmConfigDraft());
+}
+
+function saveLlmConfigDraft(draft, options = {}) {
+  return withContext(options, (context) => context.saveLlmConfigDraft(draft));
+}
 
 function readConfigFrom(value) {
   return () => value;

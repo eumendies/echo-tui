@@ -1,12 +1,13 @@
 import {prepareAgent} from '../../agent/agent-setup';
 import {createPendingConversationReference, prepareConversationReference} from '../../agent/context/conversation-reference';
 import {redactSensitiveText} from '../../agent/agent-errors';
-import {readLlmConfig, resolveContextWindow} from '../../config/llm-config';
+import {resolveContextWindow} from '../../config/llm-config';
 import {createUsageCwdHash} from '../../persistence/usage-store';
 import {isAbortError} from '../../types/agent';
 
 import type {AgentTurnResult, LlmConfig} from '../../types/agent';
 import type {CommandHostApp} from '../../types/command';
+import type {UserConfigContext} from '../../config/user-config-context';
 import type {UsageStore} from '../../types/usage';
 import type {AppContext} from '../state/app-context';
 
@@ -15,6 +16,7 @@ type ConversationReferenceCommandPortOptions = {
   appContext: AppContext; // 提供 transcript、引用和 turn 生命周期状态。
   renderFooter: () => void; // 在选择、取消和总结状态变化后重绘输入区。
   usageStore: UsageStore; // 记录独立引用总结请求产生的 token 用量。
+  userConfigContext: UserConfigContext; // 与 AppContext 共享的配置实例，禁止端口自行创建来源。
 };
 
 /**
@@ -22,6 +24,7 @@ type ConversationReferenceCommandPortOptions = {
  */
 function createConversationReferenceCommandPort(options: ConversationReferenceCommandPortOptions): CommandHostApp['reference'] {
   const {appContext, renderFooter, usageStore} = options;
+  const userConfigContext = options.userConfigContext;
 
   return {
     /** 返回当前 cwd 可引用的历史会话 metadata，不加载 journal 正文。 */
@@ -50,7 +53,8 @@ function createConversationReferenceCommandPort(options: ConversationReferenceCo
 
       try {
         const selection = appContext.getAgentSession();
-        const config = readLlmConfig({
+        const snapshot = selection.userConfigSnapshot || userConfigContext.capture();
+        const config = snapshot.resolveLlmConfig({
           modelProfileId: selection.modelProfileId,
           reasoningEffortOverride: selection.reasoningEffortOverride
         });
@@ -90,6 +94,7 @@ function createConversationReferenceCommandPort(options: ConversationReferenceCo
           reasoningEffortOverride: submissionOptions.reasoningEffortOverride
         });
         const prepared = prepareAgent({
+          configSnapshot: selection.userConfigSnapshot || userConfigContext.capture(),
           cwd: () => appContext.getCurrentCwd(),
           modelProfileId: selection.modelProfileId,
           reasoningEffortOverride: selection.reasoningEffortOverride

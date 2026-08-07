@@ -84,6 +84,7 @@ function createRequest(records: TranscriptRecord[], config: LlmConfig, registry?
     stream: true
   };
 
+  // 显式 none 也必须发送：思考模型缺省按模型默认 effort（如 medium）思考，省略参数无法表达禁用。
   if (!options.isCompaction && (config.reasoningEffort || config.reasoningSummary)) {
     request.reasoning = {
       ...(config.reasoningEffort ? {effort: config.reasoningEffort} : {}),
@@ -418,10 +419,11 @@ async function readResponseStream(stream: ResponseStream, callbacks: AgentTurnCa
       const completedReasoning = extractCompletedReasoningSummary(event);
 
       if (completedReasoning) {
-        const reasoningSummary = replaceCompletedReasoningParts(reasoningSummaryParts, completedReasoning);
+        const reasoningDraft = replaceCompletedReasoningParts(reasoningSummaryParts, completedReasoning);
 
-        if (reasoningSummary) {
-          callbacks.onReasoningUpdate?.({kind: 'complete', text: reasoningSummary});
+        if (reasoningDraft) {
+          // output item 完成只校正当前预览；整个 provider turn 结束前不能把累计全文当作最终摘要落盘。
+          callbacks.onReasoningUpdate?.({kind: 'draft', text: reasoningDraft});
         }
       }
 
@@ -456,6 +458,13 @@ async function readResponseStream(stream: ResponseStream, callbacks: AgentTurnCa
 
   if (!completed) {
     throw new LlmAgentError('模型响应流未完成');
+  }
+
+  const reasoningSummary = readReasoningSummaryText(reasoningSummaryParts);
+
+  if (reasoningSummary) {
+    // 只有 response.completed 确认整个 provider turn 完成后，才提交一次可持久化摘要。
+    callbacks.onReasoningUpdate?.({kind: 'complete', text: reasoningSummary});
   }
 
   return {
@@ -554,9 +563,9 @@ async function runResponseStreamWithRetry(createStream: ResponseStreamFactory, c
 class OpenAiAgent implements ProviderAgent {
   private readonly client: ResponseClient;
   private readonly config: LlmConfig;
-  private readonly registry: ToolRegistry;
+  private readonly registry?: ToolRegistry;
 
-  constructor(config: LlmConfig, registry: ToolRegistry, dependencies: OpenAiAgentDependencies = {}) {
+  constructor(config: LlmConfig, registry: ToolRegistry | undefined, dependencies: OpenAiAgentDependencies = {}) {
     const OpenAIClient = dependencies.OpenAIClient || OpenAI;
     const makeClient = dependencies.createClient || ((clientConfig: LlmConfig) => createClient(clientConfig, OpenAIClient));
     const client = makeClient(config);
@@ -589,7 +598,7 @@ class OpenAiAgent implements ProviderAgent {
   }
 }
 
-function createOpenAiAgent(config: LlmConfig, registry: ToolRegistry, dependencies: OpenAiAgentDependencies = {}): ProviderAgent {
+function createOpenAiAgent(config: LlmConfig, registry?: ToolRegistry, dependencies: OpenAiAgentDependencies = {}): ProviderAgent {
   return new OpenAiAgent(config, registry, dependencies);
 }
 

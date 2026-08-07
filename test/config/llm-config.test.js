@@ -6,10 +6,33 @@ const {
   DEFAULT_BASH_TOOL_TIMEOUT_MS,
   DEFAULT_CONTEXT_WINDOW,
   LlmConfigError,
-  readLlmConfig,
-  readLlmModelConfigInfo,
   resolveContextWindow
 } = require('../../src/config/llm-config');
+const {UserConfigContext} = require('../../src/config/user-config-context');
+
+function withContext(options, read) {
+  const context = new UserConfigContext({configPath: options.configPath, readFile: options.readFile});
+  try {
+    return read(context.capture());
+  } finally {
+    context.close();
+  }
+}
+
+function readLlmConfig(options = {}) {
+  return withContext(options, (snapshot) => snapshot.resolveLlmConfig({
+    modelProfileId: options.modelProfileId,
+    reasoningEffortOverride: options.reasoningEffortOverride
+  }));
+}
+
+function readLlmConfigForProfile(modelProfileId, options = {}) {
+  return withContext(options, (snapshot) => snapshot.resolveLlmConfigForProfile(modelProfileId));
+}
+
+function readLlmModelConfigInfo(options = {}) {
+  return withContext(options, (snapshot) => snapshot.getLlmModelConfigInfo());
+}
 
 const DEFAULT_TOOLS = {
   autoCompressImages: true,
@@ -283,6 +306,28 @@ test('readLlmConfig falls back to the configured current profile for a stale per
   });
 
   assert.equal(config.model, 'gpt-deep');
+});
+
+test('readLlmConfigForProfile strictly resolves the requested profile without reasoning settings', () => {
+  const source = JSON.stringify({
+    llm: {
+      selectedModel: 'deep',
+      providers: {shared: {preset: OPENAI_PRESET, apiKey: 'shared-key'}},
+      models: [
+        {id: 'fast', provider: 'shared', model: 'gpt-fast', reasoning: {effort: 'low', summary: 'detailed'}},
+        {id: 'deep', provider: 'shared', model: 'gpt-deep', reasoning: {effort: 'high'}}
+      ]
+    }
+  });
+  const config = readLlmConfigForProfile('fast', {configPath: '/tmp/echo-config.json', readFile: readConfigFrom(source)});
+
+  assert.equal(config.model, 'gpt-fast');
+  assert.equal(config.reasoningEffort, undefined);
+  assert.equal(config.reasoningSummary, undefined);
+  assert.throws(
+    () => readLlmConfigForProfile('deleted', {configPath: '/tmp/echo-config.json', readFile: readConfigFrom(source)}),
+    /profile 不存在：deleted/
+  );
 });
 
 test('readLlmConfig applies effort override after resolving the per-run model profile', () => {
@@ -669,6 +714,32 @@ test('readLlmConfig resolves openai-chat provider-backed model config', () => {
     baseURL: 'https://chat.example/v1',
     model: 'gpt-chat',
     contextWindow: 64000,
+    tools: DEFAULT_TOOLS
+  });
+});
+
+test('readLlmConfig resolves ollama provider with fixed local base URL and placeholder api key', () => {
+  const config = readLlmConfig({
+    configPath: '/tmp/echo-config.json',
+    readFile: readConfigFrom(JSON.stringify({
+      llm: {
+        selectedModel: 'local',
+        providers: {
+          local: { preset: 'ollama' }
+        },
+        models: [
+          { id: 'local', provider: 'local', model: 'qwen2.5-coder:7b', contextWindow: 128000 }
+        ]
+      }
+    }))
+  });
+
+  assert.deepEqual(config, {
+    apiKey: 'ollama',
+    agentType: 'openai-chat',
+    baseURL: 'http://localhost:11434/v1',
+    model: 'qwen2.5-coder:7b',
+    contextWindow: 128000,
     tools: DEFAULT_TOOLS
   });
 });

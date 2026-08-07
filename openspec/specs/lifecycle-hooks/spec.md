@@ -208,13 +208,13 @@ Lifecycle hooks SHALL 只能观察事件并执行旁路本地命令。Hook 命�
 系统 SHALL 为需要用户授权的 tool approval request 和 response 派发 lifecycle hook 事件。该事件 SHALL 覆盖交互式 TUI 中等待用户选择的授权请求，也 SHALL 覆盖 headless 模式下的默认拒绝或 full-access 自动允许结果。Tool approval hook SHALL 只作为旁路观察者，不得改变授权决策或工具执行结果。
 
 #### Scenario: 派发 tool approval request hook
-- **WHEN** agent loop runtime 收到需要 tool approval 的 tool call
+- **WHEN** 交互式 TUI 为 tool call 打开人工审批 surface，或 headless runtime 需要生成审批决策
 - **THEN** 系统 SHALL 在等待用户选择或生成 headless 决策前派发 `tool_approval_request` 事件
 - **THEN** payload SHALL 包含 interaction mode、tool call id、tool name 和 arguments text
 - **THEN** payload SHALL 在存在 preview 时包含 preview title 和 preview 文本
 
 #### Scenario: 派发 tool approval response hook
-- **WHEN** tool approval 请求产生结构化授权决策
+- **WHEN** 人工审批 surface 产生结构化用户决策，或 headless runtime 产生审批决策
 - **THEN** 系统 SHALL 派发 `tool_approval_response` 事件
 - **THEN** payload SHALL 包含 interaction mode、tool call id、tool name 和 decision
 - **THEN** 当用户提交反馈文本时，payload SHALL 包含该 feedback 文本
@@ -225,6 +225,16 @@ Lifecycle hooks SHALL 只能观察事件并执行旁路本地命令。Hook 命�
 - **THEN** 系统 SHALL 直接使用缓存的授权决策
 - **THEN** 系统 SHALL NOT 打开 tool approval surface
 - **THEN** 系统 SHALL NOT 派发 `tool_approval_request` 或 `tool_approval_response` 事件
+
+#### Scenario: Auto 审批直接允许时不派发交互 hook
+- **WHEN** 交互式 auto 工具审批模型允许当前调用且系统未打开人工审批 surface
+- **THEN** 系统 SHALL 直接生成当前调用的 `allow_once` 决策
+- **THEN** 系统 SHALL NOT 派发 `tool_approval_request` 或 `tool_approval_response` 事件
+
+#### Scenario: Auto 审批回退人工 surface 时派发交互 hook
+- **WHEN** 交互式 auto 工具审批返回 no 或失败并回退人工审批 surface
+- **THEN** 系统 SHALL 在真正打开该 surface 时派发 `tool_approval_request`
+- **THEN** 系统 SHALL 在用户完成选择后派发 `tool_approval_response`
 
 #### Scenario: tool approval hook 不改变授权结果
 - **WHEN** `tool_approval_request` 或 `tool_approval_response` 对应的 hook 命令失败、超时或输出内容

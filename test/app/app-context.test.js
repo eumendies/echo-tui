@@ -16,6 +16,7 @@ const { TranscriptContext } = require('../../src/app/state/transcript-context');
 const { TurnContext } = require('../../src/app/state/turn-context');
 const { INPUT_EVENTS } = require('../../src/input/event-types');
 const { DEFAULT_TUI_THEME, createTuiTheme } = require('../../src/config/theme-config');
+const {UserConfigContext} = require('../../src/config/user-config-context');
 const {createTranscriptStore} = require('../../src/persistence/transcript-store');
 const {createEditFileToolHandler} = require('../../src/tools/edit-file-tool-handler');
 
@@ -26,15 +27,53 @@ function createContext(overrides = {}) {
       }
     };
 
+  const userConfigContext = overrides.userConfigContext || new UserConfigContext({
+    readFile: overrides.appSettings
+      ? () => JSON.stringify(createConfigRootFromAppSettings(overrides.appSettings))
+      : undefined
+  });
   return new AppContext(
     terminal,
     overrides.transcriptStore || createFakeTranscriptStore(),
     overrides.cwd || '/tmp/echo_tui',
     overrides.nodeVersion || 'v20.0.0',
     overrides.theme,
-    overrides.appSettings,
-    overrides.sessionModelSettingsStore || createFakeSessionModelSettingsStore()
+    overrides.sessionModelSettingsStore || createFakeSessionModelSettingsStore(),
+    userConfigContext
   );
+}
+
+function createConfigRootFromAppSettings(settings) {
+  return {
+    compaction: {thresholdRatio: settings.compactionThresholdRatio},
+    instructions: {fileName: settings.agentInstructionFileName},
+    skills: {catalogContextRatio: settings.skillCatalogContextRatio},
+    tools: {
+      approval: {mode: settings.toolApprovalMode, ...(settings.toolApprovalModelProfileId ? {modelProfileId: settings.toolApprovalModelProfileId} : {})},
+      fileEdit: {mode: settings.fileEditMode},
+      readFiles: {autoCompressImages: settings.autoCompressImages}
+    },
+    ui: {
+      defaultInteractionMode: settings.defaultInteractionMode,
+      showReasoningSummary: settings.showReasoningSummary,
+      slashSuggestionMaxVisible: settings.slashSuggestionMaxVisible
+    }
+  };
+}
+
+function createModelContext(options = {}) {
+  const userConfigContext = new UserConfigContext();
+  return new ModelContext({
+    ...options,
+    config: options.config || {
+      getModelInfo() {
+        return userConfigContext.refresh().snapshot.getLlmModelConfigInfo();
+      },
+      resolveLlmConfig(resolveOptions) {
+        return userConfigContext.capture().resolveLlmConfig(resolveOptions);
+      }
+    }
+  });
 }
 
 function createFakeSessionModelSettingsStore(initialSettings = []) {
@@ -756,7 +795,9 @@ test('AppContext snapshots app settings into render state and agent sessions', (
       fileEditMode: 'apply_patch',
       skillCatalogContextRatio: 0.04,
       showReasoningSummary: false,
-      slashSuggestionMaxVisible: 3
+      slashSuggestionMaxVisible: 3,
+      toolApprovalMode: 'auto',
+      toolApprovalModelProfileId: 'reviewer'
     }
   });
 
@@ -768,6 +809,7 @@ test('AppContext snapshots app settings into render state and agent sessions', (
   assert.equal(context.getAgentSession().skillCatalogContextRatio, 0.04);
   assert.equal(context.getInteractionMode(), 'plan');
   assert.equal(context.getAutoCompressImages(), false);
+  assert.deepEqual(context.getToolApprovalSettings(), {mode: 'auto', modelProfileId: 'reviewer'});
 });
 
 test('AppContext refreshes external app settings and classifies redraw impact', () => {
@@ -777,23 +819,27 @@ test('AppContext refreshes external app settings and classifies redraw impact', 
 
   try {
     fs.mkdirSync(path.join(homeDir, '.echo'), {recursive: true});
-    fs.writeFileSync(path.join(homeDir, '.echo', 'config.json'), JSON.stringify({
+    const configPath = path.join(homeDir, '.echo', 'config.json');
+    fs.writeFileSync(configPath, '{}');
+    const userConfigContext = new UserConfigContext();
+    const context = createContext({userConfigContext});
+    context.setContextUsage({usedTokens: 100, contextWindow: 1000, source: 'provider'});
+    fs.writeFileSync(configPath, JSON.stringify({
       compaction: {thresholdRatio: 0.65},
       instructions: {fileName: 'CLAUDE.md'},
       skills: {catalogContextRatio: 0.07},
       tools: {readFiles: {autoCompressImages: false}},
       ui: {defaultInteractionMode: 'plan', showReasoningSummary: false, slashSuggestionMaxVisible: 4}
     }));
-    const context = createContext();
-    context.setContextUsage({usedTokens: 100, contextWindow: 1000, source: 'provider'});
-    const result = context.refreshAppSettingsFromConfig();
+    const result = context.applyAppSettingsSnapshot(userConfigContext.refresh().snapshot);
 
     assert.deepEqual(result, {
       agentInstructionFileChanged: true,
       fileEditModeChanged: false,
       reasoningVisibilityChanged: true,
       skillCatalogContextRatioChanged: true,
-      slashSuggestionLimitChanged: true
+      slashSuggestionLimitChanged: true,
+      toolApprovalChanged: false
     });
     assert.equal(context.getAgentSession().compactionThresholdRatio, 0.65);
     assert.equal(context.getAgentSession().skillCatalogContextRatio, 0.07);
@@ -817,19 +863,23 @@ test('AppContext refreshes image compression without clearing context usage or r
 
   try {
     fs.mkdirSync(path.join(homeDir, '.echo'), {recursive: true});
-    fs.writeFileSync(path.join(homeDir, '.echo', 'config.json'), JSON.stringify({
-      tools: {readFiles: {autoCompressImages: false}}
-    }));
-    const context = createContext();
+    const configPath = path.join(homeDir, '.echo', 'config.json');
+    fs.writeFileSync(configPath, '{}');
+    const userConfigContext = new UserConfigContext();
+    const context = createContext({userConfigContext});
     const usage = {usedTokens: 100, contextWindow: 1000, source: 'provider'};
     context.setContextUsage(usage);
+    fs.writeFileSync(configPath, JSON.stringify({
+      tools: {readFiles: {autoCompressImages: false}}
+    }));
 
-    assert.deepEqual(context.refreshAppSettingsFromConfig(), {
+    assert.deepEqual(context.applyAppSettingsSnapshot(userConfigContext.refresh().snapshot), {
       agentInstructionFileChanged: false,
       fileEditModeChanged: false,
       reasoningVisibilityChanged: false,
       skillCatalogContextRatioChanged: false,
-      slashSuggestionLimitChanged: false
+      slashSuggestionLimitChanged: false,
+      toolApprovalChanged: false
     });
     assert.equal(context.getAutoCompressImages(), false);
     assert.equal(context.getContextUsage().usedTokens, usage.usedTokens);
@@ -1232,7 +1282,7 @@ test('ModelContext reads model info from the default config path', () => {
       ]
     }
   }, () => {
-    const context = new ModelContext();
+    const context = createModelContext();
 
     assert.deepEqual(context.createModelCommandInfo(), {
       models: [
@@ -1256,7 +1306,7 @@ test('ModelContext reads selectable model profiles and current selection', () =>
       ]
     }
   }, () => {
-    const context = new ModelContext();
+    const context = createModelContext();
 
     assert.deepEqual(context.createModelCommandInfo(), {
       models: [
@@ -1282,7 +1332,7 @@ test('ModelContext reads provider-backed model profiles and current selection', 
       ]
     }
   }, () => {
-    const context = new ModelContext();
+    const context = createModelContext();
 
     assert.deepEqual(context.createModelCommandInfo(), {
       models: [
@@ -1312,7 +1362,7 @@ test('ModelContext defaults /effort selection to medium when profile has no effo
       ]
     }
   }, () => {
-    const context = new ModelContext();
+    const context = createModelContext();
 
     assert.deepEqual(context.createEffortCommandInfo(), {
       currentModelLabel: 'gpt-fast',
@@ -1339,7 +1389,7 @@ test('ModelContext changes the session model without rewriting global config', (
   };
 
   withTemporaryModelConfig(config, ({readConfig}) => {
-    const context = new ModelContext();
+    const context = createModelContext();
 
     assert.deepEqual(context.selectModel('deep'), {ok: true});
     assert.deepEqual(readConfig(), config);
@@ -1360,7 +1410,7 @@ test('ModelContext merges skill fields over session settings and ignores stale s
       ]
     }
   }, () => {
-    const context = new ModelContext();
+    const context = createModelContext();
     assert.deepEqual(context.selectModelAndEffort('deep', 'high'), {ok: true, modelChanged: true});
 
     assert.deepEqual(context.resolveAgentSelection(), {
@@ -1422,15 +1472,16 @@ test('AppContext keeps the current session model when the global default changes
   };
 
   withTemporaryModelConfig(config, ({configPath}) => {
-    const context = createContext();
+    const userConfigContext = new UserConfigContext();
+    const context = createContext({userConfigContext});
     context.setContextUsage({usedTokens: 120, contextWindow: 1000, source: 'provider'});
     config.llm.selectedModel = 'deep';
     fs.writeFileSync(configPath, JSON.stringify(config), 'utf8');
 
-    assert.equal(context.refreshModelStateFromConfig(), false);
+    assert.equal(context.applyModelConfigSnapshot(userConfigContext.refresh().snapshot), false);
     assert.equal(context.createRenderState().statusLine.model.label, 'gpt-fast');
     assert.equal(context.getContextUsage().usedTokens, 120);
-    assert.equal(context.refreshModelStateFromConfig(), false);
+    assert.equal(context.applyModelConfigSnapshot(userConfigContext.capture()), false);
   });
 });
 
@@ -1449,8 +1500,9 @@ test('AppContext falls back and retries persistence when config removes the curr
   };
 
   withTemporaryModelConfig(config, ({configPath}) => {
+    const userConfigContext = new UserConfigContext();
     const settingsStore = createFakeSessionModelSettingsStore();
-    const context = createContext({sessionModelSettingsStore: settingsStore});
+    const context = createContext({sessionModelSettingsStore: settingsStore, userConfigContext});
     assert.deepEqual(context.modelContext.selectModelAndEffort('deep', 'high'), {ok: true, modelChanged: true});
     context.beginUserTurn('bind session');
     context.turnContext.finishAssistantTurn('bound');
@@ -1460,7 +1512,7 @@ test('AppContext falls back and retries persistence when config removes the curr
     config.llm.models = [config.llm.models[0]];
     fs.writeFileSync(configPath, JSON.stringify(config), 'utf8');
 
-    assert.equal(context.refreshModelStateFromConfig(), true);
+    assert.equal(context.applyModelConfigSnapshot(userConfigContext.refresh().snapshot), true);
     assert.deepEqual(context.modelContext.getAgentSelection(), {modelProfileId: 'fast'});
     assert.equal(context.createRenderState().statusLine.model.label, 'gpt-fast');
     assert.equal(context.getContextUsage(), null);
@@ -1630,12 +1682,13 @@ test('AppContext pins the active turn model while the global selection changes',
   };
 
   withTemporaryModelConfig(config, ({configPath}) => {
-    const context = createContext();
+    const userConfigContext = new UserConfigContext();
+    const context = createContext({userConfigContext});
     const turn = context.beginAssistantTurn();
     config.llm.selectedModel = 'deep';
     fs.writeFileSync(configPath, JSON.stringify(config), 'utf8');
 
-    assert.equal(context.refreshModelStateFromConfig(), false);
+    assert.equal(context.applyModelConfigSnapshot(userConfigContext.refresh().snapshot), false);
     assert.equal(context.createRenderState().statusLine.model.label, 'gpt-fast');
 
     assert.equal(context.turnContext.setActiveStatusLineModelState(turn, {modelLabel: 'runtime-model'}), true);
@@ -1662,7 +1715,7 @@ test('ModelContext session selection preserves provider-backed global config', (
   };
 
   withTemporaryModelConfig(config, ({readConfig}) => {
-    const context = new ModelContext();
+    const context = createModelContext();
 
     assert.deepEqual(context.selectModel('deep'), {ok: true});
     assert.deepEqual(readConfig(), config);
@@ -1685,7 +1738,7 @@ test('ModelContext session effort preserves profile reasoning fields', () => {
   };
 
   withTemporaryModelConfig(config, ({readConfig}) => {
-    const context = new ModelContext();
+    const context = createModelContext();
 
     assert.deepEqual(context.selectEffort('high'), {ok: true});
     assert.deepEqual(readConfig(), config);
@@ -1728,7 +1781,7 @@ test('ModelContext does not create profile reasoning when selecting session effo
       ]
     }
   }, ({readConfig}) => {
-    const context = new ModelContext();
+    const context = createModelContext();
 
     assert.deepEqual(context.selectEffort('max'), {ok: true});
     assert.equal(readConfig().llm.models[0].reasoning, undefined);
@@ -1750,7 +1803,7 @@ test('ModelContext atomically selects a session model and effort while preservin
       ]
     }
   }, ({readConfig}) => {
-    const context = new ModelContext();
+    const context = createModelContext();
 
     assert.deepEqual(context.selectModelAndEffort('deep', 'xhigh'), {ok: true, modelChanged: true});
     assert.equal(readConfig().llm.selectedModel, 'fast');
@@ -1772,7 +1825,7 @@ test('ModelContext keeps explicit session effort outside previously unconfigured
       ]
     }
   }, ({readConfig}) => {
-    const context = new ModelContext();
+    const context = createModelContext();
 
     assert.deepEqual(context.selectModelAndEffort('deep', 'medium'), {ok: true, modelChanged: false});
     assert.deepEqual(readConfig().llm.models[0].reasoning, {summary: 'auto'});
@@ -1794,7 +1847,7 @@ test('ModelContext rejects invalid combined selection without changing config or
   };
 
   withTemporaryModelConfig(config, ({readConfig}) => {
-    const context = new ModelContext();
+    const context = createModelContext();
     const result = context.selectModelAndEffort('missing', 'high');
 
     assert.equal(result.ok, false);
@@ -1818,7 +1871,7 @@ test('ModelContext keeps combined selection in memory when sidecar writes fail',
       ]
     }
   }, () => {
-    const context = new ModelContext({
+    const context = createModelContext({
       getCurrentSessionId: () => 'session-1',
       settingsStore: createFailingSessionModelSettingsStore(`cannot write ${fakeApiKey}`)
     });
@@ -1841,7 +1894,7 @@ test('ModelContext keeps openai-chat usable with a session effort override', () 
       ]
     }
   }, ({readConfig}) => {
-    const context = new ModelContext();
+    const context = createModelContext();
 
     assert.deepEqual(context.selectEffort('high'), {ok: true});
     assert.equal(readConfig().llm.models[0].reasoning, undefined);
@@ -1867,7 +1920,7 @@ test('ModelContext rejects config without model profiles when selecting a model'
       }
     }
   }, ({readConfig}) => {
-    const context = new ModelContext();
+    const context = createModelContext();
 
     const result = context.selectModel('deep');
 
@@ -1922,7 +1975,7 @@ test('ModelContext keeps model selection usable when it cannot save a sidecar', 
       ]
     }
   }, () => {
-    const context = new ModelContext({
+    const context = createModelContext({
       getCurrentSessionId: () => 'session-1',
       settingsStore: createFailingSessionModelSettingsStore(`cannot write ${fakeApiKey}`)
     });
@@ -1946,7 +1999,7 @@ test('ModelContext exposes safe config errors through its cached model info path
       ]
     }
   }, () => {
-    const context = new ModelContext();
+    const context = createModelContext();
     const result = context.createModelCommandInfo();
 
     assert.match(result.error, /不存在的 provider/);
@@ -2169,7 +2222,9 @@ test('AppContext isolates session settings across clear and resume', () => {
     const firstSessionId = context.transcriptContext.getCurrentSessionId();
 
     context.clearTranscriptRecords();
-    assert.deepEqual(context.getAgentSession(), {
+    const {userConfigSnapshot, ...session} = context.getAgentSession();
+    assert.equal(userConfigSnapshot.revision, 1);
+    assert.deepEqual(session, {
       records: [],
       compaction: undefined,
       todoState: {items: [], updatedAt: ''},

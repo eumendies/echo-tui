@@ -9,6 +9,7 @@ type ProviderPreset = {
   description: string;
   agentType: AgentType;
   apiKeyRequired?: boolean;
+  defaultApiKey?: string; // 免 key preset 的运行时占位 key；openai SDK 不接受空字符串。
   baseURLMode: ProviderBaseUrlMode;
   baseURL?: string;
   codexOAuth?: boolean;
@@ -51,6 +52,17 @@ const DEFAULT_PROVIDER_PRESETS: ProviderPreset[] = [
     agentType: 'openai-chat',
     baseURLMode: 'optional',
     suggestedModels: ['gpt-4o', 'qwen2.5-coder']
+  },
+  {
+    id: 'ollama',
+    label: 'Ollama (Local)',
+    description: '本机 Ollama 服务，走 OpenAI 兼容端点调用本地模型；无需 API key。',
+    agentType: 'openai-chat',
+    apiKeyRequired: false,
+    defaultApiKey: 'ollama',
+    baseURLMode: 'fixed',
+    baseURL: 'http://localhost:11434/v1',
+    suggestedModels: ['llama3.1:8b', 'qwen2.5-coder:7b', 'deepseek-r1:7b']
   },
   {
     id: 'anthropic-compatible-api',

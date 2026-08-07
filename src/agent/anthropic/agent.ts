@@ -472,9 +472,9 @@ async function readAnthropicStream(stream: AnthropicStream, callbacks: AgentTurn
 class AnthropicAgent implements ProviderAgent {
   private readonly client: AnthropicClient;
   private readonly config: LlmConfig;
-  private readonly registry: ToolRegistry;
+  private readonly registry?: ToolRegistry;
 
-  constructor(config: LlmConfig, registry: ToolRegistry, dependencies: AnthropicAgentDependencies = {}) {
+  constructor(config: LlmConfig, registry: ToolRegistry | undefined, dependencies: AnthropicAgentDependencies = {}) {
     const AnthropicClient = dependencies.AnthropicClient || Anthropic;
     const makeClient = dependencies.createClient || ((clientConfig: LlmConfig) => createClient(clientConfig, AnthropicClient));
     const client = makeClient(config);
@@ -505,7 +505,7 @@ class AnthropicAgent implements ProviderAgent {
   }
 }
 
-function createAnthropicAgent(config: LlmConfig, registry: ToolRegistry, dependencies: AnthropicAgentDependencies = {}): ProviderAgent {
+function createAnthropicAgent(config: LlmConfig, registry?: ToolRegistry, dependencies: AnthropicAgentDependencies = {}): ProviderAgent {
   return new AnthropicAgent(config, registry, dependencies);
 }
 

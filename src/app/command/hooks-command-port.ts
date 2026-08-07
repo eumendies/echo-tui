@@ -1,6 +1,5 @@
-import {createLifecycleHookRuntimeConfigFromDraft, readLifecycleHookConfigDraft, saveLifecycleHookConfigDraft} from '../../hooks/config';
 import {createLifecycleHookSyntheticPayload, executeLifecycleHookSyntheticTest} from '../../hooks/synthetic-test';
-
+import type {UserConfigContext} from '../../config/user-config-context';
 import type {LifecycleHookDispatcher} from '../../types/hooks';
 import type {InteractionMode} from '../../types/agent';
 import type {CommandHostApp} from '../../types/command';
@@ -9,21 +8,22 @@ type HooksCommandPortOptions = {
   cwd: () => string;
   getInteractionMode: () => InteractionMode;
   hooks: LifecycleHookDispatcher;
+  userConfigContext: UserConfigContext;
 };
 
 /**
  * 创建 lifecycle hook 配置和合成测试端口。
  */
 function createHooksCommandPort(options: HooksCommandPortOptions): CommandHostApp['hooks'] {
+  const userConfigContext = options.userConfigContext;
   return {
     readDraft() {
-      return readLifecycleHookConfigDraft();
+      return userConfigContext.capture().getLifecycleHookConfigDraft();
     },
     saveDraft(draft) {
       try {
-        const nextConfig = createLifecycleHookRuntimeConfigFromDraft(draft);
-        saveLifecycleHookConfigDraft(draft);
-        options.hooks.updateConfig(nextConfig);
+        const saved = userConfigContext.saveLifecycleHookConfigDraft(draft);
+        options.hooks.updateConfig(saved.snapshot.getLifecycleHookConfig());
         return {ok: true};
       } catch (error: unknown) {
         return {

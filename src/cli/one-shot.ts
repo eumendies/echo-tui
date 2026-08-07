@@ -1,7 +1,7 @@
 import {createAgentLoopRuntime} from '../agent/agent-loop-runtime';
 import {redactSensitiveText} from '../agent/agent-errors';
+import {UserConfigContext} from '../config/user-config-context';
 import {createDebugContext} from '../debug/debug-context';
-import {readLifecycleHookConfig} from '../hooks/config';
 import {createLifecycleHookDispatcher} from '../hooks/dispatcher';
 import {McpManager} from '../mcp/manager';
 import {createUsageStore} from '../persistence/usage-store';
@@ -28,6 +28,7 @@ type RunOnceOptions = {
   runAgent?: RunAgent;
   stdout?: HeadlessOutput;
   usageStore?: UsageStore;
+  userConfigContext?: UserConfigContext;
   prompt: string;
 };
 
@@ -43,14 +44,15 @@ async function runOnce(options: RunOnceOptions): Promise<void> {
 
   const cwd = options.cwd || process.cwd();
   const stdout = options.stdout || process.stdout;
-  const mcpManager = options.mcpManager || new McpManager();
+  const userConfigContext = options.userConfigContext || new UserConfigContext();
+  const mcpManager = options.mcpManager || new McpManager({loadConfig: () => userConfigContext.capture().getMcpConfig()});
   const debug = options.debug || createDebugContext({cwd});
   const hooks = options.hooks || createLifecycleHookDispatcher({
-    config: readLifecycleHookConfig(),
+    config: userConfigContext.capture().getLifecycleHookConfig(),
     cwd
   });
   const usageStore = options.usageStore || createUsageStore();
-  const runAgent = options.runAgent || createAgentLoopRuntime(cwd, mcpManager, hooks, debug, usageStore);
+  const runAgent = options.runAgent || createAgentLoopRuntime(cwd, userConfigContext, mcpManager, hooks, debug, usageStore);
   const abortController = new AbortController();
   const signalSource = options.process || process;
   const onSignal = () => abortController.abort();
@@ -84,7 +86,8 @@ async function runOnce(options: RunOnceOptions): Promise<void> {
         approvalPolicy: options.fullAccess ? 'full-access' : 'deny'
       },
       interactionMode: 'normal',
-      records: [{role: 'user', text: prompt}]
+      records: [{role: 'user', text: prompt}],
+      userConfigSnapshot: userConfigContext.capture()
     });
 
     if (typeof result !== 'string') {
@@ -108,6 +111,7 @@ async function runOnce(options: RunOnceOptions): Promise<void> {
     signalSource.removeListener('SIGINT', onSignal);
     signalSource.removeListener('SIGTERM', onSignal);
     const cleanupError = await cleanupHeadlessResources(mcpManager, debug);
+    userConfigContext.close();
 
     if (!primaryError && cleanupError) {
       throw createHeadlessError(cleanupError);

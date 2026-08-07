@@ -60,10 +60,37 @@ class ToolApprovalContext {
       this.resolveActive({kind: 'deny', message: 'Tool execution was rejected because another approval request replaced it.'});
     }
 
-    const cachedDecision = this.createCachedDecision(call);
+    const cachedDecision = this.getCachedDecision(call);
 
     if (cachedDecision) {
       return cachedDecision;
+    }
+
+    return this.requestManual(call, display);
+  }
+
+  /** 返回当前会话缓存对该调用的决策；未授权时不创建 modal。 */
+  getCachedDecision(call: ToolCall): ToolApprovalDecision | null {
+    if (this.allowAllForSession) {
+      return {kind: 'allow_all_for_session'};
+    }
+
+    if (call.toolName === RUN_BASH_COMMAND_TOOL_NAME) {
+      const command = parseBashCommandCall(call);
+      return command && this.allowedBashCommandsForSession.has(command)
+        ? {kind: 'allow_command_for_session', toolName: RUN_BASH_COMMAND_TOOL_NAME, command}
+        : null;
+    }
+
+    return this.allowedToolsForSession.has(call.toolName)
+      ? {kind: 'allow_tool_for_session', toolName: call.toolName}
+      : null;
+  }
+
+  /** 创建现有人工审批 modal；调用方应先自行检查会话缓存。 */
+  requestManual(call: ToolCall, display?: ToolApprovalRequest): Promise<ToolApprovalDecision> {
+    if (this.activeRequest) {
+      this.resolveActive({kind: 'deny', message: 'Tool execution was rejected because another approval request replaced it.'});
     }
 
     return new Promise((resolve) => {
@@ -268,31 +295,6 @@ class ToolApprovalContext {
       ...(sessionOption ? [sessionOption] : []),
       ...TOOL_APPROVAL_OPTIONS.slice(1)
     ];
-  }
-
-  /**
-   * 命中本进程会话授权时直接返回允许决策，不打开阻塞式 approval surface。
-   */
-  private createCachedDecision(call: ToolCall): ToolApprovalDecision | null {
-    if (this.allowAllForSession) {
-      return {kind: 'allow_all_for_session'};
-    }
-
-    if (call.toolName === RUN_BASH_COMMAND_TOOL_NAME) {
-      const command = parseBashCommandCall(call);
-
-      if (command && this.allowedBashCommandsForSession.has(command)) {
-        return {kind: 'allow_command_for_session', toolName: RUN_BASH_COMMAND_TOOL_NAME, command};
-      }
-
-      return null;
-    }
-
-    if (this.allowedToolsForSession.has(call.toolName)) {
-      return {kind: 'allow_tool_for_session', toolName: call.toolName};
-    }
-
-    return null;
   }
 
   private resolveActive(decision: ToolApprovalDecision): void {

@@ -1,13 +1,16 @@
 import {isAbortError} from '../types/agent';
 import {summarizeText} from '../debug/debug-context';
+import {emitToolApprovalRequestHook, emitToolApprovalResponseHook} from '../hooks/lifecycle-events';
+import {createToolApprovalResolver} from './tool-approval-resolver';
 
-import type {AgentCallbacks, ReasoningEffort, RunAgent} from '../types/agent';
+import type {AgentCallbacks, ReasoningEffort, RunAgent, ToolApprovalDecision} from '../types/agent';
 import type {DebugContext} from '../debug/debug-context';
 import type {LifecycleHookDispatcher} from '../types/hooks';
-import type {ToolResultAttachment} from '../types/tool';
+import type {ToolApprovalRequest, ToolCall, ToolResultAttachment} from '../types/tool';
 import type {TranscriptRecord, UserTranscriptMetadata} from '../types/transcript';
 import type {AppContext} from './state/app-context';
 import type {ToolApprovalContext} from './state/tool-approval-context';
+import type {ToolApprovalReviewer} from './tool-approval-resolver';
 import type {UserQuestionContext} from './state/user-question-context';
 
 type AssistantTurnRunnerInput = {
@@ -26,6 +29,7 @@ type AssistantTurnRunnerInput = {
   appendRecords: (records: TranscriptRecord[]) => void;
   hooks: LifecycleHookDispatcher;
   renderFooter: () => void;
+  toolApprovalReviewer?: ToolApprovalReviewer; // 仅交互式 auto 审批使用的独立模型判断器。
 };
 
 /**
@@ -53,6 +57,8 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
 
   appContext.beginChangeCheckpoint();
   const interactionMode = appContext.getInteractionMode();
+  const userConfigSnapshot = appContext.captureUserConfigSnapshot();
+  const toolApprovalSettings = appContext.getToolApprovalSettings(userConfigSnapshot);
   const userRecord = appContext.beginUserTurn(userText, {
     displayText,
     metadata: {...metadata, interactionMode},
@@ -61,6 +67,27 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
   // thinking 和 streaming 都只进入 pending preview，完成或 partial 失败后才正式追加 assistant block。
   const turn = appContext.beginAssistantTurn(modelProfileIdOverride, reasoningEffortOverride);
   const isCurrentTurn = () => appContext.turnContext.isCurrentAssistantTurn(turn);
+  /** 只有创建人工审批 surface 时才派发交互式审批 lifecycle hooks。 */
+  async function requestManualApproval(call: ToolCall, request?: ToolApprovalRequest): Promise<ToolApprovalDecision> {
+    const pendingDecision = toolApproval.requestManual(call, request);
+    emitToolApprovalRequestHook(hooks, {interactionMode, toolCall: call, approval: request});
+    const decision = await pendingDecision;
+    emitToolApprovalResponseHook(hooks, {interactionMode, toolCall: call, decision});
+    return decision;
+  }
+  const toolApprovalResolver = createToolApprovalResolver({
+    abortSignal: turn.abortSignal,
+    getRecords: () => appContext.transcriptContext.getRecords(),
+    interactionMode,
+    isCurrentTurn,
+    reviewer: input.toolApprovalReviewer,
+    settings: toolApprovalSettings,
+    userConfigSnapshot,
+    toolApproval: {
+      getCachedDecision: (call) => toolApproval.getCachedDecision(call),
+      requestManual: requestManualApproval
+    }
+  });
   appContext.turnContext.startSpinner('thinking');
   appendRecord(userRecord);
   const activeStatusLineModel = appContext.turnContext.getActiveStatusLineModelState();
@@ -84,7 +111,7 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
   });
 
   try {
-    const session = appContext.getAgentSession({modelProfileIdOverride, reasoningEffortOverride});
+    const session = appContext.getAgentSession({modelProfileIdOverride, reasoningEffortOverride}, userConfigSnapshot);
     await runAgent({
       ...session,
       abortSignal: turn.abortSignal
@@ -193,11 +220,7 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
         renderFooter();
       },
       onToolApprovalRequest(call, request) {
-        if (!isCurrentTurn()) {
-          return {kind: 'deny', message: 'Tool execution was interrupted.'};
-        }
-
-        return toolApproval.request(call, request);
+        return toolApprovalResolver.request(call, request);
       },
       onUserQuestionRequest(call, request) {
         if (!isCurrentTurn()) {
@@ -249,6 +272,7 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
         });
       }
     } as AgentCallbacks);
+
   } catch (error: unknown) {
     if (!isCurrentTurn()) {
       return;
@@ -295,7 +319,8 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
     appContext.turnContext.clearAssistantTurnIfCurrent(turn);
 
     if (wasCurrentTurn) {
-      appContext.refreshModelStateFromConfig();
+      // 恢复 session 状态只消费 Context 当前已安装 revision；磁盘刷新由 watcher 或显式写入负责。
+      appContext.applyModelConfigSnapshot(appContext.captureUserConfigSnapshot());
       renderFooter();
     }
   }

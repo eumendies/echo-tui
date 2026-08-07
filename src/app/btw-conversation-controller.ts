@@ -3,7 +3,7 @@ import {INPUT_EVENTS} from '../input/event-types';
 import {createCompactionNoticeRecord} from '../agent/context/context-compaction';
 import {createToolCallTranscriptRecord, createToolResultTranscriptRecord} from '../tools/tool-transcript-record';
 
-import type {AgentCallbacks, AgentSessionInput, RunAgent} from '../types/agent';
+import type {AgentCallbacks, AgentSessionInput, AgentUserConfigSnapshot, RunAgent} from '../types/agent';
 import type {ComposerState} from '../types/composer';
 import type {InputEvent} from '../types/input';
 import type {PendingMessageRenderState, PendingState, RenderState, StatusLineState, WorkingState} from '../types/render';
@@ -35,7 +35,7 @@ type BtwConversationState = {
   abortController: AbortController | null; // 当前 side turn 的取消入口。
   pendingToolCall: ToolCall | null; // 等待 result 配对的当前工具调用。
   modelLabel?: string; // provider 解析后的 side model 标签。
-  agentOptions: Omit<AgentSessionInput, 'records' | 'compaction' | 'todoState' | 'sessionJournalPath' | 'abortSignal' | 'interactionMode' | 'toolPolicy' | 'conversationKind'>; // 打开时冻结的模型与压缩阈值选择。
+  agentOptions: Omit<AgentSessionInput, 'records' | 'compaction' | 'todoState' | 'sessionJournalPath' | 'abortSignal' | 'interactionMode' | 'toolPolicy' | 'conversationKind' | 'userConfigSnapshot'>; // 打开时冻结的模型与压缩阈值选择。
   interactionMode: 'normal' | 'plan'; // BTW 仅继承 normal/plan 回答语义，不继承 shell 提交模式。
 };
 
@@ -47,6 +47,7 @@ type BtwParentTurnState = {
 type BtwConversationDependencies = {
   runAgent: RunAgent; // 共享 provider-neutral agent loop。
   getParentSession(): AgentSessionInput; // 捕获打开瞬间的主会话快照。
+  captureUserConfigSnapshot(): AgentUserConfigSnapshot; // 为每次 side turn 捕获当时最新的用户配置 revision。
   getParentTurnState(): BtwParentTurnState; // 读取主 turn 的最小活动状态，不把 BTW 展示文案放进 main 编排层。
   appendVisible(records: TranscriptRecord[]): void; // 追加当前可见的 side records。
   renderFooter(): void; // side pending/composer 更新时局部重绘。
@@ -96,7 +97,7 @@ class BtwConversationController {
   open(initialQuestion?: string): void {
     if (this.state) return;
     const parent = this.dependencies.getParentSession();
-    const {records, compaction, todoState: _todoState, sessionJournalPath: _journalPath, abortSignal: _abortSignal, interactionMode, toolPolicy: _toolPolicy, conversationKind: _conversationKind, ...agentOptions} = parent;
+    const {records, compaction, todoState: _todoState, sessionJournalPath: _journalPath, abortSignal: _abortSignal, interactionMode, toolPolicy: _toolPolicy, conversationKind: _conversationKind, userConfigSnapshot: _userConfigSnapshot, ...agentOptions} = parent;
     this.state = {
       conversationId: this.nextConversationId++,
       baseRecords: structuredClone(records),
@@ -272,6 +273,7 @@ class BtwConversationController {
     try {
       await this.dependencies.runAgent({
         ...state.agentOptions,
+        userConfigSnapshot: this.dependencies.captureUserConfigSnapshot(),
         records: [...state.baseRecords, ...state.records],
         compaction: state.compaction,
         todoState: state.todoState,

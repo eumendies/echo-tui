@@ -12,10 +12,9 @@ const {
 const {
   DEFAULT_HOOK_TIMEOUT_MS,
   createLifecycleHookRuntimeConfigFromDraft,
-  parseLifecycleHookConfig,
-  readLifecycleHookConfigDraft,
-  saveLifecycleHookConfigDraft
+  parseLifecycleHookConfig
 } = require('../../src/hooks/config');
+const {UserConfigContext} = require('../../src/config/user-config-context');
 const {createLifecycleHookDispatcher} = require('../../src/hooks/dispatcher');
 const {executeLifecycleHookSubprocess} = require('../../src/hooks/executor');
 const {
@@ -25,6 +24,24 @@ const {
   emitUserQuestionResponseHook
 } = require('../../src/hooks/lifecycle-events');
 const {LIFECYCLE_HOOK_EVENTS} = require('../../src/types/hooks');
+
+function readLifecycleHookConfigDraft(options = {}) {
+  const context = new UserConfigContext(options);
+  try {
+    return context.capture().getLifecycleHookConfigDraft();
+  } finally {
+    context.close();
+  }
+}
+
+function saveLifecycleHookConfigDraft(draft, options = {}) {
+  const context = new UserConfigContext({configPath: draft.configPath, ...options});
+  try {
+    return context.saveLifecycleHookConfigDraft(draft);
+  } finally {
+    context.close();
+  }
+}
 
 function withTemporaryConfig(config, callback) {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-hooks-'));

@@ -2,10 +2,8 @@ import {createAgentLoopRuntime} from '../agent/agent-loop-runtime';
 import {createTranscriptStore} from '../persistence/transcript-store';
 import {createUsageStore} from '../persistence/usage-store';
 import {readTuiTheme} from '../config/theme-config';
-import {readAppSettings} from '../config/app-settings-config';
+import {UserConfigContext} from '../config/user-config-context';
 import {createDebugContext, summarizeText} from '../debug/debug-context';
-import {readLifecycleHookConfig} from '../hooks/config';
-import {watchUserConfig} from '../config/user-config';
 import {createLifecycleHookDispatcher} from '../hooks/dispatcher';
 import {McpManager, sanitizeMcpError} from '../mcp/manager';
 import {createAppRenderer} from '../render/app-renderer';
@@ -23,6 +21,7 @@ import {FilePickerContext} from './state/file-picker-context';
 import {ToolApprovalContext} from './state/tool-approval-context';
 import {UserQuestionContext} from './state/user-question-context';
 import {BtwConversationController} from './btw-conversation-controller';
+import {createToolApprovalReviewer} from './tool-approval-resolver';
 
 import type {RunAgent} from '../types/agent';
 import type {AppController} from '../types/app';
@@ -32,13 +31,15 @@ import type {LifecycleHookDispatcher} from '../types/hooks';
 import type {AppendRecordOptions, RenderState} from '../types/render';
 import type {TranscriptRecord} from '../types/transcript';
 import type {UsageStore} from '../types/usage';
-import type {UserConfigWatcher} from '../config/user-config';
 import type {AssistantTurnSubmission} from './composer-submission-controller';
 
 /**
  * 创建 app 编排控制器，串联真实 terminal、input、render 和 agent runtime。
  */
-function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleHookDispatcher, debug: DebugContext, usageStore: UsageStore): AppController {
+function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleHookDispatcher, debug: DebugContext, usageStore: UsageStore, userConfigContext: UserConfigContext): AppController {
+  if (!userConfigContext) {
+    throw new Error('createApp 必须注入共享的 UserConfigContext');
+  }
   // app 层负责把 terminal、input、render 和 agent 串起来，不直接拼 ANSI 细节。
   const input = process.stdin;
   const output = process.stdout;
@@ -46,19 +47,19 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
   const renderer = createAppRenderer(output);
   const transcriptStore = createTranscriptStore();
   const theme = readTuiTheme();
-  const appSettings = readAppSettings();
 
   // AppContext 只组合语义 context，具体状态由子 context 持有。
-  const appContext = new AppContext(terminal, transcriptStore, process.cwd, process.version, theme, appSettings);
+  const appContext = new AppContext(terminal, transcriptStore, process.cwd, process.version, theme, undefined, userConfigContext);
   const toolResultStore = createToolResultStore({cwd: () => appContext.getCurrentCwd()});
   let started = false;
+  let initialRenderComplete = false;
   let activeShellController: AbortController | null = null;
   let mcpDiagnosticSurface: CommandSurface | null = null;
   let referenceErrorSurface: CommandSurface | null = null;
-  let userConfigWatcher: UserConfigWatcher | null = null;
   const btwConversation = new BtwConversationController({
     runAgent,
     getParentSession: () => appContext.getAgentSession(),
+    captureUserConfigSnapshot: () => appContext.captureUserConfigSnapshot(),
     getParentTurnState: () => ({
       pending: appContext.turnContext.getPending(),
       responding: appContext.turnContext.responding
@@ -96,8 +97,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     activeShellController?.abort();
     btwConversation.close();
     appContext.conversationReferenceContext.clear();
-    userConfigWatcher?.close();
-    userConfigWatcher = null;
+    userConfigContext.close();
     void mcpManager.close();
     appContext.turnContext.stopSpinner();
     renderer.clearFooter();
@@ -217,16 +217,24 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     mcpManager,
     renderFooter,
     renderResizeRecovery,
-    usageStore
+    usageStore,
+    userConfigContext
   });
   const toolApproval = new ToolApprovalContext(() => renderFooter());
+  const toolApprovalReviewer = createToolApprovalReviewer({
+    cwd: () => appContext.getCurrentCwd(),
+    debug,
+    usageStore
+  });
   const userQuestion = new UserQuestionContext(() => renderFooter());
   const filePicker = new FilePickerContext(appContext.composerContext.composer, {
     cwd: () => appContext.getCurrentCwd(),
     onChange: () => renderFooter(),
     rows: () => terminal.getSize().rows
   });
-  const slashCommandHandlers = createDefaultSlashCommandHandlers();
+  const slashCommandHandlers = createDefaultSlashCommandHandlers(
+    () => userConfigContext.capture().getAppSettings().agentInstructionFileName
+  );
   const commandRuntime = createCommandRuntime({
     resolveSlashCommand: (text: string) => resolveSlashCommand(text, slashCommandHandlers),
     host: commandHost
@@ -251,6 +259,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
         appContext,
         runAgent,
         toolApproval,
+        toolApprovalReviewer,
         userQuestion,
         ...submission,
         debug,
@@ -385,17 +394,25 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
 
     started = true;
     try {
-      userConfigWatcher = watchUserConfig(
-        () => {
-          const modelChanged = appContext.refreshModelStateFromConfig();
-          const settingsRefresh = appContext.refreshAppSettingsFromConfig();
+      userConfigContext.subscribe((change) => {
+        const modelChanged = change.domains.llm ? appContext.applyModelConfigSnapshot(change.snapshot) : false;
+        const settingsRefresh = change.domains.appSettings
+          ? appContext.applyAppSettingsSnapshot(change.snapshot)
+          : null;
 
-          if (settingsRefresh.reasoningVisibilityChanged) {
-            renderResizeRecovery();
-          } else if (modelChanged || settingsRefresh.slashSuggestionLimitChanged) {
-            renderFooter();
-          }
-        },
+        if ((change.domains.llm && !modelChanged) || change.domains.tools) {
+          appContext.clearContextUsage();
+        }
+        if (!initialRenderComplete) {
+          return;
+        }
+        if (settingsRefresh?.reasoningVisibilityChanged) {
+          renderResizeRecovery();
+        } else if (modelChanged || settingsRefresh?.slashSuggestionLimitChanged) {
+          renderFooter();
+        }
+      });
+      userConfigContext.startWatching(
         (error) => debug.emit('user_config_watch_error', {error: {name: error.name, message: error.message}})
       );
     } catch (error: unknown) {
@@ -418,6 +435,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
       ...createRenderState()
     });
     rememberTerminalSize();
+    initialRenderComplete = true;
 
     if (mcpManager) {
       appContext.setMcpBootstrapStatus('initializing');
@@ -464,17 +482,25 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
  * 启动整个 TUI 应用，串联终端初始化、输入事件、渲染和真实 LLM agent 生命周期。
  */
 function run(): void {
-  // agent loop 每轮通过 prepareAgent 按最新配置装配 provider 与工具。
+  // TUI 组合根只创建一个用户配置来源，并把同一实例注入所有消费者。
   const cwd = process.cwd();
-  const mcpManager = new McpManager();
+  const userConfigContext = new UserConfigContext();
+  const mcpManager = new McpManager({loadConfig: () => userConfigContext.capture().getMcpConfig()});
   const debug = createDebugContext({cwd});
   const usageStore = createUsageStore();
   const hooks = createLifecycleHookDispatcher({
-    config: readLifecycleHookConfig(),
+    config: userConfigContext.capture().getLifecycleHookConfig(),
     cwd
   });
 
-  createApp(createAgentLoopRuntime(cwd, mcpManager, hooks, debug, usageStore), mcpManager, hooks, debug, usageStore).start();
+  createApp(
+    createAgentLoopRuntime(cwd, userConfigContext, mcpManager, hooks, debug, usageStore),
+    mcpManager,
+    hooks,
+    debug,
+    usageStore,
+    userConfigContext
+  ).start();
 }
 
 export {

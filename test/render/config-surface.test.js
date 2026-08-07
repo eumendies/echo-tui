@@ -89,7 +89,8 @@ test('config center renders general tabs, settings, and constrained width', () =
     fileEditMode: 'edit_file',
     skillCatalogContextRatio: 0.02,
     showReasoningSummary: true,
-    slashSuggestionMaxVisible: 8
+    slashSuggestionMaxVisible: 8,
+    toolApprovalMode: 'manual'
   });
   const layout = renderConfigSurface({
     kind: 'config',
@@ -129,7 +130,8 @@ test('config center highlights active tab with foreground color only', () => {
     fileEditMode: 'apply_patch',
     skillCatalogContextRatio: 0.02,
     showReasoningSummary: true,
-    slashSuggestionMaxVisible: 8
+    slashSuggestionMaxVisible: 8,
+    toolApprovalMode: 'manual'
   });
   const layout = renderConfigSurface({
     kind: 'config',
@@ -146,6 +148,96 @@ test('config center highlights active tab with foreground color only', () => {
 
   assert.ok(tabLine);
   assert.equal(tabLine.includes('\x1b[48;5;23m'), false);
+});
+
+test('config center only renders approval model for auto draft', () => {
+  const settings = {
+    agentInstructionFileName: 'AGENTS.md',
+    autoCompressImages: true,
+    compactionThresholdRatio: 0.8,
+    defaultInteractionMode: 'normal',
+    fileEditMode: 'apply_patch',
+    skillCatalogContextRatio: 0.02,
+    showReasoningSummary: true,
+    slashSuggestionMaxVisible: 8,
+    toolApprovalMode: 'manual',
+    toolApprovalModelProfileId: 'reviewer'
+  };
+  const profiles = [{id: 'reviewer', model: 'gpt-review', provider: 'openai'}];
+  const tabs = [{id: 'general', label: '常规'}];
+  const manual = createInitialGeneralConfigState(settings, profiles);
+  const manualText = renderConfigSurface({kind: 'config', view: 'general', activeTab: 'general', tabs, state: manual}, 90).lines.map(stripAnsi).join('\n');
+  assert.match(manualText, /工具审批模式/);
+  assert.match(manualText, /manual/);
+  assert.doesNotMatch(manualText, /自动审批模型/);
+
+  const auto = createInitialGeneralConfigState({...settings, toolApprovalMode: 'auto'}, profiles);
+  const autoText = renderConfigSurface({kind: 'config', view: 'general', activeTab: 'general', tabs, state: auto}, 90).lines.map(stripAnsi).join('\n');
+  assert.match(autoText, /工具审批模式/);
+  assert.match(autoText, /自动审批模型/);
+  assert.match(autoText, /gpt-review \(openai\)/);
+  assert.doesNotMatch(autoText, /reviewer/);
+
+  const unavailable = createInitialGeneralConfigState({...settings, toolApprovalMode: 'auto', toolApprovalModelProfileId: undefined}, []);
+  const unavailableText = renderConfigSurface({kind: 'config', view: 'general', activeTab: 'general', tabs, state: unavailable}, 90).lines.map(stripAnsi).join('\n');
+  assert.match(unavailableText, /未配置（无法保存 auto）/);
+});
+
+test('config center renders approval API model name and provider without the profile id', () => {
+  const state = createInitialGeneralConfigState({
+    agentInstructionFileName: 'AGENTS.md',
+    autoCompressImages: true,
+    compactionThresholdRatio: 0.8,
+    defaultInteractionMode: 'normal',
+    fileEditMode: 'apply_patch',
+    skillCatalogContextRatio: 0.02,
+    showReasoningSummary: true,
+    slashSuggestionMaxVisible: 8,
+    toolApprovalMode: 'auto',
+    toolApprovalModelProfileId: 'deepseek-v4-pro'
+  }, [{id: 'deepseek-v4-pro', model: 'deepseek-v4-pro-202608', provider: 'deepseek'}]);
+  const layout = renderConfigSurface({
+    kind: 'config',
+    view: 'general',
+    activeTab: 'general',
+    tabs: [{id: 'general', label: '常规'}],
+    state
+  }, 90);
+  const modelLine = stripAnsi(layout.lines.find((line) => stripAnsi(line).includes('自动审批模型')));
+
+  assert.match(modelLine, /deepseek-v4-pro-202608 \(deepseek\)/);
+  assert.doesNotMatch(modelLine, /…/);
+  assert.ok(layout.lines.every((line) => displayWidth(line) <= 86));
+});
+
+test('config center separates a selected approval model from its label at constrained width', () => {
+  const state = createInitialGeneralConfigState({
+    agentInstructionFileName: 'AGENTS.md',
+    autoCompressImages: true,
+    compactionThresholdRatio: 0.8,
+    defaultInteractionMode: 'normal',
+    fileEditMode: 'apply_patch',
+    skillCatalogContextRatio: 0.02,
+    showReasoningSummary: true,
+    slashSuggestionMaxVisible: 8,
+    toolApprovalMode: 'auto',
+    toolApprovalModelProfileId: 'deepseek-api-deepseek-v4-flash'
+  }, [{id: 'deepseek-api-deepseek-v4-flash', model: 'deepseek-v4-flash', provider: 'deepseek-api'}]);
+  state.selectedIndex = 8;
+
+  const layout = renderConfigSurface({
+    kind: 'config',
+    view: 'general',
+    activeTab: 'general',
+    tabs: [{id: 'general', label: '常规'}],
+    state
+  }, 55);
+  const modelLine = stripAnsi(layout.lines.find((line) => stripAnsi(line).includes('自动审批模型')));
+
+  assert.match(modelLine, /自动审批模型 {2}deepseek-v4/);
+  assert.match(modelLine, /…/);
+  assert.match(modelLine, /… │$/);
+  assert.ok(layout.lines.every((line) => displayWidth(line) <= 51));
 });
 
 test('config center renders appearance markers, errors, and discard confirmation', () => {

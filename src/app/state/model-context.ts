@@ -1,7 +1,3 @@
-import {
-  readLlmConfig,
-  readLlmModelConfigInfo
-} from '../../config/llm-config';
 import {redactSensitiveText} from '../../agent/agent-errors';
 import {REASONING_EFFORTS} from '../../types/agent';
 
@@ -67,9 +63,15 @@ type ModelStatusInfoResult = ModelStatusInfo | {error: string};
 type ActiveLlmConfigResult = LlmConfig | {error: string};
 
 type ModelContextOptions = {
+  config: ModelConfigSource; // 提供当前 revision 的模型目录与运行配置解析。
   getCurrentCwd?: () => string; // 返回 sidecar 所属 cwd，与 transcript 分区保持一致。
   getCurrentSessionId?: () => string | null; // 返回已创建 journal 的当前 session id；新草稿返回 null。
   settingsStore?: SessionModelSettingsStore; // 保存和恢复当前 session model/effort 的 sidecar store。
+};
+
+type ModelConfigSource = {
+  getModelInfo(): LlmModelConfigInfo; // 返回当前 revision 的非敏感模型目录。
+  resolveLlmConfig(options: {modelProfileId?: string; reasoningEffortOverride?: ReasoningEffort}): LlmConfig; // 解析当前 revision 的完整运行配置。
 };
 
 type AgentModelSelection = {
@@ -106,6 +108,7 @@ function sanitizeModelConfigError(error: unknown, fallback: string): string {
  * 管理用户级 model catalog 与当前 session 的 model/effort 选择，并缓存 footer 所需非敏感状态。
  */
 class ModelContext {
+  private readonly config: ModelConfigSource;
   private readonly getCurrentCwd: () => string;
   private readonly getCurrentSessionId: () => string | null;
   private modelConfigError?: string;
@@ -117,7 +120,11 @@ class ModelContext {
   private readonly settingsStore?: SessionModelSettingsStore;
   private sessionSettingsDirty: boolean;
 
-  constructor(options: ModelContextOptions = {}) {
+  constructor(options: ModelContextOptions) {
+    if (!options?.config) {
+      throw new Error('ModelContext 必须注入模型配置源');
+    }
+    this.config = options.config;
     this.getCurrentCwd = options.getCurrentCwd || (() => process.cwd());
     this.getCurrentSessionId = options.getCurrentSessionId || (() => null);
     this.settingsStore = options.settingsStore;
@@ -135,7 +142,7 @@ class ModelContext {
     const previousFingerprint = this.modelStateFingerprint;
 
     try {
-      const rawInfo = readLlmModelConfigInfo();
+      const rawInfo = this.config.getModelInfo();
       const info = normalizeModelInfo(rawInfo);
       this.models = info.models;
       if (!this.selectedModelId || !this.models.some((model) => model.id === this.selectedModelId)) {
@@ -253,7 +260,7 @@ class ModelContext {
         return {error: this.modelConfigError || 'LLM 配置缺少 models'};
       }
 
-      const config = readLlmConfig({
+      const config = this.config.resolveLlmConfig({
         modelProfileId: this.selectedModelId,
         ...(this.reasoningEffortOverride !== undefined ? {reasoningEffortOverride: this.reasoningEffortOverride} : {})
       });
@@ -280,7 +287,7 @@ class ModelContext {
         return {error: this.modelConfigError || 'LLM 配置缺少 models'};
       }
 
-      return readLlmConfig({
+      return this.config.resolveLlmConfig({
         modelProfileId: this.selectedModelId,
         ...(this.reasoningEffortOverride !== undefined ? {reasoningEffortOverride: this.reasoningEffortOverride} : {})
       });
@@ -474,6 +481,7 @@ export type {
   ModelCommandInfo,
   ModelCommandInfoResult,
   ModelCommandProfile,
+  ModelConfigSource,
   ModelContextOptions,
   ModelStatusInfo,
   ModelStatusInfoResult,

@@ -4,7 +4,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { buildProviderRecords, createAgentLoopRuntime } = require('../../src/agent/agent-loop-runtime');
+const {buildProviderRecords, createAgentLoopRuntime: createRuntime} = require('../../src/agent/agent-loop-runtime');
+const {UserConfigContext} = require('../../src/config/user-config-context');
 const {createCompactionNoticeRecord} = require('../../src/agent/context/context-compaction');
 const {formatAgentMemoryCatalogPrompt, formatUserMemoriesPrompt} = require('../../src/agent/context/memory-prompt');
 const { createBuiltInSystemPrompt } = require('../../src/agent/context/system-prompt');
@@ -29,12 +30,16 @@ const TEST_CONFIG = {
   }
 };
 
+function createAgentLoopRuntime(cwd, mcpManager, hooks, debug, usageStore, configContext) {
+  return createRuntime(cwd, configContext || new UserConfigContext(), mcpManager, hooks, debug, usageStore);
+}
+
 async function withPatchedAgentRuntime(agentOrFactory, callback, config = TEST_CONFIG) {
   const originalPrepareAgent = agentSetupModule.prepareAgent;
 
   agentSetupModule.prepareAgent = (options = {}) => {
     const resolvedConfig = typeof config === 'function'
-      ? config({modelProfileId: options.modelProfileId, reasoningEffortOverride: options.reasoningEffortOverride})
+      ? config({configSnapshot: options.configSnapshot, modelProfileId: options.modelProfileId, reasoningEffortOverride: options.reasoningEffortOverride})
       : config;
     const baseRegistry = createDefaultToolRegistry(resolvedConfig, options.cwd);
     const registry = options.mcpManager
@@ -52,6 +57,26 @@ async function withPatchedAgentRuntime(agentOrFactory, callback, config = TEST_C
   } finally {
     agentSetupModule.prepareAgent = originalPrepareAgent;
   }
+}
+
+function createRuntimeSnapshot(revision) {
+  return {
+    revision,
+    getAppSettings() {
+      return {
+        agentInstructionFileName: 'AGENTS.md',
+        compactionThresholdRatio: revision === 1 ? 0.7 : 0.9,
+        skillCatalogContextRatio: 0.02,
+        toolApprovalMode: 'manual'
+      };
+    },
+    resolveLlmConfig() {
+      throw new Error('patched prepareAgent should resolve this snapshot');
+    },
+    resolveLlmConfigForProfile() {
+      throw new Error('not used');
+    }
+  };
 }
 
 function writeUserSkill(homeDir, name, description) {
@@ -235,6 +260,55 @@ test('createAgentLoopRuntime snapshots a budgeted skill catalog across tool cont
     assert.equal(contextUsages[0].segments.reduce((sum, segment) => sum + segment.tokens, 0), 900);
     assert.ok(contextUsages[0].segments.find((segment) => segment.category === 'skills').tokens > 0);
   });
+});
+
+test('createAgentLoopRuntime pins one revision across tool continuation and uses the next revision on the next run', async () => {
+  const oldSnapshot = createRuntimeSnapshot(1);
+  const newSnapshot = createRuntimeSnapshot(2);
+  let currentSnapshot = oldSnapshot;
+  const providerRuns = [];
+  const initialized = [];
+
+  await withPatchedAgentRuntime((config, registry) => {
+    const toolNames = registry.listDefinitions().map((tool) => tool.name);
+    initialized.push({model: config.model, reasoningEffort: config.reasoningEffort, toolNames});
+    let turn = 0;
+    return {
+      async runTurn() {
+        providerRuns.push(config.model);
+        turn += 1;
+        if (config.model === 'old-model' && turn === 1) {
+          currentSnapshot = newSnapshot;
+          return {draft: '', toolCalls: [{callId: 'continue', toolName: 'create_todos', argumentsText: '{"items":["continue"]}'}]};
+        }
+        return {draft: 'done', toolCalls: []};
+      }
+    };
+  }, async () => {
+    const runtime = createAgentLoopRuntime(TEST_CWD, undefined, undefined, undefined, undefined, {
+      capture() { return currentSnapshot; }
+    });
+    await runtime({records: [{role: 'user', text: 'first'}], userConfigSnapshot: oldSnapshot});
+    await runtime({records: [{role: 'user', text: 'second'}]});
+  }, ({configSnapshot}) => ({
+    ...TEST_CONFIG,
+    model: configSnapshot.revision === 1 ? 'old-model' : 'new-model',
+    reasoningEffort: configSnapshot.revision === 1 ? 'low' : 'high',
+    tools: {
+      ...TEST_CONFIG.tools,
+      fileEditMode: configSnapshot.revision === 1 ? 'apply_patch' : 'edit_file'
+    }
+  }));
+
+  assert.deepEqual(providerRuns, ['old-model', 'old-model', 'new-model']);
+  assert.deepEqual(initialized.map(({model, reasoningEffort}) => ({model, reasoningEffort})), [
+    {model: 'old-model', reasoningEffort: 'low'},
+    {model: 'new-model', reasoningEffort: 'high'}
+  ]);
+  assert.equal(initialized[0].toolNames.includes('apply_patch'), true);
+  assert.equal(initialized[0].toolNames.includes('edit_file'), false);
+  assert.equal(initialized[1].toolNames.includes('apply_patch'), false);
+  assert.equal(initialized[1].toolNames.includes('edit_file'), true);
 });
 
 test('createAgentLoopRuntime reads the headless skill catalog ratio from app settings', async () => {
@@ -1190,6 +1264,88 @@ test('createAgentLoopRuntime full-access executes registered patch tools without
   }
 });
 
+test('createAgentLoopRuntime executes high-risk bash once after approval callback', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-auto-bash-'));
+  let turnCount = 0;
+  let approvals = 0;
+  const results = [];
+  const agent = {
+    async runTurn() {
+      turnCount += 1;
+      return turnCount === 1
+        ? {draft: '', toolCalls: [{callId: 'bash-write', toolName: 'run_bash_command', argumentsText: JSON.stringify({command: 'touch approved.txt'})}]}
+        : {draft: 'done', toolCalls: []};
+    }
+  };
+
+  try {
+    await withPatchedAgentRuntime(agent, () => createAgentLoopRuntime(cwd)(
+      {records: [{role: 'user', text: 'create it'}]},
+      {
+        onToolApprovalRequest(_call, request) {
+          approvals += 1;
+          assert.equal(request.preview, 'touch approved.txt');
+          return {kind: 'allow_once'};
+        },
+        onToolResult(result) { results.push(result); }
+      }
+    ));
+
+    assert.equal(approvals, 1);
+    assert.equal(results[0].ok, true);
+    assert.equal(fs.existsSync(path.join(cwd, 'approved.txt')), true);
+  } finally {
+    fs.rmSync(cwd, {recursive: true, force: true});
+  }
+});
+
+test('createAgentLoopRuntime applies MCP always and never approval policies before proxy execution', async () => {
+  for (const approval of ['always', 'never']) {
+    let turnCount = 0;
+    let approvals = 0;
+    let calls = 0;
+    const namespacedName = `mcp__docs__${approval}`;
+    const mcpManager = {
+      listTools() {
+        return [{serverName: 'docs', toolName: approval, namespacedName, approval, description: 'MCP test', inputSchema: {type: 'object'}}];
+      },
+      getToolReference(toolName) {
+        return toolName === namespacedName ? {serverName: 'docs', toolName: approval, namespacedName, approval} : null;
+      },
+      async callTool() {
+        calls += 1;
+        return {content: [{type: 'text', text: 'mcp done'}]};
+      }
+    };
+    const agent = {
+      async runTurn() {
+        turnCount += 1;
+        return turnCount === 1
+          ? {draft: '', toolCalls: [{callId: `mcp-${approval}`, toolName: namespacedName, argumentsText: '{}'}]}
+          : {draft: 'done', toolCalls: []};
+      }
+    };
+    const results = [];
+
+    await withPatchedAgentRuntime(agent, () => createAgentLoopRuntime(TEST_CWD, mcpManager)(
+      {records: [{role: 'user', text: 'call MCP'}]},
+      {
+        onToolApprovalRequest(_call, request) {
+          approvals += 1;
+          assert.match(request.preview, /Server: docs/);
+          return {kind: 'allow_once'};
+        },
+        onToolResult(result) { results.push(result); }
+      }
+    ));
+
+    assert.equal(approvals, approval === 'always' ? 1 : 0);
+    assert.equal(calls, 1);
+    assert.equal(results[0].ok, true);
+    assert.match(results[0].text, /mcp done/);
+  }
+});
+
 test('createAgentLoopRuntime applies edit_file approvals across tool continuation', async () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-edit-session-'));
   const target = path.join(cwd, 'value.txt');
@@ -1545,7 +1701,7 @@ test('createAgentLoopRuntime emits tool lifecycle hooks without changing continu
   ]);
 });
 
-test('createAgentLoopRuntime emits tool approval request and response hooks with feedback text', async () => {
+test('createAgentLoopRuntime leaves interactive approval hooks to the app UI boundary', async () => {
   const hooks = createHookRecorder();
   const results = [];
   let turnCount = 0;
@@ -1585,25 +1741,8 @@ test('createAgentLoopRuntime emits tool approval request and response hooks with
   assert.match(results[0].text, /Use ls instead/);
   assert.deepEqual(hooks.events.map((event) => event.event), [
     'tool_call_start',
-    'tool_approval_request',
-    'tool_approval_response',
     'tool_call_end'
   ]);
-  assert.deepEqual(hooks.events[1].payload, {
-    interactionMode: 'normal',
-    toolCallId: 'approval-call',
-    toolName: 'run_bash_command',
-    argumentsText: JSON.stringify({command: 'rm generated.txt'}),
-    preview: 'rm generated.txt'
-  });
-  assert.deepEqual(hooks.events[2].payload, {
-    interactionMode: 'normal',
-    toolCallId: 'approval-call',
-    toolName: 'run_bash_command',
-    argumentsText: JSON.stringify({command: 'rm generated.txt'}),
-    decision: 'provide_feedback',
-    feedbackText: 'Use ls instead.'
-  });
 });
 
 test('createAgentLoopRuntime omits approval hooks for cached session decisions', async () => {

@@ -530,7 +530,7 @@ test('skill manager falls back to enabled on invalid state file', () => {
   writeSkill(projectSkillsDir, 'known', 'name: known\ndescription: Known skill', '# Known');
   fs.writeFileSync(path.join(projectSkillsDir, 'skills.json'), '{not-json', 'utf8');
 
-  const manager = createSkillManager({ cwd, projectSkillsDir, userSkillsDir: path.join(cwd, 'missing-user') });
+  const manager = createSkillManager({ builtinSkillsDir: path.join(cwd, 'missing-builtin'), cwd, projectSkillsDir, userSkillsDir: path.join(cwd, 'missing-user') });
 
   assert.equal(manager.listSkills()[0].enabled, true);
   assert.equal(manager.loadSkill('known').ok, true);

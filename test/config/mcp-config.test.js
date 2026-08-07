@@ -1,7 +1,29 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const {DEFAULT_MCP_TIMEOUT_MS, readMcpConfig, readMcpConfigDraft, saveMcpEnabledStateDraft} = require('../../src/config/mcp-config');
+const {DEFAULT_MCP_TIMEOUT_MS} = require('../../src/config/mcp-config');
+const {UserConfigContext} = require('../../src/config/user-config-context');
+
+function withContext(options, read) {
+  const context = new UserConfigContext(options);
+  try {
+    return read(context);
+  } finally {
+    context.close();
+  }
+}
+
+function readMcpConfig(options = {}) {
+  return withContext(options, (context) => context.capture().getMcpConfig());
+}
+
+function readMcpConfigDraft(options = {}) {
+  return withContext(options, (context) => context.capture().getMcpConfigDraft());
+}
+
+function saveMcpEnabledStateDraft(draft, options = {}) {
+  return withContext(options, (context) => context.saveMcpEnabledStateDraft(draft));
+}
 
 function readConfigFrom(value) {
   return () => value;

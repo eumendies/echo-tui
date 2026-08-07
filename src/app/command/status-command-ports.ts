@@ -2,7 +2,6 @@ import {redactSensitiveText} from '../../agent/agent-errors';
 import {loadAgentInstructions} from '../../agent/agent-instructions';
 import {queryCodexUsage} from '../../config/codex-oauth';
 import {isDeepseekBaseUrl, queryDeepseekBalance as fetchDeepseekBalance} from '../../config/deepseek-balance';
-import {readAppSettings} from '../../config/app-settings-config';
 import {listEffectiveAgentMemoryCatalogs} from '../../memory/agent-memory-store';
 import {readUserMemories} from '../../memory/memory-store';
 import {createCommandViewport} from './command-viewport';
@@ -10,6 +9,7 @@ import {createCommandViewport} from './command-viewport';
 import type {CodexUsage} from '../../config/codex-oauth';
 import type {DeepseekBalance} from '../../config/deepseek-balance';
 import type {CommandHostApp, CommandStatusSnapshot} from '../../types/command';
+import type {UserConfigContext} from '../../config/user-config-context';
 import type {UsageStore} from '../../types/usage';
 import type {AppContext} from '../state/app-context';
 
@@ -24,6 +24,7 @@ type StatusCommandContext = Pick<AppContext,
 type StatusCommandPortOptions = {
   appContext: StatusCommandContext;
   usageStore: UsageStore;
+  userConfigContext: UserConfigContext;
 };
 
 /**
@@ -31,6 +32,7 @@ type StatusCommandPortOptions = {
  */
 function createStatusCommandPorts(options: StatusCommandPortOptions): Pick<CommandHostApp, 'context' | 'status' | 'usage'> {
   const {appContext, usageStore} = options;
+  const userConfigContext = options.userConfigContext;
 
   return {
     context: {
@@ -40,7 +42,7 @@ function createStatusCommandPorts(options: StatusCommandPortOptions): Pick<Comma
     },
     status: {
       createSnapshot() {
-        return createStatusSnapshot(appContext);
+        return createStatusSnapshot(appContext, userConfigContext);
       },
       async queryDeepseekBalance() {
         const config = appContext.modelContext.createActiveLlmConfig();
@@ -91,12 +93,12 @@ function createStatusCommandPorts(options: StatusCommandPortOptions): Pick<Comma
 /**
  * 聚合 `/status` 所需的本地只读信息；各来源失败时保留其余可用字段。
  */
-function createStatusSnapshot(appContext: StatusCommandContext): CommandStatusSnapshot {
+function createStatusSnapshot(appContext: StatusCommandContext, userConfigContext: UserConfigContext): CommandStatusSnapshot {
   const cwd = appContext.getCurrentCwd();
   const userMemoryResult = readUserMemories();
   const agentMemoryResult = listEffectiveAgentMemoryCatalogs(cwd);
   const modelResult = appContext.modelContext.createStatusInfo();
-  const appSettings = readAppSettings();
+  const appSettings = userConfigContext.capture().getAppSettings();
   const diagnostics: string[] = [];
 
   if (!userMemoryResult.ok) {

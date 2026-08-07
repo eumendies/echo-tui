@@ -245,6 +245,7 @@ export type ConfigProviderDraft = {
   id: string;
   label: string;
   preset: string;
+  isNew?: boolean; // 新建未定型 provider 标记；id 需跟随最终选择的 preset。
   apiKey: string;
   baseURL?: string;
   codexAuthFile?: string;
@@ -293,11 +294,18 @@ export type ConfigSurfaceTab = {
 };
 
 export type GeneralConfigState = {
+  approvalModelProfiles: ToolApprovalModelProfile[]; // 当前配置文件中可供自动审批引用的非敏感模型目录。
   draft: AppSettings;
   error?: string;
   feedback?: string;
   initialDraftFingerprint: string;
   selectedIndex: number;
+};
+
+export type ToolApprovalModelProfile = {
+  id: string; // 持久化模型 profile 的稳定引用 id。
+  model: string; // Provider 请求使用的 API model 展示名。
+  provider: string; // 所属 provider id，仅用于帮助用户区分候选。
 };
 
 export type AppearanceConfigState = {
@@ -633,6 +641,7 @@ export type CommandHostApp = {
     selectEffort(effort: ReasoningEffort): CommandSelectEffortResult;
   };
   config: {
+    listApprovalModelProfiles(): ToolApprovalModelProfile[];
     readSettings(): AppSettings;
     readDraft(): LlmConfigDraft;
     listModels(provider: ConfigProviderDraft): Promise<CommandConfigListModelsResult>;

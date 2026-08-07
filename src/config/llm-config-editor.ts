@@ -1,14 +1,8 @@
 import {redactSensitiveText} from '../agent/agent-errors';
-import {JsonConfigFile, JsonConfigFileError, type JsonConfigFileOptions} from './json-config-file';
-import {getDefaultConfigPath} from './llm-config';
 import {getProviderPreset, providerRequiresApiKey} from './provider-presets';
 import type {LlmConfigDraft} from '../types/command';
 
 type JsonObject = Record<string, unknown>;
-
-type ConfigEditorOptions = JsonConfigFileOptions & {
-  configPath?: string;
-};
 
 type ConfigValidationResult =
   | {ok: true}
@@ -23,28 +17,6 @@ class LlmConfigEditorError extends Error {
 
 function isJsonObject(value: unknown): value is JsonObject {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-}
-
-function getConfigPath(options: ConfigEditorOptions = {}): string {
-  return options.configPath || getDefaultConfigPath();
-}
-
-function readRootConfig(options: ConfigEditorOptions = {}): JsonObject {
-  const configPath = getConfigPath(options);
-
-  try {
-    return new JsonConfigFile(configPath, options).readOrEmpty();
-  } catch (error: unknown) {
-    if (error instanceof JsonConfigFileError && error.kind === 'invalid_json') {
-      throw new LlmConfigEditorError(`LLM 配置文件不是有效 JSON：${configPath}`);
-    }
-
-    if (error instanceof JsonConfigFileError && error.kind === 'invalid_root') {
-      throw new LlmConfigEditorError(`LLM 配置文件根节点必须是对象：${configPath}`);
-    }
-
-    throw new LlmConfigEditorError(`无法读取 LLM 配置文件：${configPath}`);
-  }
 }
 
 function readOptionalString(source: JsonObject, fieldName: string): string | undefined {
@@ -69,10 +41,9 @@ function readOptionalObject(source: JsonObject, fieldName: string): JsonObject |
 }
 
 /**
- * 读取用户配置为面板草稿；缺失配置文件时返回空草稿，便于首次配置。
+ * 从已读取的用户配置根创建面板草稿；返回值不与输入根共享可变引用。
  */
-function readLlmConfigDraft(options: ConfigEditorOptions = {}): LlmConfigDraft {
-  const rootConfig = readRootConfig(options);
+function createLlmConfigDraft(rootConfig: JsonObject): LlmConfigDraft {
   const llmConfig = isJsonObject(rootConfig.llm) ? rootConfig.llm : {};
   const rawProviders = isJsonObject(llmConfig.providers) ? llmConfig.providers : {};
   const rawModels = Array.isArray(llmConfig.models) ? llmConfig.models : [];
@@ -240,9 +211,9 @@ function validateConfigDraft(draft: LlmConfigDraft): ConfigValidationResult {
 }
 
 /**
- * 保存配置草稿到用户配置文件；仅替换 llm provider/model 相关节点。
+ * 将 LLM 草稿增量应用到最新根对象，并保留 llm 内未归属 provider/model 的字段。
  */
-function saveLlmConfigDraft(draft: LlmConfigDraft, options: ConfigEditorOptions = {}): void {
+function applyLlmConfigDraft(rootConfig: JsonObject, draft: LlmConfigDraft): void {
   const normalized = normalizeConfigDraft(draft);
   const validation = validateConfigDraft(normalized);
 
@@ -250,8 +221,6 @@ function saveLlmConfigDraft(draft: LlmConfigDraft, options: ConfigEditorOptions 
     throw new LlmConfigEditorError(validation.error);
   }
 
-  const targetPath = getConfigPath(options);
-  const configFile = new JsonConfigFile(targetPath, options);
   const providers: JsonObject = {};
   const models: JsonObject[] = [];
 
@@ -292,48 +261,19 @@ function saveLlmConfigDraft(draft: LlmConfigDraft, options: ConfigEditorOptions 
     }
   }
 
-  try {
-    let rootConfig: JsonObject;
-
-    try {
-      rootConfig = configFile.read();
-    } catch (error: unknown) {
-      if (!(error instanceof JsonConfigFileError) || error.kind !== 'missing') {
-        throw error;
-      }
-
-      rootConfig = cloneJsonObject(normalized.rootConfig);
-    }
-
-    const llmConfig = isJsonObject(rootConfig.llm) ? {...rootConfig.llm} : {};
-
-    llmConfig.providers = providers;
-    llmConfig.models = models;
-    llmConfig.selectedModel = normalized.selectedModelId;
-    rootConfig.llm = llmConfig;
-    configFile.write(rootConfig);
-  } catch (error: unknown) {
-    if (error instanceof JsonConfigFileError && error.kind === 'invalid_json') {
-      throw new LlmConfigEditorError(`LLM 配置文件不是有效 JSON：${targetPath}`);
-    }
-
-    if (error instanceof JsonConfigFileError && error.kind === 'invalid_root') {
-      throw new LlmConfigEditorError(`LLM 配置文件根节点必须是对象：${targetPath}`);
-    }
-
-    throw error;
-  }
+  const llmConfig = isJsonObject(rootConfig.llm) ? {...rootConfig.llm} : {};
+  llmConfig.providers = providers;
+  llmConfig.models = models;
+  llmConfig.selectedModel = normalized.selectedModelId;
+  rootConfig.llm = llmConfig;
 }
 
 export {
+  applyLlmConfigDraft,
+  createLlmConfigDraft,
   LlmConfigEditorError,
   normalizeConfigDraft,
-  readLlmConfigDraft,
-  saveLlmConfigDraft,
   validateConfigDraft
 };
 
-export type {
-  ConfigEditorOptions,
-  ConfigValidationResult
-};
+export type {ConfigValidationResult};

@@ -1,7 +1,7 @@
 import {INPUT_EVENTS} from '../../input/event-types';
 import {
   CONFIG_TABS,
-  GENERAL_CONFIG_ROW_IDS,
+  getGeneralConfigRowIds,
   createConfigSurface,
   createInitialAppearanceConfigState,
   createInitialConfigState,
@@ -120,11 +120,11 @@ class ConfigCommandHandler implements CommandHandler<ConfigCommandData> {
 
     if (event.type === INPUT_EVENTS.MOVE_UP || event.type === INPUT_EVENTS.MOVE_DOWN) {
       const delta = event.type === INPUT_EVENTS.MOVE_UP ? -1 : 1;
-      nextState.selectedIndex = clamp(nextState.selectedIndex + delta, 0, GENERAL_CONFIG_ROW_IDS.length - 1);
+      nextState.selectedIndex = clamp(nextState.selectedIndex + delta, 0, getGeneralConfigRowIds(nextState).length - 1);
     } else if (event.type === INPUT_EVENTS.MOVE_LEFT || event.type === INPUT_EVENTS.MOVE_RIGHT) {
       nextState = adjustGeneralValue(nextState, event.type === INPUT_EVENTS.MOVE_LEFT ? -1 : 1);
     } else if (event.type === INPUT_EVENTS.SUBMIT) {
-      const selectedRow = GENERAL_CONFIG_ROW_IDS[nextState.selectedIndex];
+      const selectedRow = getGeneralConfigRowIds(nextState)[nextState.selectedIndex];
       if (selectedRow === 'reasoningSummary') {
         nextState.draft.showReasoningSummary = !nextState.draft.showReasoningSummary;
       } else if (selectedRow === 'autoCompressImages') {
@@ -136,6 +136,8 @@ class ConfigCommandHandler implements CommandHandler<ConfigCommandData> {
           : {...nextState, error: result.error || '无法保存常规设置'};
       }
     }
+
+    nextState.selectedIndex = clamp(nextState.selectedIndex, 0, getGeneralConfigRowIds(nextState).length - 1);
 
     this.update({...data, general: {state: nextState}}, host);
   }
@@ -235,7 +237,10 @@ class ConfigCommandHandler implements CommandHandler<ConfigCommandData> {
     const nextState = saveResult.ok
       ? markModelConfigSaved({...result.state, draft: result.draft})
       : {...result.state, error: saveResult.error || '无法保存配置'};
-    this.update({...data, models: {state: nextState}}, host);
+    const general = saveResult.ok && data.general?.state
+      ? {state: {...data.general.state, approvalModelProfiles: host.config.listApprovalModelProfiles()}}
+      : data.general;
+    this.update({...data, general, models: {state: nextState}}, host);
   }
 
   private requestClose(data: ConfigCommandData, host: CommandHost): void {
@@ -286,7 +291,7 @@ class ConfigCommandHandler implements CommandHandler<ConfigCommandData> {
 function initializeTab(data: ConfigCommandData, tab: ConfigTabId, host: CommandHost): ConfigCommandData {
   if (tab === 'general' && !data.general) {
     try {
-      return {...data, general: {state: createInitialGeneralConfigState(host.config.readSettings())}};
+      return {...data, general: {state: createInitialGeneralConfigState(host.config.readSettings(), host.config.listApprovalModelProfiles())}};
     } catch (error: unknown) {
       return {...data, general: {error: toErrorMessage(error)}};
     }
@@ -312,7 +317,7 @@ function initializeTab(data: ConfigCommandData, tab: ConfigTabId, host: CommandH
 }
 
 function adjustGeneralValue(state: GeneralConfigState, direction: number): GeneralConfigState {
-  const selectedRow = GENERAL_CONFIG_ROW_IDS[state.selectedIndex];
+  const selectedRow = getGeneralConfigRowIds(state)[state.selectedIndex];
   if (selectedRow === 'compactionThreshold') {
     const next = Math.round((state.draft.compactionThresholdRatio + direction * 0.05) * 100) / 100;
     state.draft.compactionThresholdRatio = clamp(next, 0.5, 0.95);
@@ -329,6 +334,16 @@ function adjustGeneralValue(state: GeneralConfigState, direction: number): Gener
     state.draft.autoCompressImages = !state.draft.autoCompressImages;
   } else if (selectedRow === 'fileEditMode') {
     state.draft.fileEditMode = state.draft.fileEditMode === 'apply_patch' ? 'edit_file' : 'apply_patch';
+  } else if (selectedRow === 'toolApprovalMode') {
+    state.draft.toolApprovalMode = state.draft.toolApprovalMode === 'manual' ? 'auto' : 'manual';
+    if (state.draft.toolApprovalMode === 'auto'
+      && !state.approvalModelProfiles.some((profile) => profile.id === state.draft.toolApprovalModelProfileId)) {
+      state.draft.toolApprovalModelProfileId = state.approvalModelProfiles[0]?.id;
+    }
+  } else if (selectedRow === 'toolApprovalModel' && state.approvalModelProfiles.length > 0) {
+    const current = state.approvalModelProfiles.findIndex((profile) => profile.id === state.draft.toolApprovalModelProfileId);
+    const next = (Math.max(0, current) + direction + state.approvalModelProfiles.length) % state.approvalModelProfiles.length;
+    state.draft.toolApprovalModelProfileId = state.approvalModelProfiles[next].id;
   } else if (selectedRow === 'instructionFile') {
     state.draft.agentInstructionFileName = state.draft.agentInstructionFileName === 'AGENTS.md' ? 'CLAUDE.md' : 'AGENTS.md';
   }

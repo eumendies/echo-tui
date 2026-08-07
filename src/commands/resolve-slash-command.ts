@@ -1,4 +1,5 @@
 import type { MatchableCommandHandler, SlashCommandDescriptor } from '../types/command';
+import type {AgentInstructionFileName} from '../types/agent';
 import { createBuiltInAgentWorkflowHandlers } from './agent-workflows/agent-workflow-command-handler';
 import { ClearCommandHandler } from './clear-command-handler';
 import { BtwCommandHandler } from './btw-command-handler';
@@ -27,7 +28,7 @@ import { UsageCommandHandler } from './usage-command-handler';
  * 装配默认 slash command handlers；具体 app 能力由 CommandHost 在运行时提供。
  *
  */
-export function createDefaultSlashCommandHandlers(): MatchableCommandHandler[] {
+export function createDefaultSlashCommandHandlers(getAgentInstructionFileName?: () => AgentInstructionFileName): MatchableCommandHandler[] {
   return [
     new HelpCommandHandler(),
     new BtwCommandHandler(),
@@ -50,7 +51,7 @@ export function createDefaultSlashCommandHandlers(): MatchableCommandHandler[] {
     new MemoryCommandHandler(),
     new HooksCommandHandler(),
     new SkillsCommandHandler(),
-    ...createBuiltInAgentWorkflowHandlers(),
+    ...createBuiltInAgentWorkflowHandlers(getAgentInstructionFileName),
     new SkillInvocationCommandHandler()
   ];
 }

@@ -39,6 +39,7 @@ function createAssistantCommandPort(options: AssistantCommandPortOptions): Comma
     compactContext(compactionOptions: {force: true}) {
       const session = appContext.getAgentSession();
       const prepared = prepareAgent({
+        configSnapshot: session.userConfigSnapshot,
         cwd: () => appContext.getCurrentCwd(),
         modelProfileId: session.modelProfileId,
         reasoningEffortOverride: session.reasoningEffortOverride

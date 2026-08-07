@@ -6,6 +6,7 @@ const {BtwCommandHandler} = require('../../src/commands/btw-command-handler');
 const { ClearCommandHandler } = require('../../src/commands/clear-command-handler');
 const { CompactCommandHandler } = require('../../src/commands/compact-command-handler');
 const { ConfigCommandHandler } = require('../../src/commands/config/handler');
+const {getGeneralConfigRowIds} = require('../../src/commands/config/state');
 const { ContextCommandHandler } = require('../../src/commands/context-command-handler');
 const { CopyCommandHandler } = require('../../src/commands/copy-command-handler');
 const { DiffCommandHandler } = require('../../src/commands/diff-command-handler');
@@ -149,6 +150,9 @@ function createFakeHost(options = {}) {
       }
     },
     config: {
+      listApprovalModelProfiles() {
+        return options.approvalModelProfiles || [{id: 'chat-gpt', model: 'gpt-chat', provider: 'chat'}];
+      },
       readSettings() {
         if (options.settingsReadError) {
           throw new Error(options.settingsReadError);
@@ -161,7 +165,8 @@ function createFakeHost(options = {}) {
           fileEditMode: 'apply_patch',
           skillCatalogContextRatio: 0.02,
           showReasoningSummary: true,
-          slashSuggestionMaxVisible: 8
+          slashSuggestionMaxVisible: 8,
+          toolApprovalMode: 'manual'
         });
       },
       readDraft() {
@@ -1174,6 +1179,7 @@ test('configCommandHandler opens general tab, saves independently, and lazily op
   configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_RIGHT}, host);
   assert.equal(host.session.getActive().surface.state.draft.fileEditMode, 'edit_file');
   configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
+  configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
   configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_RIGHT}, host);
   assert.equal(host.session.getActive().surface.state.draft.agentInstructionFileName, 'CLAUDE.md');
   configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
@@ -1190,6 +1196,68 @@ test('configCommandHandler opens general tab, saves independently, and lazily op
   configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.TAB}, host);
   assert.equal(host.session.getActive().surface.view, 'models');
   assert.equal(host.session.getActive().surface.state.draft.providers[0].id, 'chat');
+});
+
+test('configCommandHandler dynamically shows auto approval model and cycles saved profiles', () => {
+  const configCommandHandler = new ConfigCommandHandler();
+  const profiles = [
+    {id: 'review-fast', model: 'gpt-fast', provider: 'openai'},
+    {id: 'review-deep', model: 'gpt-deep', provider: 'anthropic'}
+  ];
+  const {calls, host} = createFakeHost({approvalModelProfiles: profiles});
+  let session = startCommand(configCommandHandler, '/config', host);
+  let rows = getGeneralConfigRowIds(session.data.general.state);
+
+  assert.equal(rows.includes('toolApprovalModel'), false);
+  while (session.data.general.state.selectedIndex < rows.indexOf('toolApprovalMode')) {
+    configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_DOWN}, host);
+    session = host.session.getActive();
+  }
+  configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_RIGHT}, host);
+  session = host.session.getActive();
+  rows = getGeneralConfigRowIds(session.data.general.state);
+  assert.equal(session.data.general.state.draft.toolApprovalMode, 'auto');
+  assert.equal(session.data.general.state.draft.toolApprovalModelProfileId, 'review-fast');
+  assert.equal(rows[rows.indexOf('toolApprovalMode') + 1], 'toolApprovalModel');
+
+  configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_DOWN}, host);
+  configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_RIGHT}, host);
+  session = host.session.getActive();
+  assert.equal(session.data.general.state.draft.toolApprovalModelProfileId, 'review-deep');
+  assert.notEqual(session.data.general.state.initialDraftFingerprint, JSON.stringify(session.data.general.state.draft));
+
+  configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_UP}, host);
+  configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_LEFT}, host);
+  session = host.session.getActive();
+  assert.equal(session.data.general.state.draft.toolApprovalMode, 'manual');
+  assert.equal(session.data.general.state.draft.toolApprovalModelProfileId, 'review-deep');
+  assert.equal(getGeneralConfigRowIds(session.data.general.state).includes('toolApprovalModel'), false);
+  assert.ok(session.data.general.state.selectedIndex < getGeneralConfigRowIds(session.data.general.state).length);
+
+  while (session.data.general.state.selectedIndex < getGeneralConfigRowIds(session.data.general.state).indexOf('save')) {
+    configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_DOWN}, host);
+    session = host.session.getActive();
+  }
+  configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.SUBMIT}, host);
+  assert.equal(calls.savedSettingsDrafts.at(-1).toolApprovalMode, 'manual');
+  assert.equal(calls.savedSettingsDrafts.at(-1).toolApprovalModelProfileId, 'review-deep');
+});
+
+test('configCommandHandler shows auto model as unavailable when no saved profile exists', () => {
+  const configCommandHandler = new ConfigCommandHandler();
+  const {host} = createFakeHost({approvalModelProfiles: []});
+  let session = startCommand(configCommandHandler, '/config', host);
+  const modeIndex = getGeneralConfigRowIds(session.data.general.state).indexOf('toolApprovalMode');
+
+  for (let index = 0; index < modeIndex; index += 1) {
+    configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_DOWN}, host);
+    session = host.session.getActive();
+  }
+  configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_RIGHT}, host);
+  session = host.session.getActive();
+  assert.equal(session.data.general.state.draft.toolApprovalMode, 'auto');
+  assert.equal(session.data.general.state.draft.toolApprovalModelProfileId, undefined);
+  assert.equal(getGeneralConfigRowIds(session.data.general.state).includes('toolApprovalModel'), true);
 });
 
 test('configCommandHandler isolates tab read errors and keeps save errors inline', () => {
@@ -1213,7 +1281,7 @@ test('configCommandHandler isolates tab read errors and keeps save errors inline
     }
   });
   const session = startCommand(configCommandHandler, '/config', saveError.host);
-  for (let index = 0; index < 8; index += 1) {
+  for (let index = 0; index < 9; index += 1) {
     configCommandHandler.handleEvent(saveError.host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, saveError.host);
   }
   configCommandHandler.handleEvent(saveError.host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, saveError.host);

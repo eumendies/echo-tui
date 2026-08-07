@@ -294,6 +294,37 @@ test('config command state reads existing fake provider without offering fake as
   assert.equal(result.provider.preset, 'fake-agent');
 });
 
+test('config command state gives a new provider the id of the selected preset', () => {
+  const driver = createStateDriver({
+    providers: [],
+    selectedModelId: undefined,
+    rootConfig: {}
+  });
+
+  driver.handle({type: INPUT_EVENTS.SUBMIT});
+  assert.equal(driver.getState().mode, 'preset');
+  assert.equal(driver.getState().draft.providers.length, 1);
+
+  const preset = selectPresetByLabel(driver, 'Ollama (Local)');
+
+  assert.equal(driver.getState().draft.providers[0].id, 'ollama');
+  assert.equal(driver.getState().draft.providers[0].preset, 'ollama');
+  assert.deepEqual(driver.getState().draft.providers[0].models.map((model) => model.model), preset.suggestedModels);
+  assert.equal(driver.getState().mode, 'form');
+});
+
+test('config command state keeps an existing provider id when switching presets', () => {
+  const driver = createStateDriver();
+
+  openForm(driver);
+  moveFormToRow(driver, 'preset');
+  driver.handle({type: INPUT_EVENTS.SUBMIT});
+  selectPresetByLabel(driver, 'Ollama (Local)');
+
+  assert.equal(driver.getState().draft.providers[0].id, 'chat');
+  assert.equal(driver.getState().draft.providers[0].preset, 'ollama');
+});
+
 test('config command state selects listed models without duplicates', () => {
   const driver = createStateDriver();
 
@@ -339,7 +370,7 @@ test('config command state adds providers from the explicit add row', () => {
   const result = driver.handle({type: INPUT_EVENTS.SUBMIT});
 
   assert.equal(result.kind, 'continue');
-  assert.equal(driver.getState().mode, 'form');
+  assert.equal(driver.getState().mode, 'preset');
   assert.equal(driver.getState().draft.providers.length, 2);
 });
 
