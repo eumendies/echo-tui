@@ -2,6 +2,7 @@ import {INIT_WORKFLOW} from './init-workflow';
 import {REVIEW_WORKFLOW} from './review-workflow';
 
 import type {AgentWorkflowDefinition} from '../../types/agent-workflow';
+import type {AgentInstructionFileName} from '../../types/agent';
 import type {
   CommandHandler,
   CommandHost,
@@ -39,7 +40,7 @@ export class AgentWorkflowCommandHandler implements CommandHandler {
   readonly name: string;
   readonly description: string;
 
-  constructor(private readonly definition: AgentWorkflowDefinition) {
+  constructor(private readonly definition: AgentWorkflowDefinition, private readonly getAgentInstructionFileName?: () => AgentInstructionFileName) {
     this.name = definition.name;
     this.description = definition.description;
   }
@@ -74,7 +75,10 @@ export class AgentWorkflowCommandHandler implements CommandHandler {
 
     return {
       kind: 'submit_user_message',
-      text: this.definition.createPrompt(parsed),
+      text: this.definition.createPrompt({
+        ...parsed,
+        ...(this.getAgentInstructionFileName ? {fileName: this.getAgentInstructionFileName()} : {})
+      }),
       displayText: text,
       metadata: {
         agentWorkflow: {
@@ -90,8 +94,8 @@ export class AgentWorkflowCommandHandler implements CommandHandler {
 /**
  * 为每次默认命令装配创建独立 workflow handlers，避免共享可变命令实例。
  */
-function createBuiltInAgentWorkflowHandlers(): MatchableCommandHandler[] {
-  return BUILT_IN_AGENT_WORKFLOWS.map((definition) => new AgentWorkflowCommandHandler(definition));
+function createBuiltInAgentWorkflowHandlers(getAgentInstructionFileName?: () => AgentInstructionFileName): MatchableCommandHandler[] {
+  return BUILT_IN_AGENT_WORKFLOWS.map((definition) => new AgentWorkflowCommandHandler(definition, getAgentInstructionFileName));
 }
 
 export {

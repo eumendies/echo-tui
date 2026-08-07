@@ -6,6 +6,7 @@ const path = require('node:path');
 
 const {runOnce, stripAnsiControlSequences} = require('../../src/cli/one-shot');
 const {AgentAbortError} = require('../../src/types/agent');
+const {UserConfigContext} = require('../../src/config/user-config-context');
 
 function createResources() {
   const events = [];
@@ -112,6 +113,51 @@ test('runOnce defaults to headless denial without supplying an interactive quest
 
   assert.equal(callbacks, undefined);
   assert.deepEqual(output, ['safe\n']);
+});
+
+test('runOnce shares one non-watching config revision across MCP, hooks, and agent', async () => {
+  const resources = createResources();
+  let reads = 0;
+  let watcherStarts = 0;
+  const root = JSON.stringify({
+    llm: {
+      selectedModel: 'fake',
+      providers: {fake: {preset: 'fake-agent'}},
+      models: [{id: 'fake', provider: 'fake', model: 'echo-fake-agent'}]
+    },
+    mcp: {enabled: false},
+    hooks: {assistant_turn_start: []}
+  });
+  const context = new UserConfigContext({
+    configPath: '/tmp/echo-once-config.json',
+    readFile() {
+      reads += 1;
+      return root;
+    },
+    watchConfig() {
+      watcherStarts += 1;
+      return {close() {}};
+    }
+  });
+  const snapshot = context.capture();
+  let sessionSnapshot;
+
+  await runOnce({
+    cwd: '/tmp/project',
+    debug: resources.debug,
+    process: resources.process,
+    prompt: 'shared config',
+    runAgent: async (session) => {
+      sessionSnapshot = session.userConfigSnapshot;
+      return 'done';
+    },
+    stdout: {write() {}},
+    userConfigContext: context
+  });
+
+  assert.equal(sessionSnapshot, snapshot);
+  assert.equal(reads, 1);
+  assert.equal(watcherStarts, 0);
 });
 
 test('runOnce does not create or expose interactive session settings', async () => {

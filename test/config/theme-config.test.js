@@ -13,7 +13,16 @@ const {
   readTuiThemeBaseId,
   selectBuiltinTheme
 } = require('../../src/config/theme-config');
-const {readLlmConfig} = require('../../src/config/llm-config');
+const {UserConfigContext} = require('../../src/config/user-config-context');
+
+function readLlmConfig(options = {}) {
+  const context = new UserConfigContext(options);
+  try {
+    return context.capture().resolveLlmConfig();
+  } finally {
+    context.close();
+  }
+}
 
 test('readTuiTheme returns default theme when theme file is missing or invalid', () => {
   const missing = readTuiTheme({

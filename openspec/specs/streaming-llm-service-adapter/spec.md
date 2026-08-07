@@ -4,12 +4,13 @@
 定义 `echo_tui` 真实流式 LLM service adapter 的外部行为，包括用户级配置读取、OpenAI/Anthropic SDK 请求、文本增量处理、回调契约兼容和失败反馈约束。
 ## Requirements
 ### Requirement: 真实 LLM 服务配置
-系统 SHALL 通过用户级 JSON 配置文件创建真实 LLM adapter。配置 SHALL 从 `~/.echo/config.json` 读取，并包含创建 provider client 和发起文本响应所需的运行参数；敏感字段 SHALL 只驻留在运行时内存中，不得硬编码在源码、测试 fixture、文档示例或 OpenSpec artifacts 中。系统 SHALL NOT 要求用户为 OpenAI provider 配置客户端输出 token 上限；默认 OpenAI 请求 SHALL NOT 发送 `max_output_tokens`。系统 SHALL 支持包含多个 provider profile、多个模型 profile 与持久化当前模型选择的配置。模型 profile SHALL 通过 `provider` 引用 provider profile，并支持可选的 `contextWindow` 配置项，用于上下文压缩的窗口解析；缺省时由内置映射表或默认值回退。provider profile SHALL 使用 `preset` 引用 provider preset catalog，由 catalog 解析出运行时 `agentType`、可选固定 `baseURL` 和可选默认 headers；provider profile 也 MAY 包含手写字符串 `headers`，系统 SHALL 将其与 preset headers 合并为 provider client 默认请求 headers；用户级 real provider presets SHALL 至少包含 `openai-responses-api`、`openai-chat-compatible-api`、`anthropic-compatible-api` 和 `xiaomi-mimo-token-plan`。模型 profile SHALL 支持 OpenAI Responses、OpenAI Chat compatible 和 Anthropic-backed 模型使用可选的 `reasoning.effort` 配置项，用于控制推理等级；`reasoning.summary` SHALL 仅对 Responses-backed 模型生效，其他 provider SHALL 静默忽略该 summary 配置。系统 SHALL NOT 读取旧的顶层或 model profile 级 `agentType`、`apiKey`、`baseURL`、`headers` provider 字段作为 fallback。
+系统 SHALL 通过用户级 JSON 配置创建真实 LLM adapter。配置 SHALL 来自实例级用户配置上下文对 `~/.echo/config.json` 最新 revision 的不可变 snapshot，并包含创建 provider client 和发起文本响应所需的运行参数；同一 agent run 的 provider、模型、reasoning、tools 和上下文参数 SHALL 来自同一 revision，且该 run 的 tool continuation 期间 SHALL NOT 重新读取或切换用户配置。敏感字段 SHALL 只驻留在运行时内存中，不得硬编码在源码、测试 fixture、文档示例或 OpenSpec artifacts 中。系统 SHALL NOT 要求用户为 OpenAI provider 配置客户端输出 token 上限；默认 OpenAI 请求 SHALL NOT 发送 `max_output_tokens`。系统 SHALL 支持包含多个 provider profile、多个模型 profile 与持久化当前模型选择的配置。模型 profile SHALL 通过 `provider` 引用 provider profile，并支持可选的 `contextWindow` 配置项，用于上下文压缩的窗口解析；缺省时由内置映射表或默认值回退。provider profile SHALL 使用 `preset` 引用 provider preset catalog，由 catalog 解析出运行时 `agentType`、可选固定 `baseURL` 和可选默认 headers；provider profile 也 MAY 包含手写字符串 `headers`，系统 SHALL 将其与 preset headers 合并为 provider client 默认请求 headers；用户级 real provider presets SHALL 至少包含 `openai-responses-api`、`openai-chat-compatible-api`、`anthropic-compatible-api` 和 `xiaomi-mimo-token-plan`。模型 profile SHALL 支持 OpenAI Responses、OpenAI Chat compatible 和 Anthropic-backed 模型使用可选的 `reasoning.effort` 配置项，用于控制推理等级；`reasoning.summary` SHALL 仅对 Responses-backed 模型生效，其他 provider SHALL 静默忽略该 summary 配置。系统 SHALL NOT 读取旧的顶层或 model profile 级 `agentType`、`apiKey`、`baseURL`、`headers` provider 字段作为 fallback。
 
-#### Scenario: 从用户级配置文件创建配置
-- **WHEN** CLI 启动默认真实 adapter
-- **THEN** 系统 SHALL 从 `~/.echo/config.json` 读取 LLM 运行配置
-- **THEN** 系统 SHALL 使用读取到的配置创建 provider client 和模型请求参数
+#### Scenario: 从用户级配置 snapshot 创建配置
+- **WHEN** CLI 启动默认真实 adapter 并开始一次 agent run
+- **THEN** 系统 SHALL 捕获用户配置上下文的最新 revision
+- **THEN** 系统 SHALL 使用该 snapshot 中的 LLM 配置创建 provider client 和模型请求参数
+- **THEN** 系统 SHALL NOT 为同一 run 的 App settings、LLM 或 tools 分别重复读取 `~/.echo/config.json`
 
 #### Scenario: 从多 provider 多模型配置创建当前生效配置
 - **WHEN** `~/.echo/config.json` 中的 `llm.providers` 包含多个有效 provider profile，`llm.models` 包含多个有效模型 profile，且 `llm.selectedModel` 指向其中一个 profile id
@@ -112,9 +113,14 @@
 - **THEN** 该默认值 SHALL 由 adapter 内部提供，用户不需要在 provider 或 model profile 中配置
 
 #### Scenario: 选择持久化后后续请求使用新模型
-- **WHEN** `/model` 或 `/config` 已将某个 profile id 写入 `llm.selectedModel`
-- **THEN** 后续普通用户消息触发真实 adapter 时 SHALL 重新读取 `~/.echo/config.json`
-- **THEN** 后续 provider 请求参数 SHALL 使用新选择的模型 profile 解析出的模型名和 provider 配置
+- **WHEN** `/config` 已将某个 profile id 写入 `llm.selectedModel`，或当前 session 已通过 `/model` 选择有效 profile
+- **THEN** 用户配置写入成功 SHALL 立即安装新 revision，session 选择 SHALL 继续由 ModelContext 管理
+- **THEN** 后续普通用户消息 SHALL 捕获用户配置上下文的最新 revision，并结合当前 session profile 解析模型名和 provider 配置
+
+#### Scenario: active run 不切换配置 revision
+- **WHEN** agent run 已开始，且 watcher 在 provider streaming 或 tool continuation 期间安装新的用户配置 revision
+- **THEN** 当前 run SHALL 继续使用开始时捕获的模型、provider、reasoning 和工具配置
+- **THEN** 新 revision SHALL 只影响后续 agent run
 
 #### Scenario: 读取模型 profile 的上下文窗口配置
 - **WHEN** 当前生效模型 profile 配置了有效的 `contextWindow`

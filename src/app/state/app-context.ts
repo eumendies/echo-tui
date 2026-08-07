@@ -11,12 +11,12 @@ import {PendingMessageContext} from './pending-message-context';
 import {INPUT_EVENTS} from '../../input/event-types';
 import {createDiffSourceResult} from '../diff/source';
 import {DEFAULT_TUI_THEME, type TuiTheme} from '../../config/theme-config';
-import {DEFAULT_APP_SETTINGS, readAppSettings, type AppSettings} from '../../config/app-settings-config';
+import type {UserConfigContext, UserConfigSnapshot} from '../../config/user-config-context';
 import {createSessionModelSettingsStore} from '../../persistence/session-model-settings-store';
 import {isShellInteractionMode} from '../../types/agent';
 
 import type {TerminalController} from '../../types/app';
-import type {AgentSessionInput, ContextUsage, InteractionMode, ReasoningEffort} from '../../types/agent';
+import type {AgentSessionInput, AgentUserConfigSnapshot, ContextUsage, InteractionMode, ReasoningEffort} from '../../types/agent';
 import type {ToolApprovalSettings} from '../../config/app-settings-config';
 import type {DiffSourceResult} from '../../types/diff';
 import type {CommandSurface, SlashCommandDescriptor} from '../../types/command';
@@ -31,7 +31,7 @@ import type {AssistantTurnHandle, InterruptAssistantTurnResult} from './turn-con
 
 type AgentInteractionMode = 'normal' | 'plan';
 
-type AppSettingsRefreshResult = {
+type AppSettingsApplyResult = {
   agentInstructionFileChanged: boolean;
   fileEditModeChanged: boolean;
   reasoningVisibilityChanged: boolean;
@@ -94,12 +94,14 @@ class AppContext {
   readonly pendingMessageContext: PendingMessageContext;
   readonly renderContext: RenderContext;
   private theme: TuiTheme;
-  private appSettings: AppSettings;
+  private appSettingsSnapshot: UserConfigSnapshot;
   private slashSuggestionContext: SlashSuggestionContext;
   private interactionMode: InteractionMode;
   private lastSubmittedAgentMode: AgentInteractionMode;
   private contextUsage: ContextUsage | null;
   private mcpBootstrapStatus: 'idle' | 'initializing' | 'ready';
+  private modelConfigSnapshot: UserConfigSnapshot;
+  private readonly userConfigContext: UserConfigContext;
 
   constructor(
     terminal: TerminalController,
@@ -107,15 +109,26 @@ class AppContext {
     cwd: string | (() => string),
     nodeVersion: string | (() => string),
     theme: TuiTheme = DEFAULT_TUI_THEME,
-    appSettings: AppSettings = DEFAULT_APP_SETTINGS,
-    sessionModelSettingsStore: SessionModelSettingsStore = createSessionModelSettingsStore(transcriptStore)
+    sessionModelSettingsStore: SessionModelSettingsStore = createSessionModelSettingsStore(transcriptStore),
+    userConfigContext: UserConfigContext
   ) {
+    if (!userConfigContext) {
+      throw new Error('AppContext 必须注入共享的 UserConfigContext');
+    }
     this.getCurrentCwdValue = cwd;
     this.getNodeVersionValue = nodeVersion;
+    this.userConfigContext = userConfigContext;
+    this.modelConfigSnapshot = userConfigContext.capture();
+    this.appSettingsSnapshot = this.modelConfigSnapshot;
+    const initialAppSettings = this.appSettingsSnapshot.getAppSettings();
 
     this.composerContext = new ComposerContext(() => this.turnContext.isResponding());
     this.transcriptContext = new TranscriptContext(transcriptStore, () => this.getCurrentCwd());
     this.modelContext = new ModelContext({
+      config: {
+        getModelInfo: () => this.modelConfigSnapshot.getLlmModelConfigInfo(),
+        resolveLlmConfig: (options) => this.modelConfigSnapshot.resolveLlmConfig(options)
+      },
       getCurrentCwd: () => this.getCurrentCwd(),
       getCurrentSessionId: () => this.transcriptContext.getCurrentSessionId(),
       settingsStore: sessionModelSettingsStore
@@ -126,8 +139,7 @@ class AppContext {
     this.conversationReferenceContext = new ConversationReferenceContext();
     this.pendingMessageContext = new PendingMessageContext();
     this.theme = theme;
-    this.appSettings = structuredClone(appSettings) as AppSettings;
-    this.interactionMode = appSettings.defaultInteractionMode;
+    this.interactionMode = initialAppSettings.defaultInteractionMode;
     this.lastSubmittedAgentMode = 'normal';
     this.contextUsage = null;
     this.mcpBootstrapStatus = 'idle';
@@ -166,17 +178,23 @@ class AppContext {
    * 返回当前实例缓存的超限图片压缩偏好，供提交前 mention 展开使用。
    */
   getAutoCompressImages(): boolean {
-    return this.appSettings.autoCompressImages;
+    return this.userConfigContext.capture().getAppSettings().autoCompressImages;
   }
 
   /**
    * 返回工具审批设置副本，供 assistant turn 在启动时固定策略与模型引用。
    */
-  getToolApprovalSettings(): ToolApprovalSettings {
+  getToolApprovalSettings(snapshot: AgentUserConfigSnapshot = this.userConfigContext.capture()): ToolApprovalSettings {
+    const settings = snapshot.getAppSettings();
     return {
-      mode: this.appSettings.toolApprovalMode,
-      ...(this.appSettings.toolApprovalModelProfileId ? {modelProfileId: this.appSettings.toolApprovalModelProfileId} : {})
+      mode: settings.toolApprovalMode,
+      ...(settings.toolApprovalModelProfileId ? {modelProfileId: settings.toolApprovalModelProfileId} : {})
     };
+  }
+
+  /** 捕获当前用户配置 revision，供一次操作的所有下游请求共享。 */
+  captureUserConfigSnapshot(): UserConfigSnapshot {
+    return this.userConfigContext.capture();
   }
 
   /**
@@ -236,6 +254,7 @@ class AppContext {
    * 组合渲染层需要的瞬时状态，避免 main.ts 反复散落访问实例字段。
    */
   createRenderState(options: {commandSurface?: CommandSurface | null; toolApproval?: Pick<ToolApprovalContext, 'isAllowAllForSession'> | null} = {}): RenderState {
+    const appSettings = this.userConfigContext.capture().getAppSettings();
     const commandSurface = options.commandSurface ?? null;
     const modelTuningSnapshot = commandSurface ? null : this.modelTuningContext.getRenderState();
     const slashSuggestions = commandSurface || modelTuningSnapshot || this.mcpBootstrapStatus === 'initializing' ? null : this.getSlashSuggestionState();
@@ -258,8 +277,8 @@ class AppContext {
       model,
       pendingMessage: this.pendingMessageContext.getRenderState(),
       renderPreferences: {
-        showReasoningSummary: this.appSettings.showReasoningSummary,
-        slashSuggestionMaxVisible: this.appSettings.slashSuggestionMaxVisible
+        showReasoningSummary: appSettings.showReasoningSummary,
+        slashSuggestionMaxVisible: appSettings.slashSuggestionMaxVisible
       },
       allowAllTools: options.toolApproval?.isAllowAllForSession() || false,
       slashSuggestions
@@ -357,7 +376,8 @@ class AppContext {
   /**
    * 配置文件发生外部变化时刷新模型缓存；模型语义变化会使旧 context usage 失效。
    */
-  refreshModelStateFromConfig(): boolean {
+  applyModelConfigSnapshot(snapshot: UserConfigSnapshot): boolean {
+    this.modelConfigSnapshot = snapshot;
     const changed = this.modelContext.refreshModelState();
 
     if (changed) {
@@ -370,17 +390,18 @@ class AppContext {
   /**
    * 从用户配置刷新常规设置缓存，分类报告渲染影响，并使失效的 context usage 归零。
    */
-  refreshAppSettingsFromConfig(): AppSettingsRefreshResult {
-    const next = readAppSettings();
-    const agentInstructionFileChanged = next.agentInstructionFileName !== this.appSettings.agentInstructionFileName;
-    const fileEditModeChanged = next.fileEditMode !== this.appSettings.fileEditMode;
-    const reasoningVisibilityChanged = next.showReasoningSummary !== this.appSettings.showReasoningSummary;
-    const skillCatalogContextRatioChanged = next.skillCatalogContextRatio !== this.appSettings.skillCatalogContextRatio;
-    const slashSuggestionLimitChanged = next.slashSuggestionMaxVisible !== this.appSettings.slashSuggestionMaxVisible;
-    const toolApprovalChanged = next.toolApprovalMode !== this.appSettings.toolApprovalMode
-      || next.toolApprovalModelProfileId !== this.appSettings.toolApprovalModelProfileId;
+  applyAppSettingsSnapshot(snapshot: UserConfigSnapshot): AppSettingsApplyResult {
+    const previous = this.appSettingsSnapshot.getAppSettings();
+    const next = snapshot.getAppSettings();
+    const agentInstructionFileChanged = next.agentInstructionFileName !== previous.agentInstructionFileName;
+    const fileEditModeChanged = next.fileEditMode !== previous.fileEditMode;
+    const reasoningVisibilityChanged = next.showReasoningSummary !== previous.showReasoningSummary;
+    const skillCatalogContextRatioChanged = next.skillCatalogContextRatio !== previous.skillCatalogContextRatio;
+    const slashSuggestionLimitChanged = next.slashSuggestionMaxVisible !== previous.slashSuggestionMaxVisible;
+    const toolApprovalChanged = next.toolApprovalMode !== previous.toolApprovalMode
+      || next.toolApprovalModelProfileId !== previous.toolApprovalModelProfileId;
 
-    this.appSettings = structuredClone(next) as AppSettings;
+    this.appSettingsSnapshot = snapshot;
     if (agentInstructionFileChanged || fileEditModeChanged || skillCatalogContextRatioChanged) {
       this.clearContextUsage();
     }
@@ -575,17 +596,20 @@ class AppContext {
    * 组装本次 agent 调用的会话输入：当前 transcript 快照 + 当前压缩状态。
    * records 与 compaction 同源于 transcriptContext，拼装由 app 层内聚，不外泄到 main。
    */
-  getAgentSession(skillOverride: AgentModelSelectionOverride = {}): AgentSessionInput {
+  getAgentSession(skillOverride: AgentModelSelectionOverride = {}, snapshot?: AgentUserConfigSnapshot): AgentSessionInput {
     const modelSelection = this.modelContext.resolveAgentSelection(skillOverride);
     const sessionJournalPath = this.transcriptContext.getCurrentSessionJournalPath();
+    const capturedSnapshot = snapshot || this.userConfigContext.capture();
+    const appSettings = capturedSnapshot.getAppSettings();
 
     return {
       records: structuredClone(this.transcriptContext.getRecords()),
       compaction: this.transcriptContext.compaction ? {...this.transcriptContext.compaction} : undefined,
       todoState: structuredClone(this.transcriptContext.todoState),
       interactionMode: this.interactionMode,
-      compactionThresholdRatio: this.appSettings.compactionThresholdRatio,
-      skillCatalogContextRatio: this.appSettings.skillCatalogContextRatio,
+      compactionThresholdRatio: appSettings.compactionThresholdRatio,
+      skillCatalogContextRatio: appSettings.skillCatalogContextRatio,
+      userConfigSnapshot: capturedSnapshot,
       ...(sessionJournalPath ? {sessionJournalPath} : {}),
       ...(modelSelection || {})
     };

@@ -57,7 +57,8 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
 
   appContext.beginChangeCheckpoint();
   const interactionMode = appContext.getInteractionMode();
-  const toolApprovalSettings = appContext.getToolApprovalSettings();
+  const userConfigSnapshot = appContext.captureUserConfigSnapshot();
+  const toolApprovalSettings = appContext.getToolApprovalSettings(userConfigSnapshot);
   const userRecord = appContext.beginUserTurn(userText, {
     displayText,
     metadata: {...metadata, interactionMode},
@@ -81,6 +82,7 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
     isCurrentTurn,
     reviewer: input.toolApprovalReviewer,
     settings: toolApprovalSettings,
+    userConfigSnapshot,
     toolApproval: {
       getCachedDecision: (call) => toolApproval.getCachedDecision(call),
       requestManual: requestManualApproval
@@ -109,7 +111,7 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
   });
 
   try {
-    const session = appContext.getAgentSession({modelProfileIdOverride, reasoningEffortOverride});
+    const session = appContext.getAgentSession({modelProfileIdOverride, reasoningEffortOverride}, userConfigSnapshot);
     await runAgent({
       ...session,
       abortSignal: turn.abortSignal
@@ -317,7 +319,8 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
     appContext.turnContext.clearAssistantTurnIfCurrent(turn);
 
     if (wasCurrentTurn) {
-      appContext.refreshModelStateFromConfig();
+      // 恢复 session 状态只消费 Context 当前已安装 revision；磁盘刷新由 watcher 或显式写入负责。
+      appContext.applyModelConfigSnapshot(appContext.captureUserConfigSnapshot());
       renderFooter();
     }
   }

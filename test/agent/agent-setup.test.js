@@ -2,7 +2,6 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const agentSetupModule = require('../../src/agent/agent-setup');
-const llmConfigModule = require('../../src/config/llm-config');
 
 const TEST_CONFIG = {
   agentType: 'fake',
@@ -17,9 +16,7 @@ const TEST_CONFIG = {
   }
 };
 
-test('prepareAgent reads the selected profile and merges MCP tools into the initialized registry', () => {
-  const originalReadLlmConfig = llmConfigModule.readLlmConfig;
-  const configOptions = [];
+test('prepareAgent consumes the supplied runtime config and merges MCP tools', () => {
   const mcpManager = {
     listTools() {
       return [{
@@ -33,25 +30,14 @@ test('prepareAgent reads the selected profile and merges MCP tools into the init
     }
   };
 
-  llmConfigModule.readLlmConfig = (options) => {
-    configOptions.push(options);
-    return TEST_CONFIG;
-  };
+  const prepared = agentSetupModule.prepareAgent({
+    config: TEST_CONFIG,
+    cwd: '/tmp/echo-agent-setup',
+    mcpManager
+  });
+  const toolNames = prepared.registry.listDefinitions().map((definition) => definition.name);
 
-  try {
-    const prepared = agentSetupModule.prepareAgent({
-      cwd: '/tmp/echo-agent-setup',
-      mcpManager,
-      modelProfileId: 'review-profile',
-      reasoningEffortOverride: 'high'
-    });
-    const toolNames = prepared.registry.listDefinitions().map((definition) => definition.name);
-
-    assert.deepEqual(configOptions, [{modelProfileId: 'review-profile', reasoningEffortOverride: 'high'}]);
-    assert.equal(prepared.config, TEST_CONFIG);
-    assert.ok(toolNames.includes('read_files'));
-    assert.ok(toolNames.includes('mcp__docs__search'));
-  } finally {
-    llmConfigModule.readLlmConfig = originalReadLlmConfig;
-  }
+  assert.equal(prepared.config, TEST_CONFIG);
+  assert.ok(toolNames.includes('read_files'));
+  assert.ok(toolNames.includes('mcp__docs__search'));
 });

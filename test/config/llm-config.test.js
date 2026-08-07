@@ -6,11 +6,33 @@ const {
   DEFAULT_BASH_TOOL_TIMEOUT_MS,
   DEFAULT_CONTEXT_WINDOW,
   LlmConfigError,
-  readLlmConfig,
-  readLlmConfigForProfile,
-  readLlmModelConfigInfo,
   resolveContextWindow
 } = require('../../src/config/llm-config');
+const {UserConfigContext} = require('../../src/config/user-config-context');
+
+function withContext(options, read) {
+  const context = new UserConfigContext({configPath: options.configPath, readFile: options.readFile});
+  try {
+    return read(context.capture());
+  } finally {
+    context.close();
+  }
+}
+
+function readLlmConfig(options = {}) {
+  return withContext(options, (snapshot) => snapshot.resolveLlmConfig({
+    modelProfileId: options.modelProfileId,
+    reasoningEffortOverride: options.reasoningEffortOverride
+  }));
+}
+
+function readLlmConfigForProfile(modelProfileId, options = {}) {
+  return withContext(options, (snapshot) => snapshot.resolveLlmConfigForProfile(modelProfileId));
+}
+
+function readLlmModelConfigInfo(options = {}) {
+  return withContext(options, (snapshot) => snapshot.getLlmModelConfigInfo());
+}
 
 const DEFAULT_TOOLS = {
   autoCompressImages: true,

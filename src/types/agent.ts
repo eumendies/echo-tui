@@ -89,6 +89,23 @@ export type AgentSessionInput = {
   skillCatalogContextRatio?: number; // 技能目录 prompt 可占模型上下文窗口的比例覆盖。
   toolPolicy?: AgentToolPolicy; // 本次运行的工具执行边界；readonly 保持 schema 但拒绝副作用调用。
   conversationKind?: AgentConversationKind; // 本地生命周期标识，不得改变 built-in system prompt。
+  userConfigSnapshot?: AgentUserConfigSnapshot; // 本回合捕获的用户配置 revision；仅驻留内存，不得持久化到 transcript。
+};
+
+export type AgentUserConfigSnapshot = {
+  revision: number; // 本回合使用的用户配置 revision，仅用于一致性与诊断。
+  getAppSettings(): {
+    agentInstructionFileName: AgentInstructionFileName; // 本回合加载项目指令时使用的文件名。
+    compactionThresholdRatio: number; // 本回合自动压缩触发比例。
+    skillCatalogContextRatio: number; // 本回合 skill catalog 的上下文预算比例。
+    toolApprovalMode: 'manual' | 'auto'; // 本回合工具审批策略。
+    toolApprovalModelProfileId?: string; // 本回合自动审批严格引用的 profile。
+  };
+  resolveLlmConfig(options?: {
+    modelProfileId?: string; // 当前 session 或 skill 已解析出的 profile id。
+    reasoningEffortOverride?: ReasoningEffort; // 当前回合显式 effort 覆盖。
+  }): LlmConfig;
+  resolveLlmConfigForProfile(modelProfileId: string): LlmConfig; // 严格解析同一 revision 内的指定 profile。
 };
 
 export type AgentInstructionSourceKind = 'global' | 'project';

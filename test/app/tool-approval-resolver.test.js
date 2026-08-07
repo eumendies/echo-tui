@@ -113,6 +113,39 @@ test('tool approval reviewer uses fixed prompt, records usage, and emits only ha
   assert.equal(JSON.stringify(debug.events).includes('sensitive patch'), false);
 });
 
+test('tool approval reviewer resolves its profile from the active turn snapshot', async () => {
+  const debug = createDebug();
+  const calls = [];
+  const snapshot = {
+    revision: 9,
+    resolveLlmConfigForProfile(profileId) {
+      calls.push(profileId);
+      return createConfig({model: 'same-revision-reviewer', reasoningEffort: 'high'});
+    }
+  };
+  const reviewer = createToolApprovalReviewer({
+    cwd: '/tmp/project',
+    debug: debug.context,
+    readConfig() {
+      throw new Error('must not read another revision');
+    },
+    createAgent(config) {
+      assert.equal(config.model, 'same-revision-reviewer');
+      assert.equal(config.reasoningEffort, 'none');
+      return {async runTurn() { return {draft: 'yes', toolCalls: []}; }};
+    }
+  });
+
+  assert.equal(await reviewer({
+    call: {callId: 'same-revision', toolName: 'apply_patch', argumentsText: 'patch'},
+    interactionMode: 'normal',
+    modelProfileId: 'reviewer',
+    records: [],
+    userConfigSnapshot: snapshot
+  }), true);
+  assert.deepEqual(calls, ['reviewer']);
+});
+
 test('tool approval reviewer fails closed for config and provider errors but propagates abort', async () => {
   const debug = createDebug();
   const failedConfig = createToolApprovalReviewer({

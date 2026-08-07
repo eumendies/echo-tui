@@ -1,23 +1,21 @@
-import {readAppSettingsDraft, saveAppSettingsDraft} from '../../config/app-settings-config';
-import {readLlmConfigDraft, saveLlmConfigDraft} from '../../config/llm-config-editor';
 import {listProviderModels} from '../../config/provider-model-list';
-
+import type {UserConfigContext} from '../../config/user-config-context';
 import type {CommandHostApp} from '../../types/command';
 import type {AppContext} from '../state/app-context';
 
-type ModelCommandContext = Pick<AppContext, 'clearContextUsage' | 'modelContext' | 'refreshAppSettingsFromConfig'>;
+type ModelCommandContext = Pick<AppContext, 'clearContextUsage' | 'modelContext'>;
 
 type ModelCommandPortOptions = {
   appContext: ModelCommandContext;
-  renderFooter: () => void;
-  renderResizeRecovery: () => void;
+  userConfigContext: UserConfigContext;
 };
 
 /**
- * 创建模型和配置中心端口；写入后刷新对应实例缓存并执行所需重绘。
+ * 创建模型和配置中心端口；用户配置写入只发布 Context revision，副作用统一交给订阅者。
  */
 function createModelCommandPorts(options: ModelCommandPortOptions): Pick<CommandHostApp, 'model' | 'config'> {
-  const {appContext, renderFooter, renderResizeRecovery} = options;
+  const {appContext} = options;
+  const userConfigContext = options.userConfigContext;
 
   return {
     model: {
@@ -49,7 +47,7 @@ function createModelCommandPorts(options: ModelCommandPortOptions): Pick<Command
     config: {
       listApprovalModelProfiles() {
         try {
-          return readLlmConfigDraft().providers.flatMap((provider) => provider.models.map((model) => ({
+          return userConfigContext.capture().getLlmConfigDraft().providers.flatMap((provider) => provider.models.map((model) => ({
             id: model.id,
             model: model.model,
             provider: provider.id
@@ -59,24 +57,17 @@ function createModelCommandPorts(options: ModelCommandPortOptions): Pick<Command
         }
       },
       readSettings() {
-        return readAppSettingsDraft();
+        return userConfigContext.capture().getAppSettingsDraft();
       },
       readDraft() {
-        return readLlmConfigDraft();
+        return userConfigContext.capture().getLlmConfigDraft();
       },
       listModels(provider) {
         return listProviderModels(provider);
       },
       saveSettings(draft) {
         try {
-          saveAppSettingsDraft(draft);
-          const refresh = appContext.refreshAppSettingsFromConfig();
-
-          if (refresh.reasoningVisibilityChanged) {
-            renderResizeRecovery();
-          } else if (refresh.slashSuggestionLimitChanged) {
-            renderFooter();
-          }
+          userConfigContext.saveAppSettingsDraft(draft);
           return {ok: true};
         } catch (error: unknown) {
           return {
@@ -87,9 +78,7 @@ function createModelCommandPorts(options: ModelCommandPortOptions): Pick<Command
       },
       saveDraft(draft) {
         try {
-          saveLlmConfigDraft(draft);
-          appContext.modelContext.refreshModelState();
-          appContext.clearContextUsage();
+          userConfigContext.saveLlmConfigDraft(draft);
           return {ok: true};
         } catch (error: unknown) {
           return {

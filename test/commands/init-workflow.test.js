@@ -1,9 +1,5 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const os = require('node:os');
-const path = require('node:path');
-
 const {
   INIT_WORKFLOW,
   createInitWorkflowPrompt
@@ -51,19 +47,7 @@ test('/init prompt follows the selected CLAUDE.md instruction file', () => {
   assert.doesNotMatch(prompt, /AGENTS\.md/);
 });
 
-test('/init prompt reads the current instruction selection from user config', () => {
-  const originalHomedir = os.homedir;
-  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-init-workflow-'));
-  os.homedir = () => homeDir;
-
-  try {
-    fs.mkdirSync(path.join(homeDir, '.echo'), {recursive: true});
-    fs.writeFileSync(path.join(homeDir, '.echo', 'config.json'), JSON.stringify({instructions: {fileName: 'CLAUDE.md'}}), 'utf8');
-
-    const prompt = createInitWorkflowPrompt();
-    assert.match(prompt, /generate or review the CLAUDE\.md/);
-  } finally {
-    os.homedir = originalHomedir;
-    fs.rmSync(homeDir, {recursive: true, force: true});
-  }
+test('/init prompt uses the instruction selection supplied by the command composition root', () => {
+  const prompt = createInitWorkflowPrompt({fileName: 'CLAUDE.md'});
+  assert.match(prompt, /generate or review the CLAUDE\.md/);
 });

@@ -1,5 +1,5 @@
 import {resolveContextWindow} from '../config/llm-config';
-import {readAppSettings} from '../config/app-settings-config';
+import {DEFAULT_APP_SETTINGS} from '../config/app-settings-config';
 import {
   ASK_USER_QUESTIONS_TOOL_NAME,
   createAskUserQuestionsCancelledResult,
@@ -31,7 +31,7 @@ import {
 
 import type {TokenUsageAnchor} from './context/context-compaction';
 
-import type {AgentCallbacks, AgentConversationKind, AgentExecutionMode, AgentInstruction, AgentInstructionFileName, AgentSessionInput, AgentToolPolicy, AgentTurnCallbacks, InteractionMode, LlmConfig, ProviderAgent, ProviderRetry, ProviderUsage, ReasoningEffort, RunAgent, ToolApprovalDecision} from '../types/agent';
+import type {AgentCallbacks, AgentConversationKind, AgentExecutionMode, AgentInstruction, AgentInstructionFileName, AgentSessionInput, AgentToolPolicy, AgentTurnCallbacks, AgentUserConfigSnapshot, InteractionMode, LlmConfig, ProviderAgent, ProviderRetry, ProviderUsage, RunAgent, ToolApprovalDecision} from '../types/agent';
 import type {DebugContext} from '../debug/debug-context';
 import type {LifecycleHookDispatcher} from '../types/hooks';
 import type {UsageStore} from '../types/usage';
@@ -344,14 +344,17 @@ function isToolResultTruncated(result: ToolExecutionResult): boolean | undefined
 /**
  * 创建 provider-neutral agent loop runtime；该层拥有配置/工具加载和 tool-call continuation 状态机。
  */
-function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: LifecycleHookDispatcher, debug: DebugContext = disabledDebugContext, usageStore?: UsageStore): RunAgent {
+function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUserConfigSnapshot}, mcpManager?: McpManager, hooks?: LifecycleHookDispatcher, debug: DebugContext = disabledDebugContext, usageStore?: UsageStore): RunAgent {
   const cwdHash = createUsageCwdHash(cwd);
+  if (!configContext) {
+    throw new Error('Agent runtime 必须注入用户配置 Context');
+  }
 
   /**
    * 初始化单次调用的 loop 状态；provider、配置和 registry 由统一装配入口提供。
    */
-  function initializeRunState(interactionMode: InteractionMode, abortSignal: AbortSignal | undefined, executionMode: AgentExecutionMode, compactionThresholdRatio: number, skillCatalogContextRatio: number, agentInstructionFileName: AgentInstructionFileName, toolPolicy: AgentToolPolicy, conversationKind: AgentConversationKind, modelProfileId?: string, reasoningEffortOverride?: ReasoningEffort): AgentLoopRunState {
-    const {agent, config, registry} = prepareAgent({cwd, mcpManager, modelProfileId, reasoningEffortOverride});
+  function initializeRunState(interactionMode: InteractionMode, abortSignal: AbortSignal | undefined, executionMode: AgentExecutionMode, compactionThresholdRatio: number, skillCatalogContextRatio: number, agentInstructionFileName: AgentInstructionFileName, toolPolicy: AgentToolPolicy, conversationKind: AgentConversationKind, configSnapshot: AgentUserConfigSnapshot, modelProfileId?: string, reasoningEffortOverride?: LlmConfig['reasoningEffort']): AgentLoopRunState {
+    const {agent, config, registry} = prepareAgent({configSnapshot, cwd, mcpManager, modelProfileId, reasoningEffortOverride});
     const contextWindow = resolveContextWindow(config);
     const skillCatalogProjection = createSkillCatalogPromptProjection(registry.listSkillCatalog?.() || [], contextWindow, skillCatalogContextRatio);
     const systemPromptOverride = loadSystemPromptOverride({cwd});
@@ -393,7 +396,8 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
     const executionMode = session.executionMode || INTERACTIVE_EXECUTION_MODE;
     const toolPolicy = session.toolPolicy || 'default';
     const conversationKind = session.conversationKind || 'primary';
-    const appSettings = readAppSettings();
+    const configSnapshot = session.userConfigSnapshot || configContext.capture();
+    const appSettings = configSnapshot.getAppSettings() || DEFAULT_APP_SETTINGS;
     // 单次 assistant run 固定使用启动时设置，运行中配置变化只影响后续 turn。
     const compactionThresholdRatio = session.compactionThresholdRatio ?? appSettings.compactionThresholdRatio;
     const skillCatalogContextRatio = session.skillCatalogContextRatio ?? appSettings.skillCatalogContextRatio;
@@ -402,7 +406,7 @@ function createAgentLoopRuntime(cwd: string, mcpManager?: McpManager, hooks?: Li
     let state: AgentLoopRunState;
 
     try {
-      state = initializeRunState(interactionMode, abortSignal, executionMode, compactionThresholdRatio, skillCatalogContextRatio, appSettings.agentInstructionFileName, toolPolicy, conversationKind, session.modelProfileId, session.reasoningEffortOverride);
+      state = initializeRunState(interactionMode, abortSignal, executionMode, compactionThresholdRatio, skillCatalogContextRatio, appSettings.agentInstructionFileName, toolPolicy, conversationKind, configSnapshot, session.modelProfileId, session.reasoningEffortOverride);
     } catch (error: unknown) {
       throw normalizeError(error, '无法加载 LLM 配置');
     }

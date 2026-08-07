@@ -6,6 +6,7 @@ const {AgentAbortError} = require('../../src/types/agent');
 const {AppContext} = require('../../src/app/state/app-context');
 const {ToolApprovalContext} = require('../../src/app/state/tool-approval-context');
 const {UserQuestionContext} = require('../../src/app/state/user-question-context');
+const {UserConfigContext} = require('../../src/config/user-config-context');
 
 function createFakeTranscriptStore() {
   let currentSession = null;
@@ -110,14 +111,19 @@ function applyOperation(session, operation) {
 }
 
 function createHarness(options = {}) {
+  const userConfigContext = options.userConfigContext || new UserConfigContext({
+    readFile: options.appSettings
+      ? () => JSON.stringify(createConfigRootFromAppSettings(options.appSettings))
+      : undefined
+  });
   const appContext = new AppContext(
     {getSize() { return {columns: 80, rows: 24}; }},
     options.transcriptStore || createFakeTranscriptStore(),
     '/tmp/echo_tui',
     'v20.0.0',
     undefined,
-    options.appSettings,
-    options.sessionModelSettingsStore || createFakeSessionModelSettingsStore()
+    options.sessionModelSettingsStore || createFakeSessionModelSettingsStore(),
+    userConfigContext
   );
   const appended = [];
   const hookEvents = [];
@@ -155,6 +161,56 @@ function createHarness(options = {}) {
       },
       renderFooter() {}
     }
+  };
+}
+
+function createConfigRootFromAppSettings(settings) {
+  return {
+    compaction: {thresholdRatio: settings.compactionThresholdRatio},
+    instructions: {fileName: settings.agentInstructionFileName},
+    skills: {catalogContextRatio: settings.skillCatalogContextRatio},
+    tools: {
+      approval: {mode: settings.toolApprovalMode, ...(settings.toolApprovalModelProfileId ? {modelProfileId: settings.toolApprovalModelProfileId} : {})},
+      fileEdit: {mode: settings.fileEditMode},
+      readFiles: {autoCompressImages: settings.autoCompressImages}
+    },
+    ui: {
+      defaultInteractionMode: settings.defaultInteractionMode,
+      showReasoningSummary: settings.showReasoningSummary,
+      slashSuggestionMaxVisible: settings.slashSuggestionMaxVisible
+    }
+  };
+}
+
+function createUserConfigSnapshot(revision = 1) {
+  const config = {
+    agentType: 'fake',
+    apiKey: '',
+    model: `fake-${revision}`,
+    contextWindow: 128000,
+    tools: {bash: {timeoutMs: null, maxOutputBytes: 65536}, autoCompressImages: true, fileEditMode: 'apply_patch'}
+  };
+  return {
+    revision,
+    getAppSettings() {
+      return {
+        agentInstructionFileName: 'AGENTS.md',
+        autoCompressImages: true,
+        compactionThresholdRatio: 0.8,
+        defaultInteractionMode: 'normal',
+        fileEditMode: 'apply_patch',
+        skillCatalogContextRatio: 0.02,
+        showReasoningSummary: true,
+        slashSuggestionMaxVisible: 8,
+        toolApprovalMode: 'auto',
+        toolApprovalModelProfileId: 'reviewer'
+      };
+    },
+    getLlmModelConfigInfo() {
+      return {kind: 'profiles', selectedModelId: 'main', models: [{id: 'main', provider: 'fake', model: config.model}]};
+    },
+    resolveLlmConfig() { return config; },
+    resolveLlmConfigForProfile() { return config; }
   };
 }
 
@@ -216,6 +272,37 @@ test('runAssistantTurn auto approval allows once for file, bash, and MCP calls w
       'assistant_turn_end'
     ]);
   }
+});
+
+test('runAssistantTurn gives the main agent and auto reviewer the exact same revision snapshot', async () => {
+  const snapshot = createUserConfigSnapshot(42);
+  const harness = createHarness({
+    appSettings: snapshot.getAppSettings(),
+    userConfigContext: {capture() { return snapshot; }}
+  });
+  let agentSnapshot;
+  let reviewerSnapshot;
+
+  await runAssistantTurn({
+    ...harness.input,
+    toolApprovalReviewer: async (input) => {
+      reviewerSnapshot = input.userConfigSnapshot;
+      return true;
+    },
+    async runAgent(session, callbacks) {
+      agentSnapshot = session.userConfigSnapshot;
+      assert.deepEqual(await callbacks.onToolApprovalRequest({
+        callId: 'same-revision',
+        toolName: 'apply_patch',
+        argumentsText: 'patch'
+      }), {kind: 'allow_once'});
+      callbacks.onComplete('done');
+    }
+  });
+
+  assert.equal(agentSnapshot, snapshot);
+  assert.equal(reviewerSnapshot, snapshot);
+  assert.equal(agentSnapshot.revision, 42);
 });
 
 test('runAssistantTurn auto no falls back to the existing manual surface and session cache bypasses review', async () => {

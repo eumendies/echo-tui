@@ -10,8 +10,8 @@ import {createSettingsCommandPorts} from './settings-command-ports';
 import {createSkillsCommandPort} from './skills-command-port';
 import {createStatusCommandPorts, createStatusSnapshot} from './status-command-ports';
 import {createCopyableRecords, createTranscriptCommandPort} from './transcript-command-ports';
-
 import type {CommandHostApp} from '../../types/command';
+import type {UserConfigContext} from '../../config/user-config-context';
 import type {LifecycleHookDispatcher} from '../../types/hooks';
 import type {TranscriptRecord} from '../../types/transcript';
 import type {UsageStore} from '../../types/usage';
@@ -28,6 +28,7 @@ type CommandHostOptions = {
   renderFooter: () => void;
   renderResizeRecovery: () => void;
   usageStore: UsageStore;
+  userConfigContext: UserConfigContext;
   btw: {
     open(initialQuestion?: string): void; // 打开 BTW 临时会话。
     handleEvent(event: InputEvent): Promise<void> | void; // 转发 BTW composer 输入。
@@ -40,11 +41,16 @@ type CommandHostOptions = {
  */
 function createCommandHost(options: CommandHostOptions): CommandHostApp {
   const {appContext, appendRecord, btw, exit, hooks, mcpManager, renderFooter, renderResizeRecovery, usageStore} = options;
-  const modelPorts = createModelCommandPorts({appContext, renderFooter, renderResizeRecovery});
+  const userConfigContext = options.userConfigContext;
+  if (appContext.captureUserConfigSnapshot() !== userConfigContext.capture()) {
+    throw new Error('CommandHost 与 AppContext 必须共享同一个 UserConfigContext');
+  }
+  const modelPorts = createModelCommandPorts({appContext, userConfigContext});
   const settingsPorts = createSettingsCommandPorts({appContext, renderFooter, renderResizeRecovery});
   const statusPorts = createStatusCommandPorts({
     appContext,
-    usageStore
+    usageStore,
+    userConfigContext
   });
   const historyPorts = createHistoryCommandPorts(appContext);
   const cwd = () => appContext.getCurrentCwd();
@@ -52,17 +58,18 @@ function createCommandHost(options: CommandHostOptions): CommandHostApp {
   return {
     btw,
     transcript: createTranscriptCommandPort({appContext, appendRecord, renderResizeRecovery}),
-    reference: createConversationReferenceCommandPort({appContext, renderFooter, usageStore}),
+    reference: createConversationReferenceCommandPort({appContext, renderFooter, usageStore, userConfigContext}),
     clipboard: {writeText: writeClipboardText},
     model: modelPorts.model,
     config: modelPorts.config,
     skills: createSkillsCommandPort({cwd, clearContextUsage: () => appContext.clearContextUsage()}),
-    mcp: createMcpCommandPort({appContext, mcpManager, renderFooter}),
+    mcp: createMcpCommandPort({appContext, mcpManager, renderFooter, userConfigContext}),
     memory: createMemoryCommandPort(cwd),
     hooks: createHooksCommandPort({
       cwd,
       getInteractionMode: () => appContext.getInteractionMode(),
-      hooks
+      hooks,
+      userConfigContext
     }),
     mode: settingsPorts.mode,
     theme: settingsPorts.theme,
