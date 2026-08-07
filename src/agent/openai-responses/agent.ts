@@ -84,7 +84,8 @@ function createRequest(records: TranscriptRecord[], config: LlmConfig, registry?
     stream: true
   };
 
-  if (!options.isCompaction && config.reasoningEffort !== 'none' && (config.reasoningEffort || config.reasoningSummary)) {
+  // 显式 none 也必须发送：思考模型缺省按模型默认 effort（如 medium）思考，省略参数无法表达禁用。
+  if (!options.isCompaction && (config.reasoningEffort || config.reasoningSummary)) {
     request.reasoning = {
       ...(config.reasoningEffort ? {effort: config.reasoningEffort} : {}),
       ...(config.reasoningSummary ? {summary: config.reasoningSummary} : {})

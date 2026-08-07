@@ -443,12 +443,17 @@ test('createChatRequest sends reasoning_effort when configured', () => {
     }
   );
 
-  const noneRequest = createChatRequest([{ role: 'user', text: 'hello' }], { ...TEST_CONFIG, reasoningEffort: 'none' });
-
-  assert.equal('reasoning_effort' in noneRequest, false);
-  assert.equal('reasoning' in noneRequest, false);
-  assert.equal('input' in noneRequest, false);
-  assert.equal('max_output_tokens' in noneRequest, false);
+  assert.deepEqual(
+    createChatRequest([{ role: 'user', text: 'hello' }], { ...TEST_CONFIG, reasoningEffort: 'none' }),
+    {
+      messages: [{ role: 'user', content: 'hello' }],
+      model: 'test-chat-model',
+      prompt_cache_key: createPromptCacheKey([{ role: 'user', text: 'hello' }], TEST_CONFIG),
+      reasoning_effort: 'none',
+      stream: true,
+      stream_options: {include_usage: true}
+    }
+  );
 });
 
 test('createChatRequest omits tools and reasoning for compaction requests', () => {

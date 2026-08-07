@@ -336,12 +336,12 @@ test('createCodexRequest sends reasoning effort when configured', () => {
   );
 });
 
-test('createCodexRequest omits reasoning and encrypted reasoning when effort is none', () => {
+test('createCodexRequest sends explicit none effort without encrypted reasoning', () => {
   const records = [{role: 'user', text: 'hello'}];
   const config = {...TEST_CONFIG, reasoningEffort: 'none'};
   const request = createCodexRequest(records, config, createEmptyToolRegistry());
 
-  assert.equal('reasoning' in request, false);
+  assert.deepEqual(request.reasoning, {effort: 'none'});
   assert.equal('include' in request, false);
 });
 
