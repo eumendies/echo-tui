@@ -1,7 +1,4 @@
-import {JsonConfigFile, type JsonConfigFileOptions} from './json-config-file';
-import {getDefaultUserConfigPath, readOptionalUserConfig} from './user-config';
-
-import type {ReadUserConfigOptions, UserConfigSource} from './user-config';
+import type {UserConfigSource} from './user-config';
 import type {AgentInstructionFileName, FileEditToolMode} from '../types/agent';
 
 type AppSettings = {
@@ -26,8 +23,6 @@ type ToolApprovalSettings = {
 };
 
 type AppRenderPreferences = Pick<AppSettings, 'showReasoningSummary' | 'slashSuggestionMaxVisible'>;
-
-type AppSettingsConfigOptions = ReadUserConfigOptions & JsonConfigFileOptions;
 
 type AppSettingsValidationResult =
   | {ok: true}
@@ -54,22 +49,6 @@ const MIN_SKILL_CATALOG_CONTEXT_RATIO = 0.01;
 const MAX_SKILL_CATALOG_CONTEXT_RATIO = 0.1;
 const MIN_SLASH_SUGGESTION_MAX_VISIBLE = 1;
 const MAX_SLASH_SUGGESTION_MAX_VISIBLE = 20;
-
-/**
- * 容错读取运行时常规设置；每个非法字段独立回退，避免可选展示配置阻断应用。
- */
-function readAppSettings(options: ReadUserConfigOptions = {}): AppSettings {
-  return normalizeAppSettings(readOptionalUserConfig(options));
-}
-
-/**
- * 严格读取配置面板草稿；文件缺失使用默认值，坏 JSON 交给面板显示错误。
- */
-function readAppSettingsDraft(options: AppSettingsConfigOptions = {}): AppSettings {
-  const configPath = options.configPath || getDefaultUserConfigPath();
-  const rootConfig = new JsonConfigFile(configPath, options).readOrEmpty();
-  return normalizeAppSettings(rootConfig);
-}
 
 /**
  * 校验面板草稿范围，确保写入后的值能被运行时无损读取。
@@ -127,48 +106,44 @@ function validateAppSettingsDraft(draft: AppSettings, modelProfileIds?: Readonly
 }
 
 /**
- * 原子更新常规设置所有字段，并保留同一用户配置文件中的其他领域节点。
+ * 将已校验的常规设置增量应用到最新根对象；调用方负责原子写入与 snapshot 安装。
  */
-function saveAppSettingsDraft(draft: AppSettings, options: AppSettingsConfigOptions = {}): void {
-  const configPath = options.configPath || getDefaultUserConfigPath();
-  const configFile = new JsonConfigFile(configPath, options);
-  configFile.update((rootConfig) => {
-    const validation = validateAppSettingsDraft(draft, readModelProfileIds(rootConfig));
+function applyAppSettingsDraft(rootConfig: UserConfigSource, draft: AppSettings): void {
+  const validation = validateAppSettingsDraft(draft, readModelProfileIds(rootConfig));
 
-    if (!validation.ok) {
-      throw new Error(validation.error);
-    }
+  if (!validation.ok) {
+    throw new Error(validation.error);
+  }
 
-    const compaction = isPlainObject(rootConfig.compaction) ? {...rootConfig.compaction} : {};
-    const instructions = isPlainObject(rootConfig.instructions) ? {...rootConfig.instructions} : {};
-    const skills = isPlainObject(rootConfig.skills) ? {...rootConfig.skills} : {};
-    const ui = isPlainObject(rootConfig.ui) ? {...rootConfig.ui} : {};
-    const tools = isPlainObject(rootConfig.tools) ? {...rootConfig.tools} : {};
-    const fileEdit = isPlainObject(tools.fileEdit) ? {...tools.fileEdit} : {};
-    const readFiles = isPlainObject(tools.readFiles) ? {...tools.readFiles} : {};
-    const approval = isPlainObject(tools.approval) ? {...tools.approval} : {};
+  const compaction = isPlainObject(rootConfig.compaction) ? {...rootConfig.compaction} : {};
+  const instructions = isPlainObject(rootConfig.instructions) ? {...rootConfig.instructions} : {};
+  const skills = isPlainObject(rootConfig.skills) ? {...rootConfig.skills} : {};
+  const ui = isPlainObject(rootConfig.ui) ? {...rootConfig.ui} : {};
+  const tools = isPlainObject(rootConfig.tools) ? {...rootConfig.tools} : {};
+  const fileEdit = isPlainObject(tools.fileEdit) ? {...tools.fileEdit} : {};
+  const readFiles = isPlainObject(tools.readFiles) ? {...tools.readFiles} : {};
+  const approval = isPlainObject(tools.approval) ? {...tools.approval} : {};
 
-    compaction.thresholdRatio = draft.compactionThresholdRatio;
-    instructions.fileName = draft.agentInstructionFileName;
-    skills.catalogContextRatio = draft.skillCatalogContextRatio;
-    ui.defaultInteractionMode = draft.defaultInteractionMode;
-    ui.slashSuggestionMaxVisible = draft.slashSuggestionMaxVisible;
-    ui.showReasoningSummary = draft.showReasoningSummary;
-    fileEdit.mode = draft.fileEditMode;
-    readFiles.autoCompressImages = draft.autoCompressImages;
-    approval.mode = draft.toolApprovalMode;
-    if (draft.toolApprovalModelProfileId !== undefined) {
-      approval.modelProfileId = draft.toolApprovalModelProfileId;
-    }
-    tools.fileEdit = fileEdit;
-    tools.readFiles = readFiles;
-    tools.approval = approval;
-    rootConfig.compaction = compaction;
-    rootConfig.instructions = instructions;
-    rootConfig.skills = skills;
-    rootConfig.ui = ui;
-    rootConfig.tools = tools;
-  });
+  compaction.thresholdRatio = draft.compactionThresholdRatio;
+  instructions.fileName = draft.agentInstructionFileName;
+  skills.catalogContextRatio = draft.skillCatalogContextRatio;
+  ui.defaultInteractionMode = draft.defaultInteractionMode;
+  ui.slashSuggestionMaxVisible = draft.slashSuggestionMaxVisible;
+  ui.showReasoningSummary = draft.showReasoningSummary;
+  fileEdit.mode = draft.fileEditMode;
+  readFiles.autoCompressImages = draft.autoCompressImages;
+  approval.mode = draft.toolApprovalMode;
+  if (draft.toolApprovalModelProfileId !== undefined) {
+    approval.modelProfileId = draft.toolApprovalModelProfileId;
+  }
+  tools.fileEdit = fileEdit;
+  tools.readFiles = readFiles;
+  tools.approval = approval;
+  rootConfig.compaction = compaction;
+  rootConfig.instructions = instructions;
+  rootConfig.skills = skills;
+  rootConfig.ui = ui;
+  rootConfig.tools = tools;
 }
 
 function normalizeAppSettings(rootConfig: UserConfigSource): AppSettings {
@@ -254,16 +229,14 @@ export {
   MIN_COMPACTION_THRESHOLD_RATIO,
   MIN_SKILL_CATALOG_CONTEXT_RATIO,
   MIN_SLASH_SUGGESTION_MAX_VISIBLE,
-  readAppSettings,
-  readAppSettingsDraft,
-  saveAppSettingsDraft,
+  applyAppSettingsDraft,
+  normalizeAppSettings,
   validateAppSettingsDraft
 };
 
 export type {
   AppRenderPreferences,
   AppSettings,
-  AppSettingsConfigOptions,
   AppSettingsValidationResult,
   DefaultInteractionMode,
   ToolApprovalMode,

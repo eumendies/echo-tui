@@ -1,6 +1,6 @@
-import {readMcpConfigDraft, saveMcpEnabledStateDraft} from '../../config/mcp-config';
 import {sanitizeMcpError} from '../../mcp/manager';
 
+import type {UserConfigContext} from '../../config/user-config-context';
 import type {McpManager} from '../../mcp/manager';
 import type {CommandHostApp, CommandMcpServerInfo} from '../../types/command';
 import type {AppContext} from '../state/app-context';
@@ -11,6 +11,7 @@ type McpCommandPortOptions = {
   appContext: McpCommandContext;
   mcpManager: McpManager;
   renderFooter: () => void;
+  userConfigContext: UserConfigContext;
 };
 
 /**
@@ -18,10 +19,11 @@ type McpCommandPortOptions = {
  */
 function createMcpCommandPort(options: McpCommandPortOptions): CommandHostApp['mcp'] {
   const {appContext, mcpManager, renderFooter} = options;
+  const userConfigContext = options.userConfigContext;
 
   return {
     listServers() {
-      const draft = readMcpConfigDraft();
+      const draft = userConfigContext.capture().getMcpConfigDraft();
       const toolCountByServer = new Map<string, number>();
       const diagnosticsByServer = new Map<string, string>();
 
@@ -64,7 +66,7 @@ function createMcpCommandPort(options: McpCommandPortOptions): CommandHostApp['m
 
       try {
         const globalState = servers.find((server) => server.kind === 'global');
-        saveMcpEnabledStateDraft({
+        userConfigContext.saveMcpEnabledStateDraft({
           enabled: globalState ? globalState.enabled : true,
           servers: servers
             .filter((server) => server.kind === 'server')

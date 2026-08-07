@@ -6,6 +6,7 @@ const path = require('node:path');
 
 const {createConversationReferenceCommandPort} = require('../../src/app/command/conversation-reference-command-port');
 const {ConversationReferenceContext} = require('../../src/app/state/conversation-reference-context');
+const {UserConfigContext} = require('../../src/config/user-config-context');
 
 test('conversation reference finalization uses the current turn model override', async () => {
   const originalHomedir = os.homedir;
@@ -60,6 +61,7 @@ test('conversation reference finalization uses the current turn model override',
     const port = createConversationReferenceCommandPort({
       appContext,
       renderFooter() {},
+      userConfigContext: new UserConfigContext(),
       usageStore: {
         appendEvent() {
           throw new Error('full projection must not record provider usage');

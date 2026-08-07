@@ -44,6 +44,7 @@ ConfigCommandHandler.prototype.start = function (...args) {
 };
 
 const {createApp} = require(path.join(root, 'dist/src/app/main'));
+const {UserConfigContext} = require(path.join(root, 'dist/src/config/user-config-context'));
 const {INPUT_EVENTS} = require(path.join(root, 'dist/src/input/event-types'));
 const turns = [];
 
@@ -81,7 +82,8 @@ const app = createApp(
   {
     appendEvent: () => null,
     listDailyUsage: () => []
-  }
+  },
+  new UserConfigContext()
 );
 
 function submit(text) {

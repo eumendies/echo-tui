@@ -34,16 +34,65 @@ function createHarness(runAgent) {
     modelProfileId: 'model-1',
     interactionMode: 'normal'
   };
+  let currentUserConfigSnapshot = parent.userConfigSnapshot;
   const controller = new BtwConversationController({
     runAgent,
-    getParentSession: () => structuredClone(parent),
+    captureUserConfigSnapshot: () => currentUserConfigSnapshot || parent.userConfigSnapshot,
+    getParentSession: () => {
+      const {userConfigSnapshot, ...serializable} = parent;
+      return {
+        ...structuredClone(serializable),
+        ...(userConfigSnapshot ? {userConfigSnapshot} : {})
+      };
+    },
     getParentTurnState: () => structuredClone(parentTurnState),
     appendVisible: (records) => appended.push(...structuredClone(records)),
     renderFooter: () => { calls.footer += 1; },
     repaint: () => { calls.repaint += 1; }
   });
-  return {appended, calls, controller, parent, parentTurnState};
+  return {
+    appended,
+    calls,
+    controller,
+    parent,
+    parentTurnState,
+    setUserConfigSnapshot(snapshot) {
+      currentUserConfigSnapshot = snapshot;
+    }
+  };
 }
+
+test('BTW captures the latest UserConfigSnapshot for each side turn', async () => {
+  const firstSnapshot = {
+    revision: 7,
+    getAppSettings() { return {}; },
+    resolveLlmConfig() { return {}; },
+    resolveLlmConfigForProfile() { return {}; }
+  };
+  const secondSnapshot = {
+    ...firstSnapshot,
+    revision: 8
+  };
+  const sessions = [];
+  const {controller, parent, setUserConfigSnapshot} = createHarness(async (session, callbacks) => {
+    sessions.push(session);
+    callbacks.onComplete?.('done');
+  });
+  parent.userConfigSnapshot = firstSnapshot;
+  setUserConfigSnapshot(firstSnapshot);
+
+  controller.open('first');
+  await flush();
+  setUserConfigSnapshot(secondSnapshot);
+  controller.handleEvent({type: INPUT_EVENTS.TEXT, value: 'second'});
+  await controller.handleEvent({type: INPUT_EVENTS.SUBMIT});
+
+  assert.equal(sessions.length, 2);
+  assert.equal(sessions[0].userConfigSnapshot, firstSnapshot);
+  assert.equal(sessions[1].userConfigSnapshot, secondSnapshot);
+  assert.equal(sessions[1].userConfigSnapshot.resolveLlmConfig, secondSnapshot.resolveLlmConfig);
+  controller.close();
+});
 
 test('BTW freezes parent context and uses a visible user boundary without parent todo or journal', async () => {
   const sessions = [];

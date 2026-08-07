@@ -1,14 +1,15 @@
 const {AppContext} = require('../../src/app/state/app-context');
 
 function createAppContext(cwd = '/tmp/echo_tui') {
+  const {UserConfigContext} = require('../../src/config/user-config-context');
   return new AppContext(
     {getSize() { return {columns: 80, rows: 24}; }},
     createTranscriptStore(),
     cwd,
     'v20.0.0',
     undefined,
-    undefined,
-    createSessionModelSettingsStore()
+    createSessionModelSettingsStore(),
+    new UserConfigContext()
   );
 }
 

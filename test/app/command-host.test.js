@@ -7,6 +7,7 @@ const path = require('node:path');
 const {createCommandHost, createCopyableRecords} = require('../../src/app/command/command-host');
 const {ModelContext} = require('../../src/app/state/model-context');
 const {readBuiltinTheme} = require('../../src/config/theme-config');
+const {UserConfigContext} = require('../../src/config/user-config-context');
 
 function withTemporaryThemeConfig(content, callback) {
   const originalHomedir = os.homedir;
@@ -70,6 +71,7 @@ function withTemporaryUserConfig(content, callback) {
 
 function createHostHarness(options = {}) {
   const setThemes = [];
+  const userConfigContext = options.userConfigContext || new UserConfigContext();
   const calls = {
     contextUsageClears: 0,
     hookConfigs: [],
@@ -77,13 +79,10 @@ function createHostHarness(options = {}) {
     resizeRecoveries: 0,
     settingsRefreshes: 0
   };
-  const host = createCommandHost({
-    btw: {
-      open() {},
-      handleEvent() {},
-      close() {}
-    },
-    appContext: {
+  const appContext = {
+      captureUserConfigSnapshot() {
+        return (options.appUserConfigContext || userConfigContext).capture();
+      },
       clearContextUsage() {
         calls.contextUsageClears += 1;
       },
@@ -93,6 +92,7 @@ function createHostHarness(options = {}) {
       getInteractionMode() {
         return 'plan';
       },
+      setMcpBootstrapStatus() {},
       modelContext: options.modelContext || {
         createActiveLlmConfig() {
           return {error: 'LLM 配置缺少 models'};
@@ -104,7 +104,11 @@ function createHostHarness(options = {}) {
           calls.modelRefreshes += 1;
         }
       },
-      refreshAppSettingsFromConfig() {
+      applyModelConfigSnapshot() {
+        calls.modelRefreshes += 1;
+        return options.modelContext?.refreshModelState() || false;
+      },
+      applyAppSettingsSnapshot() {
         calls.settingsRefreshes += 1;
         return {
           agentInstructionFileChanged: false,
@@ -153,7 +157,26 @@ function createHostHarness(options = {}) {
       setTheme(theme) {
         setThemes.push(theme);
       }
+    };
+  userConfigContext.subscribe((change) => {
+    const modelChanged = change.domains.llm ? appContext.applyModelConfigSnapshot(change.snapshot) : false;
+    const settingsRefresh = change.domains.appSettings
+      ? appContext.applyAppSettingsSnapshot(change.snapshot)
+      : null;
+    if ((change.domains.llm && !modelChanged) || change.domains.tools) {
+      appContext.clearContextUsage();
+    }
+    if (settingsRefresh?.reasoningVisibilityChanged) {
+      calls.resizeRecoveries += 1;
+    }
+  });
+  const host = createCommandHost({
+    btw: {
+      open() {},
+      handleEvent() {},
+      close() {}
     },
+    appContext,
     appendRecord() {},
     exit() {},
     hooks: {
@@ -165,7 +188,7 @@ function createHostHarness(options = {}) {
         }
       }
     },
-    mcpManager: {
+    mcpManager: options.mcpManager || {
       getDiagnostics() {
         return [];
       },
@@ -182,10 +205,25 @@ function createHostHarness(options = {}) {
       listDailyUsage() {
         return [];
       }
-    }
+    },
+    userConfigContext
   });
 
   return {calls, host, setThemes};
+}
+
+function createModelContext() {
+  const userConfigContext = new UserConfigContext();
+  return new ModelContext({
+    config: {
+      getModelInfo() {
+        return userConfigContext.refresh().snapshot.getLlmModelConfigInfo();
+      },
+      resolveLlmConfig(options) {
+        return userConfigContext.capture().resolveLlmConfig(options);
+      }
+    }
+  });
 }
 
 function writeProjectSkill(cwd, name, description = 'Test skill') {
@@ -226,6 +264,18 @@ test('createCommandHost composes the complete command protocol from domain ports
     'prepare',
     'prepareForSubmission'
   ]);
+});
+
+test('createCommandHost rejects a UserConfigContext different from AppContext', () => {
+  const appUserConfigContext = new UserConfigContext();
+  const commandUserConfigContext = new UserConfigContext();
+
+  assert.throws(
+    () => createHostHarness({appUserConfigContext, userConfigContext: commandUserConfigContext}),
+    /必须共享同一个 UserConfigContext/
+  );
+  appUserConfigContext.close();
+  commandUserConfigContext.close();
 });
 
 test('CommandHost theme facade lists selected builtin theme and applies selection', () => {
@@ -404,6 +454,67 @@ test('CommandHost hooks facade creates synthetic payload and maps test result', 
   });
 });
 
+test('CommandHost MCP save reloads once from the installed revision without another config read', async () => {
+  await withTemporaryUserConfig(JSON.stringify({
+    mcp: {
+      enabled: true,
+      servers: {
+        docs: {enabled: true, transport: 'http', url: 'https://example.invalid/mcp'}
+      }
+    }
+  }), async ({configPath}) => {
+    let reads = 0;
+    let reloads = 0;
+    const context = new UserConfigContext({
+      configPath,
+      readFile(filePath, encoding) {
+        reads += 1;
+        return fs.readFileSync(filePath, encoding);
+      }
+    });
+    const mcpManager = {
+      getDiagnostics() { return []; },
+      listTools() { return []; },
+      async reload() {
+        reloads += 1;
+        assert.equal(context.capture().getMcpConfig().servers.length, 0);
+      }
+    };
+    const {host} = createHostHarness({mcpManager, userConfigContext: context});
+    const servers = host.mcp.listServers().map((server) => ({
+      ...server,
+      enabled: server.kind === 'server' ? false : server.enabled
+    }));
+
+    assert.deepEqual(await host.mcp.saveServerStates(servers), {ok: true, diagnostics: []});
+    assert.equal(reads, 2);
+    assert.equal(reloads, 1);
+    assert.equal(context.capture().revision, 2);
+    context.close();
+  });
+});
+
+test('external hooks revision changes do not reload the dispatcher', () => {
+  withTemporaryUserConfig(JSON.stringify({hooks: {assistant_turn_end: ['echo old']}}), ({configPath}) => {
+    let notify;
+    const context = new UserConfigContext({
+      configPath,
+      watchConfig(onChange) {
+        notify = onChange;
+        return {close() {}};
+      }
+    });
+    const {calls} = createHostHarness({userConfigContext: context});
+    context.startWatching();
+    fs.writeFileSync(configPath, JSON.stringify({hooks: {assistant_turn_end: ['echo external']}}), 'utf8');
+    notify();
+
+    assert.equal(context.capture().revision, 2);
+    assert.deepEqual(calls.hookConfigs, []);
+    context.close();
+  });
+});
+
 test('CommandHost config facade refreshes model catalog while preserving current session selection', () => {
   withTemporaryUserConfig(JSON.stringify({
     instructions: {fileName: 'CLAUDE.md'},
@@ -417,7 +528,7 @@ test('CommandHost config facade refreshes model catalog while preserving current
       ]
     }
   }), ({readConfig}) => {
-    const modelContext = new ModelContext();
+    const modelContext = createModelContext();
     const {calls, host} = createHostHarness({modelContext});
 
     assert.equal(modelContext.getStatusLineModelState().modelLabel, 'gpt-fast');
@@ -498,7 +609,7 @@ test('CommandHost status facade aggregates non-sensitive runtime state', () => {
     fs.mkdirSync(path.join(cwd, '.git'), {recursive: true});
     fs.writeFileSync(path.join(homeDir, '.echo', 'CLAUDE.md'), 'global instructions', 'utf8');
     fs.writeFileSync(path.join(cwd, 'CLAUDE.md'), 'project instructions', 'utf8');
-    const modelContext = new ModelContext();
+    const modelContext = createModelContext();
     const {host} = createHostHarness({
       cwd,
       modelContext,
@@ -528,7 +639,7 @@ test('CommandHost status facade aggregates non-sensitive runtime state', () => {
 test('CommandHost status facade preserves empty state and reports local read failures', async () => {
   await withTemporaryUserConfig('{broken config', async ({configPath}) => {
     fs.writeFileSync(path.join(path.dirname(configPath), 'memories.json'), '{broken memories', 'utf8');
-    const {host} = createHostHarness({modelContext: new ModelContext()});
+    const {host} = createHostHarness({modelContext: createModelContext()});
 
     const snapshot = host.status.createSnapshot();
     const usage = await host.status.queryCodexUsage();
@@ -553,7 +664,7 @@ test('CommandHost status facade skips Codex request for non-Codex provider', asy
   }), async () => {
     let didQuery = false;
     const {host} = createHostHarness({
-      modelContext: new ModelContext(),
+      modelContext: createModelContext(),
       async queryCodexUsage() {
         didQuery = true;
         throw new Error('should not query');
@@ -572,7 +683,7 @@ test('CommandHost status facade skips DeepSeek balance for non-DeepSeek provider
       models: [{id: 'chat', provider: 'chat', model: 'gpt-chat'}]
     }
   }), async () => {
-    const {host} = createHostHarness({modelContext: new ModelContext()});
+    const {host} = createHostHarness({modelContext: createModelContext()});
 
     assert.deepEqual(await host.status.queryDeepseekBalance(), {status: 'not_applicable'});
   });
@@ -603,7 +714,7 @@ test('CommandHost status facade queries DeepSeek balance with the configured api
     };
 
     try {
-      const {host} = createHostHarness({modelContext: new ModelContext()});
+      const {host} = createHostHarness({modelContext: createModelContext()});
 
       assert.deepEqual(await host.status.queryDeepseekBalance(), {
         status: 'available',
@@ -649,7 +760,7 @@ test('CommandHost status facade follows the active session model selection', asy
     };
 
     try {
-      const modelContext = new ModelContext();
+      const modelContext = createModelContext();
       const {host} = createHostHarness({modelContext});
 
       // 配置默认是 codex：只尝试 Codex 用量（auth 文件缺失 → unavailable），余额不适用。

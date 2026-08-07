@@ -1,7 +1,5 @@
 import type {AgentWorkflowDefinition} from '../../types/agent-workflow';
 
-import {readAppSettings} from '../../config/app-settings-config';
-
 import type {AgentInstructionFileName} from '../../types/agent';
 
 function buildInitWorkflowPrompt(fileName: AgentInstructionFileName): string {
@@ -43,7 +41,7 @@ Keep the analysis focused on ${fileName} and do not modify other project files.`
 const INIT_WORKFLOW_PROMPT = buildInitWorkflowPrompt('AGENTS.md');
 
 function createInitWorkflowPrompt({argumentsText, fileName}: {argumentsText?: string; fileName?: AgentInstructionFileName} = {}): string {
-  const prompt = buildInitWorkflowPrompt(fileName || readAppSettings().agentInstructionFileName);
+  const prompt = buildInitWorkflowPrompt(fileName || 'AGENTS.md');
 
   if (!argumentsText) {
     return prompt;

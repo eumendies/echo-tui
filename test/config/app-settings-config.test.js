@@ -3,11 +3,30 @@ const assert = require('node:assert/strict');
 
 const {
   DEFAULT_APP_SETTINGS,
-  readAppSettings,
-  readAppSettingsDraft,
-  saveAppSettingsDraft,
   validateAppSettingsDraft
 } = require('../../src/config/app-settings-config');
+const {UserConfigContext} = require('../../src/config/user-config-context');
+
+function withContext(options, read) {
+  const context = new UserConfigContext(options);
+  try {
+    return read(context);
+  } finally {
+    context.close();
+  }
+}
+
+function readAppSettings(options = {}) {
+  return withContext(options, (context) => context.capture().getAppSettings());
+}
+
+function readAppSettingsDraft(options = {}) {
+  return withContext(options, (context) => context.capture().getAppSettingsDraft());
+}
+
+function saveAppSettingsDraft(draft, options = {}) {
+  return withContext(options, (context) => context.saveAppSettingsDraft(draft));
+}
 
 test('readAppSettings reads valid fields and falls back invalid fields independently', () => {
   const valid = readAppSettings({

@@ -4,7 +4,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { buildProviderRecords, createAgentLoopRuntime } = require('../../src/agent/agent-loop-runtime');
+const {buildProviderRecords, createAgentLoopRuntime: createRuntime} = require('../../src/agent/agent-loop-runtime');
+const {UserConfigContext} = require('../../src/config/user-config-context');
 const {createCompactionNoticeRecord} = require('../../src/agent/context/context-compaction');
 const {formatAgentMemoryCatalogPrompt, formatUserMemoriesPrompt} = require('../../src/agent/context/memory-prompt');
 const { createBuiltInSystemPrompt } = require('../../src/agent/context/system-prompt');
@@ -29,12 +30,16 @@ const TEST_CONFIG = {
   }
 };
 
+function createAgentLoopRuntime(cwd, mcpManager, hooks, debug, usageStore, configContext) {
+  return createRuntime(cwd, configContext || new UserConfigContext(), mcpManager, hooks, debug, usageStore);
+}
+
 async function withPatchedAgentRuntime(agentOrFactory, callback, config = TEST_CONFIG) {
   const originalPrepareAgent = agentSetupModule.prepareAgent;
 
   agentSetupModule.prepareAgent = (options = {}) => {
     const resolvedConfig = typeof config === 'function'
-      ? config({modelProfileId: options.modelProfileId, reasoningEffortOverride: options.reasoningEffortOverride})
+      ? config({configSnapshot: options.configSnapshot, modelProfileId: options.modelProfileId, reasoningEffortOverride: options.reasoningEffortOverride})
       : config;
     const baseRegistry = createDefaultToolRegistry(resolvedConfig, options.cwd);
     const registry = options.mcpManager
@@ -52,6 +57,26 @@ async function withPatchedAgentRuntime(agentOrFactory, callback, config = TEST_C
   } finally {
     agentSetupModule.prepareAgent = originalPrepareAgent;
   }
+}
+
+function createRuntimeSnapshot(revision) {
+  return {
+    revision,
+    getAppSettings() {
+      return {
+        agentInstructionFileName: 'AGENTS.md',
+        compactionThresholdRatio: revision === 1 ? 0.7 : 0.9,
+        skillCatalogContextRatio: 0.02,
+        toolApprovalMode: 'manual'
+      };
+    },
+    resolveLlmConfig() {
+      throw new Error('patched prepareAgent should resolve this snapshot');
+    },
+    resolveLlmConfigForProfile() {
+      throw new Error('not used');
+    }
+  };
 }
 
 function writeUserSkill(homeDir, name, description) {
@@ -235,6 +260,55 @@ test('createAgentLoopRuntime snapshots a budgeted skill catalog across tool cont
     assert.equal(contextUsages[0].segments.reduce((sum, segment) => sum + segment.tokens, 0), 900);
     assert.ok(contextUsages[0].segments.find((segment) => segment.category === 'skills').tokens > 0);
   });
+});
+
+test('createAgentLoopRuntime pins one revision across tool continuation and uses the next revision on the next run', async () => {
+  const oldSnapshot = createRuntimeSnapshot(1);
+  const newSnapshot = createRuntimeSnapshot(2);
+  let currentSnapshot = oldSnapshot;
+  const providerRuns = [];
+  const initialized = [];
+
+  await withPatchedAgentRuntime((config, registry) => {
+    const toolNames = registry.listDefinitions().map((tool) => tool.name);
+    initialized.push({model: config.model, reasoningEffort: config.reasoningEffort, toolNames});
+    let turn = 0;
+    return {
+      async runTurn() {
+        providerRuns.push(config.model);
+        turn += 1;
+        if (config.model === 'old-model' && turn === 1) {
+          currentSnapshot = newSnapshot;
+          return {draft: '', toolCalls: [{callId: 'continue', toolName: 'create_todos', argumentsText: '{"items":["continue"]}'}]};
+        }
+        return {draft: 'done', toolCalls: []};
+      }
+    };
+  }, async () => {
+    const runtime = createAgentLoopRuntime(TEST_CWD, undefined, undefined, undefined, undefined, {
+      capture() { return currentSnapshot; }
+    });
+    await runtime({records: [{role: 'user', text: 'first'}], userConfigSnapshot: oldSnapshot});
+    await runtime({records: [{role: 'user', text: 'second'}]});
+  }, ({configSnapshot}) => ({
+    ...TEST_CONFIG,
+    model: configSnapshot.revision === 1 ? 'old-model' : 'new-model',
+    reasoningEffort: configSnapshot.revision === 1 ? 'low' : 'high',
+    tools: {
+      ...TEST_CONFIG.tools,
+      fileEditMode: configSnapshot.revision === 1 ? 'apply_patch' : 'edit_file'
+    }
+  }));
+
+  assert.deepEqual(providerRuns, ['old-model', 'old-model', 'new-model']);
+  assert.deepEqual(initialized.map(({model, reasoningEffort}) => ({model, reasoningEffort})), [
+    {model: 'old-model', reasoningEffort: 'low'},
+    {model: 'new-model', reasoningEffort: 'high'}
+  ]);
+  assert.equal(initialized[0].toolNames.includes('apply_patch'), true);
+  assert.equal(initialized[0].toolNames.includes('edit_file'), false);
+  assert.equal(initialized[1].toolNames.includes('apply_patch'), false);
+  assert.equal(initialized[1].toolNames.includes('edit_file'), true);
 });
 
 test('createAgentLoopRuntime reads the headless skill catalog ratio from app settings', async () => {

@@ -1,12 +1,11 @@
 import {createConfiguredAgent} from '../agent/agent-setup';
-import {readLlmConfigForProfile} from '../config/llm-config';
 import {hashValue} from '../debug/debug-context';
 import {createUsageCwdHash} from '../persistence/usage-store';
 import {isAbortError, throwIfAborted} from '../types/agent';
 
 import type {ToolApprovalSettings} from '../config/app-settings-config';
 import type {DebugContext} from '../debug/debug-context';
-import type {InteractionMode, LlmConfig, ProviderAgent, ToolApprovalDecision} from '../types/agent';
+import type {AgentUserConfigSnapshot, InteractionMode, LlmConfig, ProviderAgent, ToolApprovalDecision} from '../types/agent';
 import type {ToolApprovalRequest, ToolCall} from '../types/tool';
 import type {TranscriptRecord} from '../types/transcript';
 import type {UsageStore} from '../types/usage';
@@ -27,10 +26,10 @@ type ToolApprovalReviewerInput = {
   interactionMode: InteractionMode; // 仅用于沿用 usage 账本的现有维度。
   modelProfileId: string; // 必须严格解析的审批模型 profile id。
   records: TranscriptRecord[]; // 当前主 transcript 的只读快照。
+  userConfigSnapshot?: Pick<AgentUserConfigSnapshot, 'resolveLlmConfigForProfile' | 'revision'>; // 与主 agent 相同的回合配置 revision。
 };
 
 type ToolApprovalReviewerDependencies = {
-  configPath?: string; // 测试或显式配置使用的用户配置路径。
   createAgent?: (config: LlmConfig) => ProviderAgent; // 创建无工具 provider adapter 的测试替换缝。
   cwd: string | (() => string); // usage 项目分区使用的工作目录。
   debug: DebugContext; // 只接收脱敏审批摘要的 debug 旁路。
@@ -48,6 +47,7 @@ type ToolApprovalResolverDependencies = {
   reviewer?: ToolApprovalReviewer; // auto 模式使用的独立模型判断器。
   settings: ToolApprovalSettings; // assistant turn 启动时固定的审批设置。
   toolApproval: Pick<ToolApprovalContext, 'getCachedDecision' | 'requestManual'>; // 会话授权缓存和人工 surface 入口。
+  userConfigSnapshot?: Pick<AgentUserConfigSnapshot, 'resolveLlmConfigForProfile' | 'revision'>; // reviewer 与主 agent 共用的配置 revision。
 };
 
 type ToolApprovalResolver = {
@@ -103,9 +103,12 @@ function createToolApprovalReviewer(dependencies: ToolApprovalReviewerDependenci
 
     try {
       throwIfAborted(input.abortSignal);
-      const loadedConfig = dependencies.readConfig
-        ? dependencies.readConfig(input.modelProfileId)
-        : readLlmConfigForProfile(input.modelProfileId, dependencies.configPath ? {configPath: dependencies.configPath} : {});
+      const loadedConfig = input.userConfigSnapshot
+        ? input.userConfigSnapshot.resolveLlmConfigForProfile(input.modelProfileId)
+        : dependencies.readConfig?.(input.modelProfileId);
+      if (!loadedConfig) {
+        throw new Error('tool approval reviewer 缺少用户配置 snapshot');
+      }
       const {reasoningSummary: _reasoningSummary, ...reviewConfig} = loadedConfig;
       config = {...reviewConfig, reasoningEffort: 'none'};
       const agent = dependencies.createAgent
@@ -194,7 +197,8 @@ function createToolApprovalResolver(dependencies: ToolApprovalResolverDependenci
       call,
       interactionMode: dependencies.interactionMode,
       modelProfileId,
-      records: dependencies.getRecords()
+      records: dependencies.getRecords(),
+      userConfigSnapshot: dependencies.userConfigSnapshot
     });
 
     if (!dependencies.isCurrentTurn() || dependencies.abortSignal?.aborted) {

@@ -1,8 +1,6 @@
-import {JsonConfigFile, type JsonConfigFileOptions} from '../config/json-config-file';
-import {getDefaultUserConfigPath, readOptionalUserConfig} from '../config/user-config';
 import {LIFECYCLE_HOOK_EVENTS} from '../types/hooks';
 
-import type {ReadUserConfigOptions, UserConfigSource} from '../config/user-config';
+import type {UserConfigSource} from '../config/user-config';
 import type {
   LifecycleHookConfig,
   LifecycleHookConfigDiagnostic,
@@ -17,7 +15,6 @@ const MAX_HOOK_TIMEOUT_MS = 30_000;
 
 const EVENT_SET = new Set<string>(LIFECYCLE_HOOK_EVENTS);
 
-type LifecycleHookConfigDraftOptions = ReadUserConfigOptions & JsonConfigFileOptions;
 type HookDraftEntryParseResult =
   | {entry: LifecycleHookDraftEntry; ok: true}
   | {message: string; ok: false};
@@ -31,26 +28,11 @@ type LifecycleHookTimeoutParseResult =
   | {ok: true; value: number}
   | {message: string; ok: false};
 
-/**
- * 读取用户级 hooks 配置；hooks 是可选增强能力，配置错误只会让对应 entry 失效。
- */
-function readLifecycleHookConfig(options: ReadUserConfigOptions = {}): LifecycleHookConfig {
-  return parseLifecycleHookConfig(readOptionalUserConfig(options));
-}
-
 function parseLifecycleHookConfig(rootConfig: UserConfigSource): LifecycleHookConfig {
-  return createLifecycleHookRuntimeConfigFromDraft(parseLifecycleHookConfigDraftRoot(rootConfig, ''));
+  return createLifecycleHookRuntimeConfigFromDraft(parseLifecycleHookConfigDraft(rootConfig, ''));
 }
 
-/**
- * 读取 hooks 管理草稿；与 runtime parser 不同，这里保留 disabled entries 和诊断摘要。
- */
-function readLifecycleHookConfigDraft(options: ReadUserConfigOptions = {}): LifecycleHookConfigDraft {
-  const configPath = options.configPath || getDefaultLifecycleHookConfigPath();
-  return parseLifecycleHookConfigDraftRoot(readOptionalUserConfig(options), configPath);
-}
-
-function parseLifecycleHookConfigDraftRoot(rootConfig: UserConfigSource, configPath: string): LifecycleHookConfigDraft {
+function parseLifecycleHookConfigDraft(rootConfig: UserConfigSource, configPath: string): LifecycleHookConfigDraft {
   const diagnostics: LifecycleHookConfigDiagnostic[] = [];
   const events = LIFECYCLE_HOOK_EVENTS.map((event) => ({event, entries: [] as LifecycleHookDraftEntry[]}));
   const eventDraftByName = new Map(events.map((eventDraft) => [eventDraft.event, eventDraft]));
@@ -93,27 +75,20 @@ function parseLifecycleHookConfigDraftRoot(rootConfig: UserConfigSource, configP
   return {configPath, diagnostics, events};
 }
 
-/**
- * 保存 hooks 管理草稿；只替换 root hooks 节点，避免改写其它用户配置。
- */
-function saveLifecycleHookConfigDraft(draft: LifecycleHookConfigDraft, options: LifecycleHookConfigDraftOptions = {}): void {
+/** 将 hooks 草稿替换到最新根对象；空草稿移除 hooks 节点。 */
+function applyLifecycleHookConfigDraft(rootConfig: UserConfigSource, draft: LifecycleHookConfigDraft): void {
   const validation = validateLifecycleHookConfigDraft(draft);
 
   if (!validation.ok) {
     throw new Error(validation.error);
   }
 
-  const targetPath = options.configPath || draft.configPath || getDefaultLifecycleHookConfigPath();
   const hooks = createLifecycleHookConfigNodeFromDraft(draft);
-  const configFile = new JsonConfigFile(targetPath, options);
-
-  configFile.update((rootConfig) => {
-    if (Object.keys(hooks).length > 0) {
-      rootConfig.hooks = hooks;
-    } else {
-      delete rootConfig.hooks;
-    }
-  });
+  if (Object.keys(hooks).length > 0) {
+    rootConfig.hooks = hooks;
+  } else {
+    delete rootConfig.hooks;
+  }
 }
 
 function createLifecycleHookRuntimeConfigFromDraft(draft: LifecycleHookConfigDraft): LifecycleHookConfig {
@@ -152,10 +127,6 @@ function createLifecycleHookConfigNodeFromDraft(draft: LifecycleHookConfigDraft)
   }
 
   return hooks;
-}
-
-function getDefaultLifecycleHookConfigPath(): string {
-  return getDefaultUserConfigPath();
 }
 
 function validateLifecycleHookConfigDraft(draft: LifecycleHookConfigDraft): {error: string; ok: false} | {ok: true} {
@@ -275,19 +246,13 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 export {
   DEFAULT_HOOK_TIMEOUT_MS,
+  applyLifecycleHookConfigDraft,
   createLifecycleHookRuntimeConfigFromDraft,
-  getDefaultLifecycleHookConfigPath,
   MAX_HOOK_TIMEOUT_MS,
   MIN_HOOK_TIMEOUT_MS,
   parseLifecycleHookConfig,
-  readLifecycleHookConfig,
-  readLifecycleHookConfigDraft,
-  saveLifecycleHookConfigDraft,
+  parseLifecycleHookConfigDraft,
   validateLifecycleHookCommand,
   validateLifecycleHookConfigDraft,
   validateLifecycleHookTimeoutMs
-};
-
-export type {
-  LifecycleHookConfigDraftOptions
 };

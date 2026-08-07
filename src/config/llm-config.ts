@@ -1,6 +1,4 @@
 import {REASONING_EFFORTS, REASONING_SUMMARIES} from '../types/agent';
-import {JsonConfigFile, JsonConfigFileError} from './json-config-file';
-import {getDefaultUserConfigPath} from './user-config';
 import {getProviderPreset, providerRequiresApiKey} from './provider-presets';
 import {DEFAULT_APP_SETTINGS} from './app-settings-config';
 import type {AgentType, BashToolConfig, LlmConfig, ReasoningEffort, ReasoningSummary, ToolRuntimeConfig} from '../types/agent';
@@ -141,10 +139,6 @@ class LlmConfigError extends Error {
   }
 }
 
-function getDefaultConfigPath(): string {
-  return getDefaultUserConfigPath();
-}
-
 type ConfigSource = Record<string, unknown>;
 
 type LlmModelProfile = {
@@ -163,6 +157,12 @@ type LlmProviderProfile = {
   baseURL?: string;
   codexOAuth?: LlmConfig['codexOAuth'];
   headers?: Record<string, string>;
+};
+
+type ParsedLlmConfiguration = {
+  llmConfig: ConfigSource; // 当前 snapshot 的 llm 节点，保留全局模型选择语义。
+  models: LlmModelProfile[]; // 已校验且 provider 引用有效的模型目录。
+  providers: Map<string, LlmProviderProfile>; // 已解析 preset 与凭据的 provider 索引。
 };
 
 type LlmModelConfigInfo =
@@ -502,37 +502,19 @@ function resolveSelectedProviderConfig(selectedProfile: LlmModelProfile, provide
   }, provider.headers);
 }
 
-function readParsedConfig(options: ReadLlmConfigOptions = {}): ConfigSource {
-  const configPath = options.configPath || getDefaultConfigPath();
+/**
+ * 从同一用户配置根解析 provider/model 图；不访问文件，供 revision snapshot 复用。
+ */
+function parseLlmConfiguration(rootConfig: ConfigSource): ParsedLlmConfiguration {
+  assertPlainObject(rootConfig.llm, 'llm');
+  const llmConfig = rootConfig.llm;
+  const providers = parseProviderProfiles(llmConfig);
+  const models = parseModelProfiles(llmConfig, providers);
 
-  try {
-    return new JsonConfigFile(configPath, {readFile: options.readFile}).read();
-  } catch (error: unknown) {
-    if (error instanceof JsonConfigFileError && error.kind === 'missing') {
-      throw new LlmConfigError(`LLM 配置文件不存在：${configPath}`);
-    }
-
-    if (error instanceof JsonConfigFileError && error.kind === 'invalid_json') {
-      throw new LlmConfigError(`LLM 配置文件不是有效 JSON：${configPath}`);
-    }
-
-    if (error instanceof JsonConfigFileError && error.kind === 'invalid_root') {
-      throw new LlmConfigError('LLM 配置 根节点必须是对象');
-    }
-
-    throw new LlmConfigError(`无法读取 LLM 配置文件：${configPath}`);
-  }
+  return {llmConfig, models, providers};
 }
 
-function readLlmConfigSource(options: ReadLlmConfigOptions = {}): ConfigSource {
-  const parsedConfig = readParsedConfig(options);
-
-  assertPlainObject(parsedConfig.llm, 'llm');
-
-  return parsedConfig.llm;
-}
-
-function readToolRuntimeConfig(rootConfig: ConfigSource): ToolRuntimeConfig {
+function parseToolRuntimeConfig(rootConfig: ConfigSource): ToolRuntimeConfig {
   const toolsConfig = rootConfig.tools && typeof rootConfig.tools === 'object' && !Array.isArray(rootConfig.tools)
     ? rootConfig.tools as ConfigSource
     : {};
@@ -562,52 +544,29 @@ function readBashToolConfig(bashConfig: ConfigSource): BashToolConfig {
   };
 }
 
-/**
- * 读取用户级配置中的模型展示信息，供 /model 命令使用。
- */
-function readLlmModelConfigInfo(options: ReadLlmConfigOptions = {}): LlmModelConfigInfo {
-  const llmConfig = readLlmConfigSource(options);
-  const providers = parseProviderProfiles(llmConfig);
-  const models = parseModelProfiles(llmConfig, providers);
-
-  if (models.length === 0) {
+/** 从已解析图创建不含凭据的模型目录。 */
+function createLlmModelConfigInfo(parsed: ParsedLlmConfiguration): LlmModelConfigInfo {
+  if (parsed.models.length === 0) {
     throw new LlmConfigError('LLM 配置缺少 models');
   }
 
-  const selectedProfile = resolveSelectedProfile(llmConfig, models);
+  const selectedProfile = resolveSelectedProfile(parsed.llmConfig, parsed.models);
 
   return {
     kind: 'profiles',
     selectedModelId: selectedProfile.id,
-    models
+    models: parsed.models
   };
 }
 
-type ReadLlmConfigOptions = {
-  configPath?: string;
-  modelProfileId?: string;
-  reasoningEffortOverride?: ReasoningEffort;
-  readFile?: (filePath: string, encoding: BufferEncoding) => string;
-};
-
-/**
- * 从用户级配置文件读取真实 LLM adapter 配置；可为当前运行指定 profile，失效时回退全局选择。
- */
-function readLlmConfig(options: ReadLlmConfigOptions = {}): LlmConfig {
-  const rootConfig = readParsedConfig(options);
-
-  assertPlainObject(rootConfig.llm, 'llm');
-
-  const llmConfig = rootConfig.llm;
-  const providers = parseProviderProfiles(llmConfig);
-  const models = parseModelProfiles(llmConfig, providers);
-
-  if (models.length === 0) {
+/** 从已解析图和工具投影创建运行配置；无效的宽松 override 回退全局选择。 */
+function resolveLlmConfig(parsed: ParsedLlmConfiguration, tools: ToolRuntimeConfig, options: ResolveLlmConfigOptions = {}): LlmConfig {
+  if (parsed.models.length === 0) {
     throw new LlmConfigError('LLM 配置缺少 models');
   }
 
-  const selectedProfile = resolveSelectedProfile(llmConfig, models, options.modelProfileId);
-  const providerConfig = resolveSelectedProviderConfig(selectedProfile, providers);
+  const selectedProfile = resolveSelectedProfile(parsed.llmConfig, parsed.models, options.modelProfileId);
+  const providerConfig = resolveSelectedProviderConfig(selectedProfile, parsed.providers);
   const reasoningEffort = options.reasoningEffortOverride ?? selectedProfile.reasoningEffort;
 
   return {
@@ -616,31 +575,30 @@ function readLlmConfig(options: ReadLlmConfigOptions = {}): LlmConfig {
     ...(reasoningEffort ? {reasoningEffort} : {}),
     ...(selectedProfile.reasoningSummary ? {reasoningSummary: selectedProfile.reasoningSummary} : {}),
     contextWindow: selectedProfile.contextWindow,
-    tools: readToolRuntimeConfig(rootConfig)
+    tools
   };
 }
 
-/**
- * 严格解析指定模型 profile；profile 缺失时拒绝而不是回退全局 selectedModel。
- */
-function readLlmConfigForProfile(modelProfileId: string, options: Omit<ReadLlmConfigOptions, 'modelProfileId' | 'reasoningEffortOverride'> = {}): LlmConfig {
-  const rootConfig = readParsedConfig(options);
-  assertPlainObject(rootConfig.llm, 'llm');
-  const providers = parseProviderProfiles(rootConfig.llm);
-  const models = parseModelProfiles(rootConfig.llm, providers);
-  const selectedProfile = models.find((profile) => profile.id === modelProfileId);
+/** 严格解析指定 profile；审批等安全边界不得回退全局模型。 */
+function resolveLlmConfigForProfile(parsed: ParsedLlmConfiguration, tools: ToolRuntimeConfig, modelProfileId: string): LlmConfig {
+  const selectedProfile = parsed.models.find((profile) => profile.id === modelProfileId);
 
   if (!selectedProfile) {
     throw new LlmConfigError(`LLM 模型 profile 不存在：${modelProfileId}`);
   }
 
   return {
-    ...resolveSelectedProviderConfig(selectedProfile, providers),
+    ...resolveSelectedProviderConfig(selectedProfile, parsed.providers),
     model: selectedProfile.model,
     contextWindow: selectedProfile.contextWindow,
-    tools: readToolRuntimeConfig(rootConfig)
+    tools
   };
 }
+
+type ResolveLlmConfigOptions = {
+  modelProfileId?: string;
+  reasoningEffortOverride?: ReasoningEffort;
+};
 
 export {
   COMPACTION_RECENT_KEEP_COUNT,
@@ -649,16 +607,17 @@ export {
   DEFAULT_BASH_TOOL_TIMEOUT_MS,
   DEFAULT_CONTEXT_WINDOW,
   LlmConfigError,
-  getDefaultConfigPath,
-  readLlmConfig,
-  readLlmConfigForProfile,
-  readLlmModelConfigInfo,
-  readToolRuntimeConfig,
+  createLlmModelConfigInfo,
+  parseLlmConfiguration,
+  parseToolRuntimeConfig,
+  resolveLlmConfig,
+  resolveLlmConfigForProfile,
   resolveContextWindow
 };
 
 export type {
   LlmModelConfigInfo,
   LlmModelProfile,
-  ReadLlmConfigOptions
+  ParsedLlmConfiguration,
+  ResolveLlmConfigOptions
 };

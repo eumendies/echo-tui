@@ -2,20 +2,17 @@ import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import {JsonConfigFile} from './json-config-file';
-
 type UserConfigSource = Record<string, unknown>;
 
 const CONFIG_CHANGE_DEBOUNCE_MS = 75;
 const CONFIG_WATCHFILE_INTERVAL_MS = 100;
 
-type ReadUserConfigOptions = {
-  configPath?: string;
-  readFile?: (filePath: string, encoding: BufferEncoding) => string;
-};
-
 type UserConfigWatcher = {
   close: () => void;
+};
+
+type WatchUserConfigOptions = {
+  configPath?: string; // 监听的用户配置路径，缺省时使用 ~/.echo/config.json。
 };
 
 type ConfigFileSnapshot =
@@ -24,15 +21,6 @@ type ConfigFileSnapshot =
 
 function getDefaultUserConfigPath(): string {
   return path.join(os.homedir(), '.echo', 'config.json');
-}
-
-/**
- * 读取用户级配置根节点；失败时返回空对象，避免可选 TUI 配置阻断聊天能力。
- */
-function readOptionalUserConfig(options: ReadUserConfigOptions = {}): UserConfigSource {
-  const configPath = options.configPath || getDefaultUserConfigPath();
-
-  return new JsonConfigFile(configPath, {readFile: options.readFile}).readOptional();
 }
 
 function createConfigFileSnapshot(stats: fs.Stats): ConfigFileSnapshot {
@@ -71,8 +59,8 @@ function areConfigFileSnapshotsEqual(left: ConfigFileSnapshot, right: ConfigFile
 /**
  * 监听用户配置所在目录；目录监听可跨越配置文件的原子 rename 替换，资源不足时退回轮询。
  */
-function watchUserConfig(onChange: () => void, onError?: (error: Error) => void): UserConfigWatcher {
-  const configPath = getDefaultUserConfigPath();
+function watchUserConfig(onChange: () => void, onError?: (error: Error) => void, options: WatchUserConfigOptions = {}): UserConfigWatcher {
+  const configPath = options.configPath || getDefaultUserConfigPath();
   const configDirectory = path.dirname(configPath);
   const configFileName = path.basename(configPath);
   let changeTimer: ReturnType<typeof setTimeout> | undefined;
@@ -180,6 +168,12 @@ function watchUserConfig(onChange: () => void, onError?: (error: Error) => void)
     });
 
     watcher.on('error', handleWatchFailure);
+    // 注册完成后复查一次，覆盖初始 stat 与 fs.watch 真正生效之间的原子替换。
+    const currentSnapshot = readConfigFileSnapshot(configPath);
+    if (!areConfigFileSnapshotsEqual(lastSnapshot, currentSnapshot)) {
+      lastSnapshot = currentSnapshot;
+      scheduleChange();
+    }
   } catch (error) {
     handleWatchFailure(error instanceof Error ? error : new Error(String(error)));
   }
@@ -191,12 +185,11 @@ function watchUserConfig(onChange: () => void, onError?: (error: Error) => void)
 
 export {
   getDefaultUserConfigPath,
-  readOptionalUserConfig,
   watchUserConfig
 };
 
 export type {
-  ReadUserConfigOptions,
   UserConfigSource,
-  UserConfigWatcher
+  UserConfigWatcher,
+  WatchUserConfigOptions
 };

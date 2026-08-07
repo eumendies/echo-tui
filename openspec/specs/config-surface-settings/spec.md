@@ -137,7 +137,7 @@
 - **THEN** 系统 SHALL NOT 把 reasoning summary 加入 provider request、token 估算或压缩摘要输入
 
 ### Requirement: 常规设置即时刷新
-TUI SHALL 在 app 创建时读取一次归一化常规设置并缓存到实例状态。配置中心保存或 `config.json` watcher 检测到设置变化时，系统 SHALL 刷新缓存并根据变化类型执行必要重绘或清理已失效的 context usage；普通 render 热路径 SHALL NOT 同步读取配置文件。
+TUI SHALL 在 app 创建时从实例级用户配置 snapshot 读取一次归一化常规设置并缓存到实例状态。配置中心保存或 `config.json` watcher 检测到设置变化时，系统 SHALL 从同一次共享配置刷新产生的新 snapshot 更新缓存，并根据变化类型执行必要重绘或清理已失效的 context usage；普通 render 热路径 SHALL NOT 同步读取配置文件。同一 watcher 通知 SHALL NOT 为刷新模型与常规设置分别重复读取 `config.json`。
 
 #### Scenario: Slash 上限变化只重绘 footer
 - **WHEN** slash suggestion 上限变化且 reasoning summary 可见性未变化
@@ -160,6 +160,11 @@ TUI SHALL 在 app 创建时读取一次归一化常规设置并缓存到实例�
 - **THEN** 下一次 assistant run SHALL 使用新比例和当前模型 context window 创建 catalog 投影
 - **THEN** 系统 SHALL 清理旧的 context usage 快照
 - **THEN** 系统 SHALL NOT 因该变化执行不必要的 transcript 重绘或追加 record
+
+#### Scenario: watcher 同时更新模型和常规设置
+- **WHEN** 一次配置文件变化同时修改模型配置和常规设置
+- **THEN** TUI SHALL 通过一次用户配置刷新得到包含两个领域变化的新 snapshot
+- **THEN** ModelContext 与 App settings cache SHALL 消费同一 revision 且 SHALL NOT 各自重新读取配置文件
 
 ### Requirement: 文件编辑工具模式设置
 系统 SHALL 将 `tools.fileEdit.mode` 作为 TUI 与 headless runtime 共用的文件编辑工具模式设置，并 SHALL 在 `/config` 的“常规”Tab 中提供可见、可编辑和可持久化的选择项。有效值 SHALL 为 `apply_patch` 和 `edit_file`，默认值 SHALL 为 `apply_patch`；运行时读取缺失或非法值时 SHALL 独立回退默认值而不阻断应用。

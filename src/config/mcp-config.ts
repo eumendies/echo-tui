@@ -1,28 +1,18 @@
-import {JsonConfigFile, type JsonConfigFileOptions} from './json-config-file';
-import {getDefaultUserConfigPath, readOptionalUserConfig} from './user-config';
-
 import type {McpApprovalMode, McpConfig, McpConfigDiagnostic, McpConfigDraft, McpEnabledStateDraft, McpServerConfig, McpServerConfigDraft} from '../types/mcp';
-import type {ReadUserConfigOptions, UserConfigSource} from './user-config';
+import type {UserConfigSource} from './user-config';
 
 const DEFAULT_MCP_TIMEOUT_MS = 30_000;
 const MIN_MCP_TIMEOUT_MS = 1_000;
 const MAX_MCP_TIMEOUT_MS = 120_000;
 
 type ConfigSource = UserConfigSource;
-type ReadMcpConfigOptions = ReadUserConfigOptions;
-type McpConfigDraftOptions = ReadUserConfigOptions & JsonConfigFileOptions;
 type ParsedMcpServerEntry = {
   name: string;
   rawServer: unknown;
   result: ReturnType<typeof parseMcpServerConfig>;
 };
 
-function getDefaultMcpConfigPath(): string {
-  return getDefaultUserConfigPath();
-}
-
-function readMcpConfig(options: ReadMcpConfigOptions = {}): McpConfig {
-  const model = readMcpConfigModel(options);
+function createMcpConfig(model: {enabled: boolean; servers: ParsedMcpServerEntry[]}): McpConfig {
   const diagnostics: McpConfigDiagnostic[] = [];
 
   if (!model.enabled) {
@@ -45,11 +35,7 @@ function readMcpConfig(options: ReadMcpConfigOptions = {}): McpConfig {
   return {enabled: true, servers, diagnostics};
 }
 
-/**
- * 读取面向 /mcp 管理面板的配置草稿；与 runtime config 不同，这里保留 disabled 和 invalid server。
- */
-function readMcpConfigDraft(options: ReadMcpConfigOptions = {}): McpConfigDraft {
-  const model = readMcpConfigModel(options);
+function createMcpConfigDraft(model: {enabled: boolean; servers: ParsedMcpServerEntry[]}): McpConfigDraft {
   const servers: McpServerConfigDraft[] = [];
 
   for (const {name, rawServer, result} of model.servers) {
@@ -71,38 +57,30 @@ function readMcpConfigDraft(options: ReadMcpConfigOptions = {}): McpConfigDraft 
   return {enabled: model.enabled, servers};
 }
 
-/**
- * 保存 /mcp 面板产生的 enabled 草稿；只改开关字段，避免重写用户维护的 server 细节。
- */
-function saveMcpEnabledStateDraft(draft: McpEnabledStateDraft, options: McpConfigDraftOptions = {}): void {
-  const targetPath = options.configPath || getDefaultMcpConfigPath();
-  const configFile = new JsonConfigFile(targetPath, options);
+/** 只更新 MCP 全局与现有 server 开关，不改写 transport、凭据或诊断字段。 */
+function applyMcpEnabledStateDraft(rootConfig: ConfigSource, draft: McpEnabledStateDraft): void {
+  const mcp = isPlainObject(rootConfig.mcp) ? {...rootConfig.mcp} : {};
+  const servers = isPlainObject(mcp.servers) ? {...mcp.servers} : {};
 
-  configFile.update((rootConfig) => {
-    const mcp = isPlainObject(rootConfig.mcp) ? {...rootConfig.mcp} : {};
-    const servers = isPlainObject(mcp.servers) ? {...mcp.servers} : {};
+  mcp.enabled = Boolean(draft.enabled);
 
-    mcp.enabled = Boolean(draft.enabled);
-
-    for (const serverState of draft.servers) {
-      if (typeof serverState.name !== 'string' || serverState.name.trim() === '') {
-        continue;
-      }
-
-      const currentServer = servers[serverState.name];
-
-      if (isPlainObject(currentServer)) {
-        servers[serverState.name] = {...currentServer, enabled: Boolean(serverState.enabled)};
-      }
+  for (const serverState of draft.servers) {
+    if (typeof serverState.name !== 'string' || serverState.name.trim() === '') {
+      continue;
     }
 
-    mcp.servers = servers;
-    rootConfig.mcp = mcp;
-  }, {allowMissing: false});
+    const currentServer = servers[serverState.name];
+
+    if (isPlainObject(currentServer)) {
+      servers[serverState.name] = {...currentServer, enabled: Boolean(serverState.enabled)};
+    }
+  }
+
+  mcp.servers = servers;
+  rootConfig.mcp = mcp;
 }
 
-function readMcpConfigModel(options: ReadMcpConfigOptions = {}): {enabled: boolean; servers: ParsedMcpServerEntry[]} {
-  const root = readOptionalUserConfig(options);
+function parseMcpConfigModel(root: ConfigSource): {enabled: boolean; servers: ParsedMcpServerEntry[]} {
   const mcp = isPlainObject(root.mcp) ? root.mcp : {};
   const serversRoot = isPlainObject(mcp.servers) ? mcp.servers : {};
 
@@ -274,13 +252,8 @@ function readOptionalStringRecord(value: unknown): {ok: true; value?: Record<str
 
 export {
   DEFAULT_MCP_TIMEOUT_MS,
-  getDefaultMcpConfigPath,
-  readMcpConfig,
-  readMcpConfigDraft,
-  saveMcpEnabledStateDraft
-};
-
-export type {
-  McpConfigDraftOptions,
-  ReadMcpConfigOptions
+  applyMcpEnabledStateDraft,
+  createMcpConfig,
+  createMcpConfigDraft,
+  parseMcpConfigModel
 };
