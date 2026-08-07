@@ -167,7 +167,7 @@ test('tool approval reviewer fails closed for config and provider errors but pro
   await assert.rejects(() => aborted({call: {callId: '1', toolName: 'x', argumentsText: '{}'}, interactionMode: 'normal', modelProfileId: 'reviewer', records: []}), /中断/);
 });
 
-test('all provider request builders omit tools and reasoning when reviewer effort is none', () => {
+test('all provider request builders omit tools and thinking when reviewer effort is none', () => {
   const records = [{role: 'system', text: TOOL_APPROVAL_SYSTEM_PROMPT}, {role: 'user', text: 'review'}];
   const config = createConfig({reasoningEffort: 'none', reasoningSummary: 'detailed'});
   const responses = createRequest(records, config);
@@ -176,14 +176,14 @@ test('all provider request builders omit tools and reasoning when reviewer effor
   const codex = createCodexRequest(records, {...config, codexOAuth: {}});
 
   assert.equal('tools' in responses, false);
-  assert.equal('reasoning' in responses, false);
+  assert.deepEqual(responses.reasoning, {effort: 'none', summary: 'detailed'});
   assert.equal('tools' in chat, false);
-  assert.equal('reasoning_effort' in chat, false);
+  assert.deepEqual(chat.reasoning_effort, 'none');
   assert.equal('tools' in anthropic, false);
   assert.equal('thinking' in anthropic, false);
   assert.equal('output_config' in anthropic, false);
   assert.equal('tools' in codex, false);
-  assert.equal('reasoning' in codex, false);
+  assert.deepEqual(codex.reasoning, {effort: 'none'});
   assert.equal('include' in codex, false);
 });
 

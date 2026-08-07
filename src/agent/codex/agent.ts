@@ -69,6 +69,7 @@ function createCodexRequest(records: TranscriptRecord[], config: LlmConfig, regi
   const toolDefinitions = !options.isCompaction && registry && !registry.isEmpty() ? registry.listDefinitions() : [];
   const input = convertTranscriptToOpenAiInput(records).filter((item) => !('role' in item) || item.role !== 'system');
   const instructions = records.find((record) => record.role === 'system')?.text.trim();
+  // 未配置 effort 时后端默认思考，仍需 include reasoning 以便回传；显式 none 时禁用思考且不 include。
   const reasoningEnabled = !options.isCompaction && config.reasoningEffort !== 'none';
   const request: CodexCreateRequest = {
     input,
@@ -81,7 +82,8 @@ function createCodexRequest(records: TranscriptRecord[], config: LlmConfig, regi
     ...(reasoningEnabled ? {include: ['reasoning.encrypted_content']} : {})
   };
 
-  if (reasoningEnabled && config.reasoningEffort) {
+  // 显式 none 也必须发送：缺省时思考模型按模型默认 effort 思考，省略参数无法表达禁用。
+  if (!options.isCompaction && config.reasoningEffort) {
     request.reasoning = {effort: config.reasoningEffort};
   }
 

@@ -94,7 +94,8 @@ function createChatRequest(records: TranscriptRecord[], config: LlmConfig, regis
     stream_options: {include_usage: true}
   };
 
-  if (!options.isCompaction && config.reasoningEffort && config.reasoningEffort !== 'none') {
+  // 显式 none 也必须发送：思考模型缺省按模型默认 effort（如 medium）思考，省略参数无法表达禁用。
+  if (!options.isCompaction && config.reasoningEffort) {
     request.reasoning_effort = config.reasoningEffort;
   }
 
