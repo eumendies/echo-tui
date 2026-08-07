@@ -200,18 +200,10 @@ async function resolveToolApprovalDecision(toolCall: ToolCall, approval: ToolApp
     };
   }
 
-  const pendingDecision = callbacks.onToolApprovalRequest!(toolCall, approval);
-
-  if (!isPromiseLike(pendingDecision)) {
-    return {decision: pendingDecision, emitLifecycleEvents: false};
-  }
-
-  emitToolApprovalRequestHook(state.hooks, {interactionMode: state.interactionMode, toolCall, approval});
-  return {decision: await pendingDecision, emitLifecycleEvents: true};
-}
-
-function isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {
-  return Boolean(value) && typeof (value as Promise<T>).then === 'function';
+  return {
+    decision: await Promise.resolve(callbacks.onToolApprovalRequest!(toolCall, approval)),
+    emitLifecycleEvents: false
+  };
 }
 
 /**

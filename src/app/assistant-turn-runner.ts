@@ -1,11 +1,12 @@
 import {isAbortError} from '../types/agent';
 import {summarizeText} from '../debug/debug-context';
+import {emitToolApprovalRequestHook, emitToolApprovalResponseHook} from '../hooks/lifecycle-events';
 import {createToolApprovalResolver} from './tool-approval-resolver';
 
-import type {AgentCallbacks, ReasoningEffort, RunAgent} from '../types/agent';
+import type {AgentCallbacks, ReasoningEffort, RunAgent, ToolApprovalDecision} from '../types/agent';
 import type {DebugContext} from '../debug/debug-context';
 import type {LifecycleHookDispatcher} from '../types/hooks';
-import type {ToolResultAttachment} from '../types/tool';
+import type {ToolApprovalRequest, ToolCall, ToolResultAttachment} from '../types/tool';
 import type {TranscriptRecord, UserTranscriptMetadata} from '../types/transcript';
 import type {AppContext} from './state/app-context';
 import type {ToolApprovalContext} from './state/tool-approval-context';
@@ -65,6 +66,14 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
   // thinking 和 streaming 都只进入 pending preview，完成或 partial 失败后才正式追加 assistant block。
   const turn = appContext.beginAssistantTurn(modelProfileIdOverride, reasoningEffortOverride);
   const isCurrentTurn = () => appContext.turnContext.isCurrentAssistantTurn(turn);
+  /** 只有创建人工审批 surface 时才派发交互式审批 lifecycle hooks。 */
+  async function requestManualApproval(call: ToolCall, request?: ToolApprovalRequest): Promise<ToolApprovalDecision> {
+    const pendingDecision = toolApproval.requestManual(call, request);
+    emitToolApprovalRequestHook(hooks, {interactionMode, toolCall: call, approval: request});
+    const decision = await pendingDecision;
+    emitToolApprovalResponseHook(hooks, {interactionMode, toolCall: call, decision});
+    return decision;
+  }
   const toolApprovalResolver = createToolApprovalResolver({
     abortSignal: turn.abortSignal,
     getRecords: () => appContext.transcriptContext.getRecords(),
@@ -72,7 +81,10 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
     isCurrentTurn,
     reviewer: input.toolApprovalReviewer,
     settings: toolApprovalSettings,
-    toolApproval
+    toolApproval: {
+      getCachedDecision: (call) => toolApproval.getCachedDecision(call),
+      requestManual: requestManualApproval
+    }
   });
   appContext.turnContext.startSpinner('thinking');
   appendRecord(userRecord);

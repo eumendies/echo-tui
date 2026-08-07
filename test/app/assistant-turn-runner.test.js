@@ -179,6 +179,14 @@ test('runAssistantTurn keeps manual approval unchanged and does not call auto re
   });
 
   assert.equal(reviews, 0);
+  assert.deepEqual(harness.hookEvents.map((event) => event.event), [
+    'assistant_turn_start',
+    'tool_approval_request',
+    'tool_approval_response',
+    'assistant_turn_end'
+  ]);
+  assert.equal(harness.hookEvents[1].payload.toolName, 'apply_patch');
+  assert.equal(harness.hookEvents[2].payload.decision, 'allow_once');
 });
 
 test('runAssistantTurn auto approval allows once for file, bash, and MCP calls without opening modal', async () => {
@@ -203,6 +211,10 @@ test('runAssistantTurn auto approval allows once for file, bash, and MCP calls w
       }
     });
     assert.equal(reviews, 1);
+    assert.deepEqual(harness.hookEvents.map((event) => event.event), [
+      'assistant_turn_start',
+      'assistant_turn_end'
+    ]);
   }
 });
 
@@ -235,6 +247,15 @@ test('runAssistantTurn auto no falls back to the existing manual surface and ses
   });
 
   assert.equal(reviews, 1);
+  assert.deepEqual(harness.hookEvents.map((event) => event.event), [
+    'assistant_turn_start',
+    'tool_approval_request',
+    'tool_approval_response',
+    'assistant_turn_end'
+  ]);
+  assert.equal(harness.hookEvents[1].payload.toolName, 'mcp__docs__write');
+  assert.equal(harness.hookEvents[1].payload.preview, 'server docs');
+  assert.equal(harness.hookEvents[2].payload.decision, 'allow_tool_for_session');
 });
 
 test('runAssistantTurn propagates reviewer abort without opening a late manual surface', async () => {
@@ -254,6 +275,10 @@ test('runAssistantTurn propagates reviewer abort without opening a late manual s
 
   assert.equal(harness.input.toolApproval.hasActiveRequest(), false);
   assert.equal(harness.appended.some((record) => record.role === 'local_notice' && /中断/.test(record.text)), true);
+  assert.deepEqual(harness.hookEvents.map((event) => event.event), [
+    'assistant_turn_start',
+    'assistant_turn_cancelled'
+  ]);
 });
 
 test('runAssistantTurn ignores a late auto no after the turn is interrupted', async () => {
@@ -278,6 +303,7 @@ test('runAssistantTurn ignores a late auto no after the turn is interrupted', as
   resolveReview(false);
   await running;
   assert.equal(harness.input.toolApproval.hasActiveRequest(), false);
+  assert.deepEqual(harness.hookEvents.map((event) => event.event), ['assistant_turn_start']);
 });
 
 test('runAssistantTurn continues with its in-memory selection when initial session settings persistence fails', async () => {

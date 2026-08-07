@@ -1627,7 +1627,7 @@ test('createAgentLoopRuntime emits tool lifecycle hooks without changing continu
   ]);
 });
 
-test('createAgentLoopRuntime emits tool approval request and response hooks with feedback text', async () => {
+test('createAgentLoopRuntime leaves interactive approval hooks to the app UI boundary', async () => {
   const hooks = createHookRecorder();
   const results = [];
   let turnCount = 0;
@@ -1667,25 +1667,8 @@ test('createAgentLoopRuntime emits tool approval request and response hooks with
   assert.match(results[0].text, /Use ls instead/);
   assert.deepEqual(hooks.events.map((event) => event.event), [
     'tool_call_start',
-    'tool_approval_request',
-    'tool_approval_response',
     'tool_call_end'
   ]);
-  assert.deepEqual(hooks.events[1].payload, {
-    interactionMode: 'normal',
-    toolCallId: 'approval-call',
-    toolName: 'run_bash_command',
-    argumentsText: JSON.stringify({command: 'rm generated.txt'}),
-    preview: 'rm generated.txt'
-  });
-  assert.deepEqual(hooks.events[2].payload, {
-    interactionMode: 'normal',
-    toolCallId: 'approval-call',
-    toolName: 'run_bash_command',
-    argumentsText: JSON.stringify({command: 'rm generated.txt'}),
-    decision: 'provide_feedback',
-    feedbackText: 'Use ls instead.'
-  });
 });
 
 test('createAgentLoopRuntime omits approval hooks for cached session decisions', async () => {
