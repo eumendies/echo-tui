@@ -132,17 +132,17 @@ class ConfigPanelController {
   }
 
   private addProvider(): void {
-    const preset = PRESETS[0];
     const draft = normalizeConfigDraft({
       ...this.state.draft,
       providers: [
         ...this.state.draft.providers,
         {
-          id: preset.id,
-          label: preset.label,
-          preset: preset.id,
+          id: '',
+          label: '',
+          preset: '',
+          isNew: true,
           apiKey: '',
-          models: preset.suggestedModels?.[0] ? [{id: '', model: preset.suggestedModels[0]}] : []
+          models: []
         }
       ]
     });
@@ -151,8 +151,8 @@ class ConfigPanelController {
       ...this.state,
       draft,
       error: undefined,
-      formIndex: 0,
-      mode: 'form',
+      presetIndex: 0,
+      mode: 'preset',
       providerIndex: draft.providers.length - 1
     };
   }
@@ -516,6 +516,10 @@ class ConfigPanelController {
       const preset = PRESETS[this.state.presetIndex];
 
       if (provider && preset) {
+        // 新建 provider 的 id 跟随最终选择的 preset；已有 provider 切换 preset 时保留原配置 key。
+        if (provider.isNew) {
+          provider.id = preset.id;
+        }
         provider.preset = preset.id;
         provider.label = preset.label;
         provider.models = (preset.suggestedModels || []).map((model) => ({id: '', model}));

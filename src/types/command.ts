@@ -245,6 +245,7 @@ export type ConfigProviderDraft = {
   id: string;
   label: string;
   preset: string;
+  isNew?: boolean; // 新建未定型 provider 标记；id 需跟随最终选择的 preset。
   apiKey: string;
   baseURL?: string;
   codexAuthFile?: string;
