@@ -2,7 +2,7 @@ import {DEFAULT_TUI_THEME, type TuiTheme} from '../../config/theme-config';
 import {markdownStyle} from '../colors';
 import { displayWidth, safeRenderWidth } from '../layout';
 import { parseInlineSpans } from './markdown-inline';
-import { containsMarkdownTable, renderMarkdownTable, tryParseMarkdownTable, type MarkdownTable } from './markdown-table';
+import { containsMarkdownTable, isMarkdownTableRowCandidate, isPotentialMarkdownTableDelimiter, renderMarkdownTable, tryParseMarkdownTable, type MarkdownTable } from './markdown-table';
 import { highlightCodeBlock } from './syntax-highlight';
 import { renderStyledLine, styleRolePrefix } from './styled-line';
 
@@ -30,6 +30,65 @@ const RULE_PATTERN = /^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/;
  */
 export function renderMarkdownLines(text: string, width = 80, prefix = '◆ ', theme: TuiTheme = DEFAULT_TUI_THEME): string[] {
   return renderMarkdownLinesWithOptions(text, { width, prefix, theme });
+}
+
+/**
+ * 返回按最终 fence/table 口径可安全写入终端历史区的 source 前缀。
+ * 最后一个块始终保留；table 还要求其后已有非空块，未闭合 fence 永不提交。
+ */
+export function getCommittableMarkdownText(text: string): string {
+  if (text === '') return '';
+
+  const sourceLines = text.split('\n');
+  const lineStarts: number[] = [];
+  let sourceOffset = 0;
+
+  for (const line of sourceLines) {
+    lineStarts.push(sourceOffset);
+    sourceOffset += line.length + 1;
+  }
+
+  let index = 0;
+  let lastBlockStart = 0;
+
+  while (index < sourceLines.length) {
+    const sourceLine = sourceLines[index];
+    const blockStart = lineStarts[index];
+    lastBlockStart = blockStart;
+
+    if (sourceLine.match(FENCE_PATTERN)) {
+      let nextIndex = index + 1;
+      while (nextIndex < sourceLines.length && !sourceLines[nextIndex].match(FENCE_PATTERN)) {
+        nextIndex += 1;
+      }
+      if (nextIndex >= sourceLines.length) return commitBefore(text, blockStart);
+      index = nextIndex + 1;
+      continue;
+    }
+
+    const tableResult = tryParseMarkdownTable(sourceLines, index);
+    if (tableResult) {
+      const hasFollowingNonEmptyLine = sourceLines.slice(tableResult.nextIndex).some((line) => line.trim() !== '');
+      if (!hasFollowingNonEmptyLine) return commitBefore(text, blockStart);
+      index = tableResult.nextIndex;
+      continue;
+    }
+
+    const nextLine = sourceLines[index + 1];
+    if (isMarkdownTableRowCandidate(sourceLine) &&
+      (nextLine === undefined || isPotentialMarkdownTableDelimiter(nextLine))) {
+      return commitBefore(text, blockStart);
+    }
+    index += 1;
+  }
+
+  return commitBefore(text, lastBlockStart);
+}
+
+/** 保留稳定前缀与 pending 块之间的最后一个换行，避免提前投影空白块。 */
+function commitBefore(text: string, pendingStart: number): string {
+  const committedEnd = pendingStart > 0 && text[pendingStart - 1] === '\n' ? pendingStart - 1 : pendingStart;
+  return text.slice(0, committedEnd);
 }
 
 /**

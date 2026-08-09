@@ -24,7 +24,7 @@ function createBaseRenderState() {
 
 function createHarness(runAgent) {
   const appended = [];
-  const calls = {footer: 0, repaint: 0};
+  const calls = {render: 0, repaint: 0, pendingAtRecord: []};
   const parentTurnState = {pending: {kind: 'streaming', text: 'main draft'}, responding: true};
   const parent = {
     records: [{role: 'user', text: 'main question'}],
@@ -46,8 +46,13 @@ function createHarness(runAgent) {
       };
     },
     getParentTurnState: () => structuredClone(parentTurnState),
-    appendVisible: (records) => appended.push(...structuredClone(records)),
-    renderFooter: () => { calls.footer += 1; },
+    renderRecords: (records) => appended.push(...structuredClone(records)),
+    render: (finalizeRecord) => {
+      calls.render += 1;
+      if (!finalizeRecord) return;
+      calls.pendingAtRecord.push(structuredClone(controller.createRenderState(createBaseRenderState()).pending));
+      appended.push(structuredClone(finalizeRecord));
+    },
     repaint: () => { calls.repaint += 1; }
   });
   return {
@@ -222,6 +227,63 @@ test('BTW commits completed reasoning before entering assistant streaming', asyn
     'assistant'
   ]);
   controller.close();
+});
+
+test('BTW finalizes a streamed segment before rendering its record and redraws tool state once', async () => {
+  const {controller, calls} = createHarness(async (_session, callbacks) => {
+    callbacks.onToken?.('x', 'segment');
+    callbacks.onAssistantSegment?.('segment');
+    callbacks.onToolCall?.({callId: 'call-1', toolName: 'grep', argumentsText: '{}'});
+    callbacks.onToolResult?.({callId: 'call-1', toolName: 'grep', ok: true, text: 'done', details: {kind: 'grep', truncated: false}});
+    callbacks.onComplete?.('final');
+  });
+
+  controller.open('stream');
+  await flush();
+
+  assert.deepEqual(calls.pendingAtRecord, [null, null]);
+  assert.equal(calls.render, 5);
+  assert.equal(controller.hasTimedActivity(), false);
+  controller.close();
+});
+
+test('BTW flushes retry and compaction notices through activity rendering', async () => {
+  const {controller, calls} = createHarness(async (_session, callbacks) => {
+    callbacks.onToken?.('x', 'segment');
+    callbacks.onProviderRetry?.({retryCount: 1, maxRetries: 2, delayMs: 10, message: 'retry'});
+    callbacks.onCompacted?.({summaryText: 'side summary', activeStartIndex: 1, createdAt: 'side'});
+    callbacks.onComplete?.('segment');
+  });
+
+  controller.open('stream');
+  await flush();
+
+  assert.equal(calls.render, 5);
+  controller.close();
+});
+
+test('BTW queues side activity for the shared app clock and discards late callbacks after close', async () => {
+  let capturedCallbacks;
+  const {controller, calls} = createHarness(async (_session, callbacks) => {
+    capturedCallbacks = callbacks;
+    callbacks.onToken?.('x', 'alpha\n\nbeta');
+    await new Promise(() => {});
+  });
+
+  controller.open('stream');
+  await flush();
+
+  assert.equal(controller.hasTimedActivity(), true);
+  assert.equal(calls.render, 1);
+  assert.deepEqual(controller.createRenderState(createBaseRenderState()).pending, {
+    kind: 'streaming',
+    text: 'alpha\n\nbeta'
+  });
+
+  controller.close();
+  capturedCallbacks.onToken?.('x', 'alpha\n\nbeta\n\ngamma');
+  assert.equal(controller.hasTimedActivity(), false);
+  assert.equal(calls.render, 1);
 });
 
 test('BTW keeps tool pairs, todo, compaction, and provider-private records in side state only', async () => {

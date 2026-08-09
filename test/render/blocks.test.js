@@ -3,7 +3,8 @@ const assert = require('node:assert/strict');
 
 const { createTuiTheme } = require('../../src/config/theme-config');
 const { displayWidth, safeRenderWidth, stripAnsi } = require('../../src/render/layout');
-const { renderAssistantMessageLines, renderBanner, renderPendingAssistantLines, renderReasoningSummaryLines, renderShellBlock, renderUserBlock, renderUserMessageLines, renderErrorMessageLines } = require('../../src/render/blocks');
+const { getCommittableReasoningText, getCommittableStreamingText, renderAssistantMessageLines, renderBanner, renderPendingAssistantLines, renderReasoningSummaryLines, renderShellBlock, renderStreamingCommitLines, renderUserBlock, renderUserMessageLines, renderErrorMessageLines } = require('../../src/render/blocks');
+const {getCommittableMarkdownText} = require('../../src/render/markdown');
 
 test('renderBanner returns a large startup header at wide widths', () => {
   const lines = renderBanner({
@@ -264,6 +265,33 @@ test('renderAssistantMessageLines renders assistant tables while user and error 
   assert.ok(errorPlain.some((line) => line.includes('✕ | Name | Count |')));
 });
 
+test('getCommittableMarkdownText keeps unstable tail, table candidates, and unclosed fences pending', () => {
+  assert.equal(getCommittableMarkdownText('first\n\nsecond'), 'first\n');
+  assert.equal(getCommittableStreamingText('| Name | Count |'), '');
+  assert.equal(getCommittableStreamingText('| Name | Count |\n| ---'), '');
+  assert.equal(getCommittableStreamingText('| Name | Count |\n| --- | --- |\n| a | b |\n'), '');
+  assert.match(getCommittableStreamingText('| Name | Count |\n| --- | --- |\n| a | b |\n\nafter'), /\| a \| b \|/);
+  assert.equal(getCommittableStreamingText('before\n\n```ts\nconst value = 1;'), 'before\n');
+  assert.equal(getCommittableStreamingText('```md\n| A | B |\n| --- | --- |\n| 1 | 2 |\n```'), '');
+  assert.match(getCommittableStreamingText('```md\n| A | B |\n| --- | --- |\n| 1 | 2 |\n```\n\nafter'), /```md/);
+});
+
+test('renderStreamingCommitLines equals the stable prefix of the final assistant projection', () => {
+  const first = getCommittableStreamingText('alpha\n\nbeta');
+  const second = getCommittableStreamingText('alpha\n\nbeta\n\ngamma');
+  const firstLines = renderStreamingCommitLines('assistant', first, '', 30);
+  const secondLines = renderStreamingCommitLines('assistant', second, first, 30);
+  assert.deepEqual([...firstLines, ...secondLines], renderAssistantMessageLines(second, 30));
+});
+
+test('renderPendingAssistantLines removes committed projection without repeating the role prefix', () => {
+  const text = 'alpha\n\nbeta';
+  const historyText = getCommittableStreamingText(text);
+  const lines = renderPendingAssistantLines({kind: 'streaming', text, historyText}, 80).map((line) => stripAnsi(line));
+  assert.ok(lines.some((line) => line.includes('beta')));
+  assert.equal(lines.some((line) => line.startsWith('◇ ')), false);
+});
+
 test('renderPendingAssistantLines renders streaming markdown before applying tail collapse', () => {
   const text = ['# Plan', '- first', '- second', '```', 'code', '```'].join('\n');
   const lines = renderPendingAssistantLines({ kind: 'streaming', text }, 80, 3).map((line) => stripAnsi(line));
@@ -311,6 +339,17 @@ test('renderPendingAssistantLines renders reasoning streaming preview', () => {
   const lines = renderPendingAssistantLines({ kind: 'reasoning_streaming', text: 'thinking\nmore' }, 80).map((line) => stripAnsi(line).trimEnd());
 
   assert.deepEqual(lines, ['◇ thinking', '  more']);
+});
+
+test('getCommittableReasoningText commits complete visual lines before provider done', () => {
+  const text = `${'a'.repeat(90)} tail`;
+  const committed = getCommittableReasoningText(text, 40);
+
+  assert.ok(committed.length > 0);
+  assert.ok(committed.length < text.length);
+  const lines = renderPendingAssistantLines({kind: 'reasoning_streaming', text, historyText: committed}, 40);
+  assert.ok(lines.length >= 1);
+  assert.ok(lines.length < renderReasoningSummaryLines(text, 40).length);
 });
 
 test('renderPendingAssistantLines bounds reasoning streaming preview', () => {

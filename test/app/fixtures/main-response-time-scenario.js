@@ -11,16 +11,13 @@ terminalModule.setupTerminal = () => ({
 
 const snapshots = [];
 const renderer = {
-  appendRecord(options) {
-    capture(options);
-  },
-  appendRecords(options) {
+  renderRecords(options) {
     capture(options);
   },
   clearFooter() {},
+  render: capture,
   renderDestructive: capture,
   renderFinal() {},
-  renderFooter: capture,
   renderInitial: capture
 };
 

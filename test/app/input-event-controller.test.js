@@ -50,7 +50,7 @@ function createHarness(overrides = {}) {
       return false;
     }),
     exit: () => calls.push('exit'),
-    renderFooter: () => calls.push('render')
+    render: () => calls.push('render')
   });
 
   return {appContext, calls, controller};

@@ -12,7 +12,7 @@ type SettingsCommandContext = Pick<AppContext,
 
 type SettingsCommandPortOptions = {
   appContext: SettingsCommandContext;
-  renderFooter: () => void;
+  render: () => void;
   renderResizeRecovery: () => void;
 };
 
@@ -20,7 +20,7 @@ type SettingsCommandPortOptions = {
  * 创建 interaction mode 与 theme 设置端口，并触发设置生效所需的重绘。
  */
 function createSettingsCommandPorts(options: SettingsCommandPortOptions): Pick<CommandHostApp, 'mode' | 'theme'> {
-  const {appContext, renderFooter, renderResizeRecovery} = options;
+  const {appContext, render, renderResizeRecovery} = options;
 
   return {
     mode: {
@@ -30,7 +30,7 @@ function createSettingsCommandPorts(options: SettingsCommandPortOptions): Pick<C
       setInteractionMode(mode) {
         appContext.setInteractionMode(mode);
         appContext.clearContextUsage();
-        renderFooter();
+        render();
       }
     },
     theme: {

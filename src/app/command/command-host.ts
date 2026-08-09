@@ -21,11 +21,11 @@ import type {InputEvent} from '../../types/input';
 
 type CommandHostOptions = {
   appContext: AppContext;
-  appendRecord: (record: TranscriptRecord) => void;
+  renderRecords: (records: TranscriptRecord[]) => void;
   exit: () => void;
   hooks: LifecycleHookDispatcher;
   mcpManager: McpManager;
-  renderFooter: () => void;
+  render: () => void;
   renderResizeRecovery: () => void;
   usageStore: UsageStore;
   userConfigContext: UserConfigContext;
@@ -40,13 +40,13 @@ type CommandHostOptions = {
  * 在 app 组合根装配 command handler 可用的受控领域端口。
  */
 function createCommandHost(options: CommandHostOptions): CommandHostApp {
-  const {appContext, appendRecord, btw, exit, hooks, mcpManager, renderFooter, renderResizeRecovery, usageStore} = options;
+  const {appContext, renderRecords, btw, exit, hooks, mcpManager, render, renderResizeRecovery, usageStore} = options;
   const userConfigContext = options.userConfigContext;
   if (appContext.captureUserConfigSnapshot() !== userConfigContext.capture()) {
     throw new Error('CommandHost 与 AppContext 必须共享同一个 UserConfigContext');
   }
   const modelPorts = createModelCommandPorts({appContext, userConfigContext});
-  const settingsPorts = createSettingsCommandPorts({appContext, renderFooter, renderResizeRecovery});
+  const settingsPorts = createSettingsCommandPorts({appContext, render, renderResizeRecovery});
   const statusPorts = createStatusCommandPorts({
     appContext,
     usageStore,
@@ -57,13 +57,13 @@ function createCommandHost(options: CommandHostOptions): CommandHostApp {
 
   return {
     btw,
-    transcript: createTranscriptCommandPort({appContext, appendRecord, renderResizeRecovery}),
-    reference: createConversationReferenceCommandPort({appContext, renderFooter, usageStore, userConfigContext}),
+    transcript: createTranscriptCommandPort({appContext, renderRecords, renderResizeRecovery}),
+    reference: createConversationReferenceCommandPort({appContext, render, usageStore, userConfigContext}),
     clipboard: {writeText: writeClipboardText},
     model: modelPorts.model,
     config: modelPorts.config,
     skills: createSkillsCommandPort({cwd, clearContextUsage: () => appContext.clearContextUsage()}),
-    mcp: createMcpCommandPort({appContext, mcpManager, renderFooter, userConfigContext}),
+    mcp: createMcpCommandPort({appContext, mcpManager, render, userConfigContext}),
     memory: createMemoryCommandPort(cwd),
     hooks: createHooksCommandPort({
       cwd,
@@ -78,8 +78,8 @@ function createCommandHost(options: CommandHostOptions): CommandHostApp {
     usage: statusPorts.usage,
     diff: historyPorts.diff,
     undo: historyPorts.undo,
-    assistant: createAssistantCommandPort({appContext, appendRecord, renderFooter}),
-    ui: {exit, renderFooter, renderResizeRecovery}
+    assistant: createAssistantCommandPort({appContext, renderRecords, render}),
+    ui: {exit, render, renderResizeRecovery}
   };
 }
 

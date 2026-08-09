@@ -9,14 +9,10 @@ import type {ShellTranscriptRecord, TranscriptRecord, UserTranscriptMetadata} fr
 import type {BashCommandOutputEvent, BashCommandRunResult} from '../../tools/bash-command-runner';
 
 type TranscriptTurnBridge = {
-  appendRecord: (record: TranscriptRecord) => TranscriptRecord;
+  appendRecord: <Record extends TranscriptRecord>(record: Record) => Record;
 };
 
 type SpinnerKind = 'thinking' | 'working';
-
-type SpinnerTimerConfig = {
-  onTick: () => void;
-};
 
 type AssistantTurnHandle = {
   id: number;
@@ -30,20 +26,18 @@ type ActiveAssistantTurn = {
 };
 
 type InterruptAssistantTurnResult = {
-  interrupted: boolean;
-  partialRecord?: TranscriptRecord;
-  noticeRecord?: TranscriptRecord;
+  interrupted: boolean; // 当前 Esc 是否实际取消了一个有效 assistant turn。
+  reasoningRecord?: Extract<TranscriptRecord, {role: 'reasoning_summary'}>; // 中断时由完整 reasoning 草稿落成的 partial summary。
+  partialRecord?: Extract<TranscriptRecord, {role: 'assistant'}>; // 中断时由完整 assistant 草稿落成的 partial record。
+  noticeRecord?: TranscriptRecord; // 在 partial records 之后追加的本地中断提示。
 };
 
-// 响应活动重绘周期；同时推进 spinner 动效并投影期间累积的最新 pending 内容。
-const SPINNER_REDRAW_INTERVAL_MS = 100;
 const ASSISTANT_INTERRUPTED_NOTICE = '已中断模型回答';
 
 /**
- * 管理响应锁、pending preview、spinner 和 turn 生命周期。
- * spinner 帧由渲染层根据 elapsedMs 推算，不再持有递增的 frame 计数。
- * 活动重绘 timer 由本 context 持有，由 main 层在初始化时通过 configureSpinnerTimer 注入回调。
- * token 与 shell chunk 只累积 pending 状态，由同一周期 tick 批量投影到 footer。
+ * 管理响应锁、pending preview、spinner 时间锚点和 turn 生命周期。
+ * spinner 帧由渲染层根据 elapsedMs 推算；共享 activity timer 由 app 组合根持有。
+ * token 与 shell chunk 只累积 pending 状态，由 app 周期 tick 批量投影到 footer。
  */
 class TurnContext {
   transcriptContext: TranscriptTurnBridge;
@@ -56,8 +50,6 @@ class TurnContext {
   thinkingStartedAt: number | null;
   workingStartedAt: number | null;
   pendingToolCall: ToolCall | null;
-  spinnerTimer: unknown;
-  spinnerTimerConfig: SpinnerTimerConfig | null;
   activeAssistantTurn: ActiveAssistantTurn | null;
   nextAssistantTurnId: number;
 
@@ -72,48 +64,24 @@ class TurnContext {
     this.thinkingStartedAt = null;
     this.workingStartedAt = null;
     this.pendingToolCall = null;
-    this.spinnerTimer = null;
-    this.spinnerTimerConfig = null;
     this.activeAssistantTurn = null;
     this.nextAssistantTurnId = 1;
   }
 
-  /**
-   * 注入响应活动重绘 timer 配置。main 层负责在创建 app 时调用一次，
-   * 把 footer 重绘回调交给本 context 持有；timer 同时服务 spinner 和高频 pending 合并。
-   */
-  configureSpinnerTimer(config: SpinnerTimerConfig): void {
-    this.spinnerTimerConfig = config;
-  }
-
-  /**
-   * 启动指定类型的 spinner：先停掉旧 timer，再更新 spinner 状态，最后注册周期重绘回调。
-   * 周期 tick 推进 spinner 帧，并投影期间累积的最新 assistant 或 shell pending 内容。
-   */
+  /** 启动指定 spinner 阶段；周期重绘由 app 级共享 activity timer 驱动。 */
   startSpinner(kind: SpinnerKind): void {
-    this.stopSpinner();
     this.enterSpinnerState(kind);
-
-    const config = this.spinnerTimerConfig;
-    if (!config) {
-      return;
-    }
-
-    this.spinnerTimer = setInterval(config.onTick, SPINNER_REDRAW_INTERVAL_MS);
   }
 
-  /**
-   * 停止 spinner 重绘 timer；若未启动则直接返回。spinner 状态本身不在此清理，
-   * 由 turn 生命周期相关的 finishAssistantTurn / failAssistantTurn 等方法负责。
-   */
+  /** 停止当前 spinner 计时，pending 等业务状态仍由对应生命周期方法清理。 */
   stopSpinner(): void {
-    if (!this.spinnerTimer) {
-      this.spinnerTimer = null;
-      return;
-    }
+    this.thinkingStartedAt = null;
+    this.workingStartedAt = null;
+  }
 
-    clearInterval(this.spinnerTimer as Parameters<typeof clearInterval>[0]);
-    this.spinnerTimer = null;
+  /** 返回共享 activity timer 当前是否需要投影主会话活动。 */
+  hasTimedActivity(): boolean {
+    return this.thinkingStartedAt !== null || this.workingStartedAt !== null;
   }
 
   /**
@@ -202,7 +170,11 @@ class TurnContext {
     }
 
     if (this.pendingKind === 'streaming') {
-      return {kind: 'streaming', text: this.streamingDraft};
+      return {
+        kind: 'streaming',
+        text: this.streamingDraft,
+        ...(this.reasoningDraft ? {reasoningText: this.reasoningDraft} : {})
+      };
     }
 
     if (this.pendingKind === 'shell_output') {
@@ -315,21 +287,18 @@ class TurnContext {
     }
   }
 
-  /**
-   * 更新 assistant 正文 streaming 草稿，并结束 transient reasoning pending 阶段。
-   */
+  /** 更新当前 provider segment 的 assistant 正文草稿。 */
   setStreamingPending(draft: string): void {
     this.pendingKind = 'streaming';
     this.streamingDraft = draft;
-    this.reasoningDraft = '';
   }
 
-  /**
-   * 更新可读 reasoning streaming 草稿；完成后由 summary transcript 切换到正文或工具阶段。
-   */
+  /** 更新当前可读 reasoning 草稿。 */
   setReasoningStreamingPending(draft: string): void {
-    this.pendingKind = 'reasoning_streaming';
     this.reasoningDraft = draft;
+    if (this.pendingKind !== 'streaming') {
+      this.pendingKind = 'reasoning_streaming';
+    }
   }
 
   /**
@@ -372,64 +341,45 @@ class TurnContext {
     this.thinkingStartedAt = null;
   }
 
+  /** 把当前 assistant segment 落成完整 record，并清空对应草稿。 */
+  finalizeAssistantSegment(text: string): Extract<TranscriptRecord, {role: 'assistant'}> | null {
+    this.streamingDraft = '';
+    if (this.pendingKind === 'streaming') {
+      this.pendingKind = null;
+    }
+
+    if (text.trim() === '') {
+      return null;
+    }
+
+    return this.transcriptContext.appendRecord({role: 'assistant', text});
+  }
+
   /**
-   * 完成 assistant 响应，提交 assistant record 并释放 response lock。
+   * 完成 assistant 响应，提交最后一个 segment 并释放 response lock。
    */
-  finishAssistantTurn(finalText: string): TranscriptRecord | null {
+  finishAssistantTurn(finalText: string): Extract<TranscriptRecord, {role: 'assistant'}> | null {
+    const result = this.finalizeAssistantSegment(finalText);
     this.clearPending();
     this.clearWorking();
     this.pendingToolCall = null;
     this.responding = false;
+    return result;
+  }
 
-    if (finalText.trim() === '') {
+  /** 把当前 reasoning 草稿落成完整 record，并消费该草稿。 */
+  finalizeReasoning(text = this.reasoningDraft): Extract<TranscriptRecord, {role: 'reasoning_summary'}> | null {
+    if (text.trim() === '') {
       return null;
     }
 
-    return this.transcriptContext.appendRecord({
-      role: 'assistant',
-      text: finalText
-    });
-  }
-
-  /**
-   * 记录已经流出的 partial assistant 内容，但保持响应锁给随后的 error record 释放。
-   */
-  commitPartialAssistantTurn(partialText: string): TranscriptRecord | null {
-    if (partialText.trim() === '') {
-      return null;
-    }
-
-    this.clearPending();
-
-    return this.transcriptContext.appendRecord({
-      role: 'assistant',
-      text: partialText
-    });
-  }
-
-  /**
-   * 提交当前 streaming pending 中保存的 assistant 草稿，避免 app 层重复持有 draft。
-   */
-  commitPendingAssistantDraft(): TranscriptRecord | null {
-    return this.commitPartialAssistantTurn(this.streamingDraft);
-  }
-
-  /**
-   * 记录 provider 已确认完成的 reasoning summary，并清理 reasoning pending。
-   * turn-end fallback 可能发生在正文 streaming 之后，此时保留正文 pending。
-   */
-  appendReasoningSummary(text: string): TranscriptRecord {
     this.reasoningDraft = '';
     this.thinkingStartedAt = null;
-
     if (this.pendingKind === 'thinking' || this.pendingKind === 'reasoning_streaming') {
       this.pendingKind = null;
     }
 
-    return this.transcriptContext.appendRecord({
-      role: 'reasoning_summary',
-      text
-    });
+    return this.transcriptContext.appendRecord({role: 'reasoning_summary', text});
   }
 
   /**
@@ -523,11 +473,17 @@ class TurnContext {
     activeTurn.controller.abort();
     this.stopSpinner();
 
-    const partialRecord = this.commitPendingAssistantDraft() || undefined;
+    const reasoning = this.finalizeReasoning();
+    const partial = this.finalizeAssistantSegment(this.streamingDraft);
     const noticeRecord = this.cancelAssistantTurn();
     this.activeAssistantTurn = null;
 
-    return {interrupted: true, partialRecord, noticeRecord};
+    return {
+      interrupted: true,
+      ...(reasoning ? {reasoningRecord: reasoning} : {}),
+      ...(partial ? {partialRecord: partial} : {}),
+      noticeRecord
+    };
   }
 }
 

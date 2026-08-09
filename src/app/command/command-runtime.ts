@@ -54,7 +54,7 @@ function createCommandRuntime(dependencies: CommandRuntimeDependencies) {
    */
   function renderIfNeeded(): void {
     if (didMutateSession) {
-      dependencies.host.ui.renderFooter();
+      dependencies.host.ui.render();
       didMutateSession = false;
     }
   }

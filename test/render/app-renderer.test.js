@@ -71,11 +71,11 @@ function createAppRenderer(output) {
   const renderer = appRenderer.createAppRenderer(output);
   return {
     ...renderer,
-    appendRecord(options) {
-      return renderer.appendRecord({...options, record: normalizeTranscriptRecord(options.record)});
+    renderRecords(options) {
+      return renderer.renderRecords({...options, records: normalizeTranscriptRecords(options.records)});
     },
-    appendRecords(options) {
-      return renderer.appendRecords({...options, records: normalizeTranscriptRecords(options.records)});
+    render(options, finalizeRecord) {
+      return renderer.render(options, finalizeRecord ? normalizeTranscriptRecord(finalizeRecord) : undefined);
     },
     renderDestructive(options) {
       return renderer.renderDestructive({...options, records: normalizeTranscriptRecords(options.records)});
@@ -147,6 +147,136 @@ test('createAppRenderer includes the pending message card in destructive recover
   assert.equal((plain.match(/queued request/g) || []).length, 1);
 });
 
+test('createAppRenderer computes streaming history and final record suffix internally', () => {
+  const output = {writes: [], write(chunk) { this.writes.push(String(chunk)); }};
+  const renderer = createAppRenderer(output);
+  const state = {
+    streamingOwner: 'main',
+    composer: createComposer(),
+    commandSurface: null,
+    slashSuggestions: null,
+    pending: {kind: 'streaming', text: 'alpha\n\nbeta'},
+    working: {elapsedMs: 10},
+    renderPreferences: {showReasoningSummary: true, slashSuggestionMaxVisible: 8},
+    statusLine: {...DEFAULT_STATUS_LINE, mode: 'streaming'},
+    rows: 24,
+    width: 80
+  };
+
+  renderer.render(state);
+  renderer.render({...state, pending: null, working: null}, {role: 'assistant', text: 'alpha\n\nbeta'});
+
+  const plain = stripAnsi(output.writes.join(''));
+  assert.equal((plain.match(/◆ alpha/g) || []).length, 1);
+  assert.equal(plain.includes('beta'), true);
+  assert.equal(plain.includes('◆ beta'), false);
+});
+
+test('createAppRenderer flushes the reasoning tail before assistant history and filters hidden reasoning', () => {
+  const shownChunks = [];
+  const shown = createAppRenderer({write(chunk) { shownChunks.push(String(chunk)); }});
+  const state = {
+    streamingOwner: 'main',
+    composer: createComposer(),
+    commandSurface: null,
+    pending: {kind: 'streaming', text: 'stable assistant\n\ntail', reasoningText: 'stable reasoning'},
+    working: {elapsedMs: 10},
+    statusLine: {...DEFAULT_STATUS_LINE, mode: 'streaming'},
+    rows: 24,
+    width: 30,
+    renderPreferences: {showReasoningSummary: true, slashSuggestionMaxVisible: 8}
+  };
+  shown.render(state);
+  const shownPlain = stripAnsi(shownChunks.at(-1));
+  assert.ok(shownPlain.indexOf('stable reasoning') < shownPlain.indexOf('stable assistant'));
+
+  const hiddenChunks = [];
+  const hidden = createAppRenderer({write(chunk) { hiddenChunks.push(String(chunk)); }});
+  hidden.render({...state, renderPreferences: {showReasoningSummary: false, slashSuggestionMaxVisible: 8}});
+  const hiddenPlain = stripAnsi(hiddenChunks.at(-1));
+  assert.doesNotMatch(hiddenPlain, /stable reasoning/);
+  assert.match(hiddenPlain, /stable assistant/);
+});
+
+test('createAppRenderer keeps late reasoning out of assistant output for main and BTW owners', () => {
+  for (const streamingOwner of ['main', 'btw']) {
+    const chunks = [];
+    const renderer = createAppRenderer({write(chunk) { chunks.push(String(chunk)); }});
+    const state = {
+      streamingOwner,
+      composer: createComposer(),
+      commandSurface: null,
+      slashSuggestions: null,
+      working: {elapsedMs: 10},
+      renderPreferences: {showReasoningSummary: true, slashSuggestionMaxVisible: 8},
+      statusLine: {...DEFAULT_STATUS_LINE, mode: 'streaming'},
+      rows: 24,
+      width: 40
+    };
+    const assistantText = 'stable assistant\n\ntail';
+    const completeReasoning = 'early reasoning\nlate reasoning';
+
+    renderer.render({
+      ...state,
+      pending: {kind: 'streaming', text: assistantText, reasoningText: 'early reasoning'}
+    });
+    renderer.render({
+      ...state,
+      pending: {kind: 'streaming', text: assistantText, reasoningText: completeReasoning}
+    });
+    renderer.render({
+      ...state,
+      pending: {kind: 'streaming', text: assistantText, reasoningText: completeReasoning}
+    }, {role: 'reasoning_summary', text: completeReasoning});
+    renderer.render({...state, pending: null, working: null}, {role: 'assistant', text: assistantText});
+
+    const realtime = stripAnsi(chunks.join(''));
+    assert.match(realtime, /early reasoning/);
+    assert.match(realtime, /stable assistant/);
+    assert.match(realtime, /tail/);
+    assert.doesNotMatch(realtime, /late reasoning/);
+
+    renderer.renderDestructive({
+      ...state,
+      bannerContext: {cwd: '/tmp/project', nodeVersion: 'v20', terminalSize: {columns: 40, rows: 24}, mode: 'current terminal'},
+      records: [
+        {role: 'reasoning_summary', text: completeReasoning},
+        {role: 'assistant', text: assistantText}
+      ],
+      pending: null,
+      working: null
+    });
+    const replay = stripAnsi(chunks.at(-1));
+    assert.ok(replay.indexOf('late reasoning') < replay.indexOf('stable assistant'));
+  }
+});
+
+test('createAppRenderer closes reasoning display even when assistant starts without a reasoning draft', () => {
+  const chunks = [];
+  const renderer = createAppRenderer({write(chunk) { chunks.push(String(chunk)); }});
+  const state = {
+    streamingOwner: 'main',
+    composer: createComposer(),
+    commandSurface: null,
+    slashSuggestions: null,
+    working: {elapsedMs: 10},
+    renderPreferences: {showReasoningSummary: true, slashSuggestionMaxVisible: 8},
+    statusLine: {...DEFAULT_STATUS_LINE, mode: 'streaming'},
+    rows: 24,
+    width: 40
+  };
+
+  renderer.render({...state, pending: {kind: 'streaming', text: 'answer'}});
+  renderer.render({...state, pending: {kind: 'streaming', text: 'answer', reasoningText: 'late reasoning'}});
+  renderer.render({
+    ...state,
+    pending: {kind: 'streaming', text: 'answer', reasoningText: 'late reasoning'}
+  }, {role: 'reasoning_summary', text: 'late reasoning'});
+  renderer.render({...state, pending: null, working: null}, {role: 'assistant', text: 'answer'});
+
+  assert.doesNotMatch(stripAnsi(chunks.join('')), /late reasoning/);
+});
+
 test('createAppRenderer destructively switches between BTW side records and latest main records', () => {
   const chunks = [];
   const renderer = createAppRenderer({write(chunk) { chunks.push(String(chunk)); }});
@@ -216,8 +346,8 @@ test('createAppRenderer replays a response-time command surface while appending 
   assert.equal((replay.match(/stable answer/g) || []).length, 1);
   assert.equal((replay.match(/\/status/g) || []).length, 1);
 
-  renderer.appendRecord({
-    record: {role: 'local_notice', text: 'stable notice'},
+  renderer.renderRecords({
+    records: [{role: 'local_notice', text: 'stable notice'}],
     ...state
   });
 
@@ -2028,7 +2158,7 @@ test('renderTranscriptLines ignores unknown record roles', () => {
   assert.deepEqual(renderTranscriptLines([{ role: 'system', text: 'noop' }], 80), []);
 });
 
-test('createAppRenderer appendRecords preserves block spacing for realtime transcript output', () => {
+test('createAppRenderer renderRecords preserves block spacing for realtime transcript output', () => {
   const output = {
     writes: [],
     write(chunk) {
@@ -2037,7 +2167,7 @@ test('createAppRenderer appendRecords preserves block spacing for realtime trans
   };
   const renderer = createAppRenderer(output);
 
-  renderer.appendRecords({
+  renderer.renderRecords({
     records: [
       { role: 'user', text: 'move the file' },
       {

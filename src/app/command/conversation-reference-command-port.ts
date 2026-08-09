@@ -14,7 +14,7 @@ import type {AppContext} from '../state/app-context';
 // 该端口把 slash command、引用状态、模型初始化和 usage 账本组合在同一应用边界。
 type ConversationReferenceCommandPortOptions = {
   appContext: AppContext; // 提供 transcript、引用和 turn 生命周期状态。
-  renderFooter: () => void; // 在选择、取消和总结状态变化后重绘输入区。
+  render: () => void; // 在选择、取消和总结状态变化后刷新当前可见投影。
   usageStore: UsageStore; // 记录独立引用总结请求产生的 token 用量。
   userConfigContext: UserConfigContext; // 与 AppContext 共享的配置实例，禁止端口自行创建来源。
 };
@@ -23,7 +23,7 @@ type ConversationReferenceCommandPortOptions = {
  * 创建历史会话附件端口：选择时只读加载目标，发送时才处理摘要请求和取消生命周期。
  */
 function createConversationReferenceCommandPort(options: ConversationReferenceCommandPortOptions): CommandHostApp['reference'] {
-  const {appContext, renderFooter, usageStore} = options;
+  const {appContext, render, usageStore} = options;
   const userConfigContext = options.userConfigContext;
 
   return {
@@ -38,7 +38,7 @@ function createConversationReferenceCommandPort(options: ConversationReferenceCo
       if (cancelled) {
         appContext.turnContext.stopSpinner();
         appContext.turnContext.clearWorking();
-        renderFooter();
+        render();
       }
 
       return cancelled;
@@ -66,7 +66,7 @@ function createConversationReferenceCommandPort(options: ConversationReferenceCo
           title: source.title
         });
         appContext.conversationReferenceContext.setPending(pending);
-        renderFooter();
+        render();
         return {ok: true as const};
       } catch (error: unknown) {
         return {
@@ -86,7 +86,7 @@ function createConversationReferenceCommandPort(options: ConversationReferenceCo
 
       const controller = appContext.conversationReferenceContext.beginPreparation();
       appContext.turnContext.startSpinner('working');
-      renderFooter();
+      render();
 
       try {
         const selection = appContext.getAgentSession({
@@ -128,7 +128,7 @@ function createConversationReferenceCommandPort(options: ConversationReferenceCo
       } finally {
         appContext.turnContext.stopSpinner();
         appContext.turnContext.clearWorking();
-        renderFooter();
+        render();
       }
     }
   };

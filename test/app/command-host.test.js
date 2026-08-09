@@ -177,7 +177,7 @@ function createHostHarness(options = {}) {
       close() {}
     },
     appContext,
-    appendRecord() {},
+    renderRecords() {},
     exit() {},
     hooks: {
       updateConfig(config) {
@@ -197,7 +197,7 @@ function createHostHarness(options = {}) {
       },
       async reload() {}
     },
-    renderFooter() {},
+    render() {},
     renderResizeRecovery() {
       calls.resizeRecoveries += 1;
     },

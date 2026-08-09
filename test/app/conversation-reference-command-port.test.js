@@ -60,7 +60,7 @@ test('conversation reference finalization uses the current turn model override',
     };
     const port = createConversationReferenceCommandPort({
       appContext,
-      renderFooter() {},
+      render() {},
       userConfigContext: new UserConfigContext(),
       usageStore: {
         appendEvent() {
