@@ -14,61 +14,61 @@ const TRANSCRIPT_COMPOSER_SPACER_LINE = '';
 const TRANSCRIPT_COMPOSER_SPACER_LINE_COUNT = 1;
 
 /**
- * 创建独立 footer renderer，只负责 pending、composer、transcript/composer 间隔和 status line 的局部重绘。
- *
+ * 管理 footer 临时区域的局部重绘，并记录上一帧的高度与光标位置。
  */
-export function createFooterRenderer(output: NodeJS.WriteStream = process.stdout): FooterRenderer {
-  // footer 是唯一可重复重绘的临时区域；记录上一帧形状，才能只擦掉 footer。
-  let previousHeight = 0;
-  let previousCursorRow = 0;
+class DefaultFooterRenderer implements FooterRenderer {
+  private readonly output: NodeJS.WriteStream;
+  private previousHeight = 0;
+  private previousCursorRow = 0;
 
-  /**
-   * 生成清掉上一帧 footer 的定位和擦除序列，不直接写终端，供 clear 与 render 组合完整输出帧。
-   */
-  function createClearPreviousSequence(): string {
-    if (previousHeight === 0) {
+  constructor(output: NodeJS.WriteStream = process.stdout) {
+    this.output = output;
+  }
+
+  /** 生成清掉上一帧 footer 的定位和擦除序列，不直接写终端。 */
+  private createClearPreviousSequence(): string {
+    if (this.previousHeight === 0) {
       return '';
     }
 
     let sequence = '';
     // 当前光标位于上一次 composer 逻辑位置，先回到上一次 footer 顶部。
-    sequence += ansi.cursorUp(previousCursorRow);
+    sequence += ansi.cursorUp(this.previousCursorRow);
     sequence += ansi.carriageReturn();
 
-    for (let index = 0; index < previousHeight; index += 1) {
-      // 逐行清理 footer，不碰 footer 以上已经进入 scrollback 的历史输出。
+    for (let index = 0; index < this.previousHeight; index += 1) {
+      // 逐行清理 footer，不碰 footer 以上已经进入终端历史区的内容。
       sequence += ansi.clearLine();
-      if (index < previousHeight - 1) {
+      if (index < this.previousHeight - 1) {
         sequence += ansi.cursorDown(1);
       }
     }
 
-    sequence += ansi.cursorUp(previousHeight - 1);
+    sequence += ansi.cursorUp(this.previousHeight - 1);
     sequence += ansi.carriageReturn();
     return sequence;
   }
 
-  /**
-   * 移除当前临时 footer，为 transcript append 或退出让出干净的终端尾部。
-   */
-  function clear(): void {
-    const clearSequence = createClearPreviousSequence();
+  /** 移除当前临时 footer，为 transcript append 或退出让出干净的终端尾部。 */
+  clear(): void {
+    const clearSequence = this.createClearPreviousSequence();
     if (clearSequence !== '') {
-      output.write(`${ansi.hideCursor()}${clearSequence}${ansi.showCursor()}`);
+      this.output.write(`${ansi.hideCursor()}${clearSequence}${ansi.showCursor()}`);
     }
-    previousHeight = 0;
-    previousCursorRow = 0;
+    this.previousHeight = 0;
+    this.previousCursorRow = 0;
   }
 
   /**
-   * 渲染新的 footer 布局，并在完成后把光标放回 composer 的逻辑位置。
-   *
+   * 在一个终端帧中移除旧 footer、追加稳定内容并恢复新 footer。
+   * content 必须以换行结束，使新 footer 从追加内容后的下一行开始；该内容后续不再重绘。
    */
-  function render(options: RenderState): void {
+  append(content: string, options: RenderState): void {
     const layout = renderFooterLayout(options);
 
     let sequence = ansi.hideCursor();
-    sequence += createClearPreviousSequence();
+    sequence += this.createClearPreviousSequence();
+    sequence += content;
     sequence += layout.lines.join('\n');
     sequence += ansi.cursorUp(layout.lines.length - 1 - layout.cursorRow);
     sequence += ansi.carriageReturn();
@@ -78,23 +78,25 @@ export function createFooterRenderer(output: NodeJS.WriteStream = process.stdout
       sequence += ansi.showCursor();
     }
 
-    output.write(sequence);
-    rememberLayout(layout);
+    this.output.write(sequence);
+    this.rememberLayout(layout);
   }
 
-  /**
-   * 在 footer 已经由其他路径完整绘制后，同步记录它的形状，供下一次局部清理使用。
-   */
-  function rememberLayout(layout: FooterLayout): void {
-    previousHeight = layout.lines.length;
-    previousCursorRow = layout.cursorRow;
+  /** 渲染新的 footer 布局，并把光标放回 composer 的逻辑位置。 */
+  render(options: RenderState): void {
+    this.append('', options);
   }
 
-  return {
-    clear,
-    rememberLayout,
-    render
-  };
+  /** 在其他路径完整绘制 footer 后，同步记录其形状供下一次局部清理使用。 */
+  rememberLayout(layout: FooterLayout): void {
+    this.previousHeight = layout.lines.length;
+    this.previousCursorRow = layout.cursorRow;
+  }
+}
+
+/** 创建独立的 footer renderer 实例，保留现有调用入口。 */
+export function createFooterRenderer(output: NodeJS.WriteStream = process.stdout): FooterRenderer {
+  return new DefaultFooterRenderer(output);
 }
 
 /**

@@ -28,10 +28,12 @@ import type {AppController} from '../types/app';
 import type {CommandSurface} from '../types/command';
 import type {DebugContext} from '../debug/debug-context';
 import type {LifecycleHookDispatcher} from '../types/hooks';
-import type {AppendRecordOptions, RenderState} from '../types/render';
+import type {RenderState} from '../types/render';
 import type {TranscriptRecord} from '../types/transcript';
 import type {UsageStore} from '../types/usage';
 import type {AssistantTurnSubmission} from './composer-submission-controller';
+
+const ACTIVITY_REDRAW_INTERVAL_MS = 100;
 
 /**
  * 创建 app 编排控制器，串联真实 terminal、input、render 和 agent runtime。
@@ -53,6 +55,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
   const toolResultStore = createToolResultStore({cwd: () => appContext.getCurrentCwd()});
   let started = false;
   let initialRenderComplete = false;
+  let activityTimer: NodeJS.Timeout | null = null;
   let activeShellController: AbortController | null = null;
   let mcpDiagnosticSurface: CommandSurface | null = null;
   let referenceErrorSurface: CommandSurface | null = null;
@@ -64,13 +67,9 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
       pending: appContext.turnContext.getPending(),
       responding: appContext.turnContext.responding
     }),
-    appendVisible: appendBtwRecords,
-    renderFooter,
+    render: (finalizeRecord) => render(finalizeRecord, 'btw'),
+    renderRecords: (records) => renderRecords(records, 'btw'),
     repaint: renderResizeRecovery
-  });
-  // 活动重绘 timer 完全下沉到 turnContext；spinner 与高频 pending 共用这一刷新时钟。
-  appContext.turnContext.configureSpinnerTimer({
-    onTick: () => renderFooter()
   });
 
   /**
@@ -83,7 +82,9 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     const modalSurface = highPrioritySurface || (btwConversation.isActive() ? null : referenceErrorSurface || mcpDiagnosticSurface);
     const commandSurface = modalSurface || (btwConversation.isActive() ? null : commandRuntime.getSurface());
     const base = appContext.createRenderState({commandSurface, toolApproval});
-    return btwConversation.isActive() ? btwConversation.createRenderState(base) : base;
+    return btwConversation.isActive()
+      ? btwConversation.createRenderState({...base, streamingOwner: 'btw'})
+      : {...base, streamingOwner: 'main'};
   }
 
   /**
@@ -95,6 +96,8 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
       interactionMode: appContext.getInteractionMode()
     });
     activeShellController?.abort();
+    if (activityTimer) clearInterval(activityTimer);
+    activityTimer = null;
     btwConversation.close();
     appContext.conversationReferenceContext.clear();
     userConfigContext.close();
@@ -107,76 +110,61 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     process.exit(0);
   }
 
-  /**
-   * 只重绘 footer 临时区域，不重新输出 banner 或 transcript。
-   */
-  function renderFooter(): void {
-    renderer.renderFooter(createRenderState());
+  /** 提交流式稳定前缀、按需完成当前流式 record，并重绘当前可见 owner 的 footer。 */
+  function render(
+    finalizeRecord?: Extract<TranscriptRecord, {role: 'assistant' | 'reasoning_summary'}>,
+    owner?: 'main' | 'btw'
+  ): void {
+    const visibleOwner = btwConversation.isActive() ? 'btw' : 'main';
+    renderer.render(createRenderState(), owner === undefined || owner === visibleOwner ? finalizeRecord : undefined);
     rememberTerminalSize();
   }
 
-  /**
-   * transcript 发生事实新增时，交给 app renderer 统一执行 clear footer / append / redraw。
-   */
-  function appendRecord(record: TranscriptRecord): void {
-    debug.emit('transcript_append', {
-      role: record.role,
-      text: summarizeText(record.text, 0)
-    });
-    if (btwConversation.isActive()) {
-      // BTW 活跃时，只重绘 footer，不添加会话记录到主 transcript。
-      renderFooter();
+  /** 常驻 timer 仅在当前可见 owner 有计时活动时触发统一渲染。 */
+  function renderTimedActivity(): void {
+    const hasTimedActivity = btwConversation.isActive()
+      ? btwConversation.hasTimedActivity()
+      : appContext.turnContext.hasTimedActivity();
+    if (hasTimedActivity) render();
+  }
+
+  /** 渲染指定 owner 已经写入会话状态的普通 records，并保留 tool pair 批处理。 */
+  function renderRecords(records: TranscriptRecord[], owner: 'main' | 'btw'): void {
+    if (records.length === 0) return;
+    if (owner === 'main') {
+      debug.emit('transcript_render_batch', {
+        count: records.length,
+        roles: records.map((record) => record.role)
+      });
+    }
+
+    const visibleOwner = btwConversation.isActive() ? 'btw' : 'main';
+    if (owner !== visibleOwner) {
+      render();
       return;
     }
-    renderer.appendRecord({
-      record,
-      ...createRenderState()
-    } as AppendRecordOptions);
+
+    renderer.renderRecords({records, ...createRenderState()});
     rememberTerminalSize();
   }
 
   /**
-   * transcript 成组新增时一次性 append，确保相邻 tool call/result 可共享渲染状态。
-   */
-  function appendRecords(records: TranscriptRecord[]): void {
-    debug.emit('transcript_append_batch', {
-      count: records.length,
-      roles: records.map((record) => record.role)
-    });
-    if (btwConversation.isActive()) {
-      // BTW 活跃时，只重绘 footer，不添加会话记录到主 transcript。
-      renderFooter();
-      return;
-    }
-    renderer.appendRecords({
-      records,
-      ...createRenderState()
-    });
-    rememberTerminalSize();
-  }
-
-  /** 仅把 BTW 临时 records 追加到当前 BTW 投影，不触碰主 transcript。 */
-  function appendBtwRecords(records: TranscriptRecord[]): void {
-    if (!btwConversation.isActive() || records.length === 0) return;
-    renderer.appendRecords({records, ...createRenderState()});
-    rememberTerminalSize();
-  }
-
-  /**
-   * 当列宽变化时执行 destructive full replay，并把 footer renderer 与当前可见 footer 同步。
+   * 当列宽变化时清屏重绘完整界面，并同步 footer 的当前布局。
    */
   function renderResizeRecovery(): void {
     debug.emit('resize_recovery', {
       recordCount: appContext.transcriptContext.records.length,
       terminalSize: terminal.getSize()
     });
-    // 进入btw时使用destructive render，效果类似于新开了一个窗口，同时使用btw controller内存中保存的records
+    const btwActive = btwConversation.isActive();
+    const renderState = createRenderState();
+    // BTW 活跃时重画临时会话，否则重画主会话；流式显示进度由 renderer 同步。
     renderer.renderDestructive({
-      bannerContext: btwConversation.isActive()
+      bannerContext: btwActive
         ? {...appContext.renderContext.createBannerContext(), variant: 'btw', parentActivity: btwConversation.getParentActivity()}
         : appContext.renderContext.createBannerContext(),
-      records: btwConversation.isActive() ? btwConversation.getRecords() : appContext.transcriptContext.records,
-      ...createRenderState()
+      records: btwActive ? btwConversation.getRecords() : appContext.transcriptContext.records,
+      ...renderState
     });
     rememberTerminalSize();
   }
@@ -191,7 +179,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
   }
 
   /**
-   * 根据终端尺寸变化决定是否需要 destructive replay；行数压缩时旧 footer 可能已进入 scrollback。
+   * 根据终端尺寸变化决定是否需要清屏重绘；行数压缩时旧 footer 可能已经进入终端历史区。
    */
   function handleResize(): void {
     const terminalSize = terminal.getSize();
@@ -206,7 +194,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
 
   const commandHost = createCommandHost({
     appContext,
-    appendRecord,
+    renderRecords: (records) => renderRecords(records, 'main'),
     btw: {
       open: (initialQuestion) => btwConversation.open(initialQuestion),
       handleEvent: (event) => btwConversation.handleEvent(event),
@@ -215,21 +203,21 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     exit,
     hooks,
     mcpManager,
-    renderFooter,
+    render,
     renderResizeRecovery,
     usageStore,
     userConfigContext
   });
-  const toolApproval = new ToolApprovalContext(() => renderFooter());
+  const toolApproval = new ToolApprovalContext(() => render());
   const toolApprovalReviewer = createToolApprovalReviewer({
     cwd: () => appContext.getCurrentCwd(),
     debug,
     usageStore
   });
-  const userQuestion = new UserQuestionContext(() => renderFooter());
+  const userQuestion = new UserQuestionContext(() => render());
   const filePicker = new FilePickerContext(appContext.composerContext.composer, {
     cwd: () => appContext.getCurrentCwd(),
-    onChange: () => renderFooter(),
+    onChange: () => render(),
     rows: () => terminal.getSize().rows
   });
   const slashCommandHandlers = createDefaultSlashCommandHandlers(
@@ -263,10 +251,9 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
         userQuestion,
         ...submission,
         debug,
-        appendRecord,
-        appendRecords,
-        hooks,
-        renderFooter
+        renderRecords: (records) => renderRecords(records, 'main'),
+        render: (finalizeRecord) => render(finalizeRecord, 'main'),
+        hooks
       });
     },
     submitShellCommand,
@@ -278,7 +265,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
         dismissHint: 'Enter/Esc 关闭'
       };
     },
-    renderFooter
+    render
   });
   const inputController = new InputEventController({
     appContext,
@@ -304,7 +291,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     interruptActiveShellCommand,
     interruptActiveTurn,
     exit,
-    renderFooter
+    render
   });
 
   appContext.configureSlashSuggestions(
@@ -322,7 +309,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     activeShellController = shellController;
     appContext.turnContext.beginShellCommand(command);
     appContext.turnContext.startSpinner('working');
-    renderFooter();
+    render();
 
     try {
       const result = await runBashCommand({
@@ -336,9 +323,9 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
         timeoutMs: null,
         toolResultStore: includeInContext ? toolResultStore : undefined
       });
-      appendRecord(appContext.turnContext.finishShellCommand(result, includeInContext));
+      renderRecords([appContext.turnContext.finishShellCommand(result, includeInContext)], 'main');
     } catch (error: unknown) {
-      appendRecord(appContext.turnContext.failShellCommand(error));
+      renderRecords([appContext.turnContext.failShellCommand(error)], 'main');
     } finally {
       if (activeShellController === shellController) {
         activeShellController = null;
@@ -368,12 +355,16 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
       return false;
     }
 
+    if (result.reasoningRecord) {
+      render(result.reasoningRecord, 'main');
+    }
+
     if (result.partialRecord) {
-      appendRecord(result.partialRecord);
+      render(result.partialRecord, 'main');
     }
 
     if (result.noticeRecord) {
-      appendRecord(result.noticeRecord);
+      renderRecords([result.noticeRecord], 'main');
     }
     hooks.emit('assistant_turn_cancelled', {
       interactionMode: appContext.getInteractionMode(),
@@ -409,7 +400,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
         if (settingsRefresh?.reasoningVisibilityChanged) {
           renderResizeRecovery();
         } else if (modelChanged || settingsRefresh?.slashSuggestionLimitChanged) {
-          renderFooter();
+          render();
         }
       });
       userConfigContext.startWatching(
@@ -436,11 +427,12 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     });
     rememberTerminalSize();
     initialRenderComplete = true;
+    activityTimer = setInterval(renderTimedActivity, ACTIVITY_REDRAW_INTERVAL_MS);
 
     if (mcpManager) {
       appContext.setMcpBootstrapStatus('initializing');
       appContext.turnContext.startSpinner('working');
-      renderFooter();
+      render();
       void mcpManager.bootstrap().catch((error: unknown) => {
         mcpDiagnosticSurface = {kind: 'info', title: 'MCP initialization', lines: [`bootstrap: ${sanitizeMcpError(error)}`], dismissHint: 'Enter/Esc close'};
       }).then(() => {
@@ -453,7 +445,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
           mcpDiagnosticSurface = {kind: 'info', title: 'MCP initialization', lines: diagnostics.map((diagnostic) => `${diagnostic.serverName}: ${diagnostic.message}`), dismissHint: 'Enter/Esc close'};
         }
 
-        renderFooter();
+        render();
       });
     } else {
       appContext.setMcpBootstrapStatus('ready');
@@ -472,7 +464,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     exit,
     handleChunk: inputController.handleChunk,
     handleEvent: inputController.handleEvent,
-    renderFooter,
+    render,
     renderResizeRecovery,
     start
   };

@@ -714,7 +714,7 @@ export type CommandHostApp = {
     fail(error: unknown): void;
   };
   ui: {
-    renderFooter(): void;
+    render(): void;
     renderResizeRecovery(): void;
     exit(): void;
   };

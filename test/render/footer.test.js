@@ -3171,6 +3171,23 @@ test('renderFooterLayout renders confirm command surfaces by kind', () => {
   assert.ok(!plainLines.some((line) => line === '> /clear'));
 });
 
+test('renderFooterLayout only budgets the streaming tail after a stable prefix was committed', () => {
+  const streamingText = ['alpha', '', 'beta', '', 'gamma'].join('\n');
+  const layout = renderFooterLayout({
+    composer: createComposer('draft input'),
+    pending: {kind: 'streaming', text: streamingText, historyText: 'alpha\n\nbeta\n'},
+    statusLine: {...DEFAULT_STATUS_LINE, mode: 'streaming', keyHint: 'Esc 中断'},
+    rows: 14,
+    width: 80
+  });
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+
+  assert.equal(plainLines.some((line) => line.includes('alpha')), false);
+  assert.equal(plainLines.some((line) => line.includes('beta')), false);
+  assert.equal(plainLines.some((line) => line.includes('gamma')), true);
+  assert.equal(plainLines.some((line) => line.startsWith('◇ gamma')), false);
+});
+
 test('renderFooterLayout keeps long streaming pending preview bounded above composer', () => {
   const streamingText = Array.from({ length: 20 }, (_value, index) => `line ${index + 1}`).join('\n');
   const layout = renderFooterLayout({

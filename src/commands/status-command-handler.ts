@@ -119,7 +119,7 @@ export class StatusCommandHandler implements CommandHandler<StatusCommandData> {
       data,
       surface: createStatusSurface(data.snapshot, data.usage, data.deepseekBalance)
     });
-    host.ui.renderFooter();
+    host.ui.render();
   }
 }
 

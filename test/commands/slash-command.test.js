@@ -379,7 +379,7 @@ function createFakeHost(options = {}) {
       }
     },
     ui: {
-      renderFooter() {
+      render() {
         calls.renders += 1;
       },
       renderResizeRecovery() {

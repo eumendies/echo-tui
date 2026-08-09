@@ -95,6 +95,29 @@ export function containsMarkdownTable(lines: string[]): boolean {
 }
 
 /**
+ * 判断一行是否可能在后续 token 到达后成为 Markdown table delimiter。
+ * streaming 边界用它保留前一行 header candidate，避免半成品 delimiter 让已提交段落变成 table。
+ */
+export function isPotentialMarkdownTableDelimiter(line: string | undefined): boolean {
+  if (line !== undefined && line.trim() === '') {
+    return true;
+  }
+
+  const segments = parseTableSegments(line);
+  if (!segments || segments.length === 0) {
+    return false;
+  }
+
+  return segments.every((segment) => /^:?-*:?$/.test(segment.trim()));
+}
+
+/** 判断一行是否具备 pipe table header 的基本形状。 */
+export function isMarkdownTableRowCandidate(line: string | undefined): boolean {
+  const segments = parseTableSegments(line);
+  return Boolean(segments && segments.length > 0 && segments.some((segment) => segment.trim() !== ''));
+}
+
+/**
  * 渲染 Markdown table 为无外框 Unicode 内部分隔线表格。
  *
  */

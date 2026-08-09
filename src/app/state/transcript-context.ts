@@ -255,7 +255,7 @@ class TranscriptContext {
   /**
    * 向当前 transcript 追加单条记录并立即同步当前 session journal。
    */
-  appendRecord(record: TranscriptRecord): TranscriptRecord {
+  appendRecord<Record extends TranscriptRecord>(record: Record): Record {
     this.appendRecords([record]);
     return record;
   }

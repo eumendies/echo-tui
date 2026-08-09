@@ -35,7 +35,7 @@ function createHarness(options = {}) {
     showReferenceError(error) {
       errors.push(error);
     },
-    renderFooter() {
+    render() {
       renders += 1;
     }
   });

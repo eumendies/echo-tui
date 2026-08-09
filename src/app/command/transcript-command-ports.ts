@@ -12,7 +12,7 @@ type TranscriptCommandContext = Pick<AppContext,
 
 type TranscriptCommandPortOptions = {
   appContext: TranscriptCommandContext;
-  appendRecord: (record: TranscriptRecord) => void;
+  renderRecords: (records: TranscriptRecord[]) => void;
   renderResizeRecovery: () => void;
 };
 
@@ -20,7 +20,7 @@ type TranscriptCommandPortOptions = {
  * 创建 transcript 查询、追加、清理和恢复端口。
  */
 function createTranscriptCommandPort(options: TranscriptCommandPortOptions): CommandHostApp['transcript'] {
-  const {appContext, appendRecord, renderResizeRecovery} = options;
+  const {appContext, renderRecords, renderResizeRecovery} = options;
 
   return {
     clear() {
@@ -42,7 +42,7 @@ function createTranscriptCommandPort(options: TranscriptCommandPortOptions): Com
       return didLoad;
     },
     append(record: TranscriptRecord) {
-      appendRecord(appContext.transcriptContext.appendRecord(record));
+      renderRecords([appContext.transcriptContext.appendRecord(record)]);
     },
     listCopyableRecords() {
       return createCopyableRecords(appContext.transcriptContext.records);

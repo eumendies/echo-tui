@@ -916,40 +916,48 @@ test('AppContext keeps plan status line mode while reasoning streams', () => {
   assert.deepEqual(renderState.pending, {kind: 'reasoning_streaming', text: 'thinking'});
 });
 
-test('TurnContext commits completed reasoning without clearing assistant streaming draft', () => {
+test('TurnContext finalizes reasoning without clearing assistant streaming draft', () => {
   const context = createContext();
 
   context.turnContext.setReasoningStreamingPending('thinking');
   assert.deepEqual(context.turnContext.getPending(), {kind: 'reasoning_streaming', text: 'thinking'});
-  context.turnContext.appendReasoningSummary('thinking');
+  const completedRecord = context.turnContext.finalizeReasoning('thinking');
+  assert.equal(completedRecord.role, 'reasoning_summary');
   assert.equal(context.turnContext.getPending(), null);
 
   context.turnContext.setStreamingPending('draft');
-  const fallbackRecord = context.turnContext.appendReasoningSummary('fallback reasoning');
+  context.turnContext.setReasoningStreamingPending('fallback reasoning');
+  const fallbackRecord = context.turnContext.finalizeReasoning('fallback reasoning');
   assert.equal(fallbackRecord.role, 'reasoning_summary');
   assert.deepEqual(context.turnContext.getPending(), {kind: 'streaming', text: 'draft'});
 });
 
-test('TurnContext activity clock projects the latest accumulated shell output once per tick', async () => {
+test('TurnContext keeps only the latest assistant and reasoning drafts', () => {
   const context = createContext();
-  const renderedPending = [];
 
-  context.turnContext.configureSpinnerTimer({
-    onTick() {
-      renderedPending.push(context.createRenderState().pending);
-    }
+  context.turnContext.setReasoningStreamingPending('thinking');
+  assert.deepEqual(context.turnContext.getPending(), {kind: 'reasoning_streaming', text: 'thinking'});
+
+  context.turnContext.setStreamingPending('alpha\n\nbeta');
+  assert.deepEqual(context.turnContext.getPending(), {
+    kind: 'streaming',
+    text: 'alpha\n\nbeta',
+    reasoningText: 'thinking'
   });
+});
+
+test('TurnContext accumulates shell output for the app activity clock', () => {
+  const context = createContext();
+
   context.turnContext.beginShellCommand('printf ab');
   context.turnContext.startSpinner('working');
   context.turnContext.appendShellOutputPending({stream: 'stdout', chunk: 'a'});
   context.turnContext.appendShellOutputPending({stream: 'stdout', chunk: 'b'});
 
-  assert.equal(renderedPending.length, 0);
-  await new Promise((resolve) => setTimeout(resolve, 130));
+  assert.equal(context.turnContext.hasTimedActivity(), true);
+  assert.deepEqual(context.createRenderState().pending, {kind: 'shell_output', command: 'printf ab', output: 'ab'});
   context.turnContext.stopSpinner();
-
-  assert.ok(renderedPending.length >= 1);
-  assert.deepEqual(renderedPending.at(-1), {kind: 'shell_output', command: 'printf ab', output: 'ab'});
+  assert.equal(context.turnContext.hasTimedActivity(), false);
 });
 
 test('AppContext keeps plan status line mode while waiting for first assistant token', () => {

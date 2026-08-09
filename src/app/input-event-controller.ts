@@ -32,7 +32,7 @@ type InputEventControllerOptions = {
   interruptActiveShellCommand(): boolean; // 尝试中断当前 shell mode 进程。
   interruptActiveTurn(): boolean; // 尝试中断当前 assistant turn。
   exit(): void; // 执行 app 退出与终端清理。
-  renderFooter(): void; // 瞬时输入状态变化后重绘 footer。
+  render(): void; // 瞬时输入状态变化后刷新当前可见投影。
 };
 
 /**
@@ -51,7 +51,7 @@ class InputEventController {
   private readonly interruptActiveShellCommand: () => boolean;
   private readonly interruptActiveTurn: () => boolean;
   private readonly exit: () => void;
-  private readonly renderFooter: () => void;
+  private readonly render: () => void;
   private readonly keyParser = createKeyParser();
 
   constructor(options: InputEventControllerOptions) {
@@ -67,7 +67,7 @@ class InputEventController {
     this.interruptActiveShellCommand = options.interruptActiveShellCommand;
     this.interruptActiveTurn = options.interruptActiveTurn;
     this.exit = options.exit;
-    this.renderFooter = options.renderFooter;
+    this.render = options.render;
   }
 
   /**
@@ -140,19 +140,19 @@ class InputEventController {
 
       if (event.type === INPUT_EVENTS.ESCAPE || event.type === INPUT_EVENTS.SUBMIT) {
         this.localSurface.dismiss();
-        this.renderFooter();
+        this.render();
       }
       return undefined;
     }
 
     if (this.appContext.handleModelTuningEvent(event)) {
-      this.renderFooter();
+      this.render();
       return undefined;
     }
 
     if (event.type === INPUT_EVENTS.TOGGLE_MODEL_TUNING) {
       this.appContext.openModelTuning();
-      this.renderFooter();
+      this.render();
       return undefined;
     }
 
@@ -169,7 +169,7 @@ class InputEventController {
     }
 
     if (this.appContext.getMcpBootstrapStatus() !== 'initializing' && this.appContext.handleSlashSuggestionEvent(event)) {
-      this.renderFooter();
+      this.render();
       return undefined;
     }
 
@@ -177,13 +177,13 @@ class InputEventController {
       if (!this.appContext.turnContext.responding && this.appContext.getMcpBootstrapStatus() !== 'initializing') {
         this.appContext.cycleInteractionMode();
       }
-      this.renderFooter();
+      this.render();
       return undefined;
     }
 
     if (composerOps.applyComposerEditEvent(this.appContext.composerContext.composer, event)) {
       this.appContext.composerContext.leaveHistoryBrowsing();
-      this.renderFooter();
+      this.render();
       return undefined;
     }
 
@@ -192,28 +192,28 @@ class InputEventController {
         if (!this.appContext.composerContext.browseHistory(-1)) {
           composerOps.moveUp(this.appContext.composerContext.composer);
         }
-        this.renderFooter();
+        this.render();
         return undefined;
       case INPUT_EVENTS.MOVE_DOWN:
         if (!this.appContext.composerContext.browseHistory(1)) {
           composerOps.moveDown(this.appContext.composerContext.composer);
         }
-        this.renderFooter();
+        this.render();
         return undefined;
       case INPUT_EVENTS.INSERT_NEWLINE:
         this.appContext.composerContext.leaveHistoryBrowsing();
         composerOps.insertNewline(this.appContext.composerContext.composer);
-        this.renderFooter();
+        this.render();
         return undefined;
       case INPUT_EVENTS.ESCAPE:
         if (this.appContext.pendingMessageContext.getPending()) {
           this.appContext.pendingMessageContext.clear();
-          this.renderFooter();
+          this.render();
           return undefined;
         }
         if (this.appContext.conversationReferenceContext.getPending()) {
           this.appContext.conversationReferenceContext.clearPending();
-          this.renderFooter();
+          this.render();
           return undefined;
         }
         if (this.interruptActiveShellCommand()) {

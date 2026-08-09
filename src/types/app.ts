@@ -9,7 +9,7 @@ export type AppController = {
   exit: () => void;
   handleChunk: (chunk: string | Buffer) => Promise<void>;
   handleEvent: (event: InputEvent) => Promise<void> | void;
-  renderFooter: () => void;
+  render: () => void;
   renderResizeRecovery: () => void;
   start: () => void;
 };
