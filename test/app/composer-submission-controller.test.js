@@ -53,6 +53,7 @@ test('ComposerSubmissionController consumes one live draft and preserves a later
 
   assert.equal(harness.submissions.length, 1);
   assert.equal(harness.submissions[0].userText, 'first');
+  assert.equal(harness.submissions[0].userRequestText, 'first');
   assert.equal(composerOps.getText(harness.appContext.composerContext.composer), 'later draft');
   assert.deepEqual(harness.commandTexts, ['first']);
 });
@@ -128,6 +129,7 @@ test('ComposerSubmissionController expands pending file mentions at dispatch tim
 
   assert.match(harness.submissions[0].userText, /latest contents/);
   assert.equal(harness.submissions[0].displayText, 'read @note.txt');
+  assert.equal(harness.submissions[0].userRequestText, 'read @note.txt');
 });
 
 test('ComposerSubmissionController forwards image mention attachments', async () => {
@@ -141,6 +143,51 @@ test('ComposerSubmissionController forwards image mention attachments', async ()
 
   assert.equal(harness.submissions[0].attachments.length, 1);
   assert.match(harness.submissions[0].userText, /\[image attached\]/);
+  assert.equal(harness.submissions[0].userRequestText, 'inspect @image.png');
+});
+
+test('ComposerSubmissionController keeps slash command and conversation reference expansion out of userRequestText', async () => {
+  const reference = {
+    projectionMode: 'full',
+    sourcePath: '/tmp/old.jsonl',
+    sourceSessionId: 'old',
+    title: 'Old session',
+    materialText: 'history'
+  };
+  const harness = createHarness({
+    startFromText(text) {
+      return text === '/skill fix it'
+        ? {kind: 'submit_user_message', text: '[Skill Instructions]\nprivate instructions\n[User Request]\nfix it', displayText: text}
+        : {kind: 'not_matched'};
+    },
+    prepareForSubmission: async () => ({ok: true, reference: {...reference, projectionText: 'private referenced history'}})
+  });
+  harness.appContext.setMcpBootstrapStatus('ready');
+  harness.appContext.conversationReferenceContext.setPending(reference);
+  harness.appContext.composerContext.setText('/skill fix it');
+
+  await harness.controller.submitComposer();
+
+  assert.equal(harness.submissions[0].userRequestText, '/skill fix it');
+  assert.match(harness.submissions[0].userText, /private instructions/);
+  assert.match(harness.submissions[0].userText, /private referenced history/);
+});
+
+test('ComposerSubmissionController keeps workflow prompt expansion out of userRequestText', async () => {
+  const harness = createHarness({
+    startFromText(text) {
+      return text === '/review focus security'
+        ? {kind: 'submit_user_message', text: 'long internal review workflow prompt', displayText: text}
+        : {kind: 'not_matched'};
+    }
+  });
+  harness.appContext.setMcpBootstrapStatus('ready');
+  harness.appContext.composerContext.setText('/review focus security');
+
+  await harness.controller.submitComposer();
+
+  assert.equal(harness.submissions[0].userRequestText, '/review focus security');
+  assert.equal(harness.submissions[0].userText, 'long internal review workflow prompt');
 });
 
 test('ComposerSubmissionController restores composer and reports failed reference preparation', async () => {

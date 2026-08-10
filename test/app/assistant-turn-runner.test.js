@@ -141,6 +141,7 @@ function createHarness(options = {}) {
       toolApproval: new ToolApprovalContext(() => {}),
       userQuestion: new UserQuestionContext(() => {}),
       userText: 'hello',
+      userRequestText: 'hello',
       renderRecords(records) {
         appended.push(...records);
       },
@@ -306,6 +307,31 @@ test('runAssistantTurn gives the main agent and auto reviewer the exact same rev
   assert.equal(agentSnapshot, snapshot);
   assert.equal(reviewerSnapshot, snapshot);
   assert.equal(agentSnapshot.revision, 42);
+});
+
+test('runAssistantTurn forwards explicit raw user request to auto reviewer', async () => {
+  const harness = createHarness({appSettings: {
+    agentInstructionFileName: 'AGENTS.md', autoCompressImages: true, compactionThresholdRatio: 0.8,
+    defaultInteractionMode: 'normal', fileEditMode: 'apply_patch', skillCatalogContextRatio: 0.02,
+    showReasoningSummary: true, slashSuggestionMaxVisible: 8, toolApprovalMode: 'auto', toolApprovalModelProfileId: 'reviewer'
+  }});
+  let reviewerInput;
+
+  await runAssistantTurn({
+    ...harness.input,
+    userText: 'fix it\n<selected_files>private expanded content</selected_files>',
+    userRequestText: 'fix @src/a.ts',
+    toolApprovalReviewer: async (input) => { reviewerInput = input; return true; },
+    async runAgent(_session, callbacks) {
+      assert.deepEqual(await callbacks.onToolApprovalRequest({
+        callId: 'patch', toolName: 'apply_patch', argumentsText: JSON.stringify({patch: '*** Begin Patch\n*** Update File: src/a.ts\n@@\n-old\n+new\n*** End Patch'})
+      }), {kind: 'allow_once'});
+      callbacks.onComplete('done');
+    }
+  });
+
+  assert.equal(reviewerInput.currentUserRequest, 'fix @src/a.ts');
+  assert.match(reviewerInput.records[reviewerInput.turnUserRecordIndex].text, /private expanded content/);
 });
 
 test('runAssistantTurn auto no falls back to the existing manual surface and session cache bypasses review', async () => {

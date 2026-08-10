@@ -11,6 +11,7 @@ import type {AppContext} from './state/app-context';
 
 type AssistantTurnSubmission = {
   userText: string; // 最终发送给 agent 的用户文本，已包含文件和会话引用展开结果。
+  userRequestText: string; // 用户在 composer 中实际提交的原始文本，不包含内部 prompt 或文件展开。
   displayText?: string; // transcript 中展示的原始或命令转换前文本。
   metadata?: UserTranscriptMetadata; // 与本次用户消息一起持久化的领域元数据。
   modelProfileIdOverride?: string; // skill 或 workflow 为本轮指定的模型配置。
@@ -173,6 +174,7 @@ class ComposerSubmissionController {
    */
   private async submitDraft(userInput: string, options: SubmitDraftOptions = {}): Promise<boolean> {
     const conversationReference = options.conversationReference;
+    const userRequestText = userInput;
     let userText = userInput;
 
     // 先尝试处理slash command，若命中则直接返回。
@@ -250,6 +252,7 @@ class ComposerSubmissionController {
     // 真正发起请求
     const assistantTurn = this.startAssistantTurn({
       userText,
+      userRequestText,
       displayText,
       metadata: userMetadata,
       modelProfileIdOverride,
