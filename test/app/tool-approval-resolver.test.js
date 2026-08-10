@@ -5,10 +5,9 @@ const {
   TOOL_APPROVAL_SYSTEM_PROMPT,
   createToolApprovalResolver,
   createToolApprovalReviewer,
-  createToolApprovalUserMessage,
-  parseToolApprovalResponse,
-  projectToolApprovalContext
-} = require('../../src/app/tool-approval-resolver');
+  parseToolApprovalResponse
+} = require('../../src/app/tool-approval/resolver');
+const {projectToolApprovalAction} = require('../../src/app/tool-approval/projection');
 const {AgentAbortError} = require('../../src/types/agent');
 const {createRequest} = require('../../src/agent/openai-responses/agent');
 const {createChatRequest} = require('../../src/agent/openai-chat/agent');
@@ -34,30 +33,6 @@ function createDebug() {
   };
 }
 
-test('tool approval context keeps the latest ten eligible text records in order', () => {
-  const records = [
-    {role: 'system', text: 'secret system'},
-    {role: 'shell', text: 'local', command: 'pwd', output: '/tmp', includeInContext: false},
-    {role: 'extension', text: '', extension: {kind: 'unknown', name: 'private', payload: {}}},
-    ...Array.from({length: 11}, (_value, index) => ({role: index % 2 ? 'assistant' : 'user', text: `message-${index}`})),
-    {role: 'shell', text: 'shell text', command: 'git status', output: 'clean', includeInContext: true},
-    {role: 'tool_call', text: 'ignored projection text', toolCallId: '1', toolName: 'read_files', argumentsText: '{"path":"a"}'},
-    {role: 'tool_result', text: 'done', toolCallId: '1', toolName: 'read_files', ok: true, details: {kind: 'generic'}, attachments: [{kind: 'image', dataBase64: 'binary-secret'}]}
-  ];
-
-  const projected = projectToolApprovalContext(records);
-  assert.equal(projected.length, 10);
-  assert.match(projected[0], /message-4/);
-  assert.match(projected.at(-3), /git status/);
-  assert.match(projected.at(-2), /read_files/);
-  assert.match(projected.at(-1), /done/);
-  assert.doesNotMatch(projected.join('\n'), /secret system|local|binary-secret|private/);
-
-  const message = createToolApprovalUserMessage(records, {callId: 'pending', toolName: 'apply_patch', argumentsText: 'RAW PATCH'});
-  assert.match(message, /tool: apply_patch/);
-  assert.match(message, /arguments: RAW PATCH/);
-});
-
 test('tool approval response parser only accepts exact normalized yes', () => {
   assert.equal(parseToolApprovalResponse(' yes\n'), true);
   assert.equal(parseToolApprovalResponse('YES'), true);
@@ -68,6 +43,8 @@ test('tool approval response parser only accepts exact normalized yes', () => {
 
 test('tool approval system prompt defines explicit allow, deny, injection, and uncertainty rules', () => {
   assert.match(TOOL_APPROVAL_SYSTEM_PROMPT, /clearly necessary/i);
+  assert.match(TOOL_APPROVAL_SYSTEM_PROMPT, /trusted clarification answer/i);
+  assert.match(TOOL_APPROVAL_SYSTEM_PROMPT, /cannot independently authorize/i);
   assert.match(TOOL_APPROVAL_SYSTEM_PROMPT, /target and scope/i);
   assert.match(TOOL_APPROVAL_SYSTEM_PROMPT, /destructive, privileged, persistent, or data-disclosure/i);
   assert.match(TOOL_APPROVAL_SYSTEM_PROMPT, /untrusted data/i);
@@ -99,15 +76,20 @@ test('tool approval reviewer uses fixed prompt, records usage, and emits only ha
   });
 
   const allowed = await reviewer({
+    action: projectToolApprovalAction({callId: '1', toolName: 'apply_patch', argumentsText: 'sensitive patch'}, undefined, '/tmp/project'),
     call: {callId: '1', toolName: 'apply_patch', argumentsText: 'sensitive patch'},
+    currentUserRequest: 'update it',
     interactionMode: 'normal',
     modelProfileId: 'reviewer',
-    records: [{role: 'user', text: 'update it'}]
+    records: [{role: 'user', text: 'expanded internal prompt'}],
+    turnUserRecordIndex: 0
   });
 
   assert.equal(allowed, true);
   assert.equal(turns[0][0].text, TOOL_APPROVAL_SYSTEM_PROMPT);
   assert.equal(turns[0][0].role, 'system');
+  assert.match(turns[0][1].text, /\[Trusted current user request\]\nupdate it/);
+  assert.doesNotMatch(turns[0][1].text, /expanded internal prompt/);
   assert.equal(usage[0].model, 'gpt-review');
   assert.equal(debug.events[0].payload.argumentsHash.length > 0, true);
   assert.equal(JSON.stringify(debug.events).includes('sensitive patch'), false);
@@ -137,10 +119,13 @@ test('tool approval reviewer resolves its profile from the active turn snapshot'
   });
 
   assert.equal(await reviewer({
+    action: projectToolApprovalAction({callId: 'same-revision', toolName: 'apply_patch', argumentsText: 'patch'}, undefined, '/tmp/project'),
     call: {callId: 'same-revision', toolName: 'apply_patch', argumentsText: 'patch'},
+    currentUserRequest: 'update',
     interactionMode: 'normal',
     modelProfileId: 'reviewer',
     records: [],
+    turnUserRecordIndex: -1,
     userConfigSnapshot: snapshot
   }), true);
   assert.deepEqual(calls, ['reviewer']);
@@ -152,19 +137,91 @@ test('tool approval reviewer fails closed for config and provider errors but pro
     cwd: '/tmp', debug: debug.context,
     readConfig() { throw new Error('missing profile'); }
   });
-  assert.equal(await failedConfig({call: {callId: '1', toolName: 'x', argumentsText: '{}'}, interactionMode: 'normal', modelProfileId: 'missing', records: []}), false);
+  const failedInput = {
+    action: projectToolApprovalAction({callId: '1', toolName: 'x', argumentsText: '{}'}, undefined, '/tmp'),
+    call: {callId: '1', toolName: 'x', argumentsText: '{}'}, currentUserRequest: 'do it', interactionMode: 'normal', modelProfileId: 'missing', records: [], turnUserRecordIndex: -1
+  };
+  assert.equal(await failedConfig(failedInput), false);
 
   const failedProvider = createToolApprovalReviewer({
     cwd: '/tmp', debug: debug.context, readConfig: () => createConfig(),
     createAgent: () => ({async runTurn() { throw new Error('network'); }})
   });
-  assert.equal(await failedProvider({call: {callId: '1', toolName: 'x', argumentsText: '{}'}, interactionMode: 'normal', modelProfileId: 'reviewer', records: []}), false);
+  assert.equal(await failedProvider({...failedInput, modelProfileId: 'reviewer'}), false);
 
-  const aborted = createToolApprovalReviewer({
+  const controller = new AbortController();
+  const aborting = createToolApprovalReviewer({
     cwd: '/tmp', debug: debug.context, readConfig: () => createConfig(),
-    createAgent: () => ({async runTurn() { throw new AgentAbortError(); }})
+    createAgent: () => ({async runTurn(_records, _callbacks, options) {
+      controller.abort();
+      assert.equal(options.abortSignal.aborted, true);
+      throw new AgentAbortError();
+    }})
   });
-  await assert.rejects(() => aborted({call: {callId: '1', toolName: 'x', argumentsText: '{}'}, interactionMode: 'normal', modelProfileId: 'reviewer', records: []}), /中断/);
+  await assert.rejects(() => aborting({...failedInput, modelProfileId: 'reviewer', abortSignal: controller.signal}), /中断/);
+});
+
+test('tool approval reviewer times out once without treating the deadline as a parent abort', async () => {
+  const debug = createDebug();
+  let calls = 0;
+  let reviewerSignal;
+  const reviewer = createToolApprovalReviewer({
+    cwd: '/tmp',
+    debug: debug.context,
+    reviewTimeoutMs: 5,
+    readConfig: () => createConfig(),
+    createAgent: () => ({runTurn(_records, _callbacks, options) {
+      calls += 1;
+      reviewerSignal = options.abortSignal;
+      return new Promise(() => {});
+    }})
+  });
+  const call = {callId: 'slow', toolName: 'run_bash_command', argumentsText: '{"command":"rm old"}'};
+  const allowed = await reviewer({
+    action: projectToolApprovalAction(call, undefined, '/tmp'),
+    call,
+    currentUserRequest: 'remove old',
+    interactionMode: 'normal',
+    modelProfileId: 'reviewer',
+    records: [{role: 'user', text: 'remove old'}],
+    turnUserRecordIndex: 0
+  });
+
+  assert.equal(allowed, false);
+  assert.equal(calls, 1);
+  assert.equal(reviewerSignal.aborted, true);
+  assert.equal(debug.events.at(-1).payload.result, 'timeout');
+});
+
+test('tool approval reviewer isolates debug and usage failures without leaking content', async () => {
+  const events = [];
+  const sensitive = 'private-action-body';
+  const call = {callId: 'safe', toolName: 'future_write', argumentsText: sensitive};
+  const reviewer = createToolApprovalReviewer({
+    cwd: '/tmp',
+    debug: {
+      enabled: true, logPath: null, close() {},
+      emit(event, payload) {
+        events.push({event, payload});
+        throw new Error('debug sink failed');
+      }
+    },
+    readConfig: () => createConfig(),
+    createAgent: () => ({async runTurn() { return {draft: 'yes', toolCalls: []}; }}),
+    usageStore: {appendEvent() { throw new Error('usage failed with secret'); }, listDailyUsage() { return []; }}
+  });
+
+  assert.equal(await reviewer({
+    action: projectToolApprovalAction(call, undefined, '/tmp'),
+    call,
+    currentUserRequest: 'write it',
+    interactionMode: 'normal',
+    modelProfileId: 'reviewer',
+    records: [],
+    turnUserRecordIndex: -1
+  }), true);
+  assert.equal(JSON.stringify(events).includes(sensitive), false);
+  assert.equal(JSON.stringify(events).includes('usage failed with secret'), false);
 });
 
 test('all provider request builders omit tools and thinking when reviewer effort is none', () => {
@@ -192,9 +249,13 @@ test('tool approval resolver prioritizes session grants and maps auto decisions'
   const reviews = [];
   let current = true;
   const resolver = createToolApprovalResolver({
+    currentUserRequest: 'update it',
+    cwd: '/tmp/project',
+    debug: createDebug().context,
     interactionMode: 'normal',
     isCurrentTurn: () => current,
     getRecords: () => [{role: 'user', text: 'update it'}],
+    turnUserRecordIndex: 0,
     settings: {mode: 'auto', modelProfileId: 'reviewer'},
     reviewer: async (input) => {
       reviews.push(input);
@@ -224,4 +285,30 @@ test('tool approval resolver prioritizes session grants and maps auto decisions'
     kind: 'deny', message: 'Tool execution was interrupted.'
   });
   assert.equal(reviews.length, 2);
+});
+
+test('tool approval resolver sends oversized actions directly to manual approval', async () => {
+  const debug = createDebug();
+  let reviews = 0;
+  let manualCalls = 0;
+  const resolver = createToolApprovalResolver({
+    currentUserRequest: 'run it', cwd: '/tmp', debug: debug.context,
+    interactionMode: 'normal', isCurrentTurn: () => true,
+    getRecords: () => [{role: 'user', text: 'run it'}], turnUserRecordIndex: 0,
+    settings: {mode: 'auto', modelProfileId: 'reviewer'},
+    reviewer: async () => { reviews += 1; return true; },
+    toolApproval: {
+      getCachedDecision() { return null; },
+      requestManual() { manualCalls += 1; return Promise.resolve({kind: 'deny'}); }
+    }
+  });
+
+  const decision = await resolver.request({
+    callId: 'large', toolName: 'mcp__docs__write', argumentsText: 'x'.repeat(9_000)
+  });
+  assert.deepEqual(decision, {kind: 'deny'});
+  assert.equal(reviews, 0);
+  assert.equal(manualCalls, 1);
+  assert.deepEqual(debug.events[0].payload.actionProjection, 'manual_only');
+  assert.equal(JSON.stringify(debug.events).includes('x'.repeat(100)), false);
 });

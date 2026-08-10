@@ -1,7 +1,7 @@
 import {isAbortError} from '../types/agent';
 import {summarizeText} from '../debug/debug-context';
 import {emitToolApprovalRequestHook, emitToolApprovalResponseHook} from '../hooks/lifecycle-events';
-import {createToolApprovalResolver} from './tool-approval-resolver';
+import {createToolApprovalResolver} from './tool-approval/resolver';
 
 import type {AgentCallbacks, ReasoningEffort, RunAgent, ToolApprovalDecision} from '../types/agent';
 import type {DebugContext} from '../debug/debug-context';
@@ -10,7 +10,7 @@ import type {ToolApprovalRequest, ToolCall, ToolResultAttachment} from '../types
 import type {TranscriptRecord, UserTranscriptMetadata} from '../types/transcript';
 import type {AppContext} from './state/app-context';
 import type {ToolApprovalContext} from './state/tool-approval-context';
-import type {ToolApprovalReviewer} from './tool-approval-resolver';
+import type {ToolApprovalReviewer} from './tool-approval/resolver';
 import type {UserQuestionContext} from './state/user-question-context';
 
 type AssistantTurnRunnerInput = {
@@ -19,6 +19,7 @@ type AssistantTurnRunnerInput = {
   toolApproval: ToolApprovalContext;
   userQuestion: UserQuestionContext;
   userText: string;
+  userRequestText: string; // 展开前的用户原始输入，不能退化为 provider-facing 展开文本。
   displayText?: string;
   metadata?: UserTranscriptMetadata;
   modelProfileIdOverride?: string;
@@ -42,6 +43,7 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
     toolApproval,
     userQuestion,
     userText,
+    userRequestText,
     displayText,
     metadata,
     modelProfileIdOverride,
@@ -64,6 +66,7 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
   });
   // thinking 和 streaming 都只进入 pending preview，完成或 partial 失败后才正式追加 assistant block。
   const turn = appContext.beginAssistantTurn(modelProfileIdOverride, reasoningEffortOverride);
+  const turnUserRecordIndex = appContext.transcriptContext.getRecords().length - 1;
   const isCurrentTurn = () => appContext.turnContext.isCurrentAssistantTurn(turn);
   /** 只有创建人工审批 surface 时才派发交互式审批 lifecycle hooks。 */
   async function requestManualApproval(call: ToolCall, request?: ToolApprovalRequest): Promise<ToolApprovalDecision> {
@@ -75,11 +78,15 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
   }
   const toolApprovalResolver = createToolApprovalResolver({
     abortSignal: turn.abortSignal,
+    currentUserRequest: userRequestText,
+    cwd: () => appContext.getCurrentCwd(),
+    debug,
     getRecords: () => appContext.transcriptContext.getRecords(),
     interactionMode,
     isCurrentTurn,
     reviewer: input.toolApprovalReviewer,
     settings: toolApprovalSettings,
+    turnUserRecordIndex,
     userConfigSnapshot,
     toolApproval: {
       getCachedDecision: (call) => toolApproval.getCachedDecision(call),

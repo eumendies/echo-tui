@@ -21,7 +21,7 @@ import {FilePickerContext} from './state/file-picker-context';
 import {ToolApprovalContext} from './state/tool-approval-context';
 import {UserQuestionContext} from './state/user-question-context';
 import {BtwConversationController} from './btw-conversation-controller';
-import {createToolApprovalReviewer} from './tool-approval-resolver';
+import {createToolApprovalReviewer} from './tool-approval/resolver';
 
 import type {RunAgent} from '../types/agent';
 import type {AppController} from '../types/app';
