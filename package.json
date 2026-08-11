@@ -1,6 +1,6 @@
 {
   "name": "@eumendies/echo-tui",
-  "version": "1.3.3",
+  "version": "1.3.4",
   "description": "Node.js terminal TUI prototype with real streaming LLM support.",
   "type": "commonjs",
   "bin": {
