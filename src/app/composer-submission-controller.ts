@@ -11,6 +11,7 @@ import type {AppContext} from './state/app-context';
 
 type AssistantTurnSubmission = {
   userText: string; // 最终发送给 agent 的用户文本，已包含文件和会话引用展开结果。
+  userRequestText: string; // 用户在 composer 中实际提交的原始文本，不包含内部 prompt 或文件展开。
   displayText?: string; // transcript 中展示的原始或命令转换前文本。
   metadata?: UserTranscriptMetadata; // 与本次用户消息一起持久化的领域元数据。
   modelProfileIdOverride?: string; // skill 或 workflow 为本轮指定的模型配置。
@@ -36,7 +37,7 @@ type ComposerSubmissionControllerOptions = {
   startAssistantTurn(submission: AssistantTurnSubmission): Promise<void>; // 进入真实 assistant turn 生命周期的领域边界。
   submitShellCommand(command: string): Promise<void>; // 在 shell mode 中执行已消费的 composer 文本。
   showReferenceError(error: string): void; // 展示引用准备失败的本地 surface。
-  renderFooter(): void; // 提交被阻止或瞬时状态变化时重绘 footer。
+  render(): void; // 提交被阻止或瞬时状态变化时刷新当前可见投影。
 };
 
 /**
@@ -49,7 +50,7 @@ class ComposerSubmissionController {
   private readonly startAssistantTurn: (submission: AssistantTurnSubmission) => Promise<void>;
   private readonly submitShellCommand: (command: string) => Promise<void>;
   private readonly showReferenceError: (error: string) => void;
-  private readonly renderFooter: () => void;
+  private readonly render: () => void;
   private startingPendingTurn = false;
 
   constructor(options: ComposerSubmissionControllerOptions) {
@@ -59,7 +60,7 @@ class ComposerSubmissionController {
     this.startAssistantTurn = options.startAssistantTurn;
     this.submitShellCommand = options.submitShellCommand;
     this.showReferenceError = options.showReferenceError;
-    this.renderFooter = options.renderFooter;
+    this.render = options.render;
   }
 
   /**
@@ -68,7 +69,7 @@ class ComposerSubmissionController {
   async submitComposer(): Promise<void> {
     // pending 正在抢占下一轮，或其他交互 surface/初始化流程已接管输入，此次 Enter 不提交 composer。
     if (this.startingPendingTurn || this.command.hasActiveSession() || this.appContext.conversationReferenceContext.isPreparing() || this.appContext.getMcpBootstrapStatus() === 'initializing') {
-      this.renderFooter();
+      this.render();
       return;
     }
 
@@ -82,7 +83,7 @@ class ComposerSubmissionController {
 
     // 非 assistant 流程仍占用 response lock，或 composer 没有内容时，不创建新提交。
     if ((!hasActiveAssistantTurn && this.appContext.turnContext.responding) || composerOps.isEmpty(this.appContext.composerContext.composer)) {
-      this.renderFooter();
+      this.render();
       return;
     }
 
@@ -95,14 +96,14 @@ class ComposerSubmissionController {
       // 已允许的响应期命令已立即启动，只消费本次 composer，不改动已有 pending。
       if (commandResult.kind === 'handled') {
         this.consumeComposerInput(userInput);
-        this.renderFooter();
+        this.render();
         return;
       }
     }
 
     // active turn 的 pending 单槽已被占用时，保留当前 composer 草稿，避免覆盖旧消息。
     if (hasActiveAssistantTurn && !this.appContext.pendingMessageContext.enqueue(userInput)) {
-      this.renderFooter();
+      this.render();
       return;
     }
 
@@ -110,7 +111,7 @@ class ComposerSubmissionController {
 
     // active turn 中的普通输入已成功排队，本次不启动新的 assistant turn。
     if (hasActiveAssistantTurn) {
-      this.renderFooter();
+      this.render();
       return;
     }
 
@@ -173,6 +174,7 @@ class ComposerSubmissionController {
    */
   private async submitDraft(userInput: string, options: SubmitDraftOptions = {}): Promise<boolean> {
     const conversationReference = options.conversationReference;
+    const userRequestText = userInput;
     let userText = userInput;
 
     // 先尝试处理slash command，若命中则直接返回。
@@ -227,7 +229,7 @@ class ComposerSubmissionController {
       if (!preparationResult.ok) {
         if (preparationResult.reason === 'failed') {
           this.showReferenceError(preparationResult.error || '引用总结失败');
-          this.renderFooter();
+          this.render();
         }
         return false;
       }
@@ -250,6 +252,7 @@ class ComposerSubmissionController {
     // 真正发起请求
     const assistantTurn = this.startAssistantTurn({
       userText,
+      userRequestText,
       displayText,
       metadata: userMetadata,
       modelProfileIdOverride,

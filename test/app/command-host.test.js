@@ -177,7 +177,7 @@ function createHostHarness(options = {}) {
       close() {}
     },
     appContext,
-    appendRecord() {},
+    renderRecords() {},
     exit() {},
     hooks: {
       updateConfig(config) {
@@ -197,7 +197,7 @@ function createHostHarness(options = {}) {
       },
       async reload() {}
     },
-    renderFooter() {},
+    render() {},
     renderResizeRecovery() {
       calls.resizeRecoveries += 1;
     },
@@ -259,7 +259,8 @@ test('createCommandHost composes the complete command protocol from domain ports
     'ui'
   ]);
   assert.deepEqual(Object.keys(host.reference), [
-    'listSessions',
+    'listSessionSummaries',
+    'loadSessionPreview',
     'cancelPreparation',
     'prepare',
     'prepareForSubmission'

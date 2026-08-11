@@ -18,9 +18,10 @@ import type {
   TranscriptJournalSubOperation,
   TranscriptForkResult,
   TranscriptRecord,
+  TranscriptSessionSummary,
+  TranscriptSessionPreview,
   TranscriptSession,
   TranscriptSessionJournalReference,
-  TranscriptSessionMetadata,
   TranscriptStore
 } from '../../types/transcript';
 
@@ -33,6 +34,8 @@ class TranscriptContext {
   records: TranscriptRecord[];
   currentSession: TranscriptSessionJournalReference | null;
   currentSessionId: string | null;
+  private sessionPreviewCache = new Map<string, TranscriptSessionPreview>();
+  private readonly sessionPreviewCacheLimit = 5;
   changeHistory: ChangeCheckpoint[];
   compaction: CompactionState | null;
   todoState: TodoState;
@@ -78,26 +81,63 @@ class TranscriptContext {
   }
 
   /**
-   * 列出当前 cwd 下可恢复的 session metadata。
+   * 列出当前 cwd 下供恢复和引用入口复用的轻量 session 摘要。
    */
-  listResumeSessions(): TranscriptSessionMetadata[] {
-    return this.transcriptStore.listSessions(this.getCurrentCwd()).map((session) => ({
+  listSessionSummaries(): TranscriptSessionSummary[] {
+    return this.transcriptStore.listSessionSummaries(this.getCurrentCwd()).map((session) => ({
       ...session,
-      previewRecords: session.previewRecords.map((record) => ({...record}))
+      fingerprint: {...session.fingerprint}
     }));
   }
 
   /**
    * 列出可作为附件的历史会话；当前 session 不允许自引用。
    */
-  listReferenceSessions(): TranscriptSessionMetadata[] {
-    return this.listResumeSessions().filter((session) => session.sessionId !== this.currentSessionId);
+  listReferenceSessions(): TranscriptSessionSummary[] {
+    return this.transcriptStore.listSessionSummaries(this.getCurrentCwd())
+      .filter((session) => session.sessionId !== this.currentSessionId)
+      .map((session) => ({
+        ...session,
+        fingerprint: {...session.fingerprint}
+      }));
+  }
+
+  /**
+   * 只读加载一个会话候选的有界预览，并按 cwd 与文件指纹共享 LRU 缓存。
+   */
+  async loadSessionPreview(candidate: TranscriptSessionSummary): Promise<TranscriptSessionPreview | null> {
+    const cwd = this.getCurrentCwd();
+    if (candidate.cwd !== cwd) {
+      return null;
+    }
+
+    const cacheKey = `${cwd}:${candidate.sessionId}:${candidate.fingerprint.size}:${candidate.fingerprint.mtimeMs}`;
+    const cached = this.sessionPreviewCache.get(cacheKey);
+    if (cached) {
+      this.sessionPreviewCache.delete(cacheKey);
+      this.sessionPreviewCache.set(cacheKey, cached);
+      return structuredClone(cached);
+    }
+
+    const preview = await this.transcriptStore.loadSessionPreview(cwd, candidate.sessionId);
+    if (!preview || preview.sessionId !== candidate.sessionId) {
+      return null;
+    }
+
+    this.sessionPreviewCache.set(cacheKey, structuredClone(preview));
+    while (this.sessionPreviewCache.size > this.sessionPreviewCacheLimit) {
+      const oldestKey = this.sessionPreviewCache.keys().next().value;
+      if (oldestKey === undefined) break;
+      this.sessionPreviewCache.delete(oldestKey);
+    }
+
+    return structuredClone(preview);
   }
 
   /**
    * 只读加载历史会话，不改变当前 transcript、compaction 或 journal 指针。
    */
-  loadReferenceSession(candidate: TranscriptSessionMetadata): ConversationReferenceSource | null {
+  loadReferenceSession(candidate: TranscriptSessionSummary): ConversationReferenceSource | null {
     if (candidate.sessionId === this.currentSessionId || candidate.cwd !== this.getCurrentCwd()) {
       return null;
     }
@@ -110,7 +150,7 @@ class TranscriptContext {
 
     return {
       session: structuredClone(loaded.session),
-      sourcePath: candidate.sourcePath,
+      sourcePath: this.transcriptStore.getSessionFilePath(this.getCurrentCwd(), candidate.sessionId),
       title: candidate.title
     };
   }
@@ -143,6 +183,7 @@ class TranscriptContext {
     this.currentSession = nextSession;
     this.currentSessionId = nextSession.sessionId;
     this.clearPendingState();
+    this.updateSessionIndex(nextSession, this.records);
 
     return {
       ok: true,
@@ -203,6 +244,7 @@ class TranscriptContext {
     if (this.currentSession) {
       this.currentSession = this.transcriptStore.appendSession(this.getCurrentCwd(), this.currentSession, operation);
       this.currentSessionId = this.currentSession.sessionId;
+      this.updateSessionIndex(this.currentSession, this.records.slice(0, nextCount));
     }
 
     this.records.length = nextCount;
@@ -255,7 +297,7 @@ class TranscriptContext {
   /**
    * 向当前 transcript 追加单条记录并立即同步当前 session journal。
    */
-  appendRecord(record: TranscriptRecord): TranscriptRecord {
+  appendRecord<Record extends TranscriptRecord>(record: Record): Record {
     this.appendRecords([record]);
     return record;
   }
@@ -289,7 +331,17 @@ class TranscriptContext {
     }
 
     this.currentSessionId = this.currentSession.sessionId;
+    this.updateSessionIndex(this.currentSession, records.length > 0 ? [...this.records, ...records] : this.records);
     this.clearPendingState();
+  }
+
+  /** index 是可重建缓存，维护失败不得改变已经提交的 journal 和内存状态。 */
+  private updateSessionIndex(reference: TranscriptSessionJournalReference, records: TranscriptRecord[]): void {
+    try {
+      this.transcriptStore.updateSessionIndex(this.getCurrentCwd(), reference, records);
+    } catch {
+      // 下一次 /resume 会通过 journal 指纹重建缺失或过期条目。
+    }
   }
 
   private createPendingOperation(records: TranscriptRecord[]): TranscriptJournalOperation | null {

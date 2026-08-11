@@ -47,7 +47,7 @@ function createFakeTranscriptStore() {
       currentSession.updatedAt = currentReference.updatedAt;
       return {...currentReference};
     },
-    listSessions() {
+    listSessionSummaries() {
       return [];
     },
     loadSession() {
@@ -126,12 +126,14 @@ function createHarness(options = {}) {
     userConfigContext
   );
   const appended = [];
+  const appendedProjections = [];
   const hookEvents = [];
   const debugEvents = [];
 
   return {
     appContext,
     appended,
+    appendedProjections,
     debugEvents,
     hookEvents,
     input: {
@@ -139,11 +141,14 @@ function createHarness(options = {}) {
       toolApproval: new ToolApprovalContext(() => {}),
       userQuestion: new UserQuestionContext(() => {}),
       userText: 'hello',
-      appendRecord(record) {
-        appended.push(record);
-      },
-      appendRecords(records) {
+      userRequestText: 'hello',
+      renderRecords(records) {
         appended.push(...records);
+      },
+      render(finalizeRecord) {
+        if (!finalizeRecord) return;
+        appended.push(finalizeRecord);
+        appendedProjections.push(finalizeRecord.role === 'reasoning_summary' ? 'reasoning' : 'assistant');
       },
       hooks: {
         emit(event, payload) {
@@ -158,8 +163,7 @@ function createHarness(options = {}) {
           debugEvents.push({event, payload});
         },
         close() {}
-      },
-      renderFooter() {}
+      }
     }
   };
 }
@@ -303,6 +307,31 @@ test('runAssistantTurn gives the main agent and auto reviewer the exact same rev
   assert.equal(agentSnapshot, snapshot);
   assert.equal(reviewerSnapshot, snapshot);
   assert.equal(agentSnapshot.revision, 42);
+});
+
+test('runAssistantTurn forwards explicit raw user request to auto reviewer', async () => {
+  const harness = createHarness({appSettings: {
+    agentInstructionFileName: 'AGENTS.md', autoCompressImages: true, compactionThresholdRatio: 0.8,
+    defaultInteractionMode: 'normal', fileEditMode: 'apply_patch', skillCatalogContextRatio: 0.02,
+    showReasoningSummary: true, slashSuggestionMaxVisible: 8, toolApprovalMode: 'auto', toolApprovalModelProfileId: 'reviewer'
+  }});
+  let reviewerInput;
+
+  await runAssistantTurn({
+    ...harness.input,
+    userText: 'fix it\n<selected_files>private expanded content</selected_files>',
+    userRequestText: 'fix @src/a.ts',
+    toolApprovalReviewer: async (input) => { reviewerInput = input; return true; },
+    async runAgent(_session, callbacks) {
+      assert.deepEqual(await callbacks.onToolApprovalRequest({
+        callId: 'patch', toolName: 'apply_patch', argumentsText: JSON.stringify({patch: '*** Begin Patch\n*** Update File: src/a.ts\n@@\n-old\n+new\n*** End Patch'})
+      }), {kind: 'allow_once'});
+      callbacks.onComplete('done');
+    }
+  });
+
+  assert.equal(reviewerInput.currentUserRequest, 'fix @src/a.ts');
+  assert.match(reviewerInput.records[reviewerInput.turnUserRecordIndex].text, /private expanded content/);
 });
 
 test('runAssistantTurn auto no falls back to the existing manual surface and session cache bypasses review', async () => {
@@ -492,31 +521,31 @@ test('runAssistantTurn does not own live composer consumption', async () => {
   assert.equal(harness.appended[0].text, 'queued message');
 });
 
-test('runAssistantTurn coalesces token renders on the activity clock and redraws structural events immediately', async () => {
+test('runAssistantTurn queues drafts for the app activity clock and redraws structural events immediately', async () => {
   const harness = createHarness();
   const renderedStates = [];
-  const renderFooter = () => {
-    renderedStates.push(harness.appContext.createRenderState());
-  };
-
-  harness.appContext.turnContext.configureSpinnerTimer({onTick: renderFooter});
-
+  let synchronousDrains = 0;
   await runAssistantTurn({
     ...harness.input,
-    renderFooter,
+    render(finalizeRecord) {
+      harness.input.render(finalizeRecord);
+      synchronousDrains += 1;
+      renderedStates.push(harness.appContext.createRenderState());
+    },
     async runAgent(_session, callbacks) {
       callbacks.onReasoningUpdate({kind: 'draft', text: 'thinking'});
       callbacks.onReasoningUpdate({kind: 'draft', text: 'thinking more'});
 
       assert.equal(renderedStates.length, 0);
-      await new Promise((resolve) => setTimeout(resolve, 130));
-      assert.deepEqual(renderedStates.at(-1).pending, {kind: 'reasoning_streaming', text: 'thinking more'});
+      assert.deepEqual(harness.appContext.createRenderState().pending, {kind: 'reasoning_streaming', text: 'thinking more'});
 
       callbacks.onReasoningUpdate({kind: 'complete', text: 'thinking more'});
       assert.equal(harness.appContext.turnContext.getPending(), null);
+      const drainsBeforeTokens = synchronousDrains;
       callbacks.onToken('a', 'a');
       callbacks.onToken('b', 'ab');
       assert.deepEqual(harness.appContext.turnContext.getPending(), {kind: 'streaming', text: 'ab'});
+      assert.equal(synchronousDrains, drainsBeforeTokens + 1);
 
       const renderCountBeforeToolCall = renderedStates.length;
       callbacks.onToolCall({callId: 'call-1', toolName: 'grep', argumentsText: '{"pattern":"ab"}'});
@@ -528,20 +557,80 @@ test('runAssistantTurn coalesces token renders on the activity clock and redraws
     }
   });
 
-  assert.equal(harness.appContext.turnContext.spinnerTimer, null);
+  assert.equal(harness.appContext.turnContext.hasTimedActivity(), false);
   assert.deepEqual(harness.appended.map((record) => record.role), ['user', 'reasoning_summary', 'assistant']);
   assert.equal(harness.appended[2].text, 'ab');
 });
 
-test('runAssistantTurn preserves final streamed text when completion precedes the first activity tick', async () => {
+test('runAssistantTurn asks the renderer to flush reasoning when assistant text starts', async () => {
   const harness = createHarness();
-  let activityTicks = 0;
+  const pendingAtFlush = [];
 
-  harness.appContext.turnContext.configureSpinnerTimer({
-    onTick() {
-      activityTicks += 1;
+  await runAssistantTurn({
+    ...harness.input,
+    render(finalizeRecord) {
+      harness.input.render(finalizeRecord);
+      pendingAtFlush.push(harness.appContext.turnContext.getPending());
+    },
+    async runAgent(_session, callbacks) {
+      callbacks.onReasoningUpdate({kind: 'draft', text: 'short reasoning'});
+      callbacks.onToken('a', 'answer');
+      callbacks.onReasoningUpdate({kind: 'complete', text: 'short reasoning'});
+      callbacks.onComplete('answer');
+      return 'answer';
     }
   });
+
+  assert.deepEqual(pendingAtFlush[0], {
+    kind: 'streaming',
+    text: 'answer',
+    reasoningText: 'short reasoning'
+  });
+  assert.deepEqual(harness.appended.map((record) => record.role), ['user', 'reasoning_summary', 'assistant']);
+  assert.deepEqual(harness.appendedProjections.filter(Boolean), ['reasoning', 'assistant']);
+});
+
+test('runAssistantTurn sends completed streaming records to the renderer by content kind', async () => {
+  const harness = createHarness();
+
+  await runAssistantTurn({
+    ...harness.input,
+    async runAgent(_session, callbacks) {
+      callbacks.onToken('x', 'alpha\n\nbeta');
+      callbacks.onComplete('alpha\n\nbeta');
+      return 'alpha\n\nbeta';
+    }
+  });
+
+  assert.equal(harness.appended.at(-1).text, 'alpha\n\nbeta');
+  assert.equal(harness.appendedProjections.at(-1), 'assistant');
+});
+
+test('runAssistantTurn resets streaming progress between tool-call assistant segments', async () => {
+  const harness = createHarness();
+
+  await runAssistantTurn({
+    ...harness.input,
+    async runAgent(_session, callbacks) {
+      callbacks.onToken('x', 'first segment');
+      callbacks.onAssistantSegment('first segment');
+      callbacks.onToolCall({callId: 'call-1', toolName: 'grep', argumentsText: '{}'});
+      callbacks.onToolResult({callId: 'call-1', toolName: 'grep', ok: true, text: 'done', details: {kind: 'grep', truncated: false}});
+      callbacks.onToken('y', 'second segment');
+      callbacks.onComplete('second segment');
+      return 'second segment';
+    }
+  });
+
+  assert.deepEqual(harness.appended.filter((record) => record.role === 'assistant').map((record) => record.text), [
+    'first segment',
+    'second segment'
+  ]);
+  assert.deepEqual(harness.appendedProjections.filter(Boolean), ['assistant', 'assistant']);
+});
+
+test('runAssistantTurn preserves final streamed text without an activity tick', async () => {
+  const harness = createHarness();
 
   await runAssistantTurn({
     ...harness.input,
@@ -552,7 +641,6 @@ test('runAssistantTurn preserves final streamed text when completion precedes th
     }
   });
 
-  assert.equal(activityTicks, 0);
   assert.equal(harness.appContext.turnContext.getPending(), null);
   assert.equal(harness.appended.at(-1).role, 'assistant');
   assert.equal(harness.appended.at(-1).text, 'ok');
@@ -721,7 +809,7 @@ test('runAssistantTurn emits error hook while preserving error transcript behavi
     'assistant_turn_error'
   ]);
   assert.equal(harness.hookEvents[1].payload.status, 'error');
-  assert.deepEqual(harness.appended.map((record) => record.role), ['user', 'error']);
+  assert.deepEqual(harness.appended.map((record) => record.role), ['user', 'reasoning_summary', 'error']);
   assert.deepEqual(harness.debugEvents.map((event) => event.event), [
     'assistant_turn_start',
     'assistant_turn_error'
@@ -740,7 +828,7 @@ test('runAssistantTurn commits completed reasoning without clearing an active as
     async runAgent(_session, callbacks) {
       callbacks.onReasoningUpdate({kind: 'draft', text: 'thinking'});
       callbacks.onToken('d', 'draft');
-      assert.deepEqual(harness.appContext.turnContext.getPending(), {kind: 'streaming', text: 'draft'});
+      assert.deepEqual(harness.appContext.turnContext.getPending(), {kind: 'streaming', text: 'draft', reasoningText: 'thinking'});
 
       callbacks.onReasoningUpdate({kind: 'complete', text: 'thinking'});
       assert.deepEqual(harness.appContext.turnContext.getPending(), {kind: 'streaming', text: 'draft'});
@@ -898,7 +986,8 @@ test('runAssistantTurn emits a local model-switch notice and restores the global
     ...harness.input,
     modelProfileIdOverride: 'skill-model',
     reasoningEffortOverride: 'high',
-    renderFooter() {
+    render(finalizeRecord) {
+      harness.input.render(finalizeRecord);
       renderedModels.push(harness.appContext.createRenderState().statusLine);
     },
     async runAgent(_session, callbacks) {

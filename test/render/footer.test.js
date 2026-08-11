@@ -1610,6 +1610,64 @@ test('renderFooterLayout renders resume command surfaces with two columns and pr
   assert.ok(bottomLine.startsWith(`${resumeFrameColor}╰─`));
 });
 
+test('renderFooterLayout expands resume surface close to the wide terminal width', () => {
+  const terminalWidth = 180;
+  const layout = renderFooterLayout({
+    composer: createComposer('ignored'),
+    commandSurface: {
+      kind: 'resume',
+      title: '/resume 恢复会话 (1)',
+      sessions: [{label: '2026-05-19 10:00 · 4 条消息'}],
+      hiddenSessionCountAbove: 0,
+      hiddenSessionCountBelow: 0,
+      focus: 'list',
+      selectedIndex: 0,
+      previewScroll: 0,
+      previewStatus: 'ready',
+      previewRecords: [{role: 'assistant', text: 'wide preview'}],
+      emptyPreviewHint: '没有可预览消息',
+      dismissHint: 'Esc 取消'
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    width: terminalWidth
+  });
+  const topLine = layout.lines.find((line) => stripAnsi(line).startsWith('╭'));
+
+  assert.equal(displayWidth(topLine), safeRenderWidth(terminalWidth) - 4);
+});
+
+test('renderFooterLayout renders resume loading and error preview states', () => {
+  const createState = (previewStatus, previewError) => ({
+    composer: createComposer('ignored'),
+    commandSurface: {
+      kind: 'resume',
+      title: '/resume 恢复会话 (1)',
+      sessions: [{label: '2026-05-19 10:00 · 4 条消息'}],
+      hiddenSessionCountAbove: 0,
+      hiddenSessionCountBelow: 0,
+      focus: 'list',
+      selectedIndex: 0,
+      previewScroll: 0,
+      previewStatus,
+      previewRecords: [{role: 'assistant', text: 'must stay hidden'}],
+      ...(previewError ? {previewError} : {}),
+      emptyPreviewHint: '没有可预览消息',
+      dismissHint: 'Esc 取消'
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    width: 100
+  });
+  const loading = renderFooterLayout(createState('loading')).lines.map(stripAnsi);
+  const failed = renderFooterLayout(createState('error', '无法读取会话预览')).lines.map(stripAnsi);
+
+  assert.ok(loading.some((line) => line.includes('正在加载会话预览')));
+  assert.ok(!loading.some((line) => line.includes('must stay hidden')));
+  assert.ok(failed.some((line) => line.includes('无法读取会话预览')));
+  assert.ok(!failed.some((line) => line.includes('must stay hidden')));
+});
+
 test('renderFooterLayout renders diff surface with side-by-side details on very wide width', () => {
   const layout = renderFooterLayout({
     composer: createComposer(''),
@@ -3169,6 +3227,23 @@ test('renderFooterLayout renders confirm command surfaces by kind', () => {
   assert.ok(plainLines.some((line) => line.includes('Esc 取消')));
   assert.ok(layout.lines.some((line) => line.includes('\x1b[48;5;23m') && stripAnsi(line).includes('Enter 清空')));
   assert.ok(!plainLines.some((line) => line === '> /clear'));
+});
+
+test('renderFooterLayout only budgets the streaming tail after a stable prefix was committed', () => {
+  const streamingText = ['alpha', '', 'beta', '', 'gamma'].join('\n');
+  const layout = renderFooterLayout({
+    composer: createComposer('draft input'),
+    pending: {kind: 'streaming', text: streamingText, historyText: 'alpha\n\nbeta\n'},
+    statusLine: {...DEFAULT_STATUS_LINE, mode: 'streaming', keyHint: 'Esc 中断'},
+    rows: 14,
+    width: 80
+  });
+  const plainLines = layout.lines.map((line) => stripAnsi(line));
+
+  assert.equal(plainLines.some((line) => line.includes('alpha')), false);
+  assert.equal(plainLines.some((line) => line.includes('beta')), false);
+  assert.equal(plainLines.some((line) => line.includes('gamma')), true);
+  assert.equal(plainLines.some((line) => line.startsWith('◇ gamma')), false);
 });
 
 test('renderFooterLayout keeps long streaming pending preview bounded above composer', () => {

@@ -14,26 +14,26 @@ type AssistantCommandContext = Pick<AppContext,
 
 type AssistantCommandPortOptions = {
   appContext: AssistantCommandContext;
-  appendRecord: (record: TranscriptRecord) => void;
-  renderFooter: () => void;
+  renderRecords: (records: TranscriptRecord[]) => void;
+  render: () => void;
 };
 
 /**
  * 创建手动 compaction 端口，协调 turn 生命周期、agent 请求和 transcript 更新。
  */
 function createAssistantCommandPort(options: AssistantCommandPortOptions): CommandHostApp['assistant'] {
-  const {appContext, appendRecord, renderFooter} = options;
+  const {appContext, renderRecords, render} = options;
 
   return {
     beginManualCompaction(): boolean {
       if (appContext.turnContext.responding) {
-        renderFooter();
+        render();
         return false;
       }
 
       appContext.turnContext.beginManualCompaction();
       appContext.turnContext.startSpinner('working');
-      renderFooter();
+      render();
       return true;
     },
     compactContext(compactionOptions: {force: true}) {
@@ -58,19 +58,19 @@ function createAssistantCommandPort(options: AssistantCommandPortOptions): Comma
       if (result.didCompact && result.compaction) {
         const noticeRecord = appContext.transcriptContext.applyCompaction(result.compaction);
         appContext.turnContext.finishAssistantTurn('');
-        appendRecord(noticeRecord);
+        renderRecords([noticeRecord]);
         return;
       }
 
       appContext.turnContext.finishAssistantTurn('');
-      appendRecord(appContext.transcriptContext.appendRecord({
+      renderRecords([appContext.transcriptContext.appendRecord({
         role: 'compaction_notice',
         text: '当前无需压缩'
-      }));
+      })]);
     },
     fail(error: unknown) {
       appContext.turnContext.stopSpinner();
-      appendRecord(appContext.turnContext.failAssistantTurn(error));
+      renderRecords([appContext.turnContext.failAssistantTurn(error)]);
     }
   };
 }

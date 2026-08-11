@@ -2,7 +2,7 @@ import * as ansi from '../terminal/ansi';
 import {DEFAULT_TUI_THEME, type ThemeColor, type TuiTheme} from '../config/theme-config';
 import {blockBackground, blockText, colorText} from './colors';
 import { charWidth, displayWidth, safeRenderWidth, splitGraphemes, tabWidthAt } from './layout';
-import { renderMarkdownLinesWithOptions } from './markdown';
+import { getCommittableMarkdownText, renderMarkdownLinesWithOptions } from './markdown';
 import { renderToolCallPreviewLines } from './tool-message-renderer';
 import type { BannerContext, PendingState, TerminalSize } from '../types/render';
 
@@ -354,6 +354,65 @@ export function renderReasoningSummaryLines(text: string, width = 80, theme: Tui
   });
 }
 
+export type StreamingContentKind = 'assistant' | 'reasoning';
+
+/**
+ * 返回 assistant 正文中已经越过 Markdown 完整边界、可以移入终端历史区的文本。
+ * Reasoning 使用纯文本换行规则，不经过此 Markdown 边界。
+ */
+export function getCommittableStreamingText(text: string): string {
+  return getCommittableMarkdownText(text);
+}
+
+/**
+ * 返回 reasoning 中除最后一个仍可能增长的视觉行外、可以移入终端历史区的文本。
+ * 使用 UTF-16 字符串位置截取，后续仍可用完整文本按当前终端宽度重新渲染。
+ */
+export function getCommittableReasoningText(text: string, width = 80): string {
+  const safeWidth = safeRenderWidth(width);
+  const prefixWidth = displayWidth('◇ ');
+  let column = prefixWidth;
+  let textOffset = 0;
+  let committableOffset = 0;
+
+  for (const grapheme of splitGraphemes(text)) {
+    if (grapheme === '\n') {
+      committableOffset = textOffset;
+      textOffset += grapheme.length;
+      column = prefixWidth;
+      continue;
+    }
+
+    let graphemeWidth = grapheme === '\t' ? tabWidthAt(column) : charWidth(grapheme);
+    if (column + graphemeWidth > safeWidth && column > prefixWidth) {
+      committableOffset = textOffset;
+      column = prefixWidth;
+      graphemeWidth = grapheme === '\t' ? tabWidthAt(column) : charWidth(grapheme);
+    }
+
+    textOffset += grapheme.length;
+    column += graphemeWidth;
+  }
+
+  return text.slice(0, committableOffset);
+}
+
+/**
+ * 比较新旧两段稳定文本，返回本次需要追加到终端历史区的完整行。
+ */
+export function renderStreamingCommitLines(
+  kind: StreamingContentKind,
+  text: string,
+  previousText: string,
+  width = 80,
+  theme: TuiTheme = DEFAULT_TUI_THEME
+): string[] {
+  const render = kind === 'assistant' ? renderAssistantMessageLines : renderReasoningSummaryLines;
+  const previousLines = previousText === '' ? [] : render(previousText, width, theme);
+  const nextLines = text === '' ? [] : render(text, width, theme);
+  return nextLines.slice(previousLines.length);
+}
+
 function renderShellMessageLines(text: string, width = 80, theme: TuiTheme): string[] {
   return renderSymbolMessage({
     text,
@@ -397,17 +456,19 @@ export function renderPendingAssistantLines(
   }
 
   if (pending.kind === 'reasoning_streaming') {
-    return renderReasoningPendingLines(pending.text, width, normalizedMaxLines, theme);
+    return renderReasoningPendingLines(pending.text, pending.historyText || '', width, normalizedMaxLines, theme);
   }
 
-  return renderStreamingPendingLines(pending.text, width, normalizedMaxLines, theme);
+  return renderStreamingPendingLines(pending.text, pending.historyText || '', width, normalizedMaxLines, theme);
 }
 
 /**
- * 渲染 reasoning streaming preview；它是 transient 可见推理摘要，不走 Markdown，长文本只保留尾部。
+ * 渲染 reasoning 流式预览；已经移入终端历史区的部分不再重复显示。
  */
-function renderReasoningPendingLines(text: string, width: number, maxLines: number, theme: TuiTheme): string[] {
-  const lines = renderReasoningSummaryLines(text, width, theme);
+function renderReasoningPendingLines(text: string, historyText: string, width: number, maxLines: number, theme: TuiTheme): string[] {
+  const fullLines = renderReasoningSummaryLines(text, width, theme);
+  const committedLineCount = historyText === '' ? 0 : renderReasoningSummaryLines(historyText, width, theme).length;
+  const lines = fullLines.slice(committedLineCount);
   const normalizedMaxLines = normalizePreviewMaxLines(maxLines);
 
   if (normalizedMaxLines === 0) {
@@ -460,8 +521,13 @@ function renderShellOutputPendingLines(command: string, output: string, width: n
  * 渲染 streaming pending preview；长文本只保留尾部，避免 footer 高度无限增长。
  *
  */
-function renderStreamingPendingLines(text: string, width: number, maxLines: number, theme: TuiTheme): string[] {
-  const lines = renderMarkdownLinesWithOptions(text, { width, prefix: '◇ ', theme: withMarkdownRoleColor(theme, theme.blocks.colors.pendingPrefix) });
+function renderStreamingPendingLines(text: string, historyText: string, width: number, maxLines: number, theme: TuiTheme): string[] {
+  const pendingTheme = withMarkdownRoleColor(theme, theme.blocks.colors.pendingPrefix);
+  const fullLines = renderMarkdownLinesWithOptions(text, { width, prefix: '◇ ', theme: pendingTheme });
+  const committedLineCount = historyText === ''
+    ? 0
+    : renderMarkdownLinesWithOptions(historyText, { width, prefix: '◇ ', theme: pendingTheme }).length;
+  const lines = fullLines.slice(committedLineCount);
   const normalizedMaxLines = normalizePreviewMaxLines(maxLines);
 
   if (normalizedMaxLines === 0) {

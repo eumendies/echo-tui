@@ -87,5 +87,5 @@ test('an orphan settings sidecar is ignored by transcript session enumeration', 
   const cwd = '/tmp/example/orphan-settings';
   store.write(cwd, {sessionId: 'orphan', modelProfileId: 'fast'});
 
-  assert.deepEqual(transcriptStore.listSessions(cwd), []);
+  assert.deepEqual(transcriptStore.listSessionSummaries(cwd), []);
 });

@@ -34,7 +34,8 @@ export type ThinkingPendingState = {
  */
 export type ReasoningStreamingPendingState = {
   kind: 'reasoning_streaming'; // 表示当前 assistant turn 正在输出可见 reasoning preview。
-  text: string; // 当前可读 reasoning 全文 draft。
+  text: string; // 当前可读 reasoning 全文草稿。
+  historyText?: string; // 仅由 renderer 补充，表示已经移入终端历史区的部分。
 };
 
 /**
@@ -42,7 +43,9 @@ export type ReasoningStreamingPendingState = {
  */
 export type StreamingPendingState = {
   kind: 'streaming'; // 表示当前 assistant turn 已进入可见流式 preview。
-  text: string; // 当前 assistant 正文 draft。
+  text: string; // 当前 assistant 正文草稿。
+  reasoningText?: string; // 正文开始时仍需先写完的 reasoning 草稿。
+  historyText?: string; // 仅由 renderer 补充，表示已经移入终端历史区的正文。
 };
 
 /**
@@ -127,6 +130,7 @@ export type PendingMessageRenderState = {
 
 export type RenderState = {
   composer: ComposerState;
+  streamingOwner?: string; // 区分主会话与各个 BTW 会话独立的流式显示进度。
   conversationReference?: ConversationReferenceRenderState | null; // composer 上方展示的瞬时历史会话引用卡片。
   pendingMessage?: PendingMessageRenderState | null; // composer 上方展示的单条 transient 待发送消息。
   commandSurface: CommandSurface | null;
@@ -153,11 +157,7 @@ export type RenderInitialOptions = RenderState & {
   bannerContext: BannerContext;
 };
 
-export type AppendRecordOptions = RenderState & {
-  record: TranscriptRecord;
-};
-
-export type AppendRecordsOptions = RenderState & {
+export type RenderRecordsOptions = RenderState & {
   records: TranscriptRecord[];
 };
 
@@ -175,16 +175,16 @@ export type RenderFinalOptions = {
 };
 
 export type AppRenderer = {
-  appendRecord: (options: AppendRecordOptions) => void;
-  appendRecords: (options: AppendRecordsOptions) => void;
+  renderRecords: (options: RenderRecordsOptions) => void;
+  render: (options: RenderState, finalizeRecord?: Extract<TranscriptRecord, {role: 'assistant' | 'reasoning_summary'}>) => void;
   clearFooter: () => void;
   renderDestructive: (options: RenderDestructiveOptions) => void;
   renderFinal: (options: RenderFinalOptions) => void;
-  renderFooter: (options: RenderState) => void;
   renderInitial: (options: RenderInitialOptions) => void;
 };
 
 export type FooterRenderer = {
+  append: (content: string, options: RenderState) => void;
   clear: () => void;
   rememberLayout: (layout: FooterLayout) => void;
   render: (options: RenderState) => void;

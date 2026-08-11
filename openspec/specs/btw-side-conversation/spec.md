@@ -84,12 +84,12 @@ TBD - created by archiving change add-btw-command. Update Purpose after archive.
 - **THEN** 系统 SHALL NOT 列出或恢复已丢弃的 BTW records 和状态
 
 ### Requirement: BTW 替换当前可见 transcript 投影
-系统 SHALL 在进入 BTW 时 destructive repaint 为紧凑 BTW banner、side-only records 和 BTW footer，在退出时 destructive repaint 为最新主 banner、主 records 和主 footer。BTW 活跃期间的 side 稳定 records SHALL 使用现有 transcript append renderer，side token/pending SHALL 使用 footer redraw；系统 SHALL NOT 为每个 token destructive repaint，也 SHALL NOT 切换 alternate screen。
+系统 SHALL 在进入 BTW 时 destructive repaint 为紧凑 BTW banner、side-only records 和 BTW footer，在退出时 destructive repaint 为最新主 banner、主 records、主 in-flight streaming projection 和主 footer。BTW 活跃期间 terminal projection owner SHALL 为 BTW；side 正文与 reasoning SHALL 使用与主会话相同的 Markdown/纯文本边界、per-segment cursor 和 activity drain 语义。系统 SHALL NOT 为每个 token destructive repaint，也 SHALL NOT 切换 alternate screen。
 
 #### Scenario: 进入 BTW 切换全视图
 - **WHEN** `/btw` 成功打开
 - **THEN** renderer SHALL destructive repaint BTW 投影
-- **THEN** 当前可见 transcript SHALL 不包含主 records
+- **THEN** 当前可见 transcript SHALL 不包含主 records 或主 in-flight streaming 行
 - **THEN** BTW banner 或状态栏 SHALL 表明会话临时、readonly 且 Esc 返回主会话
 
 #### Scenario: BTW 内稳定记录使用 append
@@ -97,15 +97,24 @@ TBD - created by archiving change add-btw-command. Update Purpose after archive.
 - **THEN** renderer SHALL 清理 footer、append 对应现有 transcript block 并重绘 BTW footer
 - **THEN** renderer SHALL NOT 因该稳定 record 清除全部 scrollback
 
-#### Scenario: BTW streaming 只更新 footer
-- **WHEN** 活跃 side turn 持续产生 token
-- **THEN** 系统 SHALL 更新 BTW pending draft 并执行有界 footer redraw
-- **THEN** 系统 SHALL NOT 把未完成 draft 提交为稳定 record或执行 destructive repaint
+#### Scenario: BTW streaming 增量确定并只在 footer 保留尾部
+- **WHEN** 活跃 side turn 产生满足 Markdown 或 reasoning 视觉行边界的 source 前缀
+- **THEN** 系统 SHALL 在 activity drain 时把新增投影 append 到 BTW scrollback
+- **THEN** footer SHALL 从 side visible cursor 开始展示尚未成功 drain 的尾部
+- **THEN** 系统 SHALL NOT 把未确定尾部提前提交为稳定 record
 
 #### Scenario: BTW resize 恢复当前投影
 - **WHEN** BTW 活跃期间终端列宽变化或行数缩小
-- **THEN** renderer SHALL destructive replay BTW banner、全部 side records 和最新 BTW footer
-- **THEN** renderer SHALL NOT 错误重放主 transcript 到 BTW 视图
+- **THEN** renderer SHALL destructive replay BTW banner、全部 side records、当前 side in-flight source 至选定 replay boundary 的投影和最新 BTW footer
+- **THEN** renderer SHALL 按新宽度重新投影 source
+- **THEN** renderer SHALL NOT 错误重放主 transcript 或主 in-flight streaming 行
+
+#### Scenario: BTW 活跃时后台主 streaming 不污染 side 投影
+- **WHEN** BTW 活跃且后台主 turn 跨越新的稳定边界
+- **THEN** 主 turn MAY 更新自身 in-flight state
+- **THEN** renderer SHALL NOT 把主 turn 增量写入 BTW scrollback
+- **WHEN** BTW 随后关闭
+- **THEN** renderer SHALL destructive replay 最新主 records、主 in-flight source 至选定 replay boundary 的投影和主 pending tail
 
 ### Requirement: 主 turn 在 BTW 后台继续且记录不丢失
 BTW 活跃期间，主 assistant thinking、streaming、tool continuation、稳定 record 提交、journal 持久化和普通 pending message claim SHALL 继续运行。主稳定 records SHALL 更新主状态但 SHALL NOT append 到 BTW transcript；BTW footer SHALL 提供有界 MAIN activity 摘要。退出 BTW 后，主投影 SHALL 包含 BTW 期间产生的全部最新主 records 和 pending 状态。
@@ -123,25 +132,21 @@ BTW 活跃期间，主 assistant thinking、streaming、tool continuation、稳�
 - **THEN** 所有 BTW 期间隐藏的主 records SHALL 可见且顺序不变
 
 ### Requirement: Esc 原子丢弃 BTW 并隔离迟到 callback
-BTW command session 接收 Esc 时 SHALL 立即使当前 BTW conversation 和 side turn identity 失效，abort 仍运行的 side turn，丢弃全部 BTW 临时状态，关闭 command session 并恢复主投影。迟到的 side callback、catch 或 finally SHALL NOT 在关闭后追加 records、重绘 BTW 或修改主状态；关闭 BTW SHALL NOT abort 后台主 turn。
+BTW command session 接收 Esc 时 SHALL 立即使当前 BTW conversation 和 side turn identity 失效，abort 仍运行的 side turn，丢弃全部 BTW records、draft、queued commit 与 committed source state，关闭 command session并恢复主投影。迟到的 side callback、activity tick、catch 或 finally SHALL NOT 追加 records、推进 cursor、重绘 BTW 或修改主状态；关闭 BTW SHALL NOT abort 后台主 turn。
 
 #### Scenario: Side streaming 时 Esc
 - **WHEN** side assistant 正在 streaming
-- **AND** 用户按下 Esc 且没有更高优先级 surface
-- **THEN** 系统 SHALL abort side run 并关闭整个 BTW 会话
-- **THEN** 系统 SHALL 丢弃 partial side draft 和全部 BTW records
+- **AND** 用户按下 Esc且没有更高优先级 surface
+- **THEN** 系统 SHALL abort side run并关闭整个 BTW 会话
+- **THEN** 系统 SHALL 丢弃 partial side draft、queued commit、committed source state 和全部 BTW records
+- **THEN** destructive repaint SHALL 移除已经写入 BTW scrollback 的 side 行并恢复主投影
 - **THEN** 后台主 turn SHALL 继续运行
 
-#### Scenario: 退出后的迟到 token 被忽略
+#### Scenario: 退出后的迟到 token 或 tick 被忽略
 - **WHEN** BTW 已关闭并恢复主视图
-- **AND** 旧 side provider callback 随后到达
+- **AND** 旧 side provider callback 或 activity tick 随后到达
 - **THEN** callback SHALL 因 conversation 或 turn identity 不匹配而被忽略
-- **THEN** 主 transcript、主 footer 和终端输出 SHALL 不包含该 callback 内容
-
-#### Scenario: 空闲 BTW 退出
-- **WHEN** BTW 没有 active side turn
-- **AND** 用户按下 Esc
-- **THEN** 系统 SHALL 丢弃 BTW 状态并 destructive replay 最新主投影
+- **THEN** 主 transcript、主 cursor、主 footer 和 terminal 输出 SHALL 不包含该 callback 内容
 
 ### Requirement: 高优先级主交互暂时覆盖 BTW
 主 turn 在 BTW 活跃期间发起 tool approval 或 user question 等既有高优先级交互时，对应 modal SHALL 暂时接管显示和输入。Modal 结束后，若 BTW 仍活跃，系统 SHALL 恢复 BTW 投影；modal 活跃时的 Esc SHALL 先遵循 modal 语义，不得直接关闭 BTW 或中断主 turn。

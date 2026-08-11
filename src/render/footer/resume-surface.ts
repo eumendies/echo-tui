@@ -23,8 +23,8 @@ type SessionListRow =
       direction: 'up' | 'down'; // 隐藏会话相对当前窗口的方向。
     };
 
-const RESUME_SURFACE_MAX_WIDTH = 118;
 const RESUME_BODY_HEIGHT = 8;
+const WIDE_BOX_HORIZONTAL_MARGIN = 4;
 
 /**
  * 渲染 /resume 历史恢复面板；左侧是 session 窗口，右侧是当前选中项消息预览。
@@ -39,9 +39,15 @@ export function renderResumeSurface(commandSurface: ResumeCommandSurface, width:
   const selectedIndex = clampIndex(commandSurface.selectedIndex, sessions.length);
   const bodyHeight = RESUME_BODY_HEIGHT;
   const sessionRows = createSessionListRows(commandSurface, selectedIndex);
+  const previewStatus = commandSurface.previewStatus || 'ready';
+  const previewHint = previewStatus === 'loading'
+    ? '正在加载会话预览…'
+    : previewStatus === 'error'
+      ? commandSurface.previewError || '无法读取会话预览'
+      : commandSurface.emptyPreviewHint;
   const previewRows = createPreviewRows(
-    commandSurface.previewRecords,
-    commandSurface.emptyPreviewHint,
+    previewStatus === 'ready' ? commandSurface.previewRecords : [],
+    previewHint,
     {width: rightWidth, height: bodyHeight, scroll: commandSurface.previewScroll},
     theme
   );
@@ -111,7 +117,11 @@ function createSessionListRows(commandSurface: ResumeCommandSurface, selectedInd
  * 根据终端安全宽度计算面板宽度，避免写满最后一列。
  */
 function calculateBoxWidth(safeWidth: number): number {
-  return Math.min(RESUME_SURFACE_MAX_WIDTH, safeWidth);
+  if (safeWidth >= 64) {
+    return Math.max(4, safeWidth - WIDE_BOX_HORIZONTAL_MARGIN);
+  }
+
+  return Math.max(4, safeWidth);
 }
 
 /**

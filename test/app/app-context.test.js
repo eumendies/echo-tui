@@ -193,7 +193,7 @@ function createFakeTranscriptStore(initialSessions = []) {
     return {...entry.reference};
   }
 
-  function listSessions(cwd) {
+  function listSessionSummaries(cwd) {
     listCallCount += 1;
     return getSessions(cwd)
       .map(({session}) => ({
@@ -202,14 +202,17 @@ function createFakeTranscriptStore(initialSessions = []) {
         updatedAt: session.updatedAt,
         cwd: session.cwd,
         messageCount: session.records.length,
-        lastMessagePreview: session.records.length > 0 ? session.records.at(-1).text : '空会话',
-        previewRecords: createPreviewRecords(session.records),
-        sourcePath: `/tmp/${session.sessionId}.jsonl`,
         title: session.records.find((record) => record.role === 'user')?.displayText
           || session.records.find((record) => record.role === 'user')?.text
-          || '未命名对话'
+          || '未命名对话',
+        fingerprint: {size: session.records.length, mtimeMs: 1}
       }))
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  }
+
+  async function loadSessionPreview(cwd, sessionId) {
+    const loaded = loadSession(cwd, sessionId);
+    return loaded ? {sessionId, previewRecords: createPreviewRecords(loaded.session.records)} : null;
   }
 
   function loadSession(cwd, sessionId) {
@@ -229,9 +232,11 @@ function createFakeTranscriptStore(initialSessions = []) {
     createSession,
     appendSession,
     getSessionFilePath,
-    listSessions,
+    listSessionSummaries,
     loadSession,
     loadSessionReadOnly,
+    loadSessionPreview,
+    updateSessionIndex() {},
     get listCallCount() {
       return listCallCount;
     },
@@ -916,40 +921,48 @@ test('AppContext keeps plan status line mode while reasoning streams', () => {
   assert.deepEqual(renderState.pending, {kind: 'reasoning_streaming', text: 'thinking'});
 });
 
-test('TurnContext commits completed reasoning without clearing assistant streaming draft', () => {
+test('TurnContext finalizes reasoning without clearing assistant streaming draft', () => {
   const context = createContext();
 
   context.turnContext.setReasoningStreamingPending('thinking');
   assert.deepEqual(context.turnContext.getPending(), {kind: 'reasoning_streaming', text: 'thinking'});
-  context.turnContext.appendReasoningSummary('thinking');
+  const completedRecord = context.turnContext.finalizeReasoning('thinking');
+  assert.equal(completedRecord.role, 'reasoning_summary');
   assert.equal(context.turnContext.getPending(), null);
 
   context.turnContext.setStreamingPending('draft');
-  const fallbackRecord = context.turnContext.appendReasoningSummary('fallback reasoning');
+  context.turnContext.setReasoningStreamingPending('fallback reasoning');
+  const fallbackRecord = context.turnContext.finalizeReasoning('fallback reasoning');
   assert.equal(fallbackRecord.role, 'reasoning_summary');
   assert.deepEqual(context.turnContext.getPending(), {kind: 'streaming', text: 'draft'});
 });
 
-test('TurnContext activity clock projects the latest accumulated shell output once per tick', async () => {
+test('TurnContext keeps only the latest assistant and reasoning drafts', () => {
   const context = createContext();
-  const renderedPending = [];
 
-  context.turnContext.configureSpinnerTimer({
-    onTick() {
-      renderedPending.push(context.createRenderState().pending);
-    }
+  context.turnContext.setReasoningStreamingPending('thinking');
+  assert.deepEqual(context.turnContext.getPending(), {kind: 'reasoning_streaming', text: 'thinking'});
+
+  context.turnContext.setStreamingPending('alpha\n\nbeta');
+  assert.deepEqual(context.turnContext.getPending(), {
+    kind: 'streaming',
+    text: 'alpha\n\nbeta',
+    reasoningText: 'thinking'
   });
+});
+
+test('TurnContext accumulates shell output for the app activity clock', () => {
+  const context = createContext();
+
   context.turnContext.beginShellCommand('printf ab');
   context.turnContext.startSpinner('working');
   context.turnContext.appendShellOutputPending({stream: 'stdout', chunk: 'a'});
   context.turnContext.appendShellOutputPending({stream: 'stdout', chunk: 'b'});
 
-  assert.equal(renderedPending.length, 0);
-  await new Promise((resolve) => setTimeout(resolve, 130));
+  assert.equal(context.turnContext.hasTimedActivity(), true);
+  assert.deepEqual(context.createRenderState().pending, {kind: 'shell_output', command: 'printf ab', output: 'ab'});
   context.turnContext.stopSpinner();
-
-  assert.ok(renderedPending.length >= 1);
-  assert.deepEqual(renderedPending.at(-1), {kind: 'shell_output', command: 'printf ab', output: 'ab'});
+  assert.equal(context.turnContext.hasTimedActivity(), false);
 });
 
 test('AppContext keeps plan status line mode while waiting for first assistant token', () => {
@@ -1346,6 +1359,45 @@ test('ModelContext reads provider-backed model profiles and current selection', 
       currentModelLabel: 'gpt-4.1',
       efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
       selectedIndex: 3
+    });
+  });
+});
+
+test('ModelContext exposes only models backed by known presets and falls back from stale session selection', () => {
+  withTemporaryModelConfig({
+    llm: {
+      selectedModel: 'legacy-model',
+      providers: {
+        legacy: {preset: 'future-provider-preset', apiKey: 'legacy-api-key'},
+        openai: {preset: 'openai-responses-api', apiKey: 'openai-api-key'}
+      },
+      models: [
+        {id: 'legacy-model', provider: 'legacy', model: 'future-model'},
+        {id: 'current-model', provider: 'openai', model: 'gpt-4.1'}
+      ]
+    }
+  }, () => {
+    const settingsStore = createFakeSessionModelSettingsStore([{
+      schemaVersion: 1,
+      sessionId: 'session-stale',
+      modelProfileId: 'legacy-model',
+      updatedAt: '2026-05-19T00:00:00.000Z'
+    }]);
+    const context = createModelContext({settingsStore});
+
+    context.restoreSession('session-stale');
+
+    assert.deepEqual(context.createModelCommandInfo(), {
+      models: [
+        {id: 'current-model', model: 'gpt-4.1', provider: 'openai'}
+      ],
+      selectedIndex: 0
+    });
+    assert.equal(context.getStatusLineModelState().modelLabel, 'gpt-4.1');
+    assert.deepEqual(context.createStatusInfo(), {
+      agentType: 'openai',
+      model: 'gpt-4.1',
+      provider: 'openai'
     });
   });
 });
@@ -2347,7 +2399,7 @@ test('AppContext resumes persisted edit_file history through a new store instanc
   fs.rmSync(cwd, {recursive: true, force: true});
 });
 
-test('AppContext exposes semantic subcontexts for resume sessions and composer state', () => {
+test('AppContext exposes semantic subcontexts for resume sessions and composer state', async () => {
   const transcriptStore = createFakeTranscriptStore([
     {
       sessionId: 'saved-session',
@@ -2365,7 +2417,14 @@ test('AppContext exposes semantic subcontexts for resume sessions and composer s
   assert.equal(context.composerContext.getText(), 'draft question');
   assert.deepEqual(context.composerContext.getInputHistory(), ['previous input']);
   assert.equal(context.turnContext.isResponding(), true);
-  assert.equal(context.transcriptContext.listResumeSessions()[0].sessionId, 'saved-session');
+  const candidate = context.transcriptContext.listSessionSummaries()[0];
+  assert.equal(candidate.sessionId, 'saved-session');
+  assert.equal('previewRecords' in candidate, false);
+  assert.deepEqual(await context.transcriptContext.loadSessionPreview(candidate), {
+    sessionId: 'saved-session',
+    previewRecords: [{role: 'assistant', text: 'latest reply'}]
+  });
+  assert.deepEqual(context.transcriptContext.records, []);
 });
 
 test('AppContext lists reference sessions without current session and clears pending references on load and clear', () => {

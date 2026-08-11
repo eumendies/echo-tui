@@ -10,7 +10,7 @@ type McpCommandContext = Pick<AppContext, 'clearContextUsage' | 'setMcpBootstrap
 type McpCommandPortOptions = {
   appContext: McpCommandContext;
   mcpManager: McpManager;
-  renderFooter: () => void;
+  render: () => void;
   userConfigContext: UserConfigContext;
 };
 
@@ -18,7 +18,7 @@ type McpCommandPortOptions = {
  * 创建 MCP 状态查询和配置重载端口，并协调重载期间的 footer 状态。
  */
 function createMcpCommandPort(options: McpCommandPortOptions): CommandHostApp['mcp'] {
-  const {appContext, mcpManager, renderFooter} = options;
+  const {appContext, mcpManager, render} = options;
   const userConfigContext = options.userConfigContext;
 
   return {
@@ -62,7 +62,7 @@ function createMcpCommandPort(options: McpCommandPortOptions): CommandHostApp['m
     async saveServerStates(servers) {
       appContext.setMcpBootstrapStatus('initializing');
       appContext.turnContext.startSpinner('working');
-      renderFooter();
+      render();
 
       try {
         const globalState = servers.find((server) => server.kind === 'global');
@@ -82,7 +82,7 @@ function createMcpCommandPort(options: McpCommandPortOptions): CommandHostApp['m
         appContext.turnContext.stopSpinner();
         appContext.turnContext.clearWorking();
         appContext.setMcpBootstrapStatus('ready');
-        renderFooter();
+        render();
       }
     }
   };

@@ -90,6 +90,36 @@ test('readLlmConfigDraft reads preset providers and model drafts', () => {
   assert.deepEqual(draft.rootConfig.tools, {bash: {timeoutMs: 2000}});
 });
 
+test('readLlmConfigDraft preserves unknown presets for repair while validation rejects saving them', () => {
+  const draft = readLlmConfigDraft({
+    configPath: '/tmp/echo/config.json',
+    readFile: readConfigFrom(JSON.stringify({
+      llm: {
+        selectedModel: 'future-model',
+        providers: {
+          future: {
+            label: 'Future Provider',
+            preset: 'future-provider-preset',
+            apiKey: 'future-api-key'
+          }
+        },
+        models: [
+          {id: 'future-model', provider: 'future', model: 'future-model-name'}
+        ]
+      }
+    }))
+  });
+
+  assert.equal(draft.providers[0].id, 'future');
+  assert.equal(draft.providers[0].preset, 'future-provider-preset');
+  assert.deepEqual(draft.providers[0].models, [{id: 'future-model', model: 'future-model-name'}]);
+  assert.equal(draft.selectedModelId, 'future-model');
+  assert.deepEqual(validateConfigDraft(draft), {
+    ok: false,
+    error: 'provider Future Provider 的 preset 不存在：future-provider-preset'
+  });
+});
+
 test('readLlmConfigDraft rejects non-object config roots', () => {
   assert.throws(
     () => readLlmConfigDraft({

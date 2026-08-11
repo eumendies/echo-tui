@@ -1,7 +1,7 @@
 import {isAbortError} from '../types/agent';
 import {summarizeText} from '../debug/debug-context';
 import {emitToolApprovalRequestHook, emitToolApprovalResponseHook} from '../hooks/lifecycle-events';
-import {createToolApprovalResolver} from './tool-approval-resolver';
+import {createToolApprovalResolver} from './tool-approval/resolver';
 
 import type {AgentCallbacks, ReasoningEffort, RunAgent, ToolApprovalDecision} from '../types/agent';
 import type {DebugContext} from '../debug/debug-context';
@@ -10,7 +10,7 @@ import type {ToolApprovalRequest, ToolCall, ToolResultAttachment} from '../types
 import type {TranscriptRecord, UserTranscriptMetadata} from '../types/transcript';
 import type {AppContext} from './state/app-context';
 import type {ToolApprovalContext} from './state/tool-approval-context';
-import type {ToolApprovalReviewer} from './tool-approval-resolver';
+import type {ToolApprovalReviewer} from './tool-approval/resolver';
 import type {UserQuestionContext} from './state/user-question-context';
 
 type AssistantTurnRunnerInput = {
@@ -19,16 +19,16 @@ type AssistantTurnRunnerInput = {
   toolApproval: ToolApprovalContext;
   userQuestion: UserQuestionContext;
   userText: string;
+  userRequestText: string; // 展开前的用户原始输入，不能退化为 provider-facing 展开文本。
   displayText?: string;
   metadata?: UserTranscriptMetadata;
   modelProfileIdOverride?: string;
   reasoningEffortOverride?: ReasoningEffort;
   attachments?: ToolResultAttachment[];
   debug: DebugContext;
-  appendRecord: (record: TranscriptRecord) => void;
-  appendRecords: (records: TranscriptRecord[]) => void;
+  renderRecords: (records: TranscriptRecord[]) => void;
+  render: (finalizeRecord?: Extract<TranscriptRecord, {role: 'assistant' | 'reasoning_summary'}>) => void;
   hooks: LifecycleHookDispatcher;
-  renderFooter: () => void;
   toolApprovalReviewer?: ToolApprovalReviewer; // 仅交互式 auto 审批使用的独立模型判断器。
 };
 
@@ -43,16 +43,16 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
     toolApproval,
     userQuestion,
     userText,
+    userRequestText,
     displayText,
     metadata,
     modelProfileIdOverride,
     reasoningEffortOverride,
     attachments,
     debug,
-    appendRecord,
-    appendRecords,
-    hooks,
-    renderFooter
+    renderRecords,
+    render,
+    hooks
   } = input;
 
   appContext.beginChangeCheckpoint();
@@ -66,6 +66,7 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
   });
   // thinking 和 streaming 都只进入 pending preview，完成或 partial 失败后才正式追加 assistant block。
   const turn = appContext.beginAssistantTurn(modelProfileIdOverride, reasoningEffortOverride);
+  const turnUserRecordIndex = appContext.transcriptContext.getRecords().length - 1;
   const isCurrentTurn = () => appContext.turnContext.isCurrentAssistantTurn(turn);
   /** 只有创建人工审批 surface 时才派发交互式审批 lifecycle hooks。 */
   async function requestManualApproval(call: ToolCall, request?: ToolApprovalRequest): Promise<ToolApprovalDecision> {
@@ -77,11 +78,15 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
   }
   const toolApprovalResolver = createToolApprovalResolver({
     abortSignal: turn.abortSignal,
+    currentUserRequest: userRequestText,
+    cwd: () => appContext.getCurrentCwd(),
+    debug,
     getRecords: () => appContext.transcriptContext.getRecords(),
     interactionMode,
     isCurrentTurn,
     reviewer: input.toolApprovalReviewer,
     settings: toolApprovalSettings,
+    turnUserRecordIndex,
     userConfigSnapshot,
     toolApproval: {
       getCachedDecision: (call) => toolApproval.getCachedDecision(call),
@@ -89,16 +94,16 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
     }
   });
   appContext.turnContext.startSpinner('thinking');
-  appendRecord(userRecord);
+  renderRecords([userRecord]);
   const activeStatusLineModel = appContext.turnContext.getActiveStatusLineModelState();
   const hasSkillOverride = Boolean(activeStatusLineModel?.skillOverride);
 
   if (activeStatusLineModel && hasSkillOverride) {
     const effortText = activeStatusLineModel.reasoningEffort ? `，effort ${activeStatusLineModel.reasoningEffort}` : '';
-    appendRecord(appContext.transcriptContext.appendRecord({
+    renderRecords([appContext.transcriptContext.appendRecord({
       role: 'local_notice',
       text: `当前 skill 本轮使用 ${activeStatusLineModel.modelLabel}${effortText}。`
-    }));
+    })]);
   }
   debug.emit('assistant_turn_start', {
     interactionMode,
@@ -127,7 +132,7 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
           ...(model.reasoningEffort ? {reasoningEffort: model.reasoningEffort} : {}),
           ...(hasSkillOverride ? {skillOverride: true} : {})
         });
-        renderFooter();
+        render();
       },
       onThinking() {
         if (!isCurrentTurn()) {
@@ -137,24 +142,26 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
         if (!appContext.turnContext.getWorking()) {
           appContext.turnContext.startSpinner('thinking');
         }
-        renderFooter();
+        render();
       },
       onCompacted(compaction) {
         if (!isCurrentTurn()) {
           return;
         }
 
-        appendRecord(appContext.transcriptContext.applyCompaction(compaction));
+        render();
+        renderRecords([appContext.transcriptContext.applyCompaction(compaction)]);
       },
       onProviderRetry(retry) {
         if (!isCurrentTurn()) {
           return;
         }
 
-        appendRecord(appContext.transcriptContext.appendRecord({
+        render();
+        renderRecords([appContext.transcriptContext.appendRecord({
           role: 'local_notice',
           text: retry.message
-        }));
+        })]);
       },
       onContextUsage(usage) {
         if (!isCurrentTurn()) {
@@ -162,17 +169,22 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
         }
 
         appContext.setContextUsage(usage);
-        renderFooter();
+        render();
       },
       onToken(_char: string, draft: string) {
         if (!isCurrentTurn()) {
           return;
         }
 
+        const startsAssistant = appContext.turnContext.streamingDraft === '';
         if (!appContext.turnContext.getWorking()) {
           appContext.turnContext.startSpinner('working');
         }
+        // 首个正文 token 到达时立即交给 renderer，使 reasoning 尾行先于正文进入终端历史区。
         appContext.turnContext.setStreamingPending(draft);
+        if (startsAssistant) {
+          render();
+        }
       },
       onReasoningUpdate(update) {
         if (!isCurrentTurn()) {
@@ -188,24 +200,26 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
           return;
         }
 
-        appendRecord(appContext.turnContext.appendReasoningSummary(update.text));
+        const reasoning = appContext.turnContext.finalizeReasoning(update.text);
+        if (reasoning) {
+          render(reasoning);
+        }
       },
       onProviderRecords(records: TranscriptRecord[]) {
         if (!isCurrentTurn() || records.length === 0) {
           return;
         }
 
-        appendRecords(appContext.transcriptContext.appendRecords(records));
+        renderRecords(appContext.transcriptContext.appendRecords(records));
       },
       onAssistantSegment(segmentText: string) {
         if (!isCurrentTurn()) {
           return;
         }
 
-        const segmentRecord = appContext.turnContext.commitPartialAssistantTurn(segmentText);
-
-        if (segmentRecord) {
-          appendRecord(segmentRecord);
+        const segment = appContext.turnContext.finalizeAssistantSegment(segmentText);
+        if (segment) {
+          render(segment);
         }
       },
       onToolCall(call) {
@@ -217,7 +231,7 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
           appContext.turnContext.startSpinner('working');
         }
         appContext.turnContext.setToolCallPending(call);
-        renderFooter();
+        render();
       },
       onToolApprovalRequest(call, request) {
         return toolApprovalResolver.request(call, request);
@@ -239,7 +253,7 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
           return;
         }
 
-        appendRecords(appContext.transcriptContext.appendRecords(appContext.turnContext.appendPendingToolResult(result)));
+        renderRecords(appContext.transcriptContext.appendRecords(appContext.turnContext.appendPendingToolResult(result)));
       },
       onTodoStateChange(todoState) {
         if (!isCurrentTurn()) {
@@ -254,12 +268,12 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
         }
 
         appContext.turnContext.stopSpinner();
-        const assistantRecord = appContext.turnContext.finishAssistantTurn(finalText);
+        const assistant = appContext.turnContext.finishAssistantTurn(finalText);
 
-        if (assistantRecord) {
-          appendRecord(assistantRecord);
+        if (assistant) {
+          render(assistant);
         } else {
-          renderFooter();
+          render();
         }
         hooks.emit('assistant_turn_end', {
           interactionMode: appContext.getInteractionMode(),
@@ -279,14 +293,18 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
     }
 
     appContext.turnContext.stopSpinner();
-    const partialRecord = appContext.turnContext.commitPendingAssistantDraft();
+    const reasoning = appContext.turnContext.finalizeReasoning();
+    if (reasoning) {
+      render(reasoning);
+    }
+    const partial = appContext.turnContext.finalizeAssistantSegment(appContext.turnContext.streamingDraft);
 
-    if (partialRecord) {
-      appendRecord(partialRecord);
+    if (partial) {
+      render(partial);
     }
 
     if (isAbortError(error) || turn.abortSignal.aborted) {
-      appendRecord(appContext.turnContext.cancelAssistantTurn());
+      renderRecords([appContext.turnContext.cancelAssistantTurn()]);
       hooks.emit('assistant_turn_cancelled', {
         interactionMode: appContext.getInteractionMode(),
         status: 'cancelled'
@@ -296,7 +314,7 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
         status: 'cancelled'
       });
     } else {
-      appendRecord(appContext.turnContext.failAssistantTurn(error));
+      renderRecords([appContext.turnContext.failAssistantTurn(error)]);
       hooks.emit('assistant_turn_error', {
         interactionMode: appContext.getInteractionMode(),
         status: 'error',
@@ -321,7 +339,7 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
     if (wasCurrentTurn) {
       // 恢复 session 状态只消费 Context 当前已安装 revision；磁盘刷新由 watcher 或显式写入负责。
       appContext.applyModelConfigSnapshot(appContext.captureUserConfigSnapshot());
-      renderFooter();
+      render();
     }
   }
 }

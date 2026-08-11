@@ -213,22 +213,35 @@ export type TranscriptSessionPreviewRecord = {
   createdAt?: string;
 };
 
-export type TranscriptSessionMetadata = {
-  sessionId: string;
-  createdAt: string;
-  updatedAt: string;
-  cwd: string;
-  messageCount: number;
-  lastMessagePreview: string;
-  previewRecords: TranscriptSessionPreviewRecord[];
-  sourcePath: string; // 当前 session 对应 journal 的绝对路径。
-  title: string; // 从首条用户消息派生的稳定会话标题。
+export type TranscriptJournalFingerprint = {
+  size: number; // journal 当前字节数，用于发现追加、修复或替换。
+  mtimeMs: number; // journal 最近修改时间，用于发现同尺寸外部改写。
+};
+
+export type TranscriptSessionSummary = {
+  sessionId: string; // 左侧列表候选对应的持久化 session 身份。
+  createdAt: string; // session 首次创建时间，仅来自 journal header。
+  updatedAt: string; // journal 最后一个有效操作的语义更新时间。
+  cwd: string; // session 所属工作目录，必须与当前项目分区一致。
+  messageCount: number; // replay 最终状态中仍然存在的 record 数量。
+  title: string; // 从 replay 后第一条用户消息派生的稳定列表标题。
+  fingerprint: TranscriptJournalFingerprint; // 生成该摘要时对应的 journal 文件版本。
+};
+
+export type TranscriptSessionIndex = {
+  schemaVersion: 1; // session index 的持久化 schema 版本。
+  sessions: TranscriptSessionSummary[]; // 当前项目下按 sessionId 唯一的轻量摘要集合。
+};
+
+export type TranscriptSessionPreview = {
+  sessionId: string; // 本次预览所属 session，用于隔离迟到异步结果。
+  previewRecords: TranscriptSessionPreviewRecord[]; // replay 最终状态派生的有界右栏记录。
 };
 
 export type ConversationReferenceSource = {
   session: TranscriptSession; // 从源 journal 重放得到且不会替换当前 transcript 的会话。
   sourcePath: string; // 供最终引用暴露给 read_files 的 journal 路径。
-  title: string; // 与候选 metadata 保持一致的会话标题。
+  title: string; // 与候选 summary 保持一致的会话标题。
 };
 
 export type TranscriptJournalStart = {
@@ -322,7 +335,10 @@ export type TranscriptStore = {
   getProjectDir: (cwd: string) => string;
   getProjectMetadata: (cwd: string) => TranscriptProjectMetadata;
   getSessionFilePath: (cwd: string, sessionId: string) => string;
-  listSessions: (cwd: string) => TranscriptSessionMetadata[];
+  getSessionIndexFilePath: (cwd: string) => string;
+  listSessionSummaries: (cwd: string) => TranscriptSessionSummary[];
   loadSession: (cwd: string, sessionId: string) => LoadedTranscriptSession | null;
   loadSessionReadOnly: (cwd: string, sessionId: string) => LoadedTranscriptSession | null; // 重放 journal 但绝不修复或改写源文件。
+  loadSessionPreview: (cwd: string, sessionId: string) => Promise<TranscriptSessionPreview | null>;
+  updateSessionIndex: (cwd: string, reference: TranscriptSessionJournalReference, records: TranscriptRecord[]) => void;
 };

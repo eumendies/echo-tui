@@ -31,7 +31,7 @@ function createHostAppHarness() {
         return true;
       },
       append() {},
-      listResumeSessions() {
+      listSessionSummaries() {
         return [];
       }
     },
@@ -110,7 +110,7 @@ function createHostAppHarness() {
       }
     },
     ui: {
-      renderFooter() {
+      render() {
         calls.renders += 1;
       },
       renderResizeRecovery() {},
