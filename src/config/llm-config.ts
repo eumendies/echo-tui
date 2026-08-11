@@ -165,6 +165,11 @@ type ParsedLlmConfiguration = {
   providers: Map<string, LlmProviderProfile>; // 已解析 preset 与凭据的 provider 索引。
 };
 
+type ParsedProviderProfiles = {
+  providers: Map<string, LlmProviderProfile>; // 已解析 preset 与运行字段的 provider 索引。
+  ignoredProviders: Map<string, string>; // 因 preset 未知而忽略的 provider id 到 preset id 映射。
+};
+
 type LlmModelConfigInfo =
   {
     kind: 'profiles';
@@ -216,17 +221,6 @@ function readOptionalProviderString(source: ConfigSource, fieldName: string, pro
   return value;
 }
 
-function readRequiredProviderPreset(source: ConfigSource, providerId: string): ProviderPreset {
-  const presetId = readRequiredProviderString(source, 'preset', providerId);
-  const preset = getProviderPreset(presetId);
-
-  if (!preset) {
-    throw new LlmConfigError(`LLM provider ${providerId} 的 preset 不存在：${presetId}`);
-  }
-
-  return preset;
-}
-
 function readRequiredProviderString(source: ConfigSource, fieldName: string, providerId: string): string {
   const value = source[fieldName];
 
@@ -247,7 +241,8 @@ function readRequiredProviderString(source: ConfigSource, fieldName: string, pro
 
 function readProviderApiKey(source: ConfigSource, providerId: string, preset: ProviderPreset): string {
   if (!providerRequiresApiKey(preset)) {
-    return readOptionalProviderString(source, 'apiKey', providerId) || preset.defaultApiKey || '';
+    const apiKey = source.apiKey;
+    return typeof apiKey === 'string' && apiKey !== '' ? apiKey : preset.defaultApiKey || '';
   }
 
   return readRequiredProviderString(source, 'apiKey', providerId);
@@ -351,18 +346,10 @@ function readRequiredProfileProvider(source: ConfigSource, profileId: string): s
   return value;
 }
 
-function readOptionalProfilePositiveInteger(source: ConfigSource, fieldName: string, profileId: string): number | undefined {
+function readOptionalProfilePositiveInteger(source: ConfigSource, fieldName: string): number | undefined {
   const value = source[fieldName];
 
-  if (value === undefined || value === null || value === '') {
-    return undefined;
-  }
-
-  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
-    throw new LlmConfigError(`LLM 模型 ${profileId} 的 ${fieldName} 必须是正整数`);
-  }
-
-  return value;
+  return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : undefined;
 }
 
 function readConfiguredSelectedModelId(llmConfig: ConfigSource): string | undefined {
@@ -373,7 +360,7 @@ function readConfiguredSelectedModelId(llmConfig: ConfigSource): string | undefi
   }
 
   if (typeof selectedModel !== 'string') {
-    throw new LlmConfigError('LLM 配置 selectedModel 必须是字符串');
+    return undefined;
   }
 
   return selectedModel;
@@ -391,7 +378,7 @@ function resolveSelectedProfile(llmConfig: ConfigSource, models: LlmModelProfile
   return overrideProfile || selectedProfile || models[0];
 }
 
-function parseProviderProfiles(llmConfig: ConfigSource): Map<string, LlmProviderProfile> {
+function parseProviderProfiles(llmConfig: ConfigSource): ParsedProviderProfiles {
   const providers = llmConfig.providers;
 
   if (providers === undefined || providers === null || providers === '') {
@@ -401,6 +388,7 @@ function parseProviderProfiles(llmConfig: ConfigSource): Map<string, LlmProvider
   assertPlainObject(providers, 'providers');
 
   const parsedProviders = new Map<string, LlmProviderProfile>();
+  const ignoredProviders = new Map<string, string>();
 
   for (const [providerId, rawProvider] of Object.entries(providers)) {
     if (providerId.trim() === '') {
@@ -409,8 +397,16 @@ function parseProviderProfiles(llmConfig: ConfigSource): Map<string, LlmProvider
 
     assertPlainObject(rawProvider, `providers.${providerId}`);
 
-    const preset = readRequiredProviderPreset(rawProvider, providerId);
-    const userBaseURL = readOptionalProviderString(rawProvider, 'baseURL', providerId);
+    const presetId = readRequiredProviderString(rawProvider, 'preset', providerId);
+    const preset = getProviderPreset(presetId);
+    if (!preset) {
+      ignoredProviders.set(providerId, presetId);
+      continue;
+    }
+
+    const userBaseURL = preset.baseURLMode === 'optional' || preset.baseURLMode === 'required'
+      ? readOptionalProviderString(rawProvider, 'baseURL', providerId)
+      : undefined;
     const baseURL = preset.baseURLMode === 'fixed' ? preset.baseURL : userBaseURL;
     const userHeaders = readOptionalHeaders(rawProvider, 'headers', `LLM provider ${providerId}`);
     const headers = {
@@ -431,14 +427,11 @@ function parseProviderProfiles(llmConfig: ConfigSource): Map<string, LlmProvider
     });
   }
 
-  return parsedProviders;
+  return {providers: parsedProviders, ignoredProviders};
 }
 
-function parseModelProfile(rawProfile: unknown, index: number, providers: Map<string, LlmProviderProfile>): LlmModelProfile {
-  assertPlainObject(rawProfile, `models[${index}]`);
-
+function parseModelProfile(rawProfile: ConfigSource, index: number, provider: string, providers: Map<string, LlmProviderProfile>): LlmModelProfile {
   const id = readRequiredProfileString(rawProfile, 'id', `#${index + 1}`);
-  const provider = readRequiredProfileProvider(rawProfile, id);
 
   if (!providers.has(provider)) {
     throw new LlmConfigError(`LLM 模型 ${id} 引用了不存在的 provider：${provider}`);
@@ -458,11 +451,11 @@ function parseModelProfile(rawProfile: unknown, index: number, providers: Map<st
     model: readRequiredProfileString(rawProfile, 'model', id),
     ...(reasoningEffort ? {reasoningEffort} : {}),
     ...(reasoningSummary ? {reasoningSummary} : {}),
-    contextWindow: readOptionalProfilePositiveInteger(rawProfile, 'contextWindow', id)
+    contextWindow: readOptionalProfilePositiveInteger(rawProfile, 'contextWindow')
   };
 }
 
-function parseModelProfiles(llmConfig: ConfigSource, providers: Map<string, LlmProviderProfile>): LlmModelProfile[] {
+function parseModelProfiles(llmConfig: ConfigSource, providers: Map<string, LlmProviderProfile>, ignoredProviders: Map<string, string>): LlmModelProfile[] {
   const models = llmConfig.models;
 
   if (!hasUsableModels(models)) {
@@ -470,17 +463,27 @@ function parseModelProfiles(llmConfig: ConfigSource, providers: Map<string, LlmP
   }
 
   const seenIds = new Set<string>();
+  const parsedModels: LlmModelProfile[] = [];
 
-  return models.map((profile, index) => {
-    const parsedProfile = parseModelProfile(profile, index, providers);
+  for (const [index, profile] of models.entries()) {
+    assertPlainObject(profile, `models[${index}]`);
+    const profileLabel = typeof profile.id === 'string' && profile.id.trim() !== '' ? profile.id : `#${index + 1}`;
+    const provider = readRequiredProfileProvider(profile, profileLabel);
+    if (ignoredProviders.has(provider)) {
+      continue;
+    }
+
+    const parsedProfile = parseModelProfile(profile, index, provider, providers);
 
     if (seenIds.has(parsedProfile.id)) {
       throw new LlmConfigError(`LLM 模型 id 重复：${parsedProfile.id}`);
     }
 
     seenIds.add(parsedProfile.id);
-    return parsedProfile;
-  });
+    parsedModels.push(parsedProfile);
+  }
+
+  return parsedModels;
 }
 
 function withOptionalHeaders(config: Pick<LlmConfig, 'agentType' | 'apiKey' | 'baseURL' | 'codexOAuth'>, headers?: Record<string, string>): Pick<LlmConfig, 'agentType' | 'apiKey' | 'baseURL' | 'codexOAuth' | 'headers'> {
@@ -508,8 +511,13 @@ function resolveSelectedProviderConfig(selectedProfile: LlmModelProfile, provide
 function parseLlmConfiguration(rootConfig: ConfigSource): ParsedLlmConfiguration {
   assertPlainObject(rootConfig.llm, 'llm');
   const llmConfig = rootConfig.llm;
-  const providers = parseProviderProfiles(llmConfig);
-  const models = parseModelProfiles(llmConfig, providers);
+  const {providers, ignoredProviders} = parseProviderProfiles(llmConfig);
+  const models = parseModelProfiles(llmConfig, providers, ignoredProviders);
+
+  if (hasUsableModels(llmConfig.models) && models.length === 0 && ignoredProviders.size > 0) {
+    const ignored = [...ignoredProviders].map(([providerId, presetId]) => `${providerId} (${presetId})`).join('、');
+    throw new LlmConfigError(`LLM 配置没有可解析的有效 models；以下 provider 使用未知 preset：${ignored}`);
+  }
 
   return {llmConfig, models, providers};
 }

@@ -1363,6 +1363,45 @@ test('ModelContext reads provider-backed model profiles and current selection', 
   });
 });
 
+test('ModelContext exposes only models backed by known presets and falls back from stale session selection', () => {
+  withTemporaryModelConfig({
+    llm: {
+      selectedModel: 'legacy-model',
+      providers: {
+        legacy: {preset: 'future-provider-preset', apiKey: 'legacy-api-key'},
+        openai: {preset: 'openai-responses-api', apiKey: 'openai-api-key'}
+      },
+      models: [
+        {id: 'legacy-model', provider: 'legacy', model: 'future-model'},
+        {id: 'current-model', provider: 'openai', model: 'gpt-4.1'}
+      ]
+    }
+  }, () => {
+    const settingsStore = createFakeSessionModelSettingsStore([{
+      schemaVersion: 1,
+      sessionId: 'session-stale',
+      modelProfileId: 'legacy-model',
+      updatedAt: '2026-05-19T00:00:00.000Z'
+    }]);
+    const context = createModelContext({settingsStore});
+
+    context.restoreSession('session-stale');
+
+    assert.deepEqual(context.createModelCommandInfo(), {
+      models: [
+        {id: 'current-model', model: 'gpt-4.1', provider: 'openai'}
+      ],
+      selectedIndex: 0
+    });
+    assert.equal(context.getStatusLineModelState().modelLabel, 'gpt-4.1');
+    assert.deepEqual(context.createStatusInfo(), {
+      agentType: 'openai',
+      model: 'gpt-4.1',
+      provider: 'openai'
+    });
+  });
+});
+
 test('ModelContext defaults /effort selection to medium when profile has no effort', () => {
   withTemporaryModelConfig({
     llm: {

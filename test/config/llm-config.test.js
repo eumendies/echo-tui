@@ -986,6 +986,103 @@ test('readLlmModelConfigInfo returns provider-backed models for /model', () => {
   });
 });
 
+test('readLlmConfig ignores unknown provider presets and their models while keeping valid profiles usable', () => {
+  const configText = JSON.stringify({
+    llm: {
+      selectedModel: 'legacy-model',
+      providers: {
+        legacy: {preset: 'future-provider-preset', apiKey: 'legacy-secret'},
+        openai: {preset: OPENAI_PRESET, apiKey: 'openai-api-key'}
+      },
+      models: [
+        {id: 'legacy-model', provider: 'legacy', model: 'future-model'},
+        {id: 'current-model', provider: 'openai', model: 'gpt-4.1'}
+      ]
+    }
+  });
+  const config = readLlmConfig({
+    configPath: '/tmp/echo-config.json',
+    readFile: readConfigFrom(configText)
+  });
+  const info = readLlmModelConfigInfo({
+    configPath: '/tmp/echo-config.json',
+    readFile: readConfigFrom(configText)
+  });
+
+  assert.equal(config.model, 'gpt-4.1');
+  assert.equal(config.apiKey, 'openai-api-key');
+  assert.deepEqual(info, {
+    kind: 'profiles',
+    selectedModelId: 'current-model',
+    models: [
+      {id: 'current-model', provider: 'openai', model: 'gpt-4.1', contextWindow: undefined}
+    ]
+  });
+});
+
+test('readLlmConfig treats invalid optional model selection and context window as missing', () => {
+  const configText = JSON.stringify({
+    llm: {
+      selectedModel: {id: 'deep'},
+      providers: {
+        openai: {preset: OPENAI_PRESET, apiKey: 'openai-api-key'}
+      },
+      models: [
+        {id: 'fast', provider: 'openai', model: 'gpt-5.4', contextWindow: 'invalid'},
+        {id: 'deep', provider: 'openai', model: 'gpt-deep'}
+      ]
+    }
+  });
+  const config = readLlmConfig({
+    configPath: '/tmp/echo-config.json',
+    readFile: readConfigFrom(configText)
+  });
+  const info = readLlmModelConfigInfo({
+    configPath: '/tmp/echo-config.json',
+    readFile: readConfigFrom(configText)
+  });
+
+  assert.equal(config.model, 'gpt-5.4');
+  assert.equal(config.contextWindow, undefined);
+  assert.equal(resolveContextWindow(config), 1_050_000);
+  assert.equal(info.selectedModelId, 'fast');
+  assert.equal(info.models[0].contextWindow, undefined);
+});
+
+test('readLlmConfig ignores provider fields that the selected preset does not consume', () => {
+  const fakeConfig = readLlmConfig({
+    configPath: '/tmp/echo-config.json',
+    readFile: readConfigFrom(JSON.stringify({
+      llm: {
+        providers: {
+          fake: {preset: FAKE_PRESET, apiKey: {invalid: true}, baseURL: {invalid: true}}
+        },
+        models: [
+          {id: 'fake', provider: 'fake', model: 'echo-fake-agent'}
+        ]
+      }
+    }))
+  });
+  const ollamaConfig = readLlmConfig({
+    configPath: '/tmp/echo-config.json',
+    readFile: readConfigFrom(JSON.stringify({
+      llm: {
+        providers: {
+          ollama: {preset: 'ollama', apiKey: 123, baseURL: 123}
+        },
+        models: [
+          {id: 'ollama', provider: 'ollama', model: 'qwen2.5-coder:7b'}
+        ]
+      }
+    }))
+  });
+
+  assert.equal(fakeConfig.apiKey, '');
+  assert.equal(fakeConfig.baseURL, undefined);
+  assert.equal(ollamaConfig.apiKey, 'ollama');
+  assert.equal(ollamaConfig.baseURL, 'http://localhost:11434/v1');
+});
+
 test('readLlmConfig reports provider-backed configuration errors safely', () => {
   assert.throws(
     () => readLlmConfig({
@@ -1074,7 +1171,27 @@ test('readLlmConfig reports provider-backed configuration errors safely', () => 
         }
       }))
     }),
-    /LLM provider openai 的 preset 不存在：missing-preset/
+    (thrown) => {
+      assert.match(thrown.message, /没有可解析的有效 models/);
+      assert.match(thrown.message, /openai \(missing-preset\)/);
+      assert.doesNotMatch(thrown.message, /secret-value/);
+      return true;
+    }
+  );
+
+  assert.throws(
+    () => readLlmConfig({
+      configPath: '/tmp/echo-config.json',
+      readFile: readConfigFrom(JSON.stringify({
+        llm: {
+          providers: {openai: {preset: OPENAI_PRESET, apiKey: 'secret-value', baseURL: 123}},
+          models: [
+            {id: 'default', provider: 'openai', model: 'test-model'}
+          ]
+        }
+      }))
+    }),
+    /LLM provider openai 的 baseURL 必须是字符串/
   );
 
   assert.throws(
