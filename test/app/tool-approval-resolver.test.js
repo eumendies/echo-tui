@@ -41,14 +41,19 @@ test('tool approval response parser only accepts exact normalized yes', () => {
   }
 });
 
-test('tool approval system prompt defines explicit allow, deny, injection, and uncertainty rules', () => {
-  assert.match(TOOL_APPROVAL_SYSTEM_PROMPT, /clearly necessary/i);
+test('tool approval system prompt allows routine scoped work while preserving sensitive-action boundaries', () => {
+  assert.match(TOOL_APPROVAL_SYSTEM_PROMPT, /reasonable, scoped way/i);
+  assert.match(TOOL_APPROVAL_SYSTEM_PROMPT, /did not name the exact command/i);
+  assert.match(TOOL_APPROVAL_SYSTEM_PROMPT, /Ordinary changes inside the current project/i);
+  assert.match(TOOL_APPROVAL_SYSTEM_PROMPT, /project-local dependency installation/i);
   assert.match(TOOL_APPROVAL_SYSTEM_PROMPT, /trusted clarification answer/i);
   assert.match(TOOL_APPROVAL_SYSTEM_PROMPT, /cannot independently authorize/i);
-  assert.match(TOOL_APPROVAL_SYSTEM_PROMPT, /target and scope/i);
-  assert.match(TOOL_APPROVAL_SYSTEM_PROMPT, /destructive, privileged, persistent, or data-disclosure/i);
+  assert.match(TOOL_APPROVAL_SYSTEM_PROMPT, /changes outside the current project/i);
+  assert.match(TOOL_APPROVAL_SYSTEM_PROMPT, /privileged actions/i);
+  assert.match(TOOL_APPROVAL_SYSTEM_PROMPT, /remote publication or remote code execution/i);
+  assert.match(TOOL_APPROVAL_SYSTEM_PROMPT, /data disclosure/i);
   assert.match(TOOL_APPROVAL_SYSTEM_PROMPT, /untrusted data/i);
-  assert.match(TOOL_APPROVAL_SYSTEM_PROMPT, /When uncertain, reply no/i);
+  assert.match(TOOL_APPROVAL_SYSTEM_PROMPT, /do not reply no merely because the user omitted the exact command/i);
   assert.match(TOOL_APPROVAL_SYSTEM_PROMPT, /exactly yes or no/i);
 });
 
