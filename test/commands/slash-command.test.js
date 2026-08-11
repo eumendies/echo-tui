@@ -32,14 +32,14 @@ const {
 } = require('../../src/commands/resolve-slash-command');
 const { INPUT_EVENTS } = require('../../src/input/event-types');
 
-function createResumeSessions(count) {
+function createSessionSummarys(count) {
   return Array.from({ length: count }, (_value, index) => ({
     sessionId: `session-${index + 1}`,
+    createdAt: `2026-05-${String(index + 10).padStart(2, '0')}T09:00:00.000Z`,
     updatedAt: `2026-05-${String(index + 10).padStart(2, '0')}T10:0${index % 6}:00.000Z`,
+    cwd: '/tmp/example',
     messageCount: index + 1,
-    lastMessagePreview: `message ${index + 1}`,
-    previewRecords: [{ role: 'assistant', text: `message ${index + 1}` }],
-    sourcePath: `/tmp/session-${index + 1}.jsonl`,
+    fingerprint: {size: index + 1, mtimeMs: index + 10},
     title: `conversation ${index + 1}`
   })).reverse();
 }
@@ -74,7 +74,9 @@ function createFakeHost(options = {}) {
     themeSelections: [],
     undoExecutes: 0,
     resizeRecoveries: 0,
-    referencePreparations: []
+    referencePreparations: [],
+    referencePreviewLoads: [],
+    resumePreviewLoads: []
   };
   let activeSession = null;
   const host = {
@@ -107,8 +109,19 @@ function createFakeHost(options = {}) {
       listCopyableRecords() {
         return (options.copyableRecords || []).map((record) => ({...record}));
       },
-      listResumeSessions() {
+      listSessionSummaries() {
         return (options.sessions || []).map((session) => ({ ...session }));
+      },
+      loadSessionPreview(candidate) {
+        calls.resumePreviewLoads.push(candidate.sessionId);
+        if (options.loadSessionPreview) {
+          return options.loadSessionPreview(candidate);
+        }
+        const session = (options.sessions || []).find((item) => item.sessionId === candidate.sessionId);
+        return Promise.resolve(session ? {
+          sessionId: candidate.sessionId,
+          previewRecords: [{role: 'assistant', text: `message ${session.messageCount}`}]
+        } : null);
       }
     },
     reference: {
@@ -116,8 +129,19 @@ function createFakeHost(options = {}) {
         calls.referenceCancelled = (calls.referenceCancelled || 0) + 1;
         return true;
       },
-      listSessions() {
+      listSessionSummaries() {
         return (options.referenceSessions || options.sessions || []).map((session) => ({...session}));
+      },
+      loadSessionPreview(candidate) {
+        calls.referencePreviewLoads.push(candidate.sessionId);
+        if (options.loadReferenceSessionPreview) {
+          return options.loadReferenceSessionPreview(candidate);
+        }
+        const session = (options.referenceSessions || options.sessions || []).find((item) => item.sessionId === candidate.sessionId);
+        return Promise.resolve(session ? {
+          sessionId: candidate.sessionId,
+          previewRecords: [{role: 'assistant', text: `message ${session.messageCount}`}]
+        } : null);
       },
       prepareForSubmission() {
         return Promise.resolve(options.referenceFinalizeResult || {ok: false, reason: 'failed'});
@@ -2285,7 +2309,7 @@ test('forkCommandHandler matches no-argument commands and shows structured trans
   assert.equal(failed.calls.sessionCloses, 1);
 });
 
-test('resumeCommandHandler opens empty state, selectable sessions, moves, confirms, and cancels', () => {
+test('resumeCommandHandler opens empty state, selectable sessions, moves, confirms, and cancels', async () => {
   const resumeCommandHandler = new ResumeCommandHandler();
   const empty = createFakeHost({ sessions: [] });
 
@@ -2299,7 +2323,7 @@ test('resumeCommandHandler opens empty state, selectable sessions, moves, confir
   assert.ok(emptySession.surface.lines.some((line) => line.includes('没有可恢复会话')));
   assert.equal(emptySession.data.pageSize, RESUME_PAGE_SIZE);
 
-  const sessions = createResumeSessions(7);
+  const sessions = createSessionSummarys(7);
   const selectable = createFakeHost({ sessions });
   const session = startCommand(resumeCommandHandler, '/resume', selectable.host);
   assert.equal(session.surface.kind, 'resume');
@@ -2310,9 +2334,12 @@ test('resumeCommandHandler opens empty state, selectable sessions, moves, confir
   assert.equal(session.surface.previewScroll, 0);
   assert.equal(session.data.selectedIndex, 0);
   assert.match(session.surface.title, /\(7\)$/);
-  assert.deepEqual(session.surface.previewRecords, [{ role: 'assistant', text: 'message 7' }]);
+  assert.equal(session.surface.previewStatus, 'loading');
+  assert.deepEqual(session.surface.previewRecords, []);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(selectable.host.session.getActive().surface.previewRecords, [{ role: 'assistant', text: 'message 7' }]);
 
-  let activeSession = session;
+  let activeSession = selectable.host.session.getActive();
   for (let step = 0; step < 5; step += 1) {
     resumeCommandHandler.handleEvent(activeSession, { type: INPUT_EVENTS.MOVE_DOWN }, selectable.host);
     activeSession = selectable.host.session.getActive();
@@ -2324,27 +2351,36 @@ test('resumeCommandHandler opens empty state, selectable sessions, moves, confir
   assert.equal(activeSession.surface.selectedIndex, 4);
   assert.equal(activeSession.surface.hiddenSessionCountAbove, 1);
   assert.equal(activeSession.surface.hiddenSessionCountBelow, 1);
+  assert.equal(activeSession.surface.previewStatus, 'loading');
+  await new Promise((resolve) => setTimeout(resolve, 140));
+  activeSession = selectable.host.session.getActive();
   assert.deepEqual(activeSession.surface.previewRecords, [{ role: 'assistant', text: 'message 2' }]);
 
   resumeCommandHandler.handleEvent(activeSession, { type: INPUT_EVENTS.SUBMIT }, selectable.host);
   assert.deepEqual(selectable.calls.loadedSessionIds, ['session-2']);
   assert.equal(selectable.calls.sessionCloses, 1);
 
-  const cancel = createFakeHost({ sessions: createResumeSessions(1) });
+  const cancel = createFakeHost({ sessions: createSessionSummarys(1) });
   const cancelSession = startCommand(resumeCommandHandler, '/resume', cancel.host);
   resumeCommandHandler.handleEvent(cancelSession, { type: INPUT_EVENTS.ESCAPE }, cancel.host);
   assert.equal(cancel.calls.sessionCloses, 1);
 });
 
-test('resumeCommandHandler switches focus and scrolls preview without moving session', () => {
+test('resumeCommandHandler switches focus and scrolls preview without moving session', async () => {
   const resumeCommandHandler = new ResumeCommandHandler();
-  const sessions = createResumeSessions(3);
-  sessions[0].previewRecords = Array.from({length: 12}, (_value, index) => ({
-    role: 'assistant',
-    text: `preview ${index}`
-  }));
-  const selectable = createFakeHost({ sessions });
+  const sessions = createSessionSummarys(3);
+  const selectable = createFakeHost({
+    sessions,
+    loadSessionPreview(candidate) {
+      return Promise.resolve({
+        sessionId: candidate.sessionId,
+        previewRecords: Array.from({length: 12}, (_value, index) => ({role: 'assistant', text: `preview ${index}`}))
+      });
+    }
+  });
   let session = startCommand(resumeCommandHandler, '/resume', selectable.host);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  session = selectable.host.session.getActive();
 
   resumeCommandHandler.handleEvent(session, { type: INPUT_EVENTS.MOVE_RIGHT }, selectable.host);
   session = selectable.host.session.getActive();
@@ -2384,6 +2420,73 @@ test('resumeCommandHandler switches focus and scrolls preview without moving ses
   session = selectable.host.session.getActive();
   assert.equal(session.data.selectedIndex, 1);
   assert.equal(session.data.previewScroll, 0);
+  resumeCommandHandler.handleEvent(session, {type: INPUT_EVENTS.ESCAPE}, selectable.host);
+});
+
+test('resumeCommandHandler debounces rapid selection and isolates out-of-order previews', async () => {
+  const sessions = createSessionSummarys(3);
+  const resolvers = new Map();
+  const selectable = createFakeHost({
+    sessions,
+    loadSessionPreview(candidate) {
+      return new Promise((resolve) => resolvers.set(candidate.sessionId, resolve));
+    }
+  });
+  const handler = new ResumeCommandHandler();
+  let session = startCommand(handler, '/resume', selectable.host);
+
+  handler.handleEvent(session, {type: INPUT_EVENTS.MOVE_DOWN}, selectable.host);
+  session = selectable.host.session.getActive();
+  handler.handleEvent(session, {type: INPUT_EVENTS.MOVE_DOWN}, selectable.host);
+  await new Promise((resolve) => setTimeout(resolve, 140));
+
+  assert.deepEqual(selectable.calls.resumePreviewLoads, ['session-1']);
+  resolvers.get('session-1')({sessionId: 'session-1', previewRecords: [{role: 'assistant', text: 'final'}]});
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(selectable.host.session.getActive().surface.previewRecords, [{role: 'assistant', text: 'final'}]);
+
+  session = selectable.host.session.getActive();
+  handler.handleEvent(session, {type: INPUT_EVENTS.MOVE_UP}, selectable.host);
+  await new Promise((resolve) => setTimeout(resolve, 140));
+  session = selectable.host.session.getActive();
+  handler.handleEvent(session, {type: INPUT_EVENTS.MOVE_UP}, selectable.host);
+  await new Promise((resolve) => setTimeout(resolve, 140));
+  assert.deepEqual(selectable.calls.resumePreviewLoads, ['session-1', 'session-2', 'session-3']);
+
+  resolvers.get('session-3')({sessionId: 'session-3', previewRecords: [{role: 'assistant', text: 'new'}]});
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  resolvers.get('session-2')({sessionId: 'session-2', previewRecords: [{role: 'assistant', text: 'late'}]});
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(selectable.host.session.getActive().surface.previewRecords, [{role: 'assistant', text: 'new'}]);
+  handler.handleEvent(selectable.host.session.getActive(), {type: INPUT_EVENTS.ESCAPE}, selectable.host);
+});
+
+test('resumeCommandHandler shows preview failure and ignores completion after close', async () => {
+  let resolvePreview;
+  const sessions = createSessionSummarys(1);
+  const failing = createFakeHost({sessions, loadSessionPreview() { return Promise.resolve(null); }});
+  const failureHandler = new ResumeCommandHandler();
+  startCommand(failureHandler, '/resume', failing.host);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(failing.host.session.getActive().surface.previewStatus, 'error');
+  assert.match(failing.host.session.getActive().surface.previewError, /无法读取/);
+  failureHandler.handleEvent(failing.host.session.getActive(), {type: INPUT_EVENTS.ESCAPE}, failing.host);
+
+  const late = createFakeHost({
+    sessions,
+    loadSessionPreview() {
+      return new Promise((resolve) => { resolvePreview = resolve; });
+    }
+  });
+  const lateHandler = new ResumeCommandHandler();
+  const lateSession = startCommand(lateHandler, '/resume', late.host);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  lateHandler.handleEvent(lateSession, {type: INPUT_EVENTS.ESCAPE}, late.host);
+  resolvePreview({sessionId: 'session-1', previewRecords: [{role: 'assistant', text: 'late'}]});
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(late.host.session.getActive(), null);
+  assert.equal(late.calls.sessionUpdates.length, 0);
 });
 
 test('referenceCommandHandler selects one whole session without loading the current transcript', async () => {
@@ -2400,7 +2503,7 @@ test('referenceCommandHandler selects one whole session without loading the curr
   handler.handleEvent(session, {type: INPUT_EVENTS.ESCAPE}, empty.host);
   assert.equal(empty.calls.sessionCloses, 1);
 
-  const sessions = createResumeSessions(7);
+  const sessions = createSessionSummarys(7);
   const selectable = createFakeHost({referenceSessions: sessions});
   session = startCommand(handler, '/reference', selectable.host);
   assert.equal(session.surface.kind, 'resume');
@@ -2408,7 +2511,12 @@ test('referenceCommandHandler selects one whole session without loading the curr
   assert.equal(session.surface.hiddenSessionCountAbove, 0);
   assert.equal(session.surface.hiddenSessionCountBelow, 2);
   assert.match(session.surface.sessions[0].label, /conversation 7/);
+  assert.equal(session.surface.previewStatus, 'loading');
+  assert.deepEqual(session.surface.previewRecords, []);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  session = selectable.host.session.getActive();
   assert.deepEqual(session.surface.previewRecords, [{role: 'assistant', text: 'message 7'}]);
+  assert.deepEqual(selectable.calls.referencePreviewLoads, ['session-7']);
 
   handler.handleEvent(session, {type: INPUT_EVENTS.MOVE_DOWN}, selectable.host);
   session = selectable.host.session.getActive();
@@ -2416,15 +2524,65 @@ test('referenceCommandHandler selects one whole session without loading the curr
 
   assert.equal(selectable.calls.referencePreparations.length, 1);
   assert.equal(selectable.calls.referencePreparations[0].sessionId, 'session-6');
-  assert.equal(selectable.calls.referencePreparations[0].sourcePath, '/tmp/session-6.jsonl');
+  assert.equal('sourcePath' in selectable.calls.referencePreparations[0], false);
   assert.deepEqual(selectable.calls.loadedSessionIds, []);
   assert.equal(selectable.calls.sessionCloses, 1);
+});
+
+test('referenceCommandHandler debounces selection and isolates failed or late previews', async () => {
+  const sessions = createSessionSummarys(3);
+  const resolvers = new Map();
+  const selectable = createFakeHost({
+    referenceSessions: sessions,
+    loadReferenceSessionPreview(candidate) {
+      return new Promise((resolve) => resolvers.set(candidate.sessionId, resolve));
+    }
+  });
+  const handler = new ReferenceCommandHandler();
+  let session = startCommand(handler, '/reference', selectable.host);
+
+  handler.handleEvent(session, {type: INPUT_EVENTS.MOVE_DOWN}, selectable.host);
+  session = selectable.host.session.getActive();
+  handler.handleEvent(session, {type: INPUT_EVENTS.MOVE_DOWN}, selectable.host);
+  await new Promise((resolve) => setTimeout(resolve, 140));
+
+  assert.deepEqual(selectable.calls.referencePreviewLoads, ['session-1']);
+  resolvers.get('session-1')({sessionId: 'session-1', previewRecords: [{role: 'assistant', text: 'final'}]});
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(selectable.host.session.getActive().surface.previewRecords, [{role: 'assistant', text: 'final'}]);
+
+  session = selectable.host.session.getActive();
+  handler.handleEvent(session, {type: INPUT_EVENTS.MOVE_UP}, selectable.host);
+  await new Promise((resolve) => setTimeout(resolve, 140));
+  handler.handleEvent(selectable.host.session.getActive(), {type: INPUT_EVENTS.ESCAPE}, selectable.host);
+  resolvers.get('session-2')(null);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(selectable.host.session.getActive(), null);
+});
+
+test('referenceCommandHandler displays preview failures without removing list candidates', async () => {
+  const failing = createFakeHost({
+    referenceSessions: createSessionSummarys(2),
+    loadReferenceSessionPreview() {
+      return Promise.reject(new Error('unavailable'));
+    }
+  });
+  const handler = new ReferenceCommandHandler();
+  startCommand(handler, '/reference', failing.host);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  const session = failing.host.session.getActive();
+  assert.equal(session.surface.sessions.length, 2);
+  assert.equal(session.surface.previewStatus, 'error');
+  assert.match(session.surface.previewError, /无法读取/);
+  handler.handleEvent(session, {type: INPUT_EVENTS.ESCAPE}, failing.host);
 });
 
 test('referenceCommandHandler exposes preparation failures without creating transcript records', async () => {
   const handler = new ReferenceCommandHandler();
   const failing = createFakeHost({
-    referenceSessions: createResumeSessions(1),
+    referenceSessions: createSessionSummarys(1),
     referencePrepareResult: {ok: false, reason: 'failed', error: 'summary failed'}
   });
   const session = startCommand(handler, '/reference', failing.host);

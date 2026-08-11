@@ -1,7 +1,7 @@
 import type { InputEvent } from './input';
 import type { AgentInstructionFileName, AgentType, ContextUsage, InteractionMode, ReasoningEffort } from './agent';
 import type {DiffFile, DiffSourceInfo, DiffSourceResult} from './diff';
-import type { CompactionState, PendingConversationReference, PreparedConversationReference, TranscriptForkResult, TranscriptRecord, TranscriptSessionMetadata, UserTranscriptMetadata } from './transcript';
+import type { CompactionState, PendingConversationReference, PreparedConversationReference, TranscriptForkResult, TranscriptRecord, TranscriptSessionSummary, TranscriptSessionPreview, UserTranscriptMetadata } from './transcript';
 import type {UndoExecuteResult, UndoSummary} from './change-history';
 import type {UsageDailyAggregate, UsageQueryOptions} from './usage';
 import type {LifecycleHookConfigDraft, LifecycleHookDraftEntry, LifecycleHookEventName, LifecycleHookTestResult} from './hooks';
@@ -69,7 +69,9 @@ export type ResumeCommandSurface = {
   hiddenSessionCountBelow: number; // 当前左栏窗口之后尚未显示的会话数量。
   selectedIndex: number;
   previewScroll: number;
+  previewStatus: 'loading' | 'ready' | 'error'; // 当前右栏预览的异步生命周期状态。
   previewRecords: ResumeCommandSurfacePreviewRecord[];
+  previewError?: string; // 预览读取失败时展示的稳定错误文案。
   emptyPreviewHint: string;
   dismissHint: string;
 };
@@ -623,12 +625,14 @@ export type CommandHostApp = {
     loadSession(sessionId: string): boolean;
     append(record: TranscriptRecord): void;
     listCopyableRecords(): CopyableMessageRecord[];
-    listResumeSessions(): TranscriptSessionMetadata[];
+    listSessionSummaries(): TranscriptSessionSummary[];
+    loadSessionPreview(candidate: TranscriptSessionSummary): Promise<TranscriptSessionPreview | null>;
   };
   reference: {
     cancelPreparation(): boolean; // 取消正在运行的引用总结，同时保留 pending 素材。
-    listSessions(): TranscriptSessionMetadata[]; // 返回当前 cwd 中除当前会话外的引用候选。
-    prepare(candidate: TranscriptSessionMetadata): Promise<CommandReferencePrepareResult>; // 只读加载候选会话并创建 pending 引用。
+    listSessionSummaries(): TranscriptSessionSummary[]; // 返回当前 cwd 中除当前会话外的轻量引用候选。
+    loadSessionPreview(candidate: TranscriptSessionSummary): Promise<TranscriptSessionPreview | null>; // 按需只读加载当前引用候选的有界预览。
+    prepare(candidate: TranscriptSessionSummary): Promise<CommandReferencePrepareResult>; // 只读完整加载候选会话并创建 pending 引用。
     prepareForSubmission(options?: CommandReferenceSubmissionOptions): Promise<CommandReferenceSubmissionResult>; // 发送前使用本轮模型配置生成最终引用。
   };
   clipboard: {

@@ -1610,6 +1610,64 @@ test('renderFooterLayout renders resume command surfaces with two columns and pr
   assert.ok(bottomLine.startsWith(`${resumeFrameColor}╰─`));
 });
 
+test('renderFooterLayout expands resume surface close to the wide terminal width', () => {
+  const terminalWidth = 180;
+  const layout = renderFooterLayout({
+    composer: createComposer('ignored'),
+    commandSurface: {
+      kind: 'resume',
+      title: '/resume 恢复会话 (1)',
+      sessions: [{label: '2026-05-19 10:00 · 4 条消息'}],
+      hiddenSessionCountAbove: 0,
+      hiddenSessionCountBelow: 0,
+      focus: 'list',
+      selectedIndex: 0,
+      previewScroll: 0,
+      previewStatus: 'ready',
+      previewRecords: [{role: 'assistant', text: 'wide preview'}],
+      emptyPreviewHint: '没有可预览消息',
+      dismissHint: 'Esc 取消'
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    width: terminalWidth
+  });
+  const topLine = layout.lines.find((line) => stripAnsi(line).startsWith('╭'));
+
+  assert.equal(displayWidth(topLine), safeRenderWidth(terminalWidth) - 4);
+});
+
+test('renderFooterLayout renders resume loading and error preview states', () => {
+  const createState = (previewStatus, previewError) => ({
+    composer: createComposer('ignored'),
+    commandSurface: {
+      kind: 'resume',
+      title: '/resume 恢复会话 (1)',
+      sessions: [{label: '2026-05-19 10:00 · 4 条消息'}],
+      hiddenSessionCountAbove: 0,
+      hiddenSessionCountBelow: 0,
+      focus: 'list',
+      selectedIndex: 0,
+      previewScroll: 0,
+      previewStatus,
+      previewRecords: [{role: 'assistant', text: 'must stay hidden'}],
+      ...(previewError ? {previewError} : {}),
+      emptyPreviewHint: '没有可预览消息',
+      dismissHint: 'Esc 取消'
+    },
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    width: 100
+  });
+  const loading = renderFooterLayout(createState('loading')).lines.map(stripAnsi);
+  const failed = renderFooterLayout(createState('error', '无法读取会话预览')).lines.map(stripAnsi);
+
+  assert.ok(loading.some((line) => line.includes('正在加载会话预览')));
+  assert.ok(!loading.some((line) => line.includes('must stay hidden')));
+  assert.ok(failed.some((line) => line.includes('无法读取会话预览')));
+  assert.ok(!failed.some((line) => line.includes('must stay hidden')));
+});
+
 test('renderFooterLayout renders diff surface with side-by-side details on very wide width', () => {
   const layout = renderFooterLayout({
     composer: createComposer(''),

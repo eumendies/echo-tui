@@ -1,22 +1,24 @@
 import {INPUT_EVENTS} from '../input/event-types';
 import {
   SESSION_BROWSER_PAGE_SIZE,
+  createLoadingSessionPreviewState,
   createSessionBrowserSurface,
   formatSessionUpdatedAt,
   navigateSessionBrowser,
   normalizeSessionBrowserData
-} from './session-browser';
+} from './session/session-browser';
+import {SessionBrowserPreviewController} from './session/session-browser-preview-controller';
 
 import type {CommandHandler, CommandHost, CommandSession, InfoCommandSurface, ResumeCommandSurface} from '../types/command';
 import type {InputEvent} from '../types/input';
-import type {TranscriptSessionMetadata} from '../types/transcript';
-import type {SessionBrowserData} from './session-browser';
+import type {TranscriptSessionSummary} from '../types/transcript';
+import type {SessionBrowserData} from './session/session-browser';
 
 export const RESUME_PAGE_SIZE = SESSION_BROWSER_PAGE_SIZE;
 
-type ResumeData = SessionBrowserData;
+type ResumeData = SessionBrowserData<TranscriptSessionSummary>;
 
-function createSessionItem(session: TranscriptSessionMetadata): {label: string} {
+function createSessionItem(session: TranscriptSessionSummary): {label: string} {
   const messageCount = Number.isInteger(session.messageCount) ? session.messageCount : 0;
   return {label: `${formatSessionUpdatedAt(session.updatedAt)} · ${messageCount} 条消息`};
 }
@@ -57,6 +59,7 @@ function confirmResumeSelection(session: CommandSession<ResumeData>, host: Comma
 export class ResumeCommandHandler implements CommandHandler<ResumeData> {
   name = 'resume';
   description = '恢复历史会话';
+  private previewController = new SessionBrowserPreviewController<TranscriptSessionSummary>();
 
   match(text: string): boolean {
     return text.trimEnd() === '/resume';
@@ -66,7 +69,11 @@ export class ResumeCommandHandler implements CommandHandler<ResumeData> {
    * 打开可恢复会话浏览器；空列表使用说明 surface。
    */
   start(_text: string, host: CommandHost): void {
-    const sessions = host.transcript.listResumeSessions().map((session) => ({...session}));
+    this.previewController.invalidate();
+    const sessions = host.transcript.listSessionSummaries().map((session) => ({
+      ...session,
+      fingerprint: {...session.fingerprint}
+    }));
 
     if (sessions.length === 0) {
       host.session.open({
@@ -78,30 +85,54 @@ export class ResumeCommandHandler implements CommandHandler<ResumeData> {
       return;
     }
 
-    const data = normalizeSessionBrowserData({sessions});
+    const data = normalizeSessionBrowserData<TranscriptSessionSummary>({
+      sessions,
+      previewState: createLoadingSessionPreviewState(sessions[0]?.sessionId)
+    });
     host.session.open({commandName: 'resume', handler: this, surface: createResumeSurfaceFromData(data), data});
+    this.schedulePreview(data, host, 0);
   }
 
   /**
    * 复用共享浏览控制器处理列表和预览导航，并在确认时恢复目标 session。
    */
   handleEvent(session: CommandSession<ResumeData>, event: InputEvent, host: CommandHost): void {
-    const navigation = navigateSessionBrowser(normalizeSessionBrowserData(session.data), event);
+    const current = normalizeSessionBrowserData(session.data);
+    const navigation = navigateSessionBrowser(current, event);
 
     if (navigation.handled) {
       if (navigation.changed) {
+        const selectionChanged = navigation.data.selectedIndex !== current.selectedIndex;
         host.session.update({data: navigation.data, surface: createResumeSurfaceFromData(navigation.data)});
+        if (selectionChanged) {
+          this.schedulePreview(navigation.data, host, 120);
+        }
       }
       return;
     }
 
     if (event.type === INPUT_EVENTS.SUBMIT) {
+      this.previewController.invalidate();
       confirmResumeSelection(session, host);
       return;
     }
 
     if (event.type === INPUT_EVENTS.ESCAPE) {
+      this.previewController.invalidate();
       host.session.close();
     }
+  }
+
+  /** 延迟加载稳定选中项，具体防抖和迟到结果隔离由共享 controller 负责。 */
+  private schedulePreview(data: ResumeData, host: CommandHost, delayMs: number): void {
+    this.previewController.schedule({
+      commandName: 'resume',
+      createSurface: createResumeSurfaceFromData,
+      data,
+      delayMs,
+      errorMessage: '无法读取会话预览',
+      host,
+      loadPreview: (candidate) => host.transcript.loadSessionPreview(candidate)
+    });
   }
 }

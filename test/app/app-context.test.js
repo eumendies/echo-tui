@@ -193,7 +193,7 @@ function createFakeTranscriptStore(initialSessions = []) {
     return {...entry.reference};
   }
 
-  function listSessions(cwd) {
+  function listSessionSummaries(cwd) {
     listCallCount += 1;
     return getSessions(cwd)
       .map(({session}) => ({
@@ -202,14 +202,17 @@ function createFakeTranscriptStore(initialSessions = []) {
         updatedAt: session.updatedAt,
         cwd: session.cwd,
         messageCount: session.records.length,
-        lastMessagePreview: session.records.length > 0 ? session.records.at(-1).text : '空会话',
-        previewRecords: createPreviewRecords(session.records),
-        sourcePath: `/tmp/${session.sessionId}.jsonl`,
         title: session.records.find((record) => record.role === 'user')?.displayText
           || session.records.find((record) => record.role === 'user')?.text
-          || '未命名对话'
+          || '未命名对话',
+        fingerprint: {size: session.records.length, mtimeMs: 1}
       }))
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  }
+
+  async function loadSessionPreview(cwd, sessionId) {
+    const loaded = loadSession(cwd, sessionId);
+    return loaded ? {sessionId, previewRecords: createPreviewRecords(loaded.session.records)} : null;
   }
 
   function loadSession(cwd, sessionId) {
@@ -229,9 +232,11 @@ function createFakeTranscriptStore(initialSessions = []) {
     createSession,
     appendSession,
     getSessionFilePath,
-    listSessions,
+    listSessionSummaries,
     loadSession,
     loadSessionReadOnly,
+    loadSessionPreview,
+    updateSessionIndex() {},
     get listCallCount() {
       return listCallCount;
     },
@@ -2355,7 +2360,7 @@ test('AppContext resumes persisted edit_file history through a new store instanc
   fs.rmSync(cwd, {recursive: true, force: true});
 });
 
-test('AppContext exposes semantic subcontexts for resume sessions and composer state', () => {
+test('AppContext exposes semantic subcontexts for resume sessions and composer state', async () => {
   const transcriptStore = createFakeTranscriptStore([
     {
       sessionId: 'saved-session',
@@ -2373,7 +2378,14 @@ test('AppContext exposes semantic subcontexts for resume sessions and composer s
   assert.equal(context.composerContext.getText(), 'draft question');
   assert.deepEqual(context.composerContext.getInputHistory(), ['previous input']);
   assert.equal(context.turnContext.isResponding(), true);
-  assert.equal(context.transcriptContext.listResumeSessions()[0].sessionId, 'saved-session');
+  const candidate = context.transcriptContext.listSessionSummaries()[0];
+  assert.equal(candidate.sessionId, 'saved-session');
+  assert.equal('previewRecords' in candidate, false);
+  assert.deepEqual(await context.transcriptContext.loadSessionPreview(candidate), {
+    sessionId: 'saved-session',
+    previewRecords: [{role: 'assistant', text: 'latest reply'}]
+  });
+  assert.deepEqual(context.transcriptContext.records, []);
 });
 
 test('AppContext lists reference sessions without current session and clears pending references on load and clear', () => {

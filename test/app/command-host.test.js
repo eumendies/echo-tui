@@ -259,7 +259,8 @@ test('createCommandHost composes the complete command protocol from domain ports
     'ui'
   ]);
   assert.deepEqual(Object.keys(host.reference), [
-    'listSessions',
+    'listSessionSummaries',
+    'loadSessionPreview',
     'cancelPreparation',
     'prepare',
     'prepareForSubmission'

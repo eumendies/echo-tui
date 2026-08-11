@@ -47,8 +47,11 @@ function createTranscriptCommandPort(options: TranscriptCommandPortOptions): Com
     listCopyableRecords() {
       return createCopyableRecords(appContext.transcriptContext.records);
     },
-    listResumeSessions() {
-      return appContext.transcriptContext.listResumeSessions();
+    listSessionSummaries() {
+      return appContext.transcriptContext.listSessionSummaries();
+    },
+    loadSessionPreview(candidate) {
+      return appContext.transcriptContext.loadSessionPreview(candidate);
     }
   };
 }

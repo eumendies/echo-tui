@@ -16,6 +16,7 @@ const {
   STORE_SCHEMA_VERSION,
   createTranscriptStore
 } = require('../../src/persistence/transcript-store');
+const {TranscriptContext} = require('../../src/app/state/transcript-context');
 const {createOffloadedTextPreview, createToolResultStore} = require('../../src/tools/tool-result-offloading');
 
 function createTempRoot() {
@@ -366,7 +367,7 @@ test('createTranscriptStore repairs a valid final line without newline before co
   ]);
 });
 
-test('createTranscriptStore lists valid JSONL sessions by updatedAt with bounded previews', () => {
+test('createTranscriptStore lists lightweight summaries and loads bounded previews on demand', async () => {
   const rootDir = createTempRoot();
   const store = createTranscriptStore({rootDir});
   const cwd = '/tmp/example/project';
@@ -381,22 +382,22 @@ test('createTranscriptStore lists valid JSONL sessions by updatedAt with bounded
   fs.writeFileSync(path.join(path.dirname(store.getSessionFilePath(cwd, first.sessionId)), 'broken.jsonl'), '{not-json', 'utf8');
   fs.writeFileSync(path.join(path.dirname(store.getSessionFilePath(cwd, first.sessionId)), 'legacy.json'), JSON.stringify({sessionId: 'legacy'}), 'utf8');
 
-  const sessions = store.listSessions(cwd);
+  const sessions = store.listSessionSummaries(cwd);
+  const preview = await store.loadSessionPreview(cwd, second.sessionId);
 
   assert.equal(sessions.length, 2);
   assert.equal(sessions[0].sessionId, second.sessionId);
   assert.equal(sessions[0].updatedAt, '2026-07-01T12:00:00.000Z');
   assert.equal(sessions[0].messageCount, 25);
-  assert.equal(sessions[0].lastMessagePreview.startsWith('record-24 '), true);
-  assert.equal(sessions[0].previewRecords.length, 20);
-  assert.equal(sessions[0].previewRecords[0].text.startsWith('record-5 '), true);
-  assert.equal(sessions[0].previewRecords[0].text.length, 500);
   assert.equal(sessions[0].title.startsWith('record-0 '), true);
-  assert.equal(sessions[0].sourcePath, store.getSessionFilePath(cwd, second.sessionId));
+  assert.equal('previewRecords' in sessions[0], false);
+  assert.equal(preview.previewRecords.length, 20);
+  assert.equal(preview.previewRecords[0].text.startsWith('record-5 '), true);
+  assert.equal(preview.previewRecords[0].text.length, 500);
   assert.equal(sessions[1].sessionId, first.sessionId);
 });
 
-test('reference metadata title and preview come from replayed final records', () => {
+test('session summary title and on-demand preview come from replayed final records', async () => {
   const rootDir = createTempRoot();
   const store = createTranscriptStore({rootDir});
   const cwd = '/tmp/example/project';
@@ -407,15 +408,15 @@ test('reference metadata title and preview come from replayed final records', ()
   reference = store.appendSession(cwd, reference, createTruncateRecordsOperation(1));
   store.appendSession(cwd, reference, createAppendRecordsOperation([{role: 'assistant', text: 'final answer'}]));
 
-  const [session] = store.listSessions(cwd);
+  const [session] = store.listSessionSummaries(cwd);
+  const preview = await store.loadSessionPreview(cwd, reference.sessionId);
 
   assert.equal(session.title, 'Readable title');
-  assert.equal(session.sourcePath, store.getSessionFilePath(cwd, reference.sessionId));
-  assert.deepEqual(session.previewRecords.map((record) => record.text), ['Readable title', 'final answer']);
-  assert.equal(session.previewRecords.some((record) => record.text.includes('discarded')), false);
+  assert.deepEqual(preview.previewRecords.map((record) => record.text), ['Readable title', 'final answer']);
+  assert.equal(preview.previewRecords.some((record) => record.text.includes('discarded')), false);
 });
 
-test('createTranscriptStore hides provider-facing mode prompts from session previews', () => {
+test('createTranscriptStore hides provider-facing mode prompts from session summaries and previews', async () => {
   const rootDir = createTempRoot();
   const store = createTranscriptStore({rootDir});
   const cwd = '/tmp/example/project';
@@ -429,8 +430,175 @@ test('createTranscriptStore hides provider-facing mode prompts from session prev
     }
   }]), '2026-07-01T00:00:00.000Z');
 
-  const [session] = store.listSessions(cwd);
+  const [session] = store.listSessionSummaries(cwd);
+  const preview = await store.loadSessionPreview(cwd, session.sessionId);
 
-  assert.equal(session.lastMessagePreview, 'inspect');
-  assert.deepEqual(session.previewRecords, [{role: 'user', text: 'inspect'}]);
+  assert.equal(session.title, 'inspect');
+  assert.deepEqual(preview.previewRecords, [{role: 'user', text: 'inspect'}]);
+});
+
+test('session index fast path sorts summaries without reading journal bodies', () => {
+  const rootDir = createTempRoot();
+  const cwd = '/tmp/example/resume-index-fast';
+  const store = createTranscriptStore({rootDir});
+  const first = store.createSession(cwd, createAppendRecordsOperation([{role: 'user', text: 'first'}]), '2026-07-01T00:00:00.000Z');
+  const second = store.createSession(cwd, createAppendRecordsOperation([{role: 'user', text: 'second'}]), '2026-07-02T00:00:00.000Z');
+
+  assert.deepEqual(store.listSessionSummaries(cwd).map((session) => session.sessionId), [second.sessionId, first.sessionId]);
+  const journalReads = [];
+  const countingFs = Object.create(fs);
+  countingFs.readFileSync = (filePath, encoding) => {
+    if (String(filePath).endsWith('.jsonl')) journalReads.push(filePath);
+    return fs.readFileSync(filePath, encoding);
+  };
+  const reopened = createTranscriptStore({rootDir, fsImpl: countingFs});
+  const sessions = reopened.listSessionSummaries(cwd);
+
+  assert.deepEqual(sessions.map((session) => session.messageCount), [1, 1]);
+  assert.deepEqual(journalReads, []);
+  assert.equal(fs.existsSync(reopened.getSessionIndexFilePath(cwd)), true);
+});
+
+test('session index rebuilds only stale journals and removes invalid or orphan entries', () => {
+  const rootDir = createTempRoot();
+  const cwd = '/tmp/example/resume-index-reconcile';
+  const store = createTranscriptStore({rootDir});
+  const first = store.createSession(cwd, createAppendRecordsOperation([{role: 'user', text: 'first'}]), '2026-07-01T00:00:00.000Z');
+  const second = store.createSession(cwd, createAppendRecordsOperation([{role: 'user', text: 'second'}]), '2026-07-02T00:00:00.000Z');
+  store.listSessionSummaries(cwd);
+  store.appendSession(cwd, first, createAppendRecordsOperation([{role: 'assistant', text: 'changed'}]), '2026-07-03T00:00:00.000Z');
+  const sessionsDir = path.dirname(store.getSessionFilePath(cwd, first.sessionId));
+  fs.writeFileSync(path.join(sessionsDir, 'broken.jsonl'), '{bad json', 'utf8');
+  const persisted = JSON.parse(fs.readFileSync(store.getSessionIndexFilePath(cwd), 'utf8'));
+  persisted.sessions.push({
+    sessionId: 'orphan', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z', cwd,
+    messageCount: 1, title: 'orphan', fingerprint: {size: 1, mtimeMs: 1}
+  });
+  fs.writeFileSync(store.getSessionIndexFilePath(cwd), JSON.stringify(persisted), 'utf8');
+
+  const journalReads = [];
+  const countingFs = Object.create(fs);
+  countingFs.readFileSync = (filePath, encoding) => {
+    if (String(filePath).endsWith('.jsonl')) journalReads.push(path.basename(filePath));
+    return fs.readFileSync(filePath, encoding);
+  };
+  const reopened = createTranscriptStore({rootDir, fsImpl: countingFs});
+  const sessions = reopened.listSessionSummaries(cwd);
+  const repaired = JSON.parse(fs.readFileSync(reopened.getSessionIndexFilePath(cwd), 'utf8'));
+
+  assert.deepEqual(sessions.map((session) => session.sessionId), [first.sessionId, second.sessionId]);
+  assert.deepEqual(journalReads.sort(), [`${first.sessionId}.jsonl`, 'broken.jsonl'].sort());
+  assert.equal(sessions[0].messageCount, 2);
+  assert.deepEqual(repaired.sessions.map((session) => session.sessionId), [first.sessionId, second.sessionId]);
+  assert.deepEqual(fs.readdirSync(sessionsDir).filter((name) => name.includes('index.json.tmp-')), []);
+});
+
+test('session index recovers from invalid index and ignores legacy JSON sessions', () => {
+  const rootDir = createTempRoot();
+  const cwd = '/tmp/example/resume-index-invalid';
+  const store = createTranscriptStore({rootDir});
+  const reference = store.createSession(cwd, createAppendRecordsOperation([{role: 'user', text: 'saved'}]), '2026-07-01T00:00:00.000Z');
+  const sessionsDir = path.dirname(store.getSessionFilePath(cwd, reference.sessionId));
+  fs.writeFileSync(store.getSessionIndexFilePath(cwd), JSON.stringify({schemaVersion: 1, sessions: []}), 'utf8');
+  fs.writeFileSync(path.join(sessionsDir, 'legacy.json'), JSON.stringify({sessionId: 'legacy'}), 'utf8');
+
+  assert.deepEqual(store.listSessionSummaries(cwd).map((session) => session.sessionId), [reference.sessionId]);
+  assert.equal(JSON.parse(fs.readFileSync(store.getSessionIndexFilePath(cwd), 'utf8')).schemaVersion, 1);
+});
+
+test('TranscriptContext maintains session index for append, state update, truncate, load, and fork', () => {
+  const rootDir = createTempRoot();
+  const cwd = '/tmp/example/resume-index-context';
+  const store = createTranscriptStore({rootDir});
+  const context = new TranscriptContext(store, () => cwd);
+
+  context.appendRecord({role: 'user', text: 'hello'});
+  const sourceSessionId = context.currentSessionId;
+  assert.equal(store.listSessionSummaries(cwd)[0].messageCount, 1);
+  context.appendRecord({role: 'assistant', text: 'world'});
+  assert.equal(store.listSessionSummaries(cwd)[0].messageCount, 2);
+  context.updateTodoState({items: [], updatedAt: '2026-07-01T00:00:00.000Z'});
+  assert.equal(store.listSessionSummaries(cwd)[0].messageCount, 2);
+  context.restoreToBoundary(1, undefined);
+  assert.equal(store.listSessionSummaries(cwd)[0].messageCount, 1);
+  assert.ok(context.loadSession(sourceSessionId));
+  const fork = context.forkSession();
+  assert.equal(fork.ok, true);
+  assert.deepEqual(store.listSessionSummaries(cwd).map((session) => session.messageCount), [1, 1]);
+});
+
+test('session index write failure does not roll back a persisted journal', () => {
+  const rootDir = createTempRoot();
+  const cwd = '/tmp/example/resume-index-write-failure';
+  const store = createTranscriptStore({rootDir});
+  const context = new TranscriptContext({
+    ...store,
+    updateSessionIndex() {
+      throw new Error('index unavailable');
+    }
+  }, () => cwd);
+
+  context.appendRecord({role: 'user', text: 'persist me'});
+
+  assert.deepEqual(store.loadSession(cwd, context.currentSessionId).session.records, [{role: 'user', text: 'persist me'}]);
+  assert.deepEqual(store.listSessionSummaries(cwd).map((session) => session.messageCount), [1]);
+});
+
+test('loading a session does not unconditionally rewrite the complete session index', () => {
+  const rootDir = createTempRoot();
+  const cwd = '/tmp/example/resume-load-no-index-write';
+  const store = createTranscriptStore({rootDir});
+  const reference = store.createSession(cwd, createAppendRecordsOperation([{role: 'user', text: 'saved'}]), '2026-07-01T00:00:00.000Z');
+  let indexUpdates = 0;
+  const context = new TranscriptContext({
+    ...store,
+    updateSessionIndex() {
+      indexUpdates += 1;
+    }
+  }, () => cwd);
+
+  assert.ok(context.loadSession(reference.sessionId));
+  assert.equal(indexUpdates, 0);
+});
+
+test('session index removes its temporary file when atomic rename fails', () => {
+  const rootDir = createTempRoot();
+  const cwd = '/tmp/example/resume-index-rename-failure';
+  const store = createTranscriptStore({rootDir});
+  const records = [{role: 'user', text: 'saved'}];
+  const reference = store.createSession(cwd, createAppendRecordsOperation(records), '2026-07-01T00:00:00.000Z');
+  const failingFs = Object.create(fs);
+  failingFs.renameSync = (oldPath, newPath) => {
+    if (String(newPath).endsWith('index.json')) {
+      throw new Error('rename failed');
+    }
+    return fs.renameSync(oldPath, newPath);
+  };
+  const failingStore = createTranscriptStore({rootDir, fsImpl: failingFs});
+
+  assert.throws(() => failingStore.updateSessionIndex(cwd, reference, records), /rename failed/);
+  assert.deepEqual(
+    fs.readdirSync(path.dirname(store.getSessionFilePath(cwd, reference.sessionId))).filter((name) => name.includes('index.json.tmp-')),
+    []
+  );
+});
+
+test('loadSessionPreview asynchronously replays final records without repairing the journal', async () => {
+  const rootDir = createTempRoot();
+  const cwd = '/tmp/example/resume-preview';
+  const store = createTranscriptStore({rootDir});
+  let reference = store.createSession(cwd, createAppendRecordsOperation([
+    {role: 'user', text: 'kept'},
+    {role: 'assistant', text: 'discarded'}
+  ]), '2026-07-01T00:00:00.000Z');
+  reference = store.appendSession(cwd, reference, createTruncateRecordsOperation(1), '2026-07-01T00:00:01.000Z');
+  store.appendSession(cwd, reference, createAppendRecordsOperation([{role: 'assistant', text: 'final'}]), '2026-07-01T00:00:02.000Z');
+  const filePath = store.getSessionFilePath(cwd, reference.sessionId);
+  fs.appendFileSync(filePath, '{"schemaVersion":1,"seq":4', 'utf8');
+  const before = fs.readFileSync(filePath, 'utf8');
+
+  const preview = await store.loadSessionPreview(cwd, reference.sessionId);
+
+  assert.deepEqual(preview.previewRecords.map((record) => record.text), ['kept', 'final']);
+  assert.equal(fs.readFileSync(filePath, 'utf8'), before);
 });

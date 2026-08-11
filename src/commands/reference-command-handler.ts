@@ -1,17 +1,20 @@
 import {INPUT_EVENTS} from '../input/event-types';
 import {
+  createLoadingSessionPreviewState,
   createSessionBrowserSurface,
   formatSessionUpdatedAt,
   navigateSessionBrowser,
   normalizeSessionBrowserData
-} from './session-browser';
+} from './session/session-browser';
+import {SessionBrowserPreviewController} from './session/session-browser-preview-controller';
 
 import type {CommandHandler, CommandHost, CommandSession, InfoCommandSurface, ResumeCommandSurface} from '../types/command';
 import type {InputEvent} from '../types/input';
-import type {SessionBrowserData} from './session-browser';
+import type {TranscriptSessionSummary} from '../types/transcript';
+import type {SessionBrowserData} from './session/session-browser';
 
 // /reference 只负责会话选择交互；journal 重放和总结生命周期由 command port 处理。
-type ReferenceData = SessionBrowserData;
+type ReferenceData = SessionBrowserData<TranscriptSessionSummary>;
 
 /** 创建没有候选会话时的只读提示 surface。 */
 function createEmptySurface(): InfoCommandSurface {
@@ -67,6 +70,7 @@ async function confirmReference(session: CommandSession<ReferenceData>, host: Co
 export class ReferenceCommandHandler implements CommandHandler<ReferenceData> {
   name = 'reference';
   description = '引用历史对话';
+  private previewController = new SessionBrowserPreviewController<TranscriptSessionSummary>();
 
   /** 只匹配无参数的 /reference，尾随空白由 command runtime 统一容忍。 */
   match(text: string): boolean {
@@ -74,18 +78,26 @@ export class ReferenceCommandHandler implements CommandHandler<ReferenceData> {
   }
 
   /**
-   * 打开整会话选择器；只读取当前 cwd 的历史 metadata，不改变当前 transcript。
+   * 打开整会话选择器；首帧只读取当前 cwd 的轻量摘要，不改变当前 transcript。
    */
   start(_text: string, host: CommandHost): void {
-    const sessions = host.reference.listSessions();
+    this.previewController.invalidate();
+    const sessions = host.reference.listSessionSummaries().map((session) => ({
+      ...session,
+      fingerprint: {...session.fingerprint}
+    }));
 
     if (sessions.length === 0) {
       host.session.open({commandName: 'reference', handler: this, surface: createEmptySurface(), data: null});
       return;
     }
 
-    const data = normalizeSessionBrowserData({sessions});
+    const data = normalizeSessionBrowserData<TranscriptSessionSummary>({
+      sessions,
+      previewState: createLoadingSessionPreviewState(sessions[0]?.sessionId)
+    });
     host.session.open({commandName: 'reference', handler: this, surface: createReferenceSurface(data), data});
+    this.schedulePreview(data, host, 0);
   }
 
   /**
@@ -99,21 +111,41 @@ export class ReferenceCommandHandler implements CommandHandler<ReferenceData> {
       return;
     }
 
-    const navigation = navigateSessionBrowser(session.data, event);
+    const current = normalizeSessionBrowserData(session.data);
+    const navigation = navigateSessionBrowser(current, event);
     if (navigation.handled) {
       if (navigation.changed) {
+        const selectionChanged = navigation.data.selectedIndex !== current.selectedIndex;
         host.session.update({data: navigation.data, surface: createReferenceSurface(navigation.data)});
+        if (selectionChanged) {
+          this.schedulePreview(navigation.data, host, 120);
+        }
       }
       return;
     }
 
     if (event.type === INPUT_EVENTS.SUBMIT) {
+      this.previewController.invalidate();
       return confirmReference(session, host);
     }
 
     if (event.type === INPUT_EVENTS.ESCAPE) {
+      this.previewController.invalidate();
       host.session.close();
     }
+  }
+
+  /** 延迟加载稳定选中项，具体防抖和迟到结果隔离由共享 controller 负责。 */
+  private schedulePreview(data: ReferenceData, host: CommandHost, delayMs: number): void {
+    this.previewController.schedule({
+      commandName: 'reference',
+      createSurface: createReferenceSurface,
+      data,
+      delayMs,
+      errorMessage: '无法读取会话预览',
+      host,
+      loadPreview: (candidate) => host.reference.loadSessionPreview(candidate)
+    });
   }
 }
 

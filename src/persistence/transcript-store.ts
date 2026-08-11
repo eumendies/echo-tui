@@ -14,12 +14,15 @@ import type {
   LoadedTranscriptSession,
   TranscriptJournalOperation,
   TranscriptProjectMetadata,
+  TranscriptSessionIndex,
+  TranscriptSessionSummary,
+  TranscriptSessionPreview,
   TranscriptSessionJournalReference,
-  TranscriptSessionMetadata,
   TranscriptStore
 } from '../types/transcript';
 
 const STORE_SCHEMA_VERSION = 1 as const;
+const SESSION_INDEX_SCHEMA_VERSION = 1 as const;
 const SESSION_PREVIEW_RECORD_LIMIT = 20;
 const SESSION_PREVIEW_TEXT_LIMIT = 500;
 
@@ -78,6 +81,11 @@ function createTranscriptStore(options: TranscriptStoreOptions = {}): Transcript
     return path.join(getProjectDir(cwd), 'sessions', `${sessionId}.jsonl`);
   }
 
+  /** 返回当前项目轻量 session index 的固定路径。 */
+  function getSessionIndexFilePath(cwd: string): string {
+    return path.join(getProjectDir(cwd), 'sessions', 'index.json');
+  }
+
   /**
    * 原子创建包含首个操作的 journal，避免中断时留下只有 header 的空 session。
    */
@@ -134,31 +142,92 @@ function createTranscriptStore(options: TranscriptStoreOptions = {}): Transcript
   }
 
   /**
-   * 读取并按更新时间倒序返回当前 cwd 下可恢复的 session metadata。
+   * 读取轻量 index 并与 journal 文件指纹对账；正常路径不读取任何 journal 正文。
    */
-  function listSessions(cwd: string): TranscriptSessionMetadata[] {
-    const sessionsDir = path.join(getProjectDir(cwd), 'sessions');
+  function listSessionSummaries(cwd: string): TranscriptSessionSummary[] {
+    const normalizedCwd = String(cwd);
+    const sessionsDir = path.join(getProjectDir(normalizedCwd), 'sessions');
 
     if (!fsImpl.existsSync(sessionsDir)) {
       return [];
     }
 
-    return fsImpl.readdirSync(sessionsDir)
-      .filter((fileName) => fileName.endsWith('.jsonl'))
-      .map((fileName) => safelyReadJournal(path.join(sessionsDir, fileName), cwd, false))
-      .filter((loaded): loaded is LoadedTranscriptSession => loaded !== null)
-      .map(({session}) => ({
-        sessionId: session.sessionId,
-        createdAt: session.createdAt,
-        updatedAt: session.updatedAt,
-        cwd: session.cwd,
-        messageCount: session.records.length,
-        lastMessagePreview: createLastMessagePreview(session.records),
-        previewRecords: createSessionPreviewRecords(session.records),
-        sourcePath: getSessionFilePath(cwd, session.sessionId),
-        title: createSessionTitle(session.records)
-      }))
-      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+    const journalNames = fsImpl.readdirSync(sessionsDir).filter((fileName) => fileName.endsWith('.jsonl'));
+    const persisted = readSessionIndex(normalizedCwd);
+    const indexedById = new Map((persisted?.sessions || []).map((session) => [session.sessionId, session]));
+    const sessions: TranscriptSessionSummary[] = [];
+    let dirty = persisted === null || indexedById.size !== journalNames.length;
+
+    for (const fileName of journalNames) {
+      const sessionId = fileName.slice(0, -'.jsonl'.length);
+      const filePath = path.join(sessionsDir, fileName);
+      const stat = safelyStatJournal(filePath);
+      const indexed = indexedById.get(sessionId);
+
+      if (stat && indexed && indexed.cwd === normalizedCwd && fingerprintMatches(indexed, stat)) {
+        sessions.push(cloneSessionSummary(indexed));
+        continue;
+      }
+
+      dirty = true;
+      const loaded = safelyReadJournal(filePath, normalizedCwd, false);
+      const refreshedStat = safelyStatJournal(filePath);
+      if (!loaded || !refreshedStat || loaded.session.sessionId !== sessionId) {
+        continue;
+      }
+
+      sessions.push(createSessionSummary(loaded.reference, loaded.session.records, refreshedStat));
+    }
+
+    sessions.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+    if (dirty) {
+      safelyWriteSessionIndex(normalizedCwd, sessions);
+    }
+
+    return sessions.map(cloneSessionSummary);
+  }
+
+  /**
+   * 在 journal 已成功提交后原子更新单个摘要；调用方决定失败是否影响业务写入。
+   */
+  function updateSessionIndex(cwd: string, reference: TranscriptSessionJournalReference, records: import('../types/transcript').TranscriptRecord[]): void {
+    const normalizedCwd = String(cwd);
+    const stat = fsImpl.statSync(getSessionFilePath(normalizedCwd, reference.sessionId));
+    const current = readSessionIndex(normalizedCwd)?.sessions || [];
+    const next = current.filter((session) => session.sessionId !== reference.sessionId);
+    next.push(createSessionSummary(reference, records, stat));
+    next.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+    writeSessionIndex(normalizedCwd, next);
+  }
+
+  /** 异步只读重放一个 journal，并只返回右栏需要的有界预览。 */
+  function loadSessionPreview(cwd: string, sessionId: string): Promise<TranscriptSessionPreview | null> {
+    const normalizedCwd = String(cwd);
+    const filePath = getSessionFilePath(normalizedCwd, sessionId);
+
+    return new Promise((resolve) => {
+      fsImpl.readFile(filePath, 'utf8', (error, text) => {
+        if (error) {
+          resolve(null);
+          return;
+        }
+
+        try {
+          const loaded = replayTranscriptJournal(String(text));
+          if (!loaded || loaded.session.cwd !== normalizedCwd || loaded.session.sessionId !== sessionId) {
+            resolve(null);
+            return;
+          }
+
+          resolve({
+            sessionId,
+            previewRecords: createSessionPreviewRecords(loaded.session.records)
+          });
+        } catch {
+          resolve(null);
+        }
+      });
+    });
   }
 
   /**
@@ -208,6 +277,52 @@ function createTranscriptStore(options: TranscriptStoreOptions = {}): Transcript
     }
   }
 
+  function safelyStatJournal(filePath: string): import('node:fs').Stats | null {
+    try {
+      return fsImpl.statSync(filePath);
+    } catch {
+      return null;
+    }
+  }
+
+  function readSessionIndex(cwd: string): TranscriptSessionIndex | null {
+    try {
+      const parsed: unknown = JSON.parse(fsImpl.readFileSync(getSessionIndexFilePath(cwd), 'utf8'));
+      return isSessionIndex(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function safelyWriteSessionIndex(cwd: string, sessions: TranscriptSessionSummary[]): void {
+    try {
+      writeSessionIndex(cwd, sessions);
+    } catch {
+      // index 是可重建缓存，失败不能影响 journal 查询或恢复。
+    }
+  }
+
+  function writeSessionIndex(cwd: string, sessions: TranscriptSessionSummary[]): void {
+    const targetPath = getSessionIndexFilePath(cwd);
+    const tmpPath = `${targetPath}.tmp-${process.pid}-${Date.now()}`;
+    const index: TranscriptSessionIndex = {
+      schemaVersion: SESSION_INDEX_SCHEMA_VERSION,
+      sessions: sessions.map(cloneSessionSummary)
+    };
+
+    fsImpl.mkdirSync(path.dirname(targetPath), {recursive: true});
+    try {
+      fsImpl.writeFileSync(tmpPath, `${JSON.stringify(index, null, 2)}\n`, 'utf8');
+      fsImpl.renameSync(tmpPath, targetPath);
+    } finally {
+      try {
+        fsImpl.rmSync(tmpPath, {force: true});
+      } catch {
+        // 清理失败不能覆盖原始 index 写入错误。
+      }
+    }
+  }
+
   function repairJournal(filePath: string, text: string): void {
     const tmpPath = `${filePath}.repair-${process.pid}-${Date.now()}`;
 
@@ -221,11 +336,70 @@ function createTranscriptStore(options: TranscriptStoreOptions = {}): Transcript
     getDefaultRootDir,
     getProjectDir,
     getProjectMetadata,
+    getSessionIndexFilePath,
     getSessionFilePath,
-    listSessions,
+    listSessionSummaries,
     loadSession,
-    loadSessionReadOnly
+    loadSessionReadOnly,
+    loadSessionPreview,
+    updateSessionIndex
   };
+}
+
+function createSessionSummary(
+  reference: TranscriptSessionJournalReference,
+  records: import('../types/transcript').TranscriptRecord[],
+  stat: Pick<import('node:fs').Stats, 'mtimeMs' | 'size'>
+): TranscriptSessionSummary {
+  return {
+    sessionId: reference.sessionId,
+    createdAt: reference.createdAt,
+    updatedAt: reference.updatedAt,
+    cwd: reference.cwd,
+    messageCount: records.length,
+    title: createSessionTitle(records),
+    fingerprint: {size: stat.size, mtimeMs: stat.mtimeMs}
+  };
+}
+
+function cloneSessionSummary(session: TranscriptSessionSummary): TranscriptSessionSummary {
+  return {...session, fingerprint: {...session.fingerprint}};
+}
+
+function fingerprintMatches(session: TranscriptSessionSummary, stat: Pick<import('node:fs').Stats, 'mtimeMs' | 'size'>): boolean {
+  return session.fingerprint.size === stat.size && session.fingerprint.mtimeMs === stat.mtimeMs;
+}
+
+function isSessionIndex(value: unknown): value is TranscriptSessionIndex {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+
+  const index = value as Record<string, unknown>;
+  if (index.schemaVersion !== SESSION_INDEX_SCHEMA_VERSION || !Array.isArray(index.sessions) || !index.sessions.every(isSessionSummary)) {
+    return false;
+  }
+
+  const ids = index.sessions.map((session) => session.sessionId);
+  return new Set(ids).size === ids.length;
+}
+
+function isSessionSummary(value: unknown): value is TranscriptSessionSummary {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+
+  const session = value as Record<string, unknown>;
+  const fingerprint = session.fingerprint;
+  return typeof session.sessionId === 'string' && session.sessionId.length > 0 &&
+    typeof session.createdAt === 'string' && session.createdAt.length > 0 &&
+    typeof session.updatedAt === 'string' && session.updatedAt.length > 0 &&
+    typeof session.cwd === 'string' &&
+    Number.isInteger(session.messageCount) && Number(session.messageCount) >= 0 &&
+    typeof session.title === 'string' && session.title.length > 0 &&
+    Boolean(fingerprint && typeof fingerprint === 'object' && !Array.isArray(fingerprint) &&
+      typeof (fingerprint as Record<string, unknown>).size === 'number' && Number.isFinite((fingerprint as Record<string, unknown>).size) && Number((fingerprint as Record<string, unknown>).size) >= 0 &&
+      typeof (fingerprint as Record<string, unknown>).mtimeMs === 'number' && Number.isFinite((fingerprint as Record<string, unknown>).mtimeMs) && Number((fingerprint as Record<string, unknown>).mtimeMs) >= 0);
 }
 
 /**
@@ -240,15 +414,6 @@ function createSessionId(timestamp: string, cryptoImpl: Pick<typeof crypto, 'ran
  */
 function createTimestamp(): string {
   return new Date().toISOString();
-}
-
-function createLastMessagePreview(records: import('../types/transcript').TranscriptRecord[]): string {
-  if (!records.length) {
-    return '空会话';
-  }
-
-  const lastRecord = records[records.length - 1];
-  return normalizePreviewText(createRecordPreviewText(lastRecord)).slice(0, 60);
 }
 
 function createSessionPreviewRecords(records: import('../types/transcript').TranscriptRecord[]): import('../types/transcript').TranscriptSessionPreviewRecord[] {
@@ -295,6 +460,5 @@ function createSessionTitle(records: import('../types/transcript').TranscriptRec
 
 export {
   STORE_SCHEMA_VERSION,
-  createSessionTitle,
   createTranscriptStore
 };

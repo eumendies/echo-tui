@@ -47,7 +47,7 @@ function createFakeTranscriptStore() {
       currentSession.updatedAt = currentReference.updatedAt;
       return {...currentReference};
     },
-    listSessions() {
+    listSessionSummaries() {
       return [];
     },
     loadSession() {

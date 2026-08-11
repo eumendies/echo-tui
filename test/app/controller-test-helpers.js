@@ -21,7 +21,7 @@ function createTranscriptStore() {
     appendSession(_cwd, reference) {
       return {...reference, sequence: reference.sequence + 1};
     },
-    listSessions() {
+    listSessionSummaries() {
       return [];
     },
     loadSession() {

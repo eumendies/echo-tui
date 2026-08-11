@@ -27,9 +27,13 @@ function createConversationReferenceCommandPort(options: ConversationReferenceCo
   const userConfigContext = options.userConfigContext;
 
   return {
-    /** 返回当前 cwd 可引用的历史会话 metadata，不加载 journal 正文。 */
-    listSessions() {
+    /** 返回当前 cwd 可引用的轻量摘要，不加载 journal 正文。 */
+    listSessionSummaries() {
       return appContext.transcriptContext.listReferenceSessions();
+    },
+    /** 按 fingerprint 共用 transcript context 的有界预览缓存。 */
+    loadSessionPreview(candidate) {
+      return appContext.transcriptContext.loadSessionPreview(candidate);
     },
     /** 取消正在进行的延迟总结，并立即恢复 footer 的非工作状态。 */
     cancelPreparation() {
