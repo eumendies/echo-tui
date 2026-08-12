@@ -22,8 +22,13 @@ export type ToolCall = {
 };
 
 export type ToolApprovalRequest = {
-  preview?: string;
-  previewTitle?: string;
+  preview?: string; // 人工 surface 展示的受信任本地动作摘要。
+  previewTitle?: string; // preview 代码块或消息块的短标题。
+  origin?: {
+    kind: 'subagent'; // 标识该审批由受控子 Agent 的内部工具调用触发。
+    agentName: string; // 发起内部调用的子 Agent 稳定名称。
+    runId: string; // 关联当前子 Agent 运行，供迟到请求隔离。
+  };
 };
 
 export type ToolRiskAssessment =
@@ -226,8 +231,9 @@ export type ToolExecutionOptions = {
 };
 
 export type ToolHandler = {
-  definition: ToolDefinition;
-  execute: (args: Record<string, unknown>, call: ToolCall, options?: ToolExecutionOptions) => Promise<ToolExecutionResult> | ToolExecutionResult;
+  definition: ToolDefinition; // 暴露给 provider并用于 registry查找的工具 schema。
+  execute: (args: Record<string, unknown>, call: ToolCall, options?: ToolExecutionOptions) => Promise<ToolExecutionResult> | ToolExecutionResult; // 在统一 executor 边界内执行已解析参数。
+  transcriptCommitMode?: 'call_before_execute' | 'pair_after_execute'; // 声明工具执行期间是否会先发布本地 transcript 记录。
 };
 
 export type ToolRegistry = {

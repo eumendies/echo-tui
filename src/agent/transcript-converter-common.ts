@@ -6,7 +6,7 @@ type SendableImageAttachment = Pick<ToolResultImageAttachment, 'dataBase64' | 'm
 type TranscriptRecordWithAttachments = UserTranscriptRecord | ToolResultTranscriptRecord;
 
 // 这些 role 只描述本地 UI / 内部状态，不应进入 provider 请求或压缩摘要。
-const NON_PROVIDER_ROLES = new Set<TranscriptRecord['role']>(['error', 'compaction_notice', 'local_notice', 'reasoning_summary']);
+const NON_PROVIDER_ROLES = new Set<TranscriptRecord['role']>(['error', 'compaction_notice', 'local_notice', 'reasoning_summary', 'subagent']);
 
 function shouldIncludeRecordInProviderContext(record: TranscriptRecord): boolean {
   if (NON_PROVIDER_ROLES.has(record.role)) {

@@ -1483,7 +1483,7 @@ slash suggestion 列表 SHALL 在 footer 高度预算内渲染。当候选数量
 
 #### Scenario: 存在建议目录结构
 - **WHEN** 实现完成
-- **THEN** 项目 SHALL 包含 `bin/echo-tui.ts`、`src/app/main.ts`、`src/app/state/app-context.ts`、`src/app/command/command-host.ts`、`src/app/command/command-runtime.ts`、`src/app/state/composer-context.ts`、`src/app/state/model-context.ts`、`src/app/state/render-context.ts`、`src/app/state/slash-suggestion-context.ts`、`src/app/state/transcript-context.ts`、`src/app/state/turn-context.ts`、`src/terminal/ansi.ts`、`src/terminal/tty.ts`、`src/input/event-types.ts`、`src/input/key-parser.ts`、`src/input/composer.ts`、`src/render/layout.ts`、`src/render/app-renderer.ts`、`src/render/footer.ts`、`src/render/blocks.ts`、`src/render/markdown.ts`、`src/render/markdown-inline.ts`、`src/render/markdown-table.ts`、`src/agent/fake/agent.ts`、`src/agent/agent-loop-runtime.ts`、`src/agent/openai-responses/agent.ts`、`src/agent/openai-chat/agent.ts`、`src/agent/anthropic/agent.ts`、`src/agent/codex/agent.ts`、`src/config/llm-config.ts`、`src/commands/`、`src/persistence/transcript-store.ts`、`src/types/`、`tsconfig.json`、`package.json`、`README.md` 和 `docs/tui-architecture.md`
+- **THEN** 项目 SHALL 包含 `bin/echo-tui.ts`、`src/app/main.ts`、`src/app/state/app-context.ts`、`src/app/command/command-host.ts`、`src/app/command/command-runtime.ts`、`src/app/state/composer-context.ts`、`src/app/state/model-context.ts`、`src/app/state/render-context.ts`、`src/app/state/slash-suggestion-context.ts`、`src/app/state/transcript-context.ts`、`src/app/state/turn-context.ts`、`src/terminal/ansi.ts`、`src/terminal/tty.ts`、`src/input/event-types.ts`、`src/input/key-parser.ts`、`src/input/composer.ts`、`src/render/layout.ts`、`src/render/app-renderer.ts`、`src/render/footer.ts`、`src/render/blocks.ts`、`src/render/markdown.ts`、`src/render/markdown-inline.ts`、`src/render/markdown-table.ts`、`src/agent/fake/agent.ts`、`src/agent/loop-runtime/agent-loop-runtime.ts`、`src/agent/loop-runtime/subagent-loop-runtime.ts`、`src/agent/loop-runtime/shared.ts`、`src/agent/openai-responses/agent.ts`、`src/agent/openai-chat/agent.ts`、`src/agent/anthropic/agent.ts`、`src/agent/codex/agent.ts`、`src/config/llm-config.ts`、`src/commands/`、`src/persistence/transcript-store.ts`、`src/types/`、`tsconfig.json`、`package.json`、`README.md` 和 `docs/tui-architecture.md`
 
 #### Scenario: app 层通过单一 renderer 门面触发渲染
 - **WHEN** 应用运行并处理输入编辑、transcript append 或 resize destructive recovery
@@ -1517,7 +1517,7 @@ slash suggestion 列表 SHALL 在 footer 高度预算内渲染。当候选数量
 
 #### Scenario: agent 和 persistence 边界清晰
 - **WHEN** agent 与 persistence 模块参与 LLM 和 transcript session 流程
-- **THEN** `src/agent/agent-loop-runtime.ts` SHALL 承载 provider-neutral 真实 agent loop，`src/agent/openai-responses/agent.ts`、`src/agent/openai-chat/agent.ts`、`src/agent/anthropic/agent.ts` 和 `src/agent/codex/agent.ts` SHALL 承载具体 provider turn adapter，`src/config/llm-config.ts` SHALL 承载用户级配置读取与校验，`src/agent/fake/agent.ts` SHALL 作为测试注入和显式开发 fixture
+- **THEN** `src/agent/loop-runtime/agent-loop-runtime.ts` 与 `src/agent/loop-runtime/subagent-loop-runtime.ts` SHALL 分别承载 provider-neutral 主 agent loop和子 agent loop，`src/agent/openai-responses/agent.ts`、`src/agent/openai-chat/agent.ts`、`src/agent/anthropic/agent.ts` 和 `src/agent/codex/agent.ts` SHALL 承载具体 provider turn adapter，`src/config/llm-config.ts` SHALL 承载用户级配置读取与校验，`src/agent/fake/agent.ts` SHALL 作为测试注入和显式开发 fixture
 - **THEN** `src/persistence/transcript-store.ts` SHALL 承载本地 transcript session 存储、读取、列表派生和 atomic write
 - **THEN** app 层 SHALL NOT 直接读取用户配置文件、直接调用 OpenAI SDK、直接操作 session JSON 文件或绕过 transcript store
 

@@ -6,6 +6,7 @@ import {
   hasKnownToolCallId,
   parseJsonObjectText
 } from '../transcript-converter-common';
+import {shouldIncludeRecordInProviderContext} from '../transcript-converter-common';
 import {ANTHROPIC_THINKING_EXTENSION_KIND} from '../../types/transcript';
 
 import type {ToolCallTranscriptRecord, ToolResultTranscriptRecord, TranscriptExtensionRecord, TranscriptRecord, UserTranscriptRecord} from '../../types/transcript';
@@ -82,6 +83,10 @@ function convertTranscriptToAnthropicMessages(records: TranscriptRecord[]): Anth
   let currentToolAssistant: AnthropicMessage | null = null;
 
   for (const record of records) {
+    if (!shouldIncludeRecordInProviderContext(record)) {
+      continue;
+    }
+
     if (record.role === 'system') {
       if (record.text.trim() !== '') {
         systemParts.push(record.text);
@@ -123,7 +128,7 @@ function convertTranscriptToAnthropicMessages(records: TranscriptRecord[]): Anth
         continue;
       }
 
-      const assistant = currentToolAssistant || createToolAssistantMessage(messages);
+      const assistant: AnthropicMessage = currentToolAssistant || createToolAssistantMessage(messages);
       assistant.content.push(projection.toolUse);
       currentToolAssistant = assistant;
       knownToolCallIds.add(projection.toolUse.id);
@@ -132,7 +137,7 @@ function convertTranscriptToAnthropicMessages(records: TranscriptRecord[]): Anth
 
     if (record.role === 'extension' && record.extension.kind === ANTHROPIC_THINKING_EXTENSION_KIND) {
       const block = convertAnthropicThinkingRecord(record);
-      const assistant = currentToolAssistant || createToolAssistantMessage(messages);
+      const assistant: AnthropicMessage = currentToolAssistant || createToolAssistantMessage(messages);
       assistant.content.push(block);
       currentToolAssistant = assistant;
 

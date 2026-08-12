@@ -148,6 +148,10 @@ function attachStatusLineActivity(statusLine: StatusLineState | undefined, pendi
     return undefined;
   }
 
+  if (pending?.kind === 'subagent') {
+    return {...statusLine, activity: {kind: 'working', elapsedMs: pending.elapsedMs}};
+  }
+
   if (working) {
     return {...statusLine, activity: {kind: 'working', elapsedMs: working.elapsedMs}};
   }

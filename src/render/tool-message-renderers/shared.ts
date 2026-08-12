@@ -15,6 +15,7 @@ const TOOL_DISPLAY_NAMES = new Map<string, string>([
   ['grep', 'Grep'],
   ['read_files', 'Read files'],
   ['run_bash_command', 'Bash'],
+  ['run_subagent', 'Explorer'],
   ['use_skill', 'Use skill'],
   ['web_fetch', 'Web fetch'],
   ['web_search', 'Web search']
@@ -26,6 +27,21 @@ type ToolRecordRenderOptions = {
 
 type ToolRailStyle = 'tool' | 'toolError' | 'toolOutput' | 'toolSuccess';
 type ToolRailStatusStyle = 'toolError' | 'toolOutput' | 'toolSuccess';
+
+type ToolRailRow<Style extends string> = {
+  style: Style; // 当前逻辑行交给调用方语义着色器使用的样式标识。
+  text: string; // 尚未换行或着色的 rail 正文。
+};
+
+type RenderToolRailRowsOptions<Style extends string> = {
+  colorizeContent: (style: Style, text: string, theme: TuiTheme) => string; // 把一段物理行正文映射为语义样式。
+  includeMarker: boolean; // 首个物理行是否展示状态 marker。
+  markerStyle: ToolRailStatusStyle; // 状态 marker 的 blocks token。
+  railStyle: ToolRailStyle; // 连续 rail 的 blocks token。
+  rows: ToolRailRow<Style>[]; // 按原始顺序渲染的逻辑行。
+  theme: TuiTheme; // 当前运行固定的完整主题。
+  width: number; // 包含 marker、rail 与正文的终端总宽度。
+};
 
 /**
  * 将协议层工具标识符投影为 sentence case 标题；标准 MCP 名称保留 server/tool 来源层级。
@@ -215,6 +231,30 @@ function createToolRailPrefix(
 }
 
 /**
+ * 渲染通用工具 rail 行：统一处理逻辑换行、窄宽度降级、首行 marker 与连续 rail。
+ * 调用方只负责提供行语义和正文着色，不再复制 Bash 的终端布局算法。
+ */
+function renderToolRailRows<Style extends string>(options: RenderToolRailRowsOptions<Style>): string[] {
+  const safeWidth = safeRenderWidth(options.width);
+  const prefixWidth = safeWidth >= 4 ? 4 : safeWidth >= 2 ? 2 : 0;
+  const rendered: string[] = [];
+  let first = options.includeMarker;
+
+  for (const row of options.rows) {
+    for (const sourceLine of splitRenderableLines(row.text)) {
+      for (const segment of wrapContentLine(sourceLine, safeWidth, prefixWidth)) {
+        rendered.push(`${createToolRailPrefix(first, safeWidth, options.theme, options.railStyle, options.markerStyle)}${options.colorizeContent(row.style, segment, options.theme)}`);
+        first = false;
+      }
+    }
+  }
+
+  return rendered.length > 0
+    ? rendered
+    : [createToolRailPrefix(options.includeMarker, safeWidth, options.theme, options.railStyle, options.markerStyle)];
+}
+
+/**
  * 按 grapheme 和显示宽度换行，避免 ANSI 样式、宽字符或制表符破坏工具输出对齐。
  */
 function wrapContentLine(text: string, width: number, prefixWidth: number): string[] {
@@ -324,6 +364,7 @@ export {
   formatToolDisplayName,
   normalizeContentText,
   renderPrefixedLines,
+  renderToolRailRows,
   resolveToolCallPrefixStyle,
   truncateDisplayText,
   wrapContentLine

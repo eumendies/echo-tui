@@ -49,6 +49,7 @@ import type {ToolCallTranscriptRecord, ToolResultTranscriptRecord} from '../type
 import type {ToolRecordRenderOptions} from './tool-message-renderers/shared';
 
 const BASH_TOOL_NAME = 'run_bash_command';
+const RUN_SUBAGENT_TOOL_NAME = 'run_subagent';
 type ToolTranscriptRecord = ToolCallTranscriptRecord | ToolResultTranscriptRecord;
 
 /**
@@ -64,14 +65,25 @@ export function renderToolRecordBlock(record: ToolTranscriptRecord, width = 80, 
 /**
  * 渲染完整 tool call/result 对；call 的状态样式直接来自 result，不向普通 record renderer 泄漏。
  */
-export function renderToolPairBlock(call: ToolCallTranscriptRecord, result: ToolResultTranscriptRecord, width = 80, theme: TuiTheme = DEFAULT_TUI_THEME): string {
-  const pairAwareLines = renderPairAwareToolPairLines(call, result, width, theme);
-
-  if (pairAwareLines) {
-    return renderToolPairLinesBlock(pairAwareLines);
+export function renderToolPairBlock(call: ToolCallTranscriptRecord, result: ToolResultTranscriptRecord, width = 80, theme: TuiTheme = DEFAULT_TUI_THEME, compactResult = false): string {
+  if (compactResult && call.toolName === RUN_SUBAGENT_TOOL_NAME && result.toolName === RUN_SUBAGENT_TOOL_NAME) {
+    const lines = renderPrefixedLines({
+      text: result.ok ? 'Explorer · returned report' : 'Explorer · failed',
+      width,
+      firstPrefix: '◆ ',
+      continuationPrefix: '  ',
+      colorizeFirstSymbol: resolveToolCallPrefixStyle(result.ok, theme),
+      colorizeLine: (line) => blockText(theme, 'toolOutput', line)
+    });
+    return renderToolPairLinesBlock(lines);
   }
+  return renderToolPairLinesBlock(renderToolPairLines(call, result, width, theme));
+}
 
-  return renderToolPairLinesBlock(renderSplitToolPairLines(call, result, width, theme));
+/** 返回不带 block 尾部空行的完整工具对，供子 Agent rail 复用现有专属投影。 */
+export function renderToolPairLines(call: ToolCallTranscriptRecord, result: ToolResultTranscriptRecord, width = 80, theme: TuiTheme = DEFAULT_TUI_THEME): string[] {
+  return renderPairAwareToolPairLines(call, result, width, theme)
+    ?? renderSplitToolPairLines(call, result, width, theme);
 }
 
 /**
@@ -146,7 +158,12 @@ export function renderToolCallPreviewLines(toolName: string, argumentsText: stri
 /**
  * 根据 toolName 选择工具专属投影；未知工具降级为通用工具消息。
  */
-function renderToolRecordLines(record: ToolTranscriptRecord, width: number, options: ToolRecordRenderOptions = {}, theme: TuiTheme): string[] {
+export function renderToolRecordLines(record: ToolTranscriptRecord, width: number, options: ToolRecordRenderOptions = {}, theme: TuiTheme): string[] {
+  return renderToolRecordLinesWithTheme(record, width, options, theme);
+}
+
+/** 根据 toolName 选择工具专属投影，tone 统一在结构投影完成后覆盖。 */
+function renderToolRecordLinesWithTheme(record: ToolTranscriptRecord, width: number, options: ToolRecordRenderOptions, theme: TuiTheme): string[] {
   if (record.toolName === ASK_USER_QUESTIONS_TOOL_NAME && record.role === 'tool_call') {
     return renderAskUserQuestionsToolCallLines(record, options.callStatus, width, theme)
       ?? renderGenericToolRecordLines(record, width, options, theme);
@@ -252,7 +269,7 @@ function renderGenericToolRecordLines(
       width,
       firstPrefix: '◆ ',
       continuationPrefix: '  ',
-        colorizeFirstSymbol: resolveToolCallPrefixStyle(options.callStatus, theme)
+      colorizeFirstSymbol: resolveToolCallPrefixStyle(options.callStatus, theme)
     });
 
     if (record.argumentsText.trim() !== '') {

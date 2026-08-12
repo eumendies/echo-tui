@@ -1,48 +1,55 @@
-import {resolveContextWindow} from '../config/llm-config';
-import {DEFAULT_APP_SETTINGS} from '../config/app-settings-config';
+import {resolveContextWindow} from '../../config/llm-config';
+import {DEFAULT_APP_SETTINGS} from '../../config/app-settings-config';
 import {
   ASK_USER_QUESTIONS_TOOL_NAME,
   createAskUserQuestionsCancelledResult,
   createAskUserQuestionsFailureResult,
   parseAskUserQuestionsToolCall
-} from '../tools/ask-user-questions-tool-handler';
-import {classifyReadonlyToolCall, classifyToolCallRisk} from '../tools/tool-risk-classifier';
-import {createToolExecutor} from '../tools/tool-executor';
-import {createToolCallTranscriptRecord, createToolResultTranscriptRecord} from '../tools/tool-transcript-record';
-import {executeTodoToolCall, isTodoToolName} from '../tools/todo-tool-handler';
-import {getMcpToolApproval} from '../mcp/manager';
-import {createSkillCatalogPromptProjection} from '../skills/skill-catalog-prompt';
-import {throwIfAborted} from '../types/agent';
-import {normalizeError} from './agent-errors';
-import {loadAgentInstructions} from './agent-instructions';
-import {calibrateContextUsageSegments, estimateContextUsageSegments} from './context/context-usage-breakdown';
-import {resolveMemoryPrompt} from './context/memory-prompt';
-import {createBuiltInSystemPrompt, loadSystemPromptOverride} from './context/system-prompt';
-import {prepareAgent} from './agent-setup';
-import {createCompactionNoticeRecord, runCompaction} from './context/context-compaction';
-import {disabledDebugContext, hashValue, redactProviderConfig, summarizeText} from '../debug/debug-context';
-import {createUsageCwdHash} from '../persistence/usage-store';
+} from '../../tools/ask-user-questions-tool-handler';
+import {classifyReadonlyToolCall, classifyToolCallRisk} from '../../tools/tool-risk-classifier';
+import {createToolExecutor} from '../../tools/tool-executor';
+import {createToolCallTranscriptRecord, createToolResultTranscriptRecord} from '../../tools/tool-transcript-record';
+import {executeTodoToolCall, isTodoToolName} from '../../tools/todo-tool-handler';
+import {getMcpToolApproval} from '../../mcp/manager';
+import {createSkillCatalogPromptProjection} from '../../skills/skill-catalog-prompt';
+import {throwIfAborted} from '../../types/agent';
+import {normalizeError} from '../agent-errors';
+import {loadAgentInstructions} from '../agent-instructions';
+import {calibrateContextUsageSegments, estimateContextUsageSegments} from '../context/context-usage-breakdown';
+import {resolveMemoryPrompt} from '../context/memory-prompt';
+import {loadSystemPromptOverride} from '../context/system-prompt';
+import {prepareAgent} from '../agent-setup';
+import {createCompactionNoticeRecord, runCompaction} from '../context/context-compaction';
+import {disabledDebugContext, hashValue, redactProviderConfig, summarizeText} from '../../debug/debug-context';
+import {createUsageCwdHash} from '../../persistence/usage-store';
+import {createSubagentToolPort} from '../subagent/runtime';
+import {createSubagentLoopRuntime} from './subagent-loop-runtime';
+import {
+  buildProviderRecords,
+  createProviderUsageDebugPayload,
+  hasRecordableProviderUsage,
+  isToolResultTruncated
+} from './shared';
 import {
   emitToolApprovalRequestHook,
   emitToolApprovalResponseHook,
   emitUserQuestionRequestHook,
   emitUserQuestionResponseHook
-} from '../hooks/lifecycle-events';
+} from '../../hooks/lifecycle-events';
 
-import type {TokenUsageAnchor} from './context/context-compaction';
-
-import type {AgentCallbacks, AgentConversationKind, AgentExecutionMode, AgentInstruction, AgentInstructionFileName, AgentSessionInput, AgentToolPolicy, AgentTurnCallbacks, AgentUserConfigSnapshot, InteractionMode, LlmConfig, ProviderAgent, ProviderRetry, ProviderUsage, RunAgent, ToolApprovalDecision} from '../types/agent';
-import type {DebugContext} from '../debug/debug-context';
-import type {LifecycleHookDispatcher} from '../types/hooks';
-import type {UsageStore} from '../types/usage';
-import type {SkillCatalogEntry} from '../types/skill';
-import type {SkillCatalogPromptProjection} from '../skills/skill-catalog-prompt';
-import type {ToolApprovalRequest, ToolCall, ToolDefinition, ToolExecutionResult, ToolExecutor} from '../types/tool';
-import type {CompactionState, TodoState, TranscriptRecord} from '../types/transcript';
-import type {McpManager} from '../mcp/manager';
+import type {TokenUsageAnchor} from '../context/context-compaction';
+import type {MemoryPromptResolution} from '../context/memory-prompt';
+import type {AgentCallbacks, AgentConversationKind, AgentExecutionMode, AgentInstruction, AgentInstructionFileName, AgentSessionInput, AgentToolPolicy, AgentTurnCallbacks, AgentUserConfigSnapshot, InteractionMode, LlmConfig, ProviderAgent, ProviderRetry, ProviderUsage, RunAgent, SubagentToolPort, ToolApprovalDecision} from '../../types/agent';
+import type {DebugContext} from '../../debug/debug-context';
+import type {LifecycleHookDispatcher} from '../../types/hooks';
+import type {UsageStore} from '../../types/usage';
+import type {SkillCatalogEntry} from '../../types/skill';
+import type {SkillCatalogPromptProjection} from '../../skills/skill-catalog-prompt';
+import type {ToolApprovalRequest, ToolCall, ToolDefinition, ToolExecutionResult, ToolExecutor, ToolRegistry} from '../../types/tool';
+import type {CompactionState, SubagentTranscriptRecord, TodoState, TranscriptRecord} from '../../types/transcript';
+import type {McpManager} from '../../mcp/manager';
 
 const TOOL_REJECTED_BY_USER_TEXT = 'Tool execution was rejected by the user.';
-const RUNTIME_CONTEXT_NOTICE = 'Not a user request. Auto-Generated by the code. Use silently.';
 const INTERACTIVE_EXECUTION_MODE: AgentExecutionMode = {kind: 'interactive'};
 
 /**
@@ -206,140 +213,32 @@ async function resolveToolApprovalDecision(toolCall: ToolCall, approval: ToolApp
   };
 }
 
-/**
- * 构造 provider 请求上下文：稳定前缀 + 活跃区间记录 + 运行时 suffix。
- * system prompt、摘要和运行时状态只存在于 provider 上下文，不写回 app transcript。
- */
-function buildProviderRecords(activeRecords: TranscriptRecord[], cwd: string, compaction?: CompactionState, skillCatalog: SkillCatalogEntry[] = [], agentInstructions: AgentInstruction[] = [], todoState?: TodoState, memoryPrompts: string[] = [], basePrompt?: string, sessionJournalPath?: string): TranscriptRecord[] {
-  const prefix: TranscriptRecord[] = [
-    {
-      role: 'system',
-      text: createBuiltInSystemPrompt({agentInstructions, basePrompt, cwd, skillCatalog, memoryPrompts})
-    }
-  ];
-
-  if (compaction && compaction.summaryText.trim() !== '') {
-    const summaryText = `Here is a structured summary of the earlier conversation:\n${compaction.summaryText}`;
-    prefix.push({
-      role: 'user',
-      text: sessionJournalPath
-        ? [
-            summaryText,
-            '',
-            `The full original history is preserved in source_file: ${sessionJournalPath}`,
-            'If exact details are needed, use the existing read_files tool to read source_file with pagination.',
-            'source_file is an append-only JSONL journal; later truncate or set operations can supersede earlier entries.'
-          ].join('\n')
-        : summaryText
-    });
-  }
-
-  const suffix = createRuntimeContextSuffixRecords(todoState);
-
-  return [...prefix, ...activeRecords.filter((record) => record.role !== 'reasoning_summary'), ...suffix];
-}
-
-function createRuntimeContextSuffixRecords(todoState: TodoState | undefined): TranscriptRecord[] {
-  const sections: string[][] = [];
-  const todoLines = createTodoRuntimeContextLines(todoState);
-
-  if (todoLines.length > 0) {
-    sections.push(todoLines);
-  }
-
-  if (sections.length === 0) {
-    return [];
-  }
-
-  return [{
-    role: 'user',
-    text: [
-      '# Echo Runtime Context',
-      '',
-      RUNTIME_CONTEXT_NOTICE,
-      '',
-      ...sections.flatMap((section, index) => index === 0 ? section : ['', ...section])
-    ].join('\n')
-  }];
-}
-
-function createTodoRuntimeContextLines(todoState: TodoState | undefined): string[] {
-  const openTodos = (todoState?.items || []).filter((item) => item.status === 'open');
-
-  if (openTodos.length === 0) {
-    return [];
-  }
-
-  const lines = ['## Todos'];
-  lines.push('Open:', ...openTodos.map((item) => `- [${item.id}] ${item.text}`));
-
-  return lines;
-}
-
 type AgentLoopRunState = {
-  agent: ProviderAgent;
-  agentInstructions: AgentInstruction[];
-  providerConfig: Record<string, unknown>;
-  providerType: LlmConfig['agentType'];
-  model: string;
-  reasoningEffort?: LlmConfig['reasoningEffort'];
-  interactionMode: InteractionMode;
-  executor: ToolExecutor;
-  contextWindow: number;
-  compactionThresholdRatio: number;
-  skillCatalog: SkillCatalogEntry[];
-  skillCatalogTokens: number;
-  skillCatalogProjection: Pick<SkillCatalogPromptProjection, 'budgetTokens' | 'mode' | 'originalTokens'>;
-  basePrompt?: string;
-  todoState: TodoState | undefined;
-  toolDefinitions: ToolDefinition[];
-  mcpManager?: McpManager;
-  abortSignal?: AbortSignal;
-  executionMode: AgentExecutionMode;
-  hooks?: LifecycleHookDispatcher;
-  debug: DebugContext;
-  toolPolicy: AgentToolPolicy;
-  conversationKind: AgentConversationKind;
+  agent: ProviderAgent; // 已绑定本次工具目录的 provider adapter。
+  agentInstructions: AgentInstruction[]; // 当前 cwd 适用的项目/用户指令链。
+  providerConfig: Record<string, unknown>; // 仅供调试脱敏和请求准备使用的 provider 配置投影。
+  providerType: LlmConfig['agentType']; // 当前 adapter 的 provider 协议类型。
+  model: string; // 当前运行固定的 provider 模型名。
+  reasoningEffort?: LlmConfig['reasoningEffort']; // 当前运行固定的推理强度。
+  interactionMode: InteractionMode; // 父提交时捕获的 normal/plan 等模式。
+  executor: ToolExecutor; // 与 provider definitions 共用 registry 的统一执行器。
+  contextWindow: number; // 自动压缩和 skill 预算使用的模型窗口。
+  compactionThresholdRatio: number; // 自动压缩触发占比。
+  skillCatalog: SkillCatalogEntry[]; // 本次 system context 可见的有界 skill目录。
+  skillCatalogTokens: number; // 当前 skill目录投影的估算 token数。
+  skillCatalogProjection: Pick<SkillCatalogPromptProjection, 'budgetTokens' | 'mode' | 'originalTokens'>; // 调试使用的 skill预算事实。
+  basePrompt?: string; // 用户 system prompt override，缺省使用内置主 prompt。
+  todoState: TodoState | undefined; // 主运行的 open todo 状态。
+  toolDefinitions: ToolDefinition[]; // 真正发送给当前 provider 的工具 schema。
+  mcpManager?: McpManager; // 主运行可用的共享 MCP manager；子运行缺省。
+  abortSignal?: AbortSignal; // 贯穿 provider、审批和工具执行的父级取消信号。
+  executionMode: AgentExecutionMode; // interactive 或 headless 审批边界。
+  hooks?: LifecycleHookDispatcher; // 工具和压缩生命周期的本地旁路派发器。
+  debug: DebugContext; // 本次运行使用的脱敏调试 sink。
+  toolPolicy: AgentToolPolicy; // default 或 readonly 执行策略。
+  conversationKind: AgentConversationKind; // primary 或 BTW 的本地运行分类。
+  registry: ToolRegistry; // provider schema 查询和 commit mode 查询的权威目录。
 };
-
-function createProviderUsageDebugPayload(usage: ProviderUsage | undefined, usageInputTokens: number | undefined): ProviderUsage | null {
-  const payload: ProviderUsage = {
-    ...(typeof usageInputTokens === 'number' ? {inputTokens: usageInputTokens} : {}),
-    ...(typeof usage?.inputTokens === 'number' ? {inputTokens: usage.inputTokens} : {}),
-    ...(typeof usage?.cacheCreationInputTokens === 'number' ? {cacheCreationInputTokens: usage.cacheCreationInputTokens} : {}),
-    ...(typeof usage?.cacheReadInputTokens === 'number' ? {cacheReadInputTokens: usage.cacheReadInputTokens} : {}),
-    ...(typeof usage?.outputTokens === 'number' ? {outputTokens: usage.outputTokens} : {})
-  };
-
-  return Object.keys(payload).length > 0 ? payload : null;
-}
-
-function hasRecordableProviderUsage(usage: ProviderUsage | undefined, usageInputTokens: number | undefined): boolean {
-  return (
-    typeof usageInputTokens === 'number' ||
-    typeof usage?.inputTokens === 'number' ||
-    typeof usage?.cacheCreationInputTokens === 'number' ||
-    typeof usage?.cacheReadInputTokens === 'number' ||
-    typeof usage?.outputTokens === 'number'
-  );
-}
-
-function isToolResultTruncated(result: ToolExecutionResult): boolean | undefined {
-  switch (result.details.kind) {
-    case 'glob':
-    case 'grep':
-    case 'read_files':
-    case 'web_fetch':
-    case 'web_search':
-      return result.details.truncated;
-    case 'bash':
-      return result.details.truncated;
-    case 'apply_patch':
-    case 'edit_file':
-    case 'generic':
-      return undefined;
-  }
-}
 
 /**
  * 创建 provider-neutral agent loop runtime；该层拥有配置/工具加载和 tool-call continuation 状态机。
@@ -353,22 +252,30 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
   /**
    * 初始化单次调用的 loop 状态；provider、配置和 registry 由统一装配入口提供。
    */
-  function initializeRunState(interactionMode: InteractionMode, abortSignal: AbortSignal | undefined, executionMode: AgentExecutionMode, compactionThresholdRatio: number, skillCatalogContextRatio: number, agentInstructionFileName: AgentInstructionFileName, toolPolicy: AgentToolPolicy, conversationKind: AgentConversationKind, configSnapshot: AgentUserConfigSnapshot, modelProfileId?: string, reasoningEffortOverride?: LlmConfig['reasoningEffort']): AgentLoopRunState {
-    const {agent, config, registry} = prepareAgent({configSnapshot, cwd, mcpManager, modelProfileId, reasoningEffortOverride});
+  function initializeRunState(interactionMode: InteractionMode, abortSignal: AbortSignal | undefined, executionMode: AgentExecutionMode, compactionThresholdRatio: number, skillCatalogContextRatio: number, agentInstructionFileName: AgentInstructionFileName, toolPolicy: AgentToolPolicy, conversationKind: AgentConversationKind, configSnapshot: AgentUserConfigSnapshot, modelProfileId?: string, reasoningEffortOverride?: LlmConfig['reasoningEffort'], subagentPort?: SubagentToolPort): AgentLoopRunState {
+    const {agent, config, registry} = prepareAgent({
+      configSnapshot,
+      cwd,
+      mcpManager,
+      modelProfileId,
+      reasoningEffortOverride,
+      ...(subagentPort ? {subagentPort} : {})
+    });
     const contextWindow = resolveContextWindow(config);
     const skillCatalogProjection = createSkillCatalogPromptProjection(registry.listSkillCatalog?.() || [], contextWindow, skillCatalogContextRatio);
-    const systemPromptOverride = loadSystemPromptOverride({cwd});
+    const basePrompt = loadSystemPromptOverride({cwd})?.content;
 
     return {
       agent,
       agentInstructions: loadAgentInstructions({cwd, fileName: agentInstructionFileName}),
-      basePrompt: systemPromptOverride?.content,
+      basePrompt,
       providerConfig: redactProviderConfig(config),
       providerType: config.agentType,
       model: config.model,
       reasoningEffort: config.reasoningEffort,
       interactionMode,
       executor: createToolExecutor(registry),
+      registry,
       contextWindow,
       compactionThresholdRatio,
       skillCatalog: skillCatalogProjection.catalog,
@@ -386,11 +293,11 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
       hooks,
       debug,
       toolPolicy,
-      conversationKind
+      conversationKind,
     };
   }
 
-  return async function runAgentLoop(session: AgentSessionInput, callbacks: AgentCallbacks = {}): Promise<string> {
+  const runAgentLoop: RunAgent = async function runAgentLoop(session: AgentSessionInput, callbacks: AgentCallbacks = {}): Promise<string> {
     const abortSignal = session.abortSignal;
     const interactionMode = session.interactionMode || 'normal';
     const executionMode = session.executionMode || INTERACTIVE_EXECUTION_MODE;
@@ -403,10 +310,43 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
     const skillCatalogContextRatio = session.skillCatalogContextRatio ?? appSettings.skillCatalogContextRatio;
 
     throwIfAborted(abortSignal);
+    // 运行态记录区先于 registry 创建，供 run_subagent Port 在外层 tool pair 提交前发布过程事件。
+    const recordRegion: TranscriptRecord[] = [...session.records];
+    let compactionState: CompactionState | undefined = session.compaction;
+    let usageAnchor: TokenUsageAnchor | null = null;
+    let currentMemoryPrompt: MemoryPromptResolution | undefined;
     let state: AgentLoopRunState;
 
+    function publishSubagentRecords(records: SubagentTranscriptRecord[]): void {
+      if (records.length === 0) {
+        return;
+      }
+      recordRegion.push(...records);
+      callbacks.onSubagentRecords?.(records);
+    }
+
+    const subagentPort: SubagentToolPort | undefined = conversationKind === 'primary'
+      ? createSubagentToolPort({
+          callbacks,
+          configSnapshot,
+          createRuntime: (inheritedContext, definition) => createSubagentLoopRuntime(cwd, inheritedContext, definition, hooks, debug, usageStore),
+          executionMode,
+          getInheritedContext: () => ({
+            agentInstructions: state.agentInstructions,
+            basePrompt: state.basePrompt,
+            memoryPrompt: currentMemoryPrompt || resolveMemoryPrompt(cwd, state.contextWindow),
+            skillCatalog: state.skillCatalog,
+            skillCatalogProjection: state.skillCatalogProjection,
+            skillCatalogTokens: state.skillCatalogTokens
+          }),
+          modelProfileId: session.modelProfileId,
+          publishRecords: publishSubagentRecords,
+          reasoningEffortOverride: session.reasoningEffortOverride
+        })
+      : undefined;
+
     try {
-      state = initializeRunState(interactionMode, abortSignal, executionMode, compactionThresholdRatio, skillCatalogContextRatio, appSettings.agentInstructionFileName, toolPolicy, conversationKind, configSnapshot, session.modelProfileId, session.reasoningEffortOverride);
+      state = initializeRunState(interactionMode, abortSignal, executionMode, compactionThresholdRatio, skillCatalogContextRatio, appSettings.agentInstructionFileName, toolPolicy, conversationKind, configSnapshot, session.modelProfileId, session.reasoningEffortOverride, subagentPort);
     } catch (error: unknown) {
       throw normalizeError(error, '无法加载 LLM 配置');
     }
@@ -418,10 +358,6 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
     callbacks.onThinking?.();
     throwIfAborted(abortSignal);
 
-    // recordRegion 与 app records[] 平行：append-only，activeStartIndex 指向其上的活跃区间起点。
-    const recordRegion: TranscriptRecord[] = [...session.records];
-    let compactionState: CompactionState | undefined = session.compaction;
-    let usageAnchor: TokenUsageAnchor | null = null;
     state.todoState = session.todoState;
 
     /**
@@ -515,6 +451,7 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
       const activeStartIndex = compactionState ? compactionState.activeStartIndex : 0;
       const activeRecords = recordRegion.slice(activeStartIndex);
       const memoryPrompt = resolveMemoryPrompt(cwd, state.contextWindow);
+      currentMemoryPrompt = memoryPrompt;
       const providerRecords = buildProviderRecords(activeRecords, cwd, compactionState, state.skillCatalog, state.agentInstructions, state.todoState, memoryPrompt.sections, state.basePrompt, session.sessionJournalPath);
       state.debug.emit('provider_request_built', {
         activeRecordCount: activeRecords.length,
@@ -599,7 +536,11 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
       for (const toolCall of toolCalls) {
         throwIfAborted(abortSignal);
         callbacks.onToolCall?.(toolCall);
-        recordRegion.push(createToolCallTranscriptRecord(toolCall));
+        const callRecord = createToolCallTranscriptRecord(toolCall);
+        const commitMode = state.registry.getHandler(toolCall.toolName)?.transcriptCommitMode || 'call_before_execute';
+        if (commitMode === 'call_before_execute') {
+          recordRegion.push(callRecord);
+        }
         state.debug.emit('tool_call_start', {
           argumentsText: summarizeText(toolCall.argumentsText, 0),
           interactionMode,
@@ -615,8 +556,13 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
 
         const result = await executeToolCall(toolCall, state, callbacks);
         throwIfAborted(abortSignal);
+        const resultRecord = createToolResultTranscriptRecord(result);
+        if (commitMode === 'pair_after_execute') {
+          recordRegion.push(callRecord, resultRecord);
+        } else {
+          recordRegion.push(resultRecord);
+        }
         callbacks.onToolResult?.(result);
-        recordRegion.push(createToolResultTranscriptRecord(result));
         state.debug.emit('tool_call_end', {
           interactionMode,
           ok: result.ok,
@@ -636,6 +582,8 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
       throwIfAborted(abortSignal);
     }
   };
+
+  return runAgentLoop;
 }
 
 export {buildProviderRecords, createAgentLoopRuntime};

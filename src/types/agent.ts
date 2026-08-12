@@ -1,5 +1,5 @@
-import type {CompactionState, TodoState, TranscriptRecord} from './transcript';
-import type {AskUserQuestionsRequest, ToolApprovalRequest, ToolCall, ToolExecutionResult} from './tool';
+import type {CompactionState, SubagentTranscriptRecord, TodoState, TranscriptRecord} from './transcript';
+import type {AskUserQuestionsRequest, ToolApprovalRequest, ToolCall, ToolExecutionOptions, ToolExecutionResult} from './tool';
 import type {ChangeFileRecorder} from './change-history';
 
 export type InteractionMode = 'normal' | 'plan' | 'shell' | 'shell-local';
@@ -9,7 +9,46 @@ export type AgentExecutionMode =
   | {kind: 'headless'; approvalPolicy: 'deny' | 'full-access'};
 
 export type AgentToolPolicy = 'default' | 'readonly';
-export type AgentConversationKind = 'primary' | 'btw';
+export type AgentConversationKind = 'primary' | 'btw' | 'subagent';
+
+export type SubagentRunMetadata = {
+  agentName: string; // 当前内置子 Agent 名称，用于 prompt、审批和可见投影。
+  depth: number; // 当前嵌套深度；主 run 为 0，第一版子 Agent 为 1。
+  parentToolCallId: string; // 触发本次运行的外层 run_subagent call id。
+  runId: string; // 当前子 Agent 运行的进程内稳定身份。
+};
+
+export type SubagentActivityPhase = 'thinking' | 'reasoning' | 'streaming' | 'tool' | 'waiting_approval';
+
+export type SubagentActivity = {
+  agentName: string; // 当前活动的子 Agent 名称。
+  argumentsText?: string; // tool 阶段的原始参数，供现有 pending renderer 投影。
+  draft?: string; // reasoning 或 assistant 的完整 transient 草稿。
+  phase: SubagentActivityPhase; // 当前可见活动阶段。
+  runId: string; // 用于 app 隔离迟到活动更新。
+  task: string; // 当前委派任务，供 footer 和恢复边界识别。
+  toolName?: string; // tool 阶段的 provider-neutral 工具名。
+};
+
+export type SubagentRunResult =
+  | {
+      ok: true; // 表示子 Agent 已生成可返回父 Agent 的最终报告。
+      text: string; // 成功时返回父 Agent 的最终调查报告。
+    }
+  | {
+      ok: false; // 表示子运行非取消失败或预算/参数边界拒绝。
+      text: string; // 可供父 Agent 继续推理的归一化诊断。
+    };
+
+export type SubagentDescriptor = {
+  description: string; // 主 Agent工具目录中展示的子 Agent能力说明。
+  name: string; // `run_subagent` 参数使用的稳定子 Agent名称。
+};
+
+export type SubagentToolPort = {
+  listDefinitions(): readonly SubagentDescriptor[]; // 返回当前父 run可委派的子 Agent目录。
+  run(agentName: string, task: string, call: ToolCall, options?: ToolExecutionOptions): Promise<SubagentRunResult>; // 按名称在父 run边界内同步执行隔离子 Agent。
+};
 
 export function isShellInteractionMode(mode: InteractionMode): boolean {
   return mode === 'shell' || mode === 'shell-local';
@@ -69,6 +108,8 @@ export type AgentCallbacks = {
   onToolApprovalRequest?: (call: ToolCall, request?: ToolApprovalRequest) => Promise<ToolApprovalDecision> | ToolApprovalDecision;
   onUserQuestionRequest?: (call: ToolCall, request: AskUserQuestionsRequest) => Promise<ToolExecutionResult> | ToolExecutionResult;
   onToolResult?: (result: ToolExecutionResult) => void;
+  onSubagentRecords?: (records: SubagentTranscriptRecord[]) => void; // 发布已进入父 runtime record region 的稳定子 Agent 过程。
+  onSubagentActivity?: (activity: SubagentActivity | null) => void; // 更新或清空不持久化的子 Agent footer 活动。
   onTodoStateChange?: (todoState: TodoState) => void;
   onComplete?: (finalText: string) => void;
   onCompacted?: (next: CompactionState) => void;

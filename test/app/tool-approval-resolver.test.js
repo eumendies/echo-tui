@@ -292,6 +292,41 @@ test('tool approval resolver prioritizes session grants and maps auto decisions'
   assert.equal(reviews.length, 2);
 });
 
+test('subagent approval reuses the same session grants as primary approval', async () => {
+  const calls = {cache: 0, manual: 0, review: 0};
+  const resolver = createToolApprovalResolver({
+    currentUserRequest: 'inspect',
+    cwd: '/tmp/project',
+    debug: createDebug().context,
+    interactionMode: 'normal',
+    isCurrentTurn: () => true,
+    getRecords: () => [{role: 'user', text: 'inspect'}],
+    turnUserRecordIndex: 0,
+    settings: {mode: 'auto', modelProfileId: 'reviewer'},
+    reviewer: async () => { calls.review += 1; return true; },
+    toolApproval: {
+      getCachedDecision() {
+        calls.cache += 1;
+        return {kind: 'allow_all_for_session'};
+      },
+      requestManual(_call, request) {
+        calls.manual += 1;
+        return Promise.resolve({kind: 'allow_once'});
+      }
+    }
+  });
+  const decision = await resolver.request({
+    callId: 'inner-bash',
+    toolName: 'run_bash_command',
+    argumentsText: JSON.stringify({command: 'node inspect.js'})
+  }, {
+    origin: {kind: 'subagent', agentName: 'explorer', runId: 'run-1'}
+  });
+
+  assert.deepEqual(decision, {kind: 'allow_all_for_session'});
+  assert.deepEqual(calls, {cache: 1, manual: 0, review: 0});
+});
+
 test('tool approval resolver sends oversized actions directly to manual approval', async () => {
   const debug = createDebug();
   let reviews = 0;

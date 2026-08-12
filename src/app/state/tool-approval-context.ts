@@ -140,7 +140,7 @@ class ToolApprovalContext {
 
     return {
       kind: 'choice',
-      title: 'PERMISSION',
+      title: request.display?.origin ? `PERMISSION · ${request.display.origin.agentName.toUpperCase()}` : 'PERMISSION',
       ...(request.display?.preview ? {
         message: request.display.preview,
         messageTitle: request.display.previewTitle || 'command',

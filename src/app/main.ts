@@ -1,4 +1,4 @@
-import {createAgentLoopRuntime} from '../agent/agent-loop-runtime';
+import {createAgentLoopRuntime} from '../agent/loop-runtime/agent-loop-runtime';
 import {createTranscriptStore} from '../persistence/transcript-store';
 import {createUsageStore} from '../persistence/usage-store';
 import {readTuiTheme} from '../config/theme-config';
@@ -124,7 +124,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
   function renderTimedActivity(): void {
     const hasTimedActivity = btwConversation.isActive()
       ? btwConversation.hasTimedActivity()
-      : appContext.turnContext.hasTimedActivity();
+      : appContext.turnContext.hasTimedActivity() || appContext.subagentRunContext.hasTimedActivity();
     if (hasTimedActivity) render();
   }
 

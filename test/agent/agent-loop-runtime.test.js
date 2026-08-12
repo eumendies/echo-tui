@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const {buildProviderRecords, createAgentLoopRuntime: createRuntime} = require('../../src/agent/agent-loop-runtime');
+const {buildProviderRecords, createAgentLoopRuntime: createRuntime} = require('../../src/agent/loop-runtime/agent-loop-runtime');
 const {UserConfigContext} = require('../../src/config/user-config-context');
 const {createCompactionNoticeRecord} = require('../../src/agent/context/context-compaction');
 const {formatAgentMemoryCatalogPrompt, formatUserMemoriesPrompt} = require('../../src/agent/context/memory-prompt');

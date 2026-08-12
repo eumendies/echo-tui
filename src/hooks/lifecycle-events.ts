@@ -3,13 +3,13 @@ import type {LifecycleHookDispatcher, LifecycleHookPayloadData} from '../types/h
 import type {AskUserQuestionsRequest, ToolApprovalRequest, ToolCall, ToolExecutionResult} from '../types/tool';
 
 type ToolApprovalRequestHookInput = {
-  interactionMode: InteractionMode;
+  interactionMode?: InteractionMode;
   toolCall: ToolCall;
   approval?: ToolApprovalRequest;
 };
 
 type ToolApprovalResponseHookInput = {
-  interactionMode: InteractionMode;
+  interactionMode?: InteractionMode;
   toolCall: ToolCall;
   decision: ToolApprovalDecision;
 };
@@ -29,7 +29,7 @@ type UserQuestionResponseHookInput = {
 /** 将工具授权请求映射为稳定的 lifecycle hook 业务字段。 */
 function createToolApprovalRequestHookPayloadData(input: ToolApprovalRequestHookInput): LifecycleHookPayloadData {
   return {
-    interactionMode: input.interactionMode,
+    ...(input.interactionMode ? {interactionMode: input.interactionMode} : {}),
     toolCallId: input.toolCall.callId,
     toolName: input.toolCall.toolName,
     argumentsText: input.toolCall.argumentsText,
@@ -47,7 +47,7 @@ function createToolApprovalResponseHookPayloadData(input: ToolApprovalResponseHo
       : {decision: input.decision.kind};
 
   return {
-    interactionMode: input.interactionMode,
+    ...(input.interactionMode ? {interactionMode: input.interactionMode} : {}),
     toolCallId: input.toolCall.callId,
     toolName: input.toolCall.toolName,
     argumentsText: input.toolCall.argumentsText,

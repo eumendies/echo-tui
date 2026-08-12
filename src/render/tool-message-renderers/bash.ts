@@ -1,6 +1,5 @@
 import {blockText} from '../colors';
-import {safeRenderWidth} from '../layout';
-import {TOOL_RESULT_MAX_DISPLAY_LINES, createToolRailPrefix, renderPrefixedLines, truncateDisplayText, wrapContentLine} from './shared';
+import {TOOL_RESULT_MAX_DISPLAY_LINES, renderPrefixedLines, renderToolRailRows, truncateDisplayText} from './shared';
 
 import type {TuiTheme} from '../../config/theme-config';
 import type {ToolCallTranscriptRecord, ToolResultTranscriptRecord} from '../../types/transcript';
@@ -116,19 +115,15 @@ function renderRailRows(
   includeMarker: boolean,
   markerStyle: BashStatusStyle
 ): string[] {
-  const safeWidth = safeRenderWidth(width);
-  const prefixWidth = safeWidth >= 4 ? 4 : safeWidth >= 2 ? 2 : 0;
-  const rendered: string[] = [];
-  let first = includeMarker;
-
-  for (const row of normalizeRailRows(rows)) {
-    for (const segment of wrapContentLine(row.text, safeWidth, prefixWidth)) {
-      rendered.push(`${createToolRailPrefix(first, safeWidth, theme, railStyle, markerStyle)}${colorizeRailContent(row.style, segment, theme)}`);
-      first = false;
-    }
-  }
-
-  return rendered.length > 0 ? rendered : [createToolRailPrefix(includeMarker, safeWidth, theme, railStyle, markerStyle)];
+  return renderToolRailRows({
+    colorizeContent: colorizeRailContent,
+    includeMarker,
+    markerStyle,
+    railStyle,
+    rows,
+    theme,
+    width
+  });
 }
 
 function colorizeRailContent(style: BashRailRow['style'], text: string, theme: TuiTheme): string {
@@ -377,10 +372,6 @@ function parseBashResult(record: ToolResultTranscriptRecord): BashResultDisplay 
     timedOut,
     truncated
   };
-}
-
-function normalizeRailRows(rows: BashRailRow[]): BashRailRow[] {
-  return rows.flatMap((row) => splitRenderableLines(row.text).map((text) => ({...row, text})));
 }
 
 function splitRenderableLines(text: string): string[] {

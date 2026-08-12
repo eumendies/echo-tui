@@ -7,7 +7,7 @@ import type {AgentCallbacks, ReasoningEffort, RunAgent, ToolApprovalDecision} fr
 import type {DebugContext} from '../debug/debug-context';
 import type {LifecycleHookDispatcher} from '../types/hooks';
 import type {ToolApprovalRequest, ToolCall, ToolResultAttachment} from '../types/tool';
-import type {TranscriptRecord, UserTranscriptMetadata} from '../types/transcript';
+import type {SubagentTranscriptRecord, TranscriptRecord, UserTranscriptMetadata} from '../types/transcript';
 import type {AppContext} from './state/app-context';
 import type {ToolApprovalContext} from './state/tool-approval-context';
 import type {ToolApprovalReviewer} from './tool-approval/resolver';
@@ -234,6 +234,9 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
         render();
       },
       onToolApprovalRequest(call, request) {
+        if (!isCurrentTurn() || request?.origin && !appContext.subagentRunContext.isCurrentRun(request.origin.runId)) {
+          return {kind: 'deny', message: 'Tool execution was interrupted.'};
+        }
         return toolApprovalResolver.request(call, request);
       },
       onUserQuestionRequest(call, request) {
@@ -254,6 +257,19 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
         }
 
         renderRecords(appContext.transcriptContext.appendRecords(appContext.turnContext.appendPendingToolResult(result)));
+      },
+      onSubagentRecords(records: SubagentTranscriptRecord[]) {
+        if (!isCurrentTurn() || records.length === 0 || !appContext.subagentRunContext.acceptRecords(records)) {
+          return;
+        }
+
+        renderRecords(appContext.transcriptContext.appendRecords(records));
+      },
+      onSubagentActivity(activity) {
+        if (!isCurrentTurn() || !appContext.subagentRunContext.updateActivity(activity)) {
+          return;
+        }
+        // 高频 token 只更新草稿；统一由常驻 timer 读取最新状态并刷新 footer。
       },
       onTodoStateChange(todoState) {
         if (!isCurrentTurn()) {
@@ -332,6 +348,7 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
     const wasCurrentTurn = isCurrentTurn();
 
     if (wasCurrentTurn) {
+      appContext.subagentRunContext.clear();
       appContext.finalizeChangeCheckpoint();
     }
     appContext.turnContext.clearAssistantTurnIfCurrent(turn);

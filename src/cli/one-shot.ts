@@ -1,4 +1,4 @@
-import {createAgentLoopRuntime} from '../agent/agent-loop-runtime';
+import {createAgentLoopRuntime} from '../agent/loop-runtime/agent-loop-runtime';
 import {redactSensitiveText} from '../agent/agent-errors';
 import {UserConfigContext} from '../config/user-config-context';
 import {createDebugContext} from '../debug/debug-context';

@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { classifyReadonlyToolCall, classifyToolCallRisk, parseBashCommand } = require('../../src/tools/tool-risk-classifier');
+const { classifyReadonlyToolCall, classifySubagentToolCall, classifyToolCallRisk, parseBashCommand } = require('../../src/tools/tool-risk-classifier');
 
 test('readonly tool policy keeps explicit observations and rejects all other tools', () => {
   const call = (toolName, argumentsText = '{}') => ({callId: `call-${toolName}`, toolName, argumentsText});
@@ -18,6 +18,21 @@ test('readonly tool policy keeps explicit observations and rejects all other too
   }
   assert.equal(classifyReadonlyToolCall(call('run_bash_command', '{"command":"npm test"}')).risk, 'rejected');
   assert.equal(classifyReadonlyToolCall(call('run_bash_command', 'not-json')).risk, 'rejected');
+});
+
+test('subagent policy allows proven readonly Bash and requests normal approval for unknown Bash', () => {
+  const metadata = {agentName: 'explorer', depth: 1, parentToolCallId: 'outer', runId: 'run-1'};
+  assert.deepEqual(classifySubagentToolCall(createCall('git status --short'), metadata), {risk: 'safe'});
+
+  const unknown = classifySubagentToolCall(createCall('node inspect.js'), metadata);
+  assert.equal(unknown.risk, 'approval_required');
+  assert.deepEqual(unknown.approval, {
+    preview: 'node inspect.js',
+    previewTitle: 'explorer bash',
+    origin: {kind: 'subagent', agentName: 'explorer', runId: 'run-1'}
+  });
+
+  assert.equal(classifySubagentToolCall({callId: 'forged', toolName: 'apply_patch', argumentsText: '{}'}, metadata).risk, 'rejected');
 });
 
 function createCall(command) {

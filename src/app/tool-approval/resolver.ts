@@ -54,7 +54,7 @@ type ToolApprovalResolverDependencies = {
   abortSignal?: AbortSignal; // 当前 assistant turn 的中断信号。
   currentUserRequest: string; // 当前 turn 展开前的用户原始提交文本。
   cwd: string | (() => string); // pending action 投影中的当前工作目录。
-  debug: DebugContext; // manual_only 等不进入 reviewer 的脱敏观测旁路。
+  debug: DebugContext; // 审批投影与 reviewer 的脱敏观测旁路。
   getRecords: () => TranscriptRecord[]; // 返回发起审批时的主 transcript 快照。
   interactionMode: InteractionMode; // reviewer usage 账本沿用的交互模式。
   isCurrentTurn: () => boolean; // 判断回调是否仍属于当前 assistant turn。

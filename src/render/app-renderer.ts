@@ -4,7 +4,8 @@ import {DEFAULT_TUI_THEME} from '../config/theme-config';
 import { getCommittableReasoningText, getCommittableStreamingText, renderAssistantBlock, renderAssistantMessageLines, renderBanner, renderCompactionNoticeBlock, renderConversationReferenceBlock, renderErrorBlock, renderLocalNoticeBlock, renderReasoningSummaryBlock, renderReasoningSummaryLines, renderShellBlock, renderStreamingCommitLines, renderUserBlock } from './blocks';
 import { createFooterRenderer, renderFooterLayout } from './footer';
 import { renderToolPairBlock, renderToolRecordBlock } from './tool-message-renderer';
-import type { ToolCallTranscriptRecord, ToolResultTranscriptRecord, TranscriptRecord, UserTranscriptRecord } from '../types/transcript';
+import {renderSubagentRunAppendBlock, renderSubagentRunBlock} from './subagent-renderer';
+import type { SubagentTranscriptRecord, ToolCallTranscriptRecord, ToolResultTranscriptRecord, TranscriptRecord, UserTranscriptRecord } from '../types/transcript';
 import type {
   RenderRecordsOptions,
   AppRenderer,
@@ -15,9 +16,31 @@ import type {
   RenderState
 } from '../types/render';
 
-type TranscriptBlock =
-  | { kind: 'record'; record: TranscriptRecord }
-  | { kind: 'tool_pair'; call: ToolCallTranscriptRecord; result: ToolResultTranscriptRecord };
+type TranscriptRecordBlock = {
+  kind: 'record'; // 标识不参与相邻聚合的单条 transcript 记录。
+  record: TranscriptRecord; // 交给普通 role renderer 的原始事实。
+};
+
+type TranscriptToolPairBlock = {
+  call: ToolCallTranscriptRecord; // 与下一条 result 具有相同 call id 的工具调用。
+  compactSubagentResult: boolean; // 已有本地子运行终态时隐藏外层重复报告正文。
+  kind: 'tool_pair'; // 标识可由 pair-aware renderer 一次投影的工具对。
+  result: ToolResultTranscriptRecord; // 与 call 配对的权威工具结果。
+};
+
+type TranscriptSubagentRunBlock = {
+  kind: 'subagent_run'; // 标识连续同 runId 的本地子 Agent 过程。
+  records: SubagentTranscriptRecord[]; // 按物理 transcript 顺序保留的稳定事件。
+  showUnexpectedInterruption: boolean; // destructive/resume 投影是否补意外中断状态。
+};
+
+type TranscriptBlock = TranscriptRecordBlock | TranscriptToolPairBlock | TranscriptSubagentRunBlock;
+
+type SubagentAppendRenderState = {
+  pendingToolCalls: Map<string, SubagentTranscriptRecord>; // 已持久化但仍由 footer 展示的内部调用，等待 result 后成对写入历史区。
+  runIds: Set<string>; // 已经把标题写入终端历史区的子运行，后续 callback 只追加事件行。
+  terminalCallIds: Set<string>; // 已经出现终态的外层 call，用于稍后到达的 outer pair 压缩重复报告。
+};
 
 /**
  * 创建应用级 renderer 门面，统一处理 footer 局部重绘、记录追加和清屏重绘。
@@ -39,6 +62,11 @@ class DefaultAppRenderer implements AppRenderer {
   private readonly output: NodeJS.WriteStream;
   private readonly footer: ReturnType<typeof createFooterRenderer>;
   private readonly streamingByOwner = new Map<string, StreamingDisplayState>();
+  private readonly subagentAppendState: SubagentAppendRenderState = {
+    pendingToolCalls: new Map(),
+    runIds: new Set(),
+    terminalCallIds: new Set()
+  };
 
   constructor(output: NodeJS.WriteStream = process.stdout) {
     this.output = output;
@@ -167,19 +195,38 @@ class DefaultAppRenderer implements AppRenderer {
 
   /** transcript 成组新增时一次性追加所有可见块并重绘 footer。 */
   renderRecords({records, ...options}: RenderRecordsOptions): void {
-    const blocks = renderTranscriptBlocks(records, options.width, options.theme, options.renderPreferences);
+    const blocks = renderTranscriptBlocks(records, options.width, options.theme, options.renderPreferences, false, this.subagentAppendState);
     this.footer.append(blocks.join(''), this.prepareRenderState(options));
   }
 
   /** 清屏后按当前宽度重画完整界面，并重新计算尚未生成正式记录的流式内容。 */
   renderDestructive({bannerContext, records, ...options}: RenderDestructiveOptions): void {
+    const activeSubagentRunId = options.pending?.kind === 'subagent' ? options.pending.runId : undefined;
+    this.subagentAppendState.runIds.clear();
+    this.subagentAppendState.terminalCallIds.clear();
+    this.subagentAppendState.pendingToolCalls.clear();
+    for (const record of records) {
+      if (record.role === 'subagent') {
+        this.subagentAppendState.runIds.add(record.runId);
+        if (record.event.kind === 'completed' || record.event.kind === 'failed' || record.event.kind === 'cancelled') {
+          this.subagentAppendState.terminalCallIds.add(record.parentToolCallId);
+        }
+        if (record.runId === activeSubagentRunId && record.event.kind === 'tool_call') {
+          this.subagentAppendState.pendingToolCalls.set(createSubagentToolCallKey(record.runId, record.event.toolCallId), record);
+        } else if (record.runId === activeSubagentRunId && record.event.kind === 'tool_result') {
+          this.subagentAppendState.pendingToolCalls.delete(createSubagentToolCallKey(record.runId, record.event.toolCallId));
+        }
+      }
+    }
     const current = this.getStreamingState(options);
     const empty: StreamingDisplayState = {assistant: '', reasoning: '', reasoningDisplayClosed: false};
     const next = this.getStableStreamingText(options, empty);
     const prepared = this.prepareRenderState(options, next);
     const footerLayout = renderFooterLayout(prepared);
     const bannerLines = splitRenderedBlock(renderBanner(bannerContext, options.theme));
-    const transcriptLines = renderTranscriptLines(records, options.width, options.theme, options.renderPreferences);
+    const projectedRecords = records.filter((record) => record.role !== 'subagent' || record.event.kind !== 'tool_call' ||
+      !this.subagentAppendState.pendingToolCalls.has(createSubagentToolCallKey(record.runId, record.event.toolCallId)));
+    const transcriptLines = renderTranscriptLines(projectedRecords, options.width, options.theme, options.renderPreferences, true, activeSubagentRunId);
     const reasoningLines = next.reasoning === '' ? [] : renderReasoningSummaryLines(next.reasoning, options.width, options.theme);
     const assistantLines = next.assistant === '' ? [] : renderAssistantMessageLines(next.assistant, options.width, options.theme);
     const lines = [...bannerLines, ...transcriptLines, ...reasoningLines, ...assistantLines, ...footerLayout.lines];
@@ -233,11 +280,13 @@ export function renderTranscriptLines(
   records: TranscriptRecord[] = [],
   width = 80,
   theme: RenderState['theme'] = DEFAULT_TUI_THEME,
-  renderPreferences: RenderState['renderPreferences'] = DEFAULT_RENDER_PREFERENCES
+  renderPreferences: RenderState['renderPreferences'] = DEFAULT_RENDER_PREFERENCES,
+  showUnexpectedSubagentInterruption = true,
+  activeSubagentRunId?: string
 ): string[] {
   const lines: string[] = [];
 
-  for (const block of renderTranscriptBlocks(records, width, theme, renderPreferences)) {
+  for (const block of renderTranscriptBlocks(records, width, theme, renderPreferences, showUnexpectedSubagentInterruption, undefined, activeSubagentRunId)) {
     lines.push(...splitRenderedBlock(block));
   }
 
@@ -251,25 +300,107 @@ function renderTranscriptBlocks(
   records: TranscriptRecord[] = [],
   width = 80,
   theme: RenderState['theme'] = DEFAULT_TUI_THEME,
-  renderPreferences: RenderState['renderPreferences'] = DEFAULT_RENDER_PREFERENCES
+  renderPreferences: RenderState['renderPreferences'] = DEFAULT_RENDER_PREFERENCES,
+  showUnexpectedSubagentInterruption = false,
+  subagentAppendState?: SubagentAppendRenderState,
+  activeSubagentRunId?: string
 ): string[] {
   const visibleRecords = renderPreferences.showReasoningSummary
     ? records
     : records.filter((record) => record.role !== 'reasoning_summary');
-  return groupTranscriptRecords(visibleRecords)
-    .map((block) => renderTranscriptBlock(block, width, theme))
+  const renderRecords = subagentAppendState
+    ? prepareSubagentAppendRecords(visibleRecords, subagentAppendState)
+    : visibleRecords;
+  return groupTranscriptRecords(renderRecords, showUnexpectedSubagentInterruption, subagentAppendState?.terminalCallIds, activeSubagentRunId)
+    .map((block) => renderTranscriptBlock(block, width, theme, subagentAppendState?.runIds))
     .filter((block) => block.length > 0);
+}
+
+/**
+ * 实时追加时把内部 call 留在 footer，result 到达后再把完整工具对一次写入历史区。
+ * transcript 已在调用方独立持久化；这里的缓冲只影响终端投影，不改变审计顺序。
+ */
+function prepareSubagentAppendRecords(records: TranscriptRecord[], state: SubagentAppendRenderState): TranscriptRecord[] {
+  const prepared: TranscriptRecord[] = [];
+
+  for (const record of records) {
+    if (record.role !== 'subagent') {
+      prepared.push(record);
+      continue;
+    }
+
+    const key = createSubagentToolCallKey(record.runId, record.event.kind === 'tool_call' || record.event.kind === 'tool_result'
+      ? record.event.toolCallId
+      : '');
+    if (record.event.kind === 'tool_call') {
+      state.pendingToolCalls.set(key, record);
+      continue;
+    }
+
+    if (record.event.kind === 'tool_result') {
+      const call = state.pendingToolCalls.get(key);
+      if (call) {
+        prepared.push(call);
+        state.pendingToolCalls.delete(key);
+      }
+      prepared.push(record);
+      continue;
+    }
+
+    if (record.event.kind !== 'start') {
+      for (const [pendingKey, call] of state.pendingToolCalls) {
+        if (call.runId === record.runId) {
+          prepared.push(call);
+          state.pendingToolCalls.delete(pendingKey);
+        }
+      }
+    }
+    prepared.push(record);
+  }
+
+  return prepared;
+}
+
+/** 为运行内工具调用生成不会跨 run 冲突的瞬时渲染键。 */
+function createSubagentToolCallKey(runId: string, toolCallId: string): string {
+  return `${runId}\u0000${toolCallId}`;
 }
 
 /**
  * 顺序扫描 transcript，把相邻且同 call id 的工具调用和结果聚合为一个渲染块。
  */
-function groupTranscriptRecords(records: TranscriptRecord[]): TranscriptBlock[] {
+function groupTranscriptRecords(records: TranscriptRecord[], showUnexpectedSubagentInterruption = false, knownTerminalCallIds?: Set<string>, activeSubagentRunId?: string): TranscriptBlock[] {
   const blocks: TranscriptBlock[] = [];
+  const subagentTerminalCallIds = new Set(knownTerminalCallIds || []);
+  for (const parentToolCallId of records
+    .filter((record): record is SubagentTranscriptRecord => record.role === 'subagent')
+    .filter((record) => record.event.kind === 'completed' || record.event.kind === 'failed' || record.event.kind === 'cancelled')
+    .map((record) => record.parentToolCallId)) {
+    subagentTerminalCallIds.add(parentToolCallId);
+    knownTerminalCallIds?.add(parentToolCallId);
+  }
 
   for (let index = 0; index < records.length; index += 1) {
     const record = records[index];
     const nextRecord = records[index + 1];
+
+    if (record.role === 'subagent') {
+      const runRecords = [record];
+      while (true) {
+        const following = records[index + 1];
+        if (!following || following.role !== 'subagent' || following.runId !== record.runId) {
+          break;
+        }
+        runRecords.push(following);
+        index += 1;
+      }
+      blocks.push({
+        kind: 'subagent_run',
+        records: runRecords,
+        showUnexpectedInterruption: showUnexpectedSubagentInterruption && record.runId !== activeSubagentRunId
+      });
+      continue;
+    }
 
     if (
       record.role === 'tool_call' &&
@@ -277,7 +408,12 @@ function groupTranscriptRecords(records: TranscriptRecord[]): TranscriptBlock[] 
       record.toolCallId !== '' &&
       record.toolCallId === nextRecord.toolCallId
     ) {
-      blocks.push({ kind: 'tool_pair', call: record, result: nextRecord });
+      blocks.push({
+        kind: 'tool_pair',
+        call: record,
+        result: nextRecord,
+        compactSubagentResult: record.toolName === 'run_subagent' && subagentTerminalCallIds.has(record.toolCallId)
+      });
       index += 1;
       continue;
     }
@@ -291,9 +427,19 @@ function groupTranscriptRecords(records: TranscriptRecord[]): TranscriptBlock[] 
 /**
  * 按聚合后的 transcript block 类型选择对应 renderer。
  */
-function renderTranscriptBlock(block: TranscriptBlock, width: number, theme: RenderState['theme']): string {
+function renderTranscriptBlock(block: TranscriptBlock, width: number, theme: RenderState['theme'], appendedSubagentRuns?: Set<string>): string {
   if (block.kind === 'tool_pair') {
-    return renderToolPairBlock(block.call, block.result, width, theme);
+    return renderToolPairBlock(block.call, block.result, width, theme, block.compactSubagentResult);
+  }
+
+  if (block.kind === 'subagent_run') {
+    if (appendedSubagentRuns) {
+      const runId = block.records[0]?.runId || '';
+      const continuation = appendedSubagentRuns.has(runId);
+      appendedSubagentRuns.add(runId);
+      return renderSubagentRunAppendBlock(block.records, width, theme, continuation);
+    }
+    return renderSubagentRunBlock(block.records, width, theme, block.showUnexpectedInterruption);
   }
 
   return renderRecordBlock(block.record, width, theme);

@@ -12,6 +12,8 @@ import {
 
 import type {
   LoadedTranscriptSession,
+  SubagentTranscriptRecord,
+  TranscriptRecord,
   TranscriptJournalOperation,
   TranscriptProjectMetadata,
   TranscriptSessionIndex,
@@ -416,14 +418,31 @@ function createTimestamp(): string {
   return new Date().toISOString();
 }
 
-function createSessionPreviewRecords(records: import('../types/transcript').TranscriptRecord[]): import('../types/transcript').TranscriptSessionPreviewRecord[] {
+function createSessionPreviewRecords(records: TranscriptRecord[]): import('../types/transcript').TranscriptSessionPreviewRecord[] {
   const previewRecords: import('../types/transcript').TranscriptSessionPreviewRecord[] = [];
+  let index = records.length - 1;
 
-  for (let index = records.length - 1; index >= 0 && previewRecords.length < SESSION_PREVIEW_RECORD_LIMIT; index -= 1) {
+  while (index >= 0 && previewRecords.length < SESSION_PREVIEW_RECORD_LIMIT) {
     const record = records[index];
+    if (record.role === 'subagent') {
+      let startIndex = index;
+      while (startIndex > 0) {
+        const previous = records[startIndex - 1];
+        if (previous.role !== 'subagent' || previous.runId !== record.runId) {
+          break;
+        }
+        startIndex -= 1;
+      }
+      const runRecords = records.slice(startIndex, index + 1) as SubagentTranscriptRecord[];
+      previewRecords.push(createSubagentPreviewRecord(runRecords));
+      index = startIndex - 1;
+      continue;
+    }
+
     const text = normalizePreviewText(createRecordPreviewText(record)).slice(0, SESSION_PREVIEW_TEXT_LIMIT);
 
     if (text.length === 0) {
+      index -= 1;
       continue;
     }
 
@@ -432,12 +451,31 @@ function createSessionPreviewRecords(records: import('../types/transcript').Tran
       text,
       ...(record.createdAt ? {createdAt: String(record.createdAt)} : {})
     });
+    index -= 1;
   }
 
   return previewRecords.reverse();
 }
 
-function createRecordPreviewText(record: import('../types/transcript').TranscriptRecord): unknown {
+/** 把一段连续子运行压成单条 session preview，避免内部工具过程挤掉主对话摘要。 */
+function createSubagentPreviewRecord(records: SubagentTranscriptRecord[]): import('../types/transcript').TranscriptSessionPreviewRecord {
+  const first = records[0];
+  const start = records.find((record) => record.event.kind === 'start');
+  const terminal = [...records].reverse().find((record) =>
+    record.event.kind === 'completed' || record.event.kind === 'failed' || record.event.kind === 'cancelled'
+  );
+  const status = terminal?.event.kind || 'interrupted';
+  const task = start?.event.kind === 'start' ? normalizePreviewText(start.event.task) : '';
+  const text = normalizePreviewText(`${first.agentName} · ${status}${task ? ` · ${task}` : ''}`).slice(0, SESSION_PREVIEW_TEXT_LIMIT);
+
+  return {
+    role: 'subagent',
+    text,
+    ...(terminal?.createdAt || first.createdAt ? {createdAt: String(terminal?.createdAt || first.createdAt)} : {})
+  };
+}
+
+function createRecordPreviewText(record: TranscriptRecord): unknown {
   return record.role === 'user' && typeof record.displayText === 'string' ? record.displayText : record.text;
 }
 
@@ -448,7 +486,7 @@ function normalizePreviewText(text: unknown): string {
 /**
  * 从第一条用户消息派生稳定标题；列表只需要可辨识摘要，不引入额外模型调用。
  */
-function createSessionTitle(records: import('../types/transcript').TranscriptRecord[]): string {
+function createSessionTitle(records: TranscriptRecord[]): string {
   const firstUser = records.find((record) => record.role === 'user');
   const text = firstUser && firstUser.role === 'user'
     ? firstUser.displayText || firstUser.text

@@ -255,8 +255,39 @@ function isTranscriptRecord(value: unknown): value is TranscriptRecord {
         typeof value.ok === 'boolean' &&
         (value.attachments === undefined || Array.isArray(value.attachments)) &&
         isToolResultDetails(value.details);
+    case 'subagent':
+      return isSubagentTranscriptRecord(value);
     case 'extension':
       return isTranscriptExtension(value.extension);
+    default:
+      return false;
+  }
+}
+
+/** 校验持久化子 Agent 事件的身份与判别式 payload，避免恢复时接收半结构记录。 */
+function isSubagentTranscriptRecord(value: Record<string, unknown>): boolean {
+  if (!isNonEmptyString(value.runId) || !isNonEmptyString(value.parentToolCallId) || !isNonEmptyString(value.agentName) || !isRecord(value.event)) {
+    return false;
+  }
+
+  switch (value.event.kind) {
+    case 'start':
+      return isNonEmptyString(value.event.task);
+    case 'reasoning_summary':
+    case 'assistant':
+      return true;
+    case 'tool_call':
+      return isNonEmptyString(value.event.toolCallId) && isNonEmptyString(value.event.toolName) && typeof value.event.argumentsText === 'string';
+    case 'tool_result':
+      return isNonEmptyString(value.event.toolCallId) &&
+        isNonEmptyString(value.event.toolName) &&
+        typeof value.event.ok === 'boolean' &&
+        isToolResultDetails(value.event.details) &&
+        (value.event.attachments === undefined || Array.isArray(value.event.attachments));
+    case 'completed':
+    case 'failed':
+    case 'cancelled':
+      return typeof value.event.durationMs === 'number' && Number.isFinite(value.event.durationMs) && value.event.durationMs >= 0;
     default:
       return false;
   }

@@ -4,6 +4,7 @@ import {blockBackground, blockText, colorText} from './colors';
 import { charWidth, displayWidth, safeRenderWidth, splitGraphemes, tabWidthAt } from './layout';
 import { getCommittableMarkdownText, renderMarkdownLinesWithOptions } from './markdown';
 import { renderToolCallPreviewLines } from './tool-message-renderer';
+import {renderSubagentPendingLines} from './subagent-renderer';
 import type { BannerContext, PendingState, TerminalSize } from '../types/render';
 
 type BannerRenderContext = Partial<Omit<BannerContext, 'terminalSize'>> & {
@@ -457,6 +458,10 @@ export function renderPendingAssistantLines(
 
   if (pending.kind === 'reasoning_streaming') {
     return renderReasoningPendingLines(pending.text, pending.historyText || '', width, normalizedMaxLines, theme);
+  }
+
+  if (pending.kind === 'subagent') {
+    return renderSubagentPendingLines(pending, width, normalizedMaxLines, theme);
   }
 
   return renderStreamingPendingLines(pending.text, pending.historyText || '', width, normalizedMaxLines, theme);

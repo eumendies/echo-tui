@@ -1,0 +1,211 @@
+const assert = require('node:assert/strict');
+const {test} = require('node:test');
+
+const {createTuiTheme} = require('../../src/config/theme-config');
+const {renderTranscriptLines} = require('../../src/render/app-renderer');
+const {displayWidth, safeRenderWidth, stripAnsi} = require('../../src/render/layout');
+const {renderSubagentPendingLines, renderSubagentRunAppendBlock, renderSubagentRunBlock} = require('../../src/render/subagent-renderer');
+const {renderToolPairLines} = require('../../src/render/tool-message-renderer');
+
+const BASE = {role: 'subagent', agentName: 'explorer', parentToolCallId: 'outer-1', runId: 'run-1'};
+
+function subagentRecord(text, event) {
+  return {...BASE, text, event};
+}
+
+function createBashProcess(ok = true) {
+  return [
+    subagentRecord('inspect repository', {kind: 'start', task: 'inspect repository'}),
+    subagentRecord('run_bash_command', {
+      kind: 'tool_call',
+      toolCallId: 'inner-bash',
+      toolName: 'run_bash_command',
+      argumentsText: JSON.stringify({command: 'git status --short'})
+    }),
+    subagentRecord(ok ? 'clean' : 'fatal', {
+      kind: 'tool_result',
+      toolCallId: 'inner-bash',
+      toolName: 'run_bash_command',
+      ok,
+      details: {kind: 'bash', exitCode: ok ? 0 : 2, durationMs: 15, timedOut: false, truncated: false}
+    })
+  ];
+}
+
+function assertSafe(lines, width) {
+  for (const line of lines) {
+    const plain = stripAnsi(line);
+    assert.equal(plain.includes('\n'), false);
+    assert.equal(plain.includes('\r'), false);
+    assert.ok(displayWidth(line) <= safeRenderWidth(width), `${displayWidth(line)} > ${safeRenderWidth(width)}: ${plain}`);
+  }
+}
+
+test('Explorer title and outer rail use tool color while all nested Bash work uses toolOutput', () => {
+  const theme = createTuiTheme({
+    blocks: {colors: {
+      toolOutput: [1, 2, 3],
+      toolSuccess: [4, 5, 6],
+      toolError: [7, 8, 9],
+      tool: [10, 11, 12],
+      text: [13, 14, 15]
+    }}
+  });
+  const nested = renderSubagentRunBlock([
+    ...createBashProcess(false),
+    subagentRecord('failed report', {kind: 'failed', durationMs: 40})
+  ], 80, theme);
+  const nestedLines = nested.trimEnd().split('\n');
+  const nestedPlain = nestedLines.map(stripAnsi);
+
+  assert.ok(nestedPlain.some((line) => line.includes('▌ ◆ ▌ Bash · failed · exit 2 · 15ms')));
+  assert.ok(nestedPlain.some((line) => line.includes('fatal')));
+  assert.ok(nestedPlain.some((line) => line.includes('failed · 40ms · failed report')));
+  assert.match(nested, /\x1b\[38;2;1;2;3m/);
+  assert.match(nested, /\x1b\[38;2;10;11;12m/);
+  assert.doesNotMatch(nested, /\x1b\[38;2;4;5;6m|\x1b\[38;2;7;8;9m|\x1b\[38;2;13;14;15m/);
+
+  const topLevel = renderToolPairLines({
+    role: 'tool_call', text: '', toolCallId: 'top', toolName: 'run_bash_command', argumentsText: JSON.stringify({command: 'git status'})
+  }, {
+    role: 'tool_result', text: 'clean', toolCallId: 'top', toolName: 'run_bash_command', ok: true,
+    details: {kind: 'bash', exitCode: 0, durationMs: 1, timedOut: false, truncated: false}
+  }, 80, theme).join('\n');
+  assert.match(topLevel, /\x1b\[38;2;4;5;6m/);
+});
+
+test('nested non-Bash tool titles and status markers are also mapped to toolOutput', () => {
+  const theme = createTuiTheme({
+    blocks: {colors: {
+      toolOutput: [21, 22, 23],
+      toolSuccess: [24, 25, 26],
+      toolError: [27, 28, 29],
+      tool: [30, 31, 32],
+      text: [33, 34, 35]
+    }}
+  });
+  const rendered = renderSubagentRunBlock([
+    subagentRecord('find TypeScript files', {kind: 'start', task: 'find TypeScript files'}),
+    subagentRecord('glob', {
+      kind: 'tool_call', toolCallId: 'inner-glob', toolName: 'glob',
+      argumentsText: JSON.stringify({pattern: '**/*.ts', paths: ['src']})
+    }),
+    subagentRecord('src/main.ts', {
+      kind: 'tool_result', toolCallId: 'inner-glob', toolName: 'glob', ok: true,
+      details: {kind: 'glob', truncated: false, display: {kind: 'glob', paths: ['src/main.ts']}}
+    }),
+    subagentRecord('', {kind: 'completed', durationMs: 5})
+  ], 80, theme);
+
+  assert.match(rendered, /\x1b\[38;2;21;22;23m/u);
+  assert.match(rendered, /\x1b\[38;2;30;31;32m/u);
+  assert.doesNotMatch(rendered, /\x1b\[38;2;24;25;26m|\x1b\[38;2;27;28;29m|\x1b\[38;2;33;34;35m/u);
+});
+
+test('stable and pending subagent rails share one column and pending does not repeat the header', () => {
+  const stable = renderSubagentRunAppendBlock([
+    subagentRecord('inspect alignment', {kind: 'start', task: 'inspect alignment'})
+  ], 80);
+  const pending = renderSubagentPendingLines({
+    kind: 'subagent', agentName: 'explorer', elapsedMs: 1200, phase: 'streaming',
+    runId: 'run-1', task: 'inspect alignment', draft: 'collecting evidence'
+  }, 80, 10);
+  const lines = stripAnsi(stable).trimEnd().split('\n').concat(pending.map(stripAnsi));
+
+  assert.equal(lines[0].indexOf('▌'), 2);
+  assert.equal(lines[1].indexOf('▌'), 2);
+  assert.equal(lines[2].indexOf('▌'), 2);
+  assert.equal(lines[1], '  ▌ ');
+  assert.equal(lines.slice(1).some((line) => line.includes('explorer · inspect alignment')), false);
+});
+
+test('subagent reasoning and tools are separated by continuous outer rail spacer rows', () => {
+  const records = [
+    subagentRecord('inspect tools', {kind: 'start', task: 'inspect tools'}),
+    subagentRecord('choose glob', {kind: 'reasoning_summary'}),
+    subagentRecord('glob', {kind: 'tool_call', toolCallId: 'glob-1', toolName: 'glob', argumentsText: '{"pattern":"src/**"}'}),
+    subagentRecord('src/main.ts', {kind: 'tool_result', toolCallId: 'glob-1', toolName: 'glob', ok: true, details: {kind: 'glob', truncated: false, display: {kind: 'glob', paths: ['src/main.ts']}}}),
+    subagentRecord('inspect glob result', {kind: 'reasoning_summary'}),
+    subagentRecord('', {kind: 'completed', durationMs: 10})
+  ];
+  const lines = stripAnsi(renderSubagentRunBlock(records, 80)).trimEnd().split('\n');
+  const firstReasoningIndex = lines.findIndex((line) => line.includes('Reasoning: choose glob'));
+  const toolIndex = lines.findIndex((line) => line.includes('◆ Glob'));
+  const secondReasoningIndex = lines.findIndex((line) => line.includes('Reasoning: inspect glob result'));
+
+  assert.equal(lines[firstReasoningIndex - 1], '  ▌ ');
+  assert.equal(lines[toolIndex - 1], '  ▌ ');
+  assert.equal(lines[secondReasoningIndex - 1], '  ▌ ');
+});
+
+test('completed subagent rail shows its report once and compacts the outer run_subagent result', () => {
+  const records = [
+    ...createBashProcess(true),
+    subagentRecord('Final evidence report.', {kind: 'assistant'}),
+    subagentRecord('', {kind: 'completed', durationMs: 1234}),
+    {
+      role: 'tool_call', text: '', toolCallId: 'outer-1', toolName: 'run_subagent',
+      argumentsText: JSON.stringify({agent: 'explorer', task: 'inspect repository'})
+    },
+    {
+      role: 'tool_result', text: 'Final evidence report.', toolCallId: 'outer-1', toolName: 'run_subagent', ok: true,
+      details: {kind: 'generic'}
+    }
+  ];
+  const lines = renderTranscriptLines(records, 80);
+  const plain = lines.map(stripAnsi).join('\n');
+
+  assert.equal(plain.match(/Final evidence report\./g)?.length, 1);
+  assert.match(plain, /completed · 1\.2s/);
+  assert.match(plain, /Explorer · returned report/);
+  assert.doesNotMatch(plain, /\{"task":"inspect repository"\}/);
+});
+
+test('resume projection marks an unfinished run as interrupted without mutating records', () => {
+  const records = createBashProcess(true);
+  const before = structuredClone(records);
+  const plain = renderTranscriptLines(records, 50).map(stripAnsi).join('\n');
+
+  assert.match(plain, /interrupted before completion/);
+  assert.deepEqual(records, before);
+});
+
+test('destructive projection does not mark the currently active subagent run as interrupted', () => {
+  const records = createBashProcess(true);
+  const active = renderTranscriptLines(records, 50, undefined, undefined, true, 'run-1').map(stripAnsi).join('\n');
+
+  assert.doesNotMatch(active, /interrupted before completion/u);
+});
+
+test('incremental subagent projection keeps one outer header across callbacks', () => {
+  const start = subagentRecord('inspect incremental output', {kind: 'start', task: 'inspect incremental output'});
+  const reasoning = subagentRecord('Found the relevant module.', {kind: 'reasoning_summary'});
+  const completed = subagentRecord('', {kind: 'completed', durationMs: 40});
+  const output = [
+    renderSubagentRunAppendBlock([start], 80, undefined, false),
+    renderSubagentRunAppendBlock([reasoning], 80, undefined, true),
+    renderSubagentRunAppendBlock([completed], 80, undefined, true)
+  ].join('');
+  const plain = stripAnsi(output);
+
+  assert.equal((plain.match(/explorer · inspect incremental output/gu) || []).length, 1);
+  assert.match(plain, /Reasoning: Found the relevant module\./u);
+  assert.match(plain, /completed · 40ms/u);
+  assert.doesNotMatch(plain, /interrupted before completion/u);
+});
+
+test('subagent rail safely degrades and reflows Chinese content at narrow widths', () => {
+  const records = [
+    subagentRecord('调查很长的中文路径与证据'.repeat(4), {kind: 'start', task: '调查很长的中文路径与证据'.repeat(4)}),
+    subagentRecord('结论包含宽字符与非常长的内容'.repeat(5), {kind: 'assistant'}),
+    subagentRecord('', {kind: 'completed', durationMs: 5})
+  ];
+  const before = structuredClone(records);
+  const narrow = renderTranscriptLines(records, 10);
+  const wider = renderTranscriptLines(records, 24);
+
+  assertSafe(narrow, 10);
+  assertSafe(wider, 24);
+  assert.ok(narrow.some((line) => stripAnsi(line).startsWith('› ')));
+  assert.deepEqual(records, before);
+});

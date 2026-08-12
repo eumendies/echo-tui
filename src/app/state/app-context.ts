@@ -5,6 +5,7 @@ import {RenderContext} from './render-context';
 import {SlashSuggestionContext} from './slash-suggestion-context';
 import {TranscriptContext} from './transcript-context';
 import {TurnContext} from './turn-context';
+import {SubagentRunContext} from './subagent-run-context';
 import {ChangeHistoryContext} from './change-history-context';
 import {ConversationReferenceContext} from './conversation-reference-context';
 import {PendingMessageContext} from './pending-message-context';
@@ -89,6 +90,7 @@ class AppContext {
   readonly modelContext: ModelContext;
   readonly modelTuningContext: ModelTuningContext;
   readonly turnContext: TurnContext;
+  readonly subagentRunContext: SubagentRunContext;
   readonly changeHistoryContext: ChangeHistoryContext;
   readonly conversationReferenceContext: ConversationReferenceContext;
   readonly pendingMessageContext: PendingMessageContext;
@@ -135,6 +137,7 @@ class AppContext {
     });
     this.modelTuningContext = new ModelTuningContext();
     this.turnContext = new TurnContext(this.transcriptContext);
+    this.subagentRunContext = new SubagentRunContext();
     this.changeHistoryContext = new ChangeHistoryContext();
     this.conversationReferenceContext = new ConversationReferenceContext();
     this.pendingMessageContext = new PendingMessageContext();
@@ -152,7 +155,11 @@ class AppContext {
       () => this.getCurrentCwd(),
       () => this.getNodeVersion(),
       this.composerContext,
-      this.turnContext,
+      {
+        canInterruptAssistantTurn: () => this.turnContext.canInterruptAssistantTurn(),
+        getPending: () => this.subagentRunContext.getPending() || this.turnContext.getPending(),
+        getWorking: () => this.turnContext.getWorking()
+      },
       this,
       () => this.interactionMode,
       this.theme
@@ -672,6 +679,7 @@ class AppContext {
     const result = this.turnContext.interruptActiveAssistantTurn();
 
     if (result.interrupted) {
+      this.subagentRunContext.markParentCancelled();
       this.finalizeChangeCheckpoint();
     }
 

@@ -59,6 +59,41 @@ test('replayTranscriptJournal replays records and keeps state updates independen
   assert.equal(loaded.reference.sequence, 5);
 });
 
+test('replayTranscriptJournal incrementally replays valid subagent process records', () => {
+  const base = {role: 'subagent', agentName: 'explorer', parentToolCallId: 'outer-1', runId: 'run-1'};
+  const records = [
+    {...base, text: 'inspect', event: {kind: 'start', task: 'inspect'}},
+    {...base, text: 'grep({"pattern":"x"})', event: {kind: 'tool_call', toolCallId: 'inner-1', toolName: 'grep', argumentsText: '{"pattern":"x"}'}},
+    {...base, text: 'x found', event: {kind: 'tool_result', toolCallId: 'inner-1', toolName: 'grep', ok: true, details: {kind: 'grep', truncated: false}}},
+    {...base, text: 'report', event: {kind: 'assistant'}},
+    {...base, text: '', event: {kind: 'completed', durationMs: 42}}
+  ];
+  const journal = createJournalLines(records.map((record) => createAppendRecordsOperation([record]))).join('\n');
+  const loaded = replayTranscriptJournal(journal);
+
+  assert.deepEqual(loaded.session.records, records);
+  assert.equal(loaded.reference.sequence, records.length);
+});
+
+test('replayTranscriptJournal rejects malformed subagent identity and event payloads', () => {
+  const validStart = {
+    role: 'subagent',
+    text: 'inspect',
+    agentName: 'explorer',
+    parentToolCallId: 'outer-1',
+    runId: 'run-1',
+    event: {kind: 'start', task: 'inspect'}
+  };
+  const malformed = {...validStart, runId: '', event: {kind: 'completed', durationMs: -1}};
+  const journal = createJournalLines([
+    createAppendRecordsOperation([validStart]),
+    createAppendRecordsOperation([malformed]),
+    createAppendRecordsOperation([{role: 'assistant', text: 'later'}])
+  ]).join('\n');
+
+  assert.equal(replayTranscriptJournal(journal), null);
+});
+
 test('replayTranscriptJournal applies batch operations atomically in journal order', () => {
   const journal = createJournalLines([
     createAppendRecordsOperation([
