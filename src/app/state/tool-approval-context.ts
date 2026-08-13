@@ -1,4 +1,5 @@
 import {INPUT_EVENTS} from '../../input/event-types';
+import {formatSubagentRawName, isBuiltinSubagentName} from '../../agent/subagent/name';
 import {applyComposerEditEvent, createComposer, getText} from '../../input/composer';
 import {RUN_BASH_COMMAND_TOOL_NAME} from '../../tools/bash-tool-handler';
 import {parseBashCommand} from '../../tools/tool-risk-classifier';
@@ -140,7 +141,7 @@ class ToolApprovalContext {
 
     return {
       kind: 'choice',
-      title: request.display?.origin ? `PERMISSION · ${request.display.origin.agentName.toUpperCase()}` : 'PERMISSION',
+      title: request.display?.origin ? `PERMISSION · ${formatApprovalAgentName(request.display.origin.agentName)}` : 'PERMISSION',
       ...(request.display?.preview ? {
         message: request.display.preview,
         messageTitle: request.display.previewTitle || 'command',
@@ -308,6 +309,12 @@ class ToolApprovalContext {
     request.resolve(decision);
     this.onUpdate();
   }
+}
+
+/** 保留内置审批标题的大写文案，自定义名称按目录原名展示，并隔离损坏身份。 */
+function formatApprovalAgentName(agentName: unknown): string {
+  const safeName = formatSubagentRawName(agentName);
+  return isBuiltinSubagentName(agentName) ? safeName.toUpperCase() : safeName;
 }
 
 function createSessionApprovalOption(call: ToolCall): ToolApprovalOption | null {

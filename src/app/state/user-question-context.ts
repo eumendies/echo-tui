@@ -1,4 +1,5 @@
 import {INPUT_EVENTS} from '../../input/event-types';
+import {formatSubagentRawName, isBuiltinSubagentName} from '../../agent/subagent/name';
 import {applyComposerEditEvent, createComposer, getText} from '../../input/composer';
 import {moveWrappedIndex} from '../utils';
 import {
@@ -24,7 +25,7 @@ type QuestionDraft = {
 };
 
 type UserQuestionSource = {
-  agentName: string; // 受信任App桥接提供的子 Agent名称，只用于surface标题。
+  agentName: string; // App桥接提供的子 Agent目录名称，surface 投影前仍需防御性格式化。
 };
 
 type QuestionSurfaceTitleState =
@@ -565,7 +566,9 @@ function createQuestionSurfaceTitle(request: ActiveUserQuestionRequest, state: Q
   if (!request.source) {
     return state.kind === 'submit' ? '提交答案' : progress ? `Question ${progress}` : 'Question';
   }
-  const source = `QUESTION · ${request.source.agentName.toUpperCase()}`;
+  const safeName = formatSubagentRawName(request.source.agentName);
+  const sourceName = isBuiltinSubagentName(request.source.agentName) ? safeName.toUpperCase() : safeName;
+  const source = `QUESTION · ${sourceName}`;
   return state.kind === 'submit' ? `${source} · 提交答案` : progress ? `${source} · ${progress}` : source;
 }
 

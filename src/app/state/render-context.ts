@@ -1,5 +1,6 @@
 import path from 'node:path';
 
+import {formatSubagentRawName} from '../../agent/subagent/name';
 import {DEFAULT_RENDER_PREFERENCES} from '../../config/app-settings-config';
 import type {TerminalController} from '../../types/app';
 import type {CommandSurface} from '../../types/command';
@@ -126,7 +127,7 @@ class RenderContext {
       detail: pending?.kind === 'tool_call'
         ? pending.toolName
         : pending?.kind === 'subagent'
-          ? `${pending.agentName}${pending.toolName ? ` · ${pending.toolName}` : ''}`
+          ? `${formatSubagentRawName(pending.agentName)}${pending.toolName ? ` · ${pending.toolName}` : ''}`
           : undefined,
       activity: pending?.kind === 'subagent'
         ? {kind: 'working', elapsedMs: pending.elapsedMs}

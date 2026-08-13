@@ -1,4 +1,5 @@
 import {DEFAULT_TUI_THEME, type TuiTheme} from '../config/theme-config';
+import {formatSubagentRawName} from '../agent/subagent/name';
 import {blockText} from './colors';
 import {displayWidth, safeRenderWidth, stripAnsi} from './layout';
 import {renderToolPairLines, renderToolRecordLines} from './tool-message-renderer';
@@ -43,14 +44,14 @@ function renderSubagentRecords(records: SubagentTranscriptRecord[], width: numbe
     if (record.event.kind === 'start') {
       hasStart = true;
       if (!hasHeader) {
-        lines.push(...renderRailText(`${record.agentName} · ${record.event.task}`, width, firstPrefix, outerPrefix, theme, null, 'title'));
+        lines.push(...renderRailText(`${formatSubagentRawName(record.agentName)} · ${record.event.task}`, width, firstPrefix, outerPrefix, theme, null, 'title'));
         hasHeader = true;
       }
       continue;
     }
 
     if (!hasHeader) {
-      lines.push(...renderRailText(record.agentName, width, firstPrefix, outerPrefix, theme, 2, 'title'));
+      lines.push(...renderRailText(formatSubagentRawName(record.agentName), width, firstPrefix, outerPrefix, theme, 2, 'title'));
       hasHeader = true;
     }
 

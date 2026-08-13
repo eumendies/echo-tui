@@ -161,6 +161,16 @@ function createDebugObservation(debug: DebugContext, output?: ObservationOutput)
         error: createErrorPayload(error)
       });
     },
+    subagentCatalogLoaded(diagnostics) {
+      for (const diagnostic of diagnostics) {
+        debug.emit('subagent_catalog_diagnostic', {
+          code: diagnostic.code,
+          message: diagnostic.message,
+          sourceKind: diagnostic.sourceKind,
+          sourcePath: diagnostic.sourcePath
+        });
+      }
+    },
     toolApprovalResolved({scope, call, approval}) {
       debug.emit('tool_call_approval', {
         ...createDebugScopePayload(scope),

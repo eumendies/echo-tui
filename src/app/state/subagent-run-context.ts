@@ -1,9 +1,11 @@
 import type {SubagentActivity} from '../../types/agent';
+import {formatSubagentRawName} from '../../agent/subagent/name';
+
 import type {SubagentPendingState} from '../../types/render';
 import type {SubagentTranscriptRecord} from '../../types/transcript';
 
 type ActiveSubagentRun = {
-  agentName: string; // 当前 rail 与 footer 展示的内置子 Agent 名称。
+  agentName: string; // 当前 rail 与 footer 展示的内置或自定义子 Agent 目录名称。
   argumentsText?: string; // 当前内部工具调用的原始参数，仅用于瞬时摘要。
   draft?: string; // 当前 reasoning 或 assistant 草稿，不写入 transcript。
   phase: SubagentActivity['phase']; // 当前 provider、流式、工具或审批阶段。
@@ -116,7 +118,7 @@ class SubagentRunContext {
 
     return {
       kind: 'subagent',
-      agentName: active.agentName,
+      agentName: formatSubagentRawName(active.agentName),
       elapsedMs: Math.max(0, Date.now() - active.startedAt),
       phase: active.phase,
       runId: active.runId,

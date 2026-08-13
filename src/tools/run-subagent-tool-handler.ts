@@ -12,7 +12,7 @@ function createRunSubagentToolHandler(port: SubagentToolPort): ToolHandler {
   return {
     definition: {
       name: RUN_SUBAGENT_TOOL_NAME,
-      description: 'Delegate a self-contained task to a named built-in subagent and return only its final result.',
+      description: 'Delegate a self-contained task to a named subagent and return only its final result.',
       parameters: {
         type: 'object',
         additionalProperties: false,

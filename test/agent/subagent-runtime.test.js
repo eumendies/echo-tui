@@ -43,6 +43,33 @@ function createConfigSnapshot() {
   };
 }
 
+function writeCustomAgent(cwd, name, overrides = {}) {
+  const agentsDir = path.join(cwd, '.echo', 'agents');
+  fs.mkdirSync(agentsDir, {recursive: true});
+  const description = overrides.description || `${name} description`;
+  const capability = overrides.capability || 'readonly';
+  const tools = overrides.tools || ['read_files'];
+  const mcp = Object.hasOwn(overrides, 'mcp') ? `mcp: ${String(overrides.mcp)}\n` : '';
+  const body = overrides.body || `Custom Agent Instructions: ${name}`;
+  const filePath = path.join(agentsDir, `${name}.md`);
+  fs.writeFileSync(filePath, [
+    '---',
+    `description: ${description}`,
+    `capability: ${capability}`,
+    'tools:',
+    ...tools.map((tool) => `  - ${tool}`),
+    mcp.trimEnd(),
+    '---',
+    '',
+    body
+  ].filter((line, index) => line !== '' || index > 0).join('\n'), 'utf8');
+  return filePath;
+}
+
+function createTestAgentLoopRuntime(cwd, configContext, mcpManager, observation, usageStore) {
+  return createAgentLoopRuntime(cwd, configContext, mcpManager, observation, usageStore);
+}
+
 async function withPatchedAgents(cwd, createAgent, callback) {
   const originalPrepareAgent = agentSetupModule.prepareAgent;
   const preparations = [];
@@ -122,7 +149,7 @@ test('runtime synchronously delegates through an isolated explorer and commits p
       fs.writeFileSync(path.join(cwd, 'AGENTS.md'), 'stable parent instructions', 'utf8');
       const snapshot = createConfigSnapshot();
       const observation = createObservation(undefined, {emit(event, payload) { hookEvents.push({event, payload}); }});
-      const runAgent = createAgentLoopRuntime(cwd, {capture: () => snapshot}, undefined, observation);
+      const runAgent = createTestAgentLoopRuntime(cwd, {capture: () => snapshot}, undefined, observation);
       const persisted = [];
       let pendingOuterCall = null;
       let finalText = '';
@@ -185,6 +212,180 @@ test('runtime synchronously delegates through an isolated explorer and commits p
   }
 });
 
+test('custom catalog schema and execution share one frozen load per primary run and reload on the next run', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-custom-catalog-freeze-'));
+  const snapshot = createConfigSnapshot();
+  const reviewerPath = writeCustomAgent(cwd, 'reviewer', {
+    description: 'first schema',
+    body: 'first runtime'
+  });
+  const brokenPath = path.join(cwd, '.echo', 'agents', 'broken.md');
+  fs.writeFileSync(brokenPath, '---\ndescription: broken\n---\nbody', 'utf8');
+  let primaryRuns = 0;
+  const childPrompts = [];
+  const debugEvents = [];
+  const observation = createObservation({
+    enabled: true,
+    logPath: '/tmp/custom-catalog-debug.jsonl',
+    emit(event, payload) { debugEvents.push({event, payload}); },
+    close() {}
+  });
+
+  try {
+    await withPatchedAgents(cwd, (kind, registry) => {
+      if (kind === 'subagent') {
+        return {
+          async runTurn(records) {
+            childPrompts.push(records[0].text);
+            return {draft: 'custom done', toolCalls: []};
+          }
+        };
+      }
+
+      primaryRuns += 1;
+      const thisRun = primaryRuns;
+      let turn = 0;
+      return {
+        async runTurn(records) {
+          assert.equal(JSON.stringify(records).includes('Missing required frontmatter field'), false);
+          turn += 1;
+          if (turn === 1) {
+            const schema = registry.getHandler('run_subagent').definition;
+            assert.equal(schema.parameters.properties.agent.enum.includes(thisRun === 1 ? 'reviewer' : 'reviewer-next'), true);
+            assert.equal(schema.parameters.properties.agent.enum.includes(thisRun === 1 ? 'reviewer-next' : 'reviewer'), false);
+            if (thisRun === 1) {
+              fs.rmSync(reviewerPath);
+              writeCustomAgent(cwd, 'reviewer-next', {description: 'second schema', body: 'second runtime'});
+              fs.rmSync(brokenPath);
+            }
+            return {
+              draft: '',
+              toolCalls: [{
+                callId: `outer-${thisRun}`,
+                toolName: 'run_subagent',
+                argumentsText: JSON.stringify({agent: thisRun === 1 ? 'reviewer' : 'reviewer-next', task: 'review'})
+              }]
+            };
+          }
+          assert.ok(records.some((record) => record.role === 'tool_result' && record.toolName === 'run_subagent' && record.ok));
+          return {draft: `parent ${thisRun} done`, toolCalls: []};
+        }
+      };
+    }, async (preparations) => {
+      const runAgent = createTestAgentLoopRuntime(cwd, {capture: () => snapshot}, undefined, observation);
+      const runInput = {
+        records: [{role: 'user', text: 'delegate'}],
+        modelProfileId: 'parent-profile',
+        reasoningEffortOverride: 'high',
+        userConfigSnapshot: snapshot
+      };
+
+      assert.equal(await runAgent(runInput), 'parent 1 done');
+      assert.equal(await runAgent(runInput), 'parent 2 done');
+      const diagnosticEvents = debugEvents.filter(({event}) => event === 'subagent_catalog_diagnostic');
+      assert.equal(diagnosticEvents.length, 1);
+      assert.equal(diagnosticEvents[0].payload.code, 'missing_field');
+      assert.equal(diagnosticEvents[0].payload.sourcePath, brokenPath);
+      assert.match(childPrompts[0], /first runtime/u);
+      assert.doesNotMatch(childPrompts[0], /second runtime/u);
+      assert.match(childPrompts[1], /second runtime/u);
+      for (const preparation of preparations) {
+        assert.equal(preparation.options.modelProfileId, 'parent-profile');
+        assert.equal(preparation.options.reasoningEffortOverride, 'high');
+      }
+    });
+  } finally {
+    fs.rmSync(cwd, {recursive: true, force: true});
+  }
+});
+
+test('custom readonly exposes only configured real handlers and rejects forged tools', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-custom-readonly-'));
+  const snapshot = createConfigSnapshot();
+  writeCustomAgent(cwd, 'minimal-reader');
+  let parentTurn = 0;
+  let childTurn = 0;
+
+  try {
+    await withPatchedAgents(cwd, (kind, registry) => ({
+      async runTurn(records) {
+        if (kind === 'primary') {
+          parentTurn += 1;
+          return parentTurn === 1
+            ? {draft: '', toolCalls: [{callId: 'outer-readonly', toolName: 'run_subagent', argumentsText: '{"agent":"minimal-reader","task":"inspect"}'}]}
+            : {draft: 'parent done', toolCalls: []};
+        }
+        childTurn += 1;
+        assert.deepEqual(registry.listDefinitions().map(({name}) => name), ['read_files']);
+        assert.equal(registry.getHandler('grep'), undefined);
+        if (childTurn === 1) {
+          return {draft: '', toolCalls: [{callId: 'forged-grep', toolName: 'grep', argumentsText: '{"pattern":"secret"}'}]};
+        }
+        const rejected = records.find((record) => record.role === 'tool_result' && record.toolCallId === 'forged-grep');
+        assert.equal(rejected.ok, false);
+        assert.match(rejected.text, /Unknown tool: grep/u);
+        return {draft: 'readonly done', toolCalls: []};
+      }
+    }), async () => {
+      const runAgent = createTestAgentLoopRuntime(cwd, {capture: () => snapshot});
+      assert.equal(await runAgent({records: [{role: 'user', text: 'delegate'}], userConfigSnapshot: snapshot}), 'parent done');
+    });
+  } finally {
+    fs.rmSync(cwd, {recursive: true, force: true});
+  }
+});
+
+test('custom general file_edit exposes only the configured edit handler and enables MCP by definition', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-custom-general-'));
+  const snapshot = createConfigSnapshot();
+  writeCustomAgent(cwd, 'custom-worker', {capability: 'general', tools: ['file_edit'], mcp: true});
+  let parentTurn = 0;
+  let childTurn = 0;
+  let mcpCalls = 0;
+  const manager = {
+    listTools() {
+      return [{serverName: 'docs', toolName: 'read', namespacedName: 'mcp__docs__read', approval: 'never', description: 'read docs', inputSchema: {type: 'object'}}];
+    },
+    getToolReference(name) { return name === 'mcp__docs__read' ? this.listTools()[0] : null; },
+    async callTool() { mcpCalls += 1; return {content: [{type: 'text', text: 'mcp result'}]}; }
+  };
+
+  try {
+    await withPatchedAgents(cwd, (kind, registry) => ({
+    async runTurn(records) {
+      if (kind === 'primary') {
+        parentTurn += 1;
+        return parentTurn === 1
+          ? {draft: '', toolCalls: [{callId: 'outer-general', toolName: 'run_subagent', argumentsText: '{"agent":"custom-worker","task":"work"}'}]}
+          : {draft: 'parent done', toolCalls: []};
+      }
+      childTurn += 1;
+      const names = registry.listDefinitions().map(({name}) => name);
+      assert.equal(names.includes('apply_patch'), true);
+      assert.equal(names.includes('edit_file'), false);
+      assert.equal(names.includes('mcp__docs__read'), true);
+      if (childTurn === 1) {
+        return {draft: '', toolCalls: [{callId: 'forged-edit', toolName: 'edit_file', argumentsText: '{}'}]};
+      }
+      if (childTurn === 2) {
+        const forged = records.find((record) => record.role === 'tool_result' && record.toolCallId === 'forged-edit');
+        assert.equal(forged.ok, false);
+        assert.match(forged.text, /Unknown tool: edit_file/u);
+        return {draft: '', toolCalls: [{callId: 'custom-mcp', toolName: 'mcp__docs__read', argumentsText: '{}'}]};
+      }
+      assert.match(records.find((record) => record.role === 'tool_result' && record.toolCallId === 'custom-mcp').text, /mcp result/u);
+      return {draft: 'general done', toolCalls: []};
+    }
+    }), async () => {
+      const runAgent = createTestAgentLoopRuntime(cwd, {capture: () => snapshot}, manager);
+      assert.equal(await runAgent({records: [{role: 'user', text: 'delegate'}], userConfigSnapshot: snapshot}), 'parent done');
+    });
+    assert.equal(mcpCalls, 1);
+  } finally {
+    fs.rmSync(cwd, {recursive: true, force: true});
+  }
+});
+
 test('runtime enforces four delegations per parent run and normalizes the fifth as a tool failure', async () => {
   const snapshot = createConfigSnapshot();
   let parentTurn = 0;
@@ -212,7 +413,7 @@ test('runtime enforces four delegations per parent run and normalizes the fifth 
       return {draft: 'done', toolCalls: []};
     }
   }), async () => {
-    const runAgent = createAgentLoopRuntime('/tmp/echo-subagent-budget', {capture: () => snapshot});
+    const runAgent = createTestAgentLoopRuntime('/tmp/echo-subagent-budget', {capture: () => snapshot});
     await runAgent({records: [{role: 'user', text: 'delegate five'}], userConfigSnapshot: snapshot});
   });
 
@@ -267,7 +468,7 @@ test('runtime creates a fresh loop runtime for every accepted delegation', async
     };
   }, async (preparations) => {
     const observation = createObservation(debug);
-    const runAgent = createAgentLoopRuntime('/tmp/echo-subagent-runtime-instances', {capture: () => snapshot}, undefined, observation);
+    const runAgent = createTestAgentLoopRuntime('/tmp/echo-subagent-runtime-instances', {capture: () => snapshot}, undefined, observation);
     assert.equal(await runAgent({records: [{role: 'user', text: 'delegate twice'}], userConfigSnapshot: snapshot}), 'parent done');
     assert.equal(preparations.filter((entry) => entry.kind === 'subagent').length, 2);
   });
@@ -300,7 +501,7 @@ test('parent abort propagates to the child provider and leaves no outer tool pai
       });
     }
   }), async () => {
-    const runAgent = createAgentLoopRuntime('/tmp/echo-subagent-abort', {capture: () => snapshot});
+    const runAgent = createTestAgentLoopRuntime('/tmp/echo-subagent-abort', {capture: () => snapshot});
     const running = runAgent({
       records: [{role: 'user', text: 'delegate'}],
       abortSignal: controller.signal,
@@ -356,7 +557,7 @@ test('subagent approval-required Bash remains denied in headless full-access mod
         return {draft: 'Command was not executed.', toolCalls: []};
       }
     }), async () => {
-      const runAgent = createAgentLoopRuntime(cwd, {capture: () => snapshot});
+      const runAgent = createTestAgentLoopRuntime(cwd, {capture: () => snapshot});
       await runAgent({
         records: [{role: 'user', text: 'delegate bash'}],
         executionMode: {kind: 'headless', approvalPolicy: 'full-access'},
@@ -420,7 +621,7 @@ test('Worker receives the full local registry, keeps Todo local, and rejects for
       return {draft: 'worker done', toolCalls: []};
     }
   }), async () => {
-    const runAgent = createAgentLoopRuntime('/tmp/echo-worker-todo', {capture: () => snapshot});
+    const runAgent = createTestAgentLoopRuntime('/tmp/echo-worker-todo', {capture: () => snapshot});
     assert.equal(await runAgent({
       records: [{role: 'user', text: 'delegate worker'}],
       todoState: {updatedAt: 'now', items: [{id: 'parent', text: 'parent todo', status: 'open'}]},
@@ -478,7 +679,7 @@ test('Worker reuses initialized MCP tools without owning the manager lifecycle',
       return {draft: 'worker mcp done', toolCalls: []};
     }
   }), async () => {
-    const runAgent = createAgentLoopRuntime('/tmp/echo-worker-mcp', {capture: () => snapshot}, manager);
+    const runAgent = createTestAgentLoopRuntime('/tmp/echo-worker-mcp', {capture: () => snapshot}, manager);
     assert.equal(await runAgent({records: [{role: 'user', text: 'delegate'}], userConfigSnapshot: snapshot}, {
       onToolApprovalRequest(_call, request) {
         approval = request;
@@ -518,7 +719,7 @@ test('normal Worker uses shared approval callbacks with Worker origin', async ()
         return {draft: 'worker wrote file', toolCalls: []};
       }
     }), async () => {
-      const runAgent = createAgentLoopRuntime(cwd, {capture: () => snapshot});
+      const runAgent = createTestAgentLoopRuntime(cwd, {capture: () => snapshot});
       await runAgent({records: [{role: 'user', text: 'delegate'}], userConfigSnapshot: snapshot}, {
         changeRecorder: {
           captureFileBefore() {},
@@ -567,13 +768,91 @@ test('Worker plan and headless policies match the parent general-purpose boundar
           return {draft: 'worker policy done', toolCalls: []};
         }
       }), async () => {
-        const runAgent = createAgentLoopRuntime(cwd, {capture: () => snapshot});
+        const runAgent = createTestAgentLoopRuntime(cwd, {capture: () => snapshot});
         await runAgent({
           records: [{role: 'user', text: 'delegate'}], interactionMode: scenario.interactionMode,
           executionMode: scenario.executionMode, userConfigSnapshot: snapshot
         }, {onToolApprovalRequest() { throw new Error('headless/plan must not request interactive approval'); }});
       });
       assert.equal(fs.existsSync(path.join(cwd, 'result.txt')), scenario.expectedOk);
+    } finally {
+      fs.rmSync(cwd, {recursive: true, force: true});
+    }
+  }
+});
+
+test('headless custom catalog uses the public runtime path and preserves readonly and general approval boundaries', async () => {
+  for (const scenario of [
+    {agent: 'readonly-shell', policy: 'full-access', expectedOk: false},
+    {agent: 'general-shell', policy: 'deny', expectedOk: false},
+    {agent: 'general-shell', policy: 'full-access', expectedOk: true}
+  ]) {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), `echo-custom-headless-${scenario.policy}-`));
+    writeCustomAgent(cwd, 'readonly-shell', {tools: ['run_bash_command']});
+    writeCustomAgent(cwd, 'general-shell', {capability: 'general', tools: ['run_bash_command']});
+    const snapshot = createConfigSnapshot();
+    let parentTurn = 0;
+    let childTurn = 0;
+    try {
+      await withPatchedAgents(cwd, (kind) => ({
+        async runTurn(records) {
+          if (kind === 'primary') {
+            parentTurn += 1;
+            return parentTurn === 1
+              ? {draft: '', toolCalls: [{callId: 'outer-headless', toolName: 'run_subagent', argumentsText: JSON.stringify({agent: scenario.agent, task: 'run unknown readonly bash'})}]}
+              : {draft: 'parent done', toolCalls: []};
+          }
+          childTurn += 1;
+          if (childTurn === 1) {
+            return {draft: '', toolCalls: [{callId: 'inner-headless', toolName: 'run_bash_command', argumentsText: '{"command":"printf custom > result.txt"}'}]};
+          }
+          const result = records.find((record) => record.role === 'tool_result' && record.toolCallId === 'inner-headless');
+          assert.equal(result.ok, scenario.expectedOk);
+          return {draft: 'child done', toolCalls: []};
+        }
+      }), async () => {
+        const runAgent = createAgentLoopRuntime(cwd, {capture: () => snapshot});
+        assert.equal(await runAgent({
+          records: [{role: 'user', text: 'delegate'}],
+          executionMode: {kind: 'headless', approvalPolicy: scenario.policy},
+          userConfigSnapshot: snapshot
+        }), 'parent done');
+      });
+      assert.equal(fs.existsSync(path.join(cwd, 'result.txt')), scenario.expectedOk);
+    } finally {
+      fs.rmSync(cwd, {recursive: true, force: true});
+    }
+  }
+});
+
+test('custom runtime failure and cancellation labels use the shared safe display name', async () => {
+  for (const scenario of [
+    {name: 'security-reviewer', error: new Error('provider failed'), expected: /Security reviewer failed/u},
+    {name: 'security-reviewer', error: new AgentAbortError(), expected: /Security reviewer cancelled\./u}
+  ]) {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-custom-terminal-label-'));
+    const snapshot = createConfigSnapshot();
+    writeCustomAgent(cwd, scenario.name);
+    let parentTurn = 0;
+    const toolResults = [];
+    try {
+      await withPatchedAgents(cwd, (kind) => ({
+        async runTurn() {
+          if (kind === 'subagent') {
+            throw scenario.error;
+          }
+          parentTurn += 1;
+          return parentTurn === 1
+            ? {draft: '', toolCalls: [{callId: 'outer-terminal', toolName: 'run_subagent', argumentsText: JSON.stringify({agent: scenario.name, task: 'fail safely'})}]}
+            : {draft: 'parent done', toolCalls: []};
+        }
+      }), async () => {
+        const runAgent = createAgentLoopRuntime(cwd, {capture: () => snapshot});
+        await runAgent({records: [{role: 'user', text: 'delegate'}], userConfigSnapshot: snapshot}, {
+          onToolResult(result) { toolResults.push(result); }
+        });
+      });
+      assert.match(toolResults[0].text, scenario.expected);
     } finally {
       fs.rmSync(cwd, {recursive: true, force: true});
     }
@@ -606,7 +885,7 @@ test('Worker asks through the run-aware callback while headless returns cancella
         return {draft: 'worker question done', toolCalls: []};
       }
     }), async () => {
-      const runAgent = createAgentLoopRuntime(`/tmp/echo-worker-question-${headless}`, {capture: () => snapshot});
+      const runAgent = createTestAgentLoopRuntime(`/tmp/echo-worker-question-${headless}`, {capture: () => snapshot});
       await runAgent({
         records: [{role: 'user', text: 'delegate'}], userConfigSnapshot: snapshot,
         ...(headless ? {executionMode: {kind: 'headless', approvalPolicy: 'deny'}} : {})
