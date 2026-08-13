@@ -166,7 +166,7 @@ const DEFAULT_TUI_THEME: TuiTheme = {
       pendingPrefix: rgb(0, 170, 170),
       reasoning: rgb(85, 85, 85),
       shell: rgb(0, 170, 0),
-      subagentRail: rgb(91, 141, 239),
+      subagentRail: rgb(45, 115, 255),
       text: rgb(255, 255, 255),
       tool: rgb(0, 170, 170),
       toolError: rgb(170, 0, 0),
