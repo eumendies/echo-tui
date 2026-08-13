@@ -28,7 +28,7 @@ type SubagentLoopInput = {
   abortSignal?: AbortSignal; // 父 turn 传入的取消信号，贯穿子 provider和工具执行。
   configSnapshot: AgentUserConfigSnapshot; // 父 run 捕获的配置 revision，子运行不得自行切换。
   executionMode: AgentExecutionMode; // 父 run 的 interactive/headless 安全边界。
-  interactionMode: InteractionMode; // Worker 使用的父 normal/plan 模式；Explorer策略不得读取它来放宽边界。
+  interactionMode: InteractionMode; // general 策略使用的父 normal/plan 模式；readonly 策略不得读取它来放宽边界。
   metadata: SubagentRunMetadata; // 当前子运行的稳定身份和父工具关联。
   modelProfileId?: string; // 父 run 已解析选择的模型 profile。
   reasoningEffortOverride?: ReasoningEffort; // 父 run 本轮固定的推理强度覆盖。

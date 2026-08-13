@@ -59,6 +59,14 @@ test('SubagentRunContext projects Worker waiting-question activity with the curr
   assert.equal(context.isCurrentRun('run-1'), true);
 });
 
+test('SubagentRunContext keeps custom footer identity and replaces malformed names', () => {
+  const context = new SubagentRunContext();
+  context.acceptRecords([createRecord({kind: 'start', task: 'review'}, {agentName: 'security-reviewer'})]);
+  assert.equal(context.getPending().agentName, 'security-reviewer');
+  context.updateActivity({agentName: 'safe\u001b[31m\nINJECTED', phase: 'thinking', runId: 'run-1', task: 'review'});
+  assert.equal(context.getPending().agentName, 'Subagent');
+});
+
 test('SubagentRunContext applies stable tool and message boundaries before footer rendering', () => {
   const context = new SubagentRunContext();
   assert.equal(context.acceptRecords([createRecord({kind: 'start', task: 'inspect files'})]), true);
@@ -148,4 +156,15 @@ test('explorer permission can cache and reuse the same Bash command grant as pri
     command: 'node inspect.js'
   });
   assert.equal(context.getSurface(), null);
+});
+
+test('custom and malformed subagent permission titles use safe directory identities', () => {
+  const call = {callId: 'custom-approval', toolName: 'apply_patch', argumentsText: '{}'};
+  const custom = new ToolApprovalContext(() => {});
+  custom.request(call, {origin: {kind: 'subagent', agentName: 'security-reviewer', runId: 'custom-run'}});
+  assert.equal(custom.getSurface().title, 'PERMISSION · security-reviewer');
+
+  const malformed = new ToolApprovalContext(() => {});
+  malformed.request(call, {origin: {kind: 'subagent', agentName: 'safe\u001b[31m\nINJECTED', runId: 'bad-run'}});
+  assert.equal(malformed.getSurface().title, 'PERMISSION · Subagent');
 });

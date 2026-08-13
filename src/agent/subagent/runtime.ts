@@ -2,7 +2,9 @@ import {randomUUID} from 'node:crypto';
 
 import {normalizeError} from '../agent-errors';
 import {AgentAbortError} from '../../types/agent';
-import {MAX_SUBAGENT_CALLS_PER_RUN, getSubagentDefinition, listSubagentDefinitions} from './definition';
+import {MAX_SUBAGENT_CALLS_PER_RUN} from './definition';
+import {formatSubagentDisplayName} from './name';
+import {loadSubagentCatalog} from './catalog';
 import {
   createSubagentAssistantRecord,
   createSubagentReasoningRecord,
@@ -23,15 +25,18 @@ import type {
   SubagentToolPort
 } from '../../types/agent';
 import type {SubagentTranscriptRecord} from '../../types/transcript';
+import type {Observation} from '../../observation/observation';
 
 type SubagentToolPortOptions = {
   callbacks: AgentCallbacks; // 父 run 的观察回调，承载审批和 TUI 活动投影。
   configSnapshot: AgentUserConfigSnapshot; // 父 run 捕获的配置 revision，子运行不得重新读取其他 revision。
   createRuntime: SubagentLoopRuntimeFactory; // 为每次委派创建拥有独立装配状态的 loop runtime 实例。
+  cwd: string; // 当前父运行工作目录，决定项目级定义发现边界。
   executionMode: AgentExecutionMode; // 父 run 的 interactive/headless 安全边界。
   interactionMode: InteractionMode; // 父提交时捕获的 mode，供通用 Worker执行策略使用。
   getInheritedContext: () => InheritedAgentRunContext; // 延迟读取父 run 已初始化的完整上下文快照。
   modelProfileId?: string; // 父 run 已解析选择的模型 profile。
+  observation: Observation; // 接收本次目录加载形成的诊断快照。
   publishRecords: (records: SubagentTranscriptRecord[]) => void; // 把稳定过程同步提交到父 runtime 与 app transcript。
   reasoningEffortOverride?: LlmConfig['reasoningEffort']; // 父 run 本轮固定的推理强度覆盖。
 };
@@ -41,16 +46,18 @@ type SubagentToolPortOptions = {
  * 端口同步等待子运行结束；稳定过程由 publishRecords 增量提交，瞬时活动只通过父 callbacks 投影。
  */
 function createSubagentToolPort(options: SubagentToolPortOptions): SubagentToolPort {
+  const catalog = loadSubagentCatalog({cwd: options.cwd});
+  options.observation.subagentCatalogLoaded(catalog.diagnostics);
   let callCount = 0;
 
   return {
     listDefinitions() {
-      return listSubagentDefinitions().map(({name, description}) => ({name, description}));
+      return catalog.listDescriptors();
     },
     async run(agentName, task, call, executionOptions = {}) {
-      const definition = getSubagentDefinition(agentName);
+      const definition = catalog.get(agentName);
       if (!definition) {
-        return {ok: false, text: `Unknown subagent: ${agentName}`};
+        return {ok: false, text: `Unknown subagent: ${formatSubagentDisplayName(agentName)}`};
       }
       if (callCount >= MAX_SUBAGENT_CALLS_PER_RUN) {
         return {ok: false, text: `Delegation limit reached (${MAX_SUBAGENT_CALLS_PER_RUN} per parent run).`};
@@ -85,7 +92,7 @@ function createSubagentToolPort(options: SubagentToolPortOptions): SubagentToolP
         return {ok: true, text: answer};
       } catch (error: unknown) {
         const cancelled = error instanceof AgentAbortError || executionOptions.abortSignal?.aborted === true;
-        const label = definition.name.charAt(0).toUpperCase() + definition.name.slice(1);
+        const label = formatSubagentDisplayName(definition.name);
         const message = cancelled ? `${label} cancelled.` : normalizeError(error, `${label} failed`).message;
         options.publishRecords([createSubagentTerminalRecord(metadata, cancelled ? 'cancelled' : 'failed', Date.now() - startedAt, message)]);
         return {ok: false, text: message};

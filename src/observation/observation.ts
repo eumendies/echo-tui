@@ -14,6 +14,7 @@ import type {TerminalSize} from '../types/render';
 import type {SkillCatalogEntry} from '../types/skill';
 import type {AskUserQuestionsRequest, ToolApprovalRequest, ToolCall, ToolDefinition, ToolExecutionResult, ToolRiskAssessment} from '../types/tool';
 import type {CompactionState, TranscriptRecord} from '../types/transcript';
+import type {SubagentCatalogDiagnostic} from '../agent/subagent/catalog';
 
 type AppScope = {
   cwd: string; // TUI 启动时的项目工作目录。
@@ -97,6 +98,7 @@ type Observation = {
   providerRequestBuilt: (input: {scope: AgentRunScope; request: ProviderRequestObservationInput}) => void; // 发布 provider 请求已构造事实。
   providerUsage: (input: {scope: AgentRunScope; usage?: ProviderUsage; usageInputTokens?: number}) => void; // 发布 provider usage 事实。
   providerUsageStoreFailed: (input: {scope: AgentRunScope; error: unknown}) => void; // 发布 provider usage 持久化失败事实。
+  subagentCatalogLoaded: (diagnostics: readonly Readonly<SubagentCatalogDiagnostic>[]) => void; // 发布主运行加载目录时形成的完整有界诊断快照。
   toolApprovalRequested: (input: {scope: AgentRunScope; call: Readonly<ToolCall>; approval?: Readonly<ToolApprovalRequest>}) => void; // 发布 runtime 拥有的审批请求事实。
   toolApprovalResolved: (input: {scope: AgentRunScope; call: Readonly<ToolCall>; approval: ToolApprovalObservation}) => void; // 发布 runtime 审批结果事实。
   toolCompleted: (input: {scope: AgentRunScope; result: Readonly<ToolExecutionResult>}) => void; // 发布工具结果已提交事实。
@@ -111,7 +113,7 @@ const disabledObservation: Observation = {
   transcriptBatchRendered() {}, userSubmitted() {}, assistantTurnStarted() {}, assistantTurnCompleted() {},
   assistantTurnCancelled() {}, assistantTurnFailed() {}, manualApprovalRequested() {}, manualApprovalCompleted() {},
   toolApprovalReviewed() {}, toolApprovalUsageStoreFailed() {}, compactionCompleted() {}, providerRequestBuilt() {},
-  providerUsage() {}, providerUsageStoreFailed() {}, toolApprovalRequested() {}, toolApprovalResolved() {},
+  providerUsage() {}, providerUsageStoreFailed() {}, subagentCatalogLoaded() {}, toolApprovalRequested() {}, toolApprovalResolved() {},
   toolCompleted() {}, toolRiskAssessed() {}, toolStarted() {}, userQuestionCompleted() {}, userQuestionRequested() {}
 };
 
@@ -139,6 +141,7 @@ function createCompositeObservation(observations: Observation[]): Observation {
     providerRequestBuilt: (input) => notify(observations, (observation) => observation.providerRequestBuilt(input)),
     providerUsage: (input) => notify(observations, (observation) => observation.providerUsage(input)),
     providerUsageStoreFailed: (input) => notify(observations, (observation) => observation.providerUsageStoreFailed(input)),
+    subagentCatalogLoaded: (diagnostics) => notify(observations, (observation) => observation.subagentCatalogLoaded(diagnostics)),
     toolApprovalRequested: (input) => notify(observations, (observation) => observation.toolApprovalRequested(input)),
     toolApprovalResolved: (input) => notify(reverse, (observation) => observation.toolApprovalResolved(input)),
     toolCompleted: (input) => notify(observations, (observation) => observation.toolCompleted(input)),

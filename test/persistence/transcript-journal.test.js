@@ -59,8 +59,8 @@ test('replayTranscriptJournal replays records and keeps state updates independen
   assert.equal(loaded.reference.sequence, 5);
 });
 
-test('replayTranscriptJournal incrementally replays valid subagent process records', () => {
-  const base = {role: 'subagent', agentName: 'explorer', parentToolCallId: 'outer-1', runId: 'run-1'};
+test('replayTranscriptJournal incrementally replays valid custom subagent process records without migration', () => {
+  const base = {role: 'subagent', agentName: 'security-reviewer', parentToolCallId: 'outer-1', runId: 'run-1'};
   const records = [
     {...base, text: 'inspect', event: {kind: 'start', task: 'inspect'}},
     {...base, text: 'grep({"pattern":"x"})', event: {kind: 'tool_call', toolCallId: 'inner-1', toolName: 'grep', argumentsText: '{"pattern":"x"}'}},

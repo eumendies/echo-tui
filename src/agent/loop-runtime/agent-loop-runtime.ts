@@ -286,11 +286,13 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
       callbacks.onSubagentRecords?.(records);
     }
 
+    // 只有主运行创建委派端口；端口在 provider schema 装配前自行固定目录快照。
     const subagentPort: SubagentToolPort | undefined = conversationKind === 'primary'
       ? createSubagentToolPort({
           callbacks,
           configSnapshot,
           createRuntime: (inheritedContext, definition) => createSubagentLoopRuntime(cwd, inheritedContext, definition, observation, usageStore, mcpManager),
+          cwd,
           executionMode,
           interactionMode,
           getInheritedContext: () => ({
@@ -302,6 +304,7 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
             skillCatalogTokens: state.skillCatalogTokens
           }),
           modelProfileId: session.modelProfileId,
+          observation,
           publishRecords: publishSubagentRecords,
           reasoningEffortOverride: session.reasoningEffortOverride
         })

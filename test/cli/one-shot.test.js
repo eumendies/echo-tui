@@ -159,6 +159,131 @@ test('runOnce shares one non-watching config revision across MCP, hooks, and age
   assert.equal(watcherStarts, 0);
 });
 
+test('runOnce discovers and executes the same frozen custom subagent catalog as the interactive runtime', async () => {
+  const resources = createResources();
+  const agentSetupModule = require('../../src/agent/agent-setup');
+  const {createDefaultToolRegistry} = require('../../src/tools/tool-registry');
+  const originalPrepareAgent = agentSetupModule.prepareAgent;
+  const originalHomedir = os.homedir;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-once-custom-subagent-'));
+  const home = path.join(root, 'home');
+  const project = path.join(root, 'project');
+  const output = [];
+  const config = {
+    agentType: 'fake',
+    apiKey: '',
+    model: 'fake-custom-subagent',
+    contextWindow: 128000,
+    tools: {
+      autoCompressImages: true,
+      bash: {timeoutMs: 1000, maxOutputBytes: 4096},
+      fileEditMode: 'apply_patch'
+    }
+  };
+  const snapshot = {
+    revision: 1,
+    getAppSettings() {
+      return {
+        agentInstructionFileName: 'AGENTS.md',
+        compactionThresholdRatio: 0.8,
+        skillCatalogContextRatio: 0.02,
+        toolApprovalMode: 'manual'
+      };
+    },
+    resolveLlmConfig() { return config; },
+    resolveLlmConfigForProfile() { return config; }
+  };
+  const configContext = {
+    capture() { return snapshot; },
+    close() {}
+  };
+  let parentTurn = 0;
+  let childRuns = 0;
+
+  function writeAgent(base, name, description, body) {
+    const agentsDir = path.join(base, '.echo', 'agents');
+    fs.mkdirSync(agentsDir, {recursive: true});
+    fs.writeFileSync(path.join(agentsDir, `${name}.md`), [
+      '---',
+      `description: ${description}`,
+      'capability: readonly',
+      'tools:',
+      '  - read_files',
+      '---',
+      '',
+      body
+    ].join('\n'), 'utf8');
+  }
+
+  try {
+    fs.mkdirSync(path.join(project, '.git'), {recursive: true});
+    writeAgent(home, 'doc-writer', 'User documentation specialist.', 'USER DOC BODY');
+    writeAgent(home, 'reviewer', 'Stale user reviewer.', 'STALE USER BODY');
+    writeAgent(project, 'reviewer', 'Project security reviewer.', 'PROJECT REVIEW BODY');
+    os.homedir = () => home;
+    agentSetupModule.prepareAgent = (options) => {
+      const registry = createDefaultToolRegistry(config, project, undefined, {
+        allowedToolNames: options.allowedToolNames,
+        subagentPort: options.subagentPort
+      });
+      const subagent = options.allowedToolNames !== undefined;
+      return {
+        config,
+        registry,
+        agent: {
+          async runTurn(records) {
+            if (subagent) {
+              childRuns += 1;
+              assert.deepEqual(registry.listDefinitions().map(({name}) => name), ['read_files']);
+              assert.match(records[0].text, /PROJECT REVIEW BODY/u);
+              assert.doesNotMatch(records[0].text, /STALE USER BODY/u);
+              return {draft: 'review complete', toolCalls: []};
+            }
+
+            parentTurn += 1;
+            if (parentTurn === 1) {
+              const definition = registry.getHandler('run_subagent').definition;
+              assert.deepEqual(definition.parameters.properties.agent.enum, [
+                'explorer', 'worker', 'doc-writer', 'reviewer'
+              ]);
+              assert.match(definition.parameters.properties.agent.description, /reviewer: Project security reviewer/u);
+              assert.doesNotMatch(definition.parameters.properties.agent.description, /Stale user reviewer/u);
+              return {
+                draft: '',
+                toolCalls: [{
+                  callId: 'once-custom',
+                  toolName: 'run_subagent',
+                  argumentsText: '{"agent":"reviewer","task":"review project auth"}'
+                }]
+              };
+            }
+            assert.ok(records.some((record) => record.role === 'tool_result' && record.toolName === 'run_subagent' && record.text === 'review complete'));
+            return {draft: 'headless parent complete', toolCalls: []};
+          }
+        }
+      };
+    };
+
+    await runOnce({
+      cwd: project,
+      debug: resources.debug,
+      hooks: resources.hooks,
+      mcpManager: resources.mcpManager,
+      process: resources.process,
+      prompt: 'delegate review',
+      stdout: {write: (text) => output.push(text)},
+      userConfigContext: configContext
+    });
+
+    assert.equal(childRuns, 1);
+    assert.deepEqual(output, ['headless parent complete\n']);
+  } finally {
+    agentSetupModule.prepareAgent = originalPrepareAgent;
+    os.homedir = originalHomedir;
+    fs.rmSync(root, {recursive: true, force: true});
+  }
+});
+
 test('runOnce does not create or expose interactive session settings', async () => {
   const resources = createResources();
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-once-session-settings-'));

@@ -68,7 +68,7 @@ export type ShellOutputPendingState = {
 
 export type SubagentPendingState = {
   kind: 'subagent'; // 区分主 assistant pending 与隔离子 Agent 活动。
-  agentName: string; // 当前内置子 Agent 的可见名称。
+  agentName: string; // 当前内置或自定义子 Agent 的目录名称，渲染前仍需安全格式化。
   argumentsText?: string; // 内部工具参数，供现有工具 preview renderer 生成摘要。
   draft?: string; // reasoning 或 assistant 的瞬时完整草稿。
   elapsedMs: number; // 从当前子运行 start 开始计算的毫秒数。

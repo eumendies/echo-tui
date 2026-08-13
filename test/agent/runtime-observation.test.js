@@ -72,6 +72,23 @@ test('composite observation forwards flat events and isolates each consumer', ()
   assert.deepEqual(received, [input]);
 });
 
+test('subagent catalog diagnostics are expanded by debug observation and never reach hooks', () => {
+  const debug = createDebugRecorder();
+  const hookEvents = [];
+  const observation = createObservation(debug.context, createHooks(hookEvents));
+  const diagnostic = {
+    code: 'missing_field',
+    sourceKind: 'project',
+    sourcePath: '/tmp/project/.echo/agents/reviewer.md',
+    message: 'Missing required frontmatter field: tools.'
+  };
+
+  observation.subagentCatalogLoaded([diagnostic]);
+
+  assert.deepEqual(debug.events, [{event: 'subagent_catalog_diagnostic', payload: diagnostic}]);
+  assert.deepEqual(hookEvents, []);
+});
+
 test('disabled observation does not inspect diagnostic inputs', () => {
   const unreadable = new Proxy({}, {
     get() { throw new Error('input was inspected'); },
@@ -79,6 +96,7 @@ test('disabled observation does not inspect diagnostic inputs', () => {
   });
 
   assert.doesNotThrow(() => disabledObservation.providerRequestBuilt(unreadable));
+  assert.doesNotThrow(() => disabledObservation.subagentCatalogLoaded(unreadable));
   assert.doesNotThrow(() => disabledObservation.userSubmitted(unreadable));
 });
 

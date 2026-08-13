@@ -42,7 +42,7 @@ type SubagentLoopRunState = {
   providerType: LlmConfig['agentType']; // usage记录使用的 provider协议类型。
   reasoningEffort?: LlmConfig['reasoningEffort']; // 子运行固定的推理强度。
   registry: ToolRegistry; // 子 provider schema与执行器共用的裁剪目录。
-  todoState: TodoState | undefined; // Worker独立维护的待办状态；Explorer始终为空。
+  todoState: TodoState | undefined; // general 子 Agent 独立维护的待办状态；readonly 子 Agent 始终为空。
   toolDefinitions: ToolDefinition[]; // 真正发送给子 provider的工具 schema。
 };
 
@@ -72,7 +72,12 @@ function isToolExecutionAllowed(kind: string): boolean {
  */
 async function executeSubagentToolCall(toolCall: ToolCall, input: SubagentLoopInput, state: SubagentLoopRunState, callbacks: SubagentLoopCallbacks, definition: SubagentDefinition, mcpManager?: McpManager): Promise<ToolExecutionResult> {
   throwIfAborted(input.abortSignal);
-  const generalPurpose = definition.executionPolicy.kind === 'general_purpose';
+  const generalPurpose = definition.executionPolicy === 'general_purpose';
+
+  // provider 输出不可信；仅定义白名单映射后真实存在的 handler 可以进入特殊分支或执行器。
+  if (!state.registry.getHandler(toolCall.toolName)) {
+    return createRejectedToolResult(toolCall, `Unknown tool: ${toolCall.toolName}`);
+  }
 
   if (generalPurpose && isTodoToolName(toolCall.toolName)) {
     const todoResult = executeTodoToolCall(toolCall, state.todoState);
@@ -94,7 +99,7 @@ async function executeSubagentToolCall(toolCall: ToolCall, input: SubagentLoopIn
   }
 
   const assessment = generalPurpose
-    ? classifyToolCallRisk(toolCall, input.interactionMode, (toolName) => getMcpToolApproval(mcpManager, toolName))
+    ? classifyToolCallRisk(toolCall, input.interactionMode, (toolName) => getMcpToolApproval(definition.includeMcpTools ? mcpManager : undefined, toolName))
     : classifySubagentToolCall(toolCall, input.metadata);
   state.observation.toolRiskAssessed({scope: state.observationScope, call: toolCall, assessment});
 
@@ -167,7 +172,7 @@ function createSubagentLoopRuntime(cwd: string, inheritedContext: InheritedAgent
 
     try {
       const {agent, config, registry} = prepareAgent({
-        allowedToolNames: definition.localToolNames,
+        allowedToolNames: new Set(definition.localToolNames),
         configSnapshot: input.configSnapshot,
         cwd,
         ...(definition.includeMcpTools && mcpManager ? {mcpManager} : {}),

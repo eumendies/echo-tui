@@ -166,7 +166,7 @@ export type SubagentTranscriptEvent =
 
 export type SubagentTranscriptRecord = TranscriptRecordBase & {
   role: 'subagent';
-  agentName: string; // 内置子 Agent 的稳定名称。
+  agentName: string; // 内置或自定义子 Agent 的稳定目录名称。
   parentToolCallId: string; // 外层 run_subagent 调用身份。
   runId: string; // 同一次子 Agent 过程记录的分组身份。
   event: SubagentTranscriptEvent; // 当前稳定过程事件。

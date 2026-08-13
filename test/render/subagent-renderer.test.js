@@ -198,6 +198,51 @@ test('Worker rail and compact outer result preserve Worker identity', () => {
   assert.match(pending, /waiting question · 0\.5s/u);
 });
 
+test('custom subagent rail and compact results preserve safe custom identity for all visible phases', () => {
+  const customBase = {...BASE, agentName: 'security-reviewer', runId: 'custom-run', parentToolCallId: 'custom-outer'};
+  const records = [
+    {...customBase, text: 'review auth', event: {kind: 'start', task: 'review auth'}},
+    {...customBase, text: '', event: {kind: 'completed', durationMs: 15}},
+    {role: 'tool_call', text: '', toolCallId: 'custom-outer', toolName: 'run_subagent', argumentsText: '{"agent":"security-reviewer","task":"review auth"}'},
+    {role: 'tool_result', text: 'done', toolCallId: 'custom-outer', toolName: 'run_subagent', ok: true, details: {kind: 'generic'}}
+  ];
+  const completed = renderTranscriptLines(records, 40).map(stripAnsi);
+  const failed = renderTranscriptLines([
+    {...customBase, parentToolCallId: 'failed-outer', runId: 'failed-run', text: 'review auth', event: {kind: 'start', task: 'review auth'}},
+    {...customBase, parentToolCallId: 'failed-outer', runId: 'failed-run', text: 'provider failed', event: {kind: 'failed', durationMs: 20}},
+    {role: 'tool_call', text: '', toolCallId: 'failed-outer', toolName: 'run_subagent', argumentsText: '{"agent":"security-reviewer","task":"review auth"}'},
+    {role: 'tool_result', text: 'failed', toolCallId: 'failed-outer', toolName: 'run_subagent', ok: false, details: {kind: 'generic'}}
+  ], 40).map(stripAnsi);
+  const pending = renderSubagentPendingLines({
+    kind: 'subagent', agentName: 'security-reviewer', elapsedMs: 250, phase: 'streaming',
+    runId: 'custom-run', task: 'review auth', draft: 'checking'
+  }, 12, 4).map(stripAnsi);
+
+  assert.match(completed.join('\n'), /security-reviewer · review auth/u);
+  assert.match(completed.join('\n'), /Security reviewer · completed/u);
+  assert.match(failed.join('\n'), /Security reviewer · failed/u);
+  assert.match(pending.join('\n'), /streaming/u);
+  assert.match(pending.join('\n'), /0\.3s/u);
+  assertSafe(completed, 40);
+  assertSafe(failed, 40);
+  assertSafe(pending, 12);
+});
+
+test('invalid subagent names never reach rail or compact result output', () => {
+  const invalidName = 'safe\u001b[31m\nINJECTED';
+  const invalidBase = {...BASE, agentName: invalidName, runId: 'invalid-run', parentToolCallId: 'invalid-outer'};
+  const plain = renderTranscriptLines([
+    {...invalidBase, text: 'inspect', event: {kind: 'start', task: 'inspect'}},
+    {...invalidBase, text: '', event: {kind: 'failed', durationMs: 2}},
+    {role: 'tool_call', text: '', toolCallId: 'invalid-outer', toolName: 'run_subagent', argumentsText: JSON.stringify({agent: invalidName, task: 'inspect'})},
+    {role: 'tool_result', text: 'failed', toolCallId: 'invalid-outer', toolName: 'run_subagent', ok: false, details: {kind: 'generic'}}
+  ], 20).map(stripAnsi);
+
+  assert.match(plain.join('\n'), /Subagent/u);
+  assert.doesNotMatch(plain.join('\n'), /INJECTED|\[31m/u);
+  assertSafe(plain, 20);
+});
+
 test('resume projection marks an unfinished run as interrupted without mutating records', () => {
   const records = createBashProcess(true);
   const before = structuredClone(records);

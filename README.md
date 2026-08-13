@@ -101,6 +101,38 @@ Echo TUI 默认读取 `AGENTS.md`，也可以在 `/config` 中改为 `CLAUDE.md`
 
 项目级 Skill 放在 `.echo/skills/<name>/SKILL.md`，个人 Skill 放在 `~/.echo/skills/<name>/SKILL.md`。使用 `/skills` 可以启用、停用 Skill，并为显式调用选择模型。
 
+### 自定义 Subagent
+
+自定义 Subagent 是主 Agent 可通过 `run_subagent` 委派的有界角色。个人定义放在 `~/.echo/agents/<name>.md`，项目定义放在项目根目录的 `.echo/agents/<name>.md`；同名时项目级优先，`explorer` 和 `worker` 保留给内置定义。名称必须匹配 `[a-z0-9][a-z0-9_-]{0,63}`。
+
+定义使用严格、受限的 frontmatter，不执行完整 YAML、模板或环境变量替换。以下示例可保存为 `.echo/agents/security-reviewer.md`：
+
+```markdown
+---
+description: Review authentication code and report concrete security risks.
+capability: readonly
+tools:
+  - read_files
+  - glob
+  - grep
+  - run_bash_command
+mcp: false
+---
+
+# Security reviewer
+
+Inspect only authentication-related code. Cite file paths and return prioritized findings.
+```
+
+- `description`、`capability`、`tools` 必填；`mcp` 可选，默认 `false`。未知、重复或类型不符的字段会使整个定义失效。
+- `capability: readonly` 只能从只读工具上限中选择能力，不能启用 MCP。严格白名单外的 Bash 在交互模式需要人工批准，在 headless 模式中即使使用 `--full-access` 也会拒绝。
+- `capability: general` 使用普通工具风险策略，并继承 `normal` / `plan` 和 headless 的 deny / `--full-access` 边界。`file_edit` 是能力别名，运行时会映射到当前配置选中的 `apply_patch` 或 `edit_file` 实现。
+- `mcp: true` 仅允许 general 定义使用当前父运行已经初始化的 MCP 工具；具体 MCP 风险和审批设置仍然生效。
+- 每次主 Agent 运行只加载一次目录并冻结快照；运行期间修改文件不会改变当前 schema 或已解析定义，下次运行才会生效。缺少用户或项目 agents 目录会被视为空目录。
+- 无效文件不会进入模型目录；启用 debug 后可通过 `subagent_catalog_diagnostic` 定位来源路径和有界错误信息，manifest 正文不会写入诊断。
+
+自定义 Subagent 不支持覆盖内置名称、单独指定模型、嵌套委派、绕过审批或提升 manifest 声明之外的权限；它也不是独立会话、插件沙箱或会话迁移机制。
+
 ### MCP、Hooks 与主题
 
 - 使用 `/mcp` 启停已配置的 MCP Server。

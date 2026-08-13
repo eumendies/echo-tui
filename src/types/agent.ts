@@ -12,7 +12,7 @@ export type AgentToolPolicy = 'default' | 'readonly';
 export type AgentConversationKind = 'primary' | 'btw' | 'subagent';
 
 export type SubagentRunMetadata = {
-  agentName: string; // 当前内置子 Agent 名称，用于 prompt、审批和可见投影。
+  agentName: string; // 当前内置或自定义子 Agent 名称，用于 prompt、审批和可见投影。
   depth: number; // 当前嵌套深度；主 run 为 0，第一版子 Agent 为 1。
   parentToolCallId: string; // 触发本次运行的外层 run_subagent call id。
   runId: string; // 当前子 Agent 运行的进程内稳定身份。

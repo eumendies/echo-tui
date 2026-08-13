@@ -12,7 +12,7 @@ function createSubagentRecord() {
   return {
     role: 'subagent',
     text: 'PRIVATE-SUBAGENT-PROCESS',
-    agentName: 'explorer',
+    agentName: 'security-reviewer',
     parentToolCallId: 'outer-1',
     runId: 'run-1',
     event: {kind: 'tool_call', toolCallId: 'PRIVATE-INNER-ID', toolName: 'grep', argumentsText: '{}'}
