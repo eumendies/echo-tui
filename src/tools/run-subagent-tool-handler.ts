@@ -12,7 +12,7 @@ function createRunSubagentToolHandler(port: SubagentToolPort): ToolHandler {
   return {
     definition: {
       name: RUN_SUBAGENT_TOOL_NAME,
-      description: 'Delegate a broad, uncertain, or independently parallelizable investigation to a specialized subagent and return only its final report.',
+      description: 'Delegate a self-contained task to a named built-in subagent and return only its final result.',
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -25,7 +25,7 @@ function createRunSubagentToolHandler(port: SubagentToolPort): ToolHandler {
           },
           task: {
             type: 'string',
-            description: 'A self-contained investigation task requesting only decisive evidence and a concise conclusion, without process narration.'
+            description: 'A self-contained task with enough context for the selected subagent to complete it and return a concise result.'
           }
         }
       }

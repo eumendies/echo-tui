@@ -19,7 +19,7 @@ function renderSubagentRunBlock(records: SubagentTranscriptRecord[], width = 80,
   return renderSubagentRecords(records, width, theme, {continuation: false, showUnexpectedInterruption});
 }
 
-/** 实时 append 只渲染本批新事件；continuation 防止每次 callback 重复输出 Explorer 标题。 */
+/** 实时 append 只渲染本批新事件；continuation 防止每次 callback 重复输出子 Agent标题。 */
 function renderSubagentRunAppendBlock(records: SubagentTranscriptRecord[], width = 80, theme: TuiTheme = DEFAULT_TUI_THEME, continuation = false): string {
   return renderSubagentRecords(records, width, theme, {continuation, showUnexpectedInterruption: false});
 }
@@ -43,7 +43,7 @@ function renderSubagentRecords(records: SubagentTranscriptRecord[], width: numbe
     if (record.event.kind === 'start') {
       hasStart = true;
       if (!hasHeader) {
-        lines.push(...renderRailText(`${record.agentName} · ${record.event.task}`, width, firstPrefix, outerPrefix, theme, 4, 'title'));
+        lines.push(...renderRailText(`${record.agentName} · ${record.event.task}`, width, firstPrefix, outerPrefix, theme, null, 'title'));
         hasHeader = true;
       }
       continue;
@@ -103,7 +103,7 @@ function renderSubagentRecords(records: SubagentTranscriptRecord[], width: numbe
   return lines.length > 0 ? `${lines.join('\n')}${terminalSpacing}` : '';
 }
 
-/** footer 中的瞬时活动只续接已提交 rail，不重复 Explorer 标题与任务。 */
+/** footer 中的瞬时活动只续接已提交 rail，不重复子 Agent标题与任务。 */
 function renderSubagentPendingLines(pending: SubagentPendingState, width: number, maxLines: number, theme: TuiTheme = DEFAULT_TUI_THEME): string[] {
   if (maxLines <= 0) {
     return [];
@@ -157,10 +157,10 @@ function createSubagentRailLayout(width: number) {
   };
 }
 
-/** 外层 rail/prefix 使用工具强调色；只有 Explorer 标题共享该强调色，其余内容统一弱化。 */
-function renderRailText(text: string, width: number, firstPrefix: string, continuationPrefix: string, theme: TuiTheme, maxLines = SUBAGENT_TEXT_MAX_DISPLAY_LINES, tone: 'title' | 'work' = 'work'): string[] {
+/** 外层 rail/prefix 与子 Agent标题使用专属色，其余工作内容统一弱化。 */
+function renderRailText(text: string, width: number, firstPrefix: string, continuationPrefix: string, theme: TuiTheme, maxLines: number | null = SUBAGENT_TEXT_MAX_DISPLAY_LINES, tone: 'title' | 'work' = 'work'): string[] {
   const lines = renderPrefixedLines({
-    text: truncateDisplayText(text, maxLines),
+    text: maxLines === null ? text : truncateDisplayText(text, maxLines),
     width,
     firstPrefix,
     continuationPrefix
@@ -168,19 +168,19 @@ function renderRailText(text: string, width: number, firstPrefix: string, contin
   return lines.map((line, index) => {
     const prefix = index === 0 ? firstPrefix : continuationPrefix;
     const content = line.slice(prefix.length);
-    return `${blockText(theme, 'tool', prefix)}${blockText(theme, tone === 'title' ? 'tool' : 'toolOutput', content)}`;
+    return `${blockText(theme, 'subagentRail', prefix)}${blockText(theme, tone === 'title' ? 'subagentRail' : 'toolOutput', content)}`;
   });
 }
 
 /** 内部工具保留既有布局，但其标题、状态、prefix 和正文都统一映射为工作过程暗色。 */
 function prefixNestedToolLines(lines: string[], outerPrefix: string, theme: TuiTheme): string[] {
-  const prefix = blockText(theme, 'tool', outerPrefix);
+  const prefix = blockText(theme, 'subagentRail', outerPrefix);
   return lines.map((line) => `${prefix}${blockText(theme, 'toolOutput', stripAnsi(line))}`);
 }
 
 /** 逻辑工作块之间保留一条不断开的最外层 rail 空行。 */
 function renderSubagentRailSpacer(outerPrefix: string, theme: TuiTheme): string {
-  return blockText(theme, 'tool', outerPrefix);
+  return blockText(theme, 'subagentRail', outerPrefix);
 }
 
 function toToolCallRecord(record: Extract<SubagentTranscriptRecord, {event: {kind: 'tool_call'}}> | SubagentTranscriptRecord): ToolCallTranscriptRecord {

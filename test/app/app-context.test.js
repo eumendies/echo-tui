@@ -2662,6 +2662,19 @@ test('UserQuestionContext Esc closes surface without interrupting assistant turn
   assert.deepEqual(interrupted.noticeRecord, { role: 'local_notice', text: '已中断模型回答' });
 });
 
+test('UserQuestionContext shows trusted Worker source and exposes one cancellation operation', async () => {
+  const userQuestion = new UserQuestionContext(() => {});
+  const call = {callId: 'worker-question', toolName: 'ask_user_questions', argumentsText: '{}'};
+  const pending = userQuestion.request(call, {
+    questions: [{question: 'Proceed?', options: [{label: 'Yes'}, {label: 'No'}]}]
+  }, {agentName: 'worker'});
+
+  assert.equal(userQuestion.getSurface().title, 'QUESTION · WORKER');
+  userQuestion.cancelActiveRequest('parent turn ended');
+  assert.deepEqual(JSON.parse((await pending).text), {cancelled: true, reason: 'parent turn ended'});
+  assert.equal(userQuestion.getSurface(), null);
+});
+
 test('UserQuestionContext supports multi-select answers and submits them from the final tab', async () => {
   let userQuestion;
   const surfaces = [];

@@ -619,6 +619,71 @@ test('runAssistantTurn persists subagent events, restores pending after permissi
   assert.equal(harness.appContext.subagentRunContext.getPending(), null);
 });
 
+test('runAssistantTurn bridges Worker questions with run identity and rejects late requests', async () => {
+  const harness = createHarness();
+  let capturedCallbacks;
+  const metadata = {agentName: 'worker', depth: 1, parentToolCallId: 'outer-worker', runId: 'worker-run'};
+  const base = {role: 'subagent', text: 'ask user', agentName: 'worker', parentToolCallId: 'outer-worker', runId: 'worker-run'};
+
+  await runAssistantTurn({
+    ...harness.input,
+    async runAgent(_session, callbacks) {
+      capturedCallbacks = callbacks;
+      callbacks.onSubagentRecords([{...base, event: {kind: 'start', task: 'ask user'}}]);
+      callbacks.onSubagentActivity({agentName: 'worker', phase: 'waiting_question', runId: 'worker-run', task: 'ask user', toolName: 'ask_user_questions'});
+      const pending = callbacks.onSubagentUserQuestionRequest(metadata, {
+        callId: 'worker-question', toolName: 'ask_user_questions', argumentsText: '{}'
+      }, {questions: [{question: 'Proceed?', options: [{label: 'Yes'}, {label: 'No'}]}]});
+      assert.equal(harness.input.userQuestion.getSurface().title, 'QUESTION · WORKER');
+      assert.equal(harness.appContext.subagentRunContext.getPending().phase, 'waiting_question');
+      harness.input.userQuestion.handleEvent({type: 'submit'});
+      const result = await pending;
+      assert.equal(result.ok, true);
+      assert.match(result.text, /"selected":"Yes"/u);
+      callbacks.onSubagentActivity({agentName: 'worker', phase: 'thinking', runId: 'worker-run', task: 'ask user'});
+      assert.equal(harness.appContext.subagentRunContext.getPending().phase, 'thinking');
+      callbacks.onSubagentRecords([{...base, text: '', event: {kind: 'completed', durationMs: 10}}]);
+      callbacks.onComplete('done');
+    }
+  });
+
+  const late = await capturedCallbacks.onSubagentUserQuestionRequest(metadata, {
+    callId: 'late-question', toolName: 'ask_user_questions', argumentsText: '{}'
+  }, {questions: [{question: 'Late?', options: [{label: 'Yes'}]}]});
+  assert.equal(late.ok, false);
+  assert.equal(harness.input.userQuestion.getSurface(), null);
+});
+
+test('runAssistantTurn cancels an active Worker question when the parent turn is interrupted', async () => {
+  const harness = createHarness();
+  let questionResult;
+  const running = runAssistantTurn({
+    ...harness.input,
+    async runAgent(session, callbacks) {
+      const metadata = {agentName: 'worker', depth: 1, parentToolCallId: 'outer', runId: 'worker-cancel'};
+      callbacks.onSubagentRecords([{
+        role: 'subagent', text: 'ask', agentName: 'worker', parentToolCallId: 'outer', runId: 'worker-cancel',
+        event: {kind: 'start', task: 'ask'}
+      }]);
+      questionResult = await callbacks.onSubagentUserQuestionRequest(metadata, {
+        callId: 'question-cancel', toolName: 'ask_user_questions', argumentsText: '{}'
+      }, {questions: [{question: 'Wait?', options: [{label: 'Yes'}]}]});
+      if (session.abortSignal.aborted) {
+        throw new AgentAbortError();
+      }
+    }
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(harness.input.userQuestion.hasActiveRequest(), true);
+  assert.equal(harness.appContext.interruptActiveAssistantTurn().interrupted, true);
+  await running;
+  assert.equal(questionResult.ok, false);
+  assert.match(questionResult.text, /interrupted/u);
+  assert.equal(harness.input.userQuestion.hasActiveRequest(), false);
+  assert.equal(harness.appContext.turnContext.responding, false);
+});
+
 test('runAssistantTurn leaves high-frequency subagent activity rendering to the timer', async () => {
   const harness = createHarness();
   let renderCount = 0;

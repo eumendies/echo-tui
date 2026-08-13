@@ -47,6 +47,18 @@ test('SubagentRunContext tracks phases without accepting callbacks from another 
   assert.equal(context.hasTimedActivity(), false);
 });
 
+test('SubagentRunContext projects Worker waiting-question activity with the current run identity', () => {
+  const context = new SubagentRunContext();
+  assert.equal(context.acceptRecords([createRecord({kind: 'start', task: 'implement feature'}, {agentName: 'worker'})]), true);
+  assert.equal(context.updateActivity({
+    agentName: 'worker', phase: 'waiting_question', runId: 'run-1', task: 'implement feature',
+    toolName: 'ask_user_questions', argumentsText: '{"questions":[]}'
+  }), true);
+  assert.equal(context.getPending().agentName, 'worker');
+  assert.equal(context.getPending().phase, 'waiting_question');
+  assert.equal(context.isCurrentRun('run-1'), true);
+});
+
 test('SubagentRunContext applies stable tool and message boundaries before footer rendering', () => {
   const context = new SubagentRunContext();
   assert.equal(context.acceptRecords([createRecord({kind: 'start', task: 'inspect files'})]), true);

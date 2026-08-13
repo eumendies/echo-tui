@@ -4,6 +4,7 @@ const {test} = require('node:test');
 const {createToolExecutor} = require('../../src/tools/tool-executor');
 const {createDefaultToolRegistry, createToolRegistry} = require('../../src/tools/tool-registry');
 const {createRunSubagentToolHandler, RUN_SUBAGENT_TOOL_NAME} = require('../../src/tools/run-subagent-tool-handler');
+const {listSubagentDefinitions} = require('../../src/agent/subagent/definition');
 
 const TEST_CONFIG = {
   agentType: 'fake',
@@ -37,11 +38,11 @@ test('run_subagent is a normal pair-after ToolHandler executed through ToolExecu
   const result = await executor.execute(call, {abortSignal: abortController.signal});
 
   assert.equal(handler.transcriptCommitMode, 'pair_after_execute');
-  assert.equal(handler.definition.description, 'Delegate a broad, uncertain, or independently parallelizable investigation to a specialized subagent and return only its final report.');
+  assert.equal(handler.definition.description, 'Delegate a self-contained task to a named built-in subagent and return only its final result.');
   assert.deepEqual(handler.definition.parameters.required, ['agent', 'task']);
   assert.deepEqual(handler.definition.parameters.properties.agent.enum, ['explorer']);
   assert.match(handler.definition.parameters.properties.agent.description, /explorer: Investigate broad bounded tasks/u);
-  assert.match(handler.definition.parameters.properties.task.description, /without process narration/u);
+  assert.match(handler.definition.parameters.properties.task.description, /selected subagent/u);
   assert.deepEqual(invocations, [{agentName: 'explorer', task: 'inspect config', call, options: {abortSignal: abortController.signal}}]);
   assert.deepEqual(result, {
     callId: 'outer_1',
@@ -50,6 +51,18 @@ test('run_subagent is a normal pair-after ToolHandler executed through ToolExecu
     details: {kind: 'generic'},
     text: 'evidence-backed report'
   });
+});
+
+test('built-in subagent definitions expose Explorer and Worker without nested delegation', () => {
+  const definitions = listSubagentDefinitions();
+  assert.deepEqual(definitions.map((definition) => definition.name), ['explorer', 'worker']);
+  assert.deepEqual(definitions.map((definition) => definition.executionPolicy.kind), ['readonly_investigation', 'general_purpose']);
+  assert.equal(definitions[0].includeMcpTools, false);
+  assert.equal(definitions[1].includeMcpTools, true);
+  assert.equal(definitions.every((definition) => !definition.localToolNames.has(RUN_SUBAGENT_TOOL_NAME)), true);
+  assert.equal(definitions[1].localToolNames.has('apply_patch'), true);
+  assert.equal(definitions[1].localToolNames.has('ask_user_questions'), true);
+  assert.equal(definitions[1].localToolNames.has('create_todos'), true);
 });
 
 test('run_subagent rejects invalid task arguments before invoking its Port', async () => {

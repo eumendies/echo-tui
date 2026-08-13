@@ -17,6 +17,7 @@ import type {
   AgentCallbacks,
   AgentExecutionMode,
   AgentUserConfigSnapshot,
+  InteractionMode,
   LlmConfig,
   SubagentRunMetadata,
   SubagentToolPort
@@ -28,6 +29,7 @@ type SubagentToolPortOptions = {
   configSnapshot: AgentUserConfigSnapshot; // 父 run 捕获的配置 revision，子运行不得重新读取其他 revision。
   createRuntime: SubagentLoopRuntimeFactory; // 为每次委派创建拥有独立装配状态的 loop runtime 实例。
   executionMode: AgentExecutionMode; // 父 run 的 interactive/headless 安全边界。
+  interactionMode: InteractionMode; // 父提交时捕获的 mode，供通用 Worker执行策略使用。
   getInheritedContext: () => InheritedAgentRunContext; // 延迟读取父 run 已初始化的完整上下文快照。
   modelProfileId?: string; // 父 run 已解析选择的模型 profile。
   publishRecords: (records: SubagentTranscriptRecord[]) => void; // 把稳定过程同步提交到父 runtime 与 app transcript。
@@ -72,6 +74,7 @@ function createSubagentToolPort(options: SubagentToolPortOptions): SubagentToolP
           abortSignal: executionOptions.abortSignal,
           configSnapshot: options.configSnapshot,
           executionMode: options.executionMode,
+          interactionMode: options.interactionMode,
           metadata,
           modelProfileId: options.modelProfileId,
           reasoningEffortOverride: options.reasoningEffortOverride,
@@ -142,6 +145,23 @@ function createChildCallbacks(
     },
     onWaitingApproval(call) {
       publishActivity(options.callbacks, metadata, task, 'waiting_approval', call);
+    },
+    async onUserQuestionRequest(call, request) {
+      if (!options.callbacks.onSubagentUserQuestionRequest) {
+        return {
+          callId: call.callId,
+          toolName: call.toolName,
+          ok: false,
+          details: {kind: 'generic'},
+          text: 'User question was interrupted.'
+        };
+      }
+      const result = await options.callbacks.onSubagentUserQuestionRequest(metadata, call, request);
+      publishActivity(options.callbacks, metadata, task, 'thinking');
+      return result;
+    },
+    onWaitingQuestion(call) {
+      publishActivity(options.callbacks, metadata, task, 'waiting_question', call);
     }
   };
 }
@@ -151,7 +171,7 @@ function publishActivity(
   callbacks: AgentCallbacks,
   metadata: SubagentRunMetadata,
   task: string,
-  phase: 'thinking' | 'reasoning' | 'streaming' | 'tool' | 'waiting_approval',
+  phase: 'thinking' | 'reasoning' | 'streaming' | 'tool' | 'waiting_approval' | 'waiting_question',
   toolCall?: Parameters<NonNullable<AgentCallbacks['onToolCall']>>[0],
   draft?: string
 ): void {

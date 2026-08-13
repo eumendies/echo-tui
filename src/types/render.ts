@@ -72,7 +72,7 @@ export type SubagentPendingState = {
   argumentsText?: string; // 内部工具参数，供现有工具 preview renderer 生成摘要。
   draft?: string; // reasoning 或 assistant 的瞬时完整草稿。
   elapsedMs: number; // 从当前子运行 start 开始计算的毫秒数。
-  phase: 'thinking' | 'reasoning' | 'streaming' | 'tool' | 'waiting_approval'; // 当前活动阶段。
+  phase: 'thinking' | 'reasoning' | 'streaming' | 'tool' | 'waiting_approval' | 'waiting_question'; // 当前活动阶段。
   runId: string; // 当前子运行身份，仅用于本地渲染隔离。
   task: string; // 当前委派任务摘要来源。
   toolName?: string; // tool 阶段的内部工具名称。

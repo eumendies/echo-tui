@@ -1,10 +1,7 @@
 import {resolveContextWindow} from '../../config/llm-config';
 import {DEFAULT_APP_SETTINGS} from '../../config/app-settings-config';
 import {
-  ASK_USER_QUESTIONS_TOOL_NAME,
-  createAskUserQuestionsCancelledResult,
-  createAskUserQuestionsFailureResult,
-  parseAskUserQuestionsToolCall
+  ASK_USER_QUESTIONS_TOOL_NAME
 } from '../../tools/ask-user-questions-tool-handler';
 import {classifyReadonlyToolCall, classifyToolCallRisk} from '../../tools/tool-risk-classifier';
 import {createToolExecutor} from '../../tools/tool-executor';
@@ -27,6 +24,7 @@ import {createSubagentLoopRuntime} from './subagent-loop-runtime';
 import {
   buildProviderRecords,
   createProviderUsageDebugPayload,
+  executeUserQuestionToolCall,
   hasRecordableProviderUsage,
   isToolResultTruncated
 } from './shared';
@@ -119,30 +117,25 @@ async function executeToolCall(toolCall: ToolCall, state: AgentLoopRunState, cal
   }
 
   if (toolCall.toolName === ASK_USER_QUESTIONS_TOOL_NAME) {
-    const parsed = parseAskUserQuestionsToolCall(toolCall);
-
-    if (!parsed.ok) {
-      const result = createAskUserQuestionsFailureResult(toolCall, parsed.message);
-      emitUserQuestionResponseHook(state.hooks, {interactionMode: state.interactionMode, toolCall, result});
-      return result;
-    }
-
-    emitUserQuestionRequestHook(state.hooks, {
-      interactionMode: state.interactionMode,
-      toolCall,
-      request: parsed.value
+    return executeUserQuestionToolCall(toolCall, {
+      abortSignal: state.abortSignal,
+      executionMode: state.executionMode,
+      onRequest(call, request) {
+        emitUserQuestionRequestHook(state.hooks, {
+          interactionMode: state.interactionMode,
+          toolCall: call,
+          request
+        });
+      },
+      onResponse(call, result) {
+        emitUserQuestionResponseHook(state.hooks, {
+          interactionMode: state.interactionMode,
+          toolCall: call,
+          result
+        });
+      },
+      request: callbacks.onUserQuestionRequest
     });
-
-    if (state.executionMode.kind === 'headless') {
-      const result = createAskUserQuestionsCancelledResult(toolCall);
-      emitUserQuestionResponseHook(state.hooks, {interactionMode: state.interactionMode, toolCall, result});
-      return result;
-    }
-
-    const result = await Promise.resolve(callbacks.onUserQuestionRequest!(toolCall, parsed.value));
-    emitUserQuestionResponseHook(state.hooks, {interactionMode: state.interactionMode, toolCall, result});
-    throwIfAborted(state.abortSignal);
-    return result;
   }
 
   const riskAssessment = classifyToolCallRisk(toolCall, state.interactionMode, (toolName) => getMcpToolApproval(state.mcpManager, toolName));
@@ -329,8 +322,9 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
       ? createSubagentToolPort({
           callbacks,
           configSnapshot,
-          createRuntime: (inheritedContext, definition) => createSubagentLoopRuntime(cwd, inheritedContext, definition, hooks, debug, usageStore),
+          createRuntime: (inheritedContext, definition) => createSubagentLoopRuntime(cwd, inheritedContext, definition, hooks, debug, usageStore, mcpManager),
           executionMode,
+          interactionMode,
           getInheritedContext: () => ({
             agentInstructions: state.agentInstructions,
             basePrompt: state.basePrompt,
