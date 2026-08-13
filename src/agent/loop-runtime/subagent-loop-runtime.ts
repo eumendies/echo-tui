@@ -1,10 +1,16 @@
 import {resolveContextWindow} from '../../config/llm-config';
 import {disabledDebugContext, hashValue, redactProviderConfig, summarizeText} from '../../debug/debug-context';
 import {emitToolApprovalRequestHook, emitToolApprovalResponseHook} from '../../hooks/lifecycle-events';
+import {emitUserQuestionRequestHook, emitUserQuestionResponseHook} from '../../hooks/lifecycle-events';
+import {getMcpToolApproval} from '../../mcp/manager';
 import {createUsageCwdHash} from '../../persistence/usage-store';
+import {
+  ASK_USER_QUESTIONS_TOOL_NAME
+} from '../../tools/ask-user-questions-tool-handler';
 import {createToolExecutor} from '../../tools/tool-executor';
-import {classifySubagentToolCall} from '../../tools/tool-risk-classifier';
+import {classifySubagentToolCall, classifyToolCallRisk} from '../../tools/tool-risk-classifier';
 import {createToolCallTranscriptRecord, createToolResultTranscriptRecord} from '../../tools/tool-transcript-record';
+import {executeTodoToolCall, isTodoToolName} from '../../tools/todo-tool-handler';
 import {throwIfAborted} from '../../types/agent';
 import {prepareAgent} from '../agent-setup';
 import {normalizeError} from '../agent-errors';
@@ -12,6 +18,7 @@ import {createCompactionNoticeRecord, runCompaction} from '../context/context-co
 import {
   buildProviderRecords,
   createProviderUsageDebugPayload,
+  executeUserQuestionToolCall,
   hasRecordableProviderUsage,
   isToolResultTruncated
 } from './shared';
@@ -21,10 +28,11 @@ import type {DebugContext} from '../../debug/debug-context';
 import type {AgentTurnCallbacks, LlmConfig, ProviderAgent, ProviderRetry, ProviderUsage, ToolApprovalDecision} from '../../types/agent';
 import type {LifecycleHookDispatcher} from '../../types/hooks';
 import type {ToolCall, ToolDefinition, ToolExecutionResult, ToolExecutor, ToolRegistry} from '../../types/tool';
-import type {CompactionState, TranscriptRecord} from '../../types/transcript';
+import type {CompactionState, TodoState, TranscriptRecord} from '../../types/transcript';
 import type {UsageStore} from '../../types/usage';
 import type {InheritedAgentRunContext, RunSubagentAgent, SubagentLoopCallbacks, SubagentLoopInput} from './types';
 import type {SubagentDefinition} from '../subagent/definition';
+import type {McpManager} from '../../mcp/manager';
 
 const TOOL_REJECTED_BY_USER_TEXT = 'Tool execution was rejected by the user.';
 
@@ -39,6 +47,7 @@ type SubagentLoopRunState = {
   providerType: LlmConfig['agentType']; // usage记录使用的 provider协议类型。
   reasoningEffort?: LlmConfig['reasoningEffort']; // 子运行固定的推理强度。
   registry: ToolRegistry; // 子 provider schema与执行器共用的裁剪目录。
+  todoState: TodoState | undefined; // Worker独立维护的待办状态；Explorer始终为空。
   toolDefinitions: ToolDefinition[]; // 真正发送给子 provider的工具 schema。
 };
 
@@ -64,29 +73,77 @@ function isToolExecutionAllowed(kind: string): boolean {
 }
 
 /**
- * 执行子 Agent内部工具；只读分类、人工升级和 headless fail-closed均在子 runtime内完成。
+ * 执行子 Agent内部工具；定义策略决定Todo/提问、风险分类、审批和headless边界。
  */
-async function executeSubagentToolCall(toolCall: ToolCall, input: SubagentLoopInput, state: SubagentLoopRunState, callbacks: SubagentLoopCallbacks): Promise<ToolExecutionResult> {
+async function executeSubagentToolCall(toolCall: ToolCall, input: SubagentLoopInput, state: SubagentLoopRunState, callbacks: SubagentLoopCallbacks, definition: SubagentDefinition, mcpManager?: McpManager): Promise<ToolExecutionResult> {
   throwIfAborted(input.abortSignal);
-  const assessment = classifySubagentToolCall(toolCall, input.metadata);
+  const generalPurpose = definition.executionPolicy.kind === 'general_purpose';
+
+  if (generalPurpose && isTodoToolName(toolCall.toolName)) {
+    const todoResult = executeTodoToolCall(toolCall, state.todoState);
+    if (todoResult.ok) {
+      state.todoState = todoResult.todoState;
+    }
+    return todoResult.result;
+  }
+
+  if (generalPurpose && toolCall.toolName === ASK_USER_QUESTIONS_TOOL_NAME) {
+    return executeUserQuestionToolCall(toolCall, {
+      abortSignal: input.abortSignal,
+      executionMode: input.executionMode,
+      onRequest(call, request) {
+        emitUserQuestionRequestHook(state.hooks, {
+          interactionMode: input.interactionMode,
+          toolCall: call,
+          request
+        });
+      },
+      onResponse(call, result) {
+        emitUserQuestionResponseHook(state.hooks, {
+          interactionMode: input.interactionMode,
+          toolCall: call,
+          result
+        });
+      },
+      onWaiting: callbacks.onWaitingQuestion,
+      request: callbacks.onUserQuestionRequest
+    });
+  }
+
+  const assessment = generalPurpose
+    ? classifyToolCallRisk(toolCall, input.interactionMode, (toolName) => getMcpToolApproval(mcpManager, toolName))
+    : classifySubagentToolCall(toolCall, input.metadata);
 
   if (assessment.risk === 'rejected') {
     return createRejectedToolResult(toolCall, assessment.message);
   }
   if (assessment.risk === 'approval_required') {
+    const approval = {
+      ...(assessment.approval || {}),
+      origin: {
+        kind: 'subagent' as const,
+        agentName: input.metadata.agentName,
+        runId: input.metadata.runId,
+        task: input.task
+      }
+    };
     callbacks.onWaitingApproval?.(toolCall);
     let decision: ToolApprovalDecision;
 
     if (input.executionMode.kind === 'headless') {
-      emitToolApprovalRequestHook(state.hooks, {toolCall, approval: assessment.approval});
-      decision = {
-        kind: 'deny',
-        message: `Tool execution requires interactive manual approval and is unavailable in headless mode: ${toolCall.toolName}.`
-      };
+      emitToolApprovalRequestHook(state.hooks, {interactionMode: input.interactionMode, toolCall, approval});
+      decision = generalPurpose && input.executionMode.approvalPolicy === 'full-access'
+        ? {kind: 'allow_once'}
+        : {
+            kind: 'deny',
+            message: generalPurpose
+              ? `Tool execution requires approval in headless mode: ${toolCall.toolName}. Re-run with --full-access to allow it.`
+              : `Tool execution requires interactive manual approval and is unavailable in headless mode: ${toolCall.toolName}.`
+          };
       emitToolApprovalResponseHook(state.hooks, {toolCall, decision});
     } else {
       decision = callbacks.onToolApprovalRequest
-        ? await callbacks.onToolApprovalRequest(toolCall, assessment.approval)
+        ? await callbacks.onToolApprovalRequest(toolCall, approval)
         : {kind: 'deny'};
     }
 
@@ -107,7 +164,7 @@ async function executeSubagentToolCall(toolCall: ToolCall, input: SubagentLoopIn
 /**
  * 创建定义绑定的 subagent loop runtime；每个实例只运行隔离任务，不接收主 session或完整主 callbacks。
  */
-function createSubagentLoopRuntime(cwd: string, inheritedContext: InheritedAgentRunContext, definition: SubagentDefinition, hooks?: LifecycleHookDispatcher, debug: DebugContext = disabledDebugContext, usageStore?: UsageStore): RunSubagentAgent {
+function createSubagentLoopRuntime(cwd: string, inheritedContext: InheritedAgentRunContext, definition: SubagentDefinition, hooks?: LifecycleHookDispatcher, debug: DebugContext = disabledDebugContext, usageStore?: UsageStore, mcpManager?: McpManager): RunSubagentAgent {
   const cwdHash = createUsageCwdHash(cwd);
 
   const runSubagentLoop: RunSubagentAgent = async function runSubagentLoop(input, callbacks = {}): Promise<string> {
@@ -116,9 +173,10 @@ function createSubagentLoopRuntime(cwd: string, inheritedContext: InheritedAgent
 
     try {
       const {agent, config, registry} = prepareAgent({
-        allowedToolNames: definition.toolNames,
+        allowedToolNames: definition.localToolNames,
         configSnapshot: input.configSnapshot,
         cwd,
+        ...(definition.includeMcpTools && mcpManager ? {mcpManager} : {}),
         modelProfileId: input.modelProfileId,
         reasoningEffortOverride: input.reasoningEffortOverride
       });
@@ -133,6 +191,7 @@ function createSubagentLoopRuntime(cwd: string, inheritedContext: InheritedAgent
         providerType: config.agentType,
         reasoningEffort: config.reasoningEffort,
         registry,
+        todoState: undefined,
         toolDefinitions: registry.listDefinitions()
       };
     } catch (error: unknown) {
@@ -215,7 +274,7 @@ function createSubagentLoopRuntime(cwd: string, inheritedContext: InheritedAgent
         compactionState,
         inheritedContext.skillCatalog,
         inheritedContext.agentInstructions,
-        undefined,
+        state.todoState,
         memoryPrompt.sections,
         inheritedContext.basePrompt,
         undefined,
@@ -299,7 +358,7 @@ function createSubagentLoopRuntime(cwd: string, inheritedContext: InheritedAgent
           argumentsText: toolCall.argumentsText
         });
 
-        const result = await executeSubagentToolCall(toolCall, input, state, callbacks);
+        const result = await executeSubagentToolCall(toolCall, input, state, callbacks, definition, mcpManager);
         throwIfAborted(input.abortSignal);
         recordRegion.push(createToolResultTranscriptRecord(result));
         callbacks.onToolResult?.(result);

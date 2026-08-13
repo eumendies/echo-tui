@@ -5,7 +5,7 @@ const {createTuiTheme} = require('../../src/config/theme-config');
 const {renderTranscriptLines} = require('../../src/render/app-renderer');
 const {displayWidth, safeRenderWidth, stripAnsi} = require('../../src/render/layout');
 const {renderSubagentPendingLines, renderSubagentRunAppendBlock, renderSubagentRunBlock} = require('../../src/render/subagent-renderer');
-const {renderToolPairLines} = require('../../src/render/tool-message-renderer');
+const {renderToolCallPreviewLines, renderToolPairLines} = require('../../src/render/tool-message-renderer');
 
 const BASE = {role: 'subagent', agentName: 'explorer', parentToolCallId: 'outer-1', runId: 'run-1'};
 
@@ -41,13 +41,14 @@ function assertSafe(lines, width) {
   }
 }
 
-test('Explorer title and outer rail use tool color while all nested Bash work uses toolOutput', () => {
+test('Explorer title and outer rail use subagentRail while nested Bash work uses toolOutput', () => {
   const theme = createTuiTheme({
     blocks: {colors: {
       toolOutput: [1, 2, 3],
       toolSuccess: [4, 5, 6],
       toolError: [7, 8, 9],
       tool: [10, 11, 12],
+      subagentRail: [16, 17, 18],
       text: [13, 14, 15]
     }}
   });
@@ -62,8 +63,8 @@ test('Explorer title and outer rail use tool color while all nested Bash work us
   assert.ok(nestedPlain.some((line) => line.includes('fatal')));
   assert.ok(nestedPlain.some((line) => line.includes('failed · 40ms · failed report')));
   assert.match(nested, /\x1b\[38;2;1;2;3m/);
-  assert.match(nested, /\x1b\[38;2;10;11;12m/);
-  assert.doesNotMatch(nested, /\x1b\[38;2;4;5;6m|\x1b\[38;2;7;8;9m|\x1b\[38;2;13;14;15m/);
+  assert.match(nested, /\x1b\[38;2;16;17;18m/);
+  assert.doesNotMatch(nested, /\x1b\[38;2;4;5;6m|\x1b\[38;2;7;8;9m|\x1b\[38;2;10;11;12m|\x1b\[38;2;13;14;15m/);
 
   const topLevel = renderToolPairLines({
     role: 'tool_call', text: '', toolCallId: 'top', toolName: 'run_bash_command', argumentsText: JSON.stringify({command: 'git status'})
@@ -81,6 +82,7 @@ test('nested non-Bash tool titles and status markers are also mapped to toolOutp
       toolSuccess: [24, 25, 26],
       toolError: [27, 28, 29],
       tool: [30, 31, 32],
+      subagentRail: [36, 37, 38],
       text: [33, 34, 35]
     }}
   });
@@ -98,8 +100,8 @@ test('nested non-Bash tool titles and status markers are also mapped to toolOutp
   ], 80, theme);
 
   assert.match(rendered, /\x1b\[38;2;21;22;23m/u);
-  assert.match(rendered, /\x1b\[38;2;30;31;32m/u);
-  assert.doesNotMatch(rendered, /\x1b\[38;2;24;25;26m|\x1b\[38;2;27;28;29m|\x1b\[38;2;33;34;35m/u);
+  assert.match(rendered, /\x1b\[38;2;36;37;38m/u);
+  assert.doesNotMatch(rendered, /\x1b\[38;2;24;25;26m|\x1b\[38;2;27;28;29m|\x1b\[38;2;30;31;32m|\x1b\[38;2;33;34;35m/u);
 });
 
 test('stable and pending subagent rails share one column and pending does not repeat the header', () => {
@@ -117,6 +119,20 @@ test('stable and pending subagent rails share one column and pending does not re
   assert.equal(lines[2].indexOf('▌'), 2);
   assert.equal(lines[1], '  ▌ ');
   assert.equal(lines.slice(1).some((line) => line.includes('explorer · inspect alignment')), false);
+});
+
+test('run_subagent task text is never display-truncated in the outer call or subagent header', () => {
+  const task = Array.from({length: 16}, (_, index) => `delegated task line ${index + 1}`).join('\n');
+  const preview = renderToolCallPreviewLines('run_subagent', JSON.stringify({agent: 'worker', task}, null, 2), 48).map(stripAnsi).join('\n');
+  const rail = stripAnsi(renderSubagentRunBlock([
+    subagentRecord(task, {kind: 'start', task}),
+    subagentRecord('', {kind: 'completed', durationMs: 5})
+  ], 48));
+
+  assert.match(preview, /delegated task line 16/u);
+  assert.match(rail, /delegated task line 16/u);
+  assert.doesNotMatch(preview, /\[tool output truncated for display\]/u);
+  assert.doesNotMatch(rail, /\[tool output truncated for display\]/u);
 });
 
 test('subagent reasoning and tools are separated by continuous outer rail spacer rows', () => {
@@ -159,6 +175,27 @@ test('completed subagent rail shows its report once and compacts the outer run_s
   assert.match(plain, /completed · 1\.2s/);
   assert.match(plain, /Explorer · returned report/);
   assert.doesNotMatch(plain, /\{"task":"inspect repository"\}/);
+});
+
+test('Worker rail and compact outer result preserve Worker identity', () => {
+  const workerBase = {...BASE, agentName: 'worker', runId: 'worker-run', parentToolCallId: 'worker-outer'};
+  const records = [
+    {...workerBase, text: 'implement task', event: {kind: 'start', task: 'implement task'}},
+    {...workerBase, text: 'done', event: {kind: 'assistant'}},
+    {...workerBase, text: '', event: {kind: 'completed', durationMs: 25}},
+    {role: 'tool_call', text: '', toolCallId: 'worker-outer', toolName: 'run_subagent', argumentsText: '{"agent":"worker","task":"implement task"}'},
+    {role: 'tool_result', text: 'done', toolCallId: 'worker-outer', toolName: 'run_subagent', ok: true, details: {kind: 'generic'}}
+  ];
+  const plain = renderTranscriptLines(records, 80).map(stripAnsi).join('\n');
+  assert.match(plain, /worker · implement task/u);
+  assert.match(plain, /Worker · completed task/u);
+  assert.doesNotMatch(plain, /Explorer · returned report/u);
+
+  const pending = renderSubagentPendingLines({
+    kind: 'subagent', agentName: 'worker', elapsedMs: 500, phase: 'waiting_question',
+    runId: 'worker-run', task: 'implement task', toolName: 'ask_user_questions'
+  }, 80, 4).map(stripAnsi).join('\n');
+  assert.match(pending, /waiting question · 0\.5s/u);
 });
 
 test('resume projection marks an unfinished run as interrupted without mutating records', () => {

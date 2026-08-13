@@ -5,13 +5,14 @@ import type {
   AgentExecutionMode,
   AgentInstruction,
   AgentUserConfigSnapshot,
+  InteractionMode,
   ReasoningEffort,
   ReasoningUpdate,
   SubagentRunMetadata,
   ToolApprovalDecision
 } from '../../types/agent';
 import type {SkillCatalogEntry} from '../../types/skill';
-import type {ToolApprovalRequest, ToolCall, ToolExecutionResult} from '../../types/tool';
+import type {AskUserQuestionsRequest, ToolApprovalRequest, ToolCall, ToolExecutionResult} from '../../types/tool';
 import type {SubagentDefinition} from '../subagent/definition';
 
 type InheritedAgentRunContext = {
@@ -27,6 +28,7 @@ type SubagentLoopInput = {
   abortSignal?: AbortSignal; // 父 turn 传入的取消信号，贯穿子 provider和工具执行。
   configSnapshot: AgentUserConfigSnapshot; // 父 run 捕获的配置 revision，子运行不得自行切换。
   executionMode: AgentExecutionMode; // 父 run 的 interactive/headless 安全边界。
+  interactionMode: InteractionMode; // Worker 使用的父 normal/plan 模式；Explorer策略不得读取它来放宽边界。
   metadata: SubagentRunMetadata; // 当前子运行的稳定身份和父工具关联。
   modelProfileId?: string; // 父 run 已解析选择的模型 profile。
   reasoningEffortOverride?: ReasoningEffort; // 父 run 本轮固定的推理强度覆盖。
@@ -43,7 +45,9 @@ type SubagentLoopCallbacks = {
   onToolApprovalRequest?: (call: ToolCall, request?: ToolApprovalRequest) => Promise<ToolApprovalDecision> | ToolApprovalDecision; // 子 Bash人工单次审批请求。
   onToolCall?: (call: ToolCall) => void; // 子 provider产生的内部工具调用。
   onToolResult?: (result: ToolExecutionResult) => void; // 子内部工具执行后的稳定结果。
+  onUserQuestionRequest?: (call: ToolCall, request: AskUserQuestionsRequest) => Promise<ToolExecutionResult> | ToolExecutionResult; // 子问题进入父 App 前的专属桥接。
   onWaitingApproval?: (call: ToolCall) => void; // 子 loop等待人工审批的瞬时阶段。
+  onWaitingQuestion?: (call: ToolCall) => void; // 子 loop等待用户回答的瞬时阶段。
 };
 
 type RunSubagentAgent = (input: SubagentLoopInput, callbacks?: SubagentLoopCallbacks) => Promise<string>;

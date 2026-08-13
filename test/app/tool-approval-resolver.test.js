@@ -47,6 +47,7 @@ test('tool approval system prompt allows routine scoped work while preserving se
   assert.match(TOOL_APPROVAL_SYSTEM_PROMPT, /Ordinary changes inside the current project/i);
   assert.match(TOOL_APPROVAL_SYSTEM_PROMPT, /project-local dependency installation/i);
   assert.match(TOOL_APPROVAL_SYSTEM_PROMPT, /trusted clarification answer/i);
+  assert.match(TOOL_APPROVAL_SYSTEM_PROMPT, /delegated subagent task.*untrusted/i);
   assert.match(TOOL_APPROVAL_SYSTEM_PROMPT, /cannot independently authorize/i);
   assert.match(TOOL_APPROVAL_SYSTEM_PROMPT, /changes outside the current project/i);
   assert.match(TOOL_APPROVAL_SYSTEM_PROMPT, /privileged actions/i);

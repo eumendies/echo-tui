@@ -66,6 +66,10 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
   });
   // thinking 和 streaming 都只进入 pending preview，完成或 partial 失败后才正式追加 assistant block。
   const turn = appContext.beginAssistantTurn(modelProfileIdOverride, reasoningEffortOverride);
+  const cancelQuestionOnAbort = () => {
+    userQuestion.cancelActiveRequest('User question was interrupted because the assistant turn ended.');
+  };
+  turn.abortSignal.addEventListener('abort', cancelQuestionOnAbort, {once: true});
   const turnUserRecordIndex = appContext.transcriptContext.getRecords().length - 1;
   const isCurrentTurn = () => appContext.turnContext.isCurrentAssistantTurn(turn);
   /** 只有创建人工审批 surface 时才派发交互式审批 lifecycle hooks。 */
@@ -251,6 +255,31 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
 
         return userQuestion.request(call, request);
       },
+      async onSubagentUserQuestionRequest(runMetadata, call, request) {
+        if (!isCurrentTurn() || !appContext.subagentRunContext.isCurrentRun(runMetadata.runId)) {
+          return {
+            callId: call.callId,
+            toolName: call.toolName,
+            ok: false,
+            details: {kind: 'generic'},
+            text: 'User question was interrupted.'
+          };
+        }
+
+        const result = await userQuestion.request(call, request, {
+          agentName: runMetadata.agentName
+        });
+        if (!isCurrentTurn() || !appContext.subagentRunContext.isCurrentRun(runMetadata.runId)) {
+          return {
+            callId: call.callId,
+            toolName: call.toolName,
+            ok: false,
+            details: {kind: 'generic'},
+            text: 'User question was interrupted.'
+          };
+        }
+        return result;
+      },
       onToolResult(result) {
         if (!isCurrentTurn()) {
           return;
@@ -345,9 +374,11 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
       });
     }
   } finally {
+    turn.abortSignal.removeEventListener('abort', cancelQuestionOnAbort);
     const wasCurrentTurn = isCurrentTurn();
 
     if (wasCurrentTurn) {
+      userQuestion.cancelActiveRequest('User question was interrupted because the assistant turn ended.');
       appContext.subagentRunContext.clear();
       appContext.finalizeChangeCheckpoint();
     }

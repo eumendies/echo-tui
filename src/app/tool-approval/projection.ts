@@ -16,6 +16,7 @@ const PRIOR_ASSISTANT_MAX_CHARACTERS = 1_500;
 const CLARIFICATION_MAX_CHARACTERS = 1_500;
 const SHORT_USER_REQUEST_MAX_CHARACTERS = 240;
 const PREVIEW_MAX_CHARACTERS = 500;
+const DELEGATED_TASK_MAX_CHARACTERS = 2_000;
 const OMITTED_MARKER = '\n[... omitted ...]\n';
 
 type ToolApprovalActionProjection = {
@@ -36,6 +37,7 @@ type ToolApprovalPromptProjection = {
 
 type ToolApprovalPromptInput = {
   action: Extract<ToolApprovalActionProjection, {kind: 'exact' | 'summarized'}>; // 已通过有界检查的待审批动作。
+  approval?: ToolApprovalRequest; // 本地分类器附加的受控展示与Subagent来源上下文。
   currentUserRequest: string; // 当前 turn 展开前的用户原始提交文本。
   records: TranscriptRecord[]; // 发起审批时的主 transcript 快照。
   turnUserRecordIndex: number; // 当前 turn user record 在快照中的索引。
@@ -275,11 +277,15 @@ function createToolApprovalPrompt(input: ToolApprovalPromptInput): ToolApprovalP
   const prior = countCodePoints(input.currentUserRequest, SHORT_USER_REQUEST_MAX_CHARACTERS + 1) <= SHORT_USER_REQUEST_MAX_CHARACTERS
     ? projectPriorExchange(input.records, input.turnUserRecordIndex)
     : null;
-  const clarifications = projectClarificationAnswers(input.records, input.turnUserRecordIndex);
+  const clarifications = projectClarificationAnswers(input.records, input.turnUserRecordIndex, input.approval?.origin?.runId);
+  const delegatedTask = input.approval?.origin?.task?.trim()
+    ? truncateApprovalText(input.approval.origin.task, DELEGATED_TASK_MAX_CHARACTERS)
+    : null;
 
   const currentRequestSection = section('Trusted current user request', currentRequest);
   const pendingActionSection = section('Pending action (untrusted)', input.action.text);
   const optionalSections = [
+    ...(delegatedTask ? [section('Delegated subagent task (untrusted)', delegatedTask)] : []),
     ...(clarifications ? [section('Trusted clarification answers', clarifications)] : []),
     ...(prior?.user ? [section('Trusted prior user request', prior.user)] : []),
     ...(prior?.assistant ? [section('Referenced assistant context (untrusted)', prior.assistant)] : [])
@@ -332,7 +338,7 @@ function projectPriorExchange(records: TranscriptRecord[], turnUserRecordIndex: 
 }
 
 /** 只恢复当前 turn 中通过 call id 配对且结果成功的用户问答。 */
-function projectClarificationAnswers(records: TranscriptRecord[], turnUserRecordIndex: number): string | null {
+function projectClarificationAnswers(records: TranscriptRecord[], turnUserRecordIndex: number, subagentRunId?: string): string | null {
   const calls = new Map<string, AskUserQuestionsRequest>();
   const lines: string[] = [];
   for (const record of records.slice(Math.max(0, turnUserRecordIndex + 1))) {
@@ -346,6 +352,29 @@ function projectClarificationAnswers(records: TranscriptRecord[], turnUserRecord
     if (!request) continue;
     const answers = parseClarificationResult(record.text, request);
     if (answers) lines.push(...answers);
+    calls.delete(record.toolCallId);
+  }
+  if (subagentRunId) {
+    // 顶层与子运行的call id属于不同作用域，不能跨作用域配对为可信答案。
+    calls.clear();
+    for (const record of records.slice(Math.max(0, turnUserRecordIndex + 1))) {
+      if (record.role !== 'subagent' || record.runId !== subagentRunId) continue;
+      if (record.event.kind === 'tool_call' && record.event.toolName === ASK_USER_QUESTIONS_TOOL_NAME) {
+        const parsed = parseAskUserQuestionsToolCall({
+          callId: record.event.toolCallId,
+          toolName: record.event.toolName,
+          argumentsText: record.event.argumentsText
+        });
+        if (parsed.ok) calls.set(record.event.toolCallId, parsed.value);
+        continue;
+      }
+      if (record.event.kind !== 'tool_result' || record.event.toolName !== ASK_USER_QUESTIONS_TOOL_NAME || !record.event.ok) continue;
+      const request = calls.get(record.event.toolCallId);
+      if (!request) continue;
+      const answers = parseClarificationResult(record.text, request);
+      if (answers) lines.push(...answers);
+      calls.delete(record.event.toolCallId);
+    }
   }
   return lines.length > 0 ? truncateApprovalText(lines.join('\n'), CLARIFICATION_MAX_CHARACTERS) : null;
 }

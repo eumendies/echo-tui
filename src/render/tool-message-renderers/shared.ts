@@ -15,7 +15,7 @@ const TOOL_DISPLAY_NAMES = new Map<string, string>([
   ['grep', 'Grep'],
   ['read_files', 'Read files'],
   ['run_bash_command', 'Bash'],
-  ['run_subagent', 'Explorer'],
+  ['run_subagent', 'Run subagent'],
   ['use_skill', 'Use skill'],
   ['web_fetch', 'Web fetch'],
   ['web_search', 'Web search']

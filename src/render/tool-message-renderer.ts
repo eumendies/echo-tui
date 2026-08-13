@@ -67,8 +67,9 @@ export function renderToolRecordBlock(record: ToolTranscriptRecord, width = 80, 
  */
 export function renderToolPairBlock(call: ToolCallTranscriptRecord, result: ToolResultTranscriptRecord, width = 80, theme: TuiTheme = DEFAULT_TUI_THEME, compactResult = false): string {
   if (compactResult && call.toolName === RUN_SUBAGENT_TOOL_NAME && result.toolName === RUN_SUBAGENT_TOOL_NAME) {
+    const identity = resolveSubagentResultIdentity(call.argumentsText);
     const lines = renderPrefixedLines({
-      text: result.ok ? 'Explorer · returned report' : 'Explorer · failed',
+      text: result.ok ? identity.success : `${identity.label} · failed`,
       width,
       firstPrefix: '◆ ',
       continuationPrefix: '  ',
@@ -78,6 +79,25 @@ export function renderToolPairBlock(call: ToolCallTranscriptRecord, result: Tool
     return renderToolPairLinesBlock(lines);
   }
   return renderToolPairLinesBlock(renderToolPairLines(call, result, width, theme));
+}
+
+/** 从外层受限参数中恢复内置Agent身份；解析失败时使用通用Subagent文案。 */
+function resolveSubagentResultIdentity(argumentsText: string): {label: string; success: string} {
+  try {
+    const parsed: unknown = JSON.parse(argumentsText);
+    const agent = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as {agent?: unknown}).agent
+      : undefined;
+    if (agent === 'explorer') {
+      return {label: 'Explorer', success: 'Explorer · returned report'};
+    }
+    if (agent === 'worker') {
+      return {label: 'Worker', success: 'Worker · completed task'};
+    }
+  } catch {
+    // 外层参数可能来自旧记录或损坏journal，只影响可见回退文案。
+  }
+  return {label: 'Subagent', success: 'Subagent · completed'};
 }
 
 /** 返回不带 block 尾部空行的完整工具对，供子 Agent rail 复用现有专属投影。 */
@@ -274,7 +294,9 @@ function renderGenericToolRecordLines(
 
     if (record.argumentsText.trim() !== '') {
       lines.push(...renderPrefixedLines({
-        text: truncateDisplayText(record.argumentsText, TOOL_RESULT_MAX_DISPLAY_LINES),
+        text: record.toolName === RUN_SUBAGENT_TOOL_NAME
+          ? record.argumentsText
+          : truncateDisplayText(record.argumentsText, TOOL_RESULT_MAX_DISPLAY_LINES),
         width,
         firstPrefix: '  ',
         continuationPrefix: '  ',

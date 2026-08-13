@@ -28,6 +28,7 @@ export type ToolApprovalRequest = {
     kind: 'subagent'; // 标识该审批由受控子 Agent 的内部工具调用触发。
     agentName: string; // 发起内部调用的子 Agent 稳定名称。
     runId: string; // 关联当前子 Agent 运行，供迟到请求隔离。
+    task?: string; // 父 runtime 附加的完整委派上下文；消费方负责有界投影且始终视为不可信。
   };
 };
 

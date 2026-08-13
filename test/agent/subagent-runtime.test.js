@@ -9,6 +9,8 @@ const {createAgentLoopRuntime} = require('../../src/agent/loop-runtime/agent-loo
 const {AgentAbortError} = require('../../src/types/agent');
 const {createDefaultToolRegistry} = require('../../src/tools/tool-registry');
 const {createToolCallTranscriptRecord, createToolResultTranscriptRecord} = require('../../src/tools/tool-transcript-record');
+const {createMcpToolRegistry, mergeToolRegistries} = require('../../src/mcp/tool-adapter');
+const {createAskUserQuestionsSuccessResult} = require('../../src/tools/ask-user-questions-tool-handler');
 
 const TEST_CONFIG = {
   agentType: 'fake',
@@ -44,10 +46,13 @@ async function withPatchedAgents(cwd, createAgent, callback) {
   const originalPrepareAgent = agentSetupModule.prepareAgent;
   const preparations = [];
   agentSetupModule.prepareAgent = (options) => {
-    const registry = createDefaultToolRegistry(TEST_CONFIG, cwd, undefined, {
+    const localRegistry = createDefaultToolRegistry(TEST_CONFIG, cwd, undefined, {
       allowedToolNames: options.allowedToolNames,
       subagentPort: options.subagentPort
     });
+    const registry = options.mcpManager
+      ? mergeToolRegistries(localRegistry, createMcpToolRegistry(options.mcpManager))
+      : localRegistry;
     const kind = options.allowedToolNames ? 'subagent' : 'primary';
     preparations.push({kind, options, registry});
     return {agent: createAgent(kind, registry, preparations), config: TEST_CONFIG, registry};
@@ -339,5 +344,255 @@ test('subagent approval-required Bash remains denied in headless full-access mod
     assert.equal(fs.existsSync(path.join(cwd, 'should-not-exist.txt')), false);
   } finally {
     fs.rmSync(cwd, {recursive: true, force: true});
+  }
+});
+
+test('Worker receives the full local registry, keeps Todo local, and rejects forged nested delegation', async () => {
+  const snapshot = createConfigSnapshot();
+  let parentTurn = 0;
+  let childTurn = 0;
+  let parentTodoUpdates = 0;
+  const processRecords = [];
+
+  await withPatchedAgents('/tmp/echo-worker-todo', (kind, registry) => ({
+    async runTurn(records) {
+      if (kind === 'primary') {
+        parentTurn += 1;
+        if (parentTurn === 1) {
+          return {draft: '', toolCalls: [{callId: 'worker-outer', toolName: 'run_subagent', argumentsText: '{"agent":"worker","task":"implement isolated task"}'}]};
+        }
+        assert.ok(records.some((record) => record.role === 'tool_result' && record.toolCallId === 'worker-outer' && record.ok));
+        return {draft: 'parent done', toolCalls: []};
+      }
+
+      childTurn += 1;
+      const names = new Set(registry.listDefinitions().map((definition) => definition.name));
+      assert.deepEqual(names, new Set([
+        'apply_patch', 'ask_user_questions', 'complete_todo', 'create_todos', 'glob', 'grep',
+        'read_files', 'run_bash_command', 'use_skill', 'web_fetch', 'web_search'
+      ]));
+      assert.equal(registry.getHandler('run_subagent'), undefined);
+      if (childTurn === 1) {
+        assert.match(records[0].text, /Worker Subagent/u);
+        assert.doesNotMatch(records[0].text, /parent todo/u);
+        return {draft: '', toolCalls: [{callId: 'worker-todos', toolName: 'create_todos', argumentsText: '{"items":["local worker todo"]}'}]};
+      }
+      if (childTurn === 2) {
+        assert.ok(records.some((record) => record.text.includes('[todo_1] local worker todo')));
+        return {draft: '', toolCalls: [{callId: 'worker-complete', toolName: 'complete_todo', argumentsText: '{"ids":["todo_1"]}'}]};
+      }
+      if (childTurn === 3) {
+        assert.equal(records.some((record) => record.text.includes('[todo_1] local worker todo') && record.text.includes('## Todos')), false);
+        return {draft: '', toolCalls: [{callId: 'nested', toolName: 'run_subagent', argumentsText: '{"agent":"worker","task":"nested"}'}]};
+      }
+      const nested = records.find((record) => record.role === 'tool_result' && record.toolCallId === 'nested');
+      assert.equal(nested.ok, false);
+      assert.match(nested.text, /Unknown tool: run_subagent/u);
+      return {draft: 'worker done', toolCalls: []};
+    }
+  }), async () => {
+    const runAgent = createAgentLoopRuntime('/tmp/echo-worker-todo', {capture: () => snapshot});
+    assert.equal(await runAgent({
+      records: [{role: 'user', text: 'delegate worker'}],
+      todoState: {updatedAt: 'now', items: [{id: 'parent', text: 'parent todo', status: 'open'}]},
+      userConfigSnapshot: snapshot
+    }, {
+      onSubagentRecords(records) { processRecords.push(...records); },
+      onTodoStateChange() { parentTodoUpdates += 1; }
+    }), 'parent done');
+  });
+
+  assert.equal(parentTodoUpdates, 0);
+  assert.equal(childTurn, 4);
+  assert.deepEqual(processRecords.filter((record) => record.event.kind === 'tool_call').map((record) => record.event.toolName), [
+    'create_todos', 'complete_todo', 'run_subagent'
+  ]);
+});
+
+test('Worker reuses initialized MCP tools without owning the manager lifecycle', async () => {
+  const snapshot = createConfigSnapshot();
+  let parentTurn = 0;
+  let childTurn = 0;
+  let calls = 0;
+  let closes = 0;
+  let approval;
+  const manager = {
+    listTools() {
+      return [{serverName: 'docs', toolName: 'write', namespacedName: 'mcp__docs__write', approval: 'always', description: 'write docs', inputSchema: {type: 'object'}}];
+    },
+    getToolReference(name) {
+      return name === 'mcp__docs__write' ? this.listTools()[0] : null;
+    },
+    async callTool(serverName, toolName, args) {
+      calls += 1;
+      assert.deepEqual({serverName, toolName, args}, {serverName: 'docs', toolName: 'write', args: {id: 1}});
+      return {content: [{type: 'text', text: 'mcp wrote docs'}]};
+    },
+    async close() { closes += 1; }
+  };
+
+  await withPatchedAgents('/tmp/echo-worker-mcp', (kind, registry) => ({
+    async runTurn(records) {
+      if (kind === 'primary') {
+        parentTurn += 1;
+        return parentTurn === 1
+          ? {draft: '', toolCalls: [{callId: 'worker-mcp', toolName: 'run_subagent', argumentsText: '{"agent":"worker","task":"write docs"}'}]}
+          : {draft: 'parent done', toolCalls: []};
+      }
+      childTurn += 1;
+      assert.ok(registry.getHandler('mcp__docs__write'));
+      assert.equal(registry.getHandler('run_subagent'), undefined);
+      if (childTurn === 1) {
+        return {draft: '', toolCalls: [{callId: 'inner-mcp', toolName: 'mcp__docs__write', argumentsText: '{"id":1}'}]};
+      }
+      assert.match(records.find((record) => record.role === 'tool_result' && record.toolCallId === 'inner-mcp').text, /mcp wrote docs/u);
+      return {draft: 'worker mcp done', toolCalls: []};
+    }
+  }), async () => {
+    const runAgent = createAgentLoopRuntime('/tmp/echo-worker-mcp', {capture: () => snapshot}, manager);
+    assert.equal(await runAgent({records: [{role: 'user', text: 'delegate'}], userConfigSnapshot: snapshot}, {
+      onToolApprovalRequest(_call, request) {
+        approval = request;
+        return {kind: 'allow_once'};
+      }
+    }), 'parent done');
+  });
+
+  assert.equal(calls, 1);
+  assert.equal(closes, 0);
+  assert.equal(approval.origin.agentName, 'worker');
+  assert.equal(approval.previewTitle, 'mcp tool');
+});
+
+test('normal Worker uses shared approval callbacks with Worker origin', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-worker-approval-'));
+  const snapshot = createConfigSnapshot();
+  const delegatedTask = `write approved file ${'x'.repeat(2_500)} task-tail`;
+  let parentTurn = 0;
+  let childTurn = 0;
+  let approval;
+  let invalidations = 0;
+  try {
+    await withPatchedAgents(cwd, (kind) => ({
+      async runTurn(records) {
+        if (kind === 'primary') {
+          parentTurn += 1;
+          return parentTurn === 1
+            ? {draft: '', toolCalls: [{callId: 'worker-write', toolName: 'run_subagent', argumentsText: JSON.stringify({agent: 'worker', task: delegatedTask})}]}
+            : {draft: 'parent done', toolCalls: []};
+        }
+        childTurn += 1;
+        if (childTurn === 1) {
+          return {draft: '', toolCalls: [{callId: 'inner-write', toolName: 'run_bash_command', argumentsText: '{"command":"printf worker > approved.txt"}'}]};
+        }
+        assert.equal(records.find((record) => record.role === 'tool_result' && record.toolCallId === 'inner-write').ok, true);
+        return {draft: 'worker wrote file', toolCalls: []};
+      }
+    }), async () => {
+      const runAgent = createAgentLoopRuntime(cwd, {capture: () => snapshot});
+      await runAgent({records: [{role: 'user', text: 'delegate'}], userConfigSnapshot: snapshot}, {
+        changeRecorder: {
+          captureFileBefore() {},
+          captureFileAfter() {},
+          invalidate() { invalidations += 1; }
+        },
+        onToolApprovalRequest(_call, request) {
+          approval = request;
+          return {kind: 'allow_once'};
+        }
+      });
+    });
+    assert.equal(fs.readFileSync(path.join(cwd, 'approved.txt'), 'utf8'), 'worker');
+    assert.equal(approval.origin.agentName, 'worker');
+    assert.equal(approval.origin.task, delegatedTask);
+    assert.equal(invalidations, 1);
+  } finally {
+    fs.rmSync(cwd, {recursive: true, force: true});
+  }
+});
+
+test('Worker plan and headless policies match the parent general-purpose boundary', async () => {
+  for (const scenario of [
+    {name: 'plan', interactionMode: 'plan', executionMode: {kind: 'interactive'}, expectedOk: false},
+    {name: 'deny', interactionMode: 'normal', executionMode: {kind: 'headless', approvalPolicy: 'deny'}, expectedOk: false},
+    {name: 'full', interactionMode: 'normal', executionMode: {kind: 'headless', approvalPolicy: 'full-access'}, expectedOk: true}
+  ]) {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), `echo-worker-${scenario.name}-`));
+    const snapshot = createConfigSnapshot();
+    let parentTurn = 0;
+    let childTurn = 0;
+    try {
+      await withPatchedAgents(cwd, (kind) => ({
+        async runTurn(records) {
+          if (kind === 'primary') {
+            parentTurn += 1;
+            return parentTurn === 1
+              ? {draft: '', toolCalls: [{callId: `outer-${scenario.name}`, toolName: 'run_subagent', argumentsText: `{"agent":"worker","task":"${scenario.name} write"}`}]}
+              : {draft: 'parent done', toolCalls: []};
+          }
+          childTurn += 1;
+          if (childTurn === 1) {
+            return {draft: '', toolCalls: [{callId: `inner-${scenario.name}`, toolName: 'run_bash_command', argumentsText: `{"command":"printf ${scenario.name} > result.txt"}`}]};
+          }
+          assert.equal(records.find((record) => record.role === 'tool_result' && record.toolCallId === `inner-${scenario.name}`).ok, scenario.expectedOk);
+          return {draft: 'worker policy done', toolCalls: []};
+        }
+      }), async () => {
+        const runAgent = createAgentLoopRuntime(cwd, {capture: () => snapshot});
+        await runAgent({
+          records: [{role: 'user', text: 'delegate'}], interactionMode: scenario.interactionMode,
+          executionMode: scenario.executionMode, userConfigSnapshot: snapshot
+        }, {onToolApprovalRequest() { throw new Error('headless/plan must not request interactive approval'); }});
+      });
+      assert.equal(fs.existsSync(path.join(cwd, 'result.txt')), scenario.expectedOk);
+    } finally {
+      fs.rmSync(cwd, {recursive: true, force: true});
+    }
+  }
+});
+
+test('Worker asks through the run-aware callback while headless returns cancellation', async () => {
+  for (const headless of [false, true]) {
+    const snapshot = createConfigSnapshot();
+    let parentTurn = 0;
+    let childTurn = 0;
+    let questions = 0;
+    const activities = [];
+    const records = [];
+    await withPatchedAgents(`/tmp/echo-worker-question-${headless}`, (kind) => ({
+      async runTurn(providerRecords) {
+        if (kind === 'primary') {
+          parentTurn += 1;
+          return parentTurn === 1
+            ? {draft: '', toolCalls: [{callId: 'outer-question', toolName: 'run_subagent', argumentsText: '{"agent":"worker","task":"ask when necessary"}'}]}
+            : {draft: 'parent done', toolCalls: []};
+        }
+        childTurn += 1;
+        if (childTurn === 1) {
+          return {draft: '', toolCalls: [{callId: 'inner-question', toolName: 'ask_user_questions', argumentsText: '{"questions":[{"question":"Choose?","options":[{"label":"A"},{"label":"B"}]}]}'}]};
+        }
+        const result = providerRecords.find((record) => record.role === 'tool_result' && record.toolCallId === 'inner-question');
+        assert.equal(result.ok, !headless);
+        assert.match(result.text, headless ? /cancelled/u : /"selected":"A"/u);
+        return {draft: 'worker question done', toolCalls: []};
+      }
+    }), async () => {
+      const runAgent = createAgentLoopRuntime(`/tmp/echo-worker-question-${headless}`, {capture: () => snapshot});
+      await runAgent({
+        records: [{role: 'user', text: 'delegate'}], userConfigSnapshot: snapshot,
+        ...(headless ? {executionMode: {kind: 'headless', approvalPolicy: 'deny'}} : {})
+      }, {
+        onSubagentActivity(activity) { if (activity) activities.push(activity); },
+        onSubagentRecords(batch) { records.push(...batch); },
+        onSubagentUserQuestionRequest(metadata, call, request) {
+          questions += 1;
+          assert.equal(metadata.agentName, 'worker');
+          return createAskUserQuestionsSuccessResult(call, [{question: request.questions[0].question, selectedOption: request.questions[0].options[0]}]);
+        }
+      });
+    });
+    assert.equal(questions, headless ? 0 : 1);
+    assert.equal(activities.some((activity) => activity.phase === 'waiting_question'), !headless);
+    assert.equal(records.some((record) => record.event.kind === 'tool_result' && record.event.toolName === 'ask_user_questions'), true);
   }
 });

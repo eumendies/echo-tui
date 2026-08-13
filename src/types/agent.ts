@@ -18,7 +18,7 @@ export type SubagentRunMetadata = {
   runId: string; // 当前子 Agent 运行的进程内稳定身份。
 };
 
-export type SubagentActivityPhase = 'thinking' | 'reasoning' | 'streaming' | 'tool' | 'waiting_approval';
+export type SubagentActivityPhase = 'thinking' | 'reasoning' | 'streaming' | 'tool' | 'waiting_approval' | 'waiting_question';
 
 export type SubagentActivity = {
   agentName: string; // 当前活动的子 Agent 名称。
@@ -110,6 +110,7 @@ export type AgentCallbacks = {
   onToolResult?: (result: ToolExecutionResult) => void;
   onSubagentRecords?: (records: SubagentTranscriptRecord[]) => void; // 发布已进入父 runtime record region 的稳定子 Agent 过程。
   onSubagentActivity?: (activity: SubagentActivity | null) => void; // 更新或清空不持久化的子 Agent footer 活动。
+  onSubagentUserQuestionRequest?: (metadata: SubagentRunMetadata, call: ToolCall, request: AskUserQuestionsRequest) => Promise<ToolExecutionResult> | ToolExecutionResult; // 把受 run identity 保护的子 Agent 问题桥接到共享交互 surface。
   onTodoStateChange?: (todoState: TodoState) => void;
   onComplete?: (finalText: string) => void;
   onCompacted?: (next: CompactionState) => void;

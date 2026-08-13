@@ -13,6 +13,7 @@
       "pendingPrefix": "#268bd2",
       "reasoning": "#657b83",
       "shell": "#859900",
+      "subagentRail": "#268bd2",
       "text": "#073642",
       "tool": "#2aa198",
       "toolError": "#dc322f",
