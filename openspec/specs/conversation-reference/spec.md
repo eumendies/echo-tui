@@ -1,4 +1,9 @@
-## ADDED Requirements
+## Purpose
+
+定义从历史会话选择完整对话引用、生成引用投影，并在当前 composer 请求中持久化使用的完整生命周期行为。
+
+## Requirements
+
 
 ### Requirement: 用户显式选择整个历史会话
 系统 SHALL 提供 `/reference` 命令，让用户从当前 cwd 下可恢复的历史 session 中显式选择一个会话作为当前 composer 的对话引用。选择粒度 SHALL 是完整会话，系统 SHALL NOT 要求或允许用户在该流程中逐条选择消息。当前持久化 session SHALL NOT 作为可引用候选。

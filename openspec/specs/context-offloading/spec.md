@@ -1,3 +1,9 @@
+## Purpose
+
+定义工具结果超限时的安全转存、语义化预览、模型可见截断标记，以及写入失败时的安全降级行为，确保上下文大小受控且不突破工具既有安全边界。
+
+## Requirements
+
 
 ### Requirement: 超大工具结果转存到项目分区
 系统 SHALL 对声明支持 context offloading 的文本工具结果应用有界预览。当该结果超过工具的模型可见预览上限时，系统 SHALL 把预览之外的完整已采集结果保存到用户级 echo_tui store 的当前项目分区，并 SHALL NOT 在当前工作区创建 offloading 文件。Offloading 文件路径 SHALL 唯一且可由现有本地文件读取工具访问。
