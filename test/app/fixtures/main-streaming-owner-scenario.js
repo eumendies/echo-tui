@@ -33,6 +33,7 @@ const renderer = {
 require(path.join(root, 'dist/src/render/app-renderer')).createAppRenderer = () => renderer;
 
 const {createApp} = require(path.join(root, 'dist/src/app/main'));
+const {disabledObservation} = require(path.join(root, 'dist/src/observation/observation'));
 const {UserConfigContext} = require(path.join(root, 'dist/src/config/user-config-context'));
 const {INPUT_EVENTS} = require(path.join(root, 'dist/src/input/event-types'));
 const turns = [];
@@ -45,7 +46,7 @@ const app = createApp(
   runAgent,
   {close: async () => {}, getDiagnostics: () => [], listTools: () => [], reload: async () => {}},
   {emit() {}, updateConfig() {}},
-  {enabled: false, logPath: null, emit() {}, close() {}},
+  disabledObservation,
   {appendEvent: () => null, listDailyUsage: () => []},
   new UserConfigContext()
 );

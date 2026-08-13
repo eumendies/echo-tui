@@ -1,11 +1,8 @@
 import {isAbortError} from '../types/agent';
-import {summarizeText} from '../debug/debug-context';
-import {emitToolApprovalRequestHook, emitToolApprovalResponseHook} from '../hooks/lifecycle-events';
 import {createToolApprovalResolver} from './tool-approval/resolver';
 
 import type {AgentCallbacks, ReasoningEffort, RunAgent, ToolApprovalDecision} from '../types/agent';
-import type {DebugContext} from '../debug/debug-context';
-import type {LifecycleHookDispatcher} from '../types/hooks';
+import type {AssistantTurnScope, Observation} from '../observation/observation';
 import type {ToolApprovalRequest, ToolCall, ToolResultAttachment} from '../types/tool';
 import type {SubagentTranscriptRecord, TranscriptRecord, UserTranscriptMetadata} from '../types/transcript';
 import type {AppContext} from './state/app-context';
@@ -25,10 +22,10 @@ type AssistantTurnRunnerInput = {
   modelProfileIdOverride?: string;
   reasoningEffortOverride?: ReasoningEffort;
   attachments?: ToolResultAttachment[];
-  debug: DebugContext;
+  observation: Observation;
+  observationScope: AssistantTurnScope;
   renderRecords: (records: TranscriptRecord[]) => void;
   render: (finalizeRecord?: Extract<TranscriptRecord, {role: 'assistant' | 'reasoning_summary'}>) => void;
-  hooks: LifecycleHookDispatcher;
   toolApprovalReviewer?: ToolApprovalReviewer; // 仅交互式 auto 审批使用的独立模型判断器。
 };
 
@@ -49,12 +46,11 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
     modelProfileIdOverride,
     reasoningEffortOverride,
     attachments,
-    debug,
+    observation,
+    observationScope,
     renderRecords,
-    render,
-    hooks
+    render
   } = input;
-
   appContext.beginChangeCheckpoint();
   const interactionMode = appContext.getInteractionMode();
   const userConfigSnapshot = appContext.captureUserConfigSnapshot();
@@ -72,19 +68,19 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
   turn.abortSignal.addEventListener('abort', cancelQuestionOnAbort, {once: true});
   const turnUserRecordIndex = appContext.transcriptContext.getRecords().length - 1;
   const isCurrentTurn = () => appContext.turnContext.isCurrentAssistantTurn(turn);
-  /** 只有创建人工审批 surface 时才派发交互式审批 lifecycle hooks。 */
+  /** 只有创建人工审批 surface 时才发布交互式审批事实。 */
   async function requestManualApproval(call: ToolCall, request?: ToolApprovalRequest): Promise<ToolApprovalDecision> {
     const pendingDecision = toolApproval.requestManual(call, request);
-    emitToolApprovalRequestHook(hooks, {interactionMode, toolCall: call, approval: request});
+    observation.manualApprovalRequested({scope: observationScope, call, request});
     const decision = await pendingDecision;
-    emitToolApprovalResponseHook(hooks, {interactionMode, toolCall: call, decision});
+    observation.manualApprovalCompleted({scope: observationScope, call, decision, request});
     return decision;
   }
   const toolApprovalResolver = createToolApprovalResolver({
     abortSignal: turn.abortSignal,
     currentUserRequest: userRequestText,
     cwd: () => appContext.getCurrentCwd(),
-    debug,
+    observation,
     getRecords: () => appContext.transcriptContext.getRecords(),
     interactionMode,
     isCurrentTurn,
@@ -109,15 +105,7 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
       text: `当前 skill 本轮使用 ${activeStatusLineModel.modelLabel}${effortText}。`
     })]);
   }
-  debug.emit('assistant_turn_start', {
-    interactionMode,
-    recordCount: appContext.transcriptContext.records.length,
-    userText: summarizeText(userText, 0)
-  });
-  hooks.emit('assistant_turn_start', {
-    interactionMode,
-    status: 'started'
-  });
+  observation.assistantTurnStarted({scope: observationScope, userText, recordCount: appContext.transcriptContext.records.length});
 
   try {
     const session = appContext.getAgentSession({modelProfileIdOverride, reasoningEffortOverride}, userConfigSnapshot);
@@ -320,15 +308,7 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
         } else {
           render();
         }
-        hooks.emit('assistant_turn_end', {
-          interactionMode: appContext.getInteractionMode(),
-          status: 'completed'
-        });
-        debug.emit('assistant_turn_end', {
-          interactionMode: appContext.getInteractionMode(),
-          finalText: summarizeText(finalText, 0),
-          status: 'completed'
-        });
+        observation.assistantTurnCompleted({scope: observationScope, finalText});
       }
     } as AgentCallbacks);
 
@@ -350,28 +330,10 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
 
     if (isAbortError(error) || turn.abortSignal.aborted) {
       renderRecords([appContext.turnContext.cancelAssistantTurn()]);
-      hooks.emit('assistant_turn_cancelled', {
-        interactionMode: appContext.getInteractionMode(),
-        status: 'cancelled'
-      });
-      debug.emit('assistant_turn_cancelled', {
-        interactionMode: appContext.getInteractionMode(),
-        status: 'cancelled'
-      });
+      observation.assistantTurnCancelled({scope: observationScope});
     } else {
       renderRecords([appContext.turnContext.failAssistantTurn(error)]);
-      hooks.emit('assistant_turn_error', {
-        interactionMode: appContext.getInteractionMode(),
-        status: 'error',
-        errorName: error instanceof Error ? error.name : undefined,
-        errorMessage: error instanceof Error ? error.message : undefined
-      });
-      debug.emit('assistant_turn_error', {
-        interactionMode: appContext.getInteractionMode(),
-        status: 'error',
-        errorName: error instanceof Error ? error.name : undefined,
-        errorMessage: error instanceof Error ? error.message : String(error)
-      });
+      observation.assistantTurnFailed({scope: observationScope, error});
     }
   } finally {
     turn.abortSignal.removeEventListener('abort', cancelQuestionOnAbort);

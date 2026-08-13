@@ -87,8 +87,7 @@ test('runOnce executes without TTY and writes only final plain text', async () =
     'hook:assistant_turn_end:completed',
     'signal.remove:SIGINT',
     'signal.remove:SIGTERM',
-    'mcp.close',
-    'debug.close'
+    'mcp.close'
   ]);
 });
 
@@ -213,7 +212,7 @@ test('runOnce redacts provider errors and still cleans resources', async () => {
 
   assert.deepEqual(output, []);
   assert.ok(resources.events.includes('mcp.close'));
-  assert.ok(resources.events.includes('debug.close'));
+  assert.equal(resources.events.includes('debug.close'), false);
   assert.ok(resources.events.includes('hook:assistant_turn_start:started'));
   assert.ok(resources.events.includes('hook:assistant_turn_error:error'));
   assert.equal(resources.events.includes('hooks.flush'), false);

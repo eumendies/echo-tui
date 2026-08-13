@@ -17,35 +17,26 @@ import {resolveMemoryPrompt} from '../context/memory-prompt';
 import {loadSystemPromptOverride} from '../context/system-prompt';
 import {prepareAgent} from '../agent-setup';
 import {createCompactionNoticeRecord, runCompaction} from '../context/context-compaction';
-import {disabledDebugContext, hashValue, redactProviderConfig, summarizeText} from '../../debug/debug-context';
 import {createUsageCwdHash} from '../../persistence/usage-store';
 import {createSubagentToolPort} from '../subagent/runtime';
 import {createSubagentLoopRuntime} from './subagent-loop-runtime';
 import {
   buildProviderRecords,
-  createProviderUsageDebugPayload,
   executeUserQuestionToolCall,
-  hasRecordableProviderUsage,
-  isToolResultTruncated
+  hasRecordableProviderUsage
 } from './shared';
-import {
-  emitToolApprovalRequestHook,
-  emitToolApprovalResponseHook,
-  emitUserQuestionRequestHook,
-  emitUserQuestionResponseHook
-} from '../../hooks/lifecycle-events';
+import {disabledObservation} from '../../observation/observation';
 
 import type {TokenUsageAnchor} from '../context/context-compaction';
 import type {MemoryPromptResolution} from '../context/memory-prompt';
 import type {AgentCallbacks, AgentConversationKind, AgentExecutionMode, AgentInstruction, AgentInstructionFileName, AgentSessionInput, AgentToolPolicy, AgentTurnCallbacks, AgentUserConfigSnapshot, InteractionMode, LlmConfig, ProviderAgent, ProviderRetry, ProviderUsage, RunAgent, SubagentToolPort, ToolApprovalDecision} from '../../types/agent';
-import type {DebugContext} from '../../debug/debug-context';
-import type {LifecycleHookDispatcher} from '../../types/hooks';
 import type {UsageStore} from '../../types/usage';
 import type {SkillCatalogEntry} from '../../types/skill';
 import type {SkillCatalogPromptProjection} from '../../skills/skill-catalog-prompt';
 import type {ToolApprovalRequest, ToolCall, ToolDefinition, ToolExecutionResult, ToolExecutor, ToolRegistry} from '../../types/tool';
 import type {CompactionState, SubagentTranscriptRecord, TodoState, TranscriptRecord} from '../../types/transcript';
 import type {McpManager} from '../../mcp/manager';
+import type {AgentRunScope, Observation, ProviderObservationConfig} from '../../observation/observation';
 
 const TOOL_REJECTED_BY_USER_TEXT = 'Tool execution was rejected by the user.';
 const INTERACTIVE_EXECUTION_MODE: AgentExecutionMode = {kind: 'interactive'};
@@ -94,13 +85,7 @@ async function executeToolCall(toolCall: ToolCall, state: AgentLoopRunState, cal
   if (state.toolPolicy === 'readonly') {
     const readonlyAssessment = classifyReadonlyToolCall(toolCall);
     if (readonlyAssessment.risk === 'rejected') {
-      state.debug.emit('tool_call_risk', {
-        conversationKind: state.conversationKind,
-        reason: readonlyAssessment.reason,
-        risk: readonlyAssessment.risk,
-        toolCallId: toolCall.callId,
-        toolName: toolCall.toolName
-      });
+      state.observation.toolRiskAssessed({scope: state.observationScope, call: toolCall, assessment: readonlyAssessment});
       return createRejectedToolResult(toolCall, readonlyAssessment.message);
     }
   }
@@ -120,32 +105,14 @@ async function executeToolCall(toolCall: ToolCall, state: AgentLoopRunState, cal
     return executeUserQuestionToolCall(toolCall, {
       abortSignal: state.abortSignal,
       executionMode: state.executionMode,
-      onRequest(call, request) {
-        emitUserQuestionRequestHook(state.hooks, {
-          interactionMode: state.interactionMode,
-          toolCall: call,
-          request
-        });
-      },
-      onResponse(call, result) {
-        emitUserQuestionResponseHook(state.hooks, {
-          interactionMode: state.interactionMode,
-          toolCall: call,
-          result
-        });
-      },
+      onRequest: (call, request) => state.observation.userQuestionRequested({scope: state.observationScope, call, request}),
+      onResponse: (call, result) => state.observation.userQuestionCompleted({scope: state.observationScope, call, result}),
       request: callbacks.onUserQuestionRequest
     });
   }
 
   const riskAssessment = classifyToolCallRisk(toolCall, state.interactionMode, (toolName) => getMcpToolApproval(state.mcpManager, toolName));
-  state.debug.emit('tool_call_risk', {
-    interactionMode: state.interactionMode,
-    reason: riskAssessment.risk === 'rejected' ? riskAssessment.reason : undefined,
-    risk: riskAssessment.risk,
-    toolCallId: toolCall.callId,
-    toolName: toolCall.toolName
-  });
+  state.observation.toolRiskAssessed({scope: state.observationScope, call: toolCall, assessment: riskAssessment});
 
   if (riskAssessment.risk === 'rejected') {
     return createRejectedToolResult(toolCall, riskAssessment.message);
@@ -156,18 +123,14 @@ async function executeToolCall(toolCall: ToolCall, state: AgentLoopRunState, cal
     ? await resolveToolApprovalDecision(toolCall, approval, state, callbacks)
     : undefined;
   const approvalDecision = approvalResolution?.decision;
-  if (approvalResolution?.emitLifecycleEvents) {
-    emitToolApprovalResponseHook(state.hooks, {
-      interactionMode: state.interactionMode,
-      toolCall,
-      decision: approvalResolution.decision
-    });
-  }
-  state.debug.emit('tool_call_approval', {
-    decision: approvalDecision?.kind || (riskAssessment.risk === 'approval_required' ? 'missing' : 'not_required'),
-    interactionMode: state.interactionMode,
-    toolCallId: toolCall.callId,
-    toolName: toolCall.toolName
+  state.observation.toolApprovalResolved({
+    scope: state.observationScope,
+    call: toolCall,
+    approval: {
+      decision: approvalDecision,
+      emitLifecycleEvent: approvalResolution?.emitLifecycleEvents === true,
+      required: riskAssessment.risk === 'approval_required'
+    }
   });
   throwIfAborted(state.abortSignal);
 
@@ -185,7 +148,7 @@ async function executeToolCall(toolCall: ToolCall, state: AgentLoopRunState, cal
  */
 async function resolveToolApprovalDecision(toolCall: ToolCall, approval: ToolApprovalRequest | undefined, state: AgentLoopRunState, callbacks: AgentCallbacks): Promise<ToolApprovalResolution> {
   if (state.executionMode.kind === 'headless') {
-    emitToolApprovalRequestHook(state.hooks, {interactionMode: state.interactionMode, toolCall, approval});
+    state.observation.toolApprovalRequested({scope: state.observationScope, call: toolCall, approval});
 
     if (state.executionMode.approvalPolicy === 'full-access') {
       return {decision: {kind: 'allow_once'}, emitLifecycleEvents: true};
@@ -209,7 +172,6 @@ async function resolveToolApprovalDecision(toolCall: ToolCall, approval: ToolApp
 type AgentLoopRunState = {
   agent: ProviderAgent; // 已绑定本次工具目录的 provider adapter。
   agentInstructions: AgentInstruction[]; // 当前 cwd 适用的项目/用户指令链。
-  providerConfig: Record<string, unknown>; // 仅供调试脱敏和请求准备使用的 provider 配置投影。
   providerType: LlmConfig['agentType']; // 当前 adapter 的 provider 协议类型。
   model: string; // 当前运行固定的 provider 模型名。
   reasoningEffort?: LlmConfig['reasoningEffort']; // 当前运行固定的推理强度。
@@ -226,17 +188,17 @@ type AgentLoopRunState = {
   mcpManager?: McpManager; // 主运行可用的共享 MCP manager；子运行缺省。
   abortSignal?: AbortSignal; // 贯穿 provider、审批和工具执行的父级取消信号。
   executionMode: AgentExecutionMode; // interactive 或 headless 审批边界。
-  hooks?: LifecycleHookDispatcher; // 工具和压缩生命周期的本地旁路派发器。
-  debug: DebugContext; // 本次运行使用的脱敏调试 sink。
+  observation: Observation; // 单一旁路观察边界。
+  observationProvider: ProviderObservationConfig; // 从完整配置显式挑选的非敏感 provider 诊断事实。
+  observationScope: AgentRunScope; // 当前运行复用的语义 scope。
   toolPolicy: AgentToolPolicy; // default 或 readonly 执行策略。
-  conversationKind: AgentConversationKind; // primary 或 BTW 的本地运行分类。
   registry: ToolRegistry; // provider schema 查询和 commit mode 查询的权威目录。
 };
 
 /**
  * 创建 provider-neutral agent loop runtime；该层拥有配置/工具加载和 tool-call continuation 状态机。
  */
-function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUserConfigSnapshot}, mcpManager?: McpManager, hooks?: LifecycleHookDispatcher, debug: DebugContext = disabledDebugContext, usageStore?: UsageStore): RunAgent {
+function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUserConfigSnapshot}, mcpManager?: McpManager, observation: Observation = disabledObservation, usageStore?: UsageStore): RunAgent {
   const cwdHash = createUsageCwdHash(cwd);
   if (!configContext) {
     throw new Error('Agent runtime 必须注入用户配置 Context');
@@ -262,7 +224,6 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
       agent,
       agentInstructions: loadAgentInstructions({cwd, fileName: agentInstructionFileName}),
       basePrompt,
-      providerConfig: redactProviderConfig(config),
       providerType: config.agentType,
       model: config.model,
       reasoningEffort: config.reasoningEffort,
@@ -283,10 +244,17 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
       mcpManager,
       abortSignal,
       executionMode,
-      hooks,
-      debug,
+      observation,
+      observationProvider: {
+        agentType: config.agentType,
+        ...(config.baseURL ? {baseURL: config.baseURL} : {}),
+        ...(typeof config.contextWindow === 'number' ? {contextWindow: config.contextWindow} : {}),
+        model: config.model,
+        ...(config.reasoningEffort ? {reasoningEffort: config.reasoningEffort} : {}),
+        ...(config.reasoningSummary ? {reasoningSummary: config.reasoningSummary} : {})
+      },
+      observationScope: {conversationKind, interactionMode},
       toolPolicy,
-      conversationKind,
     };
   }
 
@@ -322,7 +290,7 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
       ? createSubagentToolPort({
           callbacks,
           configSnapshot,
-          createRuntime: (inheritedContext, definition) => createSubagentLoopRuntime(cwd, inheritedContext, definition, hooks, debug, usageStore, mcpManager),
+          createRuntime: (inheritedContext, definition) => createSubagentLoopRuntime(cwd, inheritedContext, definition, observation, usageStore, mcpManager),
           executionMode,
           interactionMode,
           getInheritedContext: () => ({
@@ -381,17 +349,7 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
       // app 会持久化同一 notice；runtime 同步追加以保持后续压缩索引与 session records 对齐。
       recordRegion.push(createCompactionNoticeRecord(compactionState));
       callbacks.onCompacted?.(compactionState);
-      state.debug.emit('compaction_end', {
-        activeStartIndex: compactionState.activeStartIndex,
-        createdAt: compactionState.createdAt,
-        interactionMode,
-        summary: summarizeText(compactionState.summaryText, 0)
-      });
-      state.hooks?.emit('compaction_end', {
-        interactionMode,
-        activeStartIndex: compactionState.activeStartIndex,
-        createdAt: compactionState.createdAt
-      });
+      state.observation.compactionCompleted({scope: state.observationScope, compaction: compactionState});
     }
 
     function commitProviderRecords(records?: TranscriptRecord[]): void {
@@ -426,10 +384,7 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
           outputTokens: usage?.outputTokens
         });
       } catch (error: unknown) {
-        state.debug.emit('provider_usage_store_error', {
-          interactionMode,
-          error: error instanceof Error ? {name: error.name, message: error.message} : {message: String(error)}
-        });
+        state.observation.providerUsageStoreFailed({scope: state.observationScope, error});
       }
     }
 
@@ -447,33 +402,21 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
       const memoryPrompt = resolveMemoryPrompt(cwd, state.contextWindow);
       currentMemoryPrompt = memoryPrompt;
       const providerRecords = buildProviderRecords(activeRecords, cwd, compactionState, state.skillCatalog, state.agentInstructions, state.todoState, memoryPrompt.sections, state.basePrompt, session.sessionJournalPath);
-      state.debug.emit('provider_request_built', {
-        activeRecordCount: activeRecords.length,
-        activeStartIndex,
-        agentInstructionsCount: state.agentInstructions.length,
-        userMemoryCount: memoryPrompt.userMemoryCount,
-        agentMemoryCatalogCount: memoryPrompt.agentMemory.catalogCount,
-        agentMemoryItemCount: memoryPrompt.agentMemory.itemCount,
-        agentMemoryMode: memoryPrompt.agentMemory.mode,
-        agentMemoryTokens: memoryPrompt.agentMemory.estimatedTokens,
-        compaction: compactionState ? {
-          activeStartIndex: compactionState.activeStartIndex,
-          createdAt: compactionState.createdAt,
-          summary: summarizeText(compactionState.summaryText, 0)
-        } : null,
-        interactionMode,
-        providerConfig: state.providerConfig,
-        providerInputHash: hashValue(providerRecords),
-        recordCount: providerRecords.length,
-        recordRoles: providerRecords.map((record) => record.role),
-        skillCatalogBudgetTokens: state.skillCatalogProjection.budgetTokens,
-        skillCatalogCount: state.skillCatalog.length,
-        skillCatalogMode: state.skillCatalogProjection.mode,
-        skillCatalogOriginalTokens: state.skillCatalogProjection.originalTokens,
-        skillCatalogTokens: state.skillCatalogTokens,
-        systemPromptHash: providerRecords[0]?.role === 'system' ? hashValue(providerRecords[0].text) : null,
-        toolNames: state.toolDefinitions.map((definition) => definition.name),
-        toolSchemaHash: hashValue(state.toolDefinitions)
+      state.observation.providerRequestBuilt({
+        scope: state.observationScope,
+        request: {
+          activeRecordCount: activeRecords.length,
+          activeStartIndex,
+          agentInstructionsCount: state.agentInstructions.length,
+          compaction: compactionState,
+          memoryPrompt,
+          provider: state.observationProvider,
+          providerRecords,
+          skillCatalog: state.skillCatalog,
+          skillCatalogProjection: state.skillCatalogProjection,
+          skillCatalogTokens: state.skillCatalogTokens,
+          toolDefinitions: state.toolDefinitions
+        }
       });
       throwIfAborted(abortSignal);
       const providerTurnCallbacks: AgentTurnCallbacks = {
@@ -504,10 +447,7 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
           segments: calibrateContextUsageSegments(estimatedUsageSegments, usageInputTokens)
         });
       }
-      state.debug.emit('provider_usage', {
-        interactionMode,
-        usage: createProviderUsageDebugPayload(usage, usageInputTokens)
-      });
+      state.observation.providerUsage({scope: state.observationScope, usage, usageInputTokens});
       recordProviderUsage(usage, usageInputTokens);
 
       if (toolCalls.length === 0) {
@@ -535,18 +475,7 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
         if (commitMode === 'call_before_execute') {
           recordRegion.push(callRecord);
         }
-        state.debug.emit('tool_call_start', {
-          argumentsText: summarizeText(toolCall.argumentsText, 0),
-          interactionMode,
-          toolCallId: toolCall.callId,
-          toolName: toolCall.toolName
-        });
-        state.hooks?.emit('tool_call_start', {
-          interactionMode,
-          toolCallId: toolCall.callId,
-          toolName: toolCall.toolName,
-          argumentsText: toolCall.argumentsText
-        });
+        state.observation.toolStarted({scope: state.observationScope, call: toolCall});
 
         const result = await executeToolCall(toolCall, state, callbacks);
         throwIfAborted(abortSignal);
@@ -557,20 +486,7 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
           recordRegion.push(resultRecord);
         }
         callbacks.onToolResult?.(result);
-        state.debug.emit('tool_call_end', {
-          interactionMode,
-          ok: result.ok,
-          resultText: summarizeText(result.text, 0),
-          toolCallId: result.callId,
-          toolName: result.toolName,
-          truncated: isToolResultTruncated(result)
-        });
-        state.hooks?.emit('tool_call_end', {
-          interactionMode,
-          toolCallId: result.callId,
-          toolName: result.toolName,
-          ok: result.ok
-        });
+        state.observation.toolCompleted({scope: state.observationScope, result});
       }
 
       throwIfAborted(abortSignal);

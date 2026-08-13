@@ -6,6 +6,7 @@ const path = require('node:path');
 
 const agentSetupModule = require('../../src/agent/agent-setup');
 const {createAgentLoopRuntime} = require('../../src/agent/loop-runtime/agent-loop-runtime');
+const {createObservation} = require('../../src/observation/observation-projector');
 const {AgentAbortError} = require('../../src/types/agent');
 const {createDefaultToolRegistry} = require('../../src/tools/tool-registry');
 const {createToolCallTranscriptRecord, createToolResultTranscriptRecord} = require('../../src/tools/tool-transcript-record');
@@ -70,6 +71,7 @@ test('runtime synchronously delegates through an isolated explorer and commits p
   fs.writeFileSync(path.join(cwd, 'evidence.txt'), 'isolated evidence\n', 'utf8');
   const parentRequests = [];
   const childRequests = [];
+  const hookEvents = [];
   let parentTurn = 0;
   let childTurn = 0;
 
@@ -119,7 +121,8 @@ test('runtime synchronously delegates through an isolated explorer and commits p
     }), async (preparations) => {
       fs.writeFileSync(path.join(cwd, 'AGENTS.md'), 'stable parent instructions', 'utf8');
       const snapshot = createConfigSnapshot();
-      const runAgent = createAgentLoopRuntime(cwd, {capture: () => snapshot});
+      const observation = createObservation(undefined, {emit(event, payload) { hookEvents.push({event, payload}); }});
+      const runAgent = createAgentLoopRuntime(cwd, {capture: () => snapshot}, undefined, observation);
       const persisted = [];
       let pendingOuterCall = null;
       let finalText = '';
@@ -165,6 +168,17 @@ test('runtime synchronously delegates through an isolated explorer and commits p
       assert.ok(parentRequests[1].some((record) => record.role === 'tool_call' && record.toolName === 'run_subagent'));
       assert.ok(parentRequests[1].some((record) => record.role === 'tool_result' && record.text.includes('Found `evidence.txt`')));
       assert.equal(childRequests.length, 2);
+      const outerStart = hookEvents.find((event) => event.event === 'tool_call_start' && event.payload.toolCallId === 'outer_1');
+      const innerStart = hookEvents.find((event) => event.event === 'tool_call_start' && event.payload.toolCallId === 'inner_read');
+      const innerEnd = hookEvents.find((event) => event.event === 'tool_call_end' && event.payload.toolCallId === 'inner_read');
+      assert.equal(outerStart.payload.conversationKind, 'primary');
+      assert.equal(Object.hasOwn(outerStart.payload, 'agentName'), false);
+      assert.equal(innerStart.payload.conversationKind, 'subagent');
+      assert.equal(innerStart.payload.agentName, 'explorer');
+      assert.equal(innerEnd.payload.conversationKind, 'subagent');
+      assert.equal(innerEnd.payload.agentName, 'explorer');
+      assert.equal(Object.hasOwn(innerStart.payload, 'runId'), false);
+      assert.equal(Object.hasOwn(innerStart.payload, 'parentToolCallId'), false);
     });
   } finally {
     fs.rmSync(cwd, {recursive: true, force: true});
@@ -213,6 +227,15 @@ test('runtime creates a fresh loop runtime for every accepted delegation', async
   const snapshot = createConfigSnapshot();
   let parentTurn = 0;
   const childAgents = [];
+  const debugEvents = [];
+  const debug = {
+    enabled: true,
+    logPath: '/tmp/subagent-debug.jsonl',
+    emit(event, payload) {
+      debugEvents.push({event, payload});
+    },
+    close() {}
+  };
 
   await withPatchedAgents('/tmp/echo-subagent-runtime-instances', (kind) => {
     if (kind === 'subagent') {
@@ -243,7 +266,8 @@ test('runtime creates a fresh loop runtime for every accepted delegation', async
       }
     };
   }, async (preparations) => {
-    const runAgent = createAgentLoopRuntime('/tmp/echo-subagent-runtime-instances', {capture: () => snapshot});
+    const observation = createObservation(debug);
+    const runAgent = createAgentLoopRuntime('/tmp/echo-subagent-runtime-instances', {capture: () => snapshot}, undefined, observation);
     assert.equal(await runAgent({records: [{role: 'user', text: 'delegate twice'}], userConfigSnapshot: snapshot}), 'parent done');
     assert.equal(preparations.filter((entry) => entry.kind === 'subagent').length, 2);
   });
@@ -251,6 +275,11 @@ test('runtime creates a fresh loop runtime for every accepted delegation', async
   assert.equal(childAgents.length, 2);
   assert.notEqual(childAgents[0], childAgents[1]);
   assert.deepEqual(childAgents.map((agent) => agent.turns), [1, 1]);
+  const childRequestEvents = debugEvents.filter((event) => event.event === 'provider_request_built' && event.payload.conversationKind === 'subagent');
+  assert.equal(childRequestEvents.length, 2);
+  assert.equal(new Set(childRequestEvents.map((event) => event.payload.runId)).size, 2);
+  assert.equal(childRequestEvents.every((event) => event.payload.agentName === 'explorer'), true);
+  assert.deepEqual(new Set(childRequestEvents.map((event) => event.payload.parentToolCallId)), new Set(['outer-a', 'outer-b']));
 });
 
 test('parent abort propagates to the child provider and leaves no outer tool pair', async () => {

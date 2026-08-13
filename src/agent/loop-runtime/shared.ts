@@ -100,18 +100,6 @@ function createRuntimeContextSuffixRecords(todoState: TodoState | undefined): Tr
   }];
 }
 
-function createProviderUsageDebugPayload(usage: ProviderUsage | undefined, usageInputTokens: number | undefined): ProviderUsage | null {
-  const payload: ProviderUsage = {
-    ...(typeof usageInputTokens === 'number' ? {inputTokens: usageInputTokens} : {}),
-    ...(typeof usage?.inputTokens === 'number' ? {inputTokens: usage.inputTokens} : {}),
-    ...(typeof usage?.cacheCreationInputTokens === 'number' ? {cacheCreationInputTokens: usage.cacheCreationInputTokens} : {}),
-    ...(typeof usage?.cacheReadInputTokens === 'number' ? {cacheReadInputTokens: usage.cacheReadInputTokens} : {}),
-    ...(typeof usage?.outputTokens === 'number' ? {outputTokens: usage.outputTokens} : {})
-  };
-
-  return Object.keys(payload).length > 0 ? payload : null;
-}
-
 function hasRecordableProviderUsage(usage: ProviderUsage | undefined, usageInputTokens: number | undefined): boolean {
   return (
     typeof usageInputTokens === 'number' ||
@@ -122,28 +110,10 @@ function hasRecordableProviderUsage(usage: ProviderUsage | undefined, usageInput
   );
 }
 
-function isToolResultTruncated(result: ToolExecutionResult): boolean | undefined {
-  switch (result.details.kind) {
-    case 'glob':
-    case 'grep':
-    case 'read_files':
-    case 'web_fetch':
-    case 'web_search':
-    case 'bash':
-      return result.details.truncated;
-    case 'apply_patch':
-    case 'edit_file':
-    case 'generic':
-      return undefined;
-  }
-}
-
 export {
   buildProviderRecords,
-  createProviderUsageDebugPayload,
   executeUserQuestionToolCall,
-  hasRecordableProviderUsage,
-  isToolResultTruncated
+  hasRecordableProviderUsage
 };
 
 export type {ExecuteUserQuestionToolOptions};

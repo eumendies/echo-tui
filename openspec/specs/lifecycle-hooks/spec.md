@@ -159,6 +159,8 @@ Lifecycle hooks SHALL 只能观察事件并执行旁路本地命令。Hook 命�
 ### Requirement: hook payload
 系统 SHALL 以结构化 JSON payload 向 hook 命令传递事件上下文。Payload SHALL 至少包含事件名、timestamp、cwd 和事件相关数据。系统 SHALL NOT 在 hook payload 中包含 LLM provider apiKey、headers 或 provider client 配置。
 
+Agent 运行级 hook payload SHALL 使用 `conversationKind` 区分 `primary`、`btw` 与 `subagent`。子 Agent 事件 SHALL 额外包含稳定的 `agentName`，但 SHALL NOT 暴露内部 `runId` 或 `parentToolCallId`。
+
 #### Scenario: 通过 stdin 传递 payload
 - **WHEN** 系统启动一个 hook job
 - **THEN** 系统 SHALL 将该事件的 JSON payload 写入 hook 进程 stdin
@@ -175,6 +177,12 @@ Lifecycle hooks SHALL 只能观察事件并执行旁路本地命令。Hook 命�
 - **THEN** payload SHALL 包含 tool call id 和 tool name
 - **THEN** `tool_call_start` payload SHALL 包含该 tool call 的 arguments text
 - **THEN** `tool_call_end` payload SHALL 包含 tool result 的 ok 状态
+
+#### Scenario: 区分主 Agent 与子 Agent 事件
+- **WHEN** 系统为主 Agent、BTW Agent 或子 Agent 派发 tool、approval、question 或 compaction hook
+- **THEN** payload SHALL 包含对应的 `conversationKind`
+- **THEN** 子 Agent payload SHALL 包含 `agentName`
+- **THEN** payload SHALL NOT 包含子运行 `runId` 或 `parentToolCallId`
 
 #### Scenario: compaction payload 包含压缩状态摘要元数据
 - **WHEN** 系统派发 `compaction_end` 事件

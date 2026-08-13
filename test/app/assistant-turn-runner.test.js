@@ -7,6 +7,7 @@ const {AppContext} = require('../../src/app/state/app-context');
 const {ToolApprovalContext} = require('../../src/app/state/tool-approval-context');
 const {UserQuestionContext} = require('../../src/app/state/user-question-context');
 const {UserConfigContext} = require('../../src/config/user-config-context');
+const {createObservation} = require('../../src/observation/observation-projector');
 
 function createFakeTranscriptStore() {
   let currentSession = null;
@@ -129,6 +130,21 @@ function createHarness(options = {}) {
   const appendedProjections = [];
   const hookEvents = [];
   const debugEvents = [];
+  const hooks = {
+    emit(event, payload) {
+      hookEvents.push({event, payload});
+    },
+    async flush() {}
+  };
+  const debug = {
+    enabled: true,
+    logPath: '/tmp/debug.jsonl',
+    emit(event, payload) {
+      debugEvents.push({event, payload});
+    },
+    close() {}
+  };
+  const observation = createObservation(debug, hooks);
 
   return {
     appContext,
@@ -150,20 +166,8 @@ function createHarness(options = {}) {
         appended.push(finalizeRecord);
         appendedProjections.push(finalizeRecord.role === 'reasoning_summary' ? 'reasoning' : 'assistant');
       },
-      hooks: {
-        emit(event, payload) {
-          hookEvents.push({event, payload});
-        },
-        async flush() {}
-      },
-      debug: {
-        enabled: true,
-        logPath: '/tmp/debug.jsonl',
-        emit(event, payload) {
-          debugEvents.push({event, payload});
-        },
-        close() {}
-      }
+      observation,
+      observationScope: {interactionMode: 'normal', runtimeKind: 'tui'}
     }
   };
 }
@@ -609,6 +613,12 @@ test('runAssistantTurn persists subagent events, restores pending after permissi
   ]);
   assert.equal(harness.appContext.subagentRunContext.getPending(), null);
   assert.equal(harness.appContext.turnContext.responding, false);
+  const approvalHooks = harness.hookEvents.filter((event) => event.event === 'tool_approval_request' || event.event === 'tool_approval_response');
+  assert.equal(approvalHooks.length, 2);
+  assert.equal(approvalHooks.every((event) => event.payload.conversationKind === 'subagent'), true);
+  assert.equal(approvalHooks.every((event) => event.payload.agentName === 'explorer'), true);
+  assert.equal(approvalHooks.every((event) => Object.hasOwn(event.payload, 'runId') === false), true);
+  assert.equal(approvalHooks.every((event) => Object.hasOwn(event.payload, 'parentToolCallId') === false), true);
   const recordCount = harness.appContext.transcriptContext.getRecords().length;
   capturedCallbacks.onSubagentRecords([{...base, text: 'late', event: {kind: 'assistant'}}]);
   capturedCallbacks.onSubagentActivity({agentName: 'explorer', phase: 'streaming', runId: 'run-1', task: 'late'});

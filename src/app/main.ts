@@ -3,8 +3,9 @@ import {createTranscriptStore} from '../persistence/transcript-store';
 import {createUsageStore} from '../persistence/usage-store';
 import {readTuiTheme} from '../config/theme-config';
 import {UserConfigContext} from '../config/user-config-context';
-import {createDebugContext, summarizeText} from '../debug/debug-context';
+import {createDebugContext} from '../debug/debug-context';
 import {createLifecycleHookDispatcher} from '../hooks/dispatcher';
+import {createObservation} from '../observation/observation-projector';
 import {McpManager, sanitizeMcpError} from '../mcp/manager';
 import {createAppRenderer} from '../render/app-renderer';
 import {runBashCommand} from '../tools/bash-command-runner';
@@ -26,8 +27,8 @@ import {createToolApprovalReviewer} from './tool-approval/resolver';
 import type {RunAgent} from '../types/agent';
 import type {AppController} from '../types/app';
 import type {CommandSurface} from '../types/command';
-import type {DebugContext} from '../debug/debug-context';
 import type {LifecycleHookDispatcher} from '../types/hooks';
+import type {AssistantTurnScope, Observation} from '../observation/observation';
 import type {RenderState} from '../types/render';
 import type {TranscriptRecord} from '../types/transcript';
 import type {UsageStore} from '../types/usage';
@@ -38,7 +39,7 @@ const ACTIVITY_REDRAW_INTERVAL_MS = 100;
 /**
  * 创建 app 编排控制器，串联真实 terminal、input、render 和 agent runtime。
  */
-function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleHookDispatcher, debug: DebugContext, usageStore: UsageStore, userConfigContext: UserConfigContext): AppController {
+function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleHookDispatcher, observation: Observation, usageStore: UsageStore, userConfigContext: UserConfigContext): AppController {
   if (!userConfigContext) {
     throw new Error('createApp 必须注入共享的 UserConfigContext');
   }
@@ -59,6 +60,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
   let activeShellController: AbortController | null = null;
   let mcpDiagnosticSurface: CommandSurface | null = null;
   let referenceErrorSurface: CommandSurface | null = null;
+  let activeTurnObservationScope: AssistantTurnScope | null = null;
   const btwConversation = new BtwConversationController({
     runAgent,
     getParentSession: () => appContext.getAgentSession(),
@@ -91,10 +93,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
    * 停止 spinner、渲染最终 transcript，并在退出前恢复终端状态。
    */
   function exit(): void {
-    debug.emit('app_exit', {
-      cwd: appContext.getCurrentCwd(),
-      interactionMode: appContext.getInteractionMode()
-    });
+    observation.appExiting({cwd: appContext.getCurrentCwd(), interactionMode: appContext.getInteractionMode()});
     activeShellController?.abort();
     if (activityTimer) clearInterval(activityTimer);
     activityTimer = null;
@@ -106,7 +105,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     renderer.clearFooter();
     terminal.cleanup();
     output.write('\n');
-    debug.close();
+    observation.close();
     process.exit(0);
   }
 
@@ -132,10 +131,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
   function renderRecords(records: TranscriptRecord[], owner: 'main' | 'btw'): void {
     if (records.length === 0) return;
     if (owner === 'main') {
-      debug.emit('transcript_render_batch', {
-        count: records.length,
-        roles: records.map((record) => record.role)
-      });
+      observation.transcriptBatchRendered({records});
     }
 
     const visibleOwner = btwConversation.isActive() ? 'btw' : 'main';
@@ -152,10 +148,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
    * 当列宽变化时清屏重绘完整界面，并同步 footer 的当前布局。
    */
   function renderResizeRecovery(): void {
-    debug.emit('resize_recovery', {
-      recordCount: appContext.transcriptContext.records.length,
-      terminalSize: terminal.getSize()
-    });
+    observation.resizeRecovered({recordCount: appContext.transcriptContext.records.length, terminalSize: terminal.getSize()});
     const btwActive = btwConversation.isActive();
     const renderState = createRenderState();
     // BTW 活跃时重画临时会话，否则重画主会话；流式显示进度由 renderer 同步。
@@ -211,7 +204,6 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
   const toolApproval = new ToolApprovalContext(() => render());
   const toolApprovalReviewer = createToolApprovalReviewer({
     cwd: () => appContext.getCurrentCwd(),
-    debug,
     usageStore
   });
   const userQuestion = new UserQuestionContext(() => render());
@@ -236,25 +228,31 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     },
     reference: commandHost.reference,
     async startAssistantTurn(submission: AssistantTurnSubmission): Promise<void> {
-      debug.emit('user_submit', {
+      const turnObservationScope: AssistantTurnScope = {interactionMode: appContext.getInteractionMode(), runtimeKind: 'tui'};
+      activeTurnObservationScope = turnObservationScope;
+      observation.userSubmitted({
         interactionMode: appContext.getInteractionMode(),
-        text: summarizeText(submission.userText, 0),
-        displayText: submission.displayText ? summarizeText(submission.displayText, 0) : undefined,
+        text: submission.userText,
+        displayText: submission.displayText,
         attachmentCount: submission.attachments?.length || 0,
         recordCount: appContext.transcriptContext.records.length
       });
-      await runAssistantTurn({
-        appContext,
-        runAgent,
-        toolApproval,
-        toolApprovalReviewer,
-        userQuestion,
-        ...submission,
-        debug,
-        renderRecords: (records) => renderRecords(records, 'main'),
-        render: (finalizeRecord) => render(finalizeRecord, 'main'),
-        hooks
-      });
+      try {
+        await runAssistantTurn({
+          appContext,
+          runAgent,
+          toolApproval,
+          toolApprovalReviewer,
+          userQuestion,
+          ...submission,
+          observation,
+          observationScope: turnObservationScope,
+          renderRecords: (records) => renderRecords(records, 'main'),
+          render: (finalizeRecord) => render(finalizeRecord, 'main')
+        });
+      } finally {
+        if (activeTurnObservationScope === turnObservationScope) activeTurnObservationScope = null;
+      }
     },
     submitShellCommand,
     showReferenceError(error: string): void {
@@ -366,10 +364,8 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     if (result.noticeRecord) {
       renderRecords([result.noticeRecord], 'main');
     }
-    hooks.emit('assistant_turn_cancelled', {
-      interactionMode: appContext.getInteractionMode(),
-      status: 'cancelled'
-    });
+    if (activeTurnObservationScope) observation.assistantTurnCancelled({scope: activeTurnObservationScope});
+    activeTurnObservationScope = null;
     void submissionController.dispatchPendingMessage();
 
     return true;
@@ -404,21 +400,13 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
         }
       });
       userConfigContext.startWatching(
-        (error) => debug.emit('user_config_watch_error', {error: {name: error.name, message: error.message}})
+        (error) => observation.configurationWatchFailed({error})
       );
     } catch (error: unknown) {
-      debug.emit('user_config_watch_error', {
-        error: error instanceof Error ? {name: error.name, message: error.message} : {message: String(error)}
-      });
+      observation.configurationWatchFailed({error});
     }
-    if (debug.enabled && debug.logPath) {
-      output.write(`[debug] logging to ${debug.logPath}\n`);
-    }
-    debug.emit('app_start', {
-      cwd: appContext.getCurrentCwd(),
-      logPath: debug.logPath,
-      nodeVersion: appContext.getNodeVersion(),
-      pid: process.pid,
+    observation.appStarted({
+      scope: {cwd: appContext.getCurrentCwd(), nodeVersion: appContext.getNodeVersion(), pid: process.pid},
       terminalSize: terminal.getSize()
     });
     renderer.renderInitial({
@@ -484,12 +472,13 @@ function run(): void {
     config: userConfigContext.capture().getLifecycleHookConfig(),
     cwd
   });
+  const observation = createObservation(debug, hooks, process.stdout);
 
   createApp(
-    createAgentLoopRuntime(cwd, userConfigContext, mcpManager, hooks, debug, usageStore),
+    createAgentLoopRuntime(cwd, userConfigContext, mcpManager, observation, usageStore),
     mcpManager,
     hooks,
-    debug,
+    observation,
     usageStore,
     userConfigContext
   ).start();

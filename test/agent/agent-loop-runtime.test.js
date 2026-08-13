@@ -5,6 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const {buildProviderRecords, createAgentLoopRuntime: createRuntime} = require('../../src/agent/loop-runtime/agent-loop-runtime');
+const {createObservation} = require('../../src/observation/observation-projector');
 const {UserConfigContext} = require('../../src/config/user-config-context');
 const {createCompactionNoticeRecord} = require('../../src/agent/context/context-compaction');
 const {formatAgentMemoryCatalogPrompt, formatUserMemoriesPrompt} = require('../../src/agent/context/memory-prompt');
@@ -31,7 +32,7 @@ const TEST_CONFIG = {
 };
 
 function createAgentLoopRuntime(cwd, mcpManager, hooks, debug, usageStore, configContext) {
-  return createRuntime(cwd, configContext || new UserConfigContext(), mcpManager, hooks, debug, usageStore);
+  return createRuntime(cwd, configContext || new UserConfigContext(), mcpManager, createObservation(debug, hooks), usageStore);
 }
 
 async function withPatchedAgentRuntime(agentOrFactory, callback, config = TEST_CONFIG) {
@@ -1683,6 +1684,7 @@ test('createAgentLoopRuntime emits tool lifecycle hooks without changing continu
     {
       event: 'tool_call_start',
       payload: {
+        conversationKind: 'primary',
         interactionMode: 'normal',
         toolCallId: 'call-1',
         toolName: 'missing_tool',
@@ -1692,6 +1694,7 @@ test('createAgentLoopRuntime emits tool lifecycle hooks without changing continu
     {
       event: 'tool_call_end',
       payload: {
+        conversationKind: 'primary',
         interactionMode: 'normal',
         toolCallId: 'call-1',
         toolName: 'missing_tool',

@@ -13,6 +13,7 @@ const {createRequest} = require('../../src/agent/openai-responses/agent');
 const {createChatRequest} = require('../../src/agent/openai-chat/agent');
 const {createAnthropicRequest} = require('../../src/agent/anthropic/agent');
 const {createCodexRequest} = require('../../src/agent/codex/agent');
+const {createObservation} = require('../../src/observation/observation-projector');
 
 function createConfig(overrides = {}) {
   return {
@@ -27,9 +28,11 @@ function createConfig(overrides = {}) {
 
 function createDebug() {
   const events = [];
+  const context = {enabled: true, logPath: null, close() {}, emit(event, payload) { events.push({event, payload}); }};
   return {
     events,
-    context: {enabled: true, logPath: null, close() {}, emit(event, payload) { events.push({event, payload}); }}
+    context,
+    observation: createObservation(context)
   };
 }
 
@@ -64,7 +67,6 @@ test('tool approval reviewer uses fixed prompt, records usage, and emits only ha
   const usage = [];
   const reviewer = createToolApprovalReviewer({
     cwd: '/tmp/project',
-    debug: debug.context,
     readConfig(profileId) {
       assert.equal(profileId, 'reviewer');
       return createConfig({reasoningEffort: 'high', reasoningSummary: 'detailed'});
@@ -87,6 +89,7 @@ test('tool approval reviewer uses fixed prompt, records usage, and emits only ha
     currentUserRequest: 'update it',
     interactionMode: 'normal',
     modelProfileId: 'reviewer',
+    observation: debug.observation,
     records: [{role: 'user', text: 'expanded internal prompt'}],
     turnUserRecordIndex: 0
   });
@@ -113,7 +116,6 @@ test('tool approval reviewer resolves its profile from the active turn snapshot'
   };
   const reviewer = createToolApprovalReviewer({
     cwd: '/tmp/project',
-    debug: debug.context,
     readConfig() {
       throw new Error('must not read another revision');
     },
@@ -130,6 +132,7 @@ test('tool approval reviewer resolves its profile from the active turn snapshot'
     currentUserRequest: 'update',
     interactionMode: 'normal',
     modelProfileId: 'reviewer',
+    observation: debug.observation,
     records: [],
     turnUserRecordIndex: -1,
     userConfigSnapshot: snapshot
@@ -140,24 +143,24 @@ test('tool approval reviewer resolves its profile from the active turn snapshot'
 test('tool approval reviewer fails closed for config and provider errors but propagates abort', async () => {
   const debug = createDebug();
   const failedConfig = createToolApprovalReviewer({
-    cwd: '/tmp', debug: debug.context,
+    cwd: '/tmp',
     readConfig() { throw new Error('missing profile'); }
   });
   const failedInput = {
     action: projectToolApprovalAction({callId: '1', toolName: 'x', argumentsText: '{}'}, undefined, '/tmp'),
-    call: {callId: '1', toolName: 'x', argumentsText: '{}'}, currentUserRequest: 'do it', interactionMode: 'normal', modelProfileId: 'missing', records: [], turnUserRecordIndex: -1
+    call: {callId: '1', toolName: 'x', argumentsText: '{}'}, currentUserRequest: 'do it', interactionMode: 'normal', modelProfileId: 'missing', observation: debug.observation, records: [], turnUserRecordIndex: -1
   };
   assert.equal(await failedConfig(failedInput), false);
 
   const failedProvider = createToolApprovalReviewer({
-    cwd: '/tmp', debug: debug.context, readConfig: () => createConfig(),
+    cwd: '/tmp', readConfig: () => createConfig(),
     createAgent: () => ({async runTurn() { throw new Error('network'); }})
   });
   assert.equal(await failedProvider({...failedInput, modelProfileId: 'reviewer'}), false);
 
   const controller = new AbortController();
   const aborting = createToolApprovalReviewer({
-    cwd: '/tmp', debug: debug.context, readConfig: () => createConfig(),
+    cwd: '/tmp', readConfig: () => createConfig(),
     createAgent: () => ({async runTurn(_records, _callbacks, options) {
       controller.abort();
       assert.equal(options.abortSignal.aborted, true);
@@ -173,7 +176,6 @@ test('tool approval reviewer times out once without treating the deadline as a p
   let reviewerSignal;
   const reviewer = createToolApprovalReviewer({
     cwd: '/tmp',
-    debug: debug.context,
     reviewTimeoutMs: 5,
     readConfig: () => createConfig(),
     createAgent: () => ({runTurn(_records, _callbacks, options) {
@@ -189,6 +191,7 @@ test('tool approval reviewer times out once without treating the deadline as a p
     currentUserRequest: 'remove old',
     interactionMode: 'normal',
     modelProfileId: 'reviewer',
+    observation: debug.observation,
     records: [{role: 'user', text: 'remove old'}],
     turnUserRecordIndex: 0
   });
@@ -205,17 +208,18 @@ test('tool approval reviewer isolates debug and usage failures without leaking c
   const call = {callId: 'safe', toolName: 'future_write', argumentsText: sensitive};
   const reviewer = createToolApprovalReviewer({
     cwd: '/tmp',
-    debug: {
+    readConfig: () => createConfig(),
+    createAgent: () => ({async runTurn() { return {draft: 'yes', toolCalls: []}; }}),
+    usageStore: {appendEvent() { throw new Error('usage failed with secret'); }, listDailyUsage() { return []; }}
+  });
+  const debugContext = {
       enabled: true, logPath: null, close() {},
       emit(event, payload) {
         events.push({event, payload});
         throw new Error('debug sink failed');
       }
-    },
-    readConfig: () => createConfig(),
-    createAgent: () => ({async runTurn() { return {draft: 'yes', toolCalls: []}; }}),
-    usageStore: {appendEvent() { throw new Error('usage failed with secret'); }, listDailyUsage() { return []; }}
-  });
+    };
+  const observation = createObservation(debugContext);
 
   assert.equal(await reviewer({
     action: projectToolApprovalAction(call, undefined, '/tmp'),
@@ -223,6 +227,7 @@ test('tool approval reviewer isolates debug and usage failures without leaking c
     currentUserRequest: 'write it',
     interactionMode: 'normal',
     modelProfileId: 'reviewer',
+    observation,
     records: [],
     turnUserRecordIndex: -1
   }), true);
@@ -257,7 +262,7 @@ test('tool approval resolver prioritizes session grants and maps auto decisions'
   const resolver = createToolApprovalResolver({
     currentUserRequest: 'update it',
     cwd: '/tmp/project',
-    debug: createDebug().context,
+    observation: createDebug().observation,
     interactionMode: 'normal',
     isCurrentTurn: () => current,
     getRecords: () => [{role: 'user', text: 'update it'}],
@@ -298,7 +303,7 @@ test('subagent approval reuses the same session grants as primary approval', asy
   const resolver = createToolApprovalResolver({
     currentUserRequest: 'inspect',
     cwd: '/tmp/project',
-    debug: createDebug().context,
+    observation: createDebug().observation,
     interactionMode: 'normal',
     isCurrentTurn: () => true,
     getRecords: () => [{role: 'user', text: 'inspect'}],
@@ -333,7 +338,7 @@ test('tool approval resolver sends oversized actions directly to manual approval
   let reviews = 0;
   let manualCalls = 0;
   const resolver = createToolApprovalResolver({
-    currentUserRequest: 'run it', cwd: '/tmp', debug: debug.context,
+    currentUserRequest: 'run it', cwd: '/tmp', observation: debug.observation,
     interactionMode: 'normal', isCurrentTurn: () => true,
     getRecords: () => [{role: 'user', text: 'run it'}], turnUserRecordIndex: 0,
     settings: {mode: 'auto', modelProfileId: 'reviewer'},
