@@ -527,7 +527,7 @@ test('custom general file_edit exposes only the configured edit handler and enab
   }
 });
 
-test('runtime enforces four delegations per parent run and normalizes the fifth as a tool failure', async () => {
+test('runtime accepts more than four delegations per parent run', async () => {
   const snapshot = createConfigSnapshot();
   let parentTurn = 0;
   let childRuns = 0;
@@ -558,11 +558,9 @@ test('runtime enforces four delegations per parent run and normalizes the fifth 
     await runAgent({records: [{role: 'user', text: 'delegate five'}], userConfigSnapshot: snapshot});
   });
 
-  assert.equal(childRuns, 4);
+  assert.equal(childRuns, 5);
   assert.equal(outerResults.length, 5);
-  assert.equal(outerResults.slice(0, 4).every((record) => record.ok), true);
-  assert.equal(outerResults[4].ok, false);
-  assert.match(outerResults[4].text, /Delegation limit reached/);
+  assert.equal(outerResults.every((record) => record.ok), true);
 });
 
 test('runtime creates a fresh loop runtime for every accepted delegation', async () => {
