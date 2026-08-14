@@ -13,7 +13,11 @@ import {
 import {parseCustomSubagentManifest} from './manifest';
 import {MAX_CUSTOM_SUBAGENT_FILE_BYTES} from './manifest';
 import {isBuiltinSubagentName, isValidSubagentName} from './name';
+import {inspectSafeDirectory} from './safe-storage';
+import {loadAgentsSettingsSources, selectBuiltinSubagentOverride} from './settings';
 
+import type {AgentUserConfigSnapshot} from '../../types/agent';
+import type {BuiltinSubagentName, SelectedBuiltinSubagentOverride} from './settings';
 import type {CustomSubagentManifest} from './manifest';
 import type {SubagentDefinition} from './definition';
 
@@ -40,6 +44,7 @@ type SubagentCatalog = {
 };
 
 type SubagentCatalogLoadOptions = {
+  configSnapshot?: AgentUserConfigSnapshot; // 父 run 捕获的同一配置 revision，用于严格验证非敏感模型引用。
   cwd?: string; // 项目根发现的起始工作目录。
   homedir?: string | (() => string); // 用户级 agents 路径和项目根边界使用的 home。
   readDir?: (dirPath: string) => readonly fs.Dirent[]; // 可注入的同步目录枚举依赖。
@@ -58,6 +63,10 @@ type CandidateScan = {
   diagnostics: readonly Readonly<SubagentCatalogDiagnostic>[]; // 当前层扫描时产生的文件名或目录诊断。
 };
 
+type CustomSubagentManifestValidationResult =
+  | {ok: true} // manifest 同时满足 capability ceiling 与当前模型目录约束。
+  | {code: string; message: string; ok: false}; // 校验失败时返回不包含正文的稳定诊断。
+
 /**
  * 扫描用户级和项目级目录并形成一次性的冻结 Subagent 目录。
  * 项目候选覆盖同名用户候选；高层候选解析失败时不会回退低层定义。
@@ -70,15 +79,24 @@ function loadSubagentCatalog(options: SubagentCatalogLoadOptions = {}): Readonly
   const readDir = options.readDir || ((dirPath: string) => fs.readdirSync(dirPath, {withFileTypes: true}));
   const readFile = options.readFile || fs.readFileSync;
   const projectRoot = path.resolve(findProjectRoot(cwd, homedir, stat) || cwd);
-  const userScan = scanCandidateDirectory(path.join(homedir, '.echo', 'agents'), 'user', readDir);
-  const projectScan = scanCandidateDirectory(path.join(projectRoot, '.echo', 'agents'), 'project', readDir);
+  const modelProfileIds = readModelProfileIds(options.configSnapshot);
+  const userScan = scanCandidateDirectory(homedir, 'user', readDir);
+  const projectScan = scanCandidateDirectory(projectRoot, 'project', readDir);
   const diagnostics: SubagentCatalogDiagnostic[] = [];
   appendDiagnostics(diagnostics, userScan.diagnostics);
   appendDiagnostics(diagnostics, projectScan.diagnostics);
 
-  const definitionsByName = new Map<string, Readonly<SubagentDefinition>>(
-    BUILTIN_SUBAGENT_DEFINITIONS.map((definition) => [definition.name, definition])
-  );
+  const settingsSources = loadAgentsSettingsSources({homedir, projectRoot});
+  const definitionsByName = new Map<string, Readonly<SubagentDefinition>>();
+  appendSettingsSourceDiagnostics(diagnostics, settingsSources);
+  for (const builtin of BUILTIN_SUBAGENT_DEFINITIONS) {
+    definitionsByName.set(builtin.name, applyBuiltinOverride(
+      builtin,
+      selectBuiltinSubagentOverride(builtin.name as BuiltinSubagentName, settingsSources),
+      modelProfileIds,
+      diagnostics
+    ));
+  }
   const userByName = new Map(userScan.candidates.map((candidate) => [candidate.name, candidate]));
   const projectByName = new Map(projectScan.candidates.map((candidate) => [candidate.name, candidate]));
 
@@ -109,7 +127,7 @@ function loadSubagentCatalog(options: SubagentCatalogLoadOptions = {}): Readonly
       continue;
     }
 
-    const loaded = loadCandidate(candidate, {readFile, stat});
+    const loaded = loadCandidate(candidate, {modelProfileIds, readFile, stat});
     if (!loaded.ok) {
       appendDiagnostic(diagnostics, loaded.diagnostic);
       continue;
@@ -135,8 +153,47 @@ function loadSubagentCatalog(options: SubagentCatalogLoadOptions = {}): Readonly
   return Object.freeze(catalog);
 }
 
-/** 枚举单层目录，仅接纳直接子项中的小写 .md 普通文件。 */
-function scanCandidateDirectory(dirPath: string, sourceKind: 'user' | 'project', readDir: (dirPath: string) => readonly fs.Dirent[]): CandidateScan {
+/**
+ * 从父 snapshot 读取非敏感目录；主配置错误仍由主 runtime 的统一装配路径报告。
+ * 目录不可用时返回空集合，使任何显式 Subagent 引用保持 fail-closed。
+ */
+function readModelProfileIds(snapshot?: AgentUserConfigSnapshot): ReadonlySet<string> {
+  if (!snapshot || typeof snapshot.getLlmModelConfigInfo !== 'function') {
+    return new Set();
+  }
+  try {
+    return new Set(snapshot.getLlmModelConfigInfo().models.map((model) => model.id));
+  } catch {
+    return new Set();
+  }
+}
+
+/** 复用 runtime catalog 的 capability、MCP 与模型目录规则校验管理端草稿。 */
+function validateCustomSubagentManifest(
+  manifest: Readonly<CustomSubagentManifest>,
+  configSnapshot?: AgentUserConfigSnapshot
+): CustomSubagentManifestValidationResult {
+  return validateManifestPolicy(manifest, readModelProfileIds(configSnapshot));
+}
+
+/** 检查固定目录链后枚举直接子项，仅接纳小写 .md 普通文件。 */
+function scanCandidateDirectory(rootPath: string, sourceKind: 'user' | 'project', readDir: (dirPath: string) => readonly fs.Dirent[]): CandidateScan {
+  const inspected = inspectSafeDirectory(rootPath, ['.echo', 'agents']);
+  const dirPath = path.join(path.resolve(rootPath), '.echo', 'agents');
+  if (inspected.kind === 'missing') {
+    return {candidates: [], diagnostics: []};
+  }
+  if (inspected.kind === 'unsafe') {
+    return {
+      candidates: [],
+      diagnostics: [createDiagnostic({
+        code: inspected.code,
+        message: 'Custom subagent directory could not be safely read and was treated as empty.',
+        sourceKind,
+        sourcePath: dirPath
+      })]
+    };
+  }
   let entries: readonly fs.Dirent[];
   try {
     entries = readDir(dirPath);
@@ -179,6 +236,7 @@ function scanCandidateDirectory(dirPath: string, sourceKind: 'user' | 'project',
 
 /** 读取并验证胜出的候选；解析失败仅形成诊断，不暴露部分定义。 */
 function loadCandidate(candidate: CustomSubagentCandidate, dependencies: {
+  modelProfileIds: ReadonlySet<string>;
   readFile: (filePath: string, encoding: BufferEncoding) => string;
   stat: (filePath: string) => fs.Stats;
 }): {ok: true; definition: Readonly<SubagentDefinition>} | {ok: false; diagnostic: Readonly<SubagentCatalogDiagnostic>} {
@@ -207,14 +265,35 @@ function loadCandidate(candidate: CustomSubagentCandidate, dependencies: {
     return candidateFailure(candidate, parsed.error.code, parsed.error.message);
   }
 
-  const converted = convertManifest(candidate, parsed.manifest);
+  const converted = convertManifest(candidate, parsed.manifest, dependencies.modelProfileIds);
   return converted.ok ? converted : candidateFailure(candidate, converted.code, converted.message);
 }
 
 /** 把 manifest 能力映射到固定策略与工具上限，声明只能收窄代码拥有的权限。 */
-function convertManifest(candidate: CustomSubagentCandidate, manifest: Readonly<CustomSubagentManifest>):
+function convertManifest(candidate: CustomSubagentCandidate, manifest: Readonly<CustomSubagentManifest>, modelProfileIds: ReadonlySet<string>):
   | {ok: true; definition: Readonly<SubagentDefinition>}
   | {ok: false; code: string; message: string} {
+  const validation = validateManifestPolicy(manifest, modelProfileIds);
+  if (!validation.ok) {
+    return validation;
+  }
+
+  const localToolNames = manifest.tools.flatMap((tool) => tool === 'file_edit' ? ['apply_patch', 'edit_file'] : [tool]);
+  const definition: SubagentDefinition = {
+    description: manifest.description,
+    effortPolicy: manifest.effort,
+    executionPolicy: manifest.capability === 'readonly' ? 'readonly_investigation' : 'general_purpose',
+    includeMcpTools: manifest.capability === 'general' && manifest.mcp,
+    localToolNames,
+    ...(manifest.modelProfileId ? {modelProfileId: manifest.modelProfileId} : {}),
+    name: candidate.name,
+    prompt: createCustomSubagentPrompt(manifest.capability, candidate.name, manifest.instructions)
+  };
+  return {ok: true, definition: freezeSubagentDefinition(definition)};
+}
+
+/** 执行不依赖候选路径的共享权限与模型引用校验。 */
+function validateManifestPolicy(manifest: Readonly<CustomSubagentManifest>, modelProfileIds: ReadonlySet<string>): CustomSubagentManifestValidationResult {
   const ceiling = new Set(manifest.capability === 'readonly'
     ? READONLY_SUBAGENT_TOOL_CEILING
     : GENERAL_SUBAGENT_TOOL_CEILING);
@@ -226,17 +305,52 @@ function convertManifest(candidate: CustomSubagentCandidate, manifest: Readonly<
   if (manifest.capability === 'readonly' && manifest.mcp) {
     return {ok: false, code: 'mcp_not_allowed', message: 'readonly custom subagents cannot enable MCP tools.'};
   }
+  if (manifest.modelProfileId && !modelProfileIds.has(manifest.modelProfileId)) {
+    return {ok: false, code: 'model_profile_not_found', message: `Model profile "${safeDiagnosticValue(manifest.modelProfileId)}" does not exist in the current configuration snapshot.`};
+  }
 
-  const localToolNames = manifest.tools.flatMap((tool) => tool === 'file_edit' ? ['apply_patch', 'edit_file'] : [tool]);
-  const definition: SubagentDefinition = {
-    description: manifest.description,
-    executionPolicy: manifest.capability === 'readonly' ? 'readonly_investigation' : 'general_purpose',
-    includeMcpTools: manifest.capability === 'general' && manifest.mcp,
-    localToolNames,
-    name: candidate.name,
-    prompt: createCustomSubagentPrompt(manifest.capability, candidate.name, manifest.instructions)
-  };
-  return {ok: true, definition: freezeSubagentDefinition(definition)};
+  return {ok: true};
+}
+
+/** 只复制模型策略字段；内置 prompt、工具、MCP 和执行策略继续取代码拥有的冻结定义。 */
+function applyBuiltinOverride(
+  definition: Readonly<SubagentDefinition>,
+  selected: Readonly<SelectedBuiltinSubagentOverride> | undefined,
+  modelProfileIds: ReadonlySet<string>,
+  diagnostics: SubagentCatalogDiagnostic[]
+): Readonly<SubagentDefinition> {
+  if (!selected) {
+    return definition;
+  }
+  if (selected.override.modelProfileId && !modelProfileIds.has(selected.override.modelProfileId)) {
+    appendDiagnostic(diagnostics, {
+      code: 'builtin_model_profile_not_found',
+      message: `Built-in subagent model profile "${safeDiagnosticValue(selected.override.modelProfileId)}" does not exist in the current configuration snapshot; the built-in inherits the complete parent model policy.`,
+      sourceKind: selected.sourceKind,
+      sourcePath: selected.sourcePath
+    });
+    return definition;
+  }
+
+  return freezeSubagentDefinition({
+    ...definition,
+    effortPolicy: selected.override.effort,
+    ...(selected.override.modelProfileId ? {modelProfileId: selected.override.modelProfileId} : {})
+  });
+}
+
+/** 每个无效 settings 物理来源只发布一条有界诊断，避免按内置名称重复放大。 */
+function appendSettingsSourceDiagnostics(diagnostics: SubagentCatalogDiagnostic[], sources: ReturnType<typeof loadAgentsSettingsSources>): void {
+  for (const source of sources) {
+    if (source.status === 'invalid' && source.error) {
+      appendDiagnostic(diagnostics, {
+        code: source.error.code,
+        message: source.error.message,
+        sourceKind: source.sourceKind,
+        sourcePath: source.sourcePath
+      });
+    }
+  }
 }
 
 /** 将候选错误补全为固定来源诊断。 */
@@ -250,6 +364,11 @@ function createDiagnostic(diagnostic: SubagentCatalogDiagnostic): Readonly<Subag
     .slice(0, MAX_SUBAGENT_DIAGNOSTIC_MESSAGE_CODE_POINTS)
     .join('');
   return Object.freeze({...diagnostic, message, sourcePath: path.resolve(diagnostic.sourcePath)});
+}
+
+/** 限制模型 profile 等不可信标量进入诊断的字符和长度。 */
+function safeDiagnosticValue(value: string): string {
+  return Array.from(value.replace(/[\u0000-\u001f\u007f-\u009f]/gu, ' ')).slice(0, 80).join('');
 }
 
 /** 在全局诊断预算内追加单项，防止异常目录放大内存和 debug 输出。 */
@@ -273,7 +392,14 @@ function isMissingPathError(error: unknown): boolean {
 
 export {
   MAX_CUSTOM_SUBAGENTS,
-  loadSubagentCatalog
+  loadSubagentCatalog,
+  validateCustomSubagentManifest
 };
 
-export type {SubagentCatalog, SubagentCatalogDescriptor, SubagentCatalogDiagnostic, SubagentCatalogLoadOptions};
+export type {
+  CustomSubagentManifestValidationResult,
+  SubagentCatalog,
+  SubagentCatalogDescriptor,
+  SubagentCatalogDiagnostic,
+  SubagentCatalogLoadOptions
+};

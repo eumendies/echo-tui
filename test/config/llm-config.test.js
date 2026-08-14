@@ -30,6 +30,13 @@ function readLlmConfigForProfile(modelProfileId, options = {}) {
   return withContext(options, (snapshot) => snapshot.resolveLlmConfigForProfile(modelProfileId));
 }
 
+function readLlmConfigStrict(modelProfileId, reasoningEffortOverride, options = {}) {
+  return withContext(options, (snapshot) => snapshot.resolveLlmConfigStrict({
+    modelProfileId,
+    ...(reasoningEffortOverride !== undefined ? {reasoningEffortOverride} : {})
+  }));
+}
+
 function readLlmModelConfigInfo(options = {}) {
   return withContext(options, (snapshot) => snapshot.getLlmModelConfigInfo());
 }
@@ -328,6 +335,28 @@ test('readLlmConfigForProfile strictly resolves the requested profile without re
     () => readLlmConfigForProfile('deleted', {configPath: '/tmp/echo-config.json', readFile: readConfigFrom(source)}),
     /profile 不存在：deleted/
   );
+});
+
+test('resolveLlmConfigStrict keeps profile defaults, applies fixed effort, and rejects stale profiles', () => {
+  const source = JSON.stringify({
+    llm: {
+      selectedModel: 'parent',
+      providers: {shared: {preset: OPENAI_PRESET, apiKey: 'shared-key'}},
+      models: [
+        {id: 'parent', provider: 'shared', model: 'gpt-parent', reasoning: {effort: 'high'}},
+        {id: 'reviewer', provider: 'shared', model: 'gpt-reviewer', reasoning: {effort: 'low', summary: 'concise'}}
+      ]
+    }
+  });
+  const options = {configPath: '/tmp/echo-config.json', readFile: readConfigFrom(source)};
+  const targetDefault = readLlmConfigStrict('reviewer', undefined, options);
+  const fixed = readLlmConfigStrict('reviewer', 'none', options);
+
+  assert.equal(targetDefault.model, 'gpt-reviewer');
+  assert.equal(targetDefault.reasoningEffort, 'low');
+  assert.equal(targetDefault.reasoningSummary, 'concise');
+  assert.equal(fixed.reasoningEffort, 'none');
+  assert.throws(() => readLlmConfigStrict('deleted', 'max', options), /profile 不存在：deleted/u);
 });
 
 test('readLlmConfig applies effort override after resolving the per-run model profile', () => {

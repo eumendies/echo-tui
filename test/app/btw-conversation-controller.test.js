@@ -71,7 +71,9 @@ test('BTW captures the latest UserConfigSnapshot for each side turn', async () =
   const firstSnapshot = {
     revision: 7,
     getAppSettings() { return {}; },
+    getLlmModelConfigInfo() { return {kind: 'profiles', selectedModelId: 'fake', models: []}; },
     resolveLlmConfig() { return {}; },
+    resolveLlmConfigStrict() { return {}; },
     resolveLlmConfigForProfile() { return {}; }
   };
   const secondSnapshot = {

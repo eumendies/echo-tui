@@ -171,13 +171,12 @@ function createSubagentLoopRuntime(cwd: string, inheritedContext: InheritedAgent
     let state: SubagentLoopRunState;
 
     try {
+      const resolvedConfig = resolveSubagentLlmConfig(input, definition);
       const {agent, config, registry} = prepareAgent({
         allowedToolNames: new Set(definition.localToolNames),
-        configSnapshot: input.configSnapshot,
+        config: resolvedConfig,
         cwd,
         ...(definition.includeMcpTools && mcpManager ? {mcpManager} : {}),
-        modelProfileId: input.modelProfileId,
-        reasoningEffortOverride: input.reasoningEffortOverride
       });
       state = {
         agent,
@@ -348,6 +347,29 @@ function createSubagentLoopRuntime(cwd: string, inheritedContext: InheritedAgent
   };
 
   return runSubagentLoop;
+}
+
+/**
+ * 在父 revision 内解析冻结定义的最终模型策略。
+ * inherit 传递父覆盖，default 删除覆盖，固定枚举直接替换；显式 profile 始终严格解析。
+ */
+function resolveSubagentLlmConfig(input: SubagentLoopInput, definition: SubagentDefinition): LlmConfig {
+  const modelProfileId = definition.modelProfileId || input.modelProfileId;
+  const reasoningEffortOverride = definition.effortPolicy === 'inherit'
+    ? input.reasoningEffortOverride
+    : definition.effortPolicy === 'default'
+      ? undefined
+      : definition.effortPolicy;
+
+  if (modelProfileId) {
+    return input.configSnapshot.resolveLlmConfigStrict({
+      modelProfileId,
+      ...(reasoningEffortOverride !== undefined ? {reasoningEffortOverride} : {})
+    });
+  }
+  return input.configSnapshot.resolveLlmConfig({
+    ...(reasoningEffortOverride !== undefined ? {reasoningEffortOverride} : {})
+  });
 }
 
 export {createSubagentLoopRuntime};

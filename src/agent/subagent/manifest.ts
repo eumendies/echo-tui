@@ -1,4 +1,4 @@
-import type {CustomSubagentCapability} from './definition';
+import type {CustomSubagentCapability, SubagentEffortPolicy} from './definition';
 
 const MAX_CUSTOM_SUBAGENT_FILE_BYTES = 40 * 1024;
 const MAX_CUSTOM_SUBAGENT_BODY_BYTES = 32 * 1024;
@@ -7,8 +7,10 @@ const MAX_CUSTOM_SUBAGENT_DESCRIPTION_CODE_POINTS = 500;
 type CustomSubagentManifest = {
   capability: CustomSubagentCapability; // 选择系统拥有的只读或通用权限模板。
   description: string; // 主 Agent 目录可见的简短能力说明。
+  effort: SubagentEffortPolicy; // 子运行继承父覆盖、采用模型默认值或使用固定强度的策略。
   instructions: string; // 追加在系统基础约束后的非空 Markdown 角色正文。
   mcp: boolean; // 通用能力是否请求父运行已初始化的 MCP 工具；只读能力后续强制拒绝。
+  modelProfileId?: string; // 同一用户配置 snapshot 内严格引用的非敏感模型 profile id。
   tools: readonly string[]; // manifest 声明的 provider-neutral 本地能力名称。
 };
 
@@ -24,9 +26,22 @@ type CustomSubagentManifestParseResult =
 type ParsedFrontmatter = {
   capability?: string; // 尚未完成枚举校验的 capability 标量。
   description?: string; // 尚未完成长度校验的 description 标量。
+  effort?: string; // 尚未完成策略枚举校验的 effort 标量。
   mcp?: string; // 尚未完成布尔校验的可选 mcp 标量。
+  model?: string; // 尚未完成非空校验的模型 profile 标量。
   tools?: string[]; // 按声明顺序收集的工具序列。
 };
+
+const SUBAGENT_EFFORT_POLICIES = Object.freeze([
+  'inherit',
+  'default',
+  'none',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max'
+] as const);
 
 /**
  * 解析自定义 Subagent 的受限 Markdown manifest。
@@ -106,7 +121,7 @@ function parseFrontmatterLines(lines: readonly string[]): {ok: true; fields: Par
 
     const key = match[1];
     const rawValue = match[2];
-    if (!['description', 'capability', 'tools', 'mcp'].includes(key)) {
+    if (!['description', 'capability', 'model', 'effort', 'tools', 'mcp'].includes(key)) {
       return parseFailure('unknown_field', 'Unknown frontmatter field.');
     }
     if (seen.has(key)) {
@@ -133,7 +148,7 @@ function parseFrontmatterLines(lines: readonly string[]): {ok: true; fields: Par
     if (!scalarResult.ok) {
       return scalarResult;
     }
-    fields[key as 'description' | 'capability' | 'mcp'] = scalarResult.value;
+    fields[key as 'description' | 'capability' | 'model' | 'effort' | 'mcp'] = scalarResult.value;
   }
 
   return {ok: true, fields};
@@ -187,6 +202,9 @@ function validateParsedFrontmatter(fields: ParsedFrontmatter, body: string): Cus
   if (fields.mcp !== undefined && fields.mcp !== 'true' && fields.mcp !== 'false') {
     return parseFailure('invalid_mcp', 'mcp must be the unquoted boolean true or false.');
   }
+  if (fields.effort !== undefined && !(SUBAGENT_EFFORT_POLICIES as readonly string[]).includes(fields.effort)) {
+    return parseFailure('invalid_effort', `effort must be one of: ${SUBAGENT_EFFORT_POLICIES.join(', ')}.`);
+  }
   const seenTools = new Set<string>();
   for (const tool of fields.tools!) {
     if (!/^[a-z][a-z0-9_]*$/u.test(tool)) {
@@ -201,11 +219,38 @@ function validateParsedFrontmatter(fields: ParsedFrontmatter, body: string): Cus
   const manifest: CustomSubagentManifest = {
     capability: fields.capability,
     description: fields.description!,
+    effort: (fields.effort || 'inherit') as SubagentEffortPolicy,
     instructions: body,
     mcp: fields.mcp === 'true',
+    ...(fields.model !== undefined ? {modelProfileId: fields.model} : {}),
     tools: fields.tools!
   };
   return {ok: true, manifest};
+}
+
+/**
+ * 把已校验领域对象写成稳定 manifest；字段顺序和 LF 换行固定，Markdown 正文内容不改写。
+ */
+function serializeCustomSubagentManifest(manifest: Readonly<CustomSubagentManifest>): string {
+  const lines = [
+    '---',
+    `description: ${manifest.description}`,
+    `capability: ${manifest.capability}`,
+    ...(manifest.modelProfileId ? [`model: ${manifest.modelProfileId}`] : []),
+    `effort: ${manifest.effort}`,
+    'tools:',
+    ...manifest.tools.map((tool) => `  - ${tool}`),
+    `mcp: ${String(manifest.mcp)}`,
+    '---',
+    '',
+    manifest.instructions
+  ];
+  const serialized = `${lines.join('\n')}\n`;
+  const reparsed = parseCustomSubagentManifest(serialized);
+  if (!reparsed.ok) {
+    throw new Error(`Cannot serialize invalid custom subagent manifest: ${reparsed.error.message}`);
+  }
+  return serialized;
 }
 
 /** 创建不携带文件正文的结构化解析错误。 */
@@ -222,7 +267,9 @@ export {
   MAX_CUSTOM_SUBAGENT_BODY_BYTES,
   MAX_CUSTOM_SUBAGENT_DESCRIPTION_CODE_POINTS,
   MAX_CUSTOM_SUBAGENT_FILE_BYTES,
-  parseCustomSubagentManifest
+  SUBAGENT_EFFORT_POLICIES,
+  parseCustomSubagentManifest,
+  serializeCustomSubagentManifest
 };
 
 export type {CustomSubagentManifest, CustomSubagentManifestParseError, CustomSubagentManifestParseResult};

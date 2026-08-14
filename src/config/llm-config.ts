@@ -574,30 +574,43 @@ function resolveLlmConfig(parsed: ParsedLlmConfiguration, tools: ToolRuntimeConf
   }
 
   const selectedProfile = resolveSelectedProfile(parsed.llmConfig, parsed.models, options.modelProfileId);
-  const providerConfig = resolveSelectedProviderConfig(selectedProfile, parsed.providers);
-  const reasoningEffort = options.reasoningEffortOverride ?? selectedProfile.reasoningEffort;
-
-  return {
-    ...providerConfig,
-    model: selectedProfile.model,
-    ...(reasoningEffort ? {reasoningEffort} : {}),
-    ...(selectedProfile.reasoningSummary ? {reasoningSummary: selectedProfile.reasoningSummary} : {}),
-    contextWindow: selectedProfile.contextWindow,
-    tools
-  };
+  return createResolvedProfileConfig(selectedProfile, parsed.providers, tools, options);
 }
 
 /** 严格解析指定 profile；审批等安全边界不得回退全局模型。 */
 function resolveLlmConfigForProfile(parsed: ParsedLlmConfiguration, tools: ToolRuntimeConfig, modelProfileId: string): LlmConfig {
-  const selectedProfile = parsed.models.find((profile) => profile.id === modelProfileId);
+  return createResolvedProfileConfig(requireModelProfile(parsed.models, modelProfileId), parsed.providers, tools);
+}
 
+/** 严格解析指定 profile 及其默认或显式 effort；失效引用不得落到全局选择。 */
+function resolveLlmConfigStrict(parsed: ParsedLlmConfiguration, tools: ToolRuntimeConfig, options: Required<Pick<ResolveLlmConfigOptions, 'modelProfileId'>> & Pick<ResolveLlmConfigOptions, 'reasoningEffortOverride'>): LlmConfig {
+  return createResolvedProfileConfig(requireModelProfile(parsed.models, options.modelProfileId), parsed.providers, tools, options);
+}
+
+/** 严格查找显式 profile，统一审批与 Subagent 的禁止回退语义。 */
+function requireModelProfile(models: readonly LlmModelProfile[], modelProfileId: string): LlmModelProfile {
+  const selectedProfile = models.find((profile) => profile.id === modelProfileId);
   if (!selectedProfile) {
     throw new LlmConfigError(`LLM 模型 profile 不存在：${modelProfileId}`);
   }
+  return selectedProfile;
+}
 
+/** 从已确认的 profile 组装 provider 配置；reasoningOptions 缺省时刻意不启用推理字段。 */
+function createResolvedProfileConfig(
+  selectedProfile: LlmModelProfile,
+  providers: Map<string, LlmProviderProfile>,
+  tools: ToolRuntimeConfig,
+  reasoningOptions?: Pick<ResolveLlmConfigOptions, 'reasoningEffortOverride'>
+): LlmConfig {
+  const reasoningEffort = reasoningOptions
+    ? reasoningOptions.reasoningEffortOverride ?? selectedProfile.reasoningEffort
+    : undefined;
   return {
-    ...resolveSelectedProviderConfig(selectedProfile, parsed.providers),
+    ...resolveSelectedProviderConfig(selectedProfile, providers),
     model: selectedProfile.model,
+    ...(reasoningEffort ? {reasoningEffort} : {}),
+    ...(reasoningOptions && selectedProfile.reasoningSummary ? {reasoningSummary: selectedProfile.reasoningSummary} : {}),
     contextWindow: selectedProfile.contextWindow,
     tools
   };
@@ -620,6 +633,7 @@ export {
   parseToolRuntimeConfig,
   resolveLlmConfig,
   resolveLlmConfigForProfile,
+  resolveLlmConfigStrict,
   resolveContextWindow
 };
 

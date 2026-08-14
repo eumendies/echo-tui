@@ -66,6 +66,8 @@ function completeCommandSurfaceFixture(surface) {
       return {title: 'MEMORY', dismissHint: 'Esc 关闭', ...surface};
     case 'hooks':
       return {title: 'HOOKS', dismissHint: 'Esc 关闭', ...surface};
+    case 'agents':
+      return {activeTab: 'overview', title: 'AGENTS', mode: 'list', rows: [], selectedIndex: 0, tabs: [], dismissHint: 'Esc 关闭', ...surface};
     case 'scale':
       return {title: '刻度', leftLabel: '', rightLabel: '', options: [], selectedIndex: 0, dismissHint: 'Esc 关闭', ...surface};
     case 'choice':

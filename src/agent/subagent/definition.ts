@@ -1,10 +1,14 @@
 import {isValidSubagentName} from './name';
 
+import type {ReasoningEffort} from '../../types/agent';
+
 type SubagentDefinition = {
   description: string; // 投影给主 Agent 的能力与适用场景说明。
+  effortPolicy: SubagentEffortPolicy; // 子运行最终 effort 相对父覆盖和目标模型默认值的选择策略。
   executionPolicy: SubagentExecutionPolicy; // 子 runtime 固定使用的工具风险与执行边界。
   includeMcpTools: boolean; // 是否把父运行已初始化的 MCP 工具合并到独立 registry。
   localToolNames: readonly string[]; // 子 provider schema 与本地 executor 共用的本地工具白名单快照。
+  modelProfileId?: string; // 已由父 run 配置 snapshot 严格验证的显式模型 profile。
   name: string; // 工具参数、transcript 和审批来源共用的稳定名称。
   prompt: string; // 注入子 provider system context 的专属行为约束。
 };
@@ -12,6 +16,8 @@ type SubagentDefinition = {
 type SubagentExecutionPolicy = 'readonly_investigation' | 'general_purpose';
 
 type CustomSubagentCapability = 'readonly' | 'general';
+
+type SubagentEffortPolicy = 'inherit' | 'default' | ReasoningEffort;
 
 const READONLY_SUBAGENT_TOOL_CEILING = Object.freeze([
   'read_files',
@@ -83,6 +89,7 @@ function freezeSubagentDefinition(definition: SubagentDefinition): Readonly<Suba
 const explorerSubagent = freezeSubagentDefinition({
   name: 'explorer',
   description: 'Investigate a broad bounded task with read-only project and web tools, then return concise evidence-backed findings.',
+  effortPolicy: 'inherit',
   executionPolicy: 'readonly_investigation',
   includeMcpTools: false,
   prompt: [
@@ -102,6 +109,7 @@ const explorerSubagent = freezeSubagentDefinition({
 const workerSubagent = freezeSubagentDefinition({
   name: 'worker',
   description: 'Execute a self-contained general-purpose task with project editing, commands, validation, web, skills, questions, todos, and available MCP tools.',
+  effortPolicy: 'inherit',
   executionPolicy: 'general_purpose',
   includeMcpTools: true,
   prompt: [
@@ -129,4 +137,4 @@ export {
   freezeSubagentDefinition
 };
 
-export type {CustomSubagentCapability, SubagentDefinition, SubagentExecutionPolicy};
+export type {CustomSubagentCapability, SubagentDefinition, SubagentEffortPolicy, SubagentExecutionPolicy};

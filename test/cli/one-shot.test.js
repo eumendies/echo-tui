@@ -180,6 +180,7 @@ test('runOnce discovers and executes the same frozen custom subagent catalog as 
       fileEditMode: 'apply_patch'
     }
   };
+  const reviewerConfig = {...config, model: 'fake-reviewer', reasoningEffort: 'low'};
   const snapshot = {
     revision: 1,
     getAppSettings() {
@@ -190,7 +191,21 @@ test('runOnce discovers and executes the same frozen custom subagent catalog as 
         toolApprovalMode: 'manual'
       };
     },
+    getLlmModelConfigInfo() {
+      return {
+        kind: 'profiles',
+        selectedModelId: 'fake',
+        models: [
+          {id: 'fake', provider: 'fake', model: config.model},
+          {id: 'reviewer', provider: 'fake', model: reviewerConfig.model, reasoningEffort: 'low'}
+        ]
+      };
+    },
     resolveLlmConfig() { return config; },
+    resolveLlmConfigStrict(options) {
+      if (options.modelProfileId !== 'reviewer') throw new Error('unexpected profile');
+      return {...reviewerConfig, ...(options.reasoningEffortOverride !== undefined ? {reasoningEffort: options.reasoningEffortOverride} : {})};
+    },
     resolveLlmConfigForProfile() { return config; }
   };
   const configContext = {
@@ -200,13 +215,15 @@ test('runOnce discovers and executes the same frozen custom subagent catalog as 
   let parentTurn = 0;
   let childRuns = 0;
 
-  function writeAgent(base, name, description, body) {
+  function writeAgent(base, name, description, body, modelPolicy = {}) {
     const agentsDir = path.join(base, '.echo', 'agents');
     fs.mkdirSync(agentsDir, {recursive: true});
     fs.writeFileSync(path.join(agentsDir, `${name}.md`), [
       '---',
       `description: ${description}`,
       'capability: readonly',
+      ...(modelPolicy.model ? [`model: ${modelPolicy.model}`] : []),
+      ...(modelPolicy.effort ? [`effort: ${modelPolicy.effort}`] : []),
       'tools:',
       '  - read_files',
       '---',
@@ -219,21 +236,24 @@ test('runOnce discovers and executes the same frozen custom subagent catalog as 
     fs.mkdirSync(path.join(project, '.git'), {recursive: true});
     writeAgent(home, 'doc-writer', 'User documentation specialist.', 'USER DOC BODY');
     writeAgent(home, 'reviewer', 'Stale user reviewer.', 'STALE USER BODY');
-    writeAgent(project, 'reviewer', 'Project security reviewer.', 'PROJECT REVIEW BODY');
+    writeAgent(project, 'reviewer', 'Project security reviewer.', 'PROJECT REVIEW BODY', {model: 'reviewer', effort: 'default'});
     os.homedir = () => home;
     agentSetupModule.prepareAgent = (options) => {
-      const registry = createDefaultToolRegistry(config, project, undefined, {
+      const effectiveConfig = options.config || config;
+      const registry = createDefaultToolRegistry(effectiveConfig, project, undefined, {
         allowedToolNames: options.allowedToolNames,
         subagentPort: options.subagentPort
       });
       const subagent = options.allowedToolNames !== undefined;
       return {
-        config,
+        config: effectiveConfig,
         registry,
         agent: {
           async runTurn(records) {
             if (subagent) {
               childRuns += 1;
+              assert.equal(effectiveConfig.model, 'fake-reviewer');
+              assert.equal(effectiveConfig.reasoningEffort, 'low');
               assert.deepEqual(registry.listDefinitions().map(({name}) => name), ['read_files']);
               assert.match(records[0].text, /PROJECT REVIEW BODY/u);
               assert.doesNotMatch(records[0].text, /STALE USER BODY/u);
