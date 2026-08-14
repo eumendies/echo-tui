@@ -1,6 +1,7 @@
 import {createAssistantCommandPort} from './assistant-command-port';
 import {writeClipboardText} from '../clipboard';
 import {createConversationReferenceCommandPort} from './conversation-reference-command-port';
+import {createAgentsCommandPort} from './agents-command-port';
 import {createHistoryCommandPorts} from './history-command-ports';
 import {createHooksCommandPort} from './hooks-command-port';
 import {createMcpCommandPort} from './mcp-command-port';
@@ -65,6 +66,10 @@ function createCommandHost(options: CommandHostOptions): CommandHostApp {
     skills: createSkillsCommandPort({cwd, clearContextUsage: () => appContext.clearContextUsage()}),
     mcp: createMcpCommandPort({appContext, mcpManager, render, userConfigContext}),
     memory: createMemoryCommandPort(cwd),
+    agents: createAgentsCommandPort({
+      captureUserConfigSnapshot: () => userConfigContext.capture(),
+      cwd
+    }),
     hooks: createHooksCommandPort({
       cwd,
       getInteractionMode: () => appContext.getInteractionMode(),

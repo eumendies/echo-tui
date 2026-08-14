@@ -13,8 +13,10 @@ const {
   MAX_CUSTOM_SUBAGENT_BODY_BYTES,
   MAX_CUSTOM_SUBAGENT_DESCRIPTION_CODE_POINTS,
   MAX_CUSTOM_SUBAGENT_FILE_BYTES,
-  parseCustomSubagentManifest
+  parseCustomSubagentManifest,
+  serializeCustomSubagentManifest
 } = require('../../src/agent/subagent/manifest');
+const {parseAgentsSettings} = require('../../src/agent/subagent/settings');
 const {
   formatSubagentDisplayName,
   formatSubagentRawName,
@@ -38,11 +40,15 @@ function createManifest(overrides = {}) {
   const capability = overrides.capability || 'readonly';
   const tools = overrides.tools || ['read_files', 'glob', 'grep'];
   const mcpLine = Object.hasOwn(overrides, 'mcp') ? `mcp: ${String(overrides.mcp)}\n` : '';
+  const modelLine = Object.hasOwn(overrides, 'model') ? `model: ${overrides.model}\n` : '';
+  const effortLine = Object.hasOwn(overrides, 'effort') ? `effort: ${overrides.effort}\n` : '';
   const body = overrides.body || '# Role\n\nReturn concise findings.';
   return [
     '---',
     `description: ${description}`,
     `capability: ${capability}`,
+    modelLine.trimEnd(),
+    effortLine.trimEnd(),
     'tools:',
     ...tools.map((tool) => `  - ${tool}`),
     mcpLine.trimEnd(),
@@ -52,11 +58,31 @@ function createManifest(overrides = {}) {
   ].filter((line, index) => line !== '' || index > 0).join('\n');
 }
 
+function createConfigSnapshot(modelProfileIds = ['parent']) {
+  return {
+    getLlmModelConfigInfo() {
+      return {
+        kind: 'profiles',
+        selectedModelId: modelProfileIds[0],
+        models: modelProfileIds.map((id) => ({id, provider: 'fake', model: `model-${id}`}))
+      };
+    }
+  };
+}
+
 function writeAgent(base, name, content = createManifest()) {
   const agentsDir = path.join(base, '.echo', 'agents');
   fs.mkdirSync(agentsDir, {recursive: true});
   const filePath = path.join(agentsDir, `${name}.md`);
   fs.writeFileSync(filePath, content, 'utf8');
+  return filePath;
+}
+
+function writeAgentsSettings(base, value) {
+  const echoDir = path.join(base, '.echo');
+  fs.mkdirSync(echoDir, {recursive: true});
+  const filePath = path.join(echoDir, 'agents.settings.json');
+  fs.writeFileSync(filePath, typeof value === 'string' ? value : JSON.stringify(value), 'utf8');
   return filePath;
 }
 
@@ -100,6 +126,7 @@ test('manifest parser accepts only the documented bounded subset', () => {
   assert.deepEqual(parsed.manifest, {
     capability: 'general',
     description: 'Review auth risks',
+    effort: 'inherit',
     instructions: '# Reviewer\n\nCheck authentication.',
     mcp: true,
     tools: ['read_files', 'file_edit']
@@ -109,12 +136,14 @@ test('manifest parser accepts only the documented bounded subset', () => {
 test('manifest parser rejects missing, duplicate, unknown, typed, templated, and unsupported structures', () => {
   const invalidCases = [
     ['missing_field', '---\ndescription: x\ncapability: readonly\n---\nbody'],
-    ['unknown_field', '---\ndescription: x\ncapability: readonly\ntools:\n  - grep\nmodel: secret\n---\nbody'],
+    ['unknown_field', '---\ndescription: x\ncapability: readonly\ntools:\n  - grep\nprovider: secret\n---\nbody'],
     ['duplicate_field', '---\ndescription: x\ndescription: y\ncapability: readonly\ntools:\n  - grep\n---\nbody'],
     ['duplicate_tool', '---\ndescription: x\ncapability: readonly\ntools:\n  - grep\n  - grep\n---\nbody'],
     ['unsupported_structure', '---\ndescription: x\ncapability: readonly\ntools: [grep]\n---\nbody'],
     ['unsupported_structure', '---\ndescription: ${SECRET}\ncapability: readonly\ntools:\n  - grep\n---\nbody'],
     ['invalid_mcp', '---\ndescription: x\ncapability: general\ntools:\n  - grep\nmcp: "true"\n---\nbody'],
+    ['empty_field', '---\ndescription: x\ncapability: readonly\nmodel: \ntools:\n  - grep\n---\nbody'],
+    ['invalid_effort', '---\ndescription: x\ncapability: readonly\neffort: extreme\ntools:\n  - grep\n---\nbody'],
     ['missing_body', '---\ndescription: x\ncapability: readonly\ntools:\n  - grep\n---\n  \n'],
     ['control_character', '---\ndescription: x\u001b\ncapability: readonly\ntools:\n  - grep\n---\nbody']
   ];
@@ -124,6 +153,73 @@ test('manifest parser rejects missing, duplicate, unknown, typed, templated, and
     assert.equal(parsed.ok, false, raw);
     assert.equal(parsed.error.code, code, raw);
     assert.doesNotMatch(parsed.error.message, /SECRET|body/u);
+  }
+});
+
+test('manifest parser and canonical serializer round-trip model, effort, and Markdown instructions', () => {
+  const parsed = parseCustomSubagentManifest(createManifest({
+    capability: 'general',
+    model: 'review-model',
+    effort: 'xhigh',
+    tools: ['read_files', 'file_edit'],
+    mcp: true,
+    body: '# Role\n\n- keep this list\n- and spacing'
+  }));
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.manifest.modelProfileId, 'review-model');
+  assert.equal(parsed.manifest.effort, 'xhigh');
+
+  const serialized = serializeCustomSubagentManifest(parsed.manifest);
+  assert.equal(serialized, [
+    '---',
+    'description: Review a bounded area with concrete evidence.',
+    'capability: general',
+    'model: review-model',
+    'effort: xhigh',
+    'tools:',
+    '  - read_files',
+    '  - file_edit',
+    'mcp: true',
+    '---',
+    '',
+    '# Role',
+    '',
+    '- keep this list',
+    '- and spacing',
+    ''
+  ].join('\n'));
+  assert.deepEqual(parseCustomSubagentManifest(serialized), parsed);
+});
+
+test('agents settings parser is versioned and rejects unknown or malformed override fields', () => {
+  const valid = parseAgentsSettings(JSON.stringify({
+    schemaVersion: 1,
+    overrides: {
+      explorer: {modelProfileId: 'fast', effort: 'default'},
+      worker: {effort: 'max'}
+    }
+  }));
+  assert.equal(valid.ok, true);
+  assert.deepEqual(valid.settings, {
+    schemaVersion: 1,
+    overrides: {
+      explorer: {modelProfileId: 'fast', effort: 'default'},
+      worker: {effort: 'max'}
+    }
+  });
+
+  for (const [code, value] of [
+    ['unsupported_settings_version', {schemaVersion: 2, overrides: {}}],
+    ['unknown_settings_field', {schemaVersion: 1, overrides: {}, secret: true}],
+    ['invalid_settings_overrides', {schemaVersion: 1, overrides: {other: {}}}],
+    ['invalid_builtin_override', {schemaVersion: 1, overrides: {worker: {tools: ['apply_patch']}}}],
+    ['invalid_override_model', {schemaVersion: 1, overrides: {worker: {modelProfileId: ''}}}],
+    ['invalid_override_model', {schemaVersion: 1, overrides: {worker: {modelProfileId: 'unsafe\u001b[31m'}}}],
+    ['invalid_override_effort', {schemaVersion: 1, overrides: {worker: {effort: 'extreme'}}}]
+  ]) {
+    const parsedSettings = parseAgentsSettings(JSON.stringify(value));
+    assert.equal(parsedSettings.ok, false);
+    assert.equal(parsedSettings.error.code, code);
   }
 });
 
@@ -247,10 +343,147 @@ test('catalog maps capability ceilings, file_edit alias, MCP policy, and appende
   }
 });
 
+test('catalog strictly validates custom model profiles against the supplied snapshot', () => {
+  const workspace = createWorkspace();
+  try {
+    writeAgent(workspace.project, 'valid-model', createManifest({model: 'reviewer', effort: 'default'}));
+    const invalidPath = writeAgent(workspace.project, 'stale-model', createManifest({model: 'deleted', effort: 'high'}));
+    const catalog = loadSubagentCatalog({
+      configSnapshot: createConfigSnapshot(['parent', 'reviewer']),
+      cwd: workspace.project,
+      homedir: workspace.home
+    });
+
+    assert.equal(catalog.get('valid-model').modelProfileId, 'reviewer');
+    assert.equal(catalog.get('valid-model').effortPolicy, 'default');
+    assert.equal(catalog.get('stale-model'), undefined);
+    const diagnostic = catalog.diagnostics.find(({sourcePath}) => sourcePath === invalidPath);
+    assert.equal(diagnostic.code, 'model_profile_not_found');
+    assert.match(diagnostic.message, /deleted/u);
+    assert.doesNotMatch(diagnostic.message, /provider|apiKey|header/u);
+  } finally {
+    fs.rmSync(workspace.root, {recursive: true, force: true});
+  }
+});
+
+test('built-in settings use whole-entry project precedence and preserve every safety field', () => {
+  const workspace = createWorkspace();
+  try {
+    writeAgentsSettings(workspace.home, {
+      schemaVersion: 1,
+      overrides: {
+        explorer: {modelProfileId: 'user-model', effort: 'low'},
+        worker: {modelProfileId: 'user-model', effort: 'high'}
+      }
+    });
+    writeAgentsSettings(workspace.project, {
+      schemaVersion: 1,
+      overrides: {worker: {effort: 'default'}}
+    });
+    const catalog = loadSubagentCatalog({
+      configSnapshot: createConfigSnapshot(['parent', 'user-model']),
+      cwd: workspace.project,
+      homedir: workspace.home
+    });
+    const explorer = catalog.get('explorer');
+    const worker = catalog.get('worker');
+
+    assert.equal(explorer.modelProfileId, 'user-model');
+    assert.equal(explorer.effortPolicy, 'low');
+    assert.equal(worker.modelProfileId, undefined);
+    assert.equal(worker.effortPolicy, 'default');
+    for (const [effective, original] of [[explorer, BUILTIN_SUBAGENT_DEFINITIONS[0]], [worker, BUILTIN_SUBAGENT_DEFINITIONS[1]]]) {
+      assert.equal(effective.prompt, original.prompt);
+      assert.equal(effective.description, original.description);
+      assert.equal(effective.executionPolicy, original.executionPolicy);
+      assert.equal(effective.includeMcpTools, original.includeMcpTools);
+      assert.equal(effective.localToolNames, original.localToolNames);
+    }
+  } finally {
+    fs.rmSync(workspace.root, {recursive: true, force: true});
+  }
+});
+
+test('invalid higher-priority built-in settings fail closed without user fallback', () => {
+  const workspace = createWorkspace();
+  try {
+    writeAgentsSettings(workspace.home, {
+      schemaVersion: 1,
+      overrides: {explorer: {modelProfileId: 'user-model', effort: 'max'}}
+    });
+    const projectPath = writeAgentsSettings(workspace.project, '{broken');
+    let catalog = loadSubagentCatalog({
+      configSnapshot: createConfigSnapshot(['parent', 'user-model']),
+      cwd: workspace.project,
+      homedir: workspace.home
+    });
+    assert.equal(catalog.get('explorer'), BUILTIN_SUBAGENT_DEFINITIONS[0]);
+    assert.equal(catalog.diagnostics.some(({code, sourcePath}) => code === 'invalid_settings_json' && sourcePath === projectPath), true);
+
+    writeAgentsSettings(workspace.project, {
+      schemaVersion: 1,
+      overrides: {explorer: {modelProfileId: 'deleted', effort: 'high'}}
+    });
+    catalog = loadSubagentCatalog({
+      configSnapshot: createConfigSnapshot(['parent', 'user-model']),
+      cwd: workspace.project,
+      homedir: workspace.home
+    });
+    const explorer = catalog.get('explorer');
+    assert.equal(explorer.modelProfileId, undefined);
+    assert.equal(explorer.effortPolicy, 'inherit');
+    assert.equal(catalog.diagnostics.some(({code}) => code === 'builtin_model_profile_not_found'), true);
+  } finally {
+    fs.rmSync(workspace.root, {recursive: true, force: true});
+  }
+});
+
+test('runtime settings loading rejects symbolic links like the management store', () => {
+  const workspace = createWorkspace();
+  try {
+    const outside = path.join(workspace.root, 'outside-settings.json');
+    fs.writeFileSync(outside, JSON.stringify({schemaVersion: 1, overrides: {explorer: {effort: 'high'}}}), 'utf8');
+    const projectEcho = path.join(workspace.project, '.echo');
+    fs.mkdirSync(projectEcho, {recursive: true});
+    const settingsPath = path.join(projectEcho, 'agents.settings.json');
+    fs.symlinkSync(outside, settingsPath);
+
+    const catalog = loadSubagentCatalog({
+      configSnapshot: createConfigSnapshot(['parent']),
+      cwd: workspace.project,
+      homedir: workspace.home
+    });
+    assert.equal(catalog.get('explorer'), BUILTIN_SUBAGENT_DEFINITIONS[0]);
+    assert.equal(catalog.diagnostics.some(({code, sourcePath}) => code === 'symbolic_link' && sourcePath === settingsPath), true);
+  } finally {
+    fs.rmSync(workspace.root, {recursive: true, force: true});
+  }
+});
+
+test('runtime custom Agent discovery rejects symbolic links in the managed directory chain', () => {
+  const workspace = createWorkspace();
+  try {
+    const outsideAgents = path.join(workspace.root, 'outside-agents');
+    writeAgent(workspace.root, 'outside-only', createManifest());
+    fs.renameSync(path.join(workspace.root, '.echo', 'agents'), outsideAgents);
+    const projectEcho = path.join(workspace.project, '.echo');
+    fs.mkdirSync(projectEcho, {recursive: true});
+    const projectAgents = path.join(projectEcho, 'agents');
+    fs.symlinkSync(outsideAgents, projectAgents);
+
+    const catalog = loadSubagentCatalog({cwd: workspace.project, homedir: workspace.home});
+    assert.equal(catalog.get('outside-only'), undefined);
+    assert.equal(catalog.diagnostics.some(({code, sourcePath}) => code === 'unsafe_directory' && sourcePath === projectAgents), true);
+  } finally {
+    fs.rmSync(workspace.root, {recursive: true, force: true});
+  }
+});
+
 test('catalog tolerates missing and unreadable optional directories with bounded diagnostics', () => {
   const workspace = createWorkspace();
   try {
     const projectAgents = path.join(workspace.project, '.echo', 'agents');
+    fs.mkdirSync(projectAgents, {recursive: true});
     const catalog = loadSubagentCatalog({
       cwd: workspace.project,
       homedir: workspace.home,

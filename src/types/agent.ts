@@ -143,9 +143,25 @@ export type AgentUserConfigSnapshot = {
     toolApprovalMode: 'manual' | 'auto'; // 本回合工具审批策略。
     toolApprovalModelProfileId?: string; // 本回合自动审批严格引用的 profile。
   };
+  getLlmModelConfigInfo(): {
+    kind: 'profiles'; // 当前配置使用 profile 目录模型。
+    selectedModelId: string; // 宽松主运行选择最终命中的 profile id。
+    models: readonly {
+      id: string; // manifest 和内置 override 可持久化引用的稳定 profile id。
+      provider: string; // 非敏感 provider 配置 id，不包含凭据和 headers。
+      model: string; // provider 接收的模型名称。
+      reasoningEffort?: ReasoningEffort; // profile 自身配置的默认推理强度。
+      reasoningSummary?: ReasoningSummary; // profile 自身配置的 reasoning summary 策略。
+      contextWindow?: number; // profile 显式配置的上下文窗口。
+    }[];
+  };
   resolveLlmConfig(options?: {
     modelProfileId?: string; // 当前 session 或 skill 已解析出的 profile id。
     reasoningEffortOverride?: ReasoningEffort; // 当前回合显式 effort 覆盖。
+  }): LlmConfig;
+  resolveLlmConfigStrict(options: {
+    modelProfileId: string; // 必须存在于当前 revision 的 profile id，失效时禁止回退。
+    reasoningEffortOverride?: ReasoningEffort; // 若提供则覆盖目标 profile 默认 effort，包含 none。
   }): LlmConfig;
   resolveLlmConfigForProfile(modelProfileId: string): LlmConfig; // 严格解析同一 revision 内的指定 profile。
 };

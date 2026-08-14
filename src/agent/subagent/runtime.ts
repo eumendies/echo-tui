@@ -46,7 +46,7 @@ type SubagentToolPortOptions = {
  * 端口同步等待子运行结束；稳定过程由 publishRecords 增量提交，瞬时活动只通过父 callbacks 投影。
  */
 function createSubagentToolPort(options: SubagentToolPortOptions): SubagentToolPort {
-  const catalog = loadSubagentCatalog({cwd: options.cwd});
+  const catalog = loadSubagentCatalog({configSnapshot: options.configSnapshot, cwd: options.cwd});
   options.observation.subagentCatalogLoaded(catalog.diagnostics);
   let callCount = 0;
 

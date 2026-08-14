@@ -86,6 +86,7 @@ echo-tui --once --full-access "按要求修改文件并运行检查"
 | `/reference` | 把一个历史会话作为下一条消息的参考 |
 | `/diff` `/undo` | 查看文件改动、回退上一轮改动 |
 | `/mcp` `/hooks` `/skills` | 启停已配置的 MCP Server，管理 Hooks 和 Skills |
+| `/agents` | 查看和管理内置、用户级与项目级 Subagent |
 | `/init` `/review` | 初始化项目指令、审查当前 Git 改动 |
 | `/<skill-name> [args]` | 调用已启用的 Skill |
 
@@ -111,6 +112,8 @@ Echo TUI 默认读取 `AGENTS.md`，也可以在 `/config` 中改为 `CLAUDE.md`
 ---
 description: Review authentication code and report concrete security risks.
 capability: readonly
+model: reviewer-model
+effort: high
 tools:
   - read_files
   - glob
@@ -124,14 +127,18 @@ mcp: false
 Inspect only authentication-related code. Cite file paths and return prioritized findings.
 ```
 
-- `description`、`capability`、`tools` 必填；`mcp` 可选，默认 `false`。未知、重复或类型不符的字段会使整个定义失效。
+- `description`、`capability`、`tools` 必填；`model`、`effort`、`mcp` 可选。`model` 引用 `/config` 中的模型 profile ID；引用失效时定义不会进入可委派目录，也不会静默回退。
+- `effort` 缺省或设为 `inherit` 时继承父 turn 的 effort，`default` 使用最终模型 profile 的默认值，也可固定为 `none`、`low`、`medium`、`high`、`xhigh` 或 `max`。未知、重复或类型不符的字段会使整个定义失效。
 - `capability: readonly` 只能从只读工具上限中选择能力，不能启用 MCP。严格白名单外的 Bash 在交互模式需要人工批准，在 headless 模式中即使使用 `--full-access` 也会拒绝。
 - `capability: general` 使用普通工具风险策略，并继承 `normal` / `plan` 和 headless 的 deny / `--full-access` 边界。`file_edit` 是能力别名，运行时会映射到当前配置选中的 `apply_patch` 或 `edit_file` 实现。
 - `mcp: true` 仅允许 general 定义使用当前父运行已经初始化的 MCP 工具；具体 MCP 风险和审批设置仍然生效。
 - 每次主 Agent 运行只加载一次目录并冻结快照；运行期间修改文件不会改变当前 schema 或已解析定义，下次运行才会生效。缺少用户或项目 agents 目录会被视为空目录。
 - 无效文件不会进入模型目录；启用 debug 后可通过 `subagent_catalog_diagnostic` 定位来源路径和有界错误信息，manifest 正文不会写入诊断。
+- 使用 `/agents` 可在 Overview、Project、User 和 Built-in 范围查看来源覆盖与诊断，并创建、编辑或删除定义。所有变更动作都是可聚焦选项：用方向键选择并按 Enter；创建、删除和移除内置 override 会进入默认选中“取消”的确认页，不使用 `a`、`d` 等隐藏快捷键。
+- `/agents` 允许为内置 `explorer`、`worker` 设置用户级或项目级 model/effort override；设置分别保存在 `~/.echo/agents.settings.json` 和项目根 `.echo/agents.settings.json`，不会改变内置 prompt、工具或权限策略。
+- Agent 文件和 override 使用原子写入与内容指纹冲突保护。保存成功后只影响下一次 assistant turn，已经启动的父 run 继续使用其冻结目录。
 
-自定义 Subagent 不支持覆盖内置名称、单独指定模型、嵌套委派、绕过审批或提升 manifest 声明之外的权限；它也不是独立会话、插件沙箱或会话迁移机制。
+自定义 Subagent 不支持覆盖内置名称、嵌套委派、绕过审批或提升 manifest 声明之外的权限；它也不是独立会话、插件沙箱或会话迁移机制。
 
 ### MCP、Hooks 与主题
 

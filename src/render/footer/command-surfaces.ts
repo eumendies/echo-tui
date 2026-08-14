@@ -7,6 +7,7 @@ import { renderCopySurface } from './copy-surface';
 import { renderDiffSurface } from './diff-surface';
 import { renderFilePickerSurface } from './file-picker-surface';
 import { renderHooksSurface } from './hooks-surface';
+import { renderAgentsSurface } from './agents-surface';
 import { renderMcpSurface } from './mcp-surface';
 import { renderMemorySurface } from './memory-surface';
 import { renderResumeSurface } from './resume-surface';
@@ -62,6 +63,10 @@ export function renderCommandSurface(commandSurface: CommandSurface, width: numb
 
   if (commandSurface.kind === 'hooks') {
     return constrainLayoutTail(renderHooksSurface(commandSurface, width, theme), options.maxLines);
+  }
+
+  if (commandSurface.kind === 'agents') {
+    return renderAgentsSurface(commandSurface, width, options.maxLines, theme);
   }
 
   if (commandSurface.kind === 'scale') {

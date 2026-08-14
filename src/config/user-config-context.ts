@@ -9,7 +9,8 @@ import {
   parseLlmConfiguration,
   parseToolRuntimeConfig,
   resolveLlmConfig,
-  resolveLlmConfigForProfile
+  resolveLlmConfigForProfile,
+  resolveLlmConfigStrict
 } from './llm-config';
 import {LlmConfigEditorError, applyLlmConfigDraft, createLlmConfigDraft} from './llm-config-editor';
 import {applyMcpEnabledStateDraft, createMcpConfig, createMcpConfigDraft, parseMcpConfigModel} from './mcp-config';
@@ -129,6 +130,11 @@ class UserConfigSnapshot {
   /** 解析宽松 per-run profile/effort 覆盖，并复用当前 revision 的 provider 图。 */
   resolveLlmConfig(options: ResolveLlmConfigOptions = {}): LlmConfig {
     return freezeValue(structuredClone(resolveLlmConfig(this.getParsedLlm(), this.getToolRuntimeConfig(), options)));
+  }
+
+  /** 严格解析 profile 与 effort，供冻结的 Subagent 策略创建独立 provider。 */
+  resolveLlmConfigStrict(options: Required<Pick<ResolveLlmConfigOptions, 'modelProfileId'>> & Pick<ResolveLlmConfigOptions, 'reasoningEffortOverride'>): LlmConfig {
+    return freezeValue(structuredClone(resolveLlmConfigStrict(this.getParsedLlm(), this.getToolRuntimeConfig(), options)));
   }
 
   /** 严格解析指定 profile，不回退全局或 session 模型。 */

@@ -71,10 +71,16 @@ function createRuntimeSnapshot(revision) {
         toolApprovalMode: 'manual'
       };
     },
+    getLlmModelConfigInfo() {
+      return {kind: 'profiles', selectedModelId: 'parent', models: [{id: 'parent', provider: 'fake', model: 'fake'}]};
+    },
     resolveLlmConfig() {
       throw new Error('patched prepareAgent should resolve this snapshot');
     },
     resolveLlmConfigForProfile() {
+      throw new Error('not used');
+    },
+    resolveLlmConfigStrict() {
       throw new Error('not used');
     }
   };

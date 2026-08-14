@@ -218,6 +218,7 @@ function createUserConfigSnapshot(revision = 1) {
       return {kind: 'profiles', selectedModelId: 'main', models: [{id: 'main', provider: 'fake', model: config.model}]};
     },
     resolveLlmConfig() { return config; },
+    resolveLlmConfigStrict() { return config; },
     resolveLlmConfigForProfile() { return config; }
   };
 }

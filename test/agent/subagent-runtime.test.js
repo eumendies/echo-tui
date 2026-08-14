@@ -7,6 +7,7 @@ const path = require('node:path');
 const agentSetupModule = require('../../src/agent/agent-setup');
 const {createAgentLoopRuntime} = require('../../src/agent/loop-runtime/agent-loop-runtime');
 const {createObservation} = require('../../src/observation/observation-projector');
+const {UserConfigContext} = require('../../src/config/user-config-context');
 const {AgentAbortError} = require('../../src/types/agent');
 const {createDefaultToolRegistry} = require('../../src/tools/tool-registry');
 const {createToolCallTranscriptRecord, createToolResultTranscriptRecord} = require('../../src/tools/tool-transcript-record');
@@ -23,9 +24,13 @@ const TEST_CONFIG = {
   }
 };
 
-function createConfigSnapshot() {
+function createConfigSnapshot(overrides = {}) {
+  const profiles = overrides.profiles || {
+    'parent-profile': {...TEST_CONFIG, model: 'parent-model', reasoningEffort: 'low'},
+    'review-profile': {...TEST_CONFIG, model: 'review-model', reasoningEffort: 'high'}
+  };
   return {
-    revision: 7,
+    revision: overrides.revision || 7,
     getAppSettings() {
       return {
         agentInstructionFileName: 'AGENTS.md',
@@ -34,11 +39,39 @@ function createConfigSnapshot() {
         toolApprovalMode: 'manual'
       };
     },
-    resolveLlmConfig() {
-      return TEST_CONFIG;
+    getLlmModelConfigInfo() {
+      return {
+        kind: 'profiles',
+        selectedModelId: 'parent-profile',
+        models: Object.entries(profiles).map(([id, config]) => ({
+          id,
+          provider: 'fake',
+          model: config.model,
+          ...(config.reasoningEffort ? {reasoningEffort: config.reasoningEffort} : {})
+        }))
+      };
     },
-    resolveLlmConfigForProfile() {
-      return TEST_CONFIG;
+    resolveLlmConfig(options = {}) {
+      const config = profiles[options.modelProfileId] || profiles['parent-profile'] || TEST_CONFIG;
+      return {
+        ...config,
+        ...(options.reasoningEffortOverride !== undefined ? {reasoningEffort: options.reasoningEffortOverride} : {})
+      };
+    },
+    resolveLlmConfigStrict(options) {
+      const config = profiles[options.modelProfileId];
+      if (!config) throw new Error(`missing profile: ${options.modelProfileId}`);
+      overrides.onStrictResolve?.(options);
+      return {
+        ...config,
+        ...(options.reasoningEffortOverride !== undefined ? {reasoningEffort: options.reasoningEffortOverride} : {})
+      };
+    },
+    resolveLlmConfigForProfile(modelProfileId) {
+      const config = profiles[modelProfileId];
+      if (!config) throw new Error(`missing profile: ${modelProfileId}`);
+      const {reasoningEffort, ...withoutEffort} = config;
+      return withoutEffort;
     }
   };
 }
@@ -50,12 +83,16 @@ function writeCustomAgent(cwd, name, overrides = {}) {
   const capability = overrides.capability || 'readonly';
   const tools = overrides.tools || ['read_files'];
   const mcp = Object.hasOwn(overrides, 'mcp') ? `mcp: ${String(overrides.mcp)}\n` : '';
+  const model = Object.hasOwn(overrides, 'model') ? `model: ${overrides.model}\n` : '';
+  const effort = Object.hasOwn(overrides, 'effort') ? `effort: ${overrides.effort}\n` : '';
   const body = overrides.body || `Custom Agent Instructions: ${name}`;
   const filePath = path.join(agentsDir, `${name}.md`);
   fs.writeFileSync(filePath, [
     '---',
     `description: ${description}`,
     `capability: ${capability}`,
+    model.trimEnd(),
+    effort.trimEnd(),
     'tools:',
     ...tools.map((tool) => `  - ${tool}`),
     mcp.trimEnd(),
@@ -282,19 +319,123 @@ test('custom catalog schema and execution share one frozen load per primary run 
 
       assert.equal(await runAgent(runInput), 'parent 1 done');
       assert.equal(await runAgent(runInput), 'parent 2 done');
-      const diagnosticEvents = debugEvents.filter(({event}) => event === 'subagent_catalog_diagnostic');
+      const diagnosticEvents = debugEvents.filter(({event, payload}) => event === 'subagent_catalog_diagnostic' && payload.sourcePath === brokenPath);
       assert.equal(diagnosticEvents.length, 1);
       assert.equal(diagnosticEvents[0].payload.code, 'missing_field');
       assert.equal(diagnosticEvents[0].payload.sourcePath, brokenPath);
       assert.match(childPrompts[0], /first runtime/u);
       assert.doesNotMatch(childPrompts[0], /second runtime/u);
       assert.match(childPrompts[1], /second runtime/u);
-      for (const preparation of preparations) {
-        assert.equal(preparation.options.modelProfileId, 'parent-profile');
-        assert.equal(preparation.options.reasoningEffortOverride, 'high');
-      }
+      const parentPreparation = preparations.find(({kind}) => kind === 'primary');
+      const childPreparations = preparations.filter(({kind}) => kind === 'subagent');
+      assert.equal(parentPreparation.options.modelProfileId, 'parent-profile');
+      assert.equal(parentPreparation.options.reasoningEffortOverride, 'high');
+      assert.deepEqual(childPreparations.map(({options}) => [options.config.model, options.config.reasoningEffort]), [
+        ['parent-model', 'high'],
+        ['parent-model', 'high']
+      ]);
     });
   } finally {
+    fs.rmSync(cwd, {recursive: true, force: true});
+  }
+});
+
+test('subagent runtime resolves inherit, target default, and fixed effort from one frozen definition', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-subagent-model-policy-'));
+  writeCustomAgent(cwd, 'inherit-agent');
+  writeCustomAgent(cwd, 'default-agent', {model: 'review-profile', effort: 'default'});
+  writeCustomAgent(cwd, 'fixed-agent', {model: 'review-profile', effort: 'none'});
+  const strictResolutions = [];
+  const snapshot = createConfigSnapshot({onStrictResolve(options) { strictResolutions.push(options); }});
+  let parentTurn = 0;
+
+  try {
+    await withPatchedAgents(cwd, (kind) => ({
+      async runTurn(records) {
+        if (kind === 'subagent') {
+          return {draft: 'child done', toolCalls: []};
+        }
+        parentTurn += 1;
+        if (parentTurn === 1) {
+          return {
+            draft: '',
+            toolCalls: [
+              {callId: 'inherit', toolName: 'run_subagent', argumentsText: '{"agent":"inherit-agent","task":"one"}'},
+              {callId: 'default', toolName: 'run_subagent', argumentsText: '{"agent":"default-agent","task":"two"}'},
+              {callId: 'fixed', toolName: 'run_subagent', argumentsText: '{"agent":"fixed-agent","task":"three"}'}
+            ]
+          };
+        }
+        assert.equal(records.filter((record) => record.role === 'tool_result' && record.ok).length, 3);
+        return {draft: 'parent done', toolCalls: []};
+      }
+    }), async (preparations) => {
+      const runAgent = createTestAgentLoopRuntime(cwd, {capture: () => snapshot});
+      assert.equal(await runAgent({
+        records: [{role: 'user', text: 'delegate policies'}],
+        modelProfileId: 'parent-profile',
+        reasoningEffortOverride: 'medium',
+        userConfigSnapshot: snapshot
+      }), 'parent done');
+
+      const childConfigs = preparations.filter(({kind}) => kind === 'subagent').map(({options}) => options.config);
+      assert.deepEqual(childConfigs.map(({model, reasoningEffort}) => [model, reasoningEffort]), [
+        ['parent-model', 'medium'],
+        ['review-model', 'high'],
+        ['review-model', 'none']
+      ]);
+      assert.deepEqual(strictResolutions, [
+        {modelProfileId: 'parent-profile', reasoningEffortOverride: 'medium'},
+        {modelProfileId: 'review-profile'},
+        {modelProfileId: 'review-profile', reasoningEffortOverride: 'none'}
+      ]);
+    });
+  } finally {
+    fs.rmSync(cwd, {recursive: true, force: true});
+  }
+});
+
+test('subagent explicit model keeps the parent user-config revision after the context refreshes', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-subagent-config-revision-'));
+  writeCustomAgent(cwd, 'reviewer', {model: 'review-profile', effort: 'default'});
+  const createRoot = (model) => JSON.stringify({
+    llm: {
+      selectedModel: 'parent-profile',
+      providers: {fake: {preset: 'fake-agent'}},
+      models: [
+        {id: 'parent-profile', provider: 'fake', model: 'parent-model'},
+        {id: 'review-profile', provider: 'fake', model, reasoning: {effort: 'low'}}
+      ]
+    }
+  });
+  let rawConfig = createRoot('review-model-v1');
+  const context = new UserConfigContext({
+    configPath: path.join(cwd, 'config.json'),
+    readFile() { return rawConfig; }
+  });
+  const parentSnapshot = context.capture();
+  let parentTurn = 0;
+
+  try {
+    await withPatchedAgents(cwd, (kind) => ({
+      async runTurn() {
+        if (kind === 'subagent') return {draft: 'review done', toolCalls: []};
+        parentTurn += 1;
+        if (parentTurn === 1) {
+          rawConfig = createRoot('review-model-v2');
+          context.refresh();
+          return {draft: '', toolCalls: [{callId: 'revision', toolName: 'run_subagent', argumentsText: '{"agent":"reviewer","task":"review"}'}]};
+        }
+        return {draft: 'parent done', toolCalls: []};
+      }
+    }), async (preparations) => {
+      const runAgent = createTestAgentLoopRuntime(cwd, context);
+      assert.equal(await runAgent({records: [{role: 'user', text: 'delegate'}], userConfigSnapshot: parentSnapshot}), 'parent done');
+      assert.equal(context.capture().revision, 2);
+      assert.equal(preparations.find(({kind}) => kind === 'subagent').options.config.model, 'review-model-v1');
+    });
+  } finally {
+    context.close();
     fs.rmSync(cwd, {recursive: true, force: true});
   }
 });
