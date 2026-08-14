@@ -2,7 +2,6 @@ import {randomUUID} from 'node:crypto';
 
 import {normalizeError} from '../agent-errors';
 import {AgentAbortError} from '../../types/agent';
-import {MAX_SUBAGENT_CALLS_PER_RUN} from './definition';
 import {formatSubagentDisplayName} from './name';
 import {loadSubagentCatalog} from './catalog';
 import {
@@ -42,13 +41,12 @@ type SubagentToolPortOptions = {
 };
 
 /**
- * 创建父 run专属的委派端口，按定义解析子 Agent并集中管理预算、隔离 session、回调桥接和终态归一化。
+ * 创建父 run专属的委派端口，按定义解析子 Agent并集中管理隔离 session、回调桥接和终态归一化。
  * 端口同步等待子运行结束；稳定过程由 publishRecords 增量提交，瞬时活动只通过父 callbacks 投影。
  */
 function createSubagentToolPort(options: SubagentToolPortOptions): SubagentToolPort {
   const catalog = loadSubagentCatalog({configSnapshot: options.configSnapshot, cwd: options.cwd});
   options.observation.subagentCatalogLoaded(catalog.diagnostics);
-  let callCount = 0;
 
   return {
     listDefinitions() {
@@ -59,11 +57,6 @@ function createSubagentToolPort(options: SubagentToolPortOptions): SubagentToolP
       if (!definition) {
         return {ok: false, text: `Unknown subagent: ${formatSubagentDisplayName(agentName)}`};
       }
-      if (callCount >= MAX_SUBAGENT_CALLS_PER_RUN) {
-        return {ok: false, text: `Delegation limit reached (${MAX_SUBAGENT_CALLS_PER_RUN} per parent run).`};
-      }
-      callCount += 1;
-
       const startedAt = Date.now();
       const metadata: SubagentRunMetadata = {
         agentName: definition.name,

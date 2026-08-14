@@ -126,12 +126,9 @@ const workerSubagent = freezeSubagentDefinition({
 
 const BUILTIN_SUBAGENT_DEFINITIONS: readonly Readonly<SubagentDefinition>[] = Object.freeze([explorerSubagent, workerSubagent]);
 
-const MAX_SUBAGENT_CALLS_PER_RUN = 4;
-
 export {
   BUILTIN_SUBAGENT_DEFINITIONS,
   GENERAL_SUBAGENT_TOOL_CEILING,
-  MAX_SUBAGENT_CALLS_PER_RUN,
   READONLY_SUBAGENT_TOOL_CEILING,
   createCustomSubagentPrompt,
   freezeSubagentDefinition
