@@ -42,7 +42,7 @@ test('run_subagent is a normal pair-after ToolHandler executed through ToolExecu
   assert.deepEqual(handler.definition.parameters.required, ['agent', 'task']);
   assert.deepEqual(handler.definition.parameters.properties.agent.enum, ['explorer']);
   assert.match(handler.definition.parameters.properties.agent.description, /explorer: Investigate broad bounded tasks/u);
-  assert.match(handler.definition.parameters.properties.task.description, /selected subagent/u);
+  assert.equal(handler.definition.parameters.properties.task.description, 'The selected subagent runs in an isolated context and cannot see the parent conversation. Include all necessary context directly; do not refer to prior messages or the user request.');
   assert.deepEqual(invocations, [{agentName: 'explorer', task: 'inspect config', call, options: {abortSignal: abortController.signal}}]);
   assert.deepEqual(result, {
     callId: 'outer_1',

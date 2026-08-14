@@ -25,7 +25,7 @@ function createRunSubagentToolHandler(port: SubagentToolPort): ToolHandler {
           },
           task: {
             type: 'string',
-            description: 'A self-contained task with enough context for the selected subagent to complete it and return a concise result.'
+            description: 'The selected subagent runs in an isolated context and cannot see the parent conversation. Include all necessary context directly; do not refer to prior messages or the user request.'
           }
         }
       }
