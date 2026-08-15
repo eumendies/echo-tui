@@ -6,7 +6,9 @@ const path = require('node:path');
 
 const agentSetupModule = require('../../src/agent/agent-setup');
 const {createAgentLoopRuntime} = require('../../src/agent/loop-runtime/agent-loop-runtime');
+const {createSubagentToolPort} = require('../../src/agent/subagent/runtime');
 const {createObservation} = require('../../src/observation/observation-projector');
+const {disabledObservation} = require('../../src/observation/observation');
 const {UserConfigContext} = require('../../src/config/user-config-context');
 const {AgentAbortError} = require('../../src/types/agent');
 const {createDefaultToolRegistry} = require('../../src/tools/tool-registry');
@@ -247,6 +249,130 @@ test('runtime synchronously delegates through an isolated explorer and commits p
   } finally {
     fs.rmSync(cwd, {recursive: true, force: true});
   }
+});
+
+test('runtime returns a bounded failure handoff with stable work and the interrupted assistant draft', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-subagent-handoff-runtime-'));
+  fs.writeFileSync(path.join(cwd, 'evidence.txt'), 'preserved evidence\n', 'utf8');
+  const snapshot = createConfigSnapshot();
+  const parentRequests = [];
+  const processRecords = [];
+  const outerResults = [];
+  let parentTurn = 0;
+  let childTurn = 0;
+
+  try {
+    await withPatchedAgents(cwd, (kind) => ({
+      async runTurn(records, callbacks) {
+        if (kind === 'primary') {
+          parentRequests.push(records);
+          parentTurn += 1;
+          if (parentTurn === 1) {
+            return {
+              draft: '',
+              toolCalls: [{
+                callId: 'outer-handoff', toolName: 'run_subagent',
+                argumentsText: '{"agent":"explorer","task":"inspect evidence before termination"}'
+              }]
+            };
+          }
+          const outer = records.find((record) => record.role === 'tool_result' && record.toolName === 'run_subagent');
+          assert.equal(outer.ok, false);
+          assert.match(outer.text, /Subagent failure:/u);
+          assert.match(outer.text, /Stable investigation segment/u);
+          assert.match(outer.text, /preserved evidence/u);
+          assert.match(outer.text, /Partial final report before termination/u);
+          assert.equal(records.some((record) => record.role === 'subagent'), false);
+          assert.equal(JSON.stringify(records).includes('inner-evidence'), false);
+          assert.equal(JSON.stringify(records).includes('RAW_PRIVATE_REASONING'), false);
+          return {draft: 'parent continued from partial work', toolCalls: []};
+        }
+
+        childTurn += 1;
+        if (childTurn === 1) {
+          callbacks.onToken?.('Stable', 'Stable investigation segment.');
+          return {
+            draft: 'Stable investigation segment.',
+            providerRecords: [{role: 'extension', text: '', extension: {kind: 'unknown', name: 'private', payload: {secret: 'RAW_PRIVATE_RECORD'}}}],
+            toolCalls: [{
+              callId: 'inner-evidence', toolName: 'read_files',
+              argumentsText: '{"files":[{"path":"evidence.txt"}]}'
+            }]
+          };
+        }
+        callbacks.onReasoningUpdate?.({kind: 'draft', text: 'RAW_PRIVATE_REASONING'});
+        callbacks.onToken?.('Partial', 'Partial final report before termination...');
+        throw new Error('termination error');
+      }
+    }), async () => {
+      const runAgent = createTestAgentLoopRuntime(cwd, {capture: () => snapshot});
+      const result = await runAgent({
+        records: [{role: 'user', text: 'delegate and continue'}],
+        userConfigSnapshot: snapshot
+      }, {
+        onSubagentRecords(records) { processRecords.push(...records); },
+        onToolResult(result) { outerResults.push(result); }
+      });
+
+      assert.equal(result, 'parent continued from partial work');
+    });
+
+    assert.equal(outerResults.length, 1);
+    assert.equal(outerResults[0].ok, false);
+    assert.match(outerResults[0].text, /Subagent failure:/u);
+    assert.match(outerResults[0].text, /Explorer failed：termination error/u);
+    assert.doesNotMatch(outerResults[0].text, /RAW_PRIVATE_REASONING|RAW_PRIVATE_RECORD/u);
+    assert.deepEqual(processRecords.map((record) => record.event.kind), [
+      'start', 'assistant', 'tool_call', 'tool_result', 'failed'
+    ]);
+    const terminal = processRecords.at(-1);
+    assert.match(terminal.text, /Explorer failed：termination error/u);
+    assert.doesNotMatch(terminal.text, /Subagent failure:/u);
+    assert.equal(parentRequests.length, 2);
+  } finally {
+    fs.rmSync(cwd, {recursive: true, force: true});
+  }
+});
+
+test('headless Worker failure handoff needs no app callbacks and warns about an uncertain MCP call', async () => {
+  const snapshot = createConfigSnapshot();
+  const records = [];
+  const port = createSubagentToolPort({
+    callbacks: {},
+    configSnapshot: snapshot,
+    createRuntime(_inherited, definition) {
+      assert.equal(definition.name, 'worker');
+      return async (_input, callbacks) => {
+        callbacks.onThinking?.();
+        callbacks.onToolCall?.({
+          callId: 'inner-mcp-uncertain', toolName: 'mcp__docs__write',
+          argumentsText: '{"document":"doc-1","text":"update"}'
+        });
+        callbacks.onToken?.('Partial', 'Partial Worker report');
+        throw new Error('termination error');
+      };
+    },
+    cwd: '/tmp/echo-subagent-handoff-headless',
+    executionMode: {kind: 'headless', approvalPolicy: 'deny'},
+    interactionMode: 'normal',
+    getInheritedContext() { return {}; },
+    observation: disabledObservation,
+    publishRecords(batch) { records.push(...batch); }
+  });
+
+  const result = await port.run('worker', 'update documentation', {
+    callId: 'outer-worker-handoff', toolName: 'run_subagent',
+    argumentsText: '{"agent":"worker","task":"update documentation"}'
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.text, /Subagent failure:/u);
+  assert.match(result.text, /Worker failed：termination error/u);
+  assert.match(result.text, /`mcp__docs__write` — result status unknown/u);
+  assert.match(result.text, /may have produced side effects/u);
+  assert.match(result.text, /Partial Worker report/u);
+  assert.deepEqual(records.map((record) => record.event.kind), ['start', 'tool_call', 'failed']);
+  assert.equal(records.at(-1).text, 'Worker failed：termination error');
 });
 
 test('custom catalog schema and execution share one frozen load per primary run and reload on the next run', async () => {
