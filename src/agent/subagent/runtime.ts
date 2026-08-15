@@ -4,6 +4,7 @@ import {normalizeError} from '../agent-errors';
 import {AgentAbortError} from '../../types/agent';
 import {formatSubagentDisplayName} from './name';
 import {loadSubagentCatalog} from './catalog';
+import {SubagentFailureHandoffAccumulator, buildSubagentFailureHandoff} from './failure-handoff';
 import {
   createSubagentAssistantRecord,
   createSubagentReasoningRecord,
@@ -58,13 +59,18 @@ function createSubagentToolPort(options: SubagentToolPortOptions): SubagentToolP
         return {ok: false, text: `Unknown subagent: ${formatSubagentDisplayName(agentName)}`};
       }
       const startedAt = Date.now();
+      const handoffAccumulator = new SubagentFailureHandoffAccumulator();
       const metadata: SubagentRunMetadata = {
         agentName: definition.name,
         depth: 1,
         parentToolCallId: call.callId,
         runId: randomUUID()
       };
-      options.publishRecords([createSubagentStartRecord(metadata, task)]);
+      const publishRecords = (records: SubagentTranscriptRecord[]): void => {
+        handoffAccumulator.record(records);
+        options.publishRecords(records);
+      };
+      publishRecords([createSubagentStartRecord(metadata, task)]);
       publishActivity(options.callbacks, metadata, task, 'thinking');
 
       try {
@@ -79,16 +85,19 @@ function createSubagentToolPort(options: SubagentToolPortOptions): SubagentToolP
           modelProfileId: options.modelProfileId,
           reasoningEffortOverride: options.reasoningEffortOverride,
           task
-        }, createChildCallbacks(options, metadata, task, executionOptions.changeRecorder));
+        }, createChildCallbacks(options, metadata, task, executionOptions.changeRecorder, publishRecords, handoffAccumulator));
 
-        options.publishRecords([createSubagentTerminalRecord(metadata, 'completed', Date.now() - startedAt)]);
+        publishRecords([createSubagentTerminalRecord(metadata, 'completed', Date.now() - startedAt)]);
         return {ok: true, text: answer};
       } catch (error: unknown) {
         const cancelled = error instanceof AgentAbortError || executionOptions.abortSignal?.aborted === true;
         const label = formatSubagentDisplayName(definition.name);
         const message = cancelled ? `${label} cancelled.` : normalizeError(error, `${label} failed`).message;
-        options.publishRecords([createSubagentTerminalRecord(metadata, cancelled ? 'cancelled' : 'failed', Date.now() - startedAt, message)]);
-        return {ok: false, text: message};
+        const text = cancelled
+          ? message
+          : buildSubagentFailureHandoff({errorText: message, snapshot: handoffAccumulator.snapshot()});
+        publishRecords([createSubagentTerminalRecord(metadata, cancelled ? 'cancelled' : 'failed', Date.now() - startedAt, message)]);
+        return {ok: false, text};
       }
     }
   };
@@ -99,40 +108,47 @@ function createChildCallbacks(
   options: SubagentToolPortOptions,
   metadata: SubagentRunMetadata,
   task: string,
-  changeRecorder: AgentCallbacks['changeRecorder']
+  changeRecorder: AgentCallbacks['changeRecorder'],
+  publishRecords: (records: SubagentTranscriptRecord[]) => void,
+  handoffAccumulator: SubagentFailureHandoffAccumulator
 ): SubagentLoopCallbacks {
   return {
     changeRecorder,
     onAssistantSegment(text) {
       if (text.trim()) {
-        options.publishRecords([createSubagentAssistantRecord(metadata, text)]);
+        publishRecords([createSubagentAssistantRecord(metadata, text)]);
       }
+      handoffAccumulator.completeAssistantSegment();
       publishActivity(options.callbacks, metadata, task, 'thinking');
     },
     onComplete(text) {
       if (text.trim()) {
-        options.publishRecords([createSubagentAssistantRecord(metadata, text)]);
+        publishRecords([createSubagentAssistantRecord(metadata, text)]);
       }
+      handoffAccumulator.completeAssistantSegment();
     },
     onReasoningUpdate(update) {
       publishActivity(options.callbacks, metadata, task, update.kind === 'draft' ? 'reasoning' : 'thinking', undefined, update.text);
       if (update.kind === 'complete' && update.text.trim()) {
-        options.publishRecords([createSubagentReasoningRecord(metadata, update.text)]);
+        publishRecords([createSubagentReasoningRecord(metadata, update.text)]);
         publishActivity(options.callbacks, metadata, task, 'thinking');
       }
     },
     onThinking() {
+      handoffAccumulator.beginAssistantSegment();
       publishActivity(options.callbacks, metadata, task, 'thinking');
     },
     onToken(_token, draft) {
+      handoffAccumulator.updateAssistantDraft(draft);
       publishActivity(options.callbacks, metadata, task, 'streaming', undefined, draft);
     },
     onToolCall(call) {
-      options.publishRecords([createSubagentToolCallRecord(metadata, call)]);
+      handoffAccumulator.completeAssistantSegment();
+      publishRecords([createSubagentToolCallRecord(metadata, call)]);
       publishActivity(options.callbacks, metadata, task, 'tool', call);
     },
     onToolResult(result) {
-      options.publishRecords([createSubagentToolResultRecord(metadata, result)]);
+      publishRecords([createSubagentToolResultRecord(metadata, result)]);
       publishActivity(options.callbacks, metadata, task, 'thinking');
     },
     async onToolApprovalRequest(call, approval) {

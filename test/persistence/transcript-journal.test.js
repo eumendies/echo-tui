@@ -75,6 +75,31 @@ test('replayTranscriptJournal incrementally replays valid custom subagent proces
   assert.equal(loaded.reference.sequence, records.length);
 });
 
+test('replayTranscriptJournal keeps concise subagent failure and provider-facing handoff in their separate records', () => {
+  const base = {role: 'subagent', agentName: 'explorer', parentToolCallId: 'outer-failed', runId: 'run-failed'};
+  const errorText = 'Explorer failed：termination error';
+  const handoffText = 'Subagent failure: Explorer failed：termination error\n\nStable output:\n    preserved finding';
+  const processRecords = [
+    {...base, text: 'inspect', event: {kind: 'start', task: 'inspect'}},
+    {...base, text: 'preserved finding', event: {kind: 'assistant'}},
+    {...base, text: errorText, event: {kind: 'failed', durationMs: 42}}
+  ];
+  const outerPair = [
+    {role: 'tool_call', text: 'run_subagent', toolCallId: 'outer-failed', toolName: 'run_subagent', argumentsText: '{"agent":"explorer","task":"inspect"}'},
+    {role: 'tool_result', text: handoffText, toolCallId: 'outer-failed', toolName: 'run_subagent', ok: false, details: {kind: 'generic'}}
+  ];
+  const journal = createJournalLines([
+    ...processRecords.map((record) => createAppendRecordsOperation([record])),
+    createAppendRecordsOperation(outerPair)
+  ]).join('\n');
+
+  const loaded = replayTranscriptJournal(journal);
+  assert.deepEqual(loaded.session.records, [...processRecords, ...outerPair]);
+  assert.equal(loaded.session.records[2].text, errorText);
+  assert.doesNotMatch(loaded.session.records[2].text, /Subagent failure:/u);
+  assert.equal(loaded.session.records[4].text, handoffText);
+});
+
 test('replayTranscriptJournal rejects malformed subagent identity and event payloads', () => {
   const validStart = {
     role: 'subagent',

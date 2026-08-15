@@ -228,6 +228,24 @@ test('custom subagent rail and compact results preserve safe custom identity for
   assertSafe(pending, 12);
 });
 
+test('failed subagent compact result hides the provider-facing handoff body while rail keeps concise failure', () => {
+  const handoff = 'Subagent failure: Explorer failed：termination error\n\nStable output:\n    preserved finding\n'.repeat(20);
+  const plain = renderTranscriptLines([
+    subagentRecord('inspect failure rendering', {kind: 'start', task: 'inspect failure rendering'}),
+    subagentRecord('preserved finding', {kind: 'assistant'}),
+    subagentRecord('Explorer failed：termination error', {kind: 'failed', durationMs: 25}),
+    {role: 'tool_call', text: '', toolCallId: 'outer-1', toolName: 'run_subagent', argumentsText: '{"agent":"explorer","task":"inspect failure rendering"}'},
+    {role: 'tool_result', text: handoff, toolCallId: 'outer-1', toolName: 'run_subagent', ok: false, details: {kind: 'generic'}}
+  ], 60).map(stripAnsi);
+  const output = plain.join('\n');
+
+  assert.match(output, /preserved finding/u);
+  assert.match(output, /failed · 25ms · Explorer failed：termination error/u);
+  assert.match(output, /Explorer · failed/u);
+  assert.doesNotMatch(output, /Subagent failure:|Stable output:/u);
+  assertSafe(plain, 60);
+});
+
 test('invalid subagent names never reach rail or compact result output', () => {
   const invalidName = 'safe\u001b[31m\nINJECTED';
   const invalidBase = {...BASE, agentName: invalidName, runId: 'invalid-run', parentToolCallId: 'invalid-outer'};

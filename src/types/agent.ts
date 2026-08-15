@@ -37,7 +37,7 @@ export type SubagentRunResult =
     }
   | {
       ok: false; // 表示子运行非取消失败或预算/参数边界拒绝。
-      text: string; // 可供父 Agent 继续推理的归一化诊断。
+      text: string; // 进入外层 tool result 的失败交接；runtime 启动前拒绝保持简洁诊断。
     };
 
 export type SubagentDescriptor = {
