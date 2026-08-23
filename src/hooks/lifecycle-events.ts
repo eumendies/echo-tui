@@ -1,35 +1,45 @@
-import type {InteractionMode, ToolApprovalDecision} from '../types/agent';
+import type {AgentConversationKind, InteractionMode, ToolApprovalDecision} from '../types/agent';
 import type {LifecycleHookDispatcher, LifecycleHookPayloadData} from '../types/hooks';
 import type {AskUserQuestionsRequest, ToolApprovalRequest, ToolCall, ToolExecutionResult} from '../types/tool';
 
 type ToolApprovalRequestHookInput = {
-  interactionMode: InteractionMode;
-  toolCall: ToolCall;
-  approval?: ToolApprovalRequest;
+  agentName?: string; // 子 Agent 发起审批时的稳定名称。
+  conversationKind?: AgentConversationKind; // 审批所属的运行类型。
+  interactionMode?: InteractionMode;
+  toolCall: Readonly<ToolCall>;
+  approval?: Readonly<ToolApprovalRequest>;
 };
 
 type ToolApprovalResponseHookInput = {
-  interactionMode: InteractionMode;
-  toolCall: ToolCall;
+  agentName?: string; // 子 Agent 获得审批结果时的稳定名称。
+  conversationKind?: AgentConversationKind; // 审批所属的运行类型。
+  interactionMode?: InteractionMode;
+  toolCall: Readonly<ToolCall>;
   decision: ToolApprovalDecision;
 };
 
 type UserQuestionRequestHookInput = {
+  agentName?: string; // 子 Agent 发起问题时的稳定名称。
+  conversationKind?: AgentConversationKind; // 问题所属的运行类型。
   interactionMode: InteractionMode;
-  toolCall: ToolCall;
-  request: AskUserQuestionsRequest;
+  toolCall: Readonly<ToolCall>;
+  request: Readonly<AskUserQuestionsRequest>;
 };
 
 type UserQuestionResponseHookInput = {
+  agentName?: string; // 子 Agent 收到回答时的稳定名称。
+  conversationKind?: AgentConversationKind; // 问题所属的运行类型。
   interactionMode: InteractionMode;
-  toolCall: ToolCall;
-  result: ToolExecutionResult;
+  toolCall: Readonly<ToolCall>;
+  result: Readonly<ToolExecutionResult>;
 };
 
 /** 将工具授权请求映射为稳定的 lifecycle hook 业务字段。 */
 function createToolApprovalRequestHookPayloadData(input: ToolApprovalRequestHookInput): LifecycleHookPayloadData {
   return {
-    interactionMode: input.interactionMode,
+    ...(input.agentName ? {agentName: input.agentName} : {}),
+    ...(input.conversationKind ? {conversationKind: input.conversationKind} : {}),
+    ...(input.interactionMode ? {interactionMode: input.interactionMode} : {}),
     toolCallId: input.toolCall.callId,
     toolName: input.toolCall.toolName,
     argumentsText: input.toolCall.argumentsText,
@@ -47,7 +57,9 @@ function createToolApprovalResponseHookPayloadData(input: ToolApprovalResponseHo
       : {decision: input.decision.kind};
 
   return {
-    interactionMode: input.interactionMode,
+    ...(input.agentName ? {agentName: input.agentName} : {}),
+    ...(input.conversationKind ? {conversationKind: input.conversationKind} : {}),
+    ...(input.interactionMode ? {interactionMode: input.interactionMode} : {}),
     toolCallId: input.toolCall.callId,
     toolName: input.toolCall.toolName,
     argumentsText: input.toolCall.argumentsText,
@@ -58,6 +70,8 @@ function createToolApprovalResponseHookPayloadData(input: ToolApprovalResponseHo
 /** 将用户问题请求映射为稳定的 lifecycle hook 业务字段。 */
 function createUserQuestionRequestHookPayloadData(input: UserQuestionRequestHookInput): LifecycleHookPayloadData {
   return {
+    ...(input.agentName ? {agentName: input.agentName} : {}),
+    ...(input.conversationKind ? {conversationKind: input.conversationKind} : {}),
     interactionMode: input.interactionMode,
     toolCallId: input.toolCall.callId,
     toolName: input.toolCall.toolName,
@@ -70,6 +84,8 @@ function createUserQuestionRequestHookPayloadData(input: UserQuestionRequestHook
 /** 将用户问题结果映射为稳定的 lifecycle hook 业务字段。 */
 function createUserQuestionResponseHookPayloadData(input: UserQuestionResponseHookInput): LifecycleHookPayloadData {
   return {
+    ...(input.agentName ? {agentName: input.agentName} : {}),
+    ...(input.conversationKind ? {conversationKind: input.conversationKind} : {}),
     interactionMode: input.interactionMode,
     toolCallId: input.toolCall.callId,
     toolName: input.toolCall.toolName,

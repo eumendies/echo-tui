@@ -291,12 +291,14 @@ test('createLifecycleHookSyntheticPayload covers lifecycle events with stable fi
   assert.equal(payloads.find((payload) => payload.event === 'assistant_turn_start').interactionMode, 'plan');
   assert.equal(payloads.find((payload) => payload.event === 'assistant_turn_error').errorName, 'HookTestError');
   assert.equal(payloads.find((payload) => payload.event === 'tool_call_start').argumentsText, '{}');
+  assert.equal(payloads.find((payload) => payload.event === 'tool_call_start').conversationKind, 'primary');
   assert.equal(payloads.find((payload) => payload.event === 'tool_call_end').ok, true);
   assert.equal(payloads.find((payload) => payload.event === 'tool_approval_request').preview, 'echo hook');
   assert.equal(payloads.find((payload) => payload.event === 'tool_approval_response').feedbackText, 'synthetic feedback');
   assert.equal(payloads.find((payload) => payload.event === 'user_question_request').questionCount, 1);
   assert.match(payloads.find((payload) => payload.event === 'user_question_response').resultText, /"selected":"yes"/);
   assert.equal(payloads.find((payload) => payload.event === 'compaction_end').activeStartIndex, 0);
+  assert.equal(payloads.find((payload) => payload.event === 'compaction_end').conversationKind, 'primary');
 });
 
 test('interaction lifecycle helpers map domain values and emit stable payloads', () => {
@@ -318,6 +320,8 @@ test('interaction lifecycle helpers map domain values and emit stable payloads',
   };
 
   emitToolApprovalRequestHook(hooks, {
+    agentName: 'worker',
+    conversationKind: 'subagent',
     interactionMode: 'plan',
     toolCall: approvalCall,
     approval: {previewTitle: 'command', preview: 'rm generated.txt'}
@@ -348,6 +352,8 @@ test('interaction lifecycle helpers map domain values and emit stable payloads',
     {
       event: 'tool_approval_request',
       payload: {
+        agentName: 'worker',
+        conversationKind: 'subagent',
         interactionMode: 'plan',
         toolCallId: 'approval-call',
         toolName: 'run_bash_command',

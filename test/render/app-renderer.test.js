@@ -2198,6 +2198,103 @@ test('createAppRenderer renderRecords preserves block spacing for realtime trans
   assert.match(output.writes[0], /\x1b\[38;2;0;170;0m◆\x1b\[39m/);
 });
 
+test('createAppRenderer keeps one incremental subagent rail and compacts the later outer result', () => {
+  const output = {
+    writes: [],
+    write(chunk) {
+      this.writes.push(String(chunk));
+    }
+  };
+  const renderer = createAppRenderer(output);
+  const state = {
+    composer: createComposer(''),
+    pending: null,
+    working: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    width: 80
+  };
+  const base = {role: 'subagent', agentName: 'explorer', parentToolCallId: 'outer-subagent', runId: 'subagent-run'};
+
+  renderer.renderRecords({records: [{...base, text: 'inspect incrementally', event: {kind: 'start', task: 'inspect incrementally'}}], ...state});
+  renderer.renderRecords({records: [{...base, text: 'Final incremental report.', event: {kind: 'assistant'}}], ...state});
+  renderer.renderRecords({records: [{...base, text: '', event: {kind: 'completed', durationMs: 25}}], ...state});
+  renderer.renderRecords({records: [
+    {role: 'tool_call', text: '', toolCallId: 'outer-subagent', toolName: 'run_subagent', argumentsText: '{"agent":"explorer","task":"inspect incrementally"}'},
+    {role: 'tool_result', text: 'Final incremental report.', toolCallId: 'outer-subagent', toolName: 'run_subagent', ok: true, details: {kind: 'generic'}}
+  ], ...state});
+
+  const written = stripAnsi(output.writes.join(''));
+  assert.equal((written.match(/explorer · inspect incrementally/gu) || []).length, 1);
+  assert.equal((written.match(/Final incremental report\./gu) || []).length, 1);
+  assert.match(written, /Explorer · returned report/u);
+});
+
+test('createAppRenderer keeps a persisted subagent call transient until its result can render the pair', () => {
+  const output = {writes: [], write(chunk) { this.writes.push(String(chunk)); }};
+  const renderer = createAppRenderer(output);
+  const state = {
+    composer: createComposer(''), pending: null, working: null,
+    statusLine: DEFAULT_STATUS_LINE, width: 80
+  };
+  const base = {role: 'subagent', agentName: 'explorer', parentToolCallId: 'outer', runId: 'run-pair'};
+
+  renderer.renderRecords({records: [{...base, text: 'inspect', event: {kind: 'start', task: 'inspect'}}], ...state});
+  const writesBeforeCall = output.writes.length;
+  renderer.renderRecords({records: [{
+    ...base, text: 'bash', event: {
+      kind: 'tool_call', toolCallId: 'inner', toolName: 'run_bash_command',
+      argumentsText: '{"command":"git status --short"}'
+    }
+  }], ...state});
+  assert.equal(stripAnsi(output.writes.at(-1)).includes('Bash'), false);
+  assert.equal(output.writes.length, writesBeforeCall + 1);
+
+  renderer.renderRecords({records: [{
+    ...base, text: 'clean', event: {
+      kind: 'tool_result', toolCallId: 'inner', toolName: 'run_bash_command', ok: true,
+      details: {kind: 'bash', exitCode: 0, durationMs: 3, timedOut: false, truncated: false}
+    }
+  }], ...state});
+  const completed = stripAnsi(output.writes.at(-1));
+  assert.equal((completed.match(/Bash · complete/gu) || []).length, 1);
+  assert.match(completed, /  ▌ ◆ ▌ Bash · complete/u);
+});
+
+test('createAppRenderer preserves the transient subagent tool boundary across destructive recovery', () => {
+  const output = {writes: [], write(chunk) { this.writes.push(String(chunk)); }};
+  const renderer = createAppRenderer(output);
+  const base = {role: 'subagent', agentName: 'explorer', parentToolCallId: 'outer', runId: 'run-resize'};
+  const start = {...base, text: 'inspect', event: {kind: 'start', task: 'inspect'}};
+  const call = {...base, text: 'bash', event: {
+    kind: 'tool_call', toolCallId: 'inner', toolName: 'run_bash_command', argumentsText: '{"command":"git status --short"}'
+  }};
+  const pending = {
+    kind: 'subagent', agentName: 'explorer', elapsedMs: 10, phase: 'tool', runId: 'run-resize', task: 'inspect',
+    toolName: 'run_bash_command', argumentsText: '{"command":"git status --short"}'
+  };
+  const state = {
+    composer: createComposer(''), pending, working: null,
+    statusLine: DEFAULT_STATUS_LINE, rows: 24, width: 80
+  };
+
+  renderer.renderDestructive({
+    ...state,
+    bannerContext: {cwd: '/tmp/project', nodeVersion: 'v20', terminalSize: {columns: 80, rows: 24}, mode: 'current terminal'},
+    records: [start, call]
+  });
+  assert.equal((stripAnsi(output.writes.at(-1)).match(/Bash · running/gu) || []).length, 1);
+
+  renderer.renderRecords({
+    ...state,
+    pending: {...pending, phase: 'thinking', toolName: undefined, argumentsText: undefined},
+    records: [{...base, text: 'clean', event: {
+      kind: 'tool_result', toolCallId: 'inner', toolName: 'run_bash_command', ok: true,
+      details: {kind: 'bash', exitCode: 0, durationMs: 3, timedOut: false, truncated: false}
+    }}]
+  });
+  assert.equal((stripAnsi(output.writes.at(-1)).match(/Bash · complete/gu) || []).length, 1);
+});
+
 test('glob pending preview and successful pair render query, scope, and ordered flat paths', () => {
   const args = {pattern: '**/*.ts', paths: ['src', 'test']};
   const preview = renderToolCallPreviewLines('glob', JSON.stringify(args), 100).map(stripAnsi);

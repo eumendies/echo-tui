@@ -1,5 +1,7 @@
 import type {InteractionMode} from './agent';
 
+import type {AgentConversationKind} from './agent';
+
 const LIFECYCLE_HOOK_EVENTS = [
   'assistant_turn_start',
   'assistant_turn_end',
@@ -48,6 +50,8 @@ type LifecycleHookConfigDraft = {
 };
 
 type LifecycleHookPayload = {
+  agentName?: string; // 子 Agent 事件的稳定名称；主运行和 BTW 运行缺省。
+  conversationKind?: AgentConversationKind; // 事件来自主对话、BTW 对话还是子 Agent。
   event: LifecycleHookEventName;
   timestamp: string;
   cwd: string;

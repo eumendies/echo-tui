@@ -4,7 +4,7 @@ import {isMcpToolName} from '../mcp/manager';
 import {EDIT_FILE_TOOL_NAME, createEditFileCallLabel} from './edit-file-tool-handler';
 import {isTodoToolName} from './todo-tool-handler';
 
-import type {InteractionMode} from '../types/agent';
+import type {InteractionMode, SubagentRunMetadata} from '../types/agent';
 import type {ToolCall, ToolRiskAssessment} from '../types/tool';
 
 const BASH_RISK_PATTERNS: RegExp[] = [
@@ -43,6 +43,33 @@ function classifyReadonlyToolCall(call: ToolCall): ToolRiskAssessment {
   }
 
   return {risk: 'rejected', reason: 'readonly_policy', message: READONLY_TOOL_REJECTION};
+}
+
+/** 子 Agent 仅让严格白名单 Bash 直通；其余 Bash 固定要求人工单次审批。 */
+function classifySubagentToolCall(call: ToolCall, metadata: SubagentRunMetadata): ToolRiskAssessment {
+  if (call.toolName !== RUN_BASH_COMMAND_TOOL_NAME) {
+    return READONLY_TOOL_NAMES.has(call.toolName)
+      ? {risk: 'safe'}
+      : {risk: 'rejected', reason: 'readonly_policy', message: READONLY_TOOL_REJECTION};
+  }
+
+  const command = parseBashCommand(call.argumentsText);
+  if (command && isPlanReadonlyBashCommand(command)) {
+    return {risk: 'safe'};
+  }
+
+  return {
+    risk: 'approval_required',
+    approval: {
+      preview: command || call.argumentsText,
+      previewTitle: `${metadata.agentName} bash`,
+      origin: {
+        kind: 'subagent',
+        agentName: metadata.agentName,
+        runId: metadata.runId
+      }
+    }
+  };
 }
 
 /**
@@ -141,6 +168,7 @@ function hasBashRisk(command: string): boolean {
 export {
   READONLY_TOOL_REJECTION,
   classifyReadonlyToolCall,
+  classifySubagentToolCall,
   classifyToolCallRisk,
   createMcpApprovalPreview,
   parseBashCommand

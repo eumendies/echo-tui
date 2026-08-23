@@ -2662,6 +2662,49 @@ test('UserQuestionContext Esc closes surface without interrupting assistant turn
   assert.deepEqual(interrupted.noticeRecord, { role: 'local_notice', text: '已中断模型回答' });
 });
 
+test('UserQuestionContext shows trusted Worker source and exposes one cancellation operation', async () => {
+  const userQuestion = new UserQuestionContext(() => {});
+  const call = {callId: 'worker-question', toolName: 'ask_user_questions', argumentsText: '{}'};
+  const pending = userQuestion.request(call, {
+    questions: [{question: 'Proceed?', options: [{label: 'Yes'}, {label: 'No'}]}]
+  }, {agentName: 'worker'});
+
+  assert.equal(userQuestion.getSurface().title, 'QUESTION · WORKER');
+  userQuestion.cancelActiveRequest('parent turn ended');
+  assert.deepEqual(JSON.parse((await pending).text), {cancelled: true, reason: 'parent turn ended'});
+  assert.equal(userQuestion.getSurface(), null);
+});
+
+test('UserQuestionContext and status detail format custom and malformed subagent names defensively', () => {
+  const call = {callId: 'custom-question', toolName: 'ask_user_questions', argumentsText: '{}'};
+  const customQuestion = new UserQuestionContext(() => {});
+  customQuestion.request(call, {
+    questions: [{question: 'Proceed?', options: [{label: 'Yes'}]}]
+  }, {agentName: 'security-reviewer'});
+  assert.equal(customQuestion.getSurface().title, 'QUESTION · security-reviewer');
+
+  const invalidName = 'safe\u001b[31m\nINJECTED';
+  const invalidQuestion = new UserQuestionContext(() => {});
+  invalidQuestion.request(call, {
+    questions: [{question: 'Proceed?', options: [{label: 'Yes'}]}]
+  }, {agentName: invalidName});
+  assert.equal(invalidQuestion.getSurface().title, 'QUESTION · Subagent');
+
+  const context = createContext();
+  context.subagentRunContext.acceptRecords([{
+    role: 'subagent', text: 'inspect', agentName: invalidName, parentToolCallId: 'outer', runId: 'run',
+    event: {kind: 'start', task: 'inspect'}
+  }]);
+  context.subagentRunContext.updateActivity({
+    agentName: 'security-reviewer', phase: 'tool', runId: 'run', task: 'inspect', toolName: 'grep'
+  });
+  assert.equal(context.createRenderState().statusLine.detail, 'security-reviewer · grep');
+  context.subagentRunContext.updateActivity({
+    agentName: invalidName, phase: 'tool', runId: 'run', task: 'inspect', toolName: 'grep'
+  });
+  assert.equal(context.createRenderState().statusLine.detail, 'Subagent · grep');
+});
+
 test('UserQuestionContext supports multi-select answers and submits them from the final tab', async () => {
   let userQuestion;
   const surfaces = [];

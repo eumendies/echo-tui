@@ -8,6 +8,10 @@ import type {LifecycleHookConfigDraft, LifecycleHookDraftEntry, LifecycleHookEve
 import type {AgentMemoryCatalog, AgentMemoryCatalogListResult, AgentMemoryCatalogReadResult, AgentMemoryItem, AgentMemoryMutationResult, AgentMemoryScope, UserMemory, UserMemoryMutationResult, UserMemoryReadResult} from './memory';
 import type {SkillSourceKind} from './skill';
 import type {AppSettings} from '../config/app-settings-config';
+import type {CustomSubagentCapability, SubagentEffortPolicy} from '../agent/subagent/definition';
+import type {CustomSubagentManifest} from '../agent/subagent/manifest';
+import type {AgentDefinitionMutationResult, AgentManagementDiagnostic, AgentManagementItem, AgentManagementScope} from '../agent/subagent/management-store';
+import type {AgentsSettingsMutationResult, AgentsSettingsScopeReadResult, BuiltinSubagentName, BuiltinSubagentOverride} from '../agent/subagent/settings';
 
 export type CommandSurfaceOption = {
   label: string;
@@ -162,6 +166,75 @@ export type HooksCommandSurface = {
   selectedEvent: LifecycleHookEventName;
   test?: HooksCommandSurfaceTest;
   title: string;
+};
+
+export type AgentsCommandTab = 'overview' | 'project' | 'user' | 'builtin';
+type AgentsCommandMode = 'list' | 'detail' | 'form' | 'tools' | 'instructions' | 'confirm';
+
+type AgentsCommandTabInfo = {
+  id: AgentsCommandTab; // 顶层来源范围的稳定标识。
+  label: string; // 顶层范围在 surface 中显示的标签。
+};
+
+export type AgentsCommandRow = {
+  capability?: CustomSubagentCapability; // Agent 列表行的权限模板摘要；普通字段和动作行缺省。
+  description?: string; // Agent 摘要、字段当前值或动作补充说明。
+  effort?: SubagentEffortPolicy; // Agent 列表行的 effective effort 策略。
+  id: string; // handler 与 renderer 共享的稳定行标识。
+  kind: 'agent' | 'action' | 'field' | 'tool' | 'confirm'; // 行的领域角色，决定 Enter 或 Space 语义。
+  label: string; // 当前行的主要可见文案。
+  mcp?: boolean; // Agent 列表行是否可见父运行 MCP 工具。
+  model?: string; // Agent 列表行的显式模型 profile；缺省表示继承父模型。
+  readonly?: boolean; // true 表示该字段仅展示且不得进入编辑状态。
+  selected?: boolean; // tools 多选时表示当前工具是否已纳入草稿。
+  sourceKind?: 'builtin' | AgentManagementScope; // Agent 列表行的物理来源。
+  status?: string; // Agent 的 active、shadowed、invalid 或 reserved 等状态摘要。
+  toolCount?: number; // Agent 列表行当前本地工具数量。
+};
+
+export type AgentsCommandDraft = {
+  capability: CustomSubagentCapability; // 当前自定义 Agent 的固定权限模板。
+  description: string; // 主 Agent 目录可见的能力摘要草稿。
+  effort: SubagentEffortPolicy; // 相对父运行或目标模型默认值的 effort 策略。
+  instructions: string; // 追加到系统安全约束后的 Markdown instructions 草稿。
+  mcp: boolean; // 通用 Agent 是否请求父运行已初始化的全部 MCP tools。
+  modelProfileId?: string; // 当前配置 snapshot 中的显式模型 profile；缺省表示继承。
+  name: string; // 新建时可编辑、已有定义编辑时只读的文件基础名。
+  tools: string[]; // 当前 capability ceiling 内选择的 provider-neutral 工具名。
+};
+
+export type AgentsCommandSurface = {
+  activeTab: AgentsCommandTab; // 当前 Overview、Project、User 或 Built-in 范围。
+  dismissHint: string; // 当前层级可用键位的简短说明。
+  editCursor?: number; // 行内字段或 instructions composer 的 grapheme 光标位置。
+  editField?: 'name' | 'description'; // 当前正在接收行内文本编辑的字段。
+  editText?: string; // 当前行内字段或 instructions composer 的完整可见文本。
+  error?: string; // 校验、冲突或 I/O 失败后的可见反馈。
+  feedback?: string; // 成功刷新后的下一 assistant turn 生效提示。
+  kind: 'agents'; // 独立 footer surface 分派标识。
+  mode: AgentsCommandMode; // 当前列表、详情、表单或嵌套 modal 层级。
+  rows: AgentsCommandRow[]; // Agent 与动作混合的可聚焦行快照。
+  selectedIndex: number; // 当前 rows 中已钳制的焦点索引。
+  tabs: AgentsCommandTabInfo[]; // 顶层固定 Tab 列表。
+  title: string; // 当前层级标题。
+};
+
+export type CommandAgentBuiltinInfo = {
+  capability: CustomSubagentCapability; // 从固定 execution policy 投影的只读能力模板。
+  description: string; // 内置定义的固定目录描述。
+  effort: SubagentEffortPolicy; // 当前有效 override 或完整继承策略。
+  includeMcpTools: boolean; // 内置定义固定的 MCP 可见性，只读展示。
+  localToolNames: string[]; // 内置定义固定的本地工具白名单，只读展示。
+  modelProfileId?: string; // 当前有效 override 的显式模型 profile。
+  name: BuiltinSubagentName; // Explorer 或 Worker 的固定保留名称。
+};
+
+export type CommandAgentsSnapshot = {
+  builtins: CommandAgentBuiltinInfo[]; // 固定内置定义及其当前有效模型策略。
+  diagnostics: Readonly<AgentManagementDiagnostic>[]; // 无法归属单个定义的目录级诊断。
+  items: Readonly<AgentManagementItem>[]; // Built-in、User 与 Project 物理项及覆盖状态。
+  models: Array<{id: string}>; // 当前用户配置 snapshot 中可供表单选择的模型 profile ID。
+  overrides: readonly Readonly<AgentsSettingsScopeReadResult>[]; // 两个固定 sidecar 的物理读取状态和冲突指纹。
 };
 
 export type ScaleCommandSurface = {
@@ -473,7 +546,7 @@ export type BtwCommandSurface = {
   dismissHint: string; // BTW surface 意外直接渲染时的退出提示。
 };
 
-export type CommandSurface = InfoCommandSurface | SelectCommandSurface | ResumeCommandSurface | SkillsCommandSurface | McpCommandSurface | MemoryCommandSurface | HooksCommandSurface | ScaleCommandSurface | ChoiceCommandSurface | ConfirmCommandSurface | ConfigCommandSurface | ContextUsageCommandSurface | UsageCommandSurface | StatusCommandSurface | CopyCommandSurface | FilePickerCommandSurface | DiffCommandSurface | BtwCommandSurface;
+export type CommandSurface = InfoCommandSurface | SelectCommandSurface | ResumeCommandSurface | SkillsCommandSurface | McpCommandSurface | MemoryCommandSurface | HooksCommandSurface | AgentsCommandSurface | ScaleCommandSurface | ChoiceCommandSurface | ConfirmCommandSurface | ConfigCommandSurface | ContextUsageCommandSurface | UsageCommandSurface | StatusCommandSurface | CopyCommandSurface | FilePickerCommandSurface | DiffCommandSurface | BtwCommandSurface;
 
 export type CommandModelProfile = {
   id: string;
@@ -682,6 +755,15 @@ export type CommandHostApp = {
     readDraft(): LifecycleHookConfigDraft;
     saveDraft(draft: LifecycleHookConfigDraft): CommandHooksSaveResult;
     testEntry(event: LifecycleHookEventName, entry: LifecycleHookDraftEntry): Promise<LifecycleHookTestResult>;
+  };
+  agents: {
+    list(): CommandAgentsSnapshot; // 扫描物理定义、sidecar 与当前模型目录形成管理快照。
+    validate(scope: AgentManagementScope, name: string, draft: Readonly<CustomSubagentManifest>): AgentDefinitionMutationResult; // 无副作用复用路径、manifest 与 runtime 策略校验。
+    create(scope: AgentManagementScope, name: string, draft: Readonly<CustomSubagentManifest>): AgentDefinitionMutationResult; // 排他创建规范化定义。
+    update(scope: AgentManagementScope, name: string, draft: Readonly<CustomSubagentManifest>, expectedFingerprint: string): AgentDefinitionMutationResult; // 指纹匹配时更新定义。
+    delete(scope: AgentManagementScope, name: string, expectedFingerprint: string): AgentDefinitionMutationResult; // 指纹匹配时删除定义。
+    writeBuiltinOverride(scope: AgentManagementScope, name: BuiltinSubagentName, override: Readonly<BuiltinSubagentOverride>, expectedFingerprint: string | null): AgentsSettingsMutationResult; // 乐观写入单个内置策略。
+    deleteBuiltinOverride(scope: AgentManagementScope, name: BuiltinSubagentName, expectedFingerprint: string): AgentsSettingsMutationResult; // 乐观删除单个内置策略。
   };
   mode: {
     getInteractionMode(): InteractionMode;

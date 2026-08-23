@@ -7,7 +7,7 @@ export const OPENAI_REASONING_EXTENSION_KIND = 'openai_reasoning';
 export const OPENAI_CHAT_REASONING_EXTENSION_KIND = 'openai_chat_reasoning';
 export const ANTHROPIC_THINKING_EXTENSION_KIND = 'anthropic_thinking';
 
-export type KnownTranscriptRole = 'user' | 'assistant' | 'system' | 'error' | 'compaction_notice' | 'local_notice' | 'reasoning_summary' | 'shell' | 'tool_call' | 'tool_result';
+export type KnownTranscriptRole = 'user' | 'assistant' | 'system' | 'error' | 'compaction_notice' | 'local_notice' | 'reasoning_summary' | 'shell' | 'tool_call' | 'tool_result' | 'subagent';
 
 export type TranscriptRole = KnownTranscriptRole | 'extension';
 
@@ -126,6 +126,52 @@ export type ToolResultTranscriptRecord = ToolResultTranscriptRecordBase & {
   details: ToolResultTranscriptDetails;
 };
 
+export type SubagentTranscriptEvent =
+  | {
+      kind: 'start'; // 子 Agent 已通过校验并开始运行。
+      task: string; // 外层 handler 交付的完整调查任务。
+    }
+  | {
+      kind: 'reasoning_summary'; // Provider 已确认稳定的可见推理摘要。
+    }
+  | {
+      kind: 'assistant'; // 工具前段落或最终回答的稳定文本。
+    }
+  | {
+      kind: 'tool_call'; // 子 Agent 内部工具调用事实。
+      toolCallId: string; // 内部 provider tool call id。
+      toolName: string; // 内部 provider-neutral 工具名。
+      argumentsText: string; // 内部工具原始 JSON 参数文本。
+    }
+  | {
+      kind: 'tool_result'; // 子 Agent 内部工具执行结果事实。
+      toolCallId: string; // 与内部 tool_call 配对的 call id。
+      toolName: string; // 内部 provider-neutral 工具名。
+      ok: boolean; // 内部工具是否成功完成。
+      details: ToolResultTranscriptDetails; // 供恢复后复用专属工具 renderer 的结构化事实。
+      attachments?: ToolResultAttachment[]; // 内部工具产生的受支持附件。
+    }
+  | {
+      kind: 'completed'; // 子 Agent 已成功返回最终回答。
+      durationMs: number; // 从 start 到成功完成的墙钟耗时。
+    }
+  | {
+      kind: 'failed'; // 子 Agent 因非父级取消错误结束。
+      durationMs: number; // 从 start 到失败的墙钟耗时。
+    }
+  | {
+      kind: 'cancelled'; // 子 Agent 随父 turn 主动取消。
+      durationMs: number; // 从 start 到取消的墙钟耗时。
+    };
+
+export type SubagentTranscriptRecord = TranscriptRecordBase & {
+  role: 'subagent';
+  agentName: string; // 内置或自定义子 Agent 的稳定目录名称。
+  parentToolCallId: string; // 外层 run_subagent 调用身份。
+  runId: string; // 同一次子 Agent 过程记录的分组身份。
+  event: SubagentTranscriptEvent; // 当前稳定过程事件。
+};
+
 export type ShellTranscriptRecord = TranscriptRecordBase & {
   role: 'shell';
   command: string;
@@ -174,6 +220,7 @@ export type TranscriptRecord =
   | ShellTranscriptRecord
   | ToolCallTranscriptRecord
   | ToolResultTranscriptRecord
+  | SubagentTranscriptRecord
   | TranscriptExtensionRecord;
 
 export type CompactionState = {

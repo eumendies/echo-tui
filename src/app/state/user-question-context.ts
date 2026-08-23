@@ -1,4 +1,5 @@
 import {INPUT_EVENTS} from '../../input/event-types';
+import {formatSubagentRawName, isBuiltinSubagentName} from '../../agent/subagent/name';
 import {applyComposerEditEvent, createComposer, getText} from '../../input/composer';
 import {moveWrappedIndex} from '../utils';
 import {
@@ -23,10 +24,25 @@ type QuestionDraft = {
   selectedOptionIndex?: number;
 };
 
+type UserQuestionSource = {
+  agentName: string; // App桥接提供的子 Agent目录名称，surface 投影前仍需防御性格式化。
+};
+
+type QuestionSurfaceTitleState =
+  | {
+      current?: number; // 多题模式下当前题的1-based序号。
+      kind: 'question'; // 普通题目选择页。
+      total?: number; // 多题模式下的题目总数。
+    }
+  | {
+      kind: 'submit'; // 多题模式下的最终提交页。
+    };
+
 type ActiveUserQuestionRequest = {
   call: ToolCall;
   currentTabIndex: number;
   drafts: QuestionDraft[];
+  source?: UserQuestionSource;
   request: AskUserQuestionsRequest;
   resolve: (result: ToolExecutionResult) => void;
   validationMessage?: string;
@@ -50,7 +66,7 @@ class UserQuestionContext {
   /**
    * 打开用户问题请求；多题请求保留每题独立草稿，等待用户在提交 tab 统一确认。
    */
-  request(call: ToolCall, request: AskUserQuestionsRequest): Promise<ToolExecutionResult> {
+  request(call: ToolCall, request: AskUserQuestionsRequest, source?: UserQuestionSource): Promise<ToolExecutionResult> {
     if (this.activeRequest) {
       this.resolveActive(createAskUserQuestionsCancelledResult(
         this.activeRequest.call,
@@ -63,6 +79,7 @@ class UserQuestionContext {
         call,
         currentTabIndex: 0,
         drafts: request.questions.map(() => createQuestionDraft()),
+        ...(source ? {source} : {}),
         request,
         resolve
       };
@@ -99,7 +116,12 @@ class UserQuestionContext {
 
     return {
       kind: 'choice',
-      title: request.request.questions.length > 1 ? `Question ${questionIndex + 1}/${request.request.questions.length}` : 'Question',
+      title: createQuestionSurfaceTitle(request, {
+        kind: 'question',
+        ...(request.request.questions.length > 1
+          ? {current: questionIndex + 1, total: request.request.questions.length}
+          : {})
+      }),
       ...(this.createTabs(request) ? {tabs: this.createTabs(request), activeTabIndex: questionIndex} : {}),
       message: question.question,
       messageTitle: 'question',
@@ -205,7 +227,7 @@ class UserQuestionContext {
 
     return {
       kind: 'choice',
-      title: '提交答案',
+      title: createQuestionSurfaceTitle(request, {kind: 'submit'}),
       tabs: this.createTabs(request),
       activeTabIndex: request.currentTabIndex,
       message: `${summary}${validation}`,
@@ -510,14 +532,14 @@ class UserQuestionContext {
   /**
    * 取消当前请求并向等待中的 interactive tool continuation 返回 cancelled result。
    */
-  private cancelActiveRequest(): void {
+  cancelActiveRequest(reason = 'User cancelled ask_user_questions'): void {
     const request = this.activeRequest;
 
     if (!request) {
       return;
     }
 
-    this.resolveActive(createAskUserQuestionsCancelledResult(request.call));
+    this.resolveActive(createAskUserQuestionsCancelledResult(request.call, reason));
   }
 
   /**
@@ -534,6 +556,20 @@ class UserQuestionContext {
     request.resolve(result);
     this.onUpdate();
   }
+}
+
+/** 为普通问题和子Agent问题生成稳定标题，不接受provider自报来源。 */
+function createQuestionSurfaceTitle(request: ActiveUserQuestionRequest, state: QuestionSurfaceTitleState): string {
+  const progress = state.kind === 'question' && state.current !== undefined && state.total !== undefined
+    ? `${state.current}/${state.total}`
+    : undefined;
+  if (!request.source) {
+    return state.kind === 'submit' ? '提交答案' : progress ? `Question ${progress}` : 'Question';
+  }
+  const safeName = formatSubagentRawName(request.source.agentName);
+  const sourceName = isBuiltinSubagentName(request.source.agentName) ? safeName.toUpperCase() : safeName;
+  const source = `QUESTION · ${sourceName}`;
+  return state.kind === 'submit' ? `${source} · 提交答案` : progress ? `${source} · ${progress}` : source;
 }
 
 /**

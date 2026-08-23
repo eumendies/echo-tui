@@ -68,6 +68,7 @@ type BlocksThemeColors = {
   pendingPrefix: ThemeColor;
   reasoning: ThemeColor;
   shell: ThemeColor;
+  subagentRail: ThemeColor; // 子 Agent过程块最外层 marker 与连续 rail 的专属颜色。
   text: ThemeColor;
   tool: ThemeColor;
   toolError: ThemeColor;
@@ -165,6 +166,7 @@ const DEFAULT_TUI_THEME: TuiTheme = {
       pendingPrefix: rgb(0, 170, 170),
       reasoning: rgb(85, 85, 85),
       shell: rgb(0, 170, 0),
+      subagentRail: rgb(45, 115, 255),
       text: rgb(255, 255, 255),
       tool: rgb(0, 170, 170),
       toolError: rgb(170, 0, 0),

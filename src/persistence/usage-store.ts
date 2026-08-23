@@ -103,7 +103,7 @@ function createUsageEvent(input: UsageEventInput, timestamp: string, id: string)
     cwdHash: String(input.cwdHash),
     providerType: input.providerType,
     model: String(input.model),
-    interactionMode: input.interactionMode,
+    ...(input.interactionMode ? {interactionMode: input.interactionMode} : {}),
     inputTokens: totalInputTokens,
     cacheReadInputTokens,
     cacheCreationInputTokens,
@@ -167,7 +167,7 @@ function isUsageEventShape(value: unknown): value is UsageEvent {
     typeof event.cwdHash === 'string' &&
     typeof event.model === 'string' &&
     typeof event.providerType === 'string' &&
-    typeof event.interactionMode === 'string' &&
+    (event.interactionMode === undefined || typeof event.interactionMode === 'string') &&
     isNonNegativeNumber(event.inputTokens) &&
     isNonNegativeNumber(event.cacheReadInputTokens) &&
     isNonNegativeNumber(event.cacheCreationInputTokens) &&

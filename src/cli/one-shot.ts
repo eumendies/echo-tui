@@ -1,15 +1,17 @@
-import {createAgentLoopRuntime} from '../agent/agent-loop-runtime';
+import {createAgentLoopRuntime} from '../agent/loop-runtime/agent-loop-runtime';
 import {redactSensitiveText} from '../agent/agent-errors';
 import {UserConfigContext} from '../config/user-config-context';
 import {createDebugContext} from '../debug/debug-context';
 import {createLifecycleHookDispatcher} from '../hooks/dispatcher';
 import {McpManager} from '../mcp/manager';
+import {createObservation} from '../observation/observation-projector';
 import {createUsageStore} from '../persistence/usage-store';
 import {isAbortError} from '../types/agent';
 
 import type {RunAgent} from '../types/agent';
 import type {DebugContext} from '../debug/debug-context';
 import type {LifecycleHookDispatcher} from '../types/hooks';
+import type {AssistantTurnScope, Observation} from '../observation/observation';
 import type {UsageStore} from '../types/usage';
 import type {McpManager as McpManagerType} from '../mcp/manager';
 
@@ -52,7 +54,9 @@ async function runOnce(options: RunOnceOptions): Promise<void> {
     cwd
   });
   const usageStore = options.usageStore || createUsageStore();
-  const runAgent = options.runAgent || createAgentLoopRuntime(cwd, userConfigContext, mcpManager, hooks, debug, usageStore);
+  const observation = createObservation(debug, hooks);
+  const turnObservationScope: AssistantTurnScope = {interactionMode: 'normal', runtimeKind: 'headless'};
+  const runAgent = options.runAgent || createAgentLoopRuntime(cwd, userConfigContext, mcpManager, observation, usageStore);
   const abortController = new AbortController();
   const signalSource = options.process || process;
   const onSignal = () => abortController.abort();
@@ -74,10 +78,7 @@ async function runOnce(options: RunOnceOptions): Promise<void> {
 
   try {
     await mcpManager.bootstrap();
-    hooks.emit('assistant_turn_start', {
-      interactionMode: 'normal',
-      status: 'started'
-    });
+    observation.assistantTurnStarted({scope: turnObservationScope, userText: prompt, recordCount: 1});
     turnStarted = true;
     const result = await runAgent({
       abortSignal: abortController.signal,
@@ -95,13 +96,10 @@ async function runOnce(options: RunOnceOptions): Promise<void> {
     }
 
     finalText = result;
-    hooks.emit('assistant_turn_end', {
-      interactionMode: 'normal',
-      status: 'completed'
-    });
+    observation.assistantTurnCompleted({scope: turnObservationScope, finalText: result});
   } catch (error: unknown) {
     primaryError = error;
-    emitHeadlessTurnFailure(hooks, abortController.signal, error, turnStarted);
+    emitHeadlessTurnFailure(observation, turnObservationScope, abortController.signal, error, turnStarted);
     throw createHeadlessError(error);
   } finally {
     if (options.abortSignal) {
@@ -110,7 +108,7 @@ async function runOnce(options: RunOnceOptions): Promise<void> {
 
     signalSource.removeListener('SIGINT', onSignal);
     signalSource.removeListener('SIGTERM', onSignal);
-    const cleanupError = await cleanupHeadlessResources(mcpManager, debug);
+    const cleanupError = await cleanupHeadlessResources(mcpManager, observation);
     userConfigContext.close();
 
     if (!primaryError && cleanupError) {
@@ -128,7 +126,7 @@ async function runOnce(options: RunOnceOptions): Promise<void> {
 /**
  * 关闭单轮运行创建的可关闭资源；hook dispatcher 是旁路队列，不阻塞最终输出。
  */
-async function cleanupHeadlessResources(mcpManager: McpManager, debug: DebugContext): Promise<unknown | null> {
+async function cleanupHeadlessResources(mcpManager: McpManager, observation: Observation): Promise<unknown | null> {
   let firstError: unknown = null;
 
   try {
@@ -138,7 +136,7 @@ async function cleanupHeadlessResources(mcpManager: McpManager, debug: DebugCont
   }
 
   try {
-    debug.close();
+    observation.close();
   } catch (error: unknown) {
     firstError ||= error;
   }
@@ -149,25 +147,17 @@ async function cleanupHeadlessResources(mcpManager: McpManager, debug: DebugCont
 /**
  * 将单轮失败映射为与 TUI 相同的 assistant lifecycle hook，避免旁路观察丢失结束事实。
  */
-function emitHeadlessTurnFailure(hooks: LifecycleHookDispatcher, abortSignal: AbortSignal, error: unknown, turnStarted: boolean): void {
+function emitHeadlessTurnFailure(observation: Observation, scope: AssistantTurnScope, abortSignal: AbortSignal, error: unknown, turnStarted: boolean): void {
   if (!turnStarted) {
     return;
   }
 
   if (isAbortError(error) || abortSignal.aborted) {
-    hooks.emit('assistant_turn_cancelled', {
-      interactionMode: 'normal',
-      status: 'cancelled'
-    });
+    observation.assistantTurnCancelled({scope});
     return;
   }
 
-  hooks.emit('assistant_turn_error', {
-    interactionMode: 'normal',
-    status: 'error',
-    errorName: error instanceof Error ? error.name : undefined,
-    errorMessage: error instanceof Error ? error.message : String(error)
-  });
+  observation.assistantTurnFailed({scope, error});
 }
 
 function createHeadlessError(error: unknown): Error {

@@ -8,6 +8,7 @@ import {
   hasKnownToolCallId,
   parseJsonObjectText
 } from '../transcript-converter-common';
+import {shouldIncludeRecordInProviderContext} from '../transcript-converter-common';
 import {OPENAI_CHAT_REASONING_EXTENSION_KIND} from '../../types/transcript';
 
 import type {ToolCallTranscriptRecord, ToolResultTranscriptRecord, TranscriptExtensionRecord, TranscriptRecord, UserTranscriptRecord} from '../../types/transcript';
@@ -76,6 +77,10 @@ function convertTranscriptToOpenAiChatMessages(records: TranscriptRecord[]): Ope
   let pendingReasoningContent: string | null = null;
 
   for (const record of records) {
+    if (!shouldIncludeRecordInProviderContext(record)) {
+      continue;
+    }
+
     if (record.role !== 'tool_result') {
       flushPendingImageMessages(messages, pendingImageMessages);
     }
@@ -133,7 +138,7 @@ function convertTranscriptToOpenAiChatMessages(records: TranscriptRecord[]): Ope
         continue;
       }
 
-      const assistant = currentToolAssistant || createToolAssistantMessage(messages, pendingReasoningContent);
+      const assistant: OpenAiChatAssistantMessage = currentToolAssistant || createToolAssistantMessage(messages, pendingReasoningContent);
       assistant.tool_calls = [...(assistant.tool_calls || []), projection.toolCall];
       currentToolAssistant = assistant;
       pendingReasoningContent = null;

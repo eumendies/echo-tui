@@ -38,29 +38,29 @@ function createLifecycleHookSyntheticPayload(options: LifecycleHookSyntheticPayl
     case 'assistant_turn_cancelled':
       return {...base, interactionMode, status: 'cancelled'};
     case 'tool_call_start':
-      return {...base, toolCallId: 'hook-test-call', toolName: 'hook_test', argumentsText: '{}'};
+      return {...base, conversationKind: 'primary', interactionMode, toolCallId: 'hook-test-call', toolName: 'hook_test', argumentsText: '{}'};
     case 'tool_call_end':
-      return {...base, toolCallId: 'hook-test-call', toolName: 'hook_test', ok: true};
+      return {...base, conversationKind: 'primary', interactionMode, toolCallId: 'hook-test-call', toolName: 'hook_test', ok: true};
     case 'tool_approval_request': {
       const toolCall = {callId: 'hook-test-call', toolName: 'run_bash_command', argumentsText: '{"command":"echo hook"}'};
-      return {...base, ...createToolApprovalRequestHookPayloadData({interactionMode, toolCall, approval: {previewTitle: 'command', preview: 'echo hook'}})};
+      return {...base, ...createToolApprovalRequestHookPayloadData({conversationKind: 'primary', interactionMode, toolCall, approval: {previewTitle: 'command', preview: 'echo hook'}})};
     }
     case 'tool_approval_response': {
       const toolCall = {callId: 'hook-test-call', toolName: 'run_bash_command', argumentsText: '{"command":"echo hook"}'};
-      return {...base, ...createToolApprovalResponseHookPayloadData({interactionMode, toolCall, decision: {kind: 'provide_feedback', message: 'synthetic feedback'}})};
+      return {...base, ...createToolApprovalResponseHookPayloadData({conversationKind: 'primary', interactionMode, toolCall, decision: {kind: 'provide_feedback', message: 'synthetic feedback'}})};
     }
     case 'user_question_request': {
       const toolCall = {callId: 'hook-test-question', toolName: 'ask_user_questions', argumentsText: '{"questions":[{"question":"Continue?","options":[{"label":"yes"}]}]}'};
       const request = {questions: [{question: 'Continue?', options: [{label: 'yes'}]}]};
-      return {...base, ...createUserQuestionRequestHookPayloadData({interactionMode, toolCall, request})};
+      return {...base, ...createUserQuestionRequestHookPayloadData({conversationKind: 'primary', interactionMode, toolCall, request})};
     }
     case 'user_question_response': {
       const toolCall = {callId: 'hook-test-question', toolName: 'ask_user_questions', argumentsText: '{"questions":[{"question":"Continue?","options":[{"label":"yes"}]}]}'};
       const result = {callId: toolCall.callId, toolName: toolCall.toolName, ok: true, details: {kind: 'generic'} as const, text: '{"answers":[{"index":0,"selected":"yes"}]}'};
-      return {...base, ...createUserQuestionResponseHookPayloadData({interactionMode, toolCall, result})};
+      return {...base, ...createUserQuestionResponseHookPayloadData({conversationKind: 'primary', interactionMode, toolCall, result})};
     }
     case 'compaction_end':
-      return {...base, activeStartIndex: 0, createdAt: timestamp};
+      return {...base, conversationKind: 'primary', interactionMode, activeStartIndex: 0, createdAt: timestamp};
   }
 }
 

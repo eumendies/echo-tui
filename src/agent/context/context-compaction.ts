@@ -62,12 +62,20 @@ function exceedsCompactionThreshold(estimatedTokens: number, contextWindow: numb
 }
 
 /**
- * 计算压缩边界：初始为 records.length - K，并向前吸附到干净 turn 起点，
+ * 计算压缩边界：按 provider-facing records 保留最近 K 条并映射回物理索引，再向前吸附到干净 turn 起点，
  * 确保活跃区间不以孤立 tool_result 开头、不切断 tool_call/tool_result 配对。
  * 返回 0 表示无法产生有效压缩边界（记录不足或吸附后无可压缩区间）。
  */
 function computeCompactionBoundary(records: TranscriptRecord[], keepCount = COMPACTION_RECENT_KEEP_COUNT): number {
-  const initial = records.length - keepCount;
+  const providerRecordIndices = records
+    .map((record, index) => shouldIncludeRecordInProviderContext(record) ? index : -1)
+    .filter((index) => index >= 0);
+  const normalizedKeepCount = Math.max(0, Math.floor(keepCount));
+  const initial = normalizedKeepCount === 0
+    ? records.length
+    : providerRecordIndices.length > normalizedKeepCount
+      ? providerRecordIndices[providerRecordIndices.length - normalizedKeepCount]
+      : 0;
 
   if (initial <= 0) {
     return 0;

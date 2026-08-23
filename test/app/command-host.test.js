@@ -247,6 +247,7 @@ test('createCommandHost composes the complete command protocol from domain ports
     'skills',
     'mcp',
     'memory',
+    'agents',
     'hooks',
     'mode',
     'theme',

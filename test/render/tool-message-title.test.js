@@ -7,6 +7,7 @@ test('formatToolDisplayName uses stable built-in sentence case names', () => {
   assert.equal(formatToolDisplayName('ask_user_questions'), 'Ask user questions');
   assert.equal(formatToolDisplayName('read_files'), 'Read files');
   assert.equal(formatToolDisplayName('run_bash_command'), 'Bash');
+  assert.equal(formatToolDisplayName('run_subagent'), 'Run subagent');
 });
 
 test('formatToolDisplayName normalizes snake, camel, Pascal and acronym identifiers', () => {

@@ -105,6 +105,7 @@ test('estimateContextTokens skips non-provider roles', () => {
     { role: 'compaction_notice', text: 'nnnn' },
     { role: 'local_notice', text: 'llll' },
     { role: 'reasoning_summary', text: 'rrrr' },
+    {role: 'subagent', text: 'ssss', agentName: 'explorer', parentToolCallId: 'outer', runId: 'run', event: {kind: 'assistant'}},
     { role: 'extension', text: '', extension: {kind: 'anthropic_thinking', block: anthropicThinkingBlock} },
     { role: 'assistant', text: 'bbbb' }
   ];
@@ -112,6 +113,35 @@ test('estimateContextTokens skips non-provider roles', () => {
 
   // Anthropic thinking 会回放给 provider，需要计入；本地提示不发给模型不计入。
   assert.equal(estimated, 2 + estimateTextTokens(JSON.stringify({kind: 'anthropic_thinking', block: anthropicThinkingBlock})));
+});
+
+test('computeCompactionBoundary counts provider-facing records before mapping to physical indices', () => {
+  const records = [
+    {role: 'user', text: 'old'},
+    ...Array.from({length: 20}, (_, index) => ({
+      role: 'subagent',
+      text: `process ${index}`,
+      agentName: 'explorer',
+      parentToolCallId: 'outer',
+      runId: 'run',
+      event: {kind: 'assistant'}
+    })),
+    {role: 'assistant', text: 'recent one'},
+    {role: 'user', text: 'recent two'}
+  ];
+
+  assert.equal(computeCompactionBoundary(records, 2), 21);
+});
+
+test('computeCompactionBoundary still protects an outer subagent tool pair', () => {
+  const records = [
+    {role: 'user', text: 'old'},
+    {role: 'tool_call', text: 'run_subagent', toolCallId: 'outer', toolName: 'run_subagent', argumentsText: '{"agent":"explorer","task":"inspect"}'},
+    {role: 'tool_result', text: 'report', toolCallId: 'outer', toolName: 'run_subagent', ok: true, details: {kind: 'generic'}},
+    {role: 'assistant', text: 'recent'}
+  ];
+
+  assert.equal(computeCompactionBoundary(records, 2), 1);
 });
 
 test('estimateContextTokens skips local shell records', () => {

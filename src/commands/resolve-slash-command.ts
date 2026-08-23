@@ -3,6 +3,7 @@ import type {AgentInstructionFileName} from '../types/agent';
 import { createBuiltInAgentWorkflowHandlers } from './agent-workflows/agent-workflow-command-handler';
 import { ClearCommandHandler } from './clear-command-handler';
 import { BtwCommandHandler } from './btw-command-handler';
+import { AgentsCommandHandler } from './agents-command-handler';
 import { CompactCommandHandler } from './compact-command-handler';
 import { ConfigCommandHandler } from './config/handler';
 import { ContextCommandHandler } from './context-command-handler';
@@ -49,6 +50,7 @@ export function createDefaultSlashCommandHandlers(getAgentInstructionFileName?: 
     new ReferenceCommandHandler(),
     new McpCommandHandler(),
     new MemoryCommandHandler(),
+    new AgentsCommandHandler(),
     new HooksCommandHandler(),
     new SkillsCommandHandler(),
     ...createBuiltInAgentWorkflowHandlers(getAgentInstructionFileName),

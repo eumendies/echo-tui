@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const { AgentWorkflowCommandHandler } = require('../../src/commands/agent-workflows/agent-workflow-command-handler');
+const {AgentsCommandHandler} = require('../../src/commands/agents-command-handler');
 const {BtwCommandHandler} = require('../../src/commands/btw-command-handler');
 const { ClearCommandHandler } = require('../../src/commands/clear-command-handler');
 const { CompactCommandHandler } = require('../../src/commands/compact-command-handler');
@@ -465,7 +466,7 @@ test('resolveSlashCommand asks handlers in order and returns the first match', (
 test('createDefaultSlashCommandHandlers wires handlers in order', () => {
   const handlers = createDefaultHandlersForTest();
 
-  assert.equal(handlers.length, 24);
+  assert.equal(handlers.length, 25);
   assert.equal(handlers.some((handler) => handler.name === 'skill'), false);
   assert.equal(handlers[0].name, 'help');
   assert.equal(handlers[1].name, 'btw');
@@ -486,11 +487,12 @@ test('createDefaultSlashCommandHandlers wires handlers in order', () => {
   assert.equal(handlers[16].name, 'reference');
   assert.equal(handlers[17].name, 'mcp');
   assert.equal(handlers[18].name, 'memory');
-  assert.equal(handlers[19].name, 'hooks');
-  assert.equal(handlers[20].name, 'skills');
-  assert.equal(handlers[21].name, 'init');
-  assert.equal(handlers[22].name, 'review');
-  assert.equal(handlers[23].name, undefined);
+  assert.equal(handlers[19].name, 'agents');
+  assert.equal(handlers[20].name, 'hooks');
+  assert.equal(handlers[21].name, 'skills');
+  assert.equal(handlers[22].name, 'init');
+  assert.equal(handlers[23].name, 'review');
+  assert.equal(handlers[24].name, undefined);
   assert.equal(handlers[0] instanceof HelpCommandHandler, true);
   assert.equal(handlers[1] instanceof BtwCommandHandler, true);
   assert.equal(handlers[2] instanceof ConfigCommandHandler, true);
@@ -510,11 +512,12 @@ test('createDefaultSlashCommandHandlers wires handlers in order', () => {
   assert.equal(handlers[16] instanceof ReferenceCommandHandler, true);
   assert.equal(handlers[17] instanceof McpCommandHandler, true);
   assert.equal(handlers[18] instanceof MemoryCommandHandler, true);
-  assert.equal(handlers[19] instanceof HooksCommandHandler, true);
-  assert.equal(handlers[20] instanceof SkillsCommandHandler, true);
-  assert.equal(handlers[21] instanceof AgentWorkflowCommandHandler, true);
+  assert.equal(handlers[19] instanceof AgentsCommandHandler, true);
+  assert.equal(handlers[20] instanceof HooksCommandHandler, true);
+  assert.equal(handlers[21] instanceof SkillsCommandHandler, true);
   assert.equal(handlers[22] instanceof AgentWorkflowCommandHandler, true);
-  assert.equal(handlers[23] instanceof SkillInvocationCommandHandler, true);
+  assert.equal(handlers[23] instanceof AgentWorkflowCommandHandler, true);
+  assert.equal(handlers[24] instanceof SkillInvocationCommandHandler, true);
 });
 
 test('statusCommandHandler loads Codex usage and isolates late results', async () => {
@@ -1497,6 +1500,7 @@ test('createSlashCommandDescriptors derives display metadata from handlers', () 
     { name: 'reference', description: '引用历史对话' },
     { name: 'mcp', description: '查看和管理 MCP servers' },
     { name: 'memory', description: '查看和管理持久 memory' },
+    { name: 'agents', description: '查看和管理自定义与内置 Agents' },
     { name: 'hooks', description: '查看、管理和测试 lifecycle hooks' },
     { name: 'skills', description: '查看和管理 skills' },
     { name: 'init', description: '分析项目并生成或评审当前指令文件' },

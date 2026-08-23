@@ -1,5 +1,6 @@
 import path from 'node:path';
 
+import {formatSubagentRawName} from '../../agent/subagent/name';
 import {DEFAULT_RENDER_PREFERENCES} from '../../config/app-settings-config';
 import type {TerminalController} from '../../types/app';
 import type {CommandSurface} from '../../types/command';
@@ -123,8 +124,18 @@ class RenderContext {
       mode,
       ...(allowAllTools ? {allowAllTools: true} : {}),
       ...(contextUsage ? {contextUsage} : {}),
-      detail: pending && pending.kind === 'tool_call' ? pending.toolName : undefined,
-      activity: working ? {kind: 'working', elapsedMs: working.elapsedMs} : pending?.kind === 'thinking' ? {kind: 'thinking', elapsedMs: pending.elapsedMs} : undefined,
+      detail: pending?.kind === 'tool_call'
+        ? pending.toolName
+        : pending?.kind === 'subagent'
+          ? `${formatSubagentRawName(pending.agentName)}${pending.toolName ? ` · ${pending.toolName}` : ''}`
+          : undefined,
+      activity: pending?.kind === 'subagent'
+        ? {kind: 'working', elapsedMs: pending.elapsedMs}
+        : working
+          ? {kind: 'working', elapsedMs: working.elapsedMs}
+          : pending?.kind === 'thinking'
+            ? {kind: 'thinking', elapsedMs: pending.elapsedMs}
+            : undefined,
       ...(keyHint ? {keyHint} : {})
     };
   }
@@ -165,6 +176,10 @@ function resolveStatusLineMode(pending: PendingState | null, slashSuggestions: S
 
   if (pending?.kind === 'tool_call') {
     return 'tool';
+  }
+
+  if (pending?.kind === 'subagent') {
+    return pending.phase === 'tool' || pending.phase === 'waiting_approval' ? 'tool' : 'streaming';
   }
 
   if (slashSuggestions) {

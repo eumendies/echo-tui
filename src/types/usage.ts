@@ -6,7 +6,7 @@ export type UsageEventInput = {
   contextWindow?: number;
   cwdHash: string;
   inputTokens?: number;
-  interactionMode: InteractionMode;
+  interactionMode?: InteractionMode;
   model: string;
   outputTokens?: number;
   providerType: AgentType;
@@ -20,7 +20,7 @@ export type UsageEvent = {
   cwdHash: string;
   id: string;
   inputTokens: number;
-  interactionMode: InteractionMode;
+  interactionMode?: InteractionMode;
   localDay: string;
   model: string;
   outputTokens: number;

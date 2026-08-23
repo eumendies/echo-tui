@@ -45,7 +45,8 @@ test('createTuiTheme merges valid render theme overrides and ignores invalid tok
   const theme = createTuiTheme({
     blocks: {
       colors: {
-        assistantPrefix: '#070809'
+        assistantPrefix: '#070809',
+        subagentRail: '#161718'
       }
     },
     footer: {
@@ -73,6 +74,7 @@ test('createTuiTheme merges valid render theme overrides and ignores invalid tok
   });
 
   assert.deepEqual(theme.blocks.colors.assistantPrefix, {kind: 'rgb', value: [7, 8, 9]});
+  assert.deepEqual(theme.blocks.colors.subagentRail, {kind: 'rgb', value: [22, 23, 24]});
   assert.deepEqual(theme.footer.colors.accent, {kind: 'rgb', value: [1, 2, 3]});
   assert.deepEqual(theme.footer.colors.accentStrong, {kind: 'rgb', value: [4, 5, 6]});
   assert.deepEqual(theme.footer.colors.btw, {kind: 'rgb', value: [16, 17, 18]});
@@ -109,6 +111,9 @@ test('builtin themes are listed and code default stays aligned with bundled JSON
   assert.equal(amberTheme.footer.colors.accent.kind, 'rgb');
   assert.ok(bundledThemeConfigs.every((theme) => Object.hasOwn(theme.footer.colors, 'btw')));
   assert.ok(bundledThemeConfigs.every((theme) => JSON.stringify(theme.footer.colors.btw) !== JSON.stringify(theme.footer.colors.plan)));
+  assert.ok(bundledThemeConfigs.every((theme) => Object.hasOwn(theme.blocks.colors, 'subagentRail')));
+  assert.ok(bundledThemeConfigs.every((theme) => JSON.stringify(theme.blocks.colors.subagentRail) !== JSON.stringify(theme.footer.colors.plan)));
+  assert.ok(new Set(bundledThemeConfigs.map((theme) => JSON.stringify(theme.blocks.colors.subagentRail))).size >= 12);
   assert.equal(readBuiltinTheme('../default'), null);
   assert.equal(getBuiltinThemeConfigPath('../default'), null);
 });

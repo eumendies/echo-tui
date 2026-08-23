@@ -397,6 +397,28 @@ test('createTranscriptStore lists lightweight summaries and loads bounded previe
   assert.equal(sessions[1].sessionId, first.sessionId);
 });
 
+test('session preview compacts one subagent run instead of exposing every process event', async () => {
+  const rootDir = createTempRoot();
+  const store = createTranscriptStore({rootDir});
+  const cwd = '/tmp/example/subagent-preview';
+  const base = {role: 'subagent', agentName: 'explorer', parentToolCallId: 'outer-1', runId: 'run-1'};
+  const reference = store.createSession(cwd, createAppendRecordsOperation([
+    {role: 'user', text: 'inspect repository'},
+    {...base, text: 'find evidence', event: {kind: 'start', task: 'find evidence'}},
+    {...base, text: 'grep', event: {kind: 'tool_call', toolCallId: 'inner-1', toolName: 'grep', argumentsText: '{}'}},
+    {...base, text: 'match', event: {kind: 'tool_result', toolCallId: 'inner-1', toolName: 'grep', ok: true, details: {kind: 'generic'}}},
+    {...base, text: 'report', event: {kind: 'assistant'}},
+    {...base, text: '', event: {kind: 'completed', durationMs: 20}}
+  ]), '2026-07-01T00:00:00.000Z');
+
+  const preview = await store.loadSessionPreview(cwd, reference.sessionId);
+
+  assert.deepEqual(preview.previewRecords, [
+    {role: 'user', text: 'inspect repository'},
+    {role: 'subagent', text: 'explorer · completed · find evidence'}
+  ]);
+});
+
 test('session summary title and on-demand preview come from replayed final records', async () => {
   const rootDir = createTempRoot();
   const store = createTranscriptStore({rootDir});

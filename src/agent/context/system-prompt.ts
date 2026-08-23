@@ -32,11 +32,12 @@ type SystemPromptLoadOptions = {
 };
 
 type BuiltInSystemPromptContext = {
-  agentInstructions?: AgentInstruction[];
-  basePrompt?: string;
-  cwd: string;
-  skillCatalog?: SkillCatalogEntry[];
-  memoryPrompts?: string[];
+  agentInstructions?: AgentInstruction[]; // 当前 cwd 适用且已按层级排序的项目指令。
+  basePrompt?: string; // 用户 system prompt override；缺省使用内置主 prompt。
+  cwd: string; // 进入每次 provider 请求的运行工作目录。
+  skillCatalog?: SkillCatalogEntry[]; // 当前 revision 的有界 enabled skill目录。
+  memoryPrompts?: string[]; // 当前请求动态解析的 user/agent memory sections。
+  rolePrompt?: string; // 子 Agent等隔离运行追加的明确角色边界 section。
 };
 
 /**
@@ -52,6 +53,10 @@ Runtime environment:
 
   if (agentInstructionsPrompt !== '') {
     sections.push(agentInstructionsPrompt);
+  }
+
+  if (context.rolePrompt?.trim()) {
+    sections.push(context.rolePrompt.trim());
   }
 
   if (skillCatalogPrompt !== '') {

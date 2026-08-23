@@ -1,4 +1,5 @@
 import {DEFAULT_TUI_THEME, type TuiTheme} from '../config/theme-config';
+import {formatSubagentTerminalIdentity} from '../agent/subagent/name';
 import {blockText} from './colors';
 import {
   ASK_USER_QUESTIONS_TOOL_NAME,
@@ -49,6 +50,7 @@ import type {ToolCallTranscriptRecord, ToolResultTranscriptRecord} from '../type
 import type {ToolRecordRenderOptions} from './tool-message-renderers/shared';
 
 const BASH_TOOL_NAME = 'run_bash_command';
+const RUN_SUBAGENT_TOOL_NAME = 'run_subagent';
 type ToolTranscriptRecord = ToolCallTranscriptRecord | ToolResultTranscriptRecord;
 
 /**
@@ -64,14 +66,39 @@ export function renderToolRecordBlock(record: ToolTranscriptRecord, width = 80, 
 /**
  * 渲染完整 tool call/result 对；call 的状态样式直接来自 result，不向普通 record renderer 泄漏。
  */
-export function renderToolPairBlock(call: ToolCallTranscriptRecord, result: ToolResultTranscriptRecord, width = 80, theme: TuiTheme = DEFAULT_TUI_THEME): string {
-  const pairAwareLines = renderPairAwareToolPairLines(call, result, width, theme);
-
-  if (pairAwareLines) {
-    return renderToolPairLinesBlock(pairAwareLines);
+export function renderToolPairBlock(call: ToolCallTranscriptRecord, result: ToolResultTranscriptRecord, width = 80, theme: TuiTheme = DEFAULT_TUI_THEME, compactResult = false): string {
+  if (compactResult && call.toolName === RUN_SUBAGENT_TOOL_NAME && result.toolName === RUN_SUBAGENT_TOOL_NAME) {
+    const agentName = resolveSubagentName(call.argumentsText);
+    const lines = renderPrefixedLines({
+      text: formatSubagentTerminalIdentity(agentName, result.ok ? 'completed' : 'failed'),
+      width,
+      firstPrefix: '◆ ',
+      continuationPrefix: '  ',
+      colorizeFirstSymbol: resolveToolCallPrefixStyle(result.ok, theme),
+      colorizeLine: (line) => blockText(theme, 'toolOutput', line)
+    });
+    return renderToolPairLinesBlock(lines);
   }
+  return renderToolPairLinesBlock(renderToolPairLines(call, result, width, theme));
+}
 
-  return renderToolPairLinesBlock(renderSplitToolPairLines(call, result, width, theme));
+/** 从外层参数中恢复待安全格式化的 Agent 名称；解析失败时交给共享 formatter 回退。 */
+function resolveSubagentName(argumentsText: string): unknown {
+  try {
+    const parsed: unknown = JSON.parse(argumentsText);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as {agent?: unknown}).agent
+      : undefined;
+  } catch {
+    // 外层参数可能来自旧记录或损坏journal，只影响可见回退文案。
+  }
+  return undefined;
+}
+
+/** 返回不带 block 尾部空行的完整工具对，供子 Agent rail 复用现有专属投影。 */
+export function renderToolPairLines(call: ToolCallTranscriptRecord, result: ToolResultTranscriptRecord, width = 80, theme: TuiTheme = DEFAULT_TUI_THEME): string[] {
+  return renderPairAwareToolPairLines(call, result, width, theme)
+    ?? renderSplitToolPairLines(call, result, width, theme);
 }
 
 /**
@@ -146,7 +173,12 @@ export function renderToolCallPreviewLines(toolName: string, argumentsText: stri
 /**
  * 根据 toolName 选择工具专属投影；未知工具降级为通用工具消息。
  */
-function renderToolRecordLines(record: ToolTranscriptRecord, width: number, options: ToolRecordRenderOptions = {}, theme: TuiTheme): string[] {
+export function renderToolRecordLines(record: ToolTranscriptRecord, width: number, options: ToolRecordRenderOptions = {}, theme: TuiTheme): string[] {
+  return renderToolRecordLinesWithTheme(record, width, options, theme);
+}
+
+/** 根据 toolName 选择工具专属投影，tone 统一在结构投影完成后覆盖。 */
+function renderToolRecordLinesWithTheme(record: ToolTranscriptRecord, width: number, options: ToolRecordRenderOptions, theme: TuiTheme): string[] {
   if (record.toolName === ASK_USER_QUESTIONS_TOOL_NAME && record.role === 'tool_call') {
     return renderAskUserQuestionsToolCallLines(record, options.callStatus, width, theme)
       ?? renderGenericToolRecordLines(record, width, options, theme);
@@ -252,12 +284,14 @@ function renderGenericToolRecordLines(
       width,
       firstPrefix: '◆ ',
       continuationPrefix: '  ',
-        colorizeFirstSymbol: resolveToolCallPrefixStyle(options.callStatus, theme)
+      colorizeFirstSymbol: resolveToolCallPrefixStyle(options.callStatus, theme)
     });
 
     if (record.argumentsText.trim() !== '') {
       lines.push(...renderPrefixedLines({
-        text: truncateDisplayText(record.argumentsText, TOOL_RESULT_MAX_DISPLAY_LINES),
+        text: record.toolName === RUN_SUBAGENT_TOOL_NAME
+          ? record.argumentsText
+          : truncateDisplayText(record.argumentsText, TOOL_RESULT_MAX_DISPLAY_LINES),
         width,
         firstPrefix: '  ',
         continuationPrefix: '  ',

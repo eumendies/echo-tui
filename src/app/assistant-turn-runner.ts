@@ -1,13 +1,10 @@
 import {isAbortError} from '../types/agent';
-import {summarizeText} from '../debug/debug-context';
-import {emitToolApprovalRequestHook, emitToolApprovalResponseHook} from '../hooks/lifecycle-events';
 import {createToolApprovalResolver} from './tool-approval/resolver';
 
 import type {AgentCallbacks, ReasoningEffort, RunAgent, ToolApprovalDecision} from '../types/agent';
-import type {DebugContext} from '../debug/debug-context';
-import type {LifecycleHookDispatcher} from '../types/hooks';
+import type {AssistantTurnScope, Observation} from '../observation/observation';
 import type {ToolApprovalRequest, ToolCall, ToolResultAttachment} from '../types/tool';
-import type {TranscriptRecord, UserTranscriptMetadata} from '../types/transcript';
+import type {SubagentTranscriptRecord, TranscriptRecord, UserTranscriptMetadata} from '../types/transcript';
 import type {AppContext} from './state/app-context';
 import type {ToolApprovalContext} from './state/tool-approval-context';
 import type {ToolApprovalReviewer} from './tool-approval/resolver';
@@ -25,10 +22,10 @@ type AssistantTurnRunnerInput = {
   modelProfileIdOverride?: string;
   reasoningEffortOverride?: ReasoningEffort;
   attachments?: ToolResultAttachment[];
-  debug: DebugContext;
+  observation: Observation;
+  observationScope: AssistantTurnScope;
   renderRecords: (records: TranscriptRecord[]) => void;
   render: (finalizeRecord?: Extract<TranscriptRecord, {role: 'assistant' | 'reasoning_summary'}>) => void;
-  hooks: LifecycleHookDispatcher;
   toolApprovalReviewer?: ToolApprovalReviewer; // 仅交互式 auto 审批使用的独立模型判断器。
 };
 
@@ -49,12 +46,11 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
     modelProfileIdOverride,
     reasoningEffortOverride,
     attachments,
-    debug,
+    observation,
+    observationScope,
     renderRecords,
-    render,
-    hooks
+    render
   } = input;
-
   appContext.beginChangeCheckpoint();
   const interactionMode = appContext.getInteractionMode();
   const userConfigSnapshot = appContext.captureUserConfigSnapshot();
@@ -66,21 +62,25 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
   });
   // thinking 和 streaming 都只进入 pending preview，完成或 partial 失败后才正式追加 assistant block。
   const turn = appContext.beginAssistantTurn(modelProfileIdOverride, reasoningEffortOverride);
+  const cancelQuestionOnAbort = () => {
+    userQuestion.cancelActiveRequest('User question was interrupted because the assistant turn ended.');
+  };
+  turn.abortSignal.addEventListener('abort', cancelQuestionOnAbort, {once: true});
   const turnUserRecordIndex = appContext.transcriptContext.getRecords().length - 1;
   const isCurrentTurn = () => appContext.turnContext.isCurrentAssistantTurn(turn);
-  /** 只有创建人工审批 surface 时才派发交互式审批 lifecycle hooks。 */
+  /** 只有创建人工审批 surface 时才发布交互式审批事实。 */
   async function requestManualApproval(call: ToolCall, request?: ToolApprovalRequest): Promise<ToolApprovalDecision> {
     const pendingDecision = toolApproval.requestManual(call, request);
-    emitToolApprovalRequestHook(hooks, {interactionMode, toolCall: call, approval: request});
+    observation.manualApprovalRequested({scope: observationScope, call, request});
     const decision = await pendingDecision;
-    emitToolApprovalResponseHook(hooks, {interactionMode, toolCall: call, decision});
+    observation.manualApprovalCompleted({scope: observationScope, call, decision, request});
     return decision;
   }
   const toolApprovalResolver = createToolApprovalResolver({
     abortSignal: turn.abortSignal,
     currentUserRequest: userRequestText,
     cwd: () => appContext.getCurrentCwd(),
-    debug,
+    observation,
     getRecords: () => appContext.transcriptContext.getRecords(),
     interactionMode,
     isCurrentTurn,
@@ -105,15 +105,7 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
       text: `当前 skill 本轮使用 ${activeStatusLineModel.modelLabel}${effortText}。`
     })]);
   }
-  debug.emit('assistant_turn_start', {
-    interactionMode,
-    recordCount: appContext.transcriptContext.records.length,
-    userText: summarizeText(userText, 0)
-  });
-  hooks.emit('assistant_turn_start', {
-    interactionMode,
-    status: 'started'
-  });
+  observation.assistantTurnStarted({scope: observationScope, userText, recordCount: appContext.transcriptContext.records.length});
 
   try {
     const session = appContext.getAgentSession({modelProfileIdOverride, reasoningEffortOverride}, userConfigSnapshot);
@@ -234,6 +226,9 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
         render();
       },
       onToolApprovalRequest(call, request) {
+        if (!isCurrentTurn() || request?.origin && !appContext.subagentRunContext.isCurrentRun(request.origin.runId)) {
+          return {kind: 'deny', message: 'Tool execution was interrupted.'};
+        }
         return toolApprovalResolver.request(call, request);
       },
       onUserQuestionRequest(call, request) {
@@ -248,12 +243,50 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
 
         return userQuestion.request(call, request);
       },
+      async onSubagentUserQuestionRequest(runMetadata, call, request) {
+        if (!isCurrentTurn() || !appContext.subagentRunContext.isCurrentRun(runMetadata.runId)) {
+          return {
+            callId: call.callId,
+            toolName: call.toolName,
+            ok: false,
+            details: {kind: 'generic'},
+            text: 'User question was interrupted.'
+          };
+        }
+
+        const result = await userQuestion.request(call, request, {
+          agentName: runMetadata.agentName
+        });
+        if (!isCurrentTurn() || !appContext.subagentRunContext.isCurrentRun(runMetadata.runId)) {
+          return {
+            callId: call.callId,
+            toolName: call.toolName,
+            ok: false,
+            details: {kind: 'generic'},
+            text: 'User question was interrupted.'
+          };
+        }
+        return result;
+      },
       onToolResult(result) {
         if (!isCurrentTurn()) {
           return;
         }
 
         renderRecords(appContext.transcriptContext.appendRecords(appContext.turnContext.appendPendingToolResult(result)));
+      },
+      onSubagentRecords(records: SubagentTranscriptRecord[]) {
+        if (!isCurrentTurn() || records.length === 0 || !appContext.subagentRunContext.acceptRecords(records)) {
+          return;
+        }
+
+        renderRecords(appContext.transcriptContext.appendRecords(records));
+      },
+      onSubagentActivity(activity) {
+        if (!isCurrentTurn() || !appContext.subagentRunContext.updateActivity(activity)) {
+          return;
+        }
+        // 高频 token 只更新草稿；统一由常驻 timer 读取最新状态并刷新 footer。
       },
       onTodoStateChange(todoState) {
         if (!isCurrentTurn()) {
@@ -275,15 +308,7 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
         } else {
           render();
         }
-        hooks.emit('assistant_turn_end', {
-          interactionMode: appContext.getInteractionMode(),
-          status: 'completed'
-        });
-        debug.emit('assistant_turn_end', {
-          interactionMode: appContext.getInteractionMode(),
-          finalText: summarizeText(finalText, 0),
-          status: 'completed'
-        });
+        observation.assistantTurnCompleted({scope: observationScope, finalText});
       }
     } as AgentCallbacks);
 
@@ -305,33 +330,18 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
 
     if (isAbortError(error) || turn.abortSignal.aborted) {
       renderRecords([appContext.turnContext.cancelAssistantTurn()]);
-      hooks.emit('assistant_turn_cancelled', {
-        interactionMode: appContext.getInteractionMode(),
-        status: 'cancelled'
-      });
-      debug.emit('assistant_turn_cancelled', {
-        interactionMode: appContext.getInteractionMode(),
-        status: 'cancelled'
-      });
+      observation.assistantTurnCancelled({scope: observationScope});
     } else {
       renderRecords([appContext.turnContext.failAssistantTurn(error)]);
-      hooks.emit('assistant_turn_error', {
-        interactionMode: appContext.getInteractionMode(),
-        status: 'error',
-        errorName: error instanceof Error ? error.name : undefined,
-        errorMessage: error instanceof Error ? error.message : undefined
-      });
-      debug.emit('assistant_turn_error', {
-        interactionMode: appContext.getInteractionMode(),
-        status: 'error',
-        errorName: error instanceof Error ? error.name : undefined,
-        errorMessage: error instanceof Error ? error.message : String(error)
-      });
+      observation.assistantTurnFailed({scope: observationScope, error});
     }
   } finally {
+    turn.abortSignal.removeEventListener('abort', cancelQuestionOnAbort);
     const wasCurrentTurn = isCurrentTurn();
 
     if (wasCurrentTurn) {
+      userQuestion.cancelActiveRequest('User question was interrupted because the assistant turn ended.');
+      appContext.subagentRunContext.clear();
       appContext.finalizeChangeCheckpoint();
     }
     appContext.turnContext.clearAssistantTurnIfCurrent(turn);

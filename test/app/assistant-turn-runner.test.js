@@ -7,6 +7,7 @@ const {AppContext} = require('../../src/app/state/app-context');
 const {ToolApprovalContext} = require('../../src/app/state/tool-approval-context');
 const {UserQuestionContext} = require('../../src/app/state/user-question-context');
 const {UserConfigContext} = require('../../src/config/user-config-context');
+const {createObservation} = require('../../src/observation/observation-projector');
 
 function createFakeTranscriptStore() {
   let currentSession = null;
@@ -129,6 +130,21 @@ function createHarness(options = {}) {
   const appendedProjections = [];
   const hookEvents = [];
   const debugEvents = [];
+  const hooks = {
+    emit(event, payload) {
+      hookEvents.push({event, payload});
+    },
+    async flush() {}
+  };
+  const debug = {
+    enabled: true,
+    logPath: '/tmp/debug.jsonl',
+    emit(event, payload) {
+      debugEvents.push({event, payload});
+    },
+    close() {}
+  };
+  const observation = createObservation(debug, hooks);
 
   return {
     appContext,
@@ -150,20 +166,8 @@ function createHarness(options = {}) {
         appended.push(finalizeRecord);
         appendedProjections.push(finalizeRecord.role === 'reasoning_summary' ? 'reasoning' : 'assistant');
       },
-      hooks: {
-        emit(event, payload) {
-          hookEvents.push({event, payload});
-        },
-        async flush() {}
-      },
-      debug: {
-        enabled: true,
-        logPath: '/tmp/debug.jsonl',
-        emit(event, payload) {
-          debugEvents.push({event, payload});
-        },
-        close() {}
-      }
+      observation,
+      observationScope: {interactionMode: 'normal', runtimeKind: 'tui'}
     }
   };
 }
@@ -214,6 +218,7 @@ function createUserConfigSnapshot(revision = 1) {
       return {kind: 'profiles', selectedModelId: 'main', models: [{id: 'main', provider: 'fake', model: config.model}]};
     },
     resolveLlmConfig() { return config; },
+    resolveLlmConfigStrict() { return config; },
     resolveLlmConfigForProfile() { return config; }
   };
 }
@@ -560,6 +565,200 @@ test('runAssistantTurn queues drafts for the app activity clock and redraws stru
   assert.equal(harness.appContext.turnContext.hasTimedActivity(), false);
   assert.deepEqual(harness.appended.map((record) => record.role), ['user', 'reasoning_summary', 'assistant']);
   assert.equal(harness.appended[2].text, 'ab');
+});
+
+test('runAssistantTurn persists subagent events, restores pending after permission, and rejects late callbacks', async () => {
+  const harness = createHarness({appSettings: {
+    agentInstructionFileName: 'AGENTS.md', autoCompressImages: true, compactionThresholdRatio: 0.8,
+    defaultInteractionMode: 'normal', fileEditMode: 'apply_patch', skillCatalogContextRatio: 0.02,
+    showReasoningSummary: true, slashSuggestionMaxVisible: 8, toolApprovalMode: 'manual'
+  }});
+  let capturedCallbacks;
+  const base = {role: 'subagent', agentName: 'explorer', parentToolCallId: 'outer-1', runId: 'run-1'};
+
+  await runAssistantTurn({
+    ...harness.input,
+    async runAgent(_session, callbacks) {
+      capturedCallbacks = callbacks;
+      callbacks.onToolCall({callId: 'outer-1', toolName: 'run_subagent', argumentsText: '{"agent":"explorer","task":"inspect"}'});
+      callbacks.onSubagentRecords([{...base, text: 'inspect', event: {kind: 'start', task: 'inspect'}}]);
+      callbacks.onSubagentActivity({agentName: 'explorer', phase: 'reasoning', runId: 'run-1', task: 'inspect', draft: 'checking'});
+      assert.equal(harness.appContext.createRenderState().pending.kind, 'subagent');
+      assert.equal(harness.appContext.createRenderState().pending.draft, 'checking');
+
+      const approval = callbacks.onToolApprovalRequest({
+        callId: 'inner-bash', toolName: 'run_bash_command', argumentsText: '{"command":"node inspect.js"}'
+      }, {
+        preview: 'node inspect.js',
+        origin: {kind: 'subagent', agentName: 'explorer', runId: 'run-1'}
+      });
+      assert.equal(harness.input.toolApproval.hasActiveRequest(), true);
+      harness.input.toolApproval.handleEvent({type: 'escape'});
+      assert.deepEqual(await approval, {kind: 'deny'});
+      assert.equal(harness.appContext.createRenderState().pending.kind, 'subagent');
+
+      callbacks.onSubagentRecords([
+        {...base, text: 'grep', event: {kind: 'tool_call', toolCallId: 'inner-1', toolName: 'grep', argumentsText: '{}'}},
+        {...base, text: 'match', event: {kind: 'tool_result', toolCallId: 'inner-1', toolName: 'grep', ok: true, details: {kind: 'grep', truncated: false}}}
+      ]);
+      callbacks.onSubagentRecords([{...base, text: 'report', event: {kind: 'assistant'}}]);
+      callbacks.onSubagentRecords([{...base, text: '', event: {kind: 'completed', durationMs: 15}}]);
+      callbacks.onToolResult({callId: 'outer-1', toolName: 'run_subagent', ok: true, text: 'report', details: {kind: 'generic'}});
+      callbacks.onComplete('parent answer');
+      return 'parent answer';
+    }
+  });
+
+  assert.deepEqual(harness.appContext.transcriptContext.getRecords().map((record) => record.role), [
+    'user', 'subagent', 'subagent', 'subagent', 'subagent', 'subagent', 'tool_call', 'tool_result', 'assistant'
+  ]);
+  assert.equal(harness.appContext.subagentRunContext.getPending(), null);
+  assert.equal(harness.appContext.turnContext.responding, false);
+  const approvalHooks = harness.hookEvents.filter((event) => event.event === 'tool_approval_request' || event.event === 'tool_approval_response');
+  assert.equal(approvalHooks.length, 2);
+  assert.equal(approvalHooks.every((event) => event.payload.conversationKind === 'subagent'), true);
+  assert.equal(approvalHooks.every((event) => event.payload.agentName === 'explorer'), true);
+  assert.equal(approvalHooks.every((event) => Object.hasOwn(event.payload, 'runId') === false), true);
+  assert.equal(approvalHooks.every((event) => Object.hasOwn(event.payload, 'parentToolCallId') === false), true);
+  const recordCount = harness.appContext.transcriptContext.getRecords().length;
+  capturedCallbacks.onSubagentRecords([{...base, text: 'late', event: {kind: 'assistant'}}]);
+  capturedCallbacks.onSubagentActivity({agentName: 'explorer', phase: 'streaming', runId: 'run-1', task: 'late'});
+  assert.deepEqual(await capturedCallbacks.onToolApprovalRequest({callId: 'late', toolName: 'run_bash_command', argumentsText: '{}'}, {
+    origin: {kind: 'subagent', agentName: 'explorer', runId: 'run-1'}
+  }), {kind: 'deny', message: 'Tool execution was interrupted.'});
+  assert.equal(harness.appContext.transcriptContext.getRecords().length, recordCount);
+  assert.equal(harness.appContext.subagentRunContext.getPending(), null);
+});
+
+test('runAssistantTurn bridges Worker questions with run identity and rejects late requests', async () => {
+  const harness = createHarness();
+  let capturedCallbacks;
+  const metadata = {agentName: 'worker', depth: 1, parentToolCallId: 'outer-worker', runId: 'worker-run'};
+  const base = {role: 'subagent', text: 'ask user', agentName: 'worker', parentToolCallId: 'outer-worker', runId: 'worker-run'};
+
+  await runAssistantTurn({
+    ...harness.input,
+    async runAgent(_session, callbacks) {
+      capturedCallbacks = callbacks;
+      callbacks.onSubagentRecords([{...base, event: {kind: 'start', task: 'ask user'}}]);
+      callbacks.onSubagentActivity({agentName: 'worker', phase: 'waiting_question', runId: 'worker-run', task: 'ask user', toolName: 'ask_user_questions'});
+      const pending = callbacks.onSubagentUserQuestionRequest(metadata, {
+        callId: 'worker-question', toolName: 'ask_user_questions', argumentsText: '{}'
+      }, {questions: [{question: 'Proceed?', options: [{label: 'Yes'}, {label: 'No'}]}]});
+      assert.equal(harness.input.userQuestion.getSurface().title, 'QUESTION · WORKER');
+      assert.equal(harness.appContext.subagentRunContext.getPending().phase, 'waiting_question');
+      harness.input.userQuestion.handleEvent({type: 'submit'});
+      const result = await pending;
+      assert.equal(result.ok, true);
+      assert.match(result.text, /"selected":"Yes"/u);
+      callbacks.onSubagentActivity({agentName: 'worker', phase: 'thinking', runId: 'worker-run', task: 'ask user'});
+      assert.equal(harness.appContext.subagentRunContext.getPending().phase, 'thinking');
+      callbacks.onSubagentRecords([{...base, text: '', event: {kind: 'completed', durationMs: 10}}]);
+      callbacks.onComplete('done');
+    }
+  });
+
+  const late = await capturedCallbacks.onSubagentUserQuestionRequest(metadata, {
+    callId: 'late-question', toolName: 'ask_user_questions', argumentsText: '{}'
+  }, {questions: [{question: 'Late?', options: [{label: 'Yes'}]}]});
+  assert.equal(late.ok, false);
+  assert.equal(harness.input.userQuestion.getSurface(), null);
+});
+
+test('runAssistantTurn cancels an active Worker question when the parent turn is interrupted', async () => {
+  const harness = createHarness();
+  let questionResult;
+  const running = runAssistantTurn({
+    ...harness.input,
+    async runAgent(session, callbacks) {
+      const metadata = {agentName: 'worker', depth: 1, parentToolCallId: 'outer', runId: 'worker-cancel'};
+      callbacks.onSubagentRecords([{
+        role: 'subagent', text: 'ask', agentName: 'worker', parentToolCallId: 'outer', runId: 'worker-cancel',
+        event: {kind: 'start', task: 'ask'}
+      }]);
+      questionResult = await callbacks.onSubagentUserQuestionRequest(metadata, {
+        callId: 'question-cancel', toolName: 'ask_user_questions', argumentsText: '{}'
+      }, {questions: [{question: 'Wait?', options: [{label: 'Yes'}]}]});
+      if (session.abortSignal.aborted) {
+        throw new AgentAbortError();
+      }
+    }
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(harness.input.userQuestion.hasActiveRequest(), true);
+  assert.equal(harness.appContext.interruptActiveAssistantTurn().interrupted, true);
+  await running;
+  assert.equal(questionResult.ok, false);
+  assert.match(questionResult.text, /interrupted/u);
+  assert.equal(harness.input.userQuestion.hasActiveRequest(), false);
+  assert.equal(harness.appContext.turnContext.responding, false);
+});
+
+test('runAssistantTurn leaves high-frequency subagent activity rendering to the timer', async () => {
+  const harness = createHarness();
+  let renderCount = 0;
+
+  await runAssistantTurn({
+    ...harness.input,
+    render(finalizeRecord) {
+      renderCount += 1;
+      harness.input.render(finalizeRecord);
+    },
+    async runAgent(_session, callbacks) {
+      callbacks.onSubagentRecords([{
+        role: 'subagent', text: 'inspect', agentName: 'explorer', parentToolCallId: 'outer', runId: 'run-timer',
+        event: {kind: 'start', task: 'inspect'}
+      }]);
+      const beforeActivity = renderCount;
+      callbacks.onSubagentActivity({agentName: 'explorer', phase: 'streaming', runId: 'run-timer', task: 'inspect', draft: 'a'});
+      callbacks.onSubagentActivity({agentName: 'explorer', phase: 'streaming', runId: 'run-timer', task: 'inspect', draft: 'ab'});
+      callbacks.onSubagentActivity({agentName: 'explorer', phase: 'reasoning', runId: 'run-timer', task: 'inspect', draft: 'checking'});
+      assert.equal(renderCount, beforeActivity);
+      callbacks.onSubagentRecords([{
+        role: 'subagent', text: '', agentName: 'explorer', parentToolCallId: 'outer', runId: 'run-timer',
+        event: {kind: 'completed', durationMs: 10}
+      }]);
+      callbacks.onComplete('done');
+    }
+  });
+});
+
+test('runAssistantTurn clears subagent pending and releases response lock after parent cancellation', async () => {
+  const harness = createHarness();
+  let capturedCallbacks;
+  const running = runAssistantTurn({
+    ...harness.input,
+    async runAgent(session, callbacks) {
+      capturedCallbacks = callbacks;
+      callbacks.onSubagentRecords([{
+        role: 'subagent', text: 'inspect', agentName: 'explorer', parentToolCallId: 'outer', runId: 'run-cancel',
+        event: {kind: 'start', task: 'inspect'}
+      }]);
+      callbacks.onSubagentActivity({agentName: 'explorer', phase: 'thinking', runId: 'run-cancel', task: 'inspect'});
+      await new Promise((resolve, reject) => {
+        session.abortSignal.addEventListener('abort', () => {
+          callbacks.onSubagentRecords([{
+            role: 'subagent', text: 'Explorer cancelled.', agentName: 'explorer', parentToolCallId: 'outer', runId: 'run-cancel',
+            event: {kind: 'cancelled', durationMs: 12}
+          }]);
+          reject(new AgentAbortError());
+        }, {once: true});
+      });
+    }
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(harness.appContext.createRenderState().pending.kind, 'subagent');
+  assert.equal(harness.appContext.interruptActiveAssistantTurn().interrupted, true);
+  await running;
+  assert.equal(harness.appContext.subagentRunContext.getPending(), null);
+  assert.equal(harness.appContext.turnContext.responding, false);
+  assert.equal(harness.appContext.transcriptContext.getRecords().some((record) => record.role === 'subagent' && record.event.kind === 'cancelled'), true);
+  const count = harness.appContext.transcriptContext.getRecords().length;
+  capturedCallbacks.onSubagentActivity({agentName: 'explorer', phase: 'streaming', runId: 'run-cancel', task: 'late'});
+  assert.equal(harness.appContext.transcriptContext.getRecords().length, count);
+  assert.equal(harness.appContext.subagentRunContext.getPending(), null);
 });
 
 test('runAssistantTurn asks the renderer to flush reasoning when assistant text starts', async () => {

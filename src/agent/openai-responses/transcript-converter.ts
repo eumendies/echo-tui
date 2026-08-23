@@ -1,5 +1,6 @@
 import {formatImageDataUrl, formatShellRecordForProvider, formatToolResultImageIntro, getValidImageAttachments} from '../transcript-converter-common';
 import {OPENAI_REASONING_EXTENSION_KIND} from '../../types/transcript';
+import {shouldIncludeRecordInProviderContext} from '../transcript-converter-common';
 
 import type {ToolCallTranscriptRecord, ToolResultTranscriptRecord, TranscriptExtensionRecord, TranscriptRecord, UserTranscriptRecord} from '../../types/transcript';
 
@@ -52,6 +53,10 @@ function convertTranscriptToOpenAiInput(records: TranscriptRecord[]): OpenAiInpu
   const messages: OpenAiInputItem[] = [];
 
   for (const record of records) {
+    if (!shouldIncludeRecordInProviderContext(record)) {
+      continue;
+    }
+
     if (isOpenAiInputRole(record.role)) {
       messages.push({
         role: record.role,
