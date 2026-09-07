@@ -80,7 +80,7 @@ function createDefaultToolRegistry(config: LlmConfig, cwd: string | (() => strin
     }),
     createWebSearchToolHandler({
     }),
-    ...(options.subagentPort ? [createRunSubagentToolHandler(options.subagentPort)] : [])
+    ...(options.subagentPort ? [createRunSubagentToolHandler(options.subagentPort, toolResultStore)] : [])
   ];
   const registry = createToolRegistry(options.allowedToolNames
     ? handlers.filter((handler) => options.allowedToolNames!.has(handler.definition.name))

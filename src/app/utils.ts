@@ -5,6 +5,7 @@ import {
   DEFAULT_MAX_IMAGE_BYTES,
   DEFAULT_MAX_IMAGE_PIXELS,
   DEFAULT_MAX_SOURCE_IMAGE_BYTES,
+  DEFAULT_MAX_TOTAL_IMAGE_BYTES,
   DEFAULT_MAX_PDF_BYTES,
   DEFAULT_MAX_PDF_OUTPUT_BYTES,
   DEFAULT_MAX_TOTAL_OUTPUT_BYTES
@@ -63,8 +64,10 @@ async function expandFileMentionsForUserText(userText: string, cwd: string, opti
         maxFiles: uniquePaths.length,
         maxPdfBytes: DEFAULT_MAX_PDF_BYTES,
         maxPdfOutputBytes: DEFAULT_MAX_PDF_OUTPUT_BYTES,
+        maxTotalImageBytes: DEFAULT_MAX_TOTAL_IMAGE_BYTES,
         maxTotalOutputBytes: DEFAULT_MAX_TOTAL_OUTPUT_BYTES
-      }
+      },
+      remainingImageAttachmentBytes: DEFAULT_MAX_TOTAL_IMAGE_BYTES
     });
     sections.push(formatSelectedFileForModel(filePath, result));
 

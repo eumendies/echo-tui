@@ -1,5 +1,6 @@
 import {createToolRegistry} from '../tools/tool-registry';
 import {createOffloadedTextPreview} from '../tools/tool-result-offloading';
+import {capUtf8Text} from '../tools/tool-handler-utils';
 import {sanitizeMcpError} from './manager';
 
 import type {McpCallToolResult} from './client';
@@ -26,7 +27,7 @@ function createMcpToolRegistry(manager: McpManager, toolResultStore?: ToolResult
           toolName: call.toolName,
           ok: false,
           details: {kind: 'generic'},
-          text: `MCP tool failed: ${sanitizeMcpError(error)}`
+          text: capUtf8Text(`MCP tool failed: ${sanitizeMcpError(error)}`, MAX_MCP_TOOL_RESULT_BYTES).text
         };
       }
     }
@@ -109,14 +110,11 @@ function truncateMcpToolResult(text: string, toolResultStore?: ToolResultStore):
     maxPreviewBytes: MAX_MCP_TOOL_RESULT_BYTES,
     strategy: 'head',
     store: toolResultStore,
-    text
+    text,
+    truncationMessage: '[MCP tool result truncated. Narrow the request or split it into smaller calls.]'
   });
 
-  if (!preview.truncated || preview.offloadFilePath) {
-    return preview.text;
-  }
-
-  return `${preview.text}\n\n[MCP tool result truncated: ${text.length - preview.text.length} characters omitted]`;
+  return preview.text;
 }
 
 export {

@@ -2,6 +2,7 @@ import {formatWebSearchFailure, formatWebSearchResponse, WEB_SEARCH_TOOL_NAME} f
 import {assessSearchQuality, compareScoredResults, extractQueryTerms, mergeScoredResults, scoreSearchResults} from './relevance';
 import {normalizeLimits, normalizeRequest, runSearchAttempt} from './request';
 import {dedupeStrings} from './shared';
+import {createOffloadedTextPreview} from '../tool-result-offloading';
 import {capUtf8Text} from '../tool-handler-utils';
 
 import type {ToolCall, ToolExecutionOptions, ToolHandler, WebSearchToolExecutionResult} from '../../types/tool';
@@ -68,11 +69,12 @@ async function webSearch(args: Record<string, unknown>, options: {abortSignal?: 
   const normalized = normalizeRequest(args, options.limits);
 
   if (!normalized.ok) {
+    const failure = capUtf8Text(formatWebSearchFailure(normalized.reason), options.limits.maxTotalOutputBytes);
     return {
       ok: false,
-      text: formatWebSearchFailure(normalized.reason),
+      text: failure.text,
       timedOut: false,
-      truncated: false
+      truncated: failure.truncated
     };
   }
 
@@ -89,11 +91,12 @@ async function webSearch(args: Record<string, unknown>, options: {abortSignal?: 
   let qualityAssessment: SearchQualityAssessment = assessSearchQuality([], queryTerms);
 
   if (options.abortSignal?.aborted) {
+    const failure = capUtf8Text(formatWebSearchFailure('search request cancelled'), options.limits.maxTotalOutputBytes);
     return {
       ok: false,
-      text: formatWebSearchFailure('search request cancelled'),
+      text: failure.text,
       timedOut: false,
-      truncated: false
+      truncated: failure.truncated
     };
   }
 
@@ -115,11 +118,12 @@ async function webSearch(args: Record<string, unknown>, options: {abortSignal?: 
       attemptCount += 1;
 
       if (options.abortSignal?.aborted) {
+        const failure = capUtf8Text(formatWebSearchFailure('search request cancelled'), options.limits.maxTotalOutputBytes);
         return {
           ok: false,
-          text: formatWebSearchFailure('search request cancelled'),
+          text: failure.text,
           timedOut: false,
-          truncated: false
+          truncated: failure.truncated
         };
       }
 
@@ -152,11 +156,12 @@ async function webSearch(args: Record<string, unknown>, options: {abortSignal?: 
   }
 
   if (mergedResults.size === 0 && !sawEmptySearch) {
+    const failure = capUtf8Text(formatWebSearchFailure(failures.length === 0 ? 'search produced no usable results' : `all search attempts failed: ${dedupeStrings(failures).join('; ')}`), options.limits.maxTotalOutputBytes);
     return {
       ok: false,
-      text: formatWebSearchFailure(failures.length === 0 ? 'search produced no usable results' : `all search attempts failed: ${dedupeStrings(failures).join('; ')}`),
+      text: failure.text,
       timedOut,
-      truncated: bodyTruncated
+      truncated: bodyTruncated || failure.truncated
     };
   }
 
@@ -177,14 +182,24 @@ async function webSearch(args: Record<string, unknown>, options: {abortSignal?: 
     providers: usedProviders,
     truncated: visibleTruncated
   });
-  const capped = capUtf8Text(formatted, options.limits.maxTotalOutputBytes);
+  const capped = boundWebSearchText(formatted, options.limits.maxTotalOutputBytes);
 
   return {
     ok: true,
-    text: capped.truncated ? `${capped.text}\n\nOutput was truncated.` : capped.text,
+    text: capped.text,
     timedOut: false,
     truncated: visibleTruncated || capped.truncated
   };
+}
+
+function boundWebSearchText(text: string, maxBytes: number): {text: string; truncated: boolean} {
+  const preview = createOffloadedTextPreview({
+    maxPreviewBytes: maxBytes,
+    strategy: 'head',
+    text,
+    truncationMessage: 'Output was truncated. Narrow the query, reduce count, or use offset to continue.'
+  });
+  return {text: preview.text, truncated: preview.truncated};
 }
 
 function addUsedProvider(providers: SearchProviderName[], provider: SearchProviderName): void {
