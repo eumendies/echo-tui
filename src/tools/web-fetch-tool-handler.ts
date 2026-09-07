@@ -1,6 +1,6 @@
 import * as net from 'node:net';
 
-import {normalizePositiveInteger} from './tool-handler-utils';
+import {DEFAULT_TOOL_RESULT_MAX_OUTPUT_BYTES, capUtf8Text, normalizePositiveInteger} from './tool-handler-utils';
 import {createOffloadedTextPreview} from './tool-result-offloading';
 
 import type {ToolCall, ToolExecutionOptions, ToolHandler, WebFetchToolExecutionResult} from '../types/tool';
@@ -12,7 +12,8 @@ const WEB_FETCH_TOOL_NAME = 'web_fetch';
 // 网络工具默认暴露给模型，所有外部输入和回传内容都必须有硬边界。
 const DEFAULT_TIMEOUT_MS = 20_000;
 const DEFAULT_MAX_RESPONSE_BYTES = 1_000_000;
-const DEFAULT_MAX_TOTAL_OUTPUT_BYTES = 65_536;
+const DEFAULT_MAX_TOTAL_OUTPUT_BYTES = DEFAULT_TOOL_RESULT_MAX_OUTPUT_BYTES;
+const WEB_FETCH_TRUNCATION_MESSAGE = 'Output was truncated. Use offset/limit to fetch a smaller page or narrow the URL.';
 const DEFAULT_MAX_REDIRECTS = 5;
 const DEFAULT_MAX_URL_BYTES = 4096;
 
@@ -118,22 +119,24 @@ async function webFetch(args: Record<string, unknown>, options: {abortSignal?: A
   const normalized = normalizeRequest(args, options.limits);
 
   if (!normalized.ok) {
+    const failure = capUtf8Text(formatWebFetchFailure(normalized.reason), options.limits.maxTotalOutputBytes);
     return {
       ok: false,
-      text: formatWebFetchFailure(normalized.reason),
+      text: failure.text,
       timedOut: false,
-      truncated: false
+      truncated: failure.truncated
     };
   }
 
   const fetched = await fetchWithRedirects(normalized.value.url, options);
 
   if (!fetched.ok) {
+    const failure = capUtf8Text(formatWebFetchFailure(fetched.reason), options.limits.maxTotalOutputBytes);
     return {
       ok: false,
-      text: formatWebFetchFailure(fetched.reason),
+      text: failure.text,
       timedOut: fetched.timedOut,
-      truncated: false
+      truncated: failure.truncated
     };
   }
 
@@ -141,11 +144,12 @@ async function webFetch(args: Record<string, unknown>, options: {abortSignal?: A
   const ok = fetched.value.status >= 200 && fetched.value.status < 300 && media.kind !== 'unsupported';
 
   if (media.kind === 'unsupported') {
+    const failure = capUtf8Text(formatUnsupportedResponse(fetched.value, media.reason), options.limits.maxTotalOutputBytes);
     return {
       ok: false,
-      text: formatUnsupportedResponse(fetched.value, media.reason),
+      text: failure.text,
       timedOut: false,
-      truncated: false
+      truncated: failure.truncated
     };
   }
 
@@ -156,12 +160,13 @@ async function webFetch(args: Record<string, unknown>, options: {abortSignal?: A
     maxPreviewBytes: options.limits.maxTotalOutputBytes,
     strategy: 'head',
     store: options.toolResultStore,
-    text: formatted
+    text: formatted,
+    truncationMessage: WEB_FETCH_TRUNCATION_MESSAGE
   });
 
   return {
     ok,
-    text: preview.truncated && !preview.offloadFilePath ? `${preview.text}\n\nOutput was truncated.` : preview.text,
+    text: preview.text,
     timedOut: false,
     truncated: preview.truncated || fetched.value.bodyTruncated
   };

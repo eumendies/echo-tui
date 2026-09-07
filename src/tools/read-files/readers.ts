@@ -19,6 +19,7 @@ type ReadFilesLimits = {
   maxDirectoryEntries: number;
   maxPdfBytes: number;
   maxPdfOutputBytes: number;
+  maxTotalImageBytes: number;
   maxTotalOutputBytes: number;
 };
 
@@ -45,6 +46,7 @@ type ReadOneFileOptions = {
   cwd: string; // 作为相对路径解析基准的当前工作目录。
   imageOptions: ImageReadOptions; // 控制图片附件安全上限和超限压缩行为。
   limits: ReadFilesLimits; // 控制文本、目录、PDF 与总输出规模。
+  remainingImageAttachmentBytes: number; // 当前请求按顺序可使用的剩余图片附件聚合预算。
 };
 
 async function readOneFile(request: NormalizedFileRequest, options: ReadOneFileOptions): Promise<FileReadResult> {
@@ -77,7 +79,7 @@ async function readOneFile(request: NormalizedFileRequest, options: ReadOneFileO
     }
 
     if (media.kind === 'image') {
-      return await createImageFileResult(request, absolutePath, media, stat.size, options.imageOptions);
+      return await createImageFileResult(request, absolutePath, media, stat.size, options.imageOptions, options.remainingImageAttachmentBytes);
     }
 
     if (media.kind === 'pdf') {
@@ -170,13 +172,29 @@ async function createPdfFileResult(request: NormalizedFileRequest, absolutePath:
   };
 }
 
-async function createImageFileResult(request: NormalizedFileRequest, absolutePath: string, media: MediaInfo, sizeBytes: number, imageOptions: ImageReadOptions): Promise<FileReadResult> {
-  const result = await readImageFile(request.path, absolutePath, media.mediaType, sizeBytes, imageOptions);
+async function createImageFileResult(request: NormalizedFileRequest, absolutePath: string, media: MediaInfo, sizeBytes: number, imageOptions: ImageReadOptions, remainingImageAttachmentBytes: number): Promise<FileReadResult> {
+  if (remainingImageAttachmentBytes <= 0) {
+    return createSkippedImageResult(request.path, sizeBytes);
+  }
+
+  const aggregateLimited = remainingImageAttachmentBytes < imageOptions.maxImageBytes;
+  const result = await readImageFile(request.path, absolutePath, media.mediaType, sizeBytes, {
+    ...imageOptions,
+    maxImageBytes: Math.min(imageOptions.maxImageBytes, remainingImageAttachmentBytes)
+  });
 
   if (!result.ok) {
-    return result.unsupported
-      ? createUnsupportedFile(request.path, media.kind, sizeBytes, result.reason)
-      : createFileError(request.path, media.kind, result.reason);
+    if (result.unsupported) {
+      return createUnsupportedFile(request.path, media.kind, sizeBytes, result.reason);
+    }
+
+    if (aggregateLimited) {
+      // 剩余聚合预算迫使单图上限缩小后读取失败：保留真实失败原因，
+      // 避免把解码/压缩错误误报成单纯的预算跳过，模型才能决定是分批读还是换图。
+      return createSkippedImageResult(request.path, sizeBytes, result.reason);
+    }
+
+    return createFileError(request.path, media.kind, result.reason);
   }
 
   return {
@@ -196,6 +214,25 @@ async function createImageFileResult(request: NormalizedFileRequest, absolutePat
   };
 }
 
+function createSkippedImageResult(pathText: string, sizeBytes: number, reason?: string): FileReadResult {
+  return {
+    ok: true,
+    text: formatFileEnvelope({
+      body: [
+        `size_bytes: ${sizeBytes}`,
+        'image_attached: false',
+        reason
+          ? `image_skipped: total attachment byte limit reached (image read failed: ${reason})`
+          : 'image_skipped: total attachment byte limit reached',
+        'Read images in smaller batches to attach this image.'
+      ],
+      kind: 'image',
+      path: pathText
+    }),
+    truncated: true
+  };
+}
+
 function createTextFileResult(request: NormalizedFileRequest, content: TextFileReadResult): FileReadResult {
   const numberedContent = formatNumberedContent(content);
 
@@ -205,6 +242,7 @@ function createTextFileResult(request: NormalizedFileRequest, content: TextFileR
       body: [
         ...(content.hasMore ? ['has_more: true'] : []),
         ...(content.contentTruncated ? ['content_truncated: true'] : []),
+        ...(content.hasMore ? [`next_offset: ${content.endLine ?? request.offset}`, 'Use offset/limit to continue reading this file.'] : []),
         '',
         'content:',
         '```',

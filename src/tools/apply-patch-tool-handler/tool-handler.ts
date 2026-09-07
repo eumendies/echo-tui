@@ -1,7 +1,12 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import {resolveCwd} from '../tool-handler-utils';
+import {
+  DEFAULT_TOOL_RESULT_MAX_OUTPUT_BYTES,
+  capUtf8Text,
+  normalizePositiveInteger,
+  resolveCwd
+} from '../tool-handler-utils';
 import {parsePatchText} from './parser';
 import {simulatePatch} from './simulator';
 
@@ -15,6 +20,8 @@ const DEFAULT_MAX_FILE_BYTES = 1_000_000;
 const DEFAULT_MAX_CHANGED_FILES = 20;
 const DEFAULT_MAX_HUNKS = 100;
 const APPLY_PATCH_LABEL_MAX_PATHS = 5;
+const FILE_EDIT_RESULT_MAX_FIELD_BYTES = 24_000;
+const FILE_EDIT_RESULT_TRUNCATION_SUFFIX = '… [truncated]';
 
 type ApplyPatchToolHandlerOptions = {
   cwd?: string | (() => string);
@@ -22,6 +29,7 @@ type ApplyPatchToolHandlerOptions = {
   maxFileBytes?: number;
   maxChangedFiles?: number;
   maxHunks?: number;
+  maxOutputBytes?: number; // 最终 provider-visible 摘要的 UTF-8 字节预算，仅供固定安全上限或测试覆盖。
 };
 
 /**
@@ -179,6 +187,7 @@ function normalizePatchDisplayPath(patchPath: string): string {
  */
 function createApplyPatchToolHandler(options: ApplyPatchToolHandlerOptions = {}): ToolHandler {
   const limits = normalizeLimits(options);
+  const maxOutputBytes = normalizePositiveInteger(options.maxOutputBytes, DEFAULT_TOOL_RESULT_MAX_OUTPUT_BYTES);
 
   return {
     definition: {
@@ -197,11 +206,19 @@ function createApplyPatchToolHandler(options: ApplyPatchToolHandlerOptions = {})
       }
     },
     execute(args: Record<string, unknown>, call: ToolCall, executionOptions?: ToolExecutionOptions): ApplyPatchToolExecutionResult {
-      const result = applyPatch(args.patch, {
-        cwd: resolveCwd(options.cwd),
-        limits,
-        changeRecorder: executionOptions?.changeRecorder
-      });
+      let result: ApplyPatchExecutionResult;
+      try {
+        result = applyPatch(args.patch, {
+          cwd: resolveCwd(options.cwd),
+          limits,
+          changeRecorder: executionOptions?.changeRecorder
+        });
+      } catch (error: unknown) {
+        result = {
+          ok: false,
+          reason: error instanceof Error && error.message.trim() !== '' ? error.message : 'failed to access changed files'
+        };
+      }
       const displayFiles = result.ok ? result.value.displayFiles : undefined;
       const display = displayFiles ? {kind: APPLY_PATCH_TOOL_NAME, files: displayFiles} as const : undefined;
 
@@ -209,7 +226,9 @@ function createApplyPatchToolHandler(options: ApplyPatchToolHandlerOptions = {})
         callId: call.callId,
         toolName: APPLY_PATCH_TOOL_NAME,
         ok: result.ok,
-        text: result.ok ? formatSuccess(result.value.changedFiles) : formatFailure(result.reason, result.hint),
+        text: result.ok
+          ? formatSuccess(result.value.changedFiles, maxOutputBytes)
+          : formatFailure(result.reason, result.hint, maxOutputBytes),
         details: {kind: 'apply_patch', ...(display ? {display} : {})}
       };
     }
@@ -268,22 +287,67 @@ function applyPatch(patch: unknown, options: {cwd: string; limits: ApplyPatchLim
   return {ok: true, value: simulated.value};
 }
 
-function formatSuccess(changedFiles: ChangedFile[]): string {
-  return [
-    'Applied patch.',
-    'Changed files:',
-    ...(changedFiles.length === 0
-      ? ['- none']
-      : changedFiles.map((file) => `- ${file.filePath} (${file.kind})`))
-  ].join('\n');
+function formatSuccess(changedFiles: ChangedFile[], maxOutputBytes: number): string {
+  const lines = ['Applied patch.', 'Changed files:'];
+
+  if (changedFiles.length === 0) {
+    return capUtf8Text([...lines, '- none'].join('\n'), maxOutputBytes).text;
+  }
+
+  let omitted = 0;
+  for (const [index, file] of changedFiles.entries()) {
+    const pathText = capFileEditResultField(file.filePath, FILE_EDIT_RESULT_MAX_FIELD_BYTES);
+    const line = `- ${pathText} (${file.kind})`;
+    const remaining = changedFiles.length - index - 1;
+    const candidate = [...lines, line, ...(remaining > 0 ? [formatOmittedChangedFiles(remaining)] : [])].join('\n');
+
+    if (Buffer.byteLength(candidate, 'utf8') > maxOutputBytes) {
+      omitted = changedFiles.length - index;
+      break;
+    }
+
+    lines.push(line);
+  }
+
+  if (omitted > 0) {
+    while (lines.length > 2 && Buffer.byteLength([...lines, formatOmittedChangedFiles(omitted)].join('\n'), 'utf8') > maxOutputBytes) {
+      lines.pop();
+      omitted += 1;
+    }
+    lines.push(formatOmittedChangedFiles(omitted));
+  }
+
+  return capUtf8Text(lines.join('\n'), maxOutputBytes).text;
 }
 
-function formatFailure(reason: string, hint?: string): string {
-  return [
+function formatFailure(reason: string, hint: string | undefined, maxOutputBytes: number): string {
+  const staticText = hint ? 'Patch failed.\nReason: \nHint: ' : 'Patch failed.\nReason: ';
+  const availableBytes = Math.max(0, maxOutputBytes - Buffer.byteLength(staticText, 'utf8'));
+  const reasonBudget = hint ? Math.floor(availableBytes / 2) : availableBytes;
+  const boundedReason = capFileEditResultField(reason, Math.min(FILE_EDIT_RESULT_MAX_FIELD_BYTES, reasonBudget));
+  const hintBudget = Math.max(0, availableBytes - Buffer.byteLength(boundedReason, 'utf8'));
+  const text = [
     'Patch failed.',
-    `Reason: ${reason}`,
-    ...(hint ? [`Hint: ${hint}`] : [])
+    `Reason: ${boundedReason}`,
+    ...(hint ? [`Hint: ${capFileEditResultField(hint, Math.min(FILE_EDIT_RESULT_MAX_FIELD_BYTES, hintBudget))}`] : [])
   ].join('\n');
+  return capUtf8Text(text, maxOutputBytes).text;
+}
+
+function capFileEditResultField(value: string, maxBytes: number): string {
+  const normalizedMaxBytes = Math.max(0, maxBytes);
+  if (Buffer.byteLength(value, 'utf8') <= normalizedMaxBytes) {
+    return value;
+  }
+
+  const suffixBytes = Buffer.byteLength(FILE_EDIT_RESULT_TRUNCATION_SUFFIX, 'utf8');
+  return normalizedMaxBytes <= suffixBytes
+    ? capUtf8Text(FILE_EDIT_RESULT_TRUNCATION_SUFFIX, normalizedMaxBytes).text
+    : `${capUtf8Text(value, normalizedMaxBytes - suffixBytes).text}${FILE_EDIT_RESULT_TRUNCATION_SUFFIX}`;
+}
+
+function formatOmittedChangedFiles(count: number): string {
+  return `[${count} changed ${count === 1 ? 'file' : 'files'} omitted due to output limit]`;
 }
 
 function normalizeLimits(options: ApplyPatchToolHandlerOptions): ApplyPatchLimits {

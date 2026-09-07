@@ -1,10 +1,15 @@
 const assert = require('node:assert/strict');
 const {test} = require('node:test');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
 const {createToolExecutor} = require('../../src/tools/tool-executor');
 const {createDefaultToolRegistry, createToolRegistry} = require('../../src/tools/tool-registry');
 const {createRunSubagentToolHandler, RUN_SUBAGENT_TOOL_NAME} = require('../../src/tools/run-subagent-tool-handler');
 const {BUILTIN_SUBAGENT_DEFINITIONS} = require('../../src/agent/subagent/definition');
+const {createToolResultStore} = require('../../src/tools/tool-result-offloading');
+const {DEFAULT_TOOL_RESULT_MAX_OUTPUT_BYTES} = require('../../src/tools/tool-handler-utils');
 
 const TEST_CONFIG = {
   agentType: 'fake',
@@ -38,7 +43,7 @@ test('run_subagent is a normal pair-after ToolHandler executed through ToolExecu
   const result = await executor.execute(call, {abortSignal: abortController.signal});
 
   assert.equal(handler.transcriptCommitMode, 'pair_after_execute');
-  assert.equal(handler.definition.description, 'Delegate a self-contained task to a named subagent and return only its final result.');
+  assert.equal(handler.definition.description, 'Delegate a self-contained task to a named subagent and return only its bounded final result. Oversized reports may be saved to a local artifact that can be inspected with read_files.');
   assert.deepEqual(handler.definition.parameters.required, ['agent', 'task']);
   assert.deepEqual(handler.definition.parameters.properties.agent.enum, ['explorer']);
   assert.match(handler.definition.parameters.properties.agent.description, /explorer: Investigate broad bounded tasks/u);
@@ -132,4 +137,43 @@ test('default registry only exposes run_subagent when a parent Port is injected 
   assert.equal(child.getHandler('apply_patch'), undefined);
   assert.equal(child.getHandler('ask_user_questions'), undefined);
   assert.equal(child.getHandler(RUN_SUBAGENT_TOOL_NAME), undefined);
+});
+
+test('run_subagent bounds success and failure handoffs with head previews and optional artifacts', async () => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-subagent-result-'));
+  const store = createToolResultStore({cwd: process.cwd(), rootDir});
+  const text = `结论在前\n${'你'.repeat(DEFAULT_TOOL_RESULT_MAX_OUTPUT_BYTES)}`;
+  const createPort = (ok) => ({
+    listDefinitions() { return [{name: 'explorer', description: 'Explore'}]; },
+    async run() { return {ok, text}; }
+  });
+  const call = {callId: 'bounded', toolName: RUN_SUBAGENT_TOOL_NAME, argumentsText: '{"agent":"explorer","task":"inspect"}'};
+  const success = await createToolExecutor(createToolRegistry([createRunSubagentToolHandler(createPort(true), store)])).execute(call);
+  const failure = await createToolExecutor(createToolRegistry([createRunSubagentToolHandler(createPort(false))])).execute({...call, callId: 'failed'});
+  const artifactPath = success.text.match(/\[tool result truncated: ([^\]]+)\]$/)?.[1];
+
+  assert.equal(success.ok, true);
+  assert.equal(success.text.startsWith('结论在前'), true);
+  assert.ok(artifactPath);
+  assert.equal(fs.readFileSync(artifactPath, 'utf8'), text);
+  assert.ok(Buffer.byteLength(success.text, 'utf8') <= DEFAULT_TOOL_RESULT_MAX_OUTPUT_BYTES);
+  assert.equal(failure.ok, false);
+  assert.match(failure.text, /Subagent result was truncated/);
+  assert.ok(Buffer.byteLength(failure.text, 'utf8') <= DEFAULT_TOOL_RESULT_MAX_OUTPUT_BYTES);
+  assert.doesNotMatch(failure.text, /\uFFFD/);
+});
+
+test('run_subagent bounds unexpected Port exceptions', async () => {
+  const handler = createRunSubagentToolHandler({
+    listDefinitions() { return [{name: 'explorer', description: 'Explore'}]; },
+    async run() { throw new Error('异常'.repeat(DEFAULT_TOOL_RESULT_MAX_OUTPUT_BYTES)); }
+  });
+  const result = await createToolExecutor(createToolRegistry([handler])).execute({
+    callId: 'exception', toolName: RUN_SUBAGENT_TOOL_NAME, argumentsText: '{"agent":"explorer","task":"inspect"}'
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.text, /^Subagent failed:/);
+  assert.match(result.text, /Subagent result was truncated/);
+  assert.ok(Buffer.byteLength(result.text, 'utf8') <= DEFAULT_TOOL_RESULT_MAX_OUTPUT_BYTES);
+  assert.doesNotMatch(result.text, /\uFFFD/);
 });

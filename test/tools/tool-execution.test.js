@@ -15,7 +15,7 @@ const {
   parseAskUserQuestionsArgs,
   parseAskUserQuestionsToolCall
 } = require('../../src/tools/ask-user-questions-tool-handler');
-const { createBashToolHandler, isChangeHistoryReadonlyBashCommand, RUN_BASH_COMMAND_TOOL_NAME } = require('../../src/tools/bash-tool-handler');
+const { createBashToolHandler, formatBashResult, isChangeHistoryReadonlyBashCommand, RUN_BASH_COMMAND_TOOL_NAME } = require('../../src/tools/bash-tool-handler');
 const { runBashCommand } = require('../../src/tools/bash-command-runner');
 const { createGlobToolHandler, DEFAULT_MAX_PATHS, GLOB_TOOL_NAME } = require('../../src/tools/glob-tool-handler');
 const { createGrepToolHandler, DEFAULT_MAX_MATCHES, GREP_TOOL_NAME } = require('../../src/tools/grep-tool-handler');
@@ -23,6 +23,7 @@ const {
   createReadFilesToolHandler,
   DEFAULT_MAX_DIRECTORY_ENTRIES,
   DEFAULT_MAX_PDF_OUTPUT_BYTES,
+  DEFAULT_MAX_TOTAL_IMAGE_BYTES,
   DEFAULT_MAX_TOTAL_OUTPUT_BYTES: DEFAULT_READ_FILES_MAX_TOTAL_OUTPUT_BYTES,
   READ_FILES_TOOL_NAME
 } = require('../../src/tools/read-files');
@@ -32,10 +33,11 @@ const { createSkillManager } = require('../../src/skills/skill-manager');
 const { createSkillRegistry } = require('../../src/skills/skill-registry');
 const { listSkillUseRecords } = require('../../src/skills/skill-usage');
 const { createToolExecutor } = require('../../src/tools/tool-executor');
+const { DEFAULT_TOOL_RESULT_MAX_OUTPUT_BYTES } = require('../../src/tools/tool-handler-utils');
 const { createDefaultToolRegistry, createToolRegistry } = require('../../src/tools/tool-registry');
 const { createToolResultStore } = require('../../src/tools/tool-result-offloading');
 const { COMPLETE_TODO_TOOL_NAME, CREATE_TODOS_TOOL_NAME } = require('../../src/tools/todo-tool-handler');
-const { createUseSkillToolHandler, USE_SKILL_TOOL_NAME } = require('../../src/tools/use-skill-tool-handler');
+const { createUseSkillToolHandler, MAX_USE_SKILL_ARGUMENTS_BYTES, MAX_USE_SKILL_RESOURCES_BYTES, USE_SKILL_TOOL_NAME } = require('../../src/tools/use-skill-tool-handler');
 
 function createCall(overrides = {}) {
   return {
@@ -633,6 +635,61 @@ test('use_skill handler fails for disabled skill and lists enabled skills only',
   assert.doesNotMatch(unknown.text, /- disabled/);
 });
 
+test('use_skill accepts an exact envelope boundary and rejects oversized instructions without fragments', async () => {
+  const skill = {name: 'bounded', sourcePath: '/skills/bounded/SKILL.md', content: '', resources: []};
+  const registry = {loadSkill() { return {ok: true, skill}; }, listCatalog() { return []; }};
+  const baseline = await createToolExecutor(createToolRegistry([createUseSkillToolHandler(registry, {maxOutputBytes: 256})])).execute({
+    callId: 'baseline', toolName: USE_SKILL_TOOL_NAME, argumentsText: '{"name":"bounded"}'
+  });
+  const baseBytes = Buffer.byteLength(baseline.text, 'utf8');
+  skill.content = 'x'.repeat(256 - baseBytes);
+  const exact = await createToolExecutor(createToolRegistry([createUseSkillToolHandler(registry, {maxOutputBytes: 256})])).execute({
+    callId: 'exact', toolName: USE_SKILL_TOOL_NAME, argumentsText: '{"name":"bounded"}'
+  });
+  assert.equal(exact.ok, true);
+  assert.equal(Buffer.byteLength(exact.text, 'utf8'), 256);
+
+  skill.content += 'SECRET-INSTRUCTION';
+  const oversized = await createToolExecutor(createToolRegistry([createUseSkillToolHandler(registry, {maxOutputBytes: 256})])).execute({
+    callId: 'oversized', toolName: USE_SKILL_TOOL_NAME, argumentsText: '{"name":"bounded"}'
+  });
+  assert.equal(oversized.ok, false);
+  assert.match(oversized.text, /source: \/skills\/bounded\/SKILL\.md/);
+  assert.match(oversized.text, /read_files using offset\/limit/);
+  assert.doesNotMatch(oversized.text, /SECRET-INSTRUCTION/);
+  assert.ok(Buffer.byteLength(oversized.text, 'utf8') <= 256);
+});
+
+test('use_skill rejects oversized arguments and resource lists and bounds loader errors', async () => {
+  let loads = 0;
+  const resources = [`reference/${'你'.repeat(MAX_USE_SKILL_RESOURCES_BYTES)}.md`];
+  const registry = {
+    loadSkill() { loads += 1; return {ok: true, skill: {name: 'large', sourcePath: '/skills/large/SKILL.md', content: '# Large', resources}}; },
+    listCatalog() { return []; }
+  };
+  const executor = createToolExecutor(createToolRegistry([createUseSkillToolHandler(registry)]));
+  const argumentsResult = await executor.execute({callId: 'args', toolName: USE_SKILL_TOOL_NAME, argumentsText: JSON.stringify({name: 'large', arguments: '你'.repeat(MAX_USE_SKILL_ARGUMENTS_BYTES)})});
+  assert.equal(argumentsResult.ok, false);
+  assert.match(argumentsResult.text, /arguments exceed/);
+  assert.equal(loads, 0);
+
+  const resourcesResult = await executor.execute({callId: 'resources', toolName: USE_SKILL_TOOL_NAME, argumentsText: '{"name":"large"}'});
+  assert.equal(resourcesResult.ok, false);
+  assert.match(resourcesResult.text, /resource list exceeds/);
+  assert.doesNotMatch(resourcesResult.text, /你你你/);
+  assert.ok(Buffer.byteLength(resourcesResult.text, 'utf8') <= 65_536);
+
+  const throwing = createToolExecutor(createToolRegistry([createUseSkillToolHandler({
+    listCatalog() { return []; },
+    loadSkill() { throw new Error('错'.repeat(100_000)); }
+  })]));
+  const failed = await throwing.execute({callId: 'throw', toolName: USE_SKILL_TOOL_NAME, argumentsText: '{"name":"large"}'});
+  assert.equal(failed.ok, false);
+  assert.match(failed.text, /^Failed to load skill:/);
+  assert.ok(Buffer.byteLength(failed.text, 'utf8') <= 65_536);
+  assert.doesNotMatch(failed.text, /\uFFFD/);
+});
+
 test('listSkillUseRecords extracts tool and slash skill uses only', () => {
   const records = [
     { role: 'tool_call', text: '', toolCallId: 'call_skill', toolName: USE_SKILL_TOOL_NAME, argumentsText: JSON.stringify({ name: 'review', arguments: 'diff' }), createdAt: '2026-06-09T00:00:00.000Z' },
@@ -802,6 +859,7 @@ test('glob schema exposes only semantic required fields', () => {
   assert.equal(Object.hasOwn(handler.definition, 'strict'), false);
   assert.deepEqual(handler.definition.parameters.required, ['pattern']);
   assert.equal(handler.definition.parameters.properties.paths.type, 'array');
+  assert.match(handler.definition.description, /caps results at 200 paths and may be truncated/);
 });
 
 test('grep schema exposes only semantic required fields', () => {
@@ -814,6 +872,7 @@ test('grep schema exposes only semantic required fields', () => {
   assert.equal(handler.definition.parameters.properties.literal.type, 'boolean');
   assert.equal(handler.definition.parameters.properties.literal.description, 'Defaults to true. Set to false to enable regex search, equivalent to grep -E/rg regex.');
   assert.equal(handler.definition.parameters.properties.case_sensitive.type, 'boolean');
+  assert.match(handler.definition.description, /capped at 100 matches and may be truncated/);
 });
 
 test('read_files schema exposes only semantic required fields', () => {
@@ -867,6 +926,21 @@ test('tool executor returns failure results for unknown tools and invalid argume
       text: 'Tool arguments must be a JSON object'
     }
   );
+});
+
+test('tool executor bounds its own unexpected handler failure result', async () => {
+  const handler = {
+    definition: {name: 'throws', description: 'throws', parameters: {type: 'object'}},
+    execute() {
+      throw new Error('异常🙂'.repeat(30_000));
+    }
+  };
+  const executor = createToolExecutor(createToolRegistry([handler]));
+  const result = await executor.execute(createCall({toolName: 'throws', argumentsText: '{}'}));
+
+  assert.equal(result.ok, false);
+  assert.ok(Buffer.byteLength(result.text, 'utf8') <= DEFAULT_TOOL_RESULT_MAX_OUTPUT_BYTES);
+  assert.doesNotMatch(result.text, /\uFFFD/u);
 });
 
 test('tool executor passes execution options to handlers', async () => {
@@ -1200,10 +1274,9 @@ test('bash tool truncates oversized output', async () => {
 
   assert.equal(result.ok, true);
   assert.equal(result.details.truncated, true);
-  assert.match(result.text, /command: printf 123456789/);
-  assert.match(result.text, /truncated: true/);
-  assert.match(result.text, /stdout:\n56789/);
-  assert.doesNotMatch(result.text, /stdout:\n123456789/);
+  assert.ok(Buffer.byteLength(result.text, 'utf8') <= 5);
+  assert.equal(result.text.endsWith('9'), true);
+  assert.doesNotMatch(result.text, /\uFFFD/);
 });
 
 test('bash runner offloads complete merged output and bash tool returns marker before tail', async () => {
@@ -1218,20 +1291,23 @@ test('bash runner offloads complete merged output and bash tool returns marker b
   });
   const executor = createToolExecutor(createToolRegistry([createBashToolHandler({
     cwd,
-    maxOutputBytes: 5,
+    maxOutputBytes: 512,
     toolResultStore
   })]));
-  const toolResult = await executor.execute(createCall({argumentsText: JSON.stringify({command: 'printf 123456789'})}));
+  const completeOutput = `head-${'你'.repeat(300)}-tail`;
+  const toolResult = await executor.execute(createCall({argumentsText: JSON.stringify({command: `printf ${JSON.stringify(completeOutput)}`})}));
   const markerPath = toolResult.text.match(/\[tool result truncated: ([^\]]+)\]/)?.[1];
 
   assert.equal(runResult.stdout, '56789');
   assert.equal(runResult.output, '56789');
   assert.equal(fs.readFileSync(runResult.offloadFilePath, 'utf8'), '123456789');
   assert.equal(markerPath.startsWith(rootDir), true);
-  assert.equal(fs.readFileSync(markerPath, 'utf8'), '123456789');
-  assert.match(toolResult.text, /command: printf 123456789/);
+  assert.equal(fs.readFileSync(markerPath, 'utf8'), completeOutput);
+  assert.ok(Buffer.byteLength(toolResult.text, 'utf8') <= 512);
+  assert.match(toolResult.text, /command: printf/);
   assert.match(toolResult.text, /exit_code: 0/);
-  assert.match(toolResult.text, /\[tool result truncated: [^\]]+\]\n\nstdout:\n56789/);
+  assert.match(toolResult.text, /\[tool result truncated: [^\]]+\]/);
+  assert.equal(toolResult.text.endsWith('-tail'), true);
   assert.doesNotMatch(toolResult.text, /Output was truncated/);
   assert.equal(fs.existsSync(path.join(cwd, 'tool-results')), false);
 });
@@ -1255,6 +1331,27 @@ test('bash runner preserves merged stdout and stderr arrival order in the offloa
 
   assert.equal(result.truncated, true);
   assert.equal(fs.readFileSync(result.offloadFilePath, 'utf8'), 'out1\nerr1\nout2\n');
+});
+
+test('bash tool shares its default final budget across stdout and stderr and offloads both streams', async () => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-bash-dual-stream-'));
+  const cwd = createTempWorkspace();
+  const toolResultStore = createToolResultStore({cwd, rootDir});
+  const script = "process.stdout.write('o'.repeat(40000)); process.stderr.write('e'.repeat(40000));";
+  const executor = createToolExecutor(createToolRegistry([createBashToolHandler({cwd, toolResultStore})]));
+  const result = await executor.execute(createCall({
+    argumentsText: JSON.stringify({command: `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`})
+  }));
+  const artifactPath = extractToolResultMarkerPath(result.text);
+  const artifact = fs.readFileSync(artifactPath, 'utf8');
+
+  assert.equal(result.ok, true);
+  assert.equal(result.details.truncated, true);
+  assert.ok(Buffer.byteLength(result.text, 'utf8') <= 65_536);
+  assert.equal(artifact.length, 80_000);
+  assert.equal((artifact.match(/o/g) || []).length, 40_000);
+  assert.equal((artifact.match(/e/g) || []).length, 40_000);
+  assert.equal(result.text.endsWith('e'.repeat(100)), true);
 });
 
 test('bash runner finalizes overflow artifacts after timeout and interruption', async () => {
@@ -1296,15 +1393,34 @@ test('bash offloading failure keeps a bounded tail without an invalid path', asy
   const toolResultStore = createToolResultStore({cwd: process.cwd(), rootDir: blockingFile});
   const executor = createToolExecutor(createToolRegistry([createBashToolHandler({
     cwd: process.cwd(),
-    maxOutputBytes: 5,
+    maxOutputBytes: 128,
     toolResultStore
   })]));
-  const result = await executor.execute(createCall({argumentsText: JSON.stringify({command: 'printf 123456789'})}));
+  const result = await executor.execute(createCall({argumentsText: JSON.stringify({command: `printf ${JSON.stringify('x'.repeat(200) + 'TAIL')}`})}));
 
   assert.equal(result.details.truncated, true);
-  assert.match(result.text, /stdout:\n56789/);
-  assert.match(result.text, /Output was truncated/);
+  assert.ok(Buffer.byteLength(result.text, 'utf8') <= 128);
+  assert.equal(result.text.endsWith('TAIL'), true);
+  assert.match(result.text, /Output was trunc/);
   assert.doesNotMatch(result.text, /\[tool result truncated:/);
+});
+
+test('bash formatting shares one UTF-8 budget across long metadata and keeps the merged tail', () => {
+  const result = formatBashResult({
+    command: `echo ${'命令'.repeat(100)}`,
+    durationMs: 1,
+    error: `错误${'🙂'.repeat(100)}`,
+    exitCode: 1,
+    output: `${'前'.repeat(100)}TAIL`,
+    stderr: '',
+    stdout: '',
+    timedOut: false,
+    truncated: false
+  }, 180);
+
+  assert.ok(Buffer.byteLength(result, 'utf8') <= 180);
+  assert.equal(result.endsWith('TAIL'), true);
+  assert.doesNotMatch(result, /\uFFFD/);
 });
 
 test('read_files reads a text file with line pagination metadata', async () => {
@@ -1594,6 +1710,66 @@ test('read_files automatically compresses oversized images and reports output me
   assert.equal(result.text.includes(result.attachments[0].dataBase64), false);
 });
 
+test('read_files enforces the aggregate image attachment budget in request order', async () => {
+  const cwd = createTempWorkspace();
+  const firstBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const secondBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x01, 0x02, 0x03, 0x04]);
+  fs.writeFileSync(path.join(cwd, 'first.png'), firstBytes);
+  fs.writeFileSync(path.join(cwd, 'second.png'), secondBytes);
+  const executor = createToolExecutor(createToolRegistry([createReadFilesToolHandler({
+    autoCompressImages: false,
+    cwd,
+    maxTotalImageBytes: firstBytes.length
+  })]));
+  const result = await executor.execute(createReadFilesCall([{path: 'first.png'}, {path: 'second.png'}]));
+
+  assert.equal(result.ok, true);
+  assert.equal(result.details.truncated, true);
+  assert.deepEqual(result.attachments.map((attachment) => attachment.path), ['first.png']);
+  assert.equal(result.attachments.reduce((sum, attachment) => sum + attachment.sizeBytes, 0), firstBytes.length);
+  assert.match(result.text, /--- image: second\.png[\s\S]*image_attached: false/);
+  assert.match(result.text, /Read images in smaller batches/);
+  assert.equal(result.text.includes(secondBytes.toString('base64')), false);
+});
+
+test('read_files keeps the real failure reason when an image cannot fit the remaining aggregate budget', async () => {
+  const cwd = createTempWorkspace();
+  const firstBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const secondBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a]);
+  fs.writeFileSync(path.join(cwd, 'first.png'), firstBytes);
+  fs.writeFileSync(path.join(cwd, 'second.png'), secondBytes);
+  const executor = createToolExecutor(createToolRegistry([createReadFilesToolHandler({
+    autoCompressImages: false,
+    cwd,
+    maxTotalImageBytes: firstBytes.length + 8
+  })]));
+  const result = await executor.execute(createReadFilesCall([{path: 'first.png'}, {path: 'second.png'}]));
+
+  // 剩余预算(8B)小于默认单图上限，读取第二张时被压缩预算截断并真实失败，
+  // 跳过文案必须保留失败原因，不能只报"总预算已达上限"。
+  assert.equal(result.ok, true);
+  assert.equal(result.details.truncated, true);
+  assert.deepEqual(result.attachments.map((attachment) => attachment.path), ['first.png']);
+  assert.match(result.text, /image_skipped: total attachment byte limit reached \(image read failed: image exceeds max size/u);
+  assert.equal(result.text.includes(secondBytes.toString('base64')), false);
+});
+
+test('read_files keeps all image attachments when the aggregate is exactly at its boundary', async () => {
+  const cwd = createTempWorkspace();
+  const imageBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  fs.writeFileSync(path.join(cwd, 'one.png'), imageBytes);
+  fs.writeFileSync(path.join(cwd, 'two.png'), imageBytes);
+  const executor = createToolExecutor(createToolRegistry([createReadFilesToolHandler({
+    cwd,
+    maxTotalImageBytes: imageBytes.length * 2
+  })]));
+  const result = await executor.execute(createReadFilesCall([{path: 'one.png'}, {path: 'two.png'}]));
+
+  assert.equal(result.details.truncated, false);
+  assert.deepEqual(result.attachments.map((attachment) => attachment.path), ['one.png', 'two.png']);
+  assert.equal(result.attachments.reduce((sum, attachment) => sum + attachment.sizeBytes, 0), imageBytes.length * 2);
+});
+
 test('read_files extracts PDF text without exposing binary or attachments', async () => {
   const cwd = createTempWorkspace();
   const rootDir = createTempWorkspace();
@@ -1618,9 +1794,10 @@ test('read_files extracts PDF text without exposing binary or attachments', asyn
   assert.equal(fs.existsSync(path.join(rootDir, 'projects')), false);
 });
 
-test('read_files defaults PDF previews to 64 KiB without changing its general output cap', () => {
+test('read_files defaults text, PDF, and image aggregates to bounded budgets', () => {
   assert.equal(DEFAULT_MAX_PDF_OUTPUT_BYTES, 65_536);
-  assert.equal(DEFAULT_READ_FILES_MAX_TOTAL_OUTPUT_BYTES, 256_000);
+  assert.equal(DEFAULT_READ_FILES_MAX_TOTAL_OUTPUT_BYTES, 65_536);
+  assert.equal(DEFAULT_MAX_TOTAL_IMAGE_BYTES, 10_000_000);
 });
 
 test('read_files offloads oversized PDF formatted text and supports exact artifact rereads', async () => {
@@ -1638,7 +1815,7 @@ test('read_files offloads oversized PDF formatted text and supports exact artifa
   const toolResultStore = createToolResultStore({ cwd, rootDir });
   const executor = createToolExecutor(createToolRegistry([createReadFilesToolHandler({
     cwd,
-    maxPdfOutputBytes: 120,
+    maxPdfOutputBytes: 512,
     toolResultStore
   })]));
   const result = await executor.execute(createReadFilesCall([{ path: 'large.pdf' }]));
@@ -1646,6 +1823,7 @@ test('read_files offloads oversized PDF formatted text and supports exact artifa
 
   assert.equal(result.ok, true);
   assert.equal(result.details.truncated, true);
+  assert.ok(Buffer.byteLength(result.text, 'utf8') <= 512);
   assert.match(result.text, /^--- pdf: large\.pdf\npages: 1\npages_with_text: 1/);
   assert.equal(result.text.endsWith(`[tool result truncated: ${artifactPath}]`), true);
   assert.doesNotMatch(result.text, /PDF_TAIL/);
@@ -1657,24 +1835,85 @@ test('read_files offloads oversized PDF formatted text and supports exact artifa
   assert.match(reread.text, /PDF_TAIL/);
 });
 
+test('read_files applies one final budget to batched text and offloads the complete formatted result', async () => {
+  const rootDir = createTempWorkspace();
+  const cwd = path.join(rootDir, 'workspace');
+  fs.mkdirSync(cwd);
+  fs.writeFileSync(path.join(cwd, 'a.txt'), `${'甲'.repeat(100)}\n`, 'utf8');
+  fs.writeFileSync(path.join(cwd, 'b.txt'), `${'乙'.repeat(100)}\n`, 'utf8');
+  const toolResultStore = createToolResultStore({cwd, rootDir});
+  const executor = createToolExecutor(createToolRegistry([createReadFilesToolHandler({
+    cwd,
+    maxTotalOutputBytes: 320,
+    toolResultStore
+  })]));
+  const result = await executor.execute(createReadFilesCall([{path: 'a.txt'}, {path: 'b.txt'}]));
+  const artifactPath = extractToolResultMarkerPath(result.text);
+
+  assert.equal(result.details.truncated, true);
+  assert.ok(Buffer.byteLength(result.text, 'utf8') <= 320);
+  assert.doesNotMatch(result.text, /\uFFFD/);
+  assert.match(result.text, /--- text: a\.txt/);
+  assert.match(fs.readFileSync(artifactPath, 'utf8'), /--- text: b\.txt/);
+});
+
+test('read_files applies the 64 KiB default to combined text envelopes and marker', async () => {
+  const rootDir = createTempWorkspace();
+  const cwd = path.join(rootDir, 'workspace');
+  fs.mkdirSync(cwd);
+  fs.writeFileSync(path.join(cwd, 'a.txt'), `${'a'.repeat(40_000)}\n`, 'utf8');
+  fs.writeFileSync(path.join(cwd, 'b.txt'), `${'b'.repeat(40_000)}\n`, 'utf8');
+  const toolResultStore = createToolResultStore({cwd, rootDir});
+  const executor = createToolExecutor(createToolRegistry([createReadFilesToolHandler({cwd, toolResultStore})]));
+  const result = await executor.execute(createReadFilesCall([{path: 'a.txt'}, {path: 'b.txt'}]));
+  const artifactPath = extractToolResultMarkerPath(result.text);
+
+  assert.equal(result.details.truncated, true);
+  assert.ok(Buffer.byteLength(result.text, 'utf8') <= 65_536);
+  assert.match(result.text, /\[tool result truncated:/);
+  assert.match(fs.readFileSync(artifactPath, 'utf8'), /--- text: b\.txt/);
+});
+
+test('read_files bounds and offloads an oversized filesystem failure envelope', async () => {
+  const rootDir = createTempWorkspace();
+  const cwd = path.join(rootDir, 'workspace');
+  fs.mkdirSync(cwd);
+  const toolResultStore = createToolResultStore({cwd, rootDir});
+  const executor = createToolExecutor(createToolRegistry([createReadFilesToolHandler({
+    cwd,
+    maxTotalOutputBytes: 300,
+    toolResultStore
+  })]));
+  const longPath = `${'不存在'.repeat(120)}.txt`;
+  const result = await executor.execute(createReadFilesCall([{path: longPath}]));
+  const artifactPath = extractToolResultMarkerPath(result.text);
+
+  assert.equal(result.ok, false);
+  assert.equal(result.details.truncated, true);
+  assert.ok(Buffer.byteLength(result.text, 'utf8') <= 300);
+  assert.doesNotMatch(result.text, /\uFFFD/);
+  assert.match(fs.readFileSync(artifactPath, 'utf8'), /error:/);
+});
+
 test('read_files PDF offloading keeps UTF-8 preview boundaries intact', async () => {
   const rootDir = createTempWorkspace();
   const cwd = path.join(rootDir, 'workspace');
   const toolResultStore = createToolResultStore({ cwd, rootDir });
   fs.mkdirSync(cwd);
-  fs.writeFileSync(path.join(cwd, '你.pdf'), createPdfFixture('UTF8 boundary PDF text'));
+  fs.writeFileSync(path.join(cwd, '你.pdf'), createPdfFixture(`UTF8 boundary ${'x'.repeat(500)} PDF text`));
   const executor = createToolExecutor(createToolRegistry([createReadFilesToolHandler({
     cwd,
-    maxPdfOutputBytes: 100,
-    maxTotalOutputBytes: 10,
+    maxPdfOutputBytes: 80,
+    maxTotalOutputBytes: 80,
     toolResultStore
   })]));
   const result = await executor.execute(createReadFilesCall([{ path: '你.pdf' }]));
-  const artifactPath = extractToolResultMarkerPath(result.text);
+  const artifactRelativePath = fs.readdirSync(rootDir, {recursive: true}).find((entry) => path.basename(String(entry)).startsWith('tool-result-'));
+  const artifactPath = path.join(rootDir, String(artifactRelativePath));
 
   assert.equal(result.ok, true);
   assert.equal(result.details.truncated, true);
-  assert.equal(result.text.startsWith('--- pdf: \n\n[tool result truncated: '), true);
+  assert.ok(Buffer.byteLength(result.text, 'utf8') <= 80);
   assert.doesNotMatch(result.text, /\uFFFD/);
   assert.match(fs.readFileSync(artifactPath, 'utf8'), /--- pdf: 你\.pdf/);
 });
@@ -1689,15 +1928,16 @@ test('read_files PDF offloading failure falls back to a bounded head without cha
   const toolResultStore = createToolResultStore({ cwd, rootDir: blockingFile });
   const executor = createToolExecutor(createToolRegistry([createReadFilesToolHandler({
     cwd,
-    maxPdfOutputBytes: 80,
+    maxPdfOutputBytes: 180,
     toolResultStore
   })]));
   const result = await executor.execute(createReadFilesCall([{ path: 'large.pdf' }]));
 
   assert.equal(result.ok, true);
   assert.equal(result.details.truncated, true);
+  assert.ok(Buffer.byteLength(result.text, 'utf8') <= 180);
   assert.match(result.text, /^--- pdf: large\.pdf\npages: 1/);
-  assert.match(result.text, /Output was truncated\.$/);
+  assert.match(result.text, /Output was truncated/);
   assert.doesNotMatch(result.text, /tool result truncated/);
   assert.doesNotMatch(result.text, /_TAIL/);
 });
@@ -1978,9 +2218,9 @@ test('web_fetch reports HTTP errors, timeout, body caps, output caps, and unsupp
 });
 
 test('web_fetch offloads the complete formatted result and keeps a UTF-8 head preview', async () => {
-  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-web-offload-'));
+  const rootDir = os.tmpdir();
   const toolResultStore = createToolResultStore({cwd: process.cwd(), rootDir});
-  const body = `开头\n${'你'.repeat(50)}\n结尾`;
+  const body = `开头\n${'你'.repeat(500)}\n结尾`;
   const fetchFn = createFakeFetch({
     'https://example.com/offload': {
       body,
@@ -1990,8 +2230,8 @@ test('web_fetch offloads the complete formatted result and keeps a UTF-8 head pr
   });
   const executor = createToolExecutor(createToolRegistry([createWebFetchToolHandler({
     fetch: fetchFn,
-    maxResponseBytes: 1000,
-    maxTotalOutputBytes: 70,
+    maxResponseBytes: 2000,
+    maxTotalOutputBytes: 300,
     toolResultStore
   })]));
   const result = await executor.execute(createWebFetchCall({url: 'https://example.com/offload'}));
@@ -2029,6 +2269,20 @@ test('web_fetch offloading failure falls back to the existing bounded head', asy
   assert.equal(result.details.truncated, true);
   assert.match(result.text, /Output was truncated/);
   assert.doesNotMatch(result.text, /\[tool result truncated:/);
+  assert.ok(Buffer.byteLength(result.text, 'utf8') <= 60);
+});
+
+test('web_fetch bounds multibyte network failures within the final budget', async () => {
+  const executor = createToolExecutor(createToolRegistry([createWebFetchToolHandler({
+    fetch: async () => { throw new Error('网络错误'.repeat(100)); },
+    maxTotalOutputBytes: 80
+  })]));
+  const result = await executor.execute(createWebFetchCall({url: 'https://example.com/fail'}));
+  assert.equal(result.ok, false);
+  assert.equal(result.details.truncated, true);
+  assert.match(result.text, /^web_fetch failed\./);
+  assert.ok(Buffer.byteLength(result.text, 'utf8') <= 80);
+  assert.doesNotMatch(result.text, /\uFFFD/);
 });
 
 test('web_fetch reports parent abort as cancellation without timeout', async () => {
@@ -2499,6 +2753,19 @@ test('web_search reports blocked pages, no results, HTTP errors, timeout, body c
   assert.match(verboseResult.text, /Output was truncated/);
 });
 
+test('web_search bounds single-provider and all-attempt multibyte failures', async () => {
+  const executor = createToolExecutor(createToolRegistry([createWebSearchToolHandler({
+    fetch: async () => { throw new Error('搜索失败'.repeat(100)); },
+    maxTotalOutputBytes: 90
+  })]));
+  const result = await executor.execute(createWebSearchCall({query: 'failure'}));
+  assert.equal(result.ok, false);
+  assert.equal(result.details.truncated, true);
+  assert.match(result.text, /^web_search failed\./);
+  assert.ok(Buffer.byteLength(result.text, 'utf8') <= 90);
+  assert.doesNotMatch(result.text, /\uFFFD/);
+});
+
 test('web_search reports parent abort as cancellation without timeout', async () => {
   const controller = new AbortController();
   const fetchFn = async (_url, init) => {
@@ -2697,6 +2964,57 @@ process.exit(0);
   assert.doesNotMatch(result.text, /three\.ts/);
 });
 
+test('glob keeps only complete multibyte paths within its output byte budget', async () => {
+  const cwd = createTempWorkspace();
+  const rgPath = createFakeRipgrep(cwd, `
+process.stdout.write(['目录/一.ts', '目录/二二二二.ts', '目录/three.ts'].join('\\0') + '\\0');
+setTimeout(() => process.exit(0), 500);
+`);
+  const executor = createToolExecutor(createToolRegistry([createGlobToolHandler({cwd, rgPath, maxOutputBytes: 110})]));
+  const result = await executor.execute(createGlobCall({pattern: '*.ts', paths: null}));
+
+  assert.equal(result.ok, true);
+  assert.equal(result.details.truncated, true);
+  assert.equal(Buffer.byteLength(result.text, 'utf8') <= 110, true);
+  assert.deepEqual(result.details.display, {kind: 'glob', paths: ['目录/一.ts']});
+  assert.match(result.text, /has_more: true/);
+  assert.match(result.text, /110 UTF-8 byte limit/);
+  assert.doesNotMatch(result.text, /二二二二/);
+});
+
+test('glob applies the default output budget without retaining a partial path', async () => {
+  const cwd = createTempWorkspace();
+  const rgPath = createFakeRipgrep(cwd, `process.stdout.write('目录/'.repeat(12000) + 'file.ts\\0');`);
+  const executor = createToolExecutor(createToolRegistry([createGlobToolHandler({cwd, rgPath})]));
+  const result = await executor.execute(createGlobCall({pattern: '*.ts', paths: null}));
+
+  assert.equal(result.ok, true);
+  assert.equal(result.details.truncated, true);
+  assert.equal(Buffer.byteLength(result.text, 'utf8') <= 65536, true);
+  assert.deepEqual(result.details.display, {kind: 'glob', paths: []});
+  assert.match(result.text, /has_more: true/);
+  assert.match(result.text, /65536 UTF-8 byte limit/);
+});
+
+test('glob bounds unterminated parser data and long stderr output', async () => {
+  const cwd = createTempWorkspace();
+  const pendingRgPath = createFakeRipgrep(cwd, `process.stdout.write('x'.repeat(300000));`);
+  const pendingExecutor = createToolExecutor(createToolRegistry([createGlobToolHandler({cwd, rgPath: pendingRgPath, maxOutputBytes: 512})]));
+  const pendingResult = await pendingExecutor.execute(createGlobCall({pattern: '*', paths: null}));
+
+  assert.equal(pendingResult.ok, false);
+  assert.equal(Buffer.byteLength(pendingResult.text, 'utf8') <= 512, true);
+  assert.match(pendingResult.text, /without a delimiter/);
+
+  const stderrRgPath = createFakeRipgrep(cwd, `process.stderr.write('错误'.repeat(50000)); process.exit(2);`);
+  const stderrExecutor = createToolExecutor(createToolRegistry([createGlobToolHandler({cwd, rgPath: stderrRgPath, maxOutputBytes: 300})]));
+  const stderrResult = await stderrExecutor.execute(createGlobCall({pattern: '*', paths: null}));
+
+  assert.equal(stderrResult.ok, false);
+  assert.equal(Buffer.byteLength(stderrResult.text, 'utf8') <= 300, true);
+  assert.equal(Buffer.from(stderrResult.text, 'utf8').toString('utf8'), stderrResult.text);
+});
+
 test('grep runs fixed-string searches with paths, glob, and case options', async () => {
   const cwd = createTempWorkspace();
   const rgPath = createFakeRipgrep(cwd, `
@@ -2884,6 +3202,76 @@ process.exit(0);
   assert.match(result.text, /hit-0/);
   assert.match(result.text, /hit-1/);
   assert.doesNotMatch(result.text, /hit-2/);
+});
+
+test('grep safely truncates one multibyte match and keeps display text consistent', async () => {
+  const cwd = createTempWorkspace();
+  const rgPath = createFakeRipgrep(cwd, `
+console.log(JSON.stringify({
+  type: 'match',
+  data: {
+    path: {text: 'src/中文.ts'},
+    lines: {text: '结果😀'.repeat(100) + '\\n'},
+    line_number: 9,
+    submatches: [{start: 0, end: 1, match: {text: '结'}}]
+  }
+}));
+setTimeout(() => process.exit(0), 500);
+`);
+  const executor = createToolExecutor(createToolRegistry([createGrepToolHandler({cwd, rgPath, maxOutputBytes: 180})]));
+  const result = await executor.execute(createGrepCall({pattern: '结', paths: null, glob: null, literal: true, case_sensitive: null}));
+  const match = result.details.display.matches[0];
+
+  assert.equal(result.ok, true);
+  assert.equal(result.details.truncated, true);
+  assert.equal(Buffer.byteLength(result.text, 'utf8') <= 180, true);
+  assert.equal(Buffer.from(result.text, 'utf8').toString('utf8'), result.text);
+  assert.equal(match.text.length > 0, true);
+  assert.match(result.text, new RegExp(`src/中文\\.ts:9:1: ${match.text}`));
+  assert.match(result.text, /has_more: true/);
+  assert.match(result.text, /180 UTF-8 byte limit/);
+});
+
+test('grep applies the default output budget while collecting matches', async () => {
+  const cwd = createTempWorkspace();
+  const rgPath = createFakeRipgrep(cwd, `
+console.log(JSON.stringify({
+  type: 'match',
+  data: {
+    path: {text: 'large.txt'},
+    lines: {text: '😀'.repeat(25000) + '\\n'},
+    line_number: 1,
+    submatches: [{start: 0, end: 4, match: {text: '😀'}}]
+  }
+}));
+`);
+  const executor = createToolExecutor(createToolRegistry([createGrepToolHandler({cwd, rgPath})]));
+  const result = await executor.execute(createGrepCall({pattern: '😀', paths: null, glob: null, literal: true, case_sensitive: null}));
+
+  assert.equal(result.ok, true);
+  assert.equal(result.details.truncated, true);
+  assert.equal(Buffer.byteLength(result.text, 'utf8') <= 65536, true);
+  assert.equal(result.details.display.matches[0].text.includes('\ufffd'), false);
+  assert.match(result.text, /65536 UTF-8 byte limit/);
+});
+
+test('grep bounds unterminated parser data and long stderr output', async () => {
+  const cwd = createTempWorkspace();
+  const pendingRgPath = createFakeRipgrep(cwd, `process.stdout.write('x'.repeat(300000));`);
+  const pendingExecutor = createToolExecutor(createToolRegistry([createGrepToolHandler({cwd, rgPath: pendingRgPath, maxOutputBytes: 512})]));
+  const pendingResult = await pendingExecutor.execute(createGrepCall({pattern: 'x', paths: null, glob: null, literal: true, case_sensitive: null}));
+
+  assert.equal(pendingResult.ok, false);
+  assert.equal(Buffer.byteLength(pendingResult.text, 'utf8') <= 512, true);
+  assert.match(pendingResult.text, /without a delimiter/);
+
+  const stderrRgPath = createFakeRipgrep(cwd, `process.stderr.write('错误'.repeat(50000)); process.exit(2);`);
+  const stderrExecutor = createToolExecutor(createToolRegistry([createGrepToolHandler({cwd, rgPath: stderrRgPath, maxOutputBytes: 300})]));
+  const stderrResult = await stderrExecutor.execute(createGrepCall({pattern: '[', paths: null, glob: null, literal: false, case_sensitive: null}));
+
+  assert.equal(stderrResult.ok, false);
+  assert.equal(Buffer.byteLength(stderrResult.text, 'utf8') <= 300, true);
+  assert.equal(Buffer.from(stderrResult.text, 'utf8').toString('utf8'), stderrResult.text);
 });
 
 test('apply_patch updates existing files with multiple hunks', async () => {

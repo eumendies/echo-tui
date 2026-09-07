@@ -2,17 +2,20 @@ import {spawn} from 'node:child_process';
 import * as path from 'node:path';
 import {StringDecoder} from 'node:string_decoder';
 
-import {isGitPath, normalizePositiveInteger, resolveCwd} from './tool-handler-utils';
+import {DEFAULT_TOOL_RESULT_MAX_OUTPUT_BYTES, capUtf8Text, isGitPath, normalizePositiveInteger, resolveCwd} from './tool-handler-utils';
 
 import type {GrepDisplayMatch, GrepDisplayMetadata, GrepToolExecutionResult, ToolCall, ToolHandler} from '../types/tool';
 import type {Result} from './tool-handler-utils';
 
 const GREP_TOOL_NAME = 'grep';
 const DEFAULT_MAX_MATCHES = 100;
+const MAX_PARSER_PENDING_BYTES = 256 * 1024;
+const MAX_STDERR_BYTES = 8 * 1024;
 
 type GrepToolHandlerOptions = {
   cwd?: string | (() => string);
   maxMatches?: number;
+  maxOutputBytes?: number;
   rgPath?: string;
 };
 
@@ -28,6 +31,7 @@ type GrepRunResult = {
   error?: string;
   exitCode: number | null;
   hasMore: boolean;
+  limitReason?: 'bytes' | 'count';
   matches: GrepDisplayMatch[];
   stderr: string;
   truncated: boolean;
@@ -38,12 +42,14 @@ type GrepRunResult = {
  */
 function createGrepToolHandler(options: GrepToolHandlerOptions = {}): ToolHandler {
   const maxMatches = normalizePositiveInteger(options.maxMatches, DEFAULT_MAX_MATCHES);
+  const maxOutputBytes = normalizePositiveInteger(options.maxOutputBytes, DEFAULT_TOOL_RESULT_MAX_OUTPUT_BYTES);
   const rgPath = options.rgPath || 'rg';
 
   return {
     definition: {
       name: GREP_TOOL_NAME,
-      description: `Search local text files with ripgrep and return structured matches. Omit paths to search from the current working directory. Omit glob for no glob filter, literal to default to true, and case_sensitive to use ripgrep's default case behavior. Results are capped at ${maxMatches} matches; narrow pattern, paths, or glob when has_more is true.`,
+      // 字节上限的细节属于运行时截断通知，不占常态 schema 上下文；这里只声明截断可能发生。
+      description: `Search local text files with ripgrep and return structured matches. Omit paths to search from the current working directory. Omit glob for no glob filter, literal to default to true, and case_sensitive to use ripgrep's default case behavior. Results are capped at ${maxMatches} matches and may be truncated when output is large; narrow pattern, paths, or glob when has_more is true.`,
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -75,6 +81,7 @@ function createGrepToolHandler(options: GrepToolHandlerOptions = {}): ToolHandle
       const result = await grep(args, {
         cwd: resolveCwd(options.cwd),
         maxMatches,
+        maxOutputBytes,
         rgPath
       });
 
@@ -94,13 +101,13 @@ function createGrepToolHandler(options: GrepToolHandlerOptions = {}): ToolHandle
   };
 }
 
-async function grep(args: Record<string, unknown>, options: {cwd: string; maxMatches: number; rgPath: string}): Promise<{ok: boolean; text: string; display?: GrepDisplayMetadata; exitCode?: number | null; truncated: boolean}> {
+async function grep(args: Record<string, unknown>, options: {cwd: string; maxMatches: number; maxOutputBytes: number; rgPath: string}): Promise<{ok: boolean; text: string; display?: GrepDisplayMetadata; exitCode?: number | null; truncated: boolean}> {
   const normalized = normalizeRequest(args, options.cwd);
 
   if (!normalized.ok) {
     return {
       ok: false,
-      text: formatGrepFailure(normalized.reason),
+      text: formatGrepFailure(normalized.reason, options.maxOutputBytes),
       truncated: false
     };
   }
@@ -111,7 +118,7 @@ async function grep(args: Record<string, unknown>, options: {cwd: string; maxMat
   return {
     ok,
     exitCode: runResult.exitCode,
-    text: ok ? formatGrepSuccess(normalized.value, runResult, options.maxMatches) : formatGrepFailure(runResult.error || cleanStderr(runResult.stderr) || 'ripgrep failed'),
+    text: ok ? formatGrepSuccess(runResult, options.maxMatches, options.maxOutputBytes) : formatGrepFailure(runResult.error || cleanStderr(runResult.stderr) || 'ripgrep failed', options.maxOutputBytes),
     truncated: runResult.truncated,
     ...(ok ? {display: {kind: 'grep', matches: runResult.matches}} : {})
   };
@@ -207,7 +214,7 @@ function resolveSearchPath(searchPath: string, cwd: string): Result<string> {
   return {ok: true, value: absolutePath};
 }
 
-function runRipgrep(request: NormalizedGrepRequest, options: {cwd: string; maxMatches: number; rgPath: string}): Promise<GrepRunResult> {
+function runRipgrep(request: NormalizedGrepRequest, options: {cwd: string; maxMatches: number; maxOutputBytes: number; rgPath: string}): Promise<GrepRunResult> {
   return new Promise((resolve) => {
     // 使用参数数组调用 ripgrep，避免把模型输入拼接进 shell 命令。
     const child = spawn(options.rgPath, buildRipgrepArgs(request), {
@@ -216,6 +223,9 @@ function runRipgrep(request: NormalizedGrepRequest, options: {cwd: string; maxMa
     });
 
     const parser = createJsonLineParser((line) => {
+      if (limitReached) {
+        return;
+      }
       const match = parseRipgrepMatch(line);
 
       if (!match) {
@@ -225,17 +235,54 @@ function runRipgrep(request: NormalizedGrepRequest, options: {cwd: string; maxMa
       if (matches.length >= options.maxMatches) {
         // 搜索结果不做 offset/limit 分页；命中过多时终止 rg 并提示模型收窄查询。
         hasMore = true;
+        limitReason = 'count';
         truncated = true;
+        limitReached = true;
         child.kill('SIGTERM');
         return;
       }
 
-      matches.push(match);
+      const prefix = `${match.path}:${match.line}:${match.column}: `;
+      const separatorBytes = matches.length === 0 ? 0 : 1;
+      const notice = formatGrepLimitNotice('bytes', options.maxMatches, options.maxOutputBytes);
+      const availableLineBytes = options.maxOutputBytes
+        - outputBytes
+        - separatorBytes
+        - Buffer.byteLength(`\n\n${notice}`, 'utf8');
+      const fullLineBytes = Buffer.byteLength(prefix + match.text, 'utf8');
+
+      if (fullLineBytes <= availableLineBytes) {
+        matches.push(match);
+        outputBytes += separatorBytes + fullLineBytes;
+        return;
+      }
+
+      const textBudget = availableLineBytes - Buffer.byteLength(prefix, 'utf8');
+      if (textBudget >= 0) {
+        const boundedText = capUtf8Text(match.text, textBudget).text;
+        matches.push({...match, text: boundedText});
+      }
+      hasMore = true;
+      limitReason = 'bytes';
+      truncated = true;
+      limitReached = true;
+      child.kill('SIGTERM');
+    }, MAX_PARSER_PENDING_BYTES, () => {
+      if (!limitReached) {
+        parserError = `ripgrep JSON line exceeded ${MAX_PARSER_PENDING_BYTES} bytes without a delimiter`;
+        limitReached = true;
+        child.kill('SIGTERM');
+      }
     });
 
     const matches: GrepDisplayMatch[] = [];
-    const stderrChunks: Buffer[] = [];
+    const stderrDecoder = new StringDecoder('utf8');
+    let stderr = '';
     let hasMore = false;
+    let limitReason: 'bytes' | 'count' | undefined;
+    let limitReached = false;
+    let outputBytes = 0;
+    let parserError: string | undefined;
     let truncated = false;
     let settled = false;
 
@@ -244,7 +291,7 @@ function runRipgrep(request: NormalizedGrepRequest, options: {cwd: string; maxMa
     });
 
     child.stderr.on('data', (chunk: Buffer | string) => {
-      stderrChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+      stderr = appendBoundedStderr(stderr, typeof chunk === 'string' ? chunk : stderrDecoder.write(chunk));
     });
 
     child.on('error', (error: NodeJS.ErrnoException) => {
@@ -258,7 +305,7 @@ function runRipgrep(request: NormalizedGrepRequest, options: {cwd: string; maxMa
         exitCode: null,
         hasMore,
         matches,
-        stderr: Buffer.concat(stderrChunks).toString('utf8'),
+        stderr: finishStderr(stderr, stderrDecoder),
         truncated
       });
     });
@@ -272,11 +319,12 @@ function runRipgrep(request: NormalizedGrepRequest, options: {cwd: string; maxMa
       parser.end();
       resolve({
         // 因命中上限主动终止时，保留已收集结果并把本次搜索视为成功截断。
-        error: undefined,
+        error: parserError,
         exitCode: signal && hasMore ? 0 : code,
         hasMore,
+        ...(limitReason ? {limitReason} : {}),
         matches,
-        stderr: Buffer.concat(stderrChunks).toString('utf8'),
+        stderr: finishStderr(stderr, stderrDecoder),
         truncated
       });
     });
@@ -305,15 +353,26 @@ function buildRipgrepArgs(request: NormalizedGrepRequest): string[] {
   return args;
 }
 
-function createJsonLineParser(onLine: (line: string) => void): {write: (chunk: Buffer | string) => void; end: () => void} {
+function createJsonLineParser(onLine: (line: string) => void, maxPendingBytes: number, onOverflow: () => void): {write: (chunk: Buffer | string) => void; end: () => void} {
   const decoder = new StringDecoder('utf8');
   let pending = '';
+  let overflowed = false;
 
   return {
     write(chunk: Buffer | string) {
+      if (overflowed) {
+        return;
+      }
       pending += typeof chunk === 'string' ? chunk : decoder.write(chunk);
       const lines = pending.split(/\r?\n/);
       pending = lines.pop() || '';
+
+      if (Buffer.byteLength(pending, 'utf8') > maxPendingBytes) {
+        pending = '';
+        overflowed = true;
+        onOverflow();
+        return;
+      }
 
       for (const line of lines) {
         if (line.trim() !== '') {
@@ -322,6 +381,9 @@ function createJsonLineParser(onLine: (line: string) => void): {write: (chunk: B
       }
     },
     end() {
+      if (overflowed) {
+        return;
+      }
       pending += decoder.end();
 
       if (pending.trim() !== '') {
@@ -393,23 +455,38 @@ function extractFirstColumn(value: unknown): number | undefined {
   return typeof candidate.start === 'number' ? candidate.start + 1 : undefined;
 }
 
-function formatGrepSuccess(_request: NormalizedGrepRequest, result: GrepRunResult, maxMatches: number): string {
+function formatGrepSuccess(result: GrepRunResult, maxMatches: number, maxOutputBytes: number): string {
   const lines = result.matches.length === 0
     ? ['no matches found']
     : result.matches.map((match) => `${match.path}:${match.line}:${match.column}: ${match.text}`);
 
   if (result.hasMore) {
-    lines.push('', 'has_more: true', `More than ${maxMatches} matches found. Narrow pattern, paths, or glob.`);
+    lines.push('', ...formatGrepLimitNotice(result.limitReason || 'count', maxMatches, maxOutputBytes).split('\n'));
   }
 
-  return lines.join('\n');
+  return capUtf8Text(lines.join('\n'), maxOutputBytes).text;
 }
 
-function formatGrepFailure(reason: string): string {
-  return [
+function formatGrepLimitNotice(reason: 'bytes' | 'count', maxMatches: number, maxOutputBytes: number): string {
+  const explanation = reason === 'bytes'
+    ? `Output reached the ${maxOutputBytes} UTF-8 byte limit.`
+    : `More than ${maxMatches} matches found (match count limit).`;
+  return ['has_more: true', `${explanation} Narrow pattern, paths, or glob.`].join('\n');
+}
+
+function formatGrepFailure(reason: string, maxOutputBytes: number): string {
+  return capUtf8Text([
     'grep failed.',
     `Reason: ${reason}`
-  ].join('\n');
+  ].join('\n'), maxOutputBytes).text;
+}
+
+function appendBoundedStderr(stderr: string, chunk: string): string {
+  return capUtf8Text(stderr + chunk, MAX_STDERR_BYTES).text;
+}
+
+function finishStderr(stderr: string, decoder: StringDecoder): string {
+  return appendBoundedStderr(stderr, decoder.end());
 }
 
 function cleanStderr(stderr: string): string {

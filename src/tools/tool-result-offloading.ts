@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {StringDecoder} from 'node:string_decoder';
 
-import {normalizePositiveInteger} from './tool-handler-utils';
+import {capUtf8TailText as capUtf8TailTextShared, capUtf8Text, normalizePositiveInteger} from './tool-handler-utils';
 
 const DEFAULT_TOOL_RESULT_MAX_ARTIFACT_BYTES = 8 * 1024 * 1024;
 const TOOL_RESULT_TRUNCATION_MARKER_PREFIX = '[tool result truncated: ';
@@ -195,6 +195,7 @@ function createOffloadedTextPreview(options: {
   strategy: ToolResultPreviewStrategy;
   store?: ToolResultStore;
   text: string;
+  truncationMessage?: string;
 }): OffloadedTextPreview {
   const maxPreviewBytes = normalizePositiveInteger(options.maxPreviewBytes, 1);
 
@@ -202,32 +203,33 @@ function createOffloadedTextPreview(options: {
     return {text: options.text, truncated: false};
   }
 
-  const preview = options.strategy === 'head'
-    ? capUtf8HeadText(options.text, maxPreviewBytes).text
-    : capUtf8TailText(options.text, maxPreviewBytes).text;
   const written = options.store?.writeText(options.text);
+  const artifactMarker = written?.ok ? createToolResultTruncationMarker(written.path) : undefined;
+  const canExposeArtifact = artifactMarker !== undefined && Buffer.byteLength(artifactMarker, 'utf8') <= maxPreviewBytes;
+  const marker = canExposeArtifact ? artifactMarker : options.truncationMessage;
+  const boundedMarker = marker ? capUtf8Text(marker, maxPreviewBytes).text : '';
+  const markerBytes = Buffer.byteLength(boundedMarker, 'utf8');
+  const separator = boundedMarker ? '\n\n' : '';
+  const previewBudget = Math.max(0, maxPreviewBytes - markerBytes - Buffer.byteLength(separator, 'utf8'));
+  const preview = options.strategy === 'head'
+    ? capUtf8Text(options.text, previewBudget).text
+    : capUtf8TailText(options.text, previewBudget).text;
 
-  if (!written?.ok) {
+  if (!boundedMarker) {
     return {text: preview, truncated: true};
   }
 
+  const text = preview === ''
+    ? boundedMarker
+    : options.strategy === 'head'
+      ? `${preview}${separator}${boundedMarker}`
+      : `${boundedMarker}${separator}${preview}`;
+
   return {
-    offloadFilePath: written.path,
-    text: joinPreviewAndMarker(preview, options.strategy, written.path),
+    ...(written?.ok && canExposeArtifact ? {offloadFilePath: written.path} : {}),
+    text,
     truncated: true
   };
-}
-
-function joinPreviewAndMarker(preview: string, strategy: ToolResultPreviewStrategy, filePath: string): string {
-  const marker = createToolResultTruncationMarker(filePath);
-
-  if (preview === '') {
-    return marker;
-  }
-
-  return strategy === 'head'
-    ? `${preview}\n\n${marker}`
-    : `${marker}\n\n${preview}`;
 }
 
 function createToolResultTruncationMarker(filePath: string): string {
@@ -235,31 +237,11 @@ function createToolResultTruncationMarker(filePath: string): string {
 }
 
 function capUtf8HeadText(text: string, maxBytes: number): {text: string; truncated: boolean} {
-  const buffer = Buffer.from(text, 'utf8');
-
-  if (buffer.length <= maxBytes) {
-    return {text, truncated: false};
-  }
-
-  return {
-    text: capUtf8HeadBuffer(buffer, maxBytes).toString('utf8'),
-    truncated: true
-  };
+  return capUtf8Text(text, maxBytes);
 }
 
 function capUtf8TailText(text: string, maxBytes: number): {text: string; truncated: boolean} {
-  const buffer = Buffer.from(text, 'utf8');
-
-  if (buffer.length <= maxBytes) {
-    return {text, truncated: false};
-  }
-
-  const start = findUtf8TailStart(buffer, Math.max(0, buffer.length - maxBytes));
-
-  return {
-    text: buffer.subarray(start).toString('utf8'),
-    truncated: true
-  };
+  return capUtf8TailTextShared(text, maxBytes);
 }
 
 function capUtf8HeadBuffer(buffer: Buffer, maxBytes: number): Buffer {
@@ -284,16 +266,6 @@ function findUtf8HeadEnd(buffer: Buffer, maxBytes: number): number {
   }
 
   return end;
-}
-
-function findUtf8TailStart(buffer: Buffer, start: number): number {
-  let safeStart = Math.max(0, Math.min(start, buffer.length));
-
-  while (safeStart < buffer.length && isUtf8ContinuationByte(buffer[safeStart])) {
-    safeStart += 1;
-  }
-
-  return safeStart;
 }
 
 function isUtf8ContinuationByte(byte: number | undefined): boolean {

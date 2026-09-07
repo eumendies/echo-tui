@@ -175,11 +175,11 @@ test('transcript journal persists only bounded Bash, PDF, and shell offloading p
   const cwd = '/tmp/example/offloading-project';
   const transcriptStore = createTranscriptStore({rootDir});
   const toolResultStore = createToolResultStore({cwd, rootDir});
-  const completeText = `head-FULL_ARTIFACT_ONLY-${'x'.repeat(200)}-tail`;
-  const preview = createOffloadedTextPreview({maxPreviewBytes: 40, strategy: 'tail', store: toolResultStore, text: completeText});
+  const completeText = `head-FULL_ARTIFACT_ONLY-${'x'.repeat(1000)}-tail`;
+  const preview = createOffloadedTextPreview({maxPreviewBytes: 512, strategy: 'tail', store: toolResultStore, text: completeText});
   const marker = preview.text.match(/\[tool result truncated: [^\]]+\]/)[0];
-  const completePdfText = `--- pdf: doc.pdf\npages: 1\npages_with_text: 1\n\nextracted_text:\n\`\`\`\nPDF_ARTIFACT_ONLY_${'你'.repeat(100)}\n\`\`\``;
-  const pdfPreview = createOffloadedTextPreview({maxPreviewBytes: 80, strategy: 'head', store: toolResultStore, text: completePdfText});
+  const completePdfText = `--- pdf: doc.pdf\npages: 1\npages_with_text: 1\n\nextracted_text:\n\`\`\`\n${'你'.repeat(500)}PDF_ARTIFACT_ONLY_${'你'.repeat(500)}\n\`\`\``;
+  const pdfPreview = createOffloadedTextPreview({maxPreviewBytes: 512, strategy: 'head', store: toolResultStore, text: completePdfText});
   const records = [
     {
       role: 'tool_result',
