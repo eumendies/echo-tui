@@ -126,6 +126,8 @@ class RenderContext {
       ...(contextUsage ? {contextUsage} : {}),
       detail: pending?.kind === 'tool_call'
         ? pending.toolName
+        : pending?.kind === 'tool_calls'
+          ? `${pending.calls.length} tools`
         : pending?.kind === 'subagent'
           ? `${formatSubagentRawName(pending.agentName)}${pending.toolName ? ` · ${pending.toolName}` : ''}`
           : undefined,
@@ -174,7 +176,7 @@ function resolveStatusLineMode(pending: PendingState | null, slashSuggestions: S
     return 'streaming';
   }
 
-  if (pending?.kind === 'tool_call') {
+  if (pending?.kind === 'tool_call' || pending?.kind === 'tool_calls') {
     return 'tool';
   }
 

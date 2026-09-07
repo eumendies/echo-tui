@@ -42,14 +42,13 @@ const ASSISTANT_INTERRUPTED_NOTICE = '已中断模型回答';
 class TurnContext {
   transcriptContext: TranscriptTurnBridge;
   responding: boolean;
-  pendingKind: 'thinking' | 'reasoning_streaming' | 'streaming' | 'tool_call' | 'shell_output' | null;
+  pendingKind: 'thinking' | 'reasoning_streaming' | 'streaming' | 'tool_calls' | 'shell_output' | null;
   streamingDraft: string;
   reasoningDraft: string;
   shellOutputDraft: {command: string; output: string} | null;
-  pendingTool: {toolName: string; argumentsText: string} | null;
+  pendingToolCalls: ToolCall[];
   thinkingStartedAt: number | null;
   workingStartedAt: number | null;
-  pendingToolCall: ToolCall | null;
   activeAssistantTurn: ActiveAssistantTurn | null;
   nextAssistantTurnId: number;
 
@@ -60,10 +59,9 @@ class TurnContext {
     this.streamingDraft = '';
     this.reasoningDraft = '';
     this.shellOutputDraft = null;
-    this.pendingTool = null;
+    this.pendingToolCalls = [];
     this.thinkingStartedAt = null;
     this.workingStartedAt = null;
-    this.pendingToolCall = null;
     this.activeAssistantTurn = null;
     this.nextAssistantTurnId = 1;
   }
@@ -182,11 +180,23 @@ class TurnContext {
       return draft ? {kind: 'shell_output', command: draft.command, output: draft.output} : null;
     }
 
-    const tool = this.pendingTool;
-    if (!tool) {
+    if (this.pendingToolCalls.length === 0) {
       return null;
     }
-    return {kind: 'tool_call', toolName: tool.toolName, argumentsText: tool.argumentsText};
+
+    if (this.pendingToolCalls.length === 1) {
+      const [call] = this.pendingToolCalls;
+      return {kind: 'tool_call', toolName: call.toolName, argumentsText: call.argumentsText};
+    }
+
+    return {
+      kind: 'tool_calls',
+      calls: this.pendingToolCalls.map((call) => ({
+        callId: call.callId,
+        toolName: call.toolName,
+        argumentsText: call.argumentsText
+      }))
+    };
   }
 
   /**
@@ -223,7 +233,6 @@ class TurnContext {
    */
   beginUserTurn(userText: string, options: {displayText?: string; metadata?: UserTranscriptMetadata; attachments?: ToolExecutionResult['attachments']} = {}): TranscriptRecord {
     this.responding = true;
-    this.pendingToolCall = null;
     this.clearPending();
     this.clearWorking();
 
@@ -242,7 +251,6 @@ class TurnContext {
    */
   beginManualCompaction(): void {
     this.responding = true;
-    this.pendingToolCall = null;
     this.clearPending();
     this.clearWorking();
   }
@@ -250,7 +258,6 @@ class TurnContext {
   /** 进入用户 shell 命令执行态，并用 working spinner 表示本地执行中。 */
   beginShellCommand(command: string): void {
     this.responding = true;
-    this.pendingToolCall = null;
     this.clearPending();
     this.clearWorking();
     this.shellOutputDraft = {command, output: ''};
@@ -264,7 +271,6 @@ class TurnContext {
     this.stopSpinner();
     this.clearPending();
     this.clearWorking();
-    this.pendingToolCall = null;
     this.responding = false;
 
     return this.transcriptContext.appendRecord(createShellRecord(result, includeInContext));
@@ -317,9 +323,13 @@ class TurnContext {
    * 更新 tool call pending 预览，并暂存 call 供 result 到达后落盘。
    */
   setToolCallPending(call: ToolCall): void {
-    this.pendingToolCall = call;
-    this.pendingKind = 'tool_call';
-    this.pendingTool = {toolName: call.toolName, argumentsText: call.argumentsText};
+    const existingIndex = this.pendingToolCalls.findIndex((pendingCall) => pendingCall.callId === call.callId);
+    if (existingIndex >= 0) {
+      this.pendingToolCalls[existingIndex] = call;
+    } else {
+      this.pendingToolCalls.push(call);
+    }
+    this.pendingKind = 'tool_calls';
   }
 
   /**
@@ -337,7 +347,7 @@ class TurnContext {
     this.streamingDraft = '';
     this.reasoningDraft = '';
     this.shellOutputDraft = null;
-    this.pendingTool = null;
+    this.pendingToolCalls = [];
     this.thinkingStartedAt = null;
   }
 
@@ -362,7 +372,6 @@ class TurnContext {
     const result = this.finalizeAssistantSegment(finalText);
     this.clearPending();
     this.clearWorking();
-    this.pendingToolCall = null;
     this.responding = false;
     return result;
   }
@@ -406,10 +415,13 @@ class TurnContext {
    */
   appendPendingToolResult(result: ToolExecutionResult): TranscriptRecord[] {
     const records: TranscriptRecord[] = [];
-    const pendingToolCall = this.pendingToolCall;
+    const pendingIndex = this.pendingToolCalls.findIndex((call) => call.callId === result.callId);
+    const pendingToolCall = pendingIndex >= 0 ? this.pendingToolCalls[pendingIndex] : undefined;
 
-    this.pendingToolCall = null;
-    this.clearPending();
+    if (pendingIndex >= 0) {
+      this.pendingToolCalls.splice(pendingIndex, 1);
+    }
+    this.pendingKind = this.pendingToolCalls.length > 0 ? 'tool_calls' : null;
 
     if (pendingToolCall) {
       records.push(createToolCallTranscriptRecord(pendingToolCall));
@@ -426,7 +438,6 @@ class TurnContext {
   failAssistantTurn(error: unknown): TranscriptRecord {
     this.clearPending();
     this.clearWorking();
-    this.pendingToolCall = null;
     this.responding = false;
 
     return this.transcriptContext.appendRecord(this.createAgentErrorRecord(error));
@@ -439,7 +450,6 @@ class TurnContext {
     this.stopSpinner();
     this.clearPending();
     this.clearWorking();
-    this.pendingToolCall = null;
     this.responding = false;
 
     return this.transcriptContext.appendRecord(this.createErrorRecord(error, 'Shell 执行失败'));
@@ -451,7 +461,6 @@ class TurnContext {
   cancelAssistantTurn(): TranscriptRecord {
     this.clearPending();
     this.clearWorking();
-    this.pendingToolCall = null;
     this.responding = false;
 
     return this.transcriptContext.appendRecord({

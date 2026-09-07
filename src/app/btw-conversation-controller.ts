@@ -34,7 +34,7 @@ type BtwConversationState = {
   activityStartedAt: number | null; // 当前 side turn 的 elapsedMs 时间锚点。
   activeTurnId: number | null; // 当前 side turn identity。
   abortController: AbortController | null; // 当前 side turn 的取消入口。
-  pendingToolCall: ToolCall | null; // 等待 result 配对的当前工具调用。
+  pendingToolCalls: ToolCall[]; // 按 provider 顺序等待 result 配对的 side 工具调用。
   streamingDraft: string; // 当前 provider segment 的完整 assistant 草稿。
   reasoningDraft: string; // 当前 side provider turn 的完整可读 reasoning 草稿。
   modelLabel?: string; // provider 解析后的 side model 标签。
@@ -89,6 +89,7 @@ class BtwConversationController {
   getParentActivity(): string {
     const parent = this.dependencies.getParentTurnState();
     if (parent.pending?.kind === 'tool_call') return `MAIN tool ${parent.pending.toolName}`;
+    if (parent.pending?.kind === 'tool_calls') return `MAIN tools · ${parent.pending.calls.length}`;
     if (parent.pending?.kind === 'reasoning_streaming') return 'MAIN reasoning';
     if (parent.pending?.kind === 'streaming') return 'MAIN streaming';
     if (parent.pending?.kind === 'thinking') return 'MAIN thinking';
@@ -111,7 +112,7 @@ class BtwConversationController {
       activityStartedAt: null,
       activeTurnId: null,
       abortController: null,
-      pendingToolCall: null,
+      pendingToolCalls: [],
       streamingDraft: '',
       reasoningDraft: '',
       agentOptions: structuredClone(agentOptions),
@@ -245,6 +246,7 @@ class BtwConversationController {
     state.abortController = new AbortController();
     state.streamingDraft = '';
     state.reasoningDraft = '';
+    state.pendingToolCalls = [];
     state.pending = {kind: 'thinking', elapsedMs: 0};
     state.working = null;
     state.activityStartedAt = Date.now();
@@ -299,15 +301,20 @@ class BtwConversationController {
       },
       onToolCall: (call) => {
         if (!isCurrent()) return;
-        this.state!.pendingToolCall = call;
-        this.state!.pending = {kind: 'tool_call', toolName: call.toolName, argumentsText: call.argumentsText};
+        const pendingCalls = this.state!.pendingToolCalls;
+        const existingIndex = pendingCalls.findIndex((pendingCall) => pendingCall.callId === call.callId);
+        if (existingIndex >= 0) pendingCalls[existingIndex] = call;
+        else pendingCalls.push(call);
+        this.state!.pending = createPendingToolState(pendingCalls);
         this.dependencies.render();
       },
       onToolResult: (result) => {
         if (!isCurrent()) return;
-        const call = this.state!.pendingToolCall;
-        this.state!.pendingToolCall = null;
-        this.state!.pending = {kind: 'thinking', elapsedMs: 0};
+        const pendingCalls = this.state!.pendingToolCalls;
+        const pendingIndex = pendingCalls.findIndex((call) => call.callId === result.callId);
+        const call = pendingIndex >= 0 ? pendingCalls[pendingIndex] : undefined;
+        if (pendingIndex >= 0) pendingCalls.splice(pendingIndex, 1);
+        this.state!.pending = createPendingToolState(pendingCalls) || {kind: 'thinking', elapsedMs: 0};
         append([...(call ? [createToolCallTranscriptRecord(call)] : []), createToolResultTranscriptRecord(result)]);
       },
       onTodoStateChange: (todoState) => {
@@ -323,6 +330,7 @@ class BtwConversationController {
         if (!isCurrent()) return;
         this.finalizeAssistantSegment(this.state!, text);
         this.state!.pending = null;
+        this.state!.pendingToolCalls = [];
         this.state!.working = null;
         this.state!.activityStartedAt = null;
       }
@@ -355,7 +363,7 @@ class BtwConversationController {
       this.state!.pendingMessage = undefined;
       this.state!.activeTurnId = null;
       this.state!.abortController = null;
-      this.state!.pendingToolCall = null;
+      this.state!.pendingToolCalls = [];
       this.state!.pending = null;
       this.state!.working = null;
       this.state!.activityStartedAt = null;
@@ -363,6 +371,27 @@ class BtwConversationController {
       if (next) await this.runTurn(next);
     }
   }
+}
+
+/**
+ * 将等待结果的 side 工具调用按数量投影为单工具预览或多工具 compact 列表。
+ */
+function createPendingToolState(calls: ToolCall[]): PendingState | null {
+  if (calls.length === 0) return null;
+
+  if (calls.length === 1) {
+    const [call] = calls;
+    return {kind: 'tool_call', toolName: call.toolName, argumentsText: call.argumentsText};
+  }
+
+  return {
+    kind: 'tool_calls',
+    calls: calls.map((call) => ({
+      callId: call.callId,
+      toolName: call.toolName,
+      argumentsText: call.argumentsText
+    }))
+  };
 }
 
 export {BTW_BOUNDARY, BtwConversationController};

@@ -235,7 +235,7 @@ test('convertTranscriptToOpenAiChatMessages groups tool calls on assistant messa
       { role: 'tool_call', text: '', toolCallId: 'call_1', toolName: 'run_bash_command', argumentsText: '{"command":"pwd"}' },
       { role: 'tool_result', text: 'exit_code: 0', toolCallId: 'call_1', toolName: 'run_bash_command', ok: true },
       { role: 'tool_call', text: '', toolCallId: 'call_2', toolName: 'glob', argumentsText: '{"pattern":"*.ts"}' },
-      { role: 'tool_result', text: 'src/app.ts', toolCallId: 'call_2', toolName: 'glob', ok: true }
+      { role: 'tool_result', text: 'search failed', toolCallId: 'call_2', toolName: 'glob', ok: false }
     ]),
     [
       { role: 'user', content: 'inspect' },
@@ -248,7 +248,7 @@ test('convertTranscriptToOpenAiChatMessages groups tool calls on assistant messa
         ]
       },
       { role: 'tool', tool_call_id: 'call_1', content: 'exit_code: 0' },
-      { role: 'tool', tool_call_id: 'call_2', content: 'src/app.ts' }
+      { role: 'tool', tool_call_id: 'call_2', content: 'search failed' }
     ]
   );
 });
@@ -410,7 +410,7 @@ test('createChatRequest sends messages and tools without Responses-only fields',
   assert.deepEqual(request, {
     messages: [{ role: 'user', content: 'hello' }],
     model: 'test-chat-model',
-    parallel_tool_calls: false,
+    parallel_tool_calls: true,
     prompt_cache_key: createPromptCacheKey(records, TEST_CONFIG, createToolRegistry().listDefinitions()),
     stream: true,
     stream_options: {include_usage: true},
@@ -632,7 +632,8 @@ test('createOpenAiChatAgent aggregates streaming tool call chunks', async () => 
       choices: [{
         delta: {
           tool_calls: [
-            { index: 0, function: { arguments: ':"pwd"}' } }
+            { index: 0, function: { arguments: ':"pwd"}' } },
+            { index: 1, id: 'call_2', type: 'function', function: {name: 'grep', arguments: '{"pattern":"needle"}'} }
           ]
         },
         finish_reason: 'tool_calls'
@@ -648,7 +649,10 @@ test('createOpenAiChatAgent aggregates streaming tool call chunks', async () => 
 
   assert.deepEqual(result, {
     draft: 'I will inspect.',
-    toolCalls: [{ callId: 'call_1', toolName: 'run_bash_command', argumentsText: '{"command":"pwd"}' }],
+    toolCalls: [
+      { callId: 'call_1', toolName: 'run_bash_command', argumentsText: '{"command":"pwd"}' },
+      { callId: 'call_2', toolName: 'grep', argumentsText: '{"pattern":"needle"}' }
+    ],
     usageInputTokens: undefined
   });
   assert.deepEqual(harness.requests[0].tools, [
@@ -661,7 +665,7 @@ test('createOpenAiChatAgent aggregates streaming tool call chunks', async () => 
       }
     }
   ]);
-  assert.equal(harness.requests[0].parallel_tool_calls, false);
+  assert.equal(harness.requests[0].parallel_tool_calls, true);
   assert.deepEqual(harness.callbacks, [['token', 'I will inspect.', 'I will inspect.']]);
 });
 

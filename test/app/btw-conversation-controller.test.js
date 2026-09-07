@@ -174,6 +174,11 @@ test('BTW derives parent activity labels inside the side controller', () => {
   assert.equal(controller.getParentActivity(), 'MAIN streaming');
   parentTurnState.pending = {kind: 'tool_call', toolName: 'grep', argumentsText: '{}'};
   assert.equal(controller.getParentActivity(), 'MAIN tool grep');
+  parentTurnState.pending = {kind: 'tool_calls', calls: [
+    {callId: 'one', toolName: 'grep', argumentsText: '{}'},
+    {callId: 'two', toolName: 'glob', argumentsText: '{}'}
+  ]};
+  assert.equal(controller.getParentActivity(), 'MAIN tools · 2');
   parentTurnState.pending = {kind: 'reasoning_streaming', text: 'thinking'};
   assert.equal(controller.getParentActivity(), 'MAIN reasoning');
   parentTurnState.pending = {kind: 'thinking', elapsedMs: 0};
@@ -246,6 +251,46 @@ test('BTW finalizes a streamed segment before rendering its record and redraws t
   assert.deepEqual(calls.pendingAtRecord, [null, null]);
   assert.equal(calls.render, 5);
   assert.equal(controller.hasTimedActivity(), false);
+  controller.close();
+});
+
+test('BTW keeps multiple pending tool calls isolated and pairs results by call id', async () => {
+  const pendingSnapshots = [];
+  let controller;
+  const harness = createHarness(async (_session, callbacks) => {
+    const first = {callId: 'call-1', toolName: 'grep', argumentsText: '{"pattern":"one"}'};
+    const second = {callId: 'call-2', toolName: 'glob', argumentsText: '{"pattern":"two"}'};
+    callbacks.onToolCall?.(first);
+    callbacks.onToolCall?.(second);
+    pendingSnapshots.push(controller.createRenderState(createBaseRenderState()).pending);
+    callbacks.onToolResult?.({callId: 'call-1', toolName: 'grep', ok: true, text: 'one', details: {kind: 'generic'}});
+    pendingSnapshots.push(controller.createRenderState(createBaseRenderState()).pending);
+    callbacks.onToolResult?.({callId: 'call-2', toolName: 'glob', ok: false, text: 'two failed', details: {kind: 'generic'}});
+    callbacks.onComplete?.('done');
+  });
+  controller = harness.controller;
+
+  controller.open('inspect');
+  await flush();
+
+  assert.deepEqual(pendingSnapshots, [
+    {
+      kind: 'tool_calls',
+      calls: [
+        {callId: 'call-1', toolName: 'grep', argumentsText: '{"pattern":"one"}'},
+        {callId: 'call-2', toolName: 'glob', argumentsText: '{"pattern":"two"}'}
+      ]
+    },
+    {
+      kind: 'tool_call',
+      toolName: 'glob',
+      argumentsText: '{"pattern":"two"}'
+    }
+  ]);
+  assert.deepEqual(controller.getRecords().filter((record) => record.role === 'tool_call' || record.role === 'tool_result').map((record) => [record.role, record.toolCallId]), [
+    ['tool_call', 'call-1'], ['tool_result', 'call-1'],
+    ['tool_call', 'call-2'], ['tool_result', 'call-2']
+  ]);
   controller.close();
 });
 

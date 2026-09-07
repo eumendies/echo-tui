@@ -57,6 +57,17 @@ export type ToolCallPendingState = {
   argumentsText: string;
 };
 
+export type PendingToolCall = {
+  callId: string; // 当前 assistant turn 内用于关联稳定 result 的 provider call identity。
+  toolName: string; // 选择专属 pending renderer 的 provider-neutral 工具名。
+  argumentsText: string; // 交给工具 preview renderer 的原始 JSON 参数文本。
+};
+
+export type ToolCallsPendingState = {
+  kind: 'tool_calls'; // 表示多个只读工具正在同一 assistant turn 内重叠执行。
+  calls: PendingToolCall[]; // 按 provider 原始顺序保留的运行中调用快照。
+};
+
 /**
  * shell mode 命令运行中的本地输出预览，完成后才会落成 transcript record。
  */
@@ -78,7 +89,7 @@ export type SubagentPendingState = {
   toolName?: string; // tool 阶段的内部工具名称。
 };
 
-export type PendingState = ThinkingPendingState | ReasoningStreamingPendingState | StreamingPendingState | ToolCallPendingState | ShellOutputPendingState | SubagentPendingState;
+export type PendingState = ThinkingPendingState | ReasoningStreamingPendingState | StreamingPendingState | ToolCallPendingState | ToolCallsPendingState | ShellOutputPendingState | SubagentPendingState;
 
 export type WorkingState = {
   elapsedMs: number;

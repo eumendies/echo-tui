@@ -24,6 +24,7 @@ type ResponseEventDetails = {
 type ResponseCreateRequest = {
   input: OpenAiInputItem[];
   model: string;
+  parallel_tool_calls?: true;
   prompt_cache_key: string;
   reasoning?: {effort?: NonNullable<LlmConfig['reasoningEffort']>; summary?: NonNullable<LlmConfig['reasoningSummary']>};
   stream: true;
@@ -94,6 +95,7 @@ function createRequest(records: TranscriptRecord[], config: LlmConfig, registry?
 
   if (toolDefinitions.length > 0) {
     request.tools = convertToolDefinitionsToOpenAiTools(toolDefinitions);
+    request.parallel_tool_calls = true;
   }
 
   return request;

@@ -15,7 +15,7 @@ import type {OpenAiChatFunctionTool} from './tool-converter';
 type ChatCreateRequest = {
   messages: OpenAiChatMessage[];
   model: string;
-  parallel_tool_calls?: false;
+  parallel_tool_calls?: true;
   prompt_cache_key: string;
   reasoning_effort?: NonNullable<LlmConfig['reasoningEffort']>;
   stream: true;
@@ -101,7 +101,7 @@ function createChatRequest(records: TranscriptRecord[], config: LlmConfig, regis
 
   if (toolDefinitions.length > 0) {
     request.tools = convertToolDefinitionsToOpenAiChatTools(toolDefinitions);
-    request.parallel_tool_calls = false;
+    request.parallel_tool_calls = true;
   }
 
   return request;

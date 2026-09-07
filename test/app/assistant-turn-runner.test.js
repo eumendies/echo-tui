@@ -555,7 +555,11 @@ test('runAssistantTurn queues drafts for the app activity clock and redraws stru
       const renderCountBeforeToolCall = renderedStates.length;
       callbacks.onToolCall({callId: 'call-1', toolName: 'grep', argumentsText: '{"pattern":"ab"}'});
       assert.equal(renderedStates.length, renderCountBeforeToolCall + 1);
-      assert.equal(renderedStates.at(-1).pending.kind, 'tool_call');
+      assert.deepEqual(renderedStates.at(-1).pending, {
+        kind: 'tool_call',
+        toolName: 'grep',
+        argumentsText: '{"pattern":"ab"}'
+      });
 
       callbacks.onComplete('ab');
       return 'ab';
@@ -990,6 +994,39 @@ test('runAssistantTurn persists shared tool records with result metadata', async
   assert.equal(toolResult.details.timedOut, false);
   assert.equal(toolResult.details.truncated, true);
   assert.deepEqual(toolResult.attachments, attachments);
+});
+
+test('runAssistantTurn keeps multiple pending calls and persists matching pairs in result order', async () => {
+  const harness = createHarness();
+  const first = {callId: 'call-1', toolName: 'grep', argumentsText: '{"pattern":"one"}'};
+  const second = {callId: 'call-2', toolName: 'glob', argumentsText: '{"pattern":"two"}'};
+
+  await runAssistantTurn({
+    ...harness.input,
+    async runAgent(_session, callbacks) {
+      callbacks.onToolCall(first);
+      callbacks.onToolCall(second);
+      assert.deepEqual(harness.appContext.turnContext.getPending(), {kind: 'tool_calls', calls: [first, second]});
+
+      callbacks.onToolResult({callId: 'call-1', toolName: 'grep', ok: true, text: 'one', details: {kind: 'generic'}});
+      assert.deepEqual(harness.appContext.turnContext.getPending(), {
+        kind: 'tool_call',
+        toolName: second.toolName,
+        argumentsText: second.argumentsText
+      });
+      callbacks.onToolResult({callId: 'call-2', toolName: 'glob', ok: false, text: 'two failed', details: {kind: 'generic'}});
+      assert.equal(harness.appContext.turnContext.getPending(), null);
+      callbacks.onComplete('done');
+      return 'done';
+    }
+  });
+
+  assert.deepEqual(harness.appContext.transcriptContext.records.map((record) => [record.role, record.toolCallId]), [
+    ['user', undefined],
+    ['tool_call', 'call-1'], ['tool_result', 'call-1'],
+    ['tool_call', 'call-2'], ['tool_result', 'call-2'],
+    ['assistant', undefined]
+  ]);
 });
 
 test('runAssistantTurn emits error hook while preserving error transcript behavior', async () => {

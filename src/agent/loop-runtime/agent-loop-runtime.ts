@@ -5,6 +5,7 @@ import {
 } from '../../tools/ask-user-questions-tool-handler';
 import {classifyReadonlyToolCall, classifyToolCallRisk} from '../../tools/tool-risk-classifier';
 import {createToolExecutor} from '../../tools/tool-executor';
+import {classifyToolCallConcurrency} from '../../tools/tool-concurrency-classifier';
 import {createToolCallTranscriptRecord, createToolResultTranscriptRecord} from '../../tools/tool-transcript-record';
 import {executeTodoToolCall, isTodoToolName} from '../../tools/todo-tool-handler';
 import {getMcpToolApproval} from '../../mcp/manager';
@@ -141,6 +142,27 @@ async function executeToolCall(toolCall: ToolCall, state: AgentLoopRunState, cal
   const result = await state.executor.execute(toolCall, {abortSignal: state.abortSignal, changeRecorder: callbacks.changeRecorder});
   throwIfAborted(state.abortSignal);
   return result;
+}
+
+/**
+ * 同时执行整个连续只读段；结果槽位保持 provider 原始顺序，实际完成顺序不影响提交。
+ */
+async function executeConcurrentReadonlyCalls(toolCalls: ToolCall[], state: AgentLoopRunState, callbacks: AgentCallbacks): Promise<ToolExecutionResult[]> {
+  throwIfAborted(state.abortSignal);
+  const settled = await Promise.allSettled(toolCalls.map(async (toolCall) => {
+    state.observation.toolStarted({scope: state.observationScope, call: toolCall});
+    const result = await executeToolCall(toolCall, state, callbacks);
+    state.observation.toolCompleted({scope: state.observationScope, result});
+    return result;
+  }));
+
+  throwIfAborted(state.abortSignal);
+  const rejected = settled.find((entry): entry is PromiseRejectedResult => entry.status === 'rejected');
+  if (rejected) {
+    throw rejected.reason;
+  }
+
+  return settled.map((entry) => (entry as PromiseFulfilledResult<ToolExecutionResult>).value);
 }
 
 /**
@@ -470,8 +492,32 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
         recordRegion.push({role: 'assistant', text: draft});
       }
 
-      for (const toolCall of toolCalls) {
+      for (let toolIndex = 0; toolIndex < toolCalls.length;) {
         throwIfAborted(abortSignal);
+        const toolCall = toolCalls[toolIndex];
+
+        if (classifyToolCallConcurrency(toolCall) === 'parallel_read') {
+          const readonlyCalls: ToolCall[] = [];
+          while (toolIndex < toolCalls.length && classifyToolCallConcurrency(toolCalls[toolIndex]) === 'parallel_read') {
+            readonlyCalls.push(toolCalls[toolIndex]);
+            toolIndex += 1;
+          }
+
+          for (const readonlyCall of readonlyCalls) {
+            callbacks.onToolCall?.(readonlyCall);
+          }
+          const results = await executeConcurrentReadonlyCalls(readonlyCalls, state, callbacks);
+          throwIfAborted(abortSignal);
+
+          for (let resultIndex = 0; resultIndex < readonlyCalls.length; resultIndex += 1) {
+            const readonlyCall = readonlyCalls[resultIndex];
+            const result = results[resultIndex];
+            recordRegion.push(createToolCallTranscriptRecord(readonlyCall), createToolResultTranscriptRecord(result));
+            callbacks.onToolResult?.(result);
+          }
+          continue;
+        }
+
         callbacks.onToolCall?.(toolCall);
         const callRecord = createToolCallTranscriptRecord(toolCall);
         const commitMode = state.registry.getHandler(toolCall.toolName)?.transcriptCommitMode || 'call_before_execute';
@@ -490,6 +536,7 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
         }
         callbacks.onToolResult?.(result);
         state.observation.toolCompleted({scope: state.observationScope, result});
+        toolIndex += 1;
       }
 
       throwIfAborted(abortSignal);

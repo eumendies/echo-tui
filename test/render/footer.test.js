@@ -3449,6 +3449,61 @@ test('renderFooterLayout renders tool call pending preview in footer', () => {
   assert.match(layout.lines.at(-1), /\x1b\[38;2;/);
 });
 
+test('renderFooterLayout renders multiple pending tool calls in provider order', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer(''),
+    pending: {
+      kind: 'tool_calls',
+      calls: [
+        {callId: 'grep-1', toolName: 'grep', argumentsText: '{"pattern":"needle","paths":["src"]}'},
+        {callId: 'glob-1', toolName: 'glob', argumentsText: '{"pattern":"**/*.ts","paths":["test"]}'}
+      ]
+    },
+    working: {elapsedMs: 0},
+    statusLine: {...DEFAULT_STATUS_LINE, mode: 'tool', detail: '2 tools', keyHint: 'Esc 中断'},
+    rows: 16,
+    width: 80
+  });
+  const plainLines = layout.lines.map(stripAnsi);
+  const grepIndex = plainLines.findIndex((line) => line.includes('Grep'));
+  const globIndex = plainLines.findIndex((line) => line.includes('Glob'));
+
+  assert.equal(plainLines[0], '◆ 2 tools · running');
+  assert.equal(plainLines[1], '  ├─ Grep · “needle” · in src');
+  assert.equal(plainLines[2], '  └─ Glob · “**/*.ts” · in test');
+  assert.ok(grepIndex >= 0);
+  assert.ok(globIndex > grepIndex);
+  assert.equal(plainLines.some((line) => /searching|fetching/u.test(line)), false);
+  assert.ok(plainLines.at(-1).includes('working'));
+  assert.ok(layout.lines.every((line) => displayWidth(line) <= safeRenderWidth(80)));
+});
+
+test('renderFooterLayout summarizes multiple tool calls when footer space is constrained', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer(''),
+    pending: {
+      kind: 'tool_calls',
+      calls: [
+        {callId: 'one', toolName: 'grep', argumentsText: '{"pattern":"one"}'},
+        {callId: 'two', toolName: 'glob', argumentsText: '{"pattern":"two"}'},
+        {callId: 'three', toolName: 'web_fetch', argumentsText: '{"url":"https://example.com/long/path"}'}
+      ]
+    },
+    working: {elapsedMs: 0},
+    statusLine: {...DEFAULT_STATUS_LINE, mode: 'tool', detail: '3 tools', keyHint: 'Esc 中断'},
+    rows: 9,
+    width: 42
+  });
+  const plainLines = layout.lines.map(stripAnsi);
+
+  assert.ok(layout.lines.length <= 7);
+  assert.equal(plainLines[0], '◆ 3 tools · running');
+  assert.ok(plainLines.some((line) => line.includes('… +3 more')));
+  assert.equal(plainLines.some((line) => line.includes('searching') || line.includes('fetching')), false);
+  assert.ok(plainLines.some((line) => line.includes('╭') || line.includes('╰')));
+  assert.ok(layout.cursorRow >= 0 && layout.cursorRow < layout.lines.length);
+});
+
 test('renderFooterLayout renders generic MCP pending calls with a safe layered title', () => {
   const width = 48;
   const layout = renderFooterLayout({
