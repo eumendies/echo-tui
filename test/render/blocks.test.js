@@ -10,6 +10,7 @@ test('renderBanner returns a large startup header at wide widths', () => {
   const lines = renderBanner({
     cwd: '/tmp/echo_tui',
     nodeVersion: 'v20.0.0',
+    appVersion: '1.2.5',
     terminalSize: { columns: 80, rows: 24 },
     mode: 'current terminal'
   }).split('\n');
@@ -19,6 +20,7 @@ test('renderBanner returns a large startup header at wide widths', () => {
   assert.ok(plainLines.some((line) => line.includes('███████╗ ██████╗██╗  ██╗ ██████╗')));
   assert.ok(plainLines.some((line) => line.includes('╚══════╝ ╚═════╝╚═╝  ╚═╝ ╚═════╝')));
   assert.ok(plainLines.some((line) => line.includes('cwd  /tmp/echo_tui')));
+  assert.ok(plainLines.some((line) => line.includes('echo_tui 1.2.5 · node v20.0.0')));
   assert.ok(plainLines.some((line) => line.includes('node v20.0.0')));
   assert.equal(plainLines.some((line) => line.includes('terminal session')), false);
   assert.equal(plainLines.some((line) => line.includes('current terminal')), false);
@@ -59,6 +61,7 @@ test('renderBanner falls back to a compact boxed header on narrower terminals', 
   const lines = renderBanner({
     cwd: '/tmp/echo_tui',
     nodeVersion: 'v20.0.0',
+    appVersion: '1.2.5',
     terminalSize: { columns: 20, rows: 24 },
     mode: 'current terminal'
   }).split('\n');
@@ -67,9 +70,23 @@ test('renderBanner falls back to a compact boxed header on narrower terminals', 
 
   assert.ok(plainLines.some((line) => line.includes('╭')));
   assert.ok(plainLines.some((line) => line.includes('echo_tui')));
+  assert.ok(plainLines.some((line) => line.includes('echo_tui 1.2.5')));
   assert.ok(plainLines.some((line) => line.includes('node v20.0.0')));
   assert.equal(plainLines.some((line) => line.includes('session')), false);
   assert.equal(plainLines.some((line) => line.includes('tty')), false);
+});
+
+test('renderBanner omits the app version label when it is not provided', () => {
+  const lines = renderBanner({
+    cwd: '/tmp/echo_tui',
+    nodeVersion: 'v20.0.0',
+    terminalSize: { columns: 80, rows: 24 },
+    mode: 'current terminal'
+  }).split('\n').map((line) => stripAnsi(line));
+
+  assert.ok(lines.some((line) => line.includes('node v20.0.0')));
+  assert.equal(lines.some((line) => line.includes('echo_tui 1.2.5')), false);
+  assert.equal(lines.some((line) => line.includes('undefined')), false);
 });
 
 test('renderBanner keeps every line within the safe render width', () => {

@@ -14,6 +14,7 @@ export type TerminalSize = {
 export type BannerContext = {
   cwd: string;
   nodeVersion: string;
+  appVersion: string; // echo-tui 自身版本号，来自 package.json，展示在 banner 的运行时信息中。
   terminalSize: TerminalSize;
   mode: string;
   variant?: 'main' | 'btw'; // 选择主启动 banner 或 BTW 紧凑 workspace banner。

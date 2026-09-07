@@ -45,17 +45,21 @@ const USER_MESSAGE_PREFIX = '▌ ';
  * 渲染顶部 banner，展示启动时真正对用户有用的最小上下文。
  *
  * 当前 banner 有三档：
- * 1. 宽终端：使用大字 ASCII Art 标题，强调启动瞬间的识别度。
- * 2. 中等终端：回退到带边框的紧凑 banner，保留 cwd 和 Node 版本。
+ * 1. 宽终端：使用大字 ASCII Art 标题，强调启动瞬间的识别度；应用版本并入运行时信息行。
+ * 2. 中等终端：回退到带边框的紧凑 banner，版本挂在标题上，保留 cwd 和 Node 版本独立行。
  * 3. 极窄终端：只保留最小可读标题和 cwd，优先避免横向撑爆。
  *
  */
 export function renderBanner(context: BannerRenderContext = {}, theme: TuiTheme = DEFAULT_TUI_THEME): string {
   const cwd = shortenPath(context.cwd || process.cwd(), 56);
   const nodeVersion = context.nodeVersion || process.version;
+  const appVersion = context.appVersion || '';
   const terminalSize = context.terminalSize || { columns: 80, rows: 24 };
   const width = safeRenderWidth(terminalSize.columns);
-  const runtimeInfo = `node ${nodeVersion}`;
+  const nodeRuntimeInfo = `node ${nodeVersion}`;
+  // 宽终端空间充足，应用版本并入运行时信息行；盒子标题过窄，版本挂在标题上，避免窄宽度 clamp 掉 Node 版本。
+  const runtimeInfo = appVersion ? `echo_tui ${appVersion} · ${nodeRuntimeInfo}` : nodeRuntimeInfo;
+  const boxTitle = appVersion ? ` echo_tui ${appVersion}` : ' echo_tui';
 
   if (context.variant === 'btw') {
     return renderBtwBanner(width, context.parentActivity || 'MAIN idle', theme);
@@ -93,9 +97,9 @@ export function renderBanner(context: BannerRenderContext = {}, theme: TuiTheme 
   return [
     '',
     border,
-      renderBannerBoxLine(' echo_tui', innerWidth, (text) => ansi.inverse(ansi.bold(text)), theme),
+      renderBannerBoxLine(boxTitle, innerWidth, (text) => ansi.inverse(ansi.bold(text)), theme),
       renderBannerBoxLine(` cwd  ${cwd}`, innerWidth, (text) => blockText(theme, 'bannerMuted', text), theme),
-      renderBannerBoxLine(` ${runtimeInfo}`, innerWidth, (text) => ansi.dim(blockText(theme, 'bannerMuted', text)), theme),
+      renderBannerBoxLine(` ${nodeRuntimeInfo}`, innerWidth, (text) => ansi.dim(blockText(theme, 'bannerMuted', text)), theme),
     footerBorder,
     ''
   ].join('\n');
