@@ -19,6 +19,7 @@ type PrepareAgentOptions = {
   modelProfileId?: string; // 从 snapshot 解析本次 provider 时使用的模型 profile。
   reasoningEffortOverride?: ReasoningEffort; // 仅本次准备生效的推理强度覆盖。
   allowedToolNames?: ReadonlySet<string>; // 存在时 registry 只保留该运行明确允许的本地工具。
+  sessionId?: string; // 当前会话稳定身份；preset 声明 sessionHeader 时用它注入会话亲和 header。
   subagentPort?: SubagentToolPort; // 仅允许委派的父 run 注入的同步子运行端口。
 };
 
@@ -44,17 +45,36 @@ function createConfiguredAgent(config: LlmConfig, registry?: ToolRegistry): Prov
 }
 
 /**
+ * 按 preset 声明注入会话亲和 header；运行时会话值优先于同名静态 header。
+ * 缺会话身份时刻意不伪造值，让缺失在 provider 侧显式暴露而不是漂移成假会话。
+ */
+function withSessionHeader(config: LlmConfig, sessionId?: string): LlmConfig {
+  if (!config.sessionHeader || !sessionId) {
+    return config;
+  }
+
+  return {
+    ...config,
+    headers: {
+      ...(config.headers || {}),
+      [config.sessionHeader]: sessionId
+    }
+  };
+}
+
+/**
  * 使用调用方捕获的运行配置构建完整工具 registry 并初始化 provider 实例。
  * MCP manager 的连接生命周期由调用方管理；这里只消费其已发现的工具。
  */
 function prepareAgent(options: PrepareAgentOptions): PreparedAgent {
-  const config = options.config || options.configSnapshot?.resolveLlmConfig({
+  const resolvedConfig = options.config || options.configSnapshot?.resolveLlmConfig({
     modelProfileId: options.modelProfileId,
     ...(options.reasoningEffortOverride !== undefined ? {reasoningEffortOverride: options.reasoningEffortOverride} : {})
   });
-  if (!config) {
+  if (!resolvedConfig) {
     throw new Error('prepareAgent 缺少用户配置 snapshot');
   }
+  const config = withSessionHeader(resolvedConfig, options.sessionId);
   const toolResultStore = createToolResultStore({cwd: options.cwd});
   const baseRegistry = createDefaultToolRegistry(config, options.cwd, toolResultStore, {
     allowedToolNames: options.allowedToolNames,

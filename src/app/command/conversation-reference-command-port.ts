@@ -101,7 +101,8 @@ function createConversationReferenceCommandPort(options: ConversationReferenceCo
           configSnapshot: selection.userConfigSnapshot || userConfigContext.capture(),
           cwd: () => appContext.getCurrentCwd(),
           modelProfileId: selection.modelProfileId,
-          reasoningEffortOverride: selection.reasoningEffortOverride
+          reasoningEffortOverride: selection.reasoningEffortOverride,
+          ...(selection.sessionId ? {sessionId: selection.sessionId} : {})
         });
         const reference = await prepareConversationReference({
           abortSignal: controller.signal,

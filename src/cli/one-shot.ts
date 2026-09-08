@@ -1,3 +1,5 @@
+import {randomUUID} from 'node:crypto';
+
 import {createAgentLoopRuntime} from '../agent/loop-runtime/agent-loop-runtime';
 import {redactSensitiveText} from '../agent/agent-errors';
 import {UserConfigContext} from '../config/user-config-context';
@@ -88,6 +90,8 @@ async function runOnce(options: RunOnceOptions): Promise<void> {
       },
       interactionMode: 'normal',
       records: [{role: 'user', text: prompt}],
+      // headless 一次调用即一个会话；sessionHeader 类 provider 需要稳定会话身份。
+      sessionId: randomUUID(),
       userConfigSnapshot: userConfigContext.capture()
     });
 

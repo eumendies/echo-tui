@@ -1,3 +1,5 @@
+import {randomUUID} from 'node:crypto';
+
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 
@@ -72,7 +74,9 @@ function resolveProviderConnection(provider: ConfigProviderDraft): CommandConfig
 
   const headers = {
     ...(preset.headers || {}),
-    ...(provider.headers || {})
+    ...(provider.headers || {}),
+    // 列模型请求不属于任何会话；强制会话亲和 header 的网关用一次性 UUID 满足要求。
+    ...(preset.sessionHeader ? {[preset.sessionHeader]: randomUUID()} : {})
   };
 
   return {

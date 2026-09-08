@@ -14,6 +14,7 @@ type ProviderPreset = {
   baseURL?: string;
   codexOAuth?: boolean;
   headers?: Record<string, string>;
+  sessionHeader?: string; // preset 声明的会话亲和 header 名；值由运行时按会话注入，不属于用户可编辑 headers。
   suggestedModels?: string[];
 };
 
@@ -183,7 +184,41 @@ const DEFAULT_PROVIDER_PRESETS: ProviderPreset[] = [
     agentType: "openai-chat",
     baseURLMode: "fixed",
     baseURL: "https://openrouter.ai/api/v1"
-   }
+   },
+  {
+    id: 'opencode-go',
+    label: 'OpenCode Go',
+    description: 'OpenCode Go 订阅，Chat Completions 协议模型。',
+    agentType: 'openai-chat',
+    baseURLMode: 'fixed',
+    baseURL: 'https://opencode.ai/zen/go/v1',
+    headers: {'User-Agent': 'echo-tui/1.0'},
+    sessionHeader: 'x-opencode-session',
+    suggestedModels: ['glm-5.2', 'kimi-k3', 'deepseek-v4-pro', 'mimo-v2.5', 'omen-alpha']
+  },
+  {
+    id: 'opencode-go-responses',
+    label: 'OpenCode Go (Responses)',
+    description: 'OpenCode Go 订阅，Responses API 协议模型。',
+    agentType: 'openai',
+    baseURLMode: 'fixed',
+    baseURL: 'https://opencode.ai/zen/go/v1',
+    headers: {'User-Agent': 'echo-tui/1.0'},
+    sessionHeader: 'x-opencode-session',
+    suggestedModels: ['gpt-5.6-luna', 'grok-4.6']
+  },
+  {
+    id: 'opencode-go-anthropic',
+    label: 'OpenCode Go (Anthropic)',
+    description: 'OpenCode Go 订阅，Anthropic Messages 协议模型。',
+    agentType: 'anthropic',
+    baseURLMode: 'fixed',
+    // Anthropic SDK 以 baseURL + /v1/messages 拼接端点；zen 的 messages 路径自带 /v1 前缀，这里不能重复。
+    baseURL: 'https://opencode.ai/zen/go',
+    headers: {'User-Agent': 'echo-tui/1.0'},
+    sessionHeader: 'x-opencode-session',
+    suggestedModels: ['minimax-m3', 'qwen3.8-max', 'qwen3.7-plus']
+  }
 ];
 
 function listProviderPresets(): ProviderPreset[] {

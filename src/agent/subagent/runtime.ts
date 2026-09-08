@@ -39,6 +39,7 @@ type SubagentToolPortOptions = {
   observation: Observation; // 接收本次目录加载形成的诊断快照。
   publishRecords: (records: SubagentTranscriptRecord[]) => void; // 把稳定过程同步提交到父 runtime 与 app transcript。
   reasoningEffortOverride?: LlmConfig['reasoningEffort']; // 父 run 本轮固定的推理强度覆盖。
+  sessionId?: string; // 父会话稳定身份，透传给子 loop 注入会话亲和 header。
 };
 
 /**
@@ -84,6 +85,7 @@ function createSubagentToolPort(options: SubagentToolPortOptions): SubagentToolP
           metadata,
           modelProfileId: options.modelProfileId,
           reasoningEffortOverride: options.reasoningEffortOverride,
+          ...(options.sessionId ? {sessionId: options.sessionId} : {}),
           task
         }, createChildCallbacks(options, metadata, task, executionOptions.changeRecorder, publishRecords, handoffAccumulator));
 

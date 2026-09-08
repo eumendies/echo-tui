@@ -166,6 +166,7 @@ type LlmProviderProfile = {
   baseURL?: string;
   codexOAuth?: LlmConfig['codexOAuth'];
   headers?: Record<string, string>;
+  sessionHeader?: string; // preset 声明的会话亲和 header 名；值由 agent 装配层按会话注入。
 };
 
 type ParsedLlmConfiguration = {
@@ -431,6 +432,7 @@ function parseProviderProfiles(llmConfig: ConfigSource): ParsedProviderProfiles 
       agentType: preset.agentType,
       apiKey: readProviderApiKey(rawProvider, providerId, preset),
       baseURL,
+      ...(preset.sessionHeader ? {sessionHeader: preset.sessionHeader} : {}),
       ...(preset.codexOAuth ? {codexOAuth: codexAuthFile ? {authFilePath: codexAuthFile} : {}} : {}),
       ...(Object.keys(headers).length > 0 ? {headers} : {})
     });
@@ -495,11 +497,11 @@ function parseModelProfiles(llmConfig: ConfigSource, providers: Map<string, LlmP
   return parsedModels;
 }
 
-function withOptionalHeaders(config: Pick<LlmConfig, 'agentType' | 'apiKey' | 'baseURL' | 'codexOAuth'>, headers?: Record<string, string>): Pick<LlmConfig, 'agentType' | 'apiKey' | 'baseURL' | 'codexOAuth' | 'headers'> {
+function withOptionalHeaders(config: Pick<LlmConfig, 'agentType' | 'apiKey' | 'baseURL' | 'codexOAuth' | 'sessionHeader'>, headers?: Record<string, string>): Pick<LlmConfig, 'agentType' | 'apiKey' | 'baseURL' | 'codexOAuth' | 'sessionHeader' | 'headers'> {
   return headers ? {...config, headers} : config;
 }
 
-function resolveSelectedProviderConfig(selectedProfile: LlmModelProfile, providers: Map<string, LlmProviderProfile>): Pick<LlmConfig, 'agentType' | 'apiKey' | 'baseURL' | 'codexOAuth' | 'headers'> {
+function resolveSelectedProviderConfig(selectedProfile: LlmModelProfile, providers: Map<string, LlmProviderProfile>): Pick<LlmConfig, 'agentType' | 'apiKey' | 'baseURL' | 'codexOAuth' | 'sessionHeader' | 'headers'> {
   const provider = providers.get(selectedProfile.provider);
 
   if (!provider) {
@@ -510,6 +512,7 @@ function resolveSelectedProviderConfig(selectedProfile: LlmModelProfile, provide
     agentType: provider.agentType,
     apiKey: provider.apiKey,
     baseURL: provider.baseURL,
+    ...(provider.sessionHeader ? {sessionHeader: provider.sessionHeader} : {}),
     ...(provider.codexOAuth ? {codexOAuth: provider.codexOAuth} : {})
   }, provider.headers);
 }

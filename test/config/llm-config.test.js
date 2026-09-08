@@ -1412,3 +1412,34 @@ test('readLlmConfig validates required fields without echoing field values', () 
     }
   );
 });
+
+test('readLlmConfig surfaces opencode go session header and preset headers', () => {
+  const config = readLlmConfig({
+    configPath: '/tmp/echo-config.json',
+    readFile: readConfigFrom(JSON.stringify({
+      llm: {
+        selectedModel: 'default',
+        providers: {
+          default: {
+            preset: 'opencode-go',
+            apiKey: 'test-api-key'
+          }
+        },
+        models: [
+          { id: 'default', provider: 'default', model: 'kimi-k3' }
+        ]
+      }
+    }))
+  });
+
+  assert.deepEqual(config, {
+    apiKey: 'test-api-key',
+    agentType: 'openai-chat',
+    baseURL: 'https://opencode.ai/zen/go/v1',
+    headers: {'User-Agent': 'echo-tui/1.0'},
+    sessionHeader: 'x-opencode-session',
+    model: 'kimi-k3',
+    contextWindow: undefined,
+    tools: DEFAULT_TOOLS
+  });
+});
