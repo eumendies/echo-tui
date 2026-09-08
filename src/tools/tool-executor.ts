@@ -1,4 +1,5 @@
 import type {ToolCall, ToolExecutionOptions, ToolExecutionResult, ToolExecutor, ToolRegistry} from '../types/tool';
+import {DEFAULT_TOOL_RESULT_MAX_OUTPUT_BYTES, capUtf8Text} from './tool-handler-utils';
 
 /**
  * 创建 provider-neutral 工具执行器，统一处理工具查找、参数解析和失败归一化。
@@ -65,7 +66,8 @@ function createFailureResult(call: ToolCall, message: string): ToolExecutionResu
     toolName: call.toolName,
     ok: false,
     details: {kind: 'generic'},
-    text: message
+    // 这是 executor 自身生成的失败结果，不对 handler 的正常结果做统一后处理。
+    text: capUtf8Text(message, DEFAULT_TOOL_RESULT_MAX_OUTPUT_BYTES).text
   };
 }
 

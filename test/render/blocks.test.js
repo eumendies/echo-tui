@@ -10,6 +10,7 @@ test('renderBanner returns a large startup header at wide widths', () => {
   const lines = renderBanner({
     cwd: '/tmp/echo_tui',
     nodeVersion: 'v20.0.0',
+    appVersion: '1.2.5',
     terminalSize: { columns: 80, rows: 24 },
     mode: 'current terminal'
   }).split('\n');
@@ -19,6 +20,7 @@ test('renderBanner returns a large startup header at wide widths', () => {
   assert.ok(plainLines.some((line) => line.includes('███████╗ ██████╗██╗  ██╗ ██████╗')));
   assert.ok(plainLines.some((line) => line.includes('╚══════╝ ╚═════╝╚═╝  ╚═╝ ╚═════╝')));
   assert.ok(plainLines.some((line) => line.includes('cwd  /tmp/echo_tui')));
+  assert.ok(plainLines.some((line) => line.includes('echo_tui 1.2.5 · node v20.0.0')));
   assert.ok(plainLines.some((line) => line.includes('node v20.0.0')));
   assert.equal(plainLines.some((line) => line.includes('terminal session')), false);
   assert.equal(plainLines.some((line) => line.includes('current terminal')), false);
@@ -59,6 +61,7 @@ test('renderBanner falls back to a compact boxed header on narrower terminals', 
   const lines = renderBanner({
     cwd: '/tmp/echo_tui',
     nodeVersion: 'v20.0.0',
+    appVersion: '1.2.5',
     terminalSize: { columns: 20, rows: 24 },
     mode: 'current terminal'
   }).split('\n');
@@ -67,9 +70,23 @@ test('renderBanner falls back to a compact boxed header on narrower terminals', 
 
   assert.ok(plainLines.some((line) => line.includes('╭')));
   assert.ok(plainLines.some((line) => line.includes('echo_tui')));
+  assert.ok(plainLines.some((line) => line.includes('echo_tui 1.2.5')));
   assert.ok(plainLines.some((line) => line.includes('node v20.0.0')));
   assert.equal(plainLines.some((line) => line.includes('session')), false);
   assert.equal(plainLines.some((line) => line.includes('tty')), false);
+});
+
+test('renderBanner omits the app version label when it is not provided', () => {
+  const lines = renderBanner({
+    cwd: '/tmp/echo_tui',
+    nodeVersion: 'v20.0.0',
+    terminalSize: { columns: 80, rows: 24 },
+    mode: 'current terminal'
+  }).split('\n').map((line) => stripAnsi(line));
+
+  assert.ok(lines.some((line) => line.includes('node v20.0.0')));
+  assert.equal(lines.some((line) => line.includes('echo_tui 1.2.5')), false);
+  assert.equal(lines.some((line) => line.includes('undefined')), false);
 });
 
 test('renderBanner keeps every line within the safe render width', () => {
@@ -90,6 +107,48 @@ test('renderPendingAssistantLines leaves thinking to the status line', () => {
   const lines = renderPendingAssistantLines({ kind: 'thinking', elapsedMs: 0 }, 80);
 
   assert.deepEqual(lines, []);
+});
+
+test('renderPendingAssistantLines groups multiple tools into compact ordered rows', () => {
+  const pending = {
+    kind: 'tool_calls',
+    calls: [
+      {callId: 'grep-1', toolName: 'grep', argumentsText: '{"pattern":"needle","paths":["src"]}'},
+      {callId: 'glob-1', toolName: 'glob', argumentsText: '{"pattern":"**/*.ts","paths":["test"]}'},
+      {callId: 'fetch-1', toolName: 'web_fetch', argumentsText: '{"url":"https://example.com/docs"}'}
+    ]
+  };
+  const lines = renderPendingAssistantLines(pending, 80, 10).map(stripAnsi);
+
+  assert.deepEqual(lines, [
+    '◆ 3 tools · running',
+    '  ├─ Grep · “needle” · in src',
+    '  ├─ Glob · “**/*.ts” · in test',
+    '  └─ Web fetch · example.com/docs'
+  ]);
+  assert.equal(lines.some((line) => /searching|fetching/u.test(line)), false);
+});
+
+test('renderPendingAssistantLines bounds compact tools by hidden call count and safe width', () => {
+  const pending = {
+    kind: 'tool_calls',
+    calls: [
+      {callId: 'grep-1', toolName: 'grep', argumentsText: JSON.stringify({pattern: 'needle'.repeat(20), paths: ['src']})},
+      {callId: 'glob-1', toolName: 'glob', argumentsText: '{"pattern":"**/*.ts"}'},
+      {callId: 'read-1', toolName: 'read_files', argumentsText: '{"files":[{"path":"src/a.ts"}]}'},
+      {callId: 'search-1', toolName: 'web_search', argumentsText: '{"query":"Echo TUI"}'}
+    ]
+  };
+  const constrained = renderPendingAssistantLines(pending, 32, 3).map(stripAnsi);
+  const titleOnly = renderPendingAssistantLines(pending, 32, 1).map(stripAnsi);
+  const extremelyNarrow = renderPendingAssistantLines(pending, 4, 3);
+
+  assert.deepEqual(constrained.slice(0, 1), ['◆ 4 tools · running']);
+  assert.ok(constrained[1].startsWith('  ├─ Grep · “needle'));
+  assert.equal(constrained[2], '  └─ … +3 more');
+  assert.deepEqual(titleOnly, ['◆ 4 tools · running']);
+  assert.ok(constrained.every((line) => displayWidth(line) <= safeRenderWidth(32)));
+  assert.ok(extremelyNarrow.every((line) => displayWidth(line) <= safeRenderWidth(4)));
 });
 
 test('renderPendingAssistantLines keeps streaming preview as plain text without thinking label', () => {

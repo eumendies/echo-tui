@@ -49,6 +49,7 @@ const BUILTIN_MODEL_CONTEXT_WINDOWS: Readonly<Record<string, number>> = {
   'gpt-5.6-sol': 1_050_000,
   'gpt-5.6-terra': 1_050_000,
   'gpt-5.6-luna': 1_050_000,
+  'gpt-6-astra': 1_050_000,
   'o1': 200_000,
   'o1-mini': 128_000,
   'o1-preview': 128_000,
@@ -72,10 +73,14 @@ const BUILTIN_MODEL_CONTEXT_WINDOWS: Readonly<Record<string, number>> = {
   'claude-opus-4-7': 1_000_000,
   'claude-opus-4-7-20260416': 1_000_000,
   'claude-opus-4-8': 1_000_000,
+  'claude-opus-5': 1_000_000,
+  'claude-fable-5': 1_000_000,
+  'claude-fable-5.1': 1_000_000,
   'claude-sonnet-4-20250514': 1_000_000,
   'claude-sonnet-4-5': 200_000,
   'claude-sonnet-4-5-20250929': 200_000,
   'claude-sonnet-4-6': 1_000_000,
+  'claude-sonnet-5': 1_000_000,
   'claude-haiku-4-5': 200_000,
   'claude-haiku-4-5-20251001': 200_000,
   'gemini-3-pro-preview': 1_048_576,
@@ -97,15 +102,19 @@ const BUILTIN_MODEL_CONTEXT_WINDOWS: Readonly<Record<string, number>> = {
   'qwen3-next-80b-a3b-thinking': 262_144,
   'qwen3.5-plus': 991_808,
   'qwen2.5-coder': 32_768,
+  'qwen3.8-max': 1_122_880,
   'glm-4.6': 200_000,
   'glm-4.7': 200_000,
   'glm-5': 200_000,
   'glm-5-code': 200_000,
   'glm-5.1': 200_000,
   'glm-5.2': 1_000_000,
+  'glm-5.3': 1_310_720,
+  'glm-5.3-flash': 1_310_720,
   'kimi-k2.5': 262_144,
   'kimi-k2.6': 262_144,
   'kimi-k2-thinking': 262_144,
+  'kimi-k3': 1_048_576,
   'minimax-m2': 200_000,
   'minimax-m2.1': 1_000_000,
   'minimax-m2.5': 1_000_000,
@@ -157,6 +166,7 @@ type LlmProviderProfile = {
   baseURL?: string;
   codexOAuth?: LlmConfig['codexOAuth'];
   headers?: Record<string, string>;
+  sessionHeader?: string; // preset 声明的会话亲和 header 名；值由 agent 装配层按会话注入。
 };
 
 type ParsedLlmConfiguration = {
@@ -422,6 +432,7 @@ function parseProviderProfiles(llmConfig: ConfigSource): ParsedProviderProfiles 
       agentType: preset.agentType,
       apiKey: readProviderApiKey(rawProvider, providerId, preset),
       baseURL,
+      ...(preset.sessionHeader ? {sessionHeader: preset.sessionHeader} : {}),
       ...(preset.codexOAuth ? {codexOAuth: codexAuthFile ? {authFilePath: codexAuthFile} : {}} : {}),
       ...(Object.keys(headers).length > 0 ? {headers} : {})
     });
@@ -486,11 +497,11 @@ function parseModelProfiles(llmConfig: ConfigSource, providers: Map<string, LlmP
   return parsedModels;
 }
 
-function withOptionalHeaders(config: Pick<LlmConfig, 'agentType' | 'apiKey' | 'baseURL' | 'codexOAuth'>, headers?: Record<string, string>): Pick<LlmConfig, 'agentType' | 'apiKey' | 'baseURL' | 'codexOAuth' | 'headers'> {
+function withOptionalHeaders(config: Pick<LlmConfig, 'agentType' | 'apiKey' | 'baseURL' | 'codexOAuth' | 'sessionHeader'>, headers?: Record<string, string>): Pick<LlmConfig, 'agentType' | 'apiKey' | 'baseURL' | 'codexOAuth' | 'sessionHeader' | 'headers'> {
   return headers ? {...config, headers} : config;
 }
 
-function resolveSelectedProviderConfig(selectedProfile: LlmModelProfile, providers: Map<string, LlmProviderProfile>): Pick<LlmConfig, 'agentType' | 'apiKey' | 'baseURL' | 'codexOAuth' | 'headers'> {
+function resolveSelectedProviderConfig(selectedProfile: LlmModelProfile, providers: Map<string, LlmProviderProfile>): Pick<LlmConfig, 'agentType' | 'apiKey' | 'baseURL' | 'codexOAuth' | 'sessionHeader' | 'headers'> {
   const provider = providers.get(selectedProfile.provider);
 
   if (!provider) {
@@ -501,6 +512,7 @@ function resolveSelectedProviderConfig(selectedProfile: LlmModelProfile, provide
     agentType: provider.agentType,
     apiKey: provider.apiKey,
     baseURL: provider.baseURL,
+    ...(provider.sessionHeader ? {sessionHeader: provider.sessionHeader} : {}),
     ...(provider.codexOAuth ? {codexOAuth: provider.codexOAuth} : {})
   }, provider.headers);
 }

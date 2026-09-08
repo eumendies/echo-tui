@@ -3,9 +3,9 @@ import {DEFAULT_TUI_THEME, type ThemeColor, type TuiTheme} from '../config/theme
 import {blockBackground, blockText, colorText} from './colors';
 import { charWidth, displayWidth, safeRenderWidth, splitGraphemes, tabWidthAt } from './layout';
 import { getCommittableMarkdownText, renderMarkdownLinesWithOptions } from './markdown';
-import { renderToolCallPreviewLines } from './tool-message-renderer';
+import {createCompactToolCallPreviewText, renderToolCallPreviewLines} from './tool-message-renderer';
 import {renderSubagentPendingLines} from './subagent-renderer';
-import type { BannerContext, PendingState, TerminalSize } from '../types/render';
+import type { BannerContext, PendingState, PendingToolCall, TerminalSize } from '../types/render';
 
 type BannerRenderContext = Partial<Omit<BannerContext, 'terminalSize'>> & {
   terminalSize?: TerminalSize;
@@ -45,17 +45,21 @@ const USER_MESSAGE_PREFIX = '▌ ';
  * 渲染顶部 banner，展示启动时真正对用户有用的最小上下文。
  *
  * 当前 banner 有三档：
- * 1. 宽终端：使用大字 ASCII Art 标题，强调启动瞬间的识别度。
- * 2. 中等终端：回退到带边框的紧凑 banner，保留 cwd 和 Node 版本。
+ * 1. 宽终端：使用大字 ASCII Art 标题，强调启动瞬间的识别度；应用版本并入运行时信息行。
+ * 2. 中等终端：回退到带边框的紧凑 banner，版本挂在标题上，保留 cwd 和 Node 版本独立行。
  * 3. 极窄终端：只保留最小可读标题和 cwd，优先避免横向撑爆。
  *
  */
 export function renderBanner(context: BannerRenderContext = {}, theme: TuiTheme = DEFAULT_TUI_THEME): string {
   const cwd = shortenPath(context.cwd || process.cwd(), 56);
   const nodeVersion = context.nodeVersion || process.version;
+  const appVersion = context.appVersion || '';
   const terminalSize = context.terminalSize || { columns: 80, rows: 24 };
   const width = safeRenderWidth(terminalSize.columns);
-  const runtimeInfo = `node ${nodeVersion}`;
+  const nodeRuntimeInfo = `node ${nodeVersion}`;
+  // 宽终端空间充足，应用版本并入运行时信息行；盒子标题过窄，版本挂在标题上，避免窄宽度 clamp 掉 Node 版本。
+  const runtimeInfo = appVersion ? `echo_tui ${appVersion} · ${nodeRuntimeInfo}` : nodeRuntimeInfo;
+  const boxTitle = appVersion ? ` echo_tui ${appVersion}` : ' echo_tui';
 
   if (context.variant === 'btw') {
     return renderBtwBanner(width, context.parentActivity || 'MAIN idle', theme);
@@ -93,9 +97,9 @@ export function renderBanner(context: BannerRenderContext = {}, theme: TuiTheme 
   return [
     '',
     border,
-      renderBannerBoxLine(' echo_tui', innerWidth, (text) => ansi.inverse(ansi.bold(text)), theme),
+      renderBannerBoxLine(boxTitle, innerWidth, (text) => ansi.inverse(ansi.bold(text)), theme),
       renderBannerBoxLine(` cwd  ${cwd}`, innerWidth, (text) => blockText(theme, 'bannerMuted', text), theme),
-      renderBannerBoxLine(` ${runtimeInfo}`, innerWidth, (text) => ansi.dim(blockText(theme, 'bannerMuted', text)), theme),
+      renderBannerBoxLine(` ${nodeRuntimeInfo}`, innerWidth, (text) => ansi.dim(blockText(theme, 'bannerMuted', text)), theme),
     footerBorder,
     ''
   ].join('\n');
@@ -425,7 +429,7 @@ function renderShellMessageLines(text: string, width = 80, theme: TuiTheme): str
 
 /**
  * 把 pending assistant 状态投影为逐行字符串。
- * pending 包括 thinking、reasoning_streaming、streaming、tool_call、shell_output 状态
+ * pending 包括 thinking、reasoning_streaming、streaming、tool_call、tool_calls、shell_output 状态
  * thinking状态：由 status line 展示，pending preview 不再占独立行
  * reasoning_streaming状态：展示有界的可读 reasoning preview
  * streaming状态：展示模型正文流式输出内容
@@ -452,6 +456,10 @@ export function renderPendingAssistantLines(
     return truncatePendingPreviewLines(renderToolCallPreviewLines(pending.toolName, pending.argumentsText, width, theme), width, normalizedMaxLines, theme);
   }
 
+  if (pending.kind === 'tool_calls') {
+    return renderPendingToolCallsLines(pending.calls, width, normalizedMaxLines, theme);
+  }
+
   if (pending.kind === 'shell_output') {
     return renderShellOutputPendingLines(pending.command, pending.output, width, normalizedMaxLines, theme);
   }
@@ -465,6 +473,65 @@ export function renderPendingAssistantLines(
   }
 
   return renderStreamingPendingLines(pending.text, pending.historyText || '', width, normalizedMaxLines, theme);
+}
+
+/**
+ * 将多个运行中工具投影为一个 compact 活动块；标题和隐藏数量都计入 footer 物理行预算。
+ */
+function renderPendingToolCallsLines(calls: PendingToolCall[], width: number, maxLines: number, theme: TuiTheme): string[] {
+  if (maxLines <= 0) {
+    return [];
+  }
+
+  const safeWidth = safeRenderWidth(width);
+  const header = renderCompactPendingToolHeader(calls.length, safeWidth, theme);
+  if (maxLines === 1) {
+    return [header];
+  }
+
+  const availableRows = maxLines - 1;
+  if (calls.length <= availableRows) {
+    return [
+      header,
+      ...calls.map((call, index) => renderCompactPendingToolRow(
+        createCompactToolCallPreviewText(call.toolName, call.argumentsText, theme),
+        index === calls.length - 1 ? '└─ ' : '├─ ',
+        safeWidth,
+        theme
+      ))
+    ];
+  }
+
+  const visibleCount = Math.max(0, availableRows - 1);
+  const hiddenCount = calls.length - visibleCount;
+  return [
+    header,
+    ...calls.slice(0, visibleCount).map((call) => renderCompactPendingToolRow(
+      createCompactToolCallPreviewText(call.toolName, call.argumentsText, theme),
+      '├─ ',
+      safeWidth,
+      theme
+    )),
+    renderCompactPendingToolRow(`… +${hiddenCount} more`, '└─ ', safeWidth, theme, true)
+  ];
+}
+
+/** 渲染多工具 compact 块的共享标题，并让状态文本遵守 safe width。 */
+function renderCompactPendingToolHeader(count: number, width: number, theme: TuiTheme): string {
+  const plain = clampToDisplayWidth(`◆ ${count} tools · running`, width);
+  return plain.startsWith('◆') ? `${blockText(theme, 'toolOutput', '◆')}${plain.slice(1)}` : plain;
+}
+
+/** 渲染一个单行工具摘要或隐藏数量行；树形前缀使用 muted 色降低视觉噪声。 */
+function renderCompactPendingToolRow(text: string, prefix: '├─ ' | '└─ ', width: number, theme: TuiTheme, dimText = false): string {
+  const structuralPrefix = `  ${prefix}`;
+  const plain = clampToDisplayWidth(`${structuralPrefix}${text}`, width);
+  if (!plain.startsWith(structuralPrefix)) {
+    return blockText(theme, 'muted', plain);
+  }
+
+  const content = plain.slice(structuralPrefix.length);
+  return `${blockText(theme, 'muted', structuralPrefix)}${dimText ? ansi.dim(blockText(theme, 'muted', content)) : content}`;
 }
 
 /**

@@ -6,9 +6,16 @@ import type {
   ToolHandler
 } from '../types/tool';
 
+import {DEFAULT_TOOL_RESULT_MAX_OUTPUT_BYTES, capUtf8Text} from './tool-handler-utils';
+
 const ASK_USER_QUESTIONS_TOOL_NAME = 'ask_user_questions';
 const MAX_QUESTIONS = 5;
 const MAX_OPTIONS_PER_QUESTION = 8;
+const MAX_ASK_USER_QUESTION_BYTES = 8_192;
+const MAX_ASK_USER_OPTION_LABEL_BYTES = 4_096;
+const MAX_ASK_USER_OPTION_DESCRIPTION_BYTES = 8_192;
+const MAX_ASK_USER_QUESTION_DEFINITION_BYTES = 32_768;
+const MAX_ASK_USER_CUSTOM_ANSWER_BYTES = 4_096;
 
 type ParseAskUserQuestionsResult =
   | {ok: true; value: AskUserQuestionsRequest}
@@ -21,7 +28,7 @@ function createAskUserQuestionsToolHandler(): ToolHandler {
   return {
     definition: {
       name: ASK_USER_QUESTIONS_TOOL_NAME,
-      description: 'Ask the user one or more necessary single-choice or multi-select clarification questions when the answer cannot be inferred from context.',
+      description: 'Ask the user one or more necessary single-choice or multi-select clarification questions when the answer cannot be inferred from context. Keep questions, options, descriptions, and custom answers concise; oversized definitions are rejected.',
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -107,6 +114,7 @@ function parseAskUserQuestionsArgs(args: Record<string, unknown>): ParseAskUserQ
   }
 
   const questions = [];
+  let definitionBytes = 0;
 
   for (const [questionIndex, rawQuestion] of rawQuestions.entries()) {
     if (!rawQuestion || typeof rawQuestion !== 'object' || Array.isArray(rawQuestion)) {
@@ -119,6 +127,13 @@ function parseAskUserQuestionsArgs(args: Record<string, unknown>): ParseAskUserQ
     if (typeof question !== 'string' || question.trim() === '') {
       return {ok: false, message: `questions[${questionIndex}].question must be a non-empty string`};
     }
+
+    const normalizedQuestion = question.trim();
+    const questionBytes = Buffer.byteLength(normalizedQuestion, 'utf8');
+    if (questionBytes > MAX_ASK_USER_QUESTION_BYTES) {
+      return {ok: false, message: `questions[${questionIndex}].question must not exceed ${MAX_ASK_USER_QUESTION_BYTES} UTF-8 bytes`};
+    }
+    definitionBytes += questionBytes;
 
     const multiSelect = questionRecord.multiSelect;
 
@@ -150,20 +165,37 @@ function parseAskUserQuestionsArgs(args: Record<string, unknown>): ParseAskUserQ
         return {ok: false, message: `questions[${questionIndex}].options[${optionIndex}].label must be a non-empty string`};
       }
 
+      const normalizedLabel = label.trim();
+      const labelBytes = Buffer.byteLength(normalizedLabel, 'utf8');
+      if (labelBytes > MAX_ASK_USER_OPTION_LABEL_BYTES) {
+        return {ok: false, message: `questions[${questionIndex}].options[${optionIndex}].label must not exceed ${MAX_ASK_USER_OPTION_LABEL_BYTES} UTF-8 bytes`};
+      }
+      definitionBytes += labelBytes;
+
       const description = optionRecord.description;
 
       if (description !== undefined && description !== null && typeof description !== 'string') {
         return {ok: false, message: `questions[${questionIndex}].options[${optionIndex}].description must be a string`};
       }
 
+      const normalizedDescription = typeof description === 'string' ? description.trim() : '';
+      if (Buffer.byteLength(normalizedDescription, 'utf8') > MAX_ASK_USER_OPTION_DESCRIPTION_BYTES) {
+        return {ok: false, message: `questions[${questionIndex}].options[${optionIndex}].description must not exceed ${MAX_ASK_USER_OPTION_DESCRIPTION_BYTES} UTF-8 bytes`};
+      }
+      definitionBytes += Buffer.byteLength(normalizedDescription, 'utf8');
+
+      if (definitionBytes > MAX_ASK_USER_QUESTION_DEFINITION_BYTES) {
+        return {ok: false, message: `question definitions must not exceed ${MAX_ASK_USER_QUESTION_DEFINITION_BYTES} UTF-8 bytes in total`};
+      }
+
       options.push({
-        label: label.trim(),
-        ...(typeof description === 'string' && description.trim() !== '' ? {description: description.trim()} : {})
+        label: normalizedLabel,
+        ...(normalizedDescription !== '' ? {description: normalizedDescription} : {})
       });
     }
 
     questions.push({
-      question: question.trim(),
+      question: normalizedQuestion,
       ...(typeof multiSelect === 'boolean' ? {multiSelect} : {}),
       options
     });
@@ -176,29 +208,35 @@ function parseAskUserQuestionsArgs(args: Record<string, unknown>): ParseAskUserQ
  * 构造用户完成选择后的 JSON tool result，保留问题文本和被选 option 信息。
  */
 function createAskUserQuestionsSuccessResult(call: ToolCall, answers: AskUserQuestionsAnswer[]): AskUserQuestionsToolExecutionResult {
+  const text = JSON.stringify({
+    answers: answers.map((answer, index) => {
+      if (answer.multiSelect) {
+        return {
+          index,
+          multiSelect: true,
+          selectedOptions: answer.selectedOptions.map((option) => option.label),
+          ...(answer.customText ? {customText: answer.customText} : {})
+        };
+      }
+
+      return {
+        index,
+        selected: answer.selectedOption.label,
+        ...(answer.customText ? {customText: answer.customText} : {})
+      };
+    })
+  });
+
+  if (Buffer.byteLength(text, 'utf8') > DEFAULT_TOOL_RESULT_MAX_OUTPUT_BYTES) {
+    return createAskUserQuestionsFailureResult(call, 'ask_user_questions answer exceeds the 65536-byte output limit');
+  }
+
   return {
     callId: call.callId,
     toolName: ASK_USER_QUESTIONS_TOOL_NAME,
     ok: true,
     details: {kind: 'generic'},
-    text: JSON.stringify({
-      answers: answers.map((answer, index) => {
-        if (answer.multiSelect) {
-          return {
-            index,
-            multiSelect: true,
-            selectedOptions: answer.selectedOptions.map((option) => option.label),
-            ...(answer.customText ? {customText: answer.customText} : {})
-          };
-        }
-
-        return {
-          index,
-          selected: answer.selectedOption.label,
-          ...(answer.customText ? {customText: answer.customText} : {})
-        };
-      })
-    })
+    text
   };
 }
 
@@ -221,12 +259,18 @@ function createAskUserQuestionsFailureResult(call: ToolCall, message: string): A
     toolName: ASK_USER_QUESTIONS_TOOL_NAME,
     ok: false,
     details: {kind: 'generic'},
-    text: message
+    // 校验失败是给模型和终端阅读的纯文本；只有成功/取消结果才返回结构化 JSON。
+    text: capUtf8Text(message, DEFAULT_TOOL_RESULT_MAX_OUTPUT_BYTES).text
   };
 }
 
 export {
   ASK_USER_QUESTIONS_TOOL_NAME,
+  MAX_ASK_USER_CUSTOM_ANSWER_BYTES,
+  MAX_ASK_USER_OPTION_DESCRIPTION_BYTES,
+  MAX_ASK_USER_OPTION_LABEL_BYTES,
+  MAX_ASK_USER_QUESTION_BYTES,
+  MAX_ASK_USER_QUESTION_DEFINITION_BYTES,
   createAskUserQuestionsCancelledResult,
   createAskUserQuestionsFailureResult,
   createAskUserQuestionsSuccessResult,

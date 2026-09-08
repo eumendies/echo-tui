@@ -2,16 +2,19 @@ import {spawn} from 'node:child_process';
 import * as path from 'node:path';
 import {StringDecoder} from 'node:string_decoder';
 
-import {isGitPath, normalizePositiveInteger, resolveCwd} from './tool-handler-utils';
+import {DEFAULT_TOOL_RESULT_MAX_OUTPUT_BYTES, capUtf8Text, isGitPath, normalizePositiveInteger, resolveCwd} from './tool-handler-utils';
 
 import type {GlobDisplayMetadata, GlobToolExecutionResult, ToolCall, ToolHandler} from '../types/tool';
 import type {Result} from './tool-handler-utils';
 
 const GLOB_TOOL_NAME = 'glob';
 const DEFAULT_MAX_PATHS = 200;
+const MAX_PARSER_PENDING_BYTES = 256 * 1024;
+const MAX_STDERR_BYTES = 8 * 1024;
 
 type GlobToolHandlerOptions = {
   cwd?: string | (() => string);
+  maxOutputBytes?: number;
   maxPaths?: number;
   rgPath?: string;
 };
@@ -25,6 +28,7 @@ type GlobRunResult = {
   error?: string;
   exitCode: number | null;
   hasMore: boolean;
+  limitReason?: 'bytes' | 'count';
   paths: string[];
   stderr: string;
   truncated: boolean;
@@ -34,13 +38,15 @@ type GlobRunResult = {
  * 创建本地 glob 工具；用于先按路径模式发现文件，再交给 read_files 或 grep 继续观察。
  */
 function createGlobToolHandler(options: GlobToolHandlerOptions = {}): ToolHandler {
+  const maxOutputBytes = normalizePositiveInteger(options.maxOutputBytes, DEFAULT_TOOL_RESULT_MAX_OUTPUT_BYTES);
   const maxPaths = normalizePositiveInteger(options.maxPaths, DEFAULT_MAX_PATHS);
   const rgPath = options.rgPath || 'rg';
 
   return {
     definition: {
       name: GLOB_TOOL_NAME,
-      description: `Find local file paths by glob pattern using ripgrep file listing. Omit paths to search from the current working directory. Returns files only, includes hidden files, excludes .git internals, and caps results at ${maxPaths} paths; narrow pattern or paths when has_more is true.`,
+      // 字节上限的细节属于运行时截断通知，不占常态 schema 上下文；这里只声明截断可能发生。
+      description: `Find local file paths by glob pattern using ripgrep file listing. Omit paths to search from the current working directory. Returns files only, includes hidden files, excludes .git internals, and caps results at ${maxPaths} paths and may be truncated when output is large; narrow pattern or paths when has_more is true.`,
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -61,6 +67,7 @@ function createGlobToolHandler(options: GlobToolHandlerOptions = {}): ToolHandle
     async execute(args: Record<string, unknown>, call: ToolCall): Promise<GlobToolExecutionResult> {
       const result = await glob(args, {
         cwd: resolveCwd(options.cwd),
+        maxOutputBytes,
         maxPaths,
         rgPath
       });
@@ -81,13 +88,13 @@ function createGlobToolHandler(options: GlobToolHandlerOptions = {}): ToolHandle
   };
 }
 
-async function glob(args: Record<string, unknown>, options: {cwd: string; maxPaths: number; rgPath: string}): Promise<{ok: boolean; text: string; display?: GlobDisplayMetadata; exitCode?: number | null; truncated: boolean}> {
+async function glob(args: Record<string, unknown>, options: {cwd: string; maxOutputBytes: number; maxPaths: number; rgPath: string}): Promise<{ok: boolean; text: string; display?: GlobDisplayMetadata; exitCode?: number | null; truncated: boolean}> {
   const normalized = normalizeRequest(args, options.cwd);
 
   if (!normalized.ok) {
     return {
       ok: false,
-      text: formatGlobFailure(normalized.reason),
+      text: formatGlobFailure(normalized.reason, options.maxOutputBytes),
       truncated: false
     };
   }
@@ -98,7 +105,7 @@ async function glob(args: Record<string, unknown>, options: {cwd: string; maxPat
   return {
     ok,
     exitCode: runResult.exitCode,
-    text: ok ? formatGlobSuccess(normalized.value, runResult, options.maxPaths) : formatGlobFailure(runResult.error || cleanStderr(runResult.stderr) || 'ripgrep file listing failed'),
+    text: ok ? formatGlobSuccess(runResult, options.maxPaths, options.maxOutputBytes) : formatGlobFailure(runResult.error || cleanStderr(runResult.stderr) || 'ripgrep file listing failed', options.maxOutputBytes),
     truncated: runResult.truncated,
     ...(ok ? {display: {kind: 'glob', paths: runResult.paths}} : {})
   };
@@ -180,7 +187,7 @@ function resolveSearchPath(searchPath: string, cwd: string): Result<string> {
   return {ok: true, value: absolutePath};
 }
 
-function runRipgrepFiles(request: NormalizedGlobRequest, options: {cwd: string; maxPaths: number; rgPath: string}): Promise<GlobRunResult> {
+function runRipgrepFiles(request: NormalizedGlobRequest, options: {cwd: string; maxOutputBytes: number; maxPaths: number; rgPath: string}): Promise<GlobRunResult> {
   return new Promise((resolve) => {
     // 文件发现仍通过参数数组调用 rg，避免把 pattern 或 paths 拼进 shell 命令。
     const child = spawn(options.rgPath, buildRipgrepArgs(request), {
@@ -189,6 +196,9 @@ function runRipgrepFiles(request: NormalizedGlobRequest, options: {cwd: string; 
     });
 
     const parser = createNullPathParser((filePath) => {
+      if (limitReached) {
+        return;
+      }
       const absolutePath = path.resolve(options.cwd, filePath);
 
       if (isGitPath(absolutePath)) {
@@ -198,17 +208,43 @@ function runRipgrepFiles(request: NormalizedGlobRequest, options: {cwd: string; 
       if (paths.length >= options.maxPaths) {
         // 路径发现不分页；超过上限时终止 rg 并提示模型收窄查询。
         hasMore = true;
+        limitReason = 'count';
         truncated = true;
+        limitReached = true;
+        child.kill('SIGTERM');
+        return;
+      }
+
+      const separatorBytes = paths.length === 0 ? 0 : 1;
+      const pathBytes = Buffer.byteLength(filePath, 'utf8');
+      const noticeBytes = Buffer.byteLength(`\n\n${formatGlobLimitNotice('bytes', options.maxPaths, options.maxOutputBytes)}`, 'utf8');
+      if (outputBytes + separatorBytes + pathBytes + noticeBytes > options.maxOutputBytes) {
+        hasMore = true;
+        limitReason = 'bytes';
+        truncated = true;
+        limitReached = true;
         child.kill('SIGTERM');
         return;
       }
 
       paths.push(filePath);
+      outputBytes += separatorBytes + pathBytes;
+    }, MAX_PARSER_PENDING_BYTES, () => {
+      if (!limitReached) {
+        parserError = `ripgrep NUL path exceeded ${MAX_PARSER_PENDING_BYTES} bytes without a delimiter`;
+        limitReached = true;
+        child.kill('SIGTERM');
+      }
     });
 
     const paths: string[] = [];
-    const stderrChunks: Buffer[] = [];
+    const stderrDecoder = new StringDecoder('utf8');
+    let stderr = '';
     let hasMore = false;
+    let limitReason: 'bytes' | 'count' | undefined;
+    let limitReached = false;
+    let outputBytes = 0;
+    let parserError: string | undefined;
     let truncated = false;
     let settled = false;
 
@@ -217,7 +253,7 @@ function runRipgrepFiles(request: NormalizedGlobRequest, options: {cwd: string; 
     });
 
     child.stderr.on('data', (chunk: Buffer | string) => {
-      stderrChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+      stderr = appendBoundedStderr(stderr, typeof chunk === 'string' ? chunk : stderrDecoder.write(chunk));
     });
 
     child.on('error', (error: NodeJS.ErrnoException) => {
@@ -231,7 +267,7 @@ function runRipgrepFiles(request: NormalizedGlobRequest, options: {cwd: string; 
         exitCode: null,
         hasMore,
         paths,
-        stderr: Buffer.concat(stderrChunks).toString('utf8'),
+        stderr: finishStderr(stderr, stderrDecoder),
         truncated
       });
     });
@@ -245,11 +281,12 @@ function runRipgrepFiles(request: NormalizedGlobRequest, options: {cwd: string; 
       parser.end();
       resolve({
         // 因命中上限主动终止时，保留已收集路径并把本次发现视为成功截断。
-        error: undefined,
+        error: parserError,
         exitCode: signal && hasMore ? 0 : code,
         hasMore,
+        ...(limitReason ? {limitReason} : {}),
         paths,
-        stderr: Buffer.concat(stderrChunks).toString('utf8'),
+        stderr: finishStderr(stderr, stderrDecoder),
         truncated
       });
     });
@@ -274,15 +311,26 @@ function buildRipgrepArgs(request: NormalizedGlobRequest): string[] {
   ];
 }
 
-function createNullPathParser(onPath: (filePath: string) => void): {write: (chunk: Buffer | string) => void; end: () => void} {
+function createNullPathParser(onPath: (filePath: string) => void, maxPendingBytes: number, onOverflow: () => void): {write: (chunk: Buffer | string) => void; end: () => void} {
   const decoder = new StringDecoder('utf8');
   let pending = '';
+  let overflowed = false;
 
   return {
     write(chunk: Buffer | string) {
+      if (overflowed) {
+        return;
+      }
       pending += typeof chunk === 'string' ? chunk : decoder.write(chunk);
       const paths = pending.split('\0');
       pending = paths.pop() || '';
+
+      if (Buffer.byteLength(pending, 'utf8') > maxPendingBytes) {
+        pending = '';
+        overflowed = true;
+        onOverflow();
+        return;
+      }
 
       for (const filePath of paths) {
         if (filePath !== '') {
@@ -291,6 +339,9 @@ function createNullPathParser(onPath: (filePath: string) => void): {write: (chun
       }
     },
     end() {
+      if (overflowed) {
+        return;
+      }
       pending += decoder.end();
 
       if (pending !== '') {
@@ -304,21 +355,36 @@ function containsGitSegment(value: string): boolean {
   return value.split(/[\\/]+/).includes('.git');
 }
 
-function formatGlobSuccess(_request: NormalizedGlobRequest, result: GlobRunResult, maxPaths: number): string {
+function formatGlobSuccess(result: GlobRunResult, maxPaths: number, maxOutputBytes: number): string {
   const lines = result.paths.length === 0 ? ['no files matched'] : [...result.paths];
 
   if (result.hasMore) {
-    lines.push('', 'has_more: true', `More than ${maxPaths} paths found. Narrow pattern or paths.`);
+    lines.push('', ...formatGlobLimitNotice(result.limitReason || 'count', maxPaths, maxOutputBytes).split('\n'));
   }
 
-  return lines.join('\n');
+  return capUtf8Text(lines.join('\n'), maxOutputBytes).text;
 }
 
-function formatGlobFailure(reason: string): string {
-  return [
+function formatGlobLimitNotice(reason: 'bytes' | 'count', maxPaths: number, maxOutputBytes: number): string {
+  const explanation = reason === 'bytes'
+    ? `Output reached the ${maxOutputBytes} UTF-8 byte limit.`
+    : `More than ${maxPaths} paths found (path count limit).`;
+  return ['has_more: true', `${explanation} Narrow pattern or paths.`].join('\n');
+}
+
+function formatGlobFailure(reason: string, maxOutputBytes: number): string {
+  return capUtf8Text([
     'glob failed.',
     `Reason: ${reason}`
-  ].join('\n');
+  ].join('\n'), maxOutputBytes).text;
+}
+
+function appendBoundedStderr(stderr: string, chunk: string): string {
+  return capUtf8Text(stderr + chunk, MAX_STDERR_BYTES).text;
+}
+
+function finishStderr(stderr: string, decoder: StringDecoder): string {
+  return appendBoundedStderr(stderr, decoder.end());
 }
 
 function cleanStderr(stderr: string): string {

@@ -175,6 +175,24 @@ test('convertTranscriptToAnthropicMessages maps records and filters local state'
   );
 });
 
+test('convertTranscriptToAnthropicMessages preserves mixed multi-tool results by call id', () => {
+  const projection = convertTranscriptToAnthropicMessages([
+    {role: 'tool_call', text: '', toolCallId: 'call_1', toolName: 'grep', argumentsText: '{"pattern":"one"}'},
+    {role: 'tool_result', text: 'one.ts', toolCallId: 'call_1', toolName: 'grep', ok: true},
+    {role: 'tool_call', text: '', toolCallId: 'call_2', toolName: 'read_files', argumentsText: '{"files":[{"path":"missing"}]}'},
+    {role: 'tool_result', text: 'not found', toolCallId: 'call_2', toolName: 'read_files', ok: false}
+  ]);
+
+  const results = projection.messages
+    .flatMap((message) => message.content)
+    .filter((block) => block.type === 'tool_result');
+
+  assert.deepEqual(results, [
+    {type: 'tool_result', tool_use_id: 'call_1', content: 'one.ts'},
+    {type: 'tool_result', tool_use_id: 'call_2', content: 'not found', is_error: true}
+  ]);
+});
+
 test('convertTranscriptToAnthropicMessages replays Anthropic thinking blocks before tool use', () => {
   assert.deepEqual(
     convertTranscriptToAnthropicMessages([
@@ -505,6 +523,13 @@ test('createAnthropicAgent aggregates streaming tool_use chunks', async () => {
     },
     { type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '{"command"' } },
     { type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: ':"pwd"}' } },
+    {
+      type: 'content_block_start',
+      index: 2,
+      content_block: { type: 'tool_use', id: 'call_2', name: 'grep', input: {} }
+    },
+    { type: 'content_block_delta', index: 2, delta: { type: 'input_json_delta', partial_json: '{"pattern"' } },
+    { type: 'content_block_delta', index: 2, delta: { type: 'input_json_delta', partial_json: ':"needle"}' } },
     { type: 'message_delta', usage: { input_tokens: 42, cache_read_input_tokens: 1000, output_tokens: 8 } },
     { type: 'message_delta', delta: { stop_reason: 'tool_use' } },
     { type: 'message_stop' }
@@ -518,7 +543,10 @@ test('createAnthropicAgent aggregates streaming tool_use chunks', async () => {
 
   assert.deepEqual(result, {
     draft: 'I will inspect.',
-    toolCalls: [{ callId: 'call_1', toolName: 'run_bash_command', argumentsText: '{"command":"pwd"}' }],
+    toolCalls: [
+      { callId: 'call_1', toolName: 'run_bash_command', argumentsText: '{"command":"pwd"}' },
+      { callId: 'call_2', toolName: 'grep', argumentsText: '{"pattern":"needle"}' }
+    ],
     usage: {
       inputTokens: 1042,
       cacheReadInputTokens: 1000,

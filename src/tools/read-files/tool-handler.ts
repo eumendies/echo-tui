@@ -1,5 +1,5 @@
 import {formatReadFilesFailure, readOneFile} from './readers';
-import {capUtf8Text, normalizePositiveInteger, resolveCwd} from '../tool-handler-utils';
+import {DEFAULT_TOOL_RESULT_MAX_OUTPUT_BYTES, capUtf8Text, normalizePositiveInteger, resolveCwd} from '../tool-handler-utils';
 import {createOffloadedTextPreview} from '../tool-result-offloading';
 import {DEFAULT_APP_SETTINGS} from '../../config/app-settings-config';
 
@@ -14,11 +14,12 @@ const DEFAULT_MAX_FILES = 10;
 const DEFAULT_MAX_FILE_CONTENT_BYTES = 1_000_000;
 const DEFAULT_MAX_DIRECTORY_ENTRIES = 200;
 const DEFAULT_MAX_IMAGE_BYTES = 5_000_000;
+const DEFAULT_MAX_TOTAL_IMAGE_BYTES = 10_000_000;
 const DEFAULT_MAX_SOURCE_IMAGE_BYTES = 50_000_000;
 const DEFAULT_MAX_IMAGE_PIXELS = 80_000_000;
 const DEFAULT_MAX_PDF_BYTES = 10_000_000;
 const DEFAULT_MAX_PDF_OUTPUT_BYTES = 65_536;
-const DEFAULT_MAX_TOTAL_OUTPUT_BYTES = 256_000;
+const DEFAULT_MAX_TOTAL_OUTPUT_BYTES = DEFAULT_TOOL_RESULT_MAX_OUTPUT_BYTES;
 
 type ReadFilesToolHandlerOptions = {
   autoCompressImages?: boolean; // 覆盖超限图片是否自动缩小，缺失时默认开启。
@@ -27,6 +28,7 @@ type ReadFilesToolHandlerOptions = {
   maxFileContentBytes?: number; // 限制单个文本文件本次返回的内容字节数。
   maxDirectoryEntries?: number; // 限制目录读取返回的直接子项数量。
   maxImageBytes?: number; // 限制最终图片附件的二进制字节数。
+  maxTotalImageBytes?: number; // 限制单次调用所有图片附件的二进制字节总和。
   maxImagePixels?: number; // 限制图片解码后的所有帧总像素数。
   maxSourceImageBytes?: number; // 限制进入图片解码器的源文件字节数。
   maxPdfBytes?: number; // 限制允许解析的单个 PDF 源文件字节数。
@@ -45,7 +47,7 @@ function createReadFilesToolHandler(options: ReadFilesToolHandlerOptions = {}): 
   return {
     definition: {
       name: READ_FILES_TOOL_NAME,
-      description: 'Read local files or list the direct children of known directories by path. Directory reads are non-recursive, return entry paths/types and regular-file sizes, and use offset/limit for entry pagination. Text files are returned with line numbers and use offset/limit for line pagination; supported images (PNG, JPEG, GIF, WebP) are attached as model-visible inputs with metadata and oversized images are automatically reduced when enabled; PDFs are returned as extracted text only. Offset/limit are ignored for images and PDFs. Use glob to discover files by path pattern and grep to search text content. PDF reading does not do OCR, page rendering, or PDF/document attachment passing. Unsupported media returns metadata without binary content. Relative paths resolve from the current working directory; absolute paths and .. paths are supported.',
+      description: 'Read local files or list the direct children of known directories by path. Directory reads are non-recursive, return entry paths/types and regular-file sizes, and use offset/limit for entry pagination. Text files are returned with line numbers and use offset/limit for line pagination; supported images (PNG, JPEG, GIF, WebP) are attached as model-visible inputs with metadata and oversized images are automatically reduced when enabled; PDFs are returned as extracted text only. Text results and aggregate image attachments are bounded, so split large batches and use offset/limit to continue. Offset/limit are ignored for images and PDFs. Use glob to discover files by path pattern and grep to search text content. PDF reading does not do OCR, page rendering, or PDF/document attachment passing. Unsupported media returns metadata without binary content. Relative paths resolve from the current working directory; absolute paths and .. paths are supported.',
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -100,46 +102,47 @@ async function readFiles(args: Record<string, unknown>, options: {cwd: string; i
   const normalized = normalizeRequests(args.files, options.limits);
 
   if (!normalized.ok) {
+    const capped = capUtf8Text(formatReadFilesFailure(normalized.reason), options.limits.maxTotalOutputBytes);
+
     return {
       ok: false,
-      text: formatReadFilesFailure(normalized.reason),
-      truncated: false
+      text: capped.text,
+      truncated: capped.truncated
     };
   }
 
   const fileResults: FileReadResult[] = [];
+  let imageAttachmentBytes = 0;
 
   for (const request of normalized.value) {
-    fileResults.push(await readOneFile(request, options));
+    const result = await readOneFile(request, {
+      ...options,
+      remainingImageAttachmentBytes: Math.max(0, options.limits.maxTotalImageBytes - imageAttachmentBytes)
+    });
+    fileResults.push(result);
+    imageAttachmentBytes += (result.attachments || []).reduce((sum, attachment) => sum + attachment.sizeBytes, 0);
   }
 
   const ok = fileResults.every((result) => result.ok);
   const attachments = fileResults.flatMap((result) => result.attachments || []);
   const formatted = fileResults.map((result) => result.text).join('\n\n');
 
-  if (fileResults.some((result) => result.pdfExtracted)) {
-    const preview = createOffloadedTextPreview({
-      maxPreviewBytes: Math.min(options.limits.maxPdfOutputBytes, options.limits.maxTotalOutputBytes),
-      strategy: 'head',
-      store: options.toolResultStore,
-      text: formatted
-    });
-
-    return {
-      ...(attachments.length > 0 ? {attachments} : {}),
-      ok,
-      text: preview.offloadFilePath || !preview.truncated ? preview.text : `${preview.text}\n\nOutput was truncated.`,
-      truncated: preview.truncated || fileResults.some((result) => result.truncated)
-    };
-  }
-
-  const capped = capUtf8Text(formatted, options.limits.maxTotalOutputBytes);
+  const maxOutputBytes = fileResults.some((result) => result.pdfExtracted)
+    ? Math.min(options.limits.maxPdfOutputBytes, options.limits.maxTotalOutputBytes)
+    : options.limits.maxTotalOutputBytes;
+  const preview = createOffloadedTextPreview({
+    maxPreviewBytes: maxOutputBytes,
+    strategy: 'head',
+    store: options.toolResultStore,
+    text: formatted,
+    truncationMessage: 'Output was truncated. Read fewer files per call and use offset/limit to continue text or directory reads.'
+  });
 
   return {
     ...(attachments.length > 0 ? {attachments} : {}),
     ok,
-    text: capped.truncated ? `${capped.text}\n\nOutput was truncated.` : capped.text,
-    truncated: capped.truncated || fileResults.some((result) => result.truncated)
+    text: preview.text,
+    truncated: preview.truncated || fileResults.some((result) => result.truncated)
   };
 }
 
@@ -223,6 +226,7 @@ function normalizeLimits(options: ReadFilesToolHandlerOptions): ReadFilesLimits 
     maxDirectoryEntries: normalizePositiveInteger(options.maxDirectoryEntries, DEFAULT_MAX_DIRECTORY_ENTRIES),
     maxPdfBytes: normalizePositiveInteger(options.maxPdfBytes, DEFAULT_MAX_PDF_BYTES),
     maxPdfOutputBytes: normalizePositiveInteger(options.maxPdfOutputBytes, DEFAULT_MAX_PDF_OUTPUT_BYTES),
+    maxTotalImageBytes: normalizePositiveInteger(options.maxTotalImageBytes, DEFAULT_MAX_TOTAL_IMAGE_BYTES),
     maxTotalOutputBytes: normalizePositiveInteger(options.maxTotalOutputBytes, DEFAULT_MAX_TOTAL_OUTPUT_BYTES)
   };
 }
@@ -243,6 +247,7 @@ export {
   DEFAULT_MAX_FILE_CONTENT_BYTES,
   DEFAULT_MAX_FILES,
   DEFAULT_MAX_IMAGE_BYTES,
+  DEFAULT_MAX_TOTAL_IMAGE_BYTES,
   DEFAULT_MAX_IMAGE_PIXELS,
   DEFAULT_MAX_SOURCE_IMAGE_BYTES,
   DEFAULT_MAX_PDF_BYTES,

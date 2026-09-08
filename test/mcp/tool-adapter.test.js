@@ -37,8 +37,8 @@ test('MCP result formatter handles rich content and errors', () => {
 test('MCP result formatter truncates oversized output', () => {
   const result = formatMcpToolResult({content: [{type: 'text', text: 'x'.repeat(MAX_MCP_TOOL_RESULT_BYTES + 100)}]});
 
-  assert.match(result, /\[MCP tool result truncated: 100 characters omitted\]$/);
-  assert.equal(result.length < MAX_MCP_TOOL_RESULT_BYTES + 100, true);
+  assert.match(result, /MCP tool result truncated/);
+  assert.ok(Buffer.byteLength(result, 'utf8') <= MAX_MCP_TOOL_RESULT_BYTES);
 });
 
 test('MCP formatter offloads text, structured content, and legacy results with a head marker', () => {
@@ -101,8 +101,27 @@ test('MCP offloading failure keeps the bounded legacy truncation without a path'
   const store = createToolResultStore({cwd: process.cwd(), rootDir: blockingFile});
   const result = formatMcpToolResult({content: [{type: 'text', text: 'x'.repeat(MAX_MCP_TOOL_RESULT_BYTES + 1)}]}, store);
 
-  assert.match(result, /\[MCP tool result truncated: 1 characters omitted\]$/);
+  assert.match(result, /MCP tool result truncated/);
   assert.doesNotMatch(result, /\[tool result truncated:/);
+  assert.ok(Buffer.byteLength(result, 'utf8') <= MAX_MCP_TOOL_RESULT_BYTES);
+});
+
+test('MCP result marker and external exceptions share the final UTF-8 budget', async () => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-mcp-marker-budget-'));
+  const store = createToolResultStore({cwd: process.cwd(), rootDir});
+  const preview = formatMcpToolResult({content: [{type: 'text', text: '你'.repeat(MAX_MCP_TOOL_RESULT_BYTES)}]}, store);
+  assert.match(preview, /\[tool result truncated: [^\]]+\]$/);
+  assert.ok(Buffer.byteLength(preview, 'utf8') <= MAX_MCP_TOOL_RESULT_BYTES);
+  assert.doesNotMatch(preview, /\uFFFD/);
+
+  const manager = {
+    listTools() { return [{serverName: 'docs', toolName: 'fail', namespacedName: 'mcp__docs__fail', inputSchema: {type: 'object'}}]; },
+    async callTool() { throw new Error('错'.repeat(MAX_MCP_TOOL_RESULT_BYTES)); }
+  };
+  const result = await createToolExecutor(createMcpToolRegistry(manager)).execute({callId: 'failed', toolName: 'mcp__docs__fail', argumentsText: '{}'});
+  assert.equal(result.ok, false);
+  assert.ok(Buffer.byteLength(result.text, 'utf8') <= MAX_MCP_TOOL_RESULT_BYTES);
+  assert.doesNotMatch(result.text, /\uFFFD/);
 });
 
 test('mergeToolRegistries keeps built-in skill catalog and appends MCP tools', () => {

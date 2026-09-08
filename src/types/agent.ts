@@ -122,6 +122,7 @@ export type AgentSessionInput = {
   compaction?: CompactionState; // 已持久化的上下文压缩状态，缺省时从未压缩状态开始。
   todoState?: TodoState; // 当前会话的待办状态，供 agent 在工具调用间延续。
   sessionJournalPath?: string; // 当前 session 的 transcript journal 文件绝对路径，供压缩后模型按需回读原始记录；headless 无 session 时缺省。
+  sessionId?: string; // 当前会话的稳定身份；sessionHeader 类 provider 用它注入会话亲和 header，fork/resume/clear 后自动换新。
   abortSignal?: AbortSignal; // 取消当前 agent 运行及其可中断下游操作的信号。
   interactionMode?: InteractionMode; // 本回合的 normal、plan 或 shell 等交互模式。
   executionMode?: AgentExecutionMode; // 本回合的 interactive 或 headless 执行与审批策略。
@@ -252,6 +253,7 @@ export type LlmConfig = {
   baseURL?: string;
   codexOAuth?: CodexOAuthRuntimeConfig;
   headers?: Record<string, string>;
+  sessionHeader?: string; // preset 声明的会话亲和 header 名；值由 agent 装配层按会话注入，不属于用户可编辑 headers。
   model: string;
   reasoningEffort?: ReasoningEffort;
   reasoningSummary?: ReasoningSummary;

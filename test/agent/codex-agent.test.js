@@ -140,6 +140,48 @@ test('createCodexAgent resolves OAuth credential for each provider turn', async 
   assert.deepEqual(requests[0].include, ['reasoning.encrypted_content']);
 });
 
+test('createCodexAgent preserves multiple function calls in provider order', async () => {
+  const agent = createCodexAgent(TEST_CONFIG, createToolRegistry(), {
+    createClient() {
+      return {
+        responses: {
+          async create() {
+            return streamFrom([
+              {
+                type: 'response.output_item.done',
+                item: {type: 'function_call', call_id: 'call_1', name: 'run_bash_command', arguments: '{"command":"pwd"}'}
+              },
+              {
+                type: 'response.output_item.done',
+                item: {type: 'function_call', call_id: 'call_2', name: 'grep', arguments: '{"pattern":"needle"}'}
+              },
+              {
+                type: 'response.output_item.done',
+                item: {type: 'function_call', call_id: 'call_1', name: 'run_bash_command', arguments: '{"command":"pwd"}'}
+              },
+              {type: 'response.completed'}
+            ]);
+          }
+        }
+      };
+    },
+    async resolveCodexOAuthCredential() {
+      return {accessToken: 'access-token'};
+    }
+  });
+
+  const result = await agent.runTurn([{role: 'user', text: 'inspect'}], {});
+
+  assert.deepEqual(result, {
+    draft: '',
+    toolCalls: [
+      {callId: 'call_1', toolName: 'run_bash_command', argumentsText: '{"command":"pwd"}'},
+      {callId: 'call_2', toolName: 'grep', argumentsText: '{"pattern":"needle"}'}
+    ],
+    usageInputTokens: undefined
+  });
+});
+
 test('createCodexAgent completes accumulated reasoning only after the shared response boundary', async () => {
   const callbackEvents = [];
   const agent = createCodexAgent(TEST_CONFIG, createEmptyToolRegistry(), {

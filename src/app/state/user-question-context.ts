@@ -3,7 +3,10 @@ import {formatSubagentRawName, isBuiltinSubagentName} from '../../agent/subagent
 import {applyComposerEditEvent, createComposer, getText} from '../../input/composer';
 import {moveWrappedIndex} from '../utils';
 import {
+  MAX_ASK_USER_CUSTOM_ANSWER_BYTES,
   createAskUserQuestionsCancelledResult,
+  createAskUserQuestionsFailureResult,
+  parseAskUserQuestionsArgs,
   createAskUserQuestionsSuccessResult
 } from '../../tools/ask-user-questions-tool-handler';
 
@@ -67,6 +70,11 @@ class UserQuestionContext {
    * 打开用户问题请求；多题请求保留每题独立草稿，等待用户在提交 tab 统一确认。
    */
   request(call: ToolCall, request: AskUserQuestionsRequest, source?: UserQuestionSource): Promise<ToolExecutionResult> {
+    const parsed = parseAskUserQuestionsArgs({questions: request.questions});
+    if (!parsed.ok) {
+      return Promise.resolve(createAskUserQuestionsFailureResult(call, parsed.message));
+    }
+
     if (this.activeRequest) {
       this.resolveActive(createAskUserQuestionsCancelledResult(
         this.activeRequest.call,
@@ -78,9 +86,9 @@ class UserQuestionContext {
       this.activeRequest = {
         call,
         currentTabIndex: 0,
-        drafts: request.questions.map(() => createQuestionDraft()),
+        drafts: parsed.value.questions.map(() => createQuestionDraft()),
         ...(source ? {source} : {}),
-        request,
+        request: parsed.value,
         resolve
       };
       this.onUpdate();
@@ -147,7 +155,9 @@ class UserQuestionContext {
       ],
       focusedIndex: draft.focusedOptionIndex,
       ...(multiSelect ? {selectionMode: 'multiple' as const} : {}),
-      dismissHint: this.createQuestionDismissHint(request, multiSelect)
+      dismissHint: request.validationMessage
+        ? `${this.createQuestionDismissHint(request, multiSelect)} · ${request.validationMessage}`
+        : this.createQuestionDismissHint(request, multiSelect)
     };
   }
 
@@ -323,7 +333,19 @@ class UserQuestionContext {
 
     const draft = request.drafts[request.currentTabIndex];
 
+    if (event.type === INPUT_EVENTS.TEXT) {
+      const before = draft.otherComposer.chars.slice(0, draft.otherComposer.cursor).join('');
+      const after = draft.otherComposer.chars.slice(draft.otherComposer.cursor).join('');
+      const candidate = `${before}${event.value}${after}`;
+      if (Buffer.byteLength(candidate, 'utf8') > MAX_ASK_USER_CUSTOM_ANSWER_BYTES) {
+        request.validationMessage = `Other 最多 ${MAX_ASK_USER_CUSTOM_ANSWER_BYTES} UTF-8 bytes`;
+        this.onUpdate();
+        return;
+      }
+    }
+
     if (applyComposerEditEvent(draft.otherComposer, event)) {
+      request.validationMessage = undefined;
       this.onUpdate();
     }
   }

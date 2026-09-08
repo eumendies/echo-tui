@@ -1,7 +1,13 @@
 import fs from 'node:fs';
 import * as path from 'node:path';
 
-import {isGitPath, resolveCwd} from '../tool-handler-utils';
+import {
+  DEFAULT_TOOL_RESULT_MAX_OUTPUT_BYTES,
+  capUtf8Text,
+  isGitPath,
+  normalizePositiveInteger,
+  resolveCwd
+} from '../tool-handler-utils';
 import {createEditFileDisplayFile} from './display';
 
 import type {EditFileToolExecutionResult, ToolCall, ToolExecutionOptions, ToolHandler} from '../../types/tool';
@@ -9,10 +15,13 @@ import type {ReplacementSpan} from './display';
 
 const EDIT_FILE_TOOL_NAME = 'edit_file';
 const DEFAULT_MAX_FILE_BYTES = 1_000_000;
+const FILE_EDIT_RESULT_MAX_FIELD_BYTES = 24_000;
+const FILE_EDIT_RESULT_TRUNCATION_SUFFIX = '… [truncated]';
 
 type EditFileToolHandlerOptions = {
   cwd?: string | (() => string);
   maxFileBytes?: number;
+  maxOutputBytes?: number; // 最终 provider-visible 摘要的 UTF-8 字节预算，仅供固定安全上限或测试覆盖。
 };
 
 type EditFileArguments = {
@@ -47,6 +56,7 @@ function createEditFileCallLabel(argumentsText: unknown): string {
  */
 function createEditFileToolHandler(options: EditFileToolHandlerOptions = {}): ToolHandler {
   const maxFileBytes = options.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES;
+  const maxOutputBytes = normalizePositiveInteger(options.maxOutputBytes, DEFAULT_TOOL_RESULT_MAX_OUTPUT_BYTES);
   return {
     definition: {
       name: EDIT_FILE_TOOL_NAME,
@@ -64,17 +74,24 @@ function createEditFileToolHandler(options: EditFileToolHandlerOptions = {}): To
       }
     },
     execute(args: Record<string, unknown>, call: ToolCall, executionOptions?: ToolExecutionOptions): EditFileToolExecutionResult {
+      const fail = (reason: string, hint?: string) => createFailure(call, reason, hint, maxOutputBytes);
       const parsed = parseArguments(args);
-      if (!parsed.ok) return createFailure(call, parsed.reason, parsed.hint);
+      if (!parsed.ok) return fail(parsed.reason, parsed.hint);
 
-      const resolved = resolveEditPath(resolveCwd(options.cwd), parsed.value.path);
-      if (!resolved.ok) return createFailure(call, resolved.reason);
+      let resolved: ReturnType<typeof resolveEditPath>;
+      let loaded: ReturnType<typeof readTargetFile>;
+      try {
+        resolved = resolveEditPath(resolveCwd(options.cwd), parsed.value.path);
+        if (!resolved.ok) return fail(resolved.reason);
 
-      const loaded = readTargetFile(parsed.value.path, resolved.value, maxFileBytes);
-      if (!loaded.ok) return createFailure(call, loaded.reason);
+        loaded = readTargetFile(parsed.value.path, resolved.value, maxFileBytes);
+        if (!loaded.ok) return fail(loaded.reason);
+      } catch (error: unknown) {
+        return fail(error instanceof Error && error.message.trim() ? error.message : 'failed to read target file');
+      }
 
       const simulated = simulateEdit(loaded.value, parsed.value);
-      if (!simulated.ok) return createFailure(call, simulated.reason, simulated.hint);
+      if (!simulated.ok) return fail(simulated.reason, simulated.hint);
 
       const display: NonNullable<EditFileToolExecutionResult['details']['display']> = {
         kind: EDIT_FILE_TOOL_NAME,
@@ -86,14 +103,14 @@ function createEditFileToolHandler(options: EditFileToolHandlerOptions = {}): To
         fs.writeFileSync(resolved.value, simulated.value.content, 'utf8');
         executionOptions?.changeRecorder?.captureFileAfter(resolved.value);
       } catch (error: unknown) {
-        return createFailure(call, error instanceof Error && error.message.trim() ? error.message : 'failed to write target file');
+        return fail(error instanceof Error && error.message.trim() ? error.message : 'failed to write target file');
       }
 
       return {
         callId: call.callId,
         toolName: EDIT_FILE_TOOL_NAME,
         ok: true,
-        text: `Replaced ${simulated.value.replacementCount} ${simulated.value.replacementCount === 1 ? 'occurrence' : 'occurrences'} in ${parsed.value.path}.`,
+        text: formatSuccess(simulated.value.replacementCount, parsed.value.path, maxOutputBytes),
         details: {kind: EDIT_FILE_TOOL_NAME, display}
       };
     }
@@ -163,14 +180,41 @@ function simulateEdit(content: string, args: EditFileArguments): {ok: true; valu
   return {ok: true, value: {content: chunks.join(''), replacementCount: selected.length, spans}};
 }
 
-function createFailure(call: ToolCall, reason: string, hint?: string): EditFileToolExecutionResult {
+function formatSuccess(replacementCount: number, filePath: string, maxOutputBytes: number): string {
+  const prefix = `Replaced ${replacementCount} ${replacementCount === 1 ? 'occurrence' : 'occurrences'} in `;
+  const pathBudget = Math.min(FILE_EDIT_RESULT_MAX_FIELD_BYTES, Math.max(0, maxOutputBytes - Buffer.byteLength(`${prefix}.`, 'utf8')));
+  return capUtf8Text(`${prefix}${capFileEditResultField(filePath, pathBudget)}.`, maxOutputBytes).text;
+}
+
+function createFailure(call: ToolCall, reason: string, hint: string | undefined, maxOutputBytes: number): EditFileToolExecutionResult {
+  const staticText = hint ? 'Edit failed.\nReason: \nHint: ' : 'Edit failed.\nReason: ';
+  const availableBytes = Math.max(0, maxOutputBytes - Buffer.byteLength(staticText, 'utf8'));
+  const reasonBudget = hint ? Math.floor(availableBytes / 2) : availableBytes;
+  const boundedReason = capFileEditResultField(reason, Math.min(FILE_EDIT_RESULT_MAX_FIELD_BYTES, reasonBudget));
+  const hintBudget = Math.max(0, availableBytes - Buffer.byteLength(boundedReason, 'utf8'));
   return {
     callId: call.callId,
     toolName: EDIT_FILE_TOOL_NAME,
     ok: false,
-    text: ['Edit failed.', `Reason: ${reason}`, ...(hint ? [`Hint: ${hint}`] : [])].join('\n'),
+    text: capUtf8Text([
+      'Edit failed.',
+      `Reason: ${boundedReason}`,
+      ...(hint ? [`Hint: ${capFileEditResultField(hint, Math.min(FILE_EDIT_RESULT_MAX_FIELD_BYTES, hintBudget))}`] : [])
+    ].join('\n'), maxOutputBytes).text,
     details: {kind: EDIT_FILE_TOOL_NAME}
   };
+}
+
+function capFileEditResultField(value: string, maxBytes: number): string {
+  const normalizedMaxBytes = Math.max(0, maxBytes);
+  if (Buffer.byteLength(value, 'utf8') <= normalizedMaxBytes) {
+    return value;
+  }
+
+  const suffixBytes = Buffer.byteLength(FILE_EDIT_RESULT_TRUNCATION_SUFFIX, 'utf8');
+  return normalizedMaxBytes <= suffixBytes
+    ? capUtf8Text(FILE_EDIT_RESULT_TRUNCATION_SUFFIX, normalizedMaxBytes).text
+    : `${capUtf8Text(value, normalizedMaxBytes - suffixBytes).text}${FILE_EDIT_RESULT_TRUNCATION_SUFFIX}`;
 }
 
 export {

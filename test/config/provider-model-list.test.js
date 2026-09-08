@@ -267,3 +267,21 @@ test('resolveProviderConnection allows Codex OAuth without API key', () => {
   assert.equal('ok' in connection, false);
   assert.equal(connection.listKind, 'codex');
 });
+
+test('resolveProviderConnection injects one-shot session header for OpenCode Go', () => {
+  const connection = resolveProviderConnection(createProvider({
+    preset: 'opencode-go',
+    baseURL: 'https://ignored.example/v1',
+    headers: undefined
+  }));
+
+  assert.equal('ok' in connection, false);
+  assert.equal(connection.listKind, 'openai');
+  assert.equal(connection.baseURL, 'https://opencode.ai/zen/go/v1');
+  assert.equal(connection.headers['User-Agent'], 'echo-tui/1.0');
+  assert.match(connection.headers['x-opencode-session'], /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+
+  const repeated = resolveProviderConnection(createProvider({preset: 'opencode-go', baseURL: undefined, headers: undefined}));
+
+  assert.notEqual(repeated.headers['x-opencode-session'], connection.headers['x-opencode-session']);
+});

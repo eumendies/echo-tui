@@ -147,6 +147,38 @@ test('createAppRenderer includes the pending message card in destructive recover
   assert.equal((plain.match(/queued request/g) || []).length, 1);
 });
 
+test('createAppRenderer reconstructs multiple pending tool calls during destructive recovery', () => {
+  const output = {writes: [], write(chunk) { this.writes.push(String(chunk)); }};
+  const renderer = createAppRenderer(output);
+
+  renderer.renderDestructive({
+    bannerContext: {cwd: '/tmp/echo_tui', nodeVersion: 'v20.0.0', terminalSize: {columns: 80, rows: 16}, mode: 'current terminal'},
+    records: [
+      {role: 'tool_call', text: '', toolCallId: 'done', toolName: 'grep', argumentsText: '{"pattern":"done"}'},
+      {role: 'tool_result', text: 'match', toolCallId: 'done', toolName: 'grep', ok: true, details: {kind: 'generic'}}
+    ],
+    composer: createComposer(''),
+    commandSurface: null,
+    pending: {
+      kind: 'tool_calls',
+      calls: [
+        {callId: 'active-1', toolName: 'grep', argumentsText: '{"pattern":"active"}'},
+        {callId: 'active-2', toolName: 'glob', argumentsText: '{"pattern":"**/*.ts"}'}
+      ]
+    },
+    working: {elapsedMs: 10},
+    statusLine: {...DEFAULT_STATUS_LINE, mode: 'tool', detail: '2 tools'},
+    rows: 16,
+    width: 80
+  });
+
+  const plain = stripAnsi(output.writes.at(-1));
+  assert.ok(plain.includes('Grep'));
+  assert.ok(plain.includes('Glob'));
+  assert.ok(plain.includes('active'));
+  assert.equal((plain.match(/active/gu) || []).length, 1);
+});
+
 test('createAppRenderer computes streaming history and final record suffix internally', () => {
   const output = {writes: [], write(chunk) { this.writes.push(String(chunk)); }};
   const renderer = createAppRenderer(output);

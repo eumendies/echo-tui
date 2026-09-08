@@ -14,7 +14,7 @@ const agentSetupModule = require('../../src/agent/agent-setup');
 const {createUserMemory, updateUserMemory} = require('../../src/memory/memory-store');
 const {addAgentMemory, setAgentMemoryCatalogEnabled, updateAgentMemoryCatalog} = require('../../src/memory/agent-memory-store');
 const {createMcpToolRegistry, mergeToolRegistries} = require('../../src/mcp/tool-adapter');
-const {createDefaultToolRegistry} = require('../../src/tools/tool-registry');
+const {createDefaultToolRegistry, createToolRegistry} = require('../../src/tools/tool-registry');
 const {createToolCallTranscriptRecord, createToolResultTranscriptRecord} = require('../../src/tools/tool-transcript-record');
 
 const TEST_CWD = '/tmp/echo_tui';
@@ -58,6 +58,27 @@ async function withPatchedAgentRuntime(agentOrFactory, callback, config = TEST_C
   } finally {
     agentSetupModule.prepareAgent = originalPrepareAgent;
   }
+}
+
+async function withPatchedAgentRegistry(agent, handlers, callback) {
+  const originalPrepareAgent = agentSetupModule.prepareAgent;
+  agentSetupModule.prepareAgent = () => ({agent, config: TEST_CONFIG, registry: createToolRegistry(handlers)});
+
+  try {
+    return await callback();
+  } finally {
+    agentSetupModule.prepareAgent = originalPrepareAgent;
+  }
+}
+
+function createDeferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return {promise, resolve, reject};
 }
 
 function createRuntimeSnapshot(revision) {
@@ -1752,6 +1773,223 @@ test('createAgentLoopRuntime leaves interactive approval hooks to the app UI bou
     'tool_call_start',
     'tool_call_end'
   ]);
+});
+
+test('createAgentLoopRuntime starts the complete readonly segment and commits results in provider order', async () => {
+  const releases = Array.from({length: 5}, () => createDeferred());
+  const allStarted = createDeferred();
+  const started = [];
+  const completed = [];
+  const callbacks = [];
+  const providerRequests = [];
+  let active = 0;
+  let maxActive = 0;
+  let turnCount = 0;
+  const handler = {
+    definition: {name: 'grep', description: 'controlled grep', parameters: {type: 'object'}},
+    async execute(_args, call) {
+      const index = Number(call.callId.slice('read-'.length)) - 1;
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      started.push(call.callId);
+      if (started.length === 5) allStarted.resolve();
+      await releases[index].promise;
+      completed.push(call.callId);
+      active -= 1;
+      return {callId: call.callId, toolName: call.toolName, ok: true, details: {kind: 'generic'}, text: `result ${call.callId}`};
+    }
+  };
+  const agent = {
+    async runTurn(records) {
+      providerRequests.push(records);
+      turnCount += 1;
+      return turnCount === 1
+        ? {
+            draft: '',
+            toolCalls: Array.from({length: 5}, (_, index) => ({
+              callId: `read-${index + 1}`,
+              toolName: 'grep',
+              argumentsText: JSON.stringify({pattern: String(index + 1)})
+            }))
+          }
+        : {draft: 'done', toolCalls: []};
+    }
+  };
+
+  const runPromise = withPatchedAgentRegistry(agent, [handler], () => {
+    const runAgent = createAgentLoopRuntime(TEST_CWD);
+    return runAgent({records: [{role: 'user', text: 'inspect'}]}, {
+      onToolCall(call) {
+        callbacks.push(['call', call.callId]);
+      },
+      onToolResult(result) {
+        callbacks.push(['result', result.callId]);
+      }
+    });
+  });
+
+  await allStarted.promise;
+  assert.deepEqual(started, ['read-1', 'read-2', 'read-3', 'read-4', 'read-5']);
+  assert.equal(maxActive, 5);
+  releases[4].resolve();
+  releases[3].resolve();
+  releases[2].resolve();
+  releases[1].resolve();
+  releases[0].resolve();
+
+  assert.equal(await runPromise, 'done');
+  assert.equal(maxActive, 5);
+  assert.deepEqual(completed, ['read-5', 'read-4', 'read-3', 'read-2', 'read-1']);
+  assert.deepEqual(callbacks, [
+    ['call', 'read-1'], ['call', 'read-2'], ['call', 'read-3'], ['call', 'read-4'], ['call', 'read-5'],
+    ['result', 'read-1'], ['result', 'read-2'], ['result', 'read-3'], ['result', 'read-4'], ['result', 'read-5']
+  ]);
+  assert.deepEqual(providerRequests[1].filter((record) => record.role === 'tool_call' || record.role === 'tool_result').map((record) => [record.role, record.toolCallId]), [
+    ['tool_call', 'read-1'], ['tool_result', 'read-1'],
+    ['tool_call', 'read-2'], ['tool_result', 'read-2'],
+    ['tool_call', 'read-3'], ['tool_result', 'read-3'],
+    ['tool_call', 'read-4'], ['tool_result', 'read-4'],
+    ['tool_call', 'read-5'], ['tool_result', 'read-5']
+  ]);
+});
+
+test('createAgentLoopRuntime treats exclusive calls as ordered barriers', async () => {
+  const readRelease = createDeferred();
+  const serialRelease = createDeferred();
+  const finalReadRelease = createDeferred();
+  const readsStarted = createDeferred();
+  const serialStarted = createDeferred();
+  const finalReadStarted = createDeferred();
+  const events = [];
+  let firstReadCount = 0;
+  let turnCount = 0;
+  const createHandler = (name) => ({
+    definition: {name, description: name, parameters: {type: 'object'}},
+    async execute(_args, call) {
+      events.push(`start:${call.callId}`);
+      if (call.callId === 'read-1' || call.callId === 'read-2') {
+        firstReadCount += 1;
+        if (firstReadCount === 2) readsStarted.resolve();
+        await readRelease.promise;
+      } else if (call.callId === 'write-1') {
+        serialStarted.resolve();
+        await serialRelease.promise;
+      } else {
+        finalReadStarted.resolve();
+        await finalReadRelease.promise;
+      }
+      events.push(`end:${call.callId}`);
+      return {callId: call.callId, toolName: call.toolName, ok: true, details: {kind: 'generic'}, text: 'ok'};
+    }
+  });
+  const agent = {
+    async runTurn() {
+      turnCount += 1;
+      return turnCount === 1
+        ? {draft: '', toolCalls: [
+            {callId: 'read-1', toolName: 'grep', argumentsText: '{}'},
+            {callId: 'read-2', toolName: 'grep', argumentsText: '{}'},
+            {callId: 'write-1', toolName: 'serial_tool', argumentsText: '{}'},
+            {callId: 'read-3', toolName: 'grep', argumentsText: '{}'}
+          ]}
+        : {draft: 'done', toolCalls: []};
+    }
+  };
+
+  const runPromise = withPatchedAgentRegistry(agent, [createHandler('grep'), createHandler('serial_tool')], () => {
+    return createAgentLoopRuntime(TEST_CWD)({records: [{role: 'user', text: 'ordered'}]});
+  });
+
+  await readsStarted.promise;
+  assert.equal(events.includes('start:write-1'), false);
+  readRelease.resolve();
+  await serialStarted.promise;
+  assert.equal(events.includes('start:read-3'), false);
+  serialRelease.resolve();
+  await finalReadStarted.promise;
+  finalReadRelease.resolve();
+  assert.equal(await runPromise, 'done');
+  assert.ok(events.indexOf('end:read-1') < events.indexOf('start:write-1'));
+  assert.ok(events.indexOf('end:read-2') < events.indexOf('start:write-1'));
+  assert.ok(events.indexOf('end:write-1') < events.indexOf('start:read-3'));
+});
+
+test('createAgentLoopRuntime keeps other readonly calls running when one handler fails', async () => {
+  const results = [];
+  let turnCount = 0;
+  const handler = {
+    definition: {name: 'grep', description: 'controlled grep', parameters: {type: 'object'}},
+    async execute(_args, call) {
+      if (call.callId === 'fail') throw new Error('boom');
+      return {callId: call.callId, toolName: call.toolName, ok: true, details: {kind: 'generic'}, text: 'ok'};
+    }
+  };
+  const agent = {
+    async runTurn() {
+      turnCount += 1;
+      return turnCount === 1
+        ? {draft: '', toolCalls: [
+            {callId: 'fail', toolName: 'grep', argumentsText: '{}'},
+            {callId: 'pass', toolName: 'grep', argumentsText: '{}'}
+          ]}
+        : {draft: 'done', toolCalls: []};
+    }
+  };
+
+  const text = await withPatchedAgentRegistry(agent, [handler], () => {
+    return createAgentLoopRuntime(TEST_CWD)({records: [{role: 'user', text: 'inspect'}]}, {
+      onToolResult(result) {
+        results.push(result);
+      }
+    });
+  });
+
+  assert.equal(text, 'done');
+  assert.deepEqual(results.map((result) => [result.callId, result.ok]), [['fail', false], ['pass', true]]);
+  assert.match(results[0].text, /boom/);
+});
+
+test('createAgentLoopRuntime aborts all running readonly calls without publishing results', async () => {
+  const controller = new AbortController();
+  const bothStarted = createDeferred();
+  const resultCallbacks = [];
+  let startedCount = 0;
+  const handler = {
+    definition: {name: 'grep', description: 'controlled grep', parameters: {type: 'object'}},
+    execute(_args, call, options) {
+      startedCount += 1;
+      if (startedCount === 2) bothStarted.resolve();
+      return new Promise((_resolve, reject) => {
+        const abort = () => reject(new Error(`aborted ${call.callId}`));
+        if (options.abortSignal?.aborted) abort();
+        else options.abortSignal?.addEventListener('abort', abort, {once: true});
+      });
+    }
+  };
+  const agent = {
+    async runTurn() {
+      return {draft: '', toolCalls: [
+        {callId: 'read-1', toolName: 'grep', argumentsText: '{}'},
+        {callId: 'read-2', toolName: 'grep', argumentsText: '{}'}
+      ]};
+    }
+  };
+
+  const runPromise = withPatchedAgentRegistry(agent, [handler], () => {
+    return createAgentLoopRuntime(TEST_CWD)({
+      records: [{role: 'user', text: 'inspect'}],
+      abortSignal: controller.signal
+    }, {
+      onToolResult(result) {
+        resultCallbacks.push(result);
+      }
+    });
+  });
+
+  await bothStarted.promise;
+  controller.abort();
+  await assert.rejects(runPromise, (error) => error?.name === 'AgentAbortError');
+  assert.deepEqual(resultCallbacks, []);
 });
 
 test('createAgentLoopRuntime omits approval hooks for cached session decisions', async () => {

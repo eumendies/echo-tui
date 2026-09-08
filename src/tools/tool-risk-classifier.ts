@@ -25,13 +25,13 @@ const BASH_RISK_PATTERNS: RegExp[] = [
 ];
 const PLAN_WRITE_TOOL_REJECTION = 'In plan mode, tools that modify files or system state are not available. To make changes, exit plan mode first.';
 const READONLY_TOOL_REJECTION = 'This BTW conversation only allows read-only tools. The requested tool was not executed.';
-const READONLY_TOOL_NAMES = new Set(['read_files', 'glob', 'grep', 'web_fetch', 'web_search', 'use_skill']);
+const READONLY_OBSERVATION_TOOL_NAMES: ReadonlySet<string> = new Set(['read_files', 'glob', 'grep', 'web_fetch', 'web_search', 'use_skill']);
 
 /**
  * 对 BTW 等单次 readonly run 做 fail-closed 分类；工具 schema 保持不变，执行边界在本地强制。
  */
 function classifyReadonlyToolCall(call: ToolCall): ToolRiskAssessment {
-  if (isTodoToolName(call.toolName) || READONLY_TOOL_NAMES.has(call.toolName)) {
+  if (isTodoToolName(call.toolName) || READONLY_OBSERVATION_TOOL_NAMES.has(call.toolName)) {
     return {risk: 'safe'};
   }
 
@@ -48,7 +48,7 @@ function classifyReadonlyToolCall(call: ToolCall): ToolRiskAssessment {
 /** 子 Agent 仅让严格白名单 Bash 直通；其余 Bash 固定要求人工单次审批。 */
 function classifySubagentToolCall(call: ToolCall, metadata: SubagentRunMetadata): ToolRiskAssessment {
   if (call.toolName !== RUN_BASH_COMMAND_TOOL_NAME) {
-    return READONLY_TOOL_NAMES.has(call.toolName)
+    return READONLY_OBSERVATION_TOOL_NAMES.has(call.toolName)
       ? {risk: 'safe'}
       : {risk: 'rejected', reason: 'readonly_policy', message: READONLY_TOOL_REJECTION};
   }
@@ -166,6 +166,7 @@ function hasBashRisk(command: string): boolean {
 }
 
 export {
+  READONLY_OBSERVATION_TOOL_NAMES,
   READONLY_TOOL_REJECTION,
   classifyReadonlyToolCall,
   classifySubagentToolCall,

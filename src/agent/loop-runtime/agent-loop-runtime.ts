@@ -5,6 +5,7 @@ import {
 } from '../../tools/ask-user-questions-tool-handler';
 import {classifyReadonlyToolCall, classifyToolCallRisk} from '../../tools/tool-risk-classifier';
 import {createToolExecutor} from '../../tools/tool-executor';
+import {classifyToolCallConcurrency} from '../../tools/tool-concurrency-classifier';
 import {createToolCallTranscriptRecord, createToolResultTranscriptRecord} from '../../tools/tool-transcript-record';
 import {executeTodoToolCall, isTodoToolName} from '../../tools/todo-tool-handler';
 import {getMcpToolApproval} from '../../mcp/manager';
@@ -144,6 +145,27 @@ async function executeToolCall(toolCall: ToolCall, state: AgentLoopRunState, cal
 }
 
 /**
+ * 同时执行整个连续只读段；结果槽位保持 provider 原始顺序，实际完成顺序不影响提交。
+ */
+async function executeConcurrentReadonlyCalls(toolCalls: ToolCall[], state: AgentLoopRunState, callbacks: AgentCallbacks): Promise<ToolExecutionResult[]> {
+  throwIfAborted(state.abortSignal);
+  const settled = await Promise.allSettled(toolCalls.map(async (toolCall) => {
+    state.observation.toolStarted({scope: state.observationScope, call: toolCall});
+    const result = await executeToolCall(toolCall, state, callbacks);
+    state.observation.toolCompleted({scope: state.observationScope, result});
+    return result;
+  }));
+
+  throwIfAborted(state.abortSignal);
+  const rejected = settled.find((entry): entry is PromiseRejectedResult => entry.status === 'rejected');
+  if (rejected) {
+    throw rejected.reason;
+  }
+
+  return settled.map((entry) => (entry as PromiseFulfilledResult<ToolExecutionResult>).value);
+}
+
+/**
  * 根据 execution mode 决定是否等待 UI；headless 策略永远不会触碰交互 callback。
  */
 async function resolveToolApprovalDecision(toolCall: ToolCall, approval: ToolApprovalRequest | undefined, state: AgentLoopRunState, callbacks: AgentCallbacks): Promise<ToolApprovalResolution> {
@@ -207,14 +229,15 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
   /**
    * 初始化单次调用的 loop 状态；provider、配置和 registry 由统一装配入口提供。
    */
-  function initializeRunState(interactionMode: InteractionMode, abortSignal: AbortSignal | undefined, executionMode: AgentExecutionMode, compactionThresholdRatio: number, skillCatalogContextRatio: number, agentInstructionFileName: AgentInstructionFileName, toolPolicy: AgentToolPolicy, conversationKind: AgentConversationKind, configSnapshot: AgentUserConfigSnapshot, modelProfileId?: string, reasoningEffortOverride?: LlmConfig['reasoningEffort'], subagentPort?: SubagentToolPort): AgentLoopRunState {
+  function initializeRunState(interactionMode: InteractionMode, abortSignal: AbortSignal | undefined, executionMode: AgentExecutionMode, compactionThresholdRatio: number, skillCatalogContextRatio: number, agentInstructionFileName: AgentInstructionFileName, toolPolicy: AgentToolPolicy, conversationKind: AgentConversationKind, configSnapshot: AgentUserConfigSnapshot, modelProfileId?: string, reasoningEffortOverride?: LlmConfig['reasoningEffort'], subagentPort?: SubagentToolPort, sessionId?: string): AgentLoopRunState {
     const {agent, config, registry} = prepareAgent({
       configSnapshot,
       cwd,
       mcpManager,
       modelProfileId,
       reasoningEffortOverride,
-      ...(subagentPort ? {subagentPort} : {})
+      ...(subagentPort ? {subagentPort} : {}),
+      ...(sessionId ? {sessionId} : {})
     });
     const contextWindow = resolveContextWindow(config);
     const skillCatalogProjection = createSkillCatalogPromptProjection(registry.listSkillCatalog?.() || [], contextWindow, skillCatalogContextRatio);
@@ -306,12 +329,13 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
           modelProfileId: session.modelProfileId,
           observation,
           publishRecords: publishSubagentRecords,
-          reasoningEffortOverride: session.reasoningEffortOverride
+          reasoningEffortOverride: session.reasoningEffortOverride,
+          sessionId: session.sessionId
         })
       : undefined;
 
     try {
-      state = initializeRunState(interactionMode, abortSignal, executionMode, compactionThresholdRatio, skillCatalogContextRatio, appSettings.agentInstructionFileName, toolPolicy, conversationKind, configSnapshot, session.modelProfileId, session.reasoningEffortOverride, subagentPort);
+      state = initializeRunState(interactionMode, abortSignal, executionMode, compactionThresholdRatio, skillCatalogContextRatio, appSettings.agentInstructionFileName, toolPolicy, conversationKind, configSnapshot, session.modelProfileId, session.reasoningEffortOverride, subagentPort, session.sessionId);
     } catch (error: unknown) {
       throw normalizeError(error, '无法加载 LLM 配置');
     }
@@ -470,8 +494,32 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
         recordRegion.push({role: 'assistant', text: draft});
       }
 
-      for (const toolCall of toolCalls) {
+      for (let toolIndex = 0; toolIndex < toolCalls.length;) {
         throwIfAborted(abortSignal);
+        const toolCall = toolCalls[toolIndex];
+
+        if (classifyToolCallConcurrency(toolCall) === 'parallel_read') {
+          const readonlyCalls: ToolCall[] = [];
+          while (toolIndex < toolCalls.length && classifyToolCallConcurrency(toolCalls[toolIndex]) === 'parallel_read') {
+            readonlyCalls.push(toolCalls[toolIndex]);
+            toolIndex += 1;
+          }
+
+          for (const readonlyCall of readonlyCalls) {
+            callbacks.onToolCall?.(readonlyCall);
+          }
+          const results = await executeConcurrentReadonlyCalls(readonlyCalls, state, callbacks);
+          throwIfAborted(abortSignal);
+
+          for (let resultIndex = 0; resultIndex < readonlyCalls.length; resultIndex += 1) {
+            const readonlyCall = readonlyCalls[resultIndex];
+            const result = results[resultIndex];
+            recordRegion.push(createToolCallTranscriptRecord(readonlyCall), createToolResultTranscriptRecord(result));
+            callbacks.onToolResult?.(result);
+          }
+          continue;
+        }
+
         callbacks.onToolCall?.(toolCall);
         const callRecord = createToolCallTranscriptRecord(toolCall);
         const commitMode = state.registry.getHandler(toolCall.toolName)?.transcriptCommitMode || 'call_before_execute';
@@ -490,6 +538,7 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
         }
         callbacks.onToolResult?.(result);
         state.observation.toolCompleted({scope: state.observationScope, result});
+        toolIndex += 1;
       }
 
       throwIfAborted(abortSignal);

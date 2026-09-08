@@ -55,9 +55,9 @@ test('tool result store writes atomically under the user-level cwd project parti
 test('head and tail previews preserve UTF-8 boundaries and use one positional marker', () => {
   const rootDir = createTempRoot();
   const store = createToolResultStore({cwd: '/tmp/echo-preview', rootDir});
-  const text = `HEAD-${'你'.repeat(10)}-TAIL`;
-  const head = createOffloadedTextPreview({maxPreviewBytes: 11, strategy: 'head', store, text});
-  const tail = createOffloadedTextPreview({maxPreviewBytes: 11, strategy: 'tail', store, text});
+  const text = `HEAD-${'你'.repeat(200)}-TAIL`;
+  const head = createOffloadedTextPreview({maxPreviewBytes: 256, strategy: 'head', store, text});
+  const tail = createOffloadedTextPreview({maxPreviewBytes: 256, strategy: 'tail', store, text});
   const headPath = extractMarkerPath(head.text);
   const tailPath = extractMarkerPath(tail.text);
 
@@ -71,6 +71,24 @@ test('head and tail previews preserve UTF-8 boundaries and use one positional ma
   assert.equal(fs.readFileSync(tailPath, 'utf8'), text);
   assert.equal((head.text.match(/tool result truncated/g) || []).length, 1);
   assert.equal((tail.text.match(/tool result truncated/g) || []).length, 1);
+  assert.ok(Buffer.byteLength(head.text, 'utf8') <= 256);
+  assert.ok(Buffer.byteLength(tail.text, 'utf8') <= 256);
+});
+
+test('offloaded previews keep tiny budgets bounded when an artifact marker cannot fit', () => {
+  const rootDir = createTempRoot();
+  const store = createToolResultStore({cwd: '/tmp/echo-tiny-preview', rootDir});
+  const result = createOffloadedTextPreview({
+    maxPreviewBytes: 8,
+    strategy: 'head',
+    store,
+    text: '你'.repeat(20),
+    truncationMessage: 'truncated'
+  });
+
+  assert.equal(result.offloadFilePath, undefined);
+  assert.equal(Buffer.byteLength(result.text, 'utf8'), 8);
+  assert.doesNotMatch(result.text, /\uFFFD/);
 });
 
 test('short previews do not create artifacts', () => {

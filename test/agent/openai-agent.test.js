@@ -266,6 +266,7 @@ test('createRequest sends tools only when registry is non-empty', () => {
     {
       input: [{ role: 'user', content: 'hello' }],
       model: 'test-model',
+      parallel_tool_calls: true,
       prompt_cache_key: createPromptCacheKey(records, TEST_CONFIG, toolRegistry.listDefinitions()),
       stream: true,
       tools: [
@@ -783,6 +784,21 @@ test('convertTranscriptToOpenAiInput maps complete tool records', () => {
         toolName: 'run_bash_command',
         ok: true,
         details: {kind: 'bash'}
+      },
+      {
+        role: 'tool_call',
+        text: '',
+        toolCallId: 'call_2',
+        toolName: 'read_files',
+        argumentsText: '{"files":[{"path":"missing"}]}'
+      },
+      {
+        role: 'tool_result',
+        text: 'not found',
+        toolCallId: 'call_2',
+        toolName: 'read_files',
+        ok: false,
+        details: {kind: 'read_files', truncated: false}
       }
     ]),
     [
@@ -797,6 +813,17 @@ test('convertTranscriptToOpenAiInput maps complete tool records', () => {
         type: 'function_call_output',
         call_id: 'call_1',
         output: 'exit_code: 0'
+      },
+      {
+        type: 'function_call',
+        call_id: 'call_2',
+        name: 'read_files',
+        arguments: '{"files":[{"path":"missing"}]}'
+      },
+      {
+        type: 'function_call_output',
+        call_id: 'call_2',
+        output: 'not found'
       }
     ]
   );
@@ -982,6 +1009,24 @@ test('OpenAI provider agent reports function tool calls without executing tools'
               arguments: '{"command":"pwd"}'
             }
           },
+          {
+            type: 'response.output_item.done',
+            item: {
+              type: 'function_call',
+              call_id: 'call_2',
+              name: 'grep',
+              arguments: '{"pattern":"needle"}'
+            }
+          },
+          {
+            type: 'response.output_item.done',
+            item: {
+              type: 'function_call',
+              call_id: 'call_1',
+              name: 'run_bash_command',
+              arguments: '{"command":"pwd"}'
+            }
+          },
           { type: 'response.completed' }
         ]);
       }
@@ -997,12 +1042,16 @@ test('OpenAI provider agent reports function tool calls without executing tools'
 
   assert.deepEqual(result, {
     draft: 'I will inspect.',
-    toolCalls: [{ callId: 'call_1', toolName: 'run_bash_command', argumentsText: '{"command":"pwd"}' }],
+    toolCalls: [
+      { callId: 'call_1', toolName: 'run_bash_command', argumentsText: '{"command":"pwd"}' },
+      { callId: 'call_2', toolName: 'grep', argumentsText: '{"pattern":"needle"}' }
+    ],
     usageInputTokens: undefined
   });
   assert.deepEqual(requests[0], {
     input: [{ role: 'user', content: 'where am I?' }],
     model: 'test-model',
+    parallel_tool_calls: true,
     prompt_cache_key: createPromptCacheKey([{ role: 'user', text: 'where am I?' }], TEST_CONFIG, toolRegistry.listDefinitions()),
     stream: true,
     tools: [

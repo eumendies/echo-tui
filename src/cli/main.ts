@@ -1,7 +1,5 @@
-import fs from 'node:fs';
-import path from 'node:path';
-
 import { run } from '../app/main';
+import {readPackageVersion} from '../config/package-version';
 import {bootstrapEchoUserSetup} from '../config/user-setup-bootstrap';
 import {runOnce} from './one-shot';
 import type {RunOnceOptions} from './one-shot';
@@ -140,20 +138,9 @@ async function runCli(options: RunCliOptions = {}): Promise<number> {
   }
 }
 
-function readPackageVersion(): string {
-  try {
-    const packageJsonPath = path.join(__dirname, '..', '..', '..', 'package.json');
-    const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8')) as {version?: unknown};
-    return typeof packageJson.version === 'string' ? packageJson.version : '0.0.0';
-  } catch {
-    return '0.0.0';
-  }
-}
-
 export {
   HELP_TEXT,
   parseCliArgs,
-  readPackageVersion,
   runCli
 };
 

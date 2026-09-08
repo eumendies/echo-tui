@@ -1,6 +1,7 @@
 import {DEFAULT_TUI_THEME, type TuiTheme} from '../config/theme-config';
 import {formatSubagentTerminalIdentity} from '../agent/subagent/name';
 import {blockText} from './colors';
+import {stripAnsi} from './layout';
 import {
   ASK_USER_QUESTIONS_TOOL_NAME,
   renderAskUserQuestionsToolCallLines,
@@ -51,6 +52,7 @@ import type {ToolRecordRenderOptions} from './tool-message-renderers/shared';
 
 const BASH_TOOL_NAME = 'run_bash_command';
 const RUN_SUBAGENT_TOOL_NAME = 'run_subagent';
+const COMPACT_PREVIEW_SOURCE_WIDTH = 4096;
 type ToolTranscriptRecord = ToolCallTranscriptRecord | ToolResultTranscriptRecord;
 
 /**
@@ -168,6 +170,27 @@ export function renderToolCallPreviewLines(toolName: string, argumentsText: stri
     toolName,
     argumentsText
   }, width, {}, theme);
+}
+
+/**
+ * 将现有专属 pending 投影压缩为单行摘要；只移除重复 marker 和运行状态，不重新解释工具参数。
+ */
+export function createCompactToolCallPreviewText(toolName: string, argumentsText: string, theme: TuiTheme = DEFAULT_TUI_THEME): string {
+  const lines = renderToolCallPreviewLines(toolName, argumentsText, COMPACT_PREVIEW_SOURCE_WIDTH, theme)
+    .map((line, index) => normalizeCompactPreviewSegment(stripAnsi(line), index === 0))
+    .filter(Boolean);
+
+  return lines.length > 0 ? lines.join(' · ') : formatToolDisplayName(toolName);
+}
+
+/** 清理完整工具预览中的结构前缀和重复运行状态，供 compact 分组列表复用。 */
+function normalizeCompactPreviewSegment(line: string, first: boolean): string {
+  const withoutPrefix = first
+    ? line.replace(/^◆\s*(?:▌\s*)?/u, '')
+    : line.replace(/^\s*(?:[▌│]\s*)?/u, '');
+  const normalized = withoutPrefix.replace(/\s+/gu, ' ').trim();
+
+  return first ? normalized.replace(/ · (?:fetching|running|searching)$/u, '') : normalized;
 }
 
 /**

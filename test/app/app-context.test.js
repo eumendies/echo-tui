@@ -995,11 +995,51 @@ test('AppContext status line shows Esc interrupt throughout an active assistant 
   context.turnContext.setStreamingPending('draft');
   assert.equal(context.createRenderState().statusLine.keyHint, 'Esc 中断');
 
-  context.turnContext.setToolCallPending({id: 'call-1', toolName: 'run_bash_command', argumentsText: '{"command":"pwd"}'});
+  context.turnContext.setToolCallPending({callId: 'call-1', toolName: 'run_bash_command', argumentsText: '{"command":"pwd"}'});
   assert.equal(context.createRenderState().statusLine.keyHint, 'Esc 中断');
 
   context.turnContext.finishAssistantTurn('done');
   assert.equal(context.createRenderState().statusLine.keyHint, undefined);
+});
+
+test('TurnContext keeps multiple pending tool calls ordered and matches results by call id', () => {
+  const context = createContext();
+  const first = {callId: 'call-1', toolName: 'grep', argumentsText: '{"pattern":"one"}'};
+  const second = {callId: 'call-2', toolName: 'glob', argumentsText: '{"pattern":"two"}'};
+
+  context.beginUserTurn('inspect');
+  context.beginAssistantTurn();
+  context.turnContext.setToolCallPending(first);
+  assert.deepEqual(context.turnContext.getPending(), {
+    kind: 'tool_call',
+    toolName: first.toolName,
+    argumentsText: first.argumentsText
+  });
+
+  context.turnContext.setToolCallPending(second);
+  assert.deepEqual(context.turnContext.getPending(), {
+    kind: 'tool_calls',
+    calls: [first, second]
+  });
+  const secondRecords = context.turnContext.appendPendingToolResult({
+    callId: 'call-2', toolName: 'glob', ok: true, text: 'two', details: {kind: 'generic'}
+  });
+  assert.deepEqual(secondRecords.map((record) => [record.role, record.toolCallId]), [
+    ['tool_call', 'call-2'], ['tool_result', 'call-2']
+  ]);
+  assert.deepEqual(context.turnContext.getPending(), {
+    kind: 'tool_call',
+    toolName: first.toolName,
+    argumentsText: first.argumentsText
+  });
+
+  const firstRecords = context.turnContext.appendPendingToolResult({
+    callId: 'call-1', toolName: 'grep', ok: false, text: 'failed', details: {kind: 'generic'}
+  });
+  assert.deepEqual(firstRecords.map((record) => [record.role, record.toolCallId]), [
+    ['tool_call', 'call-1'], ['tool_result', 'call-1']
+  ]);
+  assert.equal(context.turnContext.getPending(), null);
 });
 
 test('AppContext does not advertise Esc interrupt for manual compaction without an active assistant turn', () => {

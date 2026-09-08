@@ -606,6 +606,7 @@ class AppContext {
   getAgentSession(skillOverride: AgentModelSelectionOverride = {}, snapshot?: AgentUserConfigSnapshot): AgentSessionInput {
     const modelSelection = this.modelContext.resolveAgentSelection(skillOverride);
     const sessionJournalPath = this.transcriptContext.getCurrentSessionJournalPath();
+    const sessionId = this.transcriptContext.getCurrentSessionId();
     const capturedSnapshot = snapshot || this.userConfigContext.capture();
     const appSettings = capturedSnapshot.getAppSettings();
 
@@ -618,6 +619,7 @@ class AppContext {
       skillCatalogContextRatio: appSettings.skillCatalogContextRatio,
       userConfigSnapshot: capturedSnapshot,
       ...(sessionJournalPath ? {sessionJournalPath} : {}),
+      ...(sessionId ? {sessionId} : {}),
       ...(modelSelection || {})
     };
   }

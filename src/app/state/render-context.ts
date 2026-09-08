@@ -1,6 +1,7 @@
 import path from 'node:path';
 
 import {formatSubagentRawName} from '../../agent/subagent/name';
+import {readPackageVersion} from '../../config/package-version';
 import {DEFAULT_RENDER_PREFERENCES} from '../../config/app-settings-config';
 import type {TerminalController} from '../../types/app';
 import type {CommandSurface} from '../../types/command';
@@ -64,11 +65,13 @@ class RenderContext {
 
   /**
    * 生成 banner 所需的运行时上下文，避免渲染层直接依赖 process 全局状态。
+   * Node 版本由外部注入；应用版本号是 package.json 静态元数据，helper 内部有缓存。
    */
   createBannerContext(): BannerContext {
     return {
       cwd: this.getCurrentCwd(),
       nodeVersion: this.getNodeVersion(),
+      appVersion: readPackageVersion(),
       terminalSize: this.terminal.getSize(),
       mode: 'current terminal'
     };
@@ -126,6 +129,8 @@ class RenderContext {
       ...(contextUsage ? {contextUsage} : {}),
       detail: pending?.kind === 'tool_call'
         ? pending.toolName
+        : pending?.kind === 'tool_calls'
+          ? `${pending.calls.length} tools`
         : pending?.kind === 'subagent'
           ? `${formatSubagentRawName(pending.agentName)}${pending.toolName ? ` · ${pending.toolName}` : ''}`
           : undefined,
@@ -174,7 +179,7 @@ function resolveStatusLineMode(pending: PendingState | null, slashSuggestions: S
     return 'streaming';
   }
 
-  if (pending?.kind === 'tool_call') {
+  if (pending?.kind === 'tool_call' || pending?.kind === 'tool_calls') {
     return 'tool';
   }
 
