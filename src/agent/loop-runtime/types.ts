@@ -32,6 +32,7 @@ type SubagentLoopInput = {
   metadata: SubagentRunMetadata; // 当前子运行的稳定身份和父工具关联。
   modelProfileId?: string; // 父 run 已解析选择的模型 profile。
   reasoningEffortOverride?: ReasoningEffort; // 父 run 本轮固定的推理强度覆盖。
+  sessionId?: string; // 父会话稳定身份；子运行继承它以保持 provider 会话亲和。
   task: string; // 唯一进入子 transcript 的委派任务。
 };
 

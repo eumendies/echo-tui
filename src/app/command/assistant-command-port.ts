@@ -42,7 +42,8 @@ function createAssistantCommandPort(options: AssistantCommandPortOptions): Comma
         configSnapshot: session.userConfigSnapshot,
         cwd: () => appContext.getCurrentCwd(),
         modelProfileId: session.modelProfileId,
-        reasoningEffortOverride: session.reasoningEffortOverride
+        reasoningEffortOverride: session.reasoningEffortOverride,
+        ...(session.sessionId ? {sessionId: session.sessionId} : {})
       });
 
       return runCompaction({
