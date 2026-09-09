@@ -20,7 +20,7 @@ import {applyLifecycleHookConfigDraft, parseLifecycleHookConfig, parseLifecycleH
 import type {AppSettings} from './app-settings-config';
 import type {JsonConfigFileOptions, JsonConfigObject, JsonConfigFileErrorKind} from './json-config-file';
 import type {LlmModelConfigInfo, ParsedLlmConfiguration, ResolveLlmConfigOptions} from './llm-config';
-import type {LlmConfig, ToolRuntimeConfig} from '../types/agent';
+import type {LlmConfig, SandboxToolConfig, ToolRuntimeConfig} from '../types/agent';
 import type {LifecycleHookConfig, LifecycleHookConfigDraft} from '../types/hooks';
 import type {LlmConfigDraft} from '../types/command';
 import type {McpConfig, McpConfigDraft, McpEnabledStateDraft} from '../types/mcp';
@@ -125,6 +125,11 @@ class UserConfigSnapshot {
   getLlmModelConfigInfo(): LlmModelConfigInfo {
     this.modelInfoCache ||= freezeValue(createLlmModelConfigInfo(this.getParsedLlm()));
     return this.modelInfoCache;
+  }
+
+  /** 返回 bash 工具沙箱策略;供 /status 等只读展示使用,不依赖 provider 解析。 */
+  getSandboxToolConfig(): SandboxToolConfig {
+    return this.getToolRuntimeConfig().sandbox;
   }
 
   /** 解析宽松 per-run profile/effort 覆盖，并复用当前 revision 的 provider 图。 */

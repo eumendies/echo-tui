@@ -196,7 +196,7 @@ function createUserConfigSnapshot(revision = 1) {
     apiKey: '',
     model: `fake-${revision}`,
     contextWindow: 128000,
-    tools: {bash: {timeoutMs: null, maxOutputBytes: 65536}, autoCompressImages: true, fileEditMode: 'apply_patch'}
+    tools: {bash: {timeoutMs: null, maxOutputBytes: 65536}, autoCompressImages: true, fileEditMode: 'apply_patch', sandbox: {mode: 'off', network: false, extraWritablePaths: []}}
   };
   return {
     revision,

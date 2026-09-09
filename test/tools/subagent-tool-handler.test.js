@@ -17,7 +17,8 @@ const TEST_CONFIG = {
   model: 'fake',
   contextWindow: 128000,
   tools: {
-    bash: {timeoutMs: 1000, maxOutputBytes: 1024}
+    bash: {timeoutMs: 1000, maxOutputBytes: 1024},
+    sandbox: {mode: 'off', network: false, extraWritablePaths: []}
   }
 };
 

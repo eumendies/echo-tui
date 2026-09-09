@@ -4,6 +4,7 @@ import {StringDecoder} from 'node:string_decoder';
 
 import {normalizePositiveInteger} from './tool-handler-utils';
 import type {ToolResultStore, ToolResultStreamWriter} from './tool-result-offloading';
+import type {SandboxRuntimeContext} from '../sandbox/types';
 
 const DEFAULT_BASH_MAX_OUTPUT_BYTES = 65_536;
 const TERMINATE_KILL_GRACE_MS = 500;
@@ -14,6 +15,7 @@ type BashCommandRunnerOptions = {
   cwd: string;
   maxOutputBytes?: number | null;
   onOutput?: (event: BashCommandOutputEvent) => void;
+  sandbox?: SandboxRuntimeContext; // 存在且 provider 可用时以平台沙箱包装 spawn argv;缺省按无沙箱执行。
   shell?: string;
   timeoutMs?: number | null;
   toolResultStore?: ToolResultStore;
@@ -49,12 +51,20 @@ function runBashCommand(options: BashCommandRunnerOptions): Promise<BashCommandR
   const startedAt = Date.now();
 
   return new Promise((resolve) => {
+    // 沙箱生效时以 sandbox-exec 包装同一 shell 调用;包装不改变进程组、stdio 与终止语义。
+    const sandboxArgv = options.sandbox
+      ? options.sandbox.provider.wrapCommand({command: options.command, shell, cwd: options.cwd}, options.sandbox.policy)
+      : null;
     // 不提供 stdin/TTY，避免命令变成需要用户交互的悬挂进程。
-    const child = spawn(shell, ['-lc', options.command], {
-      cwd: options.cwd,
-      detached: process.platform !== 'win32',
-      stdio: ['ignore', 'pipe', 'pipe']
-    });
+    const child = spawn(
+      sandboxArgv ? sandboxArgv[0] : shell,
+      sandboxArgv ? sandboxArgv.slice(1) : ['-lc', options.command],
+      {
+        cwd: options.cwd,
+        detached: process.platform !== 'win32',
+        stdio: ['ignore', 'pipe', 'pipe']
+      }
+    );
     const stdout = createOutputCapture(maxOutputBytes);
     const stderr = createOutputCapture(maxOutputBytes);
     const output = createOutputCapture(maxOutputBytes);
