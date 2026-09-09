@@ -12,7 +12,8 @@ const TEST_CONFIG = {
     bash: {
       timeoutMs: 1000,
       maxOutputBytes: 1024
-    }
+    },
+    sandbox: {mode: 'off', network: false, extraWritablePaths: []}
   }
 };
 

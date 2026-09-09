@@ -4,7 +4,7 @@ import {tokenText, type FooterTheme} from '../colors';
 import {clampPlainText, padVisibleText} from './text';
 import {constrainLayoutTail} from './window';
 
-import type {CommandCodexUsageWindow, CommandDeepseekBalanceInfo, StatusCommandSurface} from '../../types/command';
+import type {CommandCodexUsageWindow, CommandDeepseekBalanceInfo, CommandStatusSandboxState, StatusCommandSurface} from '../../types/command';
 import type {FooterLayout} from '../../types/render';
 
 const FILL = '█';
@@ -28,7 +28,8 @@ function renderStatusSurface(surface: StatusCommandSurface, width: number, maxLi
     plainRow(cardWidth, `Provider  ${model ? `${model.provider} (${model.agentType})` : '不可用'}`, theme),
     plainRow(cardWidth, `Session  ${snapshot.sessionId || '未创建'}`, theme),
     plainRow(cardWidth, `Instructions  ${snapshot.agentInstructionFileName} · ${instructionLabels.length > 0 ? instructionLabels.join(', ') : '无'}`, theme),
-    plainRow(cardWidth, `Memory  user:${snapshot.userMemoryCount} · catalogs:${catalogLabels.length > 0 ? catalogLabels.join(', ') : '无'}`, theme)
+    plainRow(cardWidth, `Memory  user:${snapshot.userMemoryCount} · catalogs:${catalogLabels.length > 0 ? catalogLabels.join(', ') : '无'}`, theme),
+    plainRow(cardWidth, `沙箱  ${formatSandboxState(snapshot.sandbox)}`, theme, snapshot.sandbox.available || snapshot.sandbox.mode === 'off' ? 'text' : 'warning')
   ];
 
   if (snapshot.diagnostics.length > 0) {
@@ -86,6 +87,21 @@ function renderStatusSurface(surface: StatusCommandSurface, width: number, maxLi
     cursorColumn: 0,
     showCursor: false
   }, maxLines);
+}
+
+/**
+ * 把沙箱快照投影为单行文案;关闭态不展开网络细节,不可用态保留降级原因。
+ */
+function formatSandboxState(state: CommandStatusSandboxState): string {
+  if (state.mode === 'off') {
+    return '关闭';
+  }
+
+  if (!state.available) {
+    return `${state.mode} · 不可用(${state.unavailableReason || '未知原因'})`;
+  }
+
+  return `${state.mode} · 网络${state.network ? '开' : '关'} · ${state.provider}`;
 }
 
 function balanceRowText(info: CommandDeepseekBalanceInfo): string {

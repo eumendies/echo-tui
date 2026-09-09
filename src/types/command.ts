@@ -1,5 +1,6 @@
 import type { InputEvent } from './input';
 import type { AgentInstructionFileName, AgentType, ContextUsage, InteractionMode, ReasoningEffort } from './agent';
+import type { SandboxMode } from '../sandbox/types';
 import type {DiffFile, DiffSourceInfo, DiffSourceResult} from './diff';
 import type { CompactionState, PendingConversationReference, PreparedConversationReference, TranscriptForkResult, TranscriptRecord, TranscriptSessionSummary, TranscriptSessionPreview, UserTranscriptMetadata } from './transcript';
 import type {UndoExecuteResult, UndoSummary} from './change-history';
@@ -430,8 +431,17 @@ export type CommandStatusSnapshot = {
     model: string;
     provider: string;
   } | null;
+  sandbox: CommandStatusSandboxState;
   sessionId: string | null;
   userMemoryCount: number;
+};
+
+export type CommandStatusSandboxState = {
+  mode: SandboxMode; // 配置的沙箱档位。
+  network: boolean; // 沙箱生效后的实际网络状态;read-only 恒为 false,与配置原值无关。
+  provider: string | null; // 沙箱实现标识;平台不支持时为 null。
+  available: boolean; // 沙箱在当前环境是否实际生效。
+  unavailableReason?: string; // 配置生效但沙箱不可用时的降级原因;available 时缺省。
 };
 
 export type CommandCodexUsageWindow = {

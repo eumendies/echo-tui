@@ -48,13 +48,28 @@ async function executeUserQuestionToolCall(call: ToolCall, options: ExecuteUserQ
   return result;
 }
 
+type ProviderRecordOptions = {
+  activeRecords: TranscriptRecord[]; // 进入本次 provider 请求的活跃记录区间。
+  agentInstructions?: AgentInstruction[]; // 当前 cwd 适用且已按层级排序的项目指令。
+  basePrompt?: string; // 用户 system prompt override;缺省使用内置主 prompt。
+  compaction?: CompactionState; // 压缩状态;摘要非空时前置为带回读提示的 user 记录。
+  cwd: string; // 注入 runtime environment 的工作目录。
+  memoryPrompts?: string[]; // 当前请求动态解析的 user/agent memory sections。
+  rolePrompt?: string; // 子 Agent 等隔离运行追加的明确角色边界 section。
+  sandboxNote?: string; // bash 沙箱生效时的边界说明;缺省表示本次未包装沙箱。
+  sessionJournalPath?: string; // 会话 journal 路径;压缩摘要附带完整历史回读提示。
+  skillCatalog?: SkillCatalogEntry[]; // 当前 revision 的有界 enabled skill 目录。
+  todoState?: TodoState; // 待办状态;存在 open 项时追加 runtime context 后缀记录。
+};
+
 /**
  * 构造 provider请求上下文；函数只投影输入事实，不判断主/子运行身份或提交 callback。
  */
-function buildProviderRecords(activeRecords: TranscriptRecord[], cwd: string, compaction?: CompactionState, skillCatalog: SkillCatalogEntry[] = [], agentInstructions: AgentInstruction[] = [], todoState?: TodoState, memoryPrompts: string[] = [], basePrompt?: string, sessionJournalPath?: string, rolePrompt?: string): TranscriptRecord[] {
+function buildProviderRecords(options: ProviderRecordOptions): TranscriptRecord[] {
+  const {activeRecords, agentInstructions = [], basePrompt, compaction, cwd, memoryPrompts = [], rolePrompt, sandboxNote, sessionJournalPath, skillCatalog = [], todoState} = options;
   const prefix: TranscriptRecord[] = [{
     role: 'system',
-    text: createBuiltInSystemPrompt({agentInstructions, basePrompt, cwd, skillCatalog, memoryPrompts, rolePrompt})
+    text: createBuiltInSystemPrompt({agentInstructions, basePrompt, cwd, ...(sandboxNote ? {sandboxNote} : {}), skillCatalog, memoryPrompts, rolePrompt})
   }];
 
   if (compaction && compaction.summaryText.trim() !== '') {
@@ -116,4 +131,4 @@ export {
   hasRecordableProviderUsage
 };
 
-export type {ExecuteUserQuestionToolOptions};
+export type {ExecuteUserQuestionToolOptions, ProviderRecordOptions};

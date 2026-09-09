@@ -22,7 +22,8 @@ const TEST_CONFIG = {
   model: 'fake-subagent',
   contextWindow: 128000,
   tools: {
-    bash: {timeoutMs: 1000, maxOutputBytes: 4096}
+    bash: {timeoutMs: 1000, maxOutputBytes: 4096},
+    sandbox: {mode: 'off', network: false, extraWritablePaths: []}
   }
 };
 

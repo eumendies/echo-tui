@@ -177,7 +177,8 @@ test('runOnce discovers and executes the same frozen custom subagent catalog as 
     tools: {
       autoCompressImages: true,
       bash: {timeoutMs: 1000, maxOutputBytes: 4096},
-      fileEditMode: 'apply_patch'
+      fileEditMode: 'apply_patch',
+      sandbox: {mode: 'off', network: false, extraWritablePaths: []}
     }
   };
   const reviewerConfig = {...config, model: 'fake-reviewer', reasoningEffort: 'low'};

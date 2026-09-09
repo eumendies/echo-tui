@@ -1,6 +1,7 @@
 import type {CompactionState, SubagentTranscriptRecord, TodoState, TranscriptRecord} from './transcript';
 import type {AskUserQuestionsRequest, ToolApprovalRequest, ToolCall, ToolExecutionOptions, ToolExecutionResult} from './tool';
 import type {ChangeFileRecorder} from './change-history';
+import type {SandboxMode} from '../sandbox/types';
 
 export type InteractionMode = 'normal' | 'plan' | 'shell' | 'shell-local';
 
@@ -265,11 +266,18 @@ export type ToolRuntimeConfig = {
   autoCompressImages: boolean; // 控制 read_files 是否把超限图片缩小到最终附件上限内。
   bash: BashToolConfig;
   fileEditMode: FileEditToolMode;
+  sandbox: SandboxToolConfig; // run_bash_command 的沙箱策略;由 tools.sandbox 配置解析,macOS 默认 workspace-write 且网络开启。
 };
 
 export type BashToolConfig = {
   timeoutMs: number | null;
   maxOutputBytes: number;
+};
+
+export type SandboxToolConfig = {
+  mode: SandboxMode; // 沙箱档位:off 关闭、read-only 仅临时目录可写并禁网、workspace-write 工作区可写。
+  network: boolean; // 是否放行命令网络访问;read-only 档强制禁网。
+  extraWritablePaths: string[]; // 追加可写的绝对目录路径;执行前由沙箱 provider realpath 归一化。
 };
 
 export type CodexOAuthRuntimeConfig = {

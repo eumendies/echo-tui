@@ -27,7 +27,8 @@ const TEST_CONFIG = {
     bash: {
       timeoutMs: 1000,
       maxOutputBytes: 1024
-    }
+    },
+    sandbox: {mode: 'off', network: false, extraWritablePaths: []}
   }
 };
 
@@ -157,15 +158,19 @@ function createDebugRecorder() {
 }
 
 test('buildProviderRecords includes skill catalog without skill body', () => {
-  const records = buildProviderRecords([{ role: 'user', text: 'review this' }], TEST_CWD, undefined, [
-    {
-      name: 'code-review',
-      description: 'Review code changes',
-      sourceKind: 'project',
-      sourcePath: '/repo/.echo/skills/code-review/SKILL.md',
-      resources: ['reference/checklist.md']
-    }
-  ]);
+  const records = buildProviderRecords({
+    activeRecords: [{ role: 'user', text: 'review this' }],
+    cwd: TEST_CWD,
+    skillCatalog: [
+      {
+        name: 'code-review',
+        description: 'Review code changes',
+        sourceKind: 'project',
+        sourcePath: '/repo/.echo/skills/code-review/SKILL.md',
+        resources: ['reference/checklist.md']
+      }
+    ]
+  });
 
   assert.equal(records[0].role, 'system');
   assert.match(records[0].text, /Available Skills/);
@@ -173,6 +178,19 @@ test('buildProviderRecords includes skill catalog without skill body', () => {
   assert.match(records[0].text, /use_skill/);
   assert.doesNotMatch(records[0].text, /SKILL\.md/);
   assert.doesNotMatch(records[0].text, /reference\/checklist\.md/);
+  assert.deepEqual(records.slice(1), [{ role: 'user', text: 'review this' }]);
+});
+
+test('buildProviderRecords injects sandbox boundary note into the transient system prompt', () => {
+  const records = buildProviderRecords({
+    activeRecords: [{ role: 'user', text: 'review this' }],
+    cwd: TEST_CWD,
+    sandboxNote: 'filesystem writes are limited to the workspace, temp directories, and configured extra paths; network access is denied'
+  });
+
+  assert.equal(records[0].role, 'system');
+  assert.match(records[0].text, /Bash sandbox: filesystem writes are limited to the workspace/);
+  assert.match(records[0].text, /network access is denied/);
   assert.deepEqual(records.slice(1), [{ role: 'user', text: 'review this' }]);
 });
 
@@ -395,20 +413,24 @@ test('createAgentLoopRuntime loads only the configured CLAUDE instruction files'
 });
 
 test('buildProviderRecords includes AGENTS instructions with precedence text', () => {
-  const records = buildProviderRecords([{ role: 'user', text: 'follow repo rules' }], TEST_CWD, undefined, [], [
-    {
-      content: 'Use concise Chinese replies.',
-      filePath: '/home/user/.echo/AGENTS.md',
-      label: 'AGENTS.md',
-      sourceKind: 'global'
-    },
-    {
-      content: 'Run npm test before finishing.',
-      filePath: '/repo/AGENTS.md',
-      label: 'AGENTS.md',
-      sourceKind: 'project'
-    }
-  ]);
+  const records = buildProviderRecords({
+    activeRecords: [{ role: 'user', text: 'follow repo rules' }],
+    agentInstructions: [
+      {
+        content: 'Use concise Chinese replies.',
+        filePath: '/home/user/.echo/AGENTS.md',
+        label: 'AGENTS.md',
+        sourceKind: 'global'
+      },
+      {
+        content: 'Run npm test before finishing.',
+        filePath: '/repo/AGENTS.md',
+        label: 'AGENTS.md',
+        sourceKind: 'project'
+      }
+    ],
+    cwd: TEST_CWD
+  });
 
   assert.equal(records[0].role, 'system');
   assert.match(records[0].text, /AGENTS\.md instructions/);
@@ -421,14 +443,18 @@ test('buildProviderRecords includes AGENTS instructions with precedence text', (
 });
 
 test('buildProviderRecords labels CLAUDE instructions dynamically', () => {
-  const records = buildProviderRecords([{role: 'user', text: 'follow rules'}], TEST_CWD, undefined, [], [
-    {
-      content: 'Use the Claude project rules.',
-      filePath: '/repo/CLAUDE.md',
-      label: 'CLAUDE.md',
-      sourceKind: 'project'
-    }
-  ]);
+  const records = buildProviderRecords({
+    activeRecords: [{role: 'user', text: 'follow rules'}],
+    agentInstructions: [
+      {
+        content: 'Use the Claude project rules.',
+        filePath: '/repo/CLAUDE.md',
+        label: 'CLAUDE.md',
+        sourceKind: 'project'
+      }
+    ],
+    cwd: TEST_CWD
+  });
 
   assert.match(records[0].text, /CLAUDE\.md instructions/);
   assert.match(records[0].text, /Project CLAUDE\.md: CLAUDE\.md/);
@@ -443,7 +469,7 @@ test('buildProviderRecords injects user memories only into the transient system 
     createdAt: '2026-07-12T07:00:00.000Z',
     updatedAt: '2026-07-12T07:00:00.000Z'
   }]);
-  const records = buildProviderRecords([{role: 'user', text: '继续'}], TEST_CWD, undefined, [], [], undefined, [memoryPrompt]);
+  const records = buildProviderRecords({activeRecords: [{role: 'user', text: '继续'}], cwd: TEST_CWD, memoryPrompts: [memoryPrompt]});
 
   assert.match(records[0].text, /User-managed memories/);
   assert.match(records[0].text, /回复使用中文/);
@@ -459,7 +485,7 @@ test('buildProviderRecords excludes disabled user memories', () => {
     createdAt: '2026-07-12T07:00:00.000Z',
     updatedAt: '2026-07-12T07:00:00.000Z'
   }]);
-  const records = buildProviderRecords([{role: 'user', text: '继续'}], TEST_CWD, undefined, [], [], undefined, [memoryPrompt]);
+  const records = buildProviderRecords({activeRecords: [{role: 'user', text: '继续'}], cwd: TEST_CWD, memoryPrompts: [memoryPrompt]});
 
   assert.doesNotMatch(records[0].text, /User-managed memories/);
   assert.doesNotMatch(records[0].text, /不应注入/);
@@ -472,7 +498,7 @@ test('buildProviderRecords injects only agent memory catalog names and descripti
     description: 'Terminal rendering rules',
     scope: {kind: 'project', projectRoot: TEST_CWD}
   }]);
-  const records = buildProviderRecords([{role: 'user', text: '继续'}], TEST_CWD, undefined, [], [], undefined, [memoryPrompt]);
+  const records = buildProviderRecords({activeRecords: [{role: 'user', text: '继续'}], cwd: TEST_CWD, memoryPrompts: [memoryPrompt]});
 
   assert.match(records[0].text, /Agent memory catalogs/);
   assert.match(records[0].text, /rendering: Terminal rendering rules/);
@@ -609,7 +635,7 @@ test('createAgentLoopRuntime excludes disabled catalogs and falls back to enable
 });
 
 test('buildProviderRecords does not inject mode runtime context', () => {
-  const records = buildProviderRecords([{ role: 'user', text: 'plan this' }], TEST_CWD);
+  const records = buildProviderRecords({activeRecords: [{ role: 'user', text: 'plan this' }], cwd: TEST_CWD});
 
   assert.deepEqual(records, [
     { role: 'system', text: createBuiltInSystemPrompt({ cwd: TEST_CWD }) },
@@ -627,8 +653,8 @@ test('buildProviderRecords injects todo runtime context without changing system 
       {id: 'todo_2', text: 'done task', status: 'completed'}
     ]
   };
-  const normalRecords = buildProviderRecords([{ role: 'user', text: 'continue' }], TEST_CWD);
-  const todoRecords = buildProviderRecords([{ role: 'user', text: 'continue' }], TEST_CWD, undefined, [], [], todoState);
+  const normalRecords = buildProviderRecords({activeRecords: [{ role: 'user', text: 'continue' }], cwd: TEST_CWD});
+  const todoRecords = buildProviderRecords({activeRecords: [{ role: 'user', text: 'continue' }], cwd: TEST_CWD, todoState});
 
   assert.equal(todoRecords[0].text, normalRecords[0].text);
   assert.deepEqual(todoRecords.slice(0, normalRecords.length), normalRecords);
@@ -643,28 +669,40 @@ test('buildProviderRecords injects todo runtime context without changing system 
 });
 
 test('buildProviderRecords omits completed-only todo state from runtime context', () => {
-  const records = buildProviderRecords([{ role: 'user', text: 'continue' }], TEST_CWD, undefined, [], [], {
-    updatedAt: '2026-06-30T00:00:00.000Z',
-    items: [{id: 'todo_1', text: 'done task', status: 'completed'}]
+  const records = buildProviderRecords({
+    activeRecords: [{ role: 'user', text: 'continue' }],
+    cwd: TEST_CWD,
+    todoState: {
+      updatedAt: '2026-06-30T00:00:00.000Z',
+      items: [{id: 'todo_1', text: 'done task', status: 'completed'}]
+    }
   });
 
   assert.deepEqual(records.slice(1), [{ role: 'user', text: 'continue' }]);
 });
 
 test('buildProviderRecords omits runtime context when no runtime state exists', () => {
-  const records = buildProviderRecords([{ role: 'user', text: 'continue' }], TEST_CWD, undefined, [], [], {
-    updatedAt: '2026-06-30T00:00:00.000Z',
-    items: []
+  const records = buildProviderRecords({
+    activeRecords: [{ role: 'user', text: 'continue' }],
+    cwd: TEST_CWD,
+    todoState: {
+      updatedAt: '2026-06-30T00:00:00.000Z',
+      items: []
+    }
   });
 
   assert.deepEqual(records.slice(1), [{ role: 'user', text: 'continue' }]);
 });
 
 test('buildProviderRecords does not append mode context after compacted active records', () => {
-  const records = buildProviderRecords([{role: 'user', text: 'next task'}], TEST_CWD, {
-    summaryText: 'Earlier context.',
-    activeStartIndex: 4,
-    createdAt: '2026-06-29T00:00:00.000Z'
+  const records = buildProviderRecords({
+    activeRecords: [{role: 'user', text: 'next task'}],
+    compaction: {
+      summaryText: 'Earlier context.',
+      activeStartIndex: 4,
+      createdAt: '2026-06-29T00:00:00.000Z'
+    },
+    cwd: TEST_CWD
   });
 
   assert.deepEqual(records.map((record) => record.role), ['system', 'user', 'user']);
@@ -674,11 +712,16 @@ test('buildProviderRecords does not append mode context after compacted active r
 });
 
 test('buildProviderRecords injects source_file and read-back hint when source path is available', () => {
-  const records = buildProviderRecords([{role: 'user', text: 'next task'}], TEST_CWD, {
-    summaryText: 'Earlier context.',
-    activeStartIndex: 4,
-    createdAt: '2026-06-29T00:00:00.000Z'
-  }, [], [], undefined, [], undefined, '/tmp/echo_tui/session.jsonl');
+  const records = buildProviderRecords({
+    activeRecords: [{role: 'user', text: 'next task'}],
+    compaction: {
+      summaryText: 'Earlier context.',
+      activeStartIndex: 4,
+      createdAt: '2026-06-29T00:00:00.000Z'
+    },
+    cwd: TEST_CWD,
+    sessionJournalPath: '/tmp/echo_tui/session.jsonl'
+  });
 
   assert.deepEqual(records.map((record) => record.role), ['system', 'user', 'user']);
   assert.match(records[1].text, /Here is a structured summary of the earlier conversation:\nEarlier context\./);
@@ -689,10 +732,14 @@ test('buildProviderRecords injects source_file and read-back hint when source pa
 });
 
 test('buildProviderRecords does not inject source hint when source path is absent', () => {
-  const records = buildProviderRecords([{role: 'user', text: 'next task'}], TEST_CWD, {
-    summaryText: 'Earlier context.',
-    activeStartIndex: 4,
-    createdAt: '2026-06-29T00:00:00.000Z'
+  const records = buildProviderRecords({
+    activeRecords: [{role: 'user', text: 'next task'}],
+    compaction: {
+      summaryText: 'Earlier context.',
+      activeStartIndex: 4,
+      createdAt: '2026-06-29T00:00:00.000Z'
+    },
+    cwd: TEST_CWD
   });
 
   assert.equal(records[1].text, 'Here is a structured summary of the earlier conversation:\nEarlier context.');
@@ -817,17 +864,20 @@ test('buildProviderRecords sends slash skill invocation as ordinary user record'
     text: '[Skill Invocation]\nskill: review\n\n# Review',
     skillInvocation: { source: 'slash', skillName: 'review' }
   };
-  const records = buildProviderRecords([skillRecord], TEST_CWD);
+  const records = buildProviderRecords({activeRecords: [skillRecord], cwd: TEST_CWD});
 
   assert.deepEqual(records.slice(1), [skillRecord]);
 });
 
 test('buildProviderRecords filters visible reasoning summary records', () => {
-  const records = buildProviderRecords([
-    { role: 'user', text: 'inspect' },
-    { role: 'reasoning_summary', text: 'I will inspect first.' },
-    { role: 'assistant', text: 'done' }
-  ], TEST_CWD);
+  const records = buildProviderRecords({
+    activeRecords: [
+      { role: 'user', text: 'inspect' },
+      { role: 'reasoning_summary', text: 'I will inspect first.' },
+      { role: 'assistant', text: 'done' }
+    ],
+    cwd: TEST_CWD
+  });
 
   assert.deepEqual(records.slice(1), [
     { role: 'user', text: 'inspect' },
@@ -841,11 +891,14 @@ test('buildProviderRecords keeps chat reasoning content records', () => {
     text: '',
     extension: {kind: 'openai_chat_reasoning', reasoningContent: 'hidden'}
   };
-  const records = buildProviderRecords([
-    { role: 'user', text: 'inspect' },
-    reasoningRecord,
-    { role: 'assistant', text: 'done' }
-  ], TEST_CWD);
+  const records = buildProviderRecords({
+    activeRecords: [
+      { role: 'user', text: 'inspect' },
+      reasoningRecord,
+      { role: 'assistant', text: 'done' }
+    ],
+    cwd: TEST_CWD
+  });
 
   assert.deepEqual(records.slice(1), [
     { role: 'user', text: 'inspect' },
@@ -955,7 +1008,7 @@ test('createAgentLoopRuntime uses one overridden config for provider, context, u
     ...TEST_CONFIG,
     model: 'override-model',
     contextWindow: 777,
-    tools: {bash: {timeoutMs: 4321, maxOutputBytes: 2048}}
+    tools: {bash: {timeoutMs: 4321, maxOutputBytes: 2048}, sandbox: {mode: 'off', network: false, extraWritablePaths: []}}
   };
 
   await withPatchedAgentRuntime(createAgent, async () => {

@@ -26,7 +26,7 @@ function createConfig(fileEditMode) {
     agentType: 'fake',
     apiKey: '',
     model: 'fake',
-    tools: {bash: {timeoutMs: null, maxOutputBytes: 65_536}, fileEditMode}
+    tools: {bash: {timeoutMs: null, maxOutputBytes: 65_536}, fileEditMode, sandbox: {mode: 'off', network: false, extraWritablePaths: []}}
   };
 }
 
