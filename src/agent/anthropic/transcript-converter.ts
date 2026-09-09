@@ -74,6 +74,9 @@ const FILTERED_ROLES = new Set(['error', 'compaction_notice', 'local_notice', 'r
 
 /**
  * 把本地 transcript 投影为 Anthropic Messages API 请求上下文，并重组工具历史 content blocks。
+ * 同一轮响应的 thinking / 文本 / 多个并行 tool_use 聚合进同一条 assistant 消息，
+ * 对应的 tool_result 缓冲后合并为一条 user 消息，保持与模型原始响应一致的 turn 结构；
+ * 拆散会导致 thinking 与其伴随的 tool_use 分离，thinking 模式下会被 API 拒绝。
  */
 function convertTranscriptToAnthropicMessages(records: TranscriptRecord[]): AnthropicTranscriptProjection {
   const messages: AnthropicMessage[] = [];
@@ -81,6 +84,17 @@ function convertTranscriptToAnthropicMessages(records: TranscriptRecord[]): Anth
   const knownToolCallIds = new Set<string>();
   const invalidToolCallFeedback = new Map<string, string>();
   let currentToolAssistant: AnthropicMessage | null = null;
+  let pendingToolResults: AnthropicMessage | null = null;
+
+  // 输出缓冲的 tool_result user 消息；只有真正输出 results 时才结束当前 assistant 消息，
+  // 让 thinking + 文本 + 并行 tool_use 始终聚合在同一条消息里。
+  const flushPendingToolResults = (): void => {
+    if (pendingToolResults) {
+      messages.push(pendingToolResults);
+      pendingToolResults = null;
+      currentToolAssistant = null;
+    }
+  };
 
   for (const record of records) {
     if (!shouldIncludeRecordInProviderContext(record)) {
@@ -88,6 +102,7 @@ function convertTranscriptToAnthropicMessages(records: TranscriptRecord[]): Anth
     }
 
     if (record.role === 'system') {
+      flushPendingToolResults();
       if (record.text.trim() !== '') {
         systemParts.push(record.text);
       }
@@ -96,18 +111,25 @@ function convertTranscriptToAnthropicMessages(records: TranscriptRecord[]): Anth
     }
 
     if (record.role === 'user') {
+      flushPendingToolResults();
       messages.push({role: 'user', content: createUserContent(record)});
       currentToolAssistant = null;
       continue;
     }
 
     if (record.role === 'assistant') {
-      currentToolAssistant = {role: 'assistant', content: record.text === '' ? [] : [{type: 'text', text: record.text}]};
-      messages.push(currentToolAssistant);
+      flushPendingToolResults();
+      // thinking block 可能已先行创建本轮 assistant 消息；文本并入同一条消息，避免拆成相邻两条。
+      const assistant: AnthropicMessage = currentToolAssistant || createToolAssistantMessage(messages);
+      if (record.text !== '') {
+        assistant.content.push({type: 'text', text: record.text});
+      }
+      currentToolAssistant = assistant;
       continue;
     }
 
     if (record.role === 'shell') {
+      flushPendingToolResults();
       if (record.includeInContext !== false) {
         messages.push({role: 'user', content: [{type: 'text', text: formatShellRecordForProvider(record)}]});
       }
@@ -124,10 +146,11 @@ function convertTranscriptToAnthropicMessages(records: TranscriptRecord[]): Anth
 
       if (projection.kind === 'invalid') {
         invalidToolCallFeedback.set(projection.id, projection.feedback);
-        currentToolAssistant = null;
+        flushPendingToolResults();
         continue;
       }
 
+      // 并行 tool call 与之前的 tool_use 同属一条 assistant 消息。
       const assistant: AnthropicMessage = currentToolAssistant || createToolAssistantMessage(messages);
       assistant.content.push(projection.toolUse);
       currentToolAssistant = assistant;
@@ -136,6 +159,8 @@ function convertTranscriptToAnthropicMessages(records: TranscriptRecord[]): Anth
     }
 
     if (record.role === 'extension' && record.extension.kind === ANTHROPIC_THINKING_EXTENSION_KIND) {
+      // 新一轮 thinking 开启新的 assistant turn：先输出上一轮缓冲的 tool results。
+      flushPendingToolResults();
       const block = convertAnthropicThinkingRecord(record);
       const assistant: AnthropicMessage = currentToolAssistant || createToolAssistantMessage(messages);
       assistant.content.push(block);
@@ -152,18 +177,21 @@ function convertTranscriptToAnthropicMessages(records: TranscriptRecord[]): Anth
       const feedbackMessage = convertInvalidToolResultRecord(record, invalidToolCallFeedback);
 
       if (feedbackMessage) {
+        flushPendingToolResults();
         messages.push(feedbackMessage);
-        currentToolAssistant = null;
         continue;
       }
 
-      const toolMessage = convertToolResultRecord(record, knownToolCallIds);
+      const toolResultBlock = convertToolResultBlock(record, knownToolCallIds);
 
-      if (toolMessage) {
-        messages.push(toolMessage);
+      if (toolResultBlock) {
+        pendingToolResults = pendingToolResults || {role: 'user', content: []};
+        pendingToolResults.content.push(toolResultBlock);
+        continue;
       }
 
-      currentToolAssistant = null;
+      // 无法配对的 tool_result 保持旧语义：立即结束当前 assistant 消息。
+      flushPendingToolResults();
       continue;
     }
 
@@ -173,6 +201,8 @@ function convertTranscriptToAnthropicMessages(records: TranscriptRecord[]): Anth
 
     currentToolAssistant = null;
   }
+
+  flushPendingToolResults();
 
   return {
     messages,
@@ -249,7 +279,7 @@ function convertAnthropicThinkingRecord(record: TranscriptExtensionRecord): Anth
   return extension.block;
 }
 
-function convertToolResultRecord(record: ToolResultTranscriptRecord, knownToolCallIds: Set<string>): AnthropicMessage | null {
+function convertToolResultBlock(record: ToolResultTranscriptRecord, knownToolCallIds: Set<string>): AnthropicToolResultBlock | null {
   if (!hasKnownToolCallId(record, knownToolCallIds)) {
     return null;
   }
@@ -264,13 +294,10 @@ function convertToolResultRecord(record: ToolResultTranscriptRecord, knownToolCa
   }));
 
   return {
-    role: 'user',
-    content: [{
-      type: 'tool_result',
-      tool_use_id: record.toolCallId,
-      content: imageBlocks.length > 0 ? [{type: 'text', text: record.text}, ...imageBlocks] : record.text,
-      ...(record.ok === false ? {is_error: true} : {})
-    }]
+    type: 'tool_result',
+    tool_use_id: record.toolCallId,
+    content: imageBlocks.length > 0 ? [{type: 'text', text: record.text}, ...imageBlocks] : record.text,
+    ...(record.ok === false ? {is_error: true} : {})
   };
 }
 
