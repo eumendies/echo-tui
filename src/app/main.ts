@@ -79,7 +79,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
    */
   function createRenderState(): RenderState {
     // 渲染投影优先展示 modal 和本地诊断 surface；输入消费顺序由 input controller 独立维护。
-    const highPrioritySurface = userQuestion.getSurface() || toolApproval.getSurface() || filePicker.getSurface();
+    const highPrioritySurface = getActiveModalSurface();
     // 本地诊断 surface 的输入优先级低于 command session；BTW 活跃时先隐藏，避免显示与输入所有者错位。
     const modalSurface = highPrioritySurface || (btwConversation.isActive() ? null : referenceErrorSurface || mcpDiagnosticSurface);
     const commandSurface = modalSurface || (btwConversation.isActive() ? null : commandRuntime.getSurface());
@@ -87,6 +87,11 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     return btwConversation.isActive()
       ? btwConversation.createRenderState({...base, streamingOwner: 'btw'})
       : {...base, streamingOwner: 'main'};
+  }
+
+  /** 用户问题、工具审批与文件选择按优先级取第一个激活的 modal 表面;激活时 footer 输入区为静态卡片。 */
+  function getActiveModalSurface(): CommandSurface | null {
+    return userQuestion.getSurface() || toolApproval.getSurface() || filePicker.getSurface() || null;
   }
 
   /**
@@ -119,12 +124,24 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     rememberTerminalSize();
   }
 
-  /** 常驻 timer 仅在当前可见 owner 有计时活动时触发统一渲染。 */
+  /**
+   * 常驻 timer 仅在当前可见 owner 有计时活动时触发统一渲染;modal 表面激活时跳过周期重绘,
+   * 避免等待输入期间整帧擦写静态卡片造成频闪。
+   */
   function renderTimedActivity(): void {
     const hasTimedActivity = btwConversation.isActive()
       ? btwConversation.hasTimedActivity()
       : appContext.turnContext.hasTimedActivity() || appContext.subagentRunContext.hasTimedActivity();
-    if (hasTimedActivity) render();
+    if (!hasTimedActivity) {
+      return;
+    }
+
+    // 用户问题/工具审批/文件选择挂起时 spinner 状态行并不展示,周期重绘没有可见变化,只会整帧擦写高多行卡片造成频闪;按键路径仍会即时 render()。
+    if (getActiveModalSurface()) {
+      return;
+    }
+
+    render();
   }
 
   /** 渲染指定 owner 已经写入会话状态的普通 records，并保留 tool pair 批处理。 */
