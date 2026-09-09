@@ -359,6 +359,18 @@ Context offloading 的交互式回归由人工执行，至少覆盖：
 - MCP 工具返回超限 text/structured result，确认 call 配对、成功状态和 head + marker 保持正常
 - 退出后通过 `/resume` 恢复上述 shell/tool transcript，确认 marker 仍可见且路径仍可回读
 
+## Bash 沙箱
+
+macOS 上 `run_bash_command` 默认经过 `sandbox-exec`(Seatbelt)包装执行,定位是审批流之外的防御纵深,不是完整安全边界:
+
+- `src/sandbox/` 提供 provider-neutral 抽象:`SandboxPolicy`(`off` / `read-only` / `workspace-write`、`network`、`extraWritablePaths`)与 `SandboxProvider`(把 `(shell -lc command)` 包装为平台 spawn argv);`resolveSandboxProvider` 按平台解析,非 darwin 返回 null,后续接入其他系统沙箱只需新增 provider
+- Seatbelt profile 由 `deny default` 加定向 allow 生成:文件读取全盘放行,写入限定在 realpath 归一化后的工作区、进程 TMPDIR、`/private/tmp`、`~/.echo/agent-memory`、`/dev/null` 与用户追加目录;网络由 `tools.sandbox.network` 决定,`read-only` 档恒为禁网
+- Seatbelt 下 setuid/restricted 系统二进制(如 `ps`、`top`)无法 exec(报 `Operation not permitted`),属 Seatbelt 预期限制而非配置问题;`git`、`node`、`lsof` 等常规工具链不受影响
+- 默认档位为 `workspace-write` 且网络开启;`~/.echo/config.json` 的 `tools.sandbox` 可覆盖,非法档位或取值在配置解析期显式报错
+- 执行语义不变:timeout、Esc 中断(进程组 kill)、输出截断与 offload 都作用在 `sandbox-exec` 整个进程组上;headless `--full-access` 强制关闭沙箱,headless `deny` 下照常生效
+- 用户 shell 模式、lifecycle hooks、MCP server 进程与 Node 侧内置工具不套沙箱;审批流(`tool-risk-classifier`)与沙箱正交,已批准命令在其沙箱边界内执行
+- `/usr/bin/sandbox-exec` 缺失或平台不支持时按无沙箱降级,`/status` 展示档位、网络与可用性,降级不静默;沙箱生效时在内置 transient 系统上下文追加一行边界说明,让模型对受限命令有预期
+
 ## Markdown 渲染
 
 assistant 的 Markdown 支持位于 render 层，不改变 transcript、agent 或 persistence 的事实模型。`src/render/markdown.ts` 使用项目内轻量 parser 按行扫描文本，识别常见 LLM 输出子集：heading、paragraph、无序/有序列表、blockquote、horizontal rule、inline code、bold、italic、links、fenced code block 和 GFM 风格 pipe table。不支持完整 CommonMark、HTML table、rowspan/colspan、复杂 nested block table cell 或语法级完美高亮；无法识别的语法会安全降级为普通文本。
