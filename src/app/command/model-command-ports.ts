@@ -86,6 +86,20 @@ function createModelCommandPorts(options: ModelCommandPortOptions): Pick<Command
             error: error instanceof Error ? error.message : String(error)
           };
         }
+      },
+      readSandboxDraft() {
+        return userConfigContext.capture().getSandboxConfigDraft();
+      },
+      saveSandboxDraft(draft) {
+        try {
+          userConfigContext.saveSandboxConfigDraft(draft);
+          return {ok: true};
+        } catch (error: unknown) {
+          return {
+            ok: false,
+            error: error instanceof Error ? error.message : String(error)
+          };
+        }
       }
     }
   };

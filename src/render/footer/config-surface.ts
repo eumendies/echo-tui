@@ -4,8 +4,10 @@ import {activeBackground, renderFocusBar, resolveFooterTheme, tokenText, type Fo
 import {clampPlainText, padVisibleText} from './text';
 import {constrainLayoutTail, createSelectedWindowRows} from './window';
 import {getProviderPreset, listProviderPresets, providerRequiresApiKey} from '../../config/provider-presets';
-import {getGeneralConfigRowIds, configProviderSupportsReasoningEffort, getConfigModelReasoningEffort} from '../../commands/config/state';
+import {getGeneralConfigRowIds, configProviderSupportsReasoningEffort, getConfigModelReasoningEffort, getSandboxConfigRowIds} from '../../commands/config/state';
+import type {SandboxMode} from '../../sandbox/types';
 import type {AppearanceConfigState, ConfigCommandState, ConfigCommandSurface, ConfigFormRow, ConfigSurfaceTab, ConfigTabId, GeneralConfigState} from '../../types/command';
+import type {SandboxConfigState} from '../../types/command';
 import type {FooterLayout} from '../../types/render';
 
 type RenderConfigPanelOptions = {
@@ -35,6 +37,8 @@ function renderConfigSurface(commandSurface: ConfigCommandSurface, width: number
     lines = renderGeneralView(commandSurface.state, commandSurface.tabs, commandSurface.activeTab, width, options.maxLines, theme);
   } else if (commandSurface.view === 'appearance') {
     lines = renderAppearanceView(commandSurface.state, commandSurface.tabs, commandSurface.activeTab, width, options.maxLines, theme);
+  } else if (commandSurface.view === 'sandbox') {
+    lines = renderSandboxView(commandSurface.state, commandSurface.tabs, commandSurface.activeTab, width, options.maxLines, theme);
   } else if (commandSurface.view === 'models') {
     const extraLines = 1 + (commandSurface.state.feedback ? 1 : 0);
     const modelLines = renderConfigPanel(commandSurface.state, width, {
@@ -138,6 +142,70 @@ function renderAppearanceView(state: AppearanceConfigState, tabs: ConfigSurfaceT
     lines.push(feedbackLine(width, state.feedback, theme));
   }
   lines.push(line(width, dimHint(width, 'Tab 切换 · ↑/↓ 移动 · Enter 应用主题 · Esc 关闭'), theme));
+  lines.push(bottom(width, theme));
+  return lines;
+}
+
+const SANDBOX_MODE_LABELS: Record<SandboxMode, string> = {
+  off: '关闭',
+  'read-only': '只读',
+  'workspace-write': '工作区可写'
+};
+
+/**
+ * 渲染沙箱设置 Tab；行集合与 handler 共享投影，数值只显示草稿，保存动作与常规 Tab 同构。
+ */
+function renderSandboxView(state: SandboxConfigState, tabs: ConfigSurfaceTab[], activeTab: ConfigTabId, columns: number, maxLines: number | undefined, theme: FooterTheme): string[] {
+  const width = calculateBoxWidth(columns);
+
+  if (state.pathInput !== undefined) {
+    // 输入超宽时显示层从开头截断,保留结尾光标与最新输入;pathInput 数据仍完整保存。
+    const visibleInput = tailWindow(`${state.pathInput}█`, sandboxInputValueBudget(width));
+    const inputLines = [
+      top(width, ' CONFIG ', 'accentStrong', theme, ansi.dim('沙箱')),
+      renderTabsLine(width, tabs, activeTab, theme),
+      splitRow(width, '新目录路径', visibleInput, true, theme)
+    ];
+
+    if (state.error) {
+      inputLines.push(errorLine(width, state.error, theme));
+    }
+
+    inputLines.push(line(width, dimHint(width, 'Enter 确认添加 · Esc 取消'), theme), bottom(width, theme));
+    return inputLines;
+  }
+
+  const rows = getSandboxConfigRowIds(state).map((rowId): {label: string; value: string; action: boolean; danger: boolean} => {
+    if (rowId === 'mode') return {label: '沙箱档位', value: SANDBOX_MODE_LABELS[state.draft.mode], action: false, danger: false};
+    if (rowId === 'network') return {label: '允许网络访问', value: state.draft.network ? '开' : '关', action: false, danger: false};
+    if (rowId === 'header') return {label: '额外可写目录', value: '', action: false, danger: false};
+    if (rowId === 'addPath') return {label: '+ 添加可写目录', value: 'Enter 输入绝对路径', action: true, danger: false};
+    if (rowId === 'save') return {label: '保存沙箱设置', value: '写入 ~/.echo/config.json', action: true, danger: false};
+    const pathIndex = Number(rowId.slice('path:'.length));
+    return {label: `  ↳ ${state.draft.extraWritablePaths[pathIndex] ?? ''}`, value: 'Enter 移除', action: true, danger: true};
+  });
+  const fixedLines = 5 + (state.error || state.feedback ? 1 : 0);
+  const visibleRows = Number.isFinite(maxLines)
+    ? createSelectedWindowRows(rows, state.selectedIndex, calculateItemBudget(maxLines, fixedLines))
+    : rows.map((item, index) => ({kind: 'item' as const, item, index}));
+  const lines = [top(width, ' CONFIG ', 'accentStrong', theme, ansi.dim('沙箱')), renderTabsLine(width, tabs, activeTab, theme)];
+
+  for (const row of visibleRows) {
+    if (row.kind === 'more') {
+      lines.push(moreRow(width, row.direction, row.count, theme));
+    } else if (row.item.action) {
+      lines.push(actionRow(width, row.item.label, row.item.value, row.index === state.selectedIndex, row.item.danger, theme));
+    } else {
+      lines.push(splitRow(width, row.item.label, row.item.value, row.index === state.selectedIndex, theme));
+    }
+  }
+
+  if (state.error) {
+    lines.push(errorLine(width, state.error, theme));
+  } else if (state.feedback) {
+    lines.push(feedbackLine(width, state.feedback, theme));
+  }
+  lines.push(line(width, dimHint(width, 'Tab 切换 · ↑/↓ 移动 · ←/→ 调整 · Enter 执行 · Esc 关闭'), theme));
   lines.push(bottom(width, theme));
   return lines;
 }
@@ -621,6 +689,43 @@ function splitRow(width: number, leftText: string, rightText: string, active: bo
   const right = tokenText(theme, active ? 'accentStrong' : 'accent', clampInnerText(rightText, rightWidth));
   const body = `${padVisibleText(left, leftWidth)}${padVisibleText(right, rightWidth)}`;
   return line(width, renderSelectableBody(inner, body, active, theme), theme);
+}
+
+/**
+ * 计算沙箱路径输入行右列的显示宽度预算;与 splitRow 的布局公式保持一致,避免二次截断。
+ */
+function sandboxInputValueBudget(width: number): number {
+  const bodyWidth = activeBodyWidth(contentWidth(width), true);
+  const leftNaturalWidth = Math.min(1 + displayWidth('新目录路径'), bodyWidth);
+  const columnGap = Math.min(2, Math.max(0, bodyWidth - leftNaturalWidth));
+  return Math.max(1, bodyWidth - leftNaturalWidth - columnGap);
+}
+
+/**
+ * 尾部视窗截断:超宽时丢弃开头内容并加省略号前缀,保留结尾(光标所在处)的最新输入。
+ */
+function tailWindow(text: string, maxWidth: number): string {
+  if (maxWidth < 1) {
+    return '';
+  }
+  if (displayWidth(text) <= maxWidth) {
+    return text;
+  }
+  const ellipsis = '…';
+  const budget = Math.max(0, maxWidth - displayWidth(ellipsis));
+  // 从尾部按码点回溯累计显示宽度,避免把代理对等宽字符切坏。
+  const chars = Array.from(text);
+  let takenWidth = 0;
+  let taken = '';
+  for (let index = chars.length - 1; index >= 0; index -= 1) {
+    const charWidth = displayWidth(chars[index]);
+    if (takenWidth + charWidth > budget) {
+      break;
+    }
+    takenWidth += charWidth;
+    taken = chars[index] + taken;
+  }
+  return ellipsis + taken;
 }
 
 function modelRow(width: number, text: string, active: boolean, theme: FooterTheme): string {

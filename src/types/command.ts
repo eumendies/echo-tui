@@ -361,7 +361,7 @@ export type ConfigCommandState = {
   providerIndex: number;
 };
 
-export type ConfigTabId = 'general' | 'models' | 'appearance';
+export type ConfigTabId = 'general' | 'models' | 'sandbox' | 'appearance';
 
 export type ConfigSurfaceTab = {
   id: ConfigTabId;
@@ -384,6 +384,21 @@ export type ToolApprovalModelProfile = {
   provider: string; // 所属 provider id，仅用于帮助用户区分候选。
 };
 
+export type SandboxConfigDraft = {
+  mode: SandboxMode; // 沙箱档位：off / read-only / workspace-write。
+  network: boolean; // 配置原值；read-only 档由 runtime 归一化为禁网。
+  extraWritablePaths: string[]; // 用户追加的可写目录绝对路径。
+};
+
+export type SandboxConfigState = {
+  draft: SandboxConfigDraft; // 当前沙箱草稿；保存前不落盘。
+  error?: string; // 最近一次操作的就地错误；由下一次操作清除。
+  feedback?: string; // 最近一次成功保存的提示。
+  initialDraftFingerprint: string; // 打开或保存成功时的草稿指纹；脏跟踪基线。
+  pathInput?: string; // 新目录行内输入缓冲；undefined 表示列表模式，'' 表示空输入。
+  selectedIndex: number; // 列表选中行；输入模式下忽略。
+};
+
 export type AppearanceConfigState = {
   error?: string;
   feedback?: string;
@@ -395,6 +410,7 @@ export type ConfigCommandSurface =
   | {kind: 'config'; view: 'general'; activeTab: ConfigTabId; tabs: ConfigSurfaceTab[]; state: GeneralConfigState}
   | {kind: 'config'; view: 'models'; activeTab: ConfigTabId; tabs: ConfigSurfaceTab[]; state: ConfigCommandState; rows: ConfigFormRow[]}
   | {kind: 'config'; view: 'appearance'; activeTab: ConfigTabId; tabs: ConfigSurfaceTab[]; state: AppearanceConfigState}
+  | {kind: 'config'; view: 'sandbox'; activeTab: ConfigTabId; tabs: ConfigSurfaceTab[]; state: SandboxConfigState}
   | {kind: 'config'; view: 'error'; activeTab: ConfigTabId; tabs: ConfigSurfaceTab[]; error: string}
   | {kind: 'config'; view: 'discardConfirm'; activeTab: ConfigTabId; tabs: ConfigSurfaceTab[]; dirtyTabs: string[]; selectedIndex: number};
 
@@ -734,6 +750,8 @@ export type CommandHostApp = {
     listModels(provider: ConfigProviderDraft): Promise<CommandConfigListModelsResult>;
     saveSettings(draft: AppSettings): CommandConfigSaveResult;
     saveDraft(draft: LlmConfigDraft): CommandConfigSaveResult;
+    readSandboxDraft(): SandboxConfigDraft;
+    saveSandboxDraft(draft: SandboxConfigDraft): CommandConfigSaveResult;
   };
   skills: {
     createSkillInvocation(skillName: string, argumentsText?: string): CommandSkillInvocationResult;
