@@ -2,17 +2,17 @@
 定义 `/config` 配置中心的外部行为，包括三 Tab 导航、常规设置读写、slash suggestion 可见窗口、reasoning summary 显隐和设置刷新语义。
 ## Requirements
 ### Requirement: Tab 配置中心
-系统 SHALL 将纯 `/config` 命令投影为带“常规”“模型与 Provider”“外观”三个 Tab 的配置中心。配置中心 SHALL 使用现有 command runtime 和 footer command surface，不得写入 transcript、启动 agent loop、进入 tool approval flow 或切换 terminal alternate screen。纯 `/config` SHALL 默认打开“常规”Tab。
+系统 SHALL 将纯 `/config` 命令投影为带“常规”“模型与 Provider”“沙箱”“外观”四个 Tab 的配置中心。配置中心 SHALL 使用现有 command runtime 和 footer command surface，不得写入 transcript、启动 agent loop、进入 tool approval flow 或切换 terminal alternate screen。纯 `/config` SHALL 默认打开“常规”Tab。
 
 #### Scenario: 打开配置中心
 - **WHEN** 用户在主 UI composer 中提交纯 `/config`
 - **THEN** 系统 SHALL 清空 composer 并打开 active command session
-- **THEN** 配置中心 SHALL 显示三个 Tab 并激活“常规”
+- **THEN** 配置中心 SHALL 显示四个 Tab 并激活“常规”
 - **THEN** 系统 SHALL NOT 追加 transcript record 或启动 agent loop
 
 #### Scenario: 循环切换 Tab
 - **WHEN** 配置中心处于活跃状态且用户按 Tab
-- **THEN** 系统 SHALL 在三个 Tab 间单向循环切换
+- **THEN** 系统 SHALL 在四个 Tab 间单向循环切换
 - **THEN** Tab strip SHALL 在常规页面和模型的 provider、header、model 子页面中保持可见
 
 #### Scenario: 切换 Tab 保留现场
@@ -21,10 +21,15 @@
 - **THEN** 用户返回该 Tab 时 SHALL 能继续原有编辑现场
 
 #### Scenario: 配置读取错误按 Tab 隔离
-- **WHEN** `~/.echo/config.json` 无法用于常规或模型配置读取，但 `~/.echo/theme.json` 和内置主题可用
+- **WHEN** `~/.echo/config.json` 无法用于常规、模型或沙箱配置读取，但 `~/.echo/theme.json` 和内置主题可用
 - **AND** 用户在配置中心切换到“外观”Tab
 - **THEN** 系统 SHALL 允许用户查看和选择主题
 - **THEN** `config.json` 错误 SHALL NOT 阻断外观 Tab
+
+#### Scenario: 沙箱 Tab 读取错误隔离
+- **WHEN** `~/.echo/config.json` 无法用于沙箱草稿读取
+- **THEN** 沙箱 Tab SHALL 以错误态展示且不影响其他 Tab
+- **THEN** 用户 SHALL 仍能切换到其他 Tab 继续操作
 
 ### Requirement: 常规设置草稿与持久化
 “常规”Tab SHALL 管理自动压缩阈值、技能列表上下文占比上限、slash suggestion 最大同时可见条目数和 reasoning summary 显示开关。系统 SHALL 使用默认值 0.8、0.02、8 和 true；压缩阈值有效范围 SHALL 为 0.5 至 0.95，技能列表上下文占比上限有效范围 SHALL 为 0.01 至 0.10，slash suggestion 上限有效范围 SHALL 为 1 至 20。运行时读取缺失、类型错误、非有限或越界字段时 SHALL 回退对应默认值。
@@ -69,7 +74,7 @@
 - **THEN** 系统 SHALL NOT 写入 `~/.echo/config.json`
 
 ### Requirement: 分域保存和统一草稿保护
-“常规”和“模型与 Provider”Tab SHALL 分别提供显式保存动作，并只提交各自所有的配置字段；成功保存 SHALL 重置该 Tab 的 dirty fingerprint 且 SHALL NOT 自动关闭配置中心。“外观”主题选择 SHALL 立即持久化，不形成未保存主题草稿。配置中心在关闭顶层页面时 SHALL 检查所有已初始化 Tab 的未保存草稿。
+“常规”、“模型与 Provider”和“沙箱”Tab SHALL 分别提供显式保存动作，并只提交各自所有的配置字段；成功保存 SHALL 重置该 Tab 的 dirty fingerprint 且 SHALL NOT 自动关闭配置中心。“外观”主题选择 SHALL 立即持久化，不形成未保存主题草稿。配置中心在关闭顶层页面时 SHALL 检查所有已初始化 Tab 的未保存草稿。
 
 #### Scenario: 保存一个 Tab 不提交另一个 Tab 草稿
 - **WHEN** 常规和模型 Tab 都包含未保存修改，且用户只保存常规 Tab

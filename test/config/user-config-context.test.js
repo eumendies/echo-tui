@@ -307,3 +307,49 @@ test('UserConfigContext MCP writer requires an existing config while hooks can c
     fs.rmSync(directory, {recursive: true, force: true});
   }
 });
+
+test('UserConfigContext sandbox draft reads normalized values and persists via tools domain', () => {
+  const {context, state} = createMemoryContext(createConfigRoot({
+    tools: {bash: {timeoutMs: 1000}, sandbox: {mode: 'read-only', network: false, extraWritablePaths: ['/tmp/one']}}
+  }));
+  const before = context.capture();
+
+  assert.deepEqual(before.getSandboxConfigDraft(), {mode: 'read-only', network: false, extraWritablePaths: ['/tmp/one']});
+
+  // 非法字段就地回退缺省(草稿层宽容),保存校验负责把文件修正为合法值。
+  const invalid = createMemoryContext(createConfigRoot({tools: {sandbox: {mode: 'bogus', network: 'yes', extraWritablePaths: 'oops'}}}));
+  assert.deepEqual(invalid.context.capture().getSandboxConfigDraft(), {mode: 'workspace-write', network: true, extraWritablePaths: []});
+  invalid.context.close();
+
+  const result = context.saveSandboxConfigDraft({mode: 'workspace-write', network: true, extraWritablePaths: ['/tmp/two']});
+
+  assert.equal(result.changed, true);
+  assert.equal(result.domains.tools, true);
+  assert.equal(result.domains.llm, false);
+  assert.equal(context.capture().revision, before.revision + 1);
+  assert.deepEqual(context.capture().getSandboxConfigDraft(), {mode: 'workspace-write', network: true, extraWritablePaths: ['/tmp/two']});
+
+  const written = JSON.parse(state.writes.at(-1)[1]);
+  assert.equal(written.tools.bash.timeoutMs, 1000);
+  assert.deepEqual(written.tools.sandbox, {mode: 'workspace-write', network: true, extraWritablePaths: ['/tmp/two']});
+  context.close();
+});
+
+test('UserConfigContext sandbox draft supports missing files, rejects invalid saves, and keeps other domains intact', () => {
+  const enoent = new Error('not found');
+  enoent.code = 'ENOENT';
+  const {context, state} = createMemoryContext(enoent);
+
+  assert.deepEqual(context.capture().getSandboxConfigDraft(), {mode: 'workspace-write', network: true, extraWritablePaths: []});
+
+  assert.throws(
+    () => context.saveSandboxConfigDraft({mode: 'bogus', network: true, extraWritablePaths: []}),
+    /tools\.sandbox\.mode/
+  );
+  assert.equal(state.writes.length, 0);
+
+  context.saveSandboxConfigDraft({mode: 'off', network: false, extraWritablePaths: []});
+  const written = JSON.parse(state.writes.at(-1)[1]);
+  assert.deepEqual(written.tools.sandbox, {mode: 'off', network: false, extraWritablePaths: []});
+  context.close();
+});

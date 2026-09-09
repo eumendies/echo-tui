@@ -1,3 +1,5 @@
+import {isAbsolute} from 'node:path';
+
 import {INPUT_EVENTS} from '../../input/event-types';
 import {
   CONFIG_TABS,
@@ -6,10 +8,15 @@ import {
   createInitialAppearanceConfigState,
   createInitialConfigState,
   createInitialGeneralConfigState,
+  createInitialSandboxConfigState,
+  getSandboxConfigRowIds,
   isGeneralConfigDirty,
   isModelConfigDirty,
+  isSandboxConfigDirty,
   markGeneralConfigSaved,
-  markModelConfigSaved
+  markModelConfigSaved,
+  markSandboxConfigSaved,
+  SANDBOX_MODE_CYCLE
 } from './state';
 import {handleConfigPanelEvent} from './panel-state';
 
@@ -21,7 +28,8 @@ import type {
   CommandSession,
   ConfigCommandState,
   ConfigTabId,
-  GeneralConfigState
+  GeneralConfigState,
+  SandboxConfigState
 } from '../../types/command';
 import type {InputEvent} from '../../types/input';
 import type {ConfigCommandData} from './state';
@@ -51,7 +59,7 @@ function createModelListState(requestId: number, result: CommandConfigListModels
  */
 class ConfigCommandHandler implements CommandHandler<ConfigCommandData> {
   name = 'config';
-  description = '配置常规设置、指令文件、模型和主题';
+  description = '配置常规设置、指令文件、模型、沙箱和主题';
 
   match(text: string): boolean {
     return text.trimEnd() === '/config';
@@ -85,7 +93,13 @@ class ConfigCommandHandler implements CommandHandler<ConfigCommandData> {
       return;
     }
 
-    const activeSlot = data.activeTab === 'general' ? data.general : data.activeTab === 'models' ? data.models : data.appearance;
+    const activeSlot = data.activeTab === 'general'
+      ? data.general
+      : data.activeTab === 'models'
+        ? data.models
+        : data.activeTab === 'sandbox'
+          ? data.sandbox
+          : data.appearance;
     if (activeSlot?.error) {
       if (event.type === INPUT_EVENTS.ESCAPE) {
         this.requestClose(data, host);
@@ -95,6 +109,11 @@ class ConfigCommandHandler implements CommandHandler<ConfigCommandData> {
 
     if (data.activeTab === 'general' && data.general?.state) {
       this.handleGeneralEvent(data, data.general.state, event, host);
+      return;
+    }
+
+    if (data.activeTab === 'sandbox' && data.sandbox?.state) {
+      this.handleSandboxEvent(data, data.sandbox.state, event, host);
       return;
     }
 
@@ -140,6 +159,101 @@ class ConfigCommandHandler implements CommandHandler<ConfigCommandData> {
     nextState.selectedIndex = clamp(nextState.selectedIndex, 0, getGeneralConfigRowIds(nextState).length - 1);
 
     this.update({...data, general: {state: nextState}}, host);
+  }
+
+  private handleSandboxEvent(data: ConfigCommandData, state: SandboxConfigState, event: InputEvent, host: CommandHost): void {
+    // 行内输入模式下接管文本编辑事件,列表导航与保存动作暂停。
+    if (state.pathInput !== undefined) {
+      this.handleSandboxPathInput(data, state, event, host);
+      return;
+    }
+
+    if (event.type === INPUT_EVENTS.ESCAPE) {
+      this.requestClose(data, host);
+      return;
+    }
+
+    let nextState = structuredClone(state) as SandboxConfigState;
+    nextState.error = undefined;
+    nextState.feedback = undefined;
+
+    if (event.type === INPUT_EVENTS.MOVE_UP || event.type === INPUT_EVENTS.MOVE_DOWN) {
+      const delta = event.type === INPUT_EVENTS.MOVE_UP ? -1 : 1;
+      const rowIds = getSandboxConfigRowIds(nextState);
+      let target = nextState.selectedIndex + delta;
+      // 分组标题行不可选中:焦点移动时直接越过,保证选中行始终是真实配置行。
+      while (rowIds[target] === 'header') {
+        target += delta;
+      }
+      nextState.selectedIndex = clamp(target, 0, rowIds.length - 1);
+    } else if (event.type === INPUT_EVENTS.MOVE_LEFT || event.type === INPUT_EVENTS.MOVE_RIGHT) {
+      adjustSandboxValue(nextState, event.type === INPUT_EVENTS.MOVE_LEFT ? -1 : 1);
+    } else if (event.type === INPUT_EVENTS.SUBMIT) {
+      const selectedRow = getSandboxConfigRowIds(nextState)[nextState.selectedIndex];
+      if (selectedRow === 'network') {
+        nextState.draft.network = !nextState.draft.network;
+      } else if (selectedRow.startsWith('path:')) {
+        const removedIndex = Number(selectedRow.slice('path:'.length));
+        nextState.draft.extraWritablePaths.splice(removedIndex, 1);
+        // 删除后焦点回到相邻路径行;没有路径行时落到添加行,避免焦点漂到保存行造成误触保存。
+        const nextSelectedRow = nextState.draft.extraWritablePaths.length > 0
+          ? `path:${Math.min(removedIndex, nextState.draft.extraWritablePaths.length - 1)}`
+          : 'addPath';
+        nextState.selectedIndex = getSandboxConfigRowIds(nextState).findIndex((rowId) => rowId === nextSelectedRow);
+      } else if (selectedRow === 'addPath') {
+        nextState.pathInput = '';
+      } else if (selectedRow === 'save') {
+        const result = host.config.saveSandboxDraft(nextState.draft);
+        nextState = result.ok
+          ? markSandboxConfigSaved(nextState)
+          : {...nextState, error: result.error || '无法保存沙箱设置'};
+      }
+    }
+
+    nextState.selectedIndex = clamp(nextState.selectedIndex, 0, getSandboxConfigRowIds(nextState).length - 1);
+
+    this.update({...data, sandbox: {state: nextState}}, host);
+  }
+
+  private handleSandboxPathInput(data: ConfigCommandData, state: SandboxConfigState, event: InputEvent, host: CommandHost): void {
+    const nextState = structuredClone(state) as SandboxConfigState;
+    const buffer = nextState.pathInput ?? '';
+
+    if (event.type === INPUT_EVENTS.TEXT && typeof event.value === 'string') {
+      // 正常输入时清掉旧错误提示,避免提示残留。
+      nextState.error = undefined;
+      const merged = buffer + event.value;
+      if (Array.from(merged).length <= SANDBOX_PATH_INPUT_MAX) {
+        nextState.pathInput = merged;
+      } else {
+        // 超过上限时保持缓冲不变并明确报错,绝不静默丢弃任何已输入字符。
+        nextState.error = `路径太长：最多 ${SANDBOX_PATH_INPUT_MAX} 个字符`;
+      }
+    } else if (event.type === INPUT_EVENTS.BACKSPACE) {
+      nextState.error = undefined;
+      nextState.pathInput = Array.from(buffer).slice(0, -1).join('');
+    } else if (event.type === INPUT_EVENTS.ESCAPE) {
+      nextState.pathInput = undefined;
+    } else if (event.type === INPUT_EVENTS.SUBMIT) {
+      const candidate = buffer.trim();
+
+      if (candidate === '') {
+        nextState.error = '路径不能为空';
+      } else if (!isAbsolute(candidate)) {
+        nextState.error = '路径必须是绝对路径';
+      } else if (nextState.draft.extraWritablePaths.includes(candidate)) {
+        nextState.error = `路径已存在：${candidate}`;
+      } else {
+        nextState.draft.extraWritablePaths.push(candidate);
+        nextState.pathInput = undefined;
+        nextState.selectedIndex = getSandboxConfigRowIds(nextState).findIndex((rowId) => rowId === `path:${nextState.draft.extraWritablePaths.length - 1}`);
+      }
+    } else {
+      // 输入模式下忽略其余事件(移动键等),保持输入状态。
+      return;
+    }
+
+    this.update({...data, sandbox: {state: nextState}}, host);
   }
 
   private handleAppearanceEvent(data: ConfigCommandData, state: AppearanceConfigState, event: InputEvent, host: CommandHost): void {
@@ -246,7 +360,8 @@ class ConfigCommandHandler implements CommandHandler<ConfigCommandData> {
   private requestClose(data: ConfigCommandData, host: CommandHost): void {
     const dirtyTabs = [
       ...(isGeneralConfigDirty(data.general?.state) ? ['常规'] : []),
-      ...(isModelConfigDirty(data.models?.state) ? ['模型与 Provider'] : [])
+      ...(isModelConfigDirty(data.models?.state) ? ['模型与 Provider'] : []),
+      ...(isSandboxConfigDirty(data.sandbox?.state) ? ['沙箱'] : [])
     ];
 
     if (dirtyTabs.length > 0) {
@@ -305,6 +420,14 @@ function initializeTab(data: ConfigCommandData, tab: ConfigTabId, host: CommandH
     }
   }
 
+  if (tab === 'sandbox' && !data.sandbox) {
+    try {
+      return {...data, sandbox: {state: createInitialSandboxConfigState(host.config.readSandboxDraft())}};
+    } catch (error: unknown) {
+      return {...data, sandbox: {error: toErrorMessage(error)}};
+    }
+  }
+
   if (tab === 'appearance' && !data.appearance) {
     try {
       return {...data, appearance: {state: createInitialAppearanceConfigState(host.theme.listThemes())}};
@@ -348,6 +471,20 @@ function adjustGeneralValue(state: GeneralConfigState, direction: number): Gener
     state.draft.agentInstructionFileName = state.draft.agentInstructionFileName === 'AGENTS.md' ? 'CLAUDE.md' : 'AGENTS.md';
   }
   return state;
+}
+
+const SANDBOX_PATH_INPUT_MAX = 4096; // 沙箱目录行内输入长度上限(码点);覆盖 PATH_MAX,防止超长粘贴撑爆缓冲。
+
+function adjustSandboxValue(state: SandboxConfigState, direction: number): void {
+  const selectedRow = getSandboxConfigRowIds(state)[state.selectedIndex];
+
+  if (selectedRow === 'mode') {
+    const currentIndex = SANDBOX_MODE_CYCLE.indexOf(state.draft.mode);
+    const next = (Math.max(0, currentIndex) + direction + SANDBOX_MODE_CYCLE.length) % SANDBOX_MODE_CYCLE.length;
+    state.draft.mode = SANDBOX_MODE_CYCLE[next];
+  } else if (selectedRow === 'network') {
+    state.draft.network = !state.draft.network;
+  }
 }
 
 function clamp(value: number, min: number, max: number): number {

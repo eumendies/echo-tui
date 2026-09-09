@@ -370,6 +370,7 @@ macOS 上 `run_bash_command` 默认经过 `sandbox-exec`(Seatbelt)包装执行,�
 - 执行语义不变:timeout、Esc 中断(进程组 kill)、输出截断与 offload 都作用在 `sandbox-exec` 整个进程组上;headless `--full-access` 强制关闭沙箱,headless `deny` 下照常生效
 - 用户 shell 模式、lifecycle hooks、MCP server 进程与 Node 侧内置工具不套沙箱;审批流(`tool-risk-classifier`)与沙箱正交,已批准命令在其沙箱边界内执行
 - `/usr/bin/sandbox-exec` 缺失或平台不支持时按无沙箱降级,`/status` 展示档位、网络与可用性,降级不静默;沙箱生效时在内置 transient 系统上下文追加一行边界说明,让模型对受限命令有预期
+- `/config` 的「沙箱」Tab 可视化编辑 `tools.sandbox`(档位/网络/额外可写目录),保存原子写入并发布新配置 revision,下一条 bash 命令即时生效;非法档位或路径就地报错不落盘
 
 ## Markdown 渲染
 
