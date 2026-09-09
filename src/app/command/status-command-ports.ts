@@ -155,7 +155,7 @@ function createStatusSandboxState(config: SandboxToolConfig): CommandStatusSandb
   }
 
   if (!effective.available) {
-    return {mode: effective.policy.mode, network: effective.policy.network, provider: effective.provider.name, available: false, unavailableReason: 'sandbox-exec 不可用'};
+    return {mode: effective.policy.mode, network: effective.policy.network, provider: effective.provider.name, available: false, unavailableReason: effective.provider.describeUnavailable()};
   }
 
   return {mode: effective.policy.mode, network: effective.policy.network, provider: effective.provider.name, available: true};

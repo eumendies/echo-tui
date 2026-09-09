@@ -6,6 +6,7 @@ import type {SandboxCommandInput, SandboxPolicy, SandboxProvider} from './types'
 
 const MACOS_SANDBOX_EXEC_PATH = '/usr/bin/sandbox-exec'; // macOS 自带 Seatbelt 前端;已 deprecated,缺失时按不可用降级。
 const MACOS_SEATBELT_PROVIDER_NAME = 'macos-seatbelt';
+const MACOS_SANDBOX_UNAVAILABLE_REASON = 'sandbox-exec 不可用'; // /status 降级说明;保持既有展示文案不变。
 
 type MacosSeatbeltProviderOptions = {
   sandboxExecPath?: string; // 沙箱前端可执行文件路径;测试可注入。
@@ -29,6 +30,7 @@ function createMacosSeatbeltSandboxProvider(options: MacosSeatbeltProviderOption
   return {
     name: MACOS_SEATBELT_PROVIDER_NAME,
     isAvailable: () => exists(sandboxExecPath),
+    describeUnavailable: () => MACOS_SANDBOX_UNAVAILABLE_REASON,
     wrapCommand(input: SandboxCommandInput, policy: SandboxPolicy): string[] | null {
       if (policy.mode === 'off' || !exists(sandboxExecPath)) {
         return null;
