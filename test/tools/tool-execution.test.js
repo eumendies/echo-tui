@@ -4284,6 +4284,62 @@ test('apply_patch rejects hunk mismatches and ambiguous hunks', async () => {
   assert.equal(readWorkspaceFile(cwd, 'ambiguous.txt'), 'same\nkeep\nsame\nkeep\n');
 });
 
+test('apply_patch failure reasons identify the failing hunk', async () => {
+  const cwd = createTempWorkspace();
+  fs.writeFileSync(path.join(cwd, 'seq.txt'), 'alpha\nkeep\nomega\n', 'utf8');
+  fs.writeFileSync(path.join(cwd, 'amb.txt'), 'top\nalpha\nkeep\nbeta\nkeep\n', 'utf8');
+  const executor = createToolExecutor(createToolRegistry([createApplyPatchToolHandler({ cwd })]));
+
+  const staleSecondHunk = await executor.execute(createPatchCall([
+    '*** Begin Patch',
+    '*** Update File: seq.txt',
+    '@@',
+    ' alpha',
+    '-keep',
+    '+changed',
+    '@@',
+    ' beta',
+    '-gamma',
+    '+delta',
+    '*** End Patch'
+  ].join('\n')));
+
+  assert.equal(staleSecondHunk.ok, false);
+  assert.match(staleSecondHunk.text, /hunk 2 of 2 matched 0 locations in seq\.txt/);
+  assert.equal(readWorkspaceFile(cwd, 'seq.txt'), 'alpha\nkeep\nomega\n');
+
+  const staleSecondAnchor = await executor.execute(createPatchCall([
+    '*** Begin Patch',
+    '*** Update File: seq.txt',
+    '@@ keep',
+    '+inserted',
+    '@@ gone',
+    '+end',
+    '*** End Patch'
+  ].join('\n')));
+
+  assert.equal(staleSecondAnchor.ok, false);
+  assert.match(staleSecondAnchor.text, /hunk 2 of 2 anchor line matched 0 locations in seq\.txt/);
+  assert.equal(readWorkspaceFile(cwd, 'seq.txt'), 'alpha\nkeep\nomega\n');
+
+  const ambiguousSecondHunk = await executor.execute(createPatchCall([
+    '--- a/amb.txt',
+    '+++ b/amb.txt',
+    '@@ -1,2 +1,2 @@',
+    ' top',
+    '-alpha',
+    '+ALPHA',
+    '@@ -3 +3 @@',
+    '-keep',
+    '+KEEP',
+    ''
+  ].join('\n')));
+
+  assert.equal(ambiguousSecondHunk.ok, false);
+  assert.match(ambiguousSecondHunk.text, /hunk 2 of 2 matched multiple locations in amb\.txt/);
+  assert.equal(readWorkspaceFile(cwd, 'amb.txt'), 'top\nalpha\nkeep\nbeta\nkeep\n');
+});
+
 test('apply_patch rejects invalid input, missing targets, and existing add targets', async () => {
   const cwd = createTempWorkspace();
   fs.writeFileSync(path.join(cwd, 'exists.txt'), 'exists\n', 'utf8');

@@ -359,12 +359,14 @@ function applyIndependentUpdateHunks(
   let currentLines = startingLines;
   const matchedHunks: Array<{hunk: PatchHunk; postStart: number}> = [];
 
-  for (const hunk of operation.hunks) {
+  for (const [hunkIndex, hunk] of operation.hunks.entries()) {
+    const hunkRef = formatHunkRef(hunkIndex, operation.hunks.length);
+
     // 空 oldLines 没有定位锚点；插入也必须带上下文，避免猜测插入位置。
     if (hunk.oldLines.length === 0) {
       return {
         ok: false,
-        reason: `hunk for ${operation.filePath} has no context or removed lines`,
+        reason: `${hunkRef} for ${operation.filePath} has no context or removed lines`,
         hint: 'Read the file again and include context around the insertion.'
       };
     }
@@ -374,7 +376,7 @@ function applyIndependentUpdateHunks(
     if (!match.ok) {
       return {
         ok: false,
-        reason: `${match.reason} in ${operation.filePath}`,
+        reason: `${hunkRef} ${match.reason} in ${operation.filePath}`,
         hint: 'Read the file again and include more surrounding context in the hunk.'
       };
     }
@@ -406,14 +408,16 @@ function applySequentialUpdateHunks(
   const matchedHunks: Array<{hunk: PatchHunk; postStart: number}> = [];
   let searchStart = 0;
 
-  for (const hunk of operation.hunks) {
+  for (const [hunkIndex, hunk] of operation.hunks.entries()) {
+    const hunkRef = formatHunkRef(hunkIndex, operation.hunks.length);
+
     if (hunk.anchorLine !== undefined) {
       const anchor = findFirstMatch(currentLines, [hunk.anchorLine], searchStart);
 
       if (!anchor.ok) {
         return {
           ok: false,
-          reason: `${anchor.reason} in ${operation.filePath}`,
+          reason: `${hunkRef} anchor line ${anchor.reason} in ${operation.filePath}`,
           hint: 'Read the file again and include more surrounding context in the hunk.'
         };
       }
@@ -429,7 +433,7 @@ function applySequentialUpdateHunks(
 
         return {
           ok: false,
-          reason: `hunk for ${operation.filePath} has no context or removed lines`,
+          reason: `${hunkRef} for ${operation.filePath} has no context or removed lines`,
           hint: 'Read the file again and include context around the insertion.'
         };
       }
@@ -439,7 +443,7 @@ function applySequentialUpdateHunks(
       if (!contextMatch.ok) {
         return {
           ok: false,
-          reason: `${contextMatch.reason} in ${operation.filePath}`,
+          reason: `${hunkRef} ${contextMatch.reason} in ${operation.filePath}`,
           hint: 'Read the file again and include more surrounding context in the hunk.'
         };
       }
@@ -452,7 +456,7 @@ function applySequentialUpdateHunks(
       if (hunk.anchorLine === undefined) {
         return {
           ok: false,
-          reason: `hunk for ${operation.filePath} has no context or removed lines`,
+          reason: `${hunkRef} for ${operation.filePath} has no context or removed lines`,
           hint: 'Read the file again and include context around the insertion.'
         };
       }
@@ -473,7 +477,7 @@ function applySequentialUpdateHunks(
     if (!match.ok) {
       return {
         ok: false,
-        reason: `${match.reason} in ${operation.filePath}`,
+        reason: `${hunkRef} ${match.reason} in ${operation.filePath}`,
         hint: 'Read the file again and include more surrounding context in the hunk.'
       };
     }
@@ -488,6 +492,13 @@ function applySequentialUpdateHunks(
   }
 
   return {ok: true, value: {lines: currentLines, matchedHunks}};
+}
+
+/**
+ * 失败原因必须定位到具体 hunk；序号从 1 开始，与 patch 中 hunk 的书写顺序一致。
+ */
+function formatHunkRef(hunkIndex: number, totalHunks: number): string {
+  return `hunk ${hunkIndex + 1} of ${totalHunks}`;
 }
 
 /**
@@ -559,12 +570,12 @@ function findUniqueMatch(lines: string[], target: string[], startIndex = 0): Res
     }
 
     if (matches.length > 1) {
-      return {ok: false, reason: 'hunk matched multiple locations'};
+      return {ok: false, reason: 'matched multiple locations'};
     }
   }
 
   return matches.length === 0
-    ? {ok: false, reason: 'hunk matched 0 locations'}
+    ? {ok: false, reason: 'matched 0 locations'}
     : {ok: true, value: matches[0]};
 }
 
@@ -585,7 +596,7 @@ function findFirstMatch(lines: string[], target: string[], startIndex: number): 
     }
   }
 
-  return {ok: false, reason: 'hunk matched 0 locations'};
+  return {ok: false, reason: 'matched 0 locations'};
 }
 
 function resolvePatchPath(cwd: string, patchPath: string): Result<string> {
