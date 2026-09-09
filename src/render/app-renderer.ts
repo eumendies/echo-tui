@@ -1,4 +1,5 @@
 import * as ansi from '../terminal/ansi';
+import {sanitizeTerminalText} from '../terminal/control-chars';
 import {DEFAULT_RENDER_PREFERENCES} from '../config/app-settings-config';
 import {DEFAULT_TUI_THEME} from '../config/theme-config';
 import { getCommittableReasoningText, getCommittableStreamingText, renderAssistantBlock, renderAssistantMessageLines, renderBanner, renderCompactionNoticeBlock, renderConversationReferenceBlock, renderErrorBlock, renderLocalNoticeBlock, renderReasoningSummaryBlock, renderReasoningSummaryLines, renderShellBlock, renderStreamingCommitLines, renderUserBlock } from './blocks';
@@ -13,6 +14,7 @@ import type {
   RenderDestructiveOptions,
   RenderFinalOptions,
   RenderInitialOptions,
+  PendingState,
   RenderState
 } from '../types/render';
 
@@ -54,6 +56,75 @@ type DisplayedStreamingText = {
 type StreamingDisplayState = DisplayedStreamingText & {
   reasoningDisplayClosed: boolean; // 首个正文 token 后禁止再把迟到 reasoning 追加到当前终端历史区。
 };
+
+/**
+ * 外部来源的 pending 文本(模型草稿、工具参数)可能混入控制字符;
+ * CR 会把光标拉回列首覆盖已写内容,ESC 可注入 ANSI 序列,进入渲染前统一净化。
+ */
+export function sanitizePendingDisplayText(pending: PendingState): PendingState {
+  if (pending.kind === 'reasoning_streaming') {
+    return {
+      ...pending,
+      text: sanitizeTerminalText(pending.text),
+      ...(pending.historyText !== undefined ? {historyText: sanitizeTerminalText(pending.historyText)} : {})
+    };
+  }
+
+  if (pending.kind === 'streaming') {
+    return {
+      ...pending,
+      text: sanitizeTerminalText(pending.text),
+      ...(pending.reasoningText !== undefined ? {reasoningText: sanitizeTerminalText(pending.reasoningText)} : {}),
+      ...(pending.historyText !== undefined ? {historyText: sanitizeTerminalText(pending.historyText)} : {})
+    };
+  }
+
+  if (pending.kind === 'tool_call') {
+    return {...pending, argumentsText: sanitizeTerminalText(pending.argumentsText)};
+  }
+
+  if (pending.kind === 'tool_calls') {
+    return {
+      ...pending,
+      calls: pending.calls.map((call) => ({...call, argumentsText: sanitizeTerminalText(call.argumentsText)}))
+    };
+  }
+
+  // thinking 无文本,shell 输出的 CR 具有进度条语义,subagent 由专属 renderer 处理,均保持原样。
+  return pending;
+}
+
+/**
+ * transcript 文本来自模型、工具与用户粘贴等外部来源;渲染前剥离控制字符,
+ * 只净化终端投影,持久化事实保持原样。
+ */
+function sanitizeRecordDisplayText(record: TranscriptRecord): TranscriptRecord {
+  if (record.role === 'user') {
+    return {
+      ...record,
+      text: sanitizeTerminalText(record.text),
+      ...(record.displayText !== undefined ? {displayText: sanitizeTerminalText(record.displayText)} : {})
+    };
+  }
+
+  if (record.role === 'tool_call') {
+    return {
+      ...record,
+      text: sanitizeTerminalText(record.text),
+      argumentsText: sanitizeTerminalText(record.argumentsText)
+    };
+  }
+
+  if (record.role === 'tool_result') {
+    return {...record, text: sanitizeTerminalText(record.text)};
+  }
+
+  if (record.role === 'subagent' || record.role === 'extension') {
+    return record;
+  }
+
+  return {...record, text: sanitizeTerminalText(record.text)};
+}
 
 /**
  * 管理应用级终端渲染，并为主会话与 BTW 分别保存流式显示进度。
@@ -153,6 +224,7 @@ class DefaultAppRenderer implements AppRenderer {
    * finalizeRecord 是已经写入会话事实的权威文本；对应通道由 record role 决定。
    */
   render(options: RenderState, finalizeRecord?: Extract<TranscriptRecord, {role: 'assistant' | 'reasoning_summary'}>): void {
+    options = options.pending ? {...options, pending: sanitizePendingDisplayText(options.pending)} : options;
     const current = this.getStreamingState(options);
     const next = finalizeRecord && !options.pending
       ? {assistant: current.assistant, reasoning: current.reasoning}
@@ -172,7 +244,7 @@ class DefaultAppRenderer implements AppRenderer {
     if (finalizeRecord) {
       const kind = finalizeRecord.role === 'assistant' ? 'assistant' : 'reasoning';
       const renderMessage = kind === 'assistant' ? renderAssistantMessageLines : renderReasoningSummaryLines;
-      const fullLines = renderMessage(finalizeRecord.text, options.width, options.theme);
+      const fullLines = renderMessage(sanitizeTerminalText(finalizeRecord.text), options.width, options.theme);
       const displayedText = current[kind];
       const displayedLines = displayedText === '' ? [] : renderMessage(displayedText, options.width, options.theme);
       const remainingLines = fullLines.slice(displayedLines.length);
@@ -194,13 +266,15 @@ class DefaultAppRenderer implements AppRenderer {
   }
 
   /** transcript 成组新增时一次性追加所有可见块并重绘 footer。 */
-  renderRecords({records, ...options}: RenderRecordsOptions): void {
+  renderRecords({records, ...rawState}: RenderRecordsOptions): void {
+    const options = rawState.pending ? {...rawState, pending: sanitizePendingDisplayText(rawState.pending)} : rawState;
     const blocks = renderTranscriptBlocks(records, options.width, options.theme, options.renderPreferences, false, this.subagentAppendState);
     this.footer.append(blocks.join(''), this.prepareRenderState(options));
   }
 
   /** 清屏后按当前宽度重画完整界面，并重新计算尚未生成正式记录的流式内容。 */
-  renderDestructive({bannerContext, records, ...options}: RenderDestructiveOptions): void {
+  renderDestructive({bannerContext, records, ...rawState}: RenderDestructiveOptions): void {
+    const options = rawState.pending ? {...rawState, pending: sanitizePendingDisplayText(rawState.pending)} : rawState;
     const activeSubagentRunId = options.pending?.kind === 'subagent' ? options.pending.runId : undefined;
     this.subagentAppendState.runIds.clear();
     this.subagentAppendState.terminalCallIds.clear();
@@ -451,40 +525,41 @@ function renderTranscriptBlock(block: TranscriptBlock, width: number, theme: Ren
  *
  */
 function renderRecordBlock(record: TranscriptRecord, width: number, theme: RenderState['theme']): string {
-  if (record.role === 'user') {
-    const reference = record.metadata?.conversationReference;
+  const safeRecord = sanitizeRecordDisplayText(record);
+  if (safeRecord.role === 'user') {
+    const reference = safeRecord.metadata?.conversationReference;
     const referenceBlock = reference
       ? renderConversationReferenceBlock(reference.title, reference.projectionMode, width, theme)
       : '';
-    return `${referenceBlock}${renderUserBlock(getUserDisplayText(record), width, theme, record.metadata?.interactionMode)}`;
+    return `${referenceBlock}${renderUserBlock(getUserDisplayText(safeRecord), width, theme, safeRecord.metadata?.interactionMode)}`;
   }
 
-  if (record.role === 'assistant') {
-    return renderAssistantBlock(record.text, width, theme);
+  if (safeRecord.role === 'assistant') {
+    return renderAssistantBlock(safeRecord.text, width, theme);
   }
 
-  if (record.role === 'tool_call' || record.role === 'tool_result') {
-    return renderToolRecordBlock(record, width, theme);
+  if (safeRecord.role === 'tool_call' || safeRecord.role === 'tool_result') {
+    return renderToolRecordBlock(safeRecord, width, theme);
   }
 
-  if (record.role === 'shell') {
-    return renderShellBlock(record.text, width, theme);
+  if (safeRecord.role === 'shell') {
+    return renderShellBlock(safeRecord.text, width, theme);
   }
 
-  if (record.role === 'error') {
-    return renderErrorBlock(record.text, width, theme);
+  if (safeRecord.role === 'error') {
+    return renderErrorBlock(safeRecord.text, width, theme);
   }
 
-  if (record.role === 'compaction_notice') {
-    return renderCompactionNoticeBlock(record.text, width, theme);
+  if (safeRecord.role === 'compaction_notice') {
+    return renderCompactionNoticeBlock(safeRecord.text, width, theme);
   }
 
-  if (record.role === 'local_notice') {
-    return renderLocalNoticeBlock(record.text, width, theme);
+  if (safeRecord.role === 'local_notice') {
+    return renderLocalNoticeBlock(safeRecord.text, width, theme);
   }
 
-  if (record.role === 'reasoning_summary') {
-    return renderReasoningSummaryBlock(record.text, width, theme);
+  if (safeRecord.role === 'reasoning_summary') {
+    return renderReasoningSummaryBlock(safeRecord.text, width, theme);
   }
 
   return '';

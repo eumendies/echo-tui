@@ -1,5 +1,6 @@
 import * as ansi from '../../terminal/ansi';
 import { displayWidth, safeRenderWidth, wrapText } from '../layout';
+import { sanitizeTerminalText } from '../../terminal/control-chars';
 import { activeBackground, codeBackground, renderFocusBar, resolveFooterTheme, tokenText, type FooterTheme } from '../colors';
 import { clampPlainText, padVisibleText } from './text';
 import { clampCursorRow, clampIndex, normalizeLineLimit } from './window';
@@ -36,20 +37,48 @@ type ChoiceOptionRenderUnit = {
 /**
  * 渲染统一 choice card；调用方只提供标题、正文 section、选项 section 和当前选择快照。
  */
+/**
+ * 外部来源的卡片文本可能携带 CR/ESC 等控制字符;渲染前统一净化,避免行覆盖与 ANSI 注入。
+ * inlineInput.cursor 以原始草稿为基准,粘贴含 CR 文本等极端场景光标列可能略有偏差,可接受。
+ */
+function sanitizeChoiceSurfaceText(commandSurface: ChoiceCommandSurface): ChoiceCommandSurface {
+  return {
+    ...commandSurface,
+    title: sanitizeTerminalText(commandSurface.title),
+    ...(commandSurface.tabs ? {tabs: commandSurface.tabs.map((tab) => ({...tab, label: sanitizeTerminalText(tab.label)}))} : {}),
+    ...(commandSurface.message !== undefined ? {message: sanitizeTerminalText(commandSurface.message)} : {}),
+    ...(commandSurface.messageTitle !== undefined ? {messageTitle: sanitizeTerminalText(commandSurface.messageTitle)} : {}),
+    optionsTitle: sanitizeTerminalText(commandSurface.optionsTitle),
+    options: commandSurface.options.map((option) => ({
+      ...option,
+      label: sanitizeTerminalText(option.label),
+      ...(option.description !== undefined ? {description: sanitizeTerminalText(option.description)} : {}),
+      ...(option.inlineInput ? {inlineInput: {
+        ...option.inlineInput,
+        placeholder: sanitizeTerminalText(option.inlineInput.placeholder),
+        text: sanitizeTerminalText(option.inlineInput.text)
+      }} : {})
+    })),
+    dismissHint: sanitizeTerminalText(commandSurface.dismissHint)
+  };
+}
+
 export function renderChoiceSurface(commandSurface: ChoiceCommandSurface, width: number, maxLines = Number.POSITIVE_INFINITY, theme: FooterTheme = resolveFooterTheme(undefined)): FooterLayout {
-  const boxWidth = calculateChoiceCardBoxWidth(commandSurface, width);
+  // 选项文本来自模型参数等外部来源;进入布局前剥离控制字符,避免 CR 覆盖与 ANSI 注入破坏卡片。
+  const surface = sanitizeChoiceSurfaceText(commandSurface);
+  const boxWidth = calculateChoiceCardBoxWidth(surface, width);
   const innerWidth = Math.max(1, boxWidth - 2);
-  const options = commandSurface.options;
-  const focusedIndex = commandSurface.focusedIndex;
-  const selectionMode = commandSurface.selectionMode || 'single';
-  const topLine = renderChoiceCardBorderTop(commandSurface.title, innerWidth, theme);
-  const tabLines = renderChoiceCardTabs(commandSurface.tabs, commandSurface.activeTabIndex, innerWidth, theme);
-  const messageLines = commandSurface.message
-    ? renderChoiceCardMessageSection(commandSurface.message, commandSurface.messageTitle || '消息', commandSurface.messageStyle || 'text', innerWidth, theme)
+  const options = surface.options;
+  const focusedIndex = surface.focusedIndex;
+  const selectionMode = surface.selectionMode || 'single';
+  const topLine = renderChoiceCardBorderTop(surface.title, innerWidth, theme);
+  const tabLines = renderChoiceCardTabs(surface.tabs, surface.activeTabIndex, innerWidth, theme);
+  const messageLines = surface.message
+    ? renderChoiceCardMessageSection(surface.message, surface.messageTitle || '消息', surface.messageStyle || 'text', innerWidth, theme)
     : [];
-  const optionsLine = renderChoiceCardBoxLine(renderChoiceCardSectionRule(commandSurface.optionsTitle, Math.max(1, innerWidth - 2), theme), innerWidth, theme);
+  const optionsLine = renderChoiceCardBoxLine(renderChoiceCardSectionRule(surface.optionsTitle, Math.max(1, innerWidth - 2), theme), innerWidth, theme);
   const optionUnits = options.map((option, index) => renderChoiceCardOptionUnit(option, index, focusedIndex, selectionMode, innerWidth, theme));
-  const dismissHint = commandSurface.dismissHint;
+  const dismissHint = surface.dismissHint;
   const dismissLine = renderChoiceCardBoxLine(ansi.dim(clampPlainText(dismissHint, Math.max(1, innerWidth - 2))), innerWidth, theme);
   const bottomLine = renderChoiceCardBorderBottom(innerWidth, theme);
   const fullLayout = createChoiceCardLayout({
