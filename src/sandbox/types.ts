@@ -17,11 +17,12 @@ export type SandboxCommandInput = {
   cwd: string; // 本次执行的工作目录;workspace-write 档的默认可写根。
 };
 
-export type SandboxProviderName = 'macos-seatbelt'; // 平台实现的稳定标识,用于 /status 与诊断展示。
+export type SandboxProviderName = 'macos-seatbelt' | 'linux-bubblewrap'; // 平台实现的稳定标识,用于 /status 与诊断展示。
 
 export type SandboxProvider = {
   name: SandboxProviderName; // 实现标识。
   isAvailable: () => boolean; // 沙箱工具是否存在于当前环境。
+  describeUnavailable: () => string; // 不可用降级原因;仅在 isAvailable() 为 false 时由 /status 读取,供降级说明定位到具体实现。
   wrapCommand: (input: SandboxCommandInput, policy: SandboxPolicy) => string[] | null; // 返回完整 spawn argv;不可用或策略为 off 时返回 null,调用方按无沙箱执行。
 };
 

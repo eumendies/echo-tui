@@ -9,17 +9,38 @@ const AVAILABLE_PROVIDER_OPTIONS = {
   realpath: (targetPath) => targetPath,
   tmpdir: () => '/private/tmp'
 };
+const AVAILABLE_LINUX_PROVIDER_OPTIONS = {
+  bwrapPath: '/usr/bin/bwrap',
+  exists: () => true,
+  mkdir: () => {},
+  probe: () => true,
+  realpath: (targetPath) => targetPath,
+  tmpdir: () => '/tmp'
+};
 const SANDBOX_CONFIG = {mode: 'workspace-write', network: true, extraWritablePaths: []};
 
-test('resolveSandboxProvider only returns provider on darwin', () => {
-  assert.equal(resolveSandboxProvider('linux'), null);
+test('resolveSandboxProvider resolves providers per platform', () => {
   assert.equal(resolveSandboxProvider('win32'), null);
   assert.equal(resolveSandboxProvider('darwin', AVAILABLE_PROVIDER_OPTIONS)?.name, 'macos-seatbelt');
+  assert.equal(resolveSandboxProvider('linux')?.name, 'linux-bubblewrap');
 });
 
-test('resolveBashSandboxContext returns null for off mode and non-darwin platforms', () => {
+test('resolveBashSandboxContext returns null for off mode and unsupported platforms', () => {
   assert.equal(resolveBashSandboxContext({...SANDBOX_CONFIG, mode: 'off'}, undefined, {platform: 'darwin', providerOptions: AVAILABLE_PROVIDER_OPTIONS}), null);
-  assert.equal(resolveBashSandboxContext(SANDBOX_CONFIG, undefined, {platform: 'linux', providerOptions: AVAILABLE_PROVIDER_OPTIONS}), null);
+  assert.equal(resolveBashSandboxContext(SANDBOX_CONFIG, undefined, {platform: 'win32'}), null);
+});
+
+test('linux platform resolves a bubblewrap sandbox context and runtime note', () => {
+  const context = resolveBashSandboxContext(SANDBOX_CONFIG, undefined, {platform: 'linux', providerOptions: AVAILABLE_LINUX_PROVIDER_OPTIONS});
+
+  assert.equal(context?.provider.name, 'linux-bubblewrap');
+  assert.equal(context?.policy.mode, 'workspace-write');
+  assert.equal(context?.policy.network, true);
+
+  const note = createSandboxRuntimeNote(SANDBOX_CONFIG, undefined, {platform: 'linux', providerOptions: AVAILABLE_LINUX_PROVIDER_OPTIONS});
+
+  assert.match(note, /filesystem writes are limited to the workspace/);
+  assert.match(note, /network access is allowed/);
 });
 
 test('resolveBashSandboxContext exempts headless full-access runs', () => {
@@ -39,7 +60,7 @@ test('resolveBashSandboxContext keeps sandbox for headless deny runs and forces 
 });
 
 test('resolveEffectiveSandbox keeps the normalized policy visible without a platform provider', () => {
-  const readOnly = resolveEffectiveSandbox({...SANDBOX_CONFIG, mode: 'read-only', network: true}, undefined, {platform: 'linux'});
+  const readOnly = resolveEffectiveSandbox({...SANDBOX_CONFIG, mode: 'read-only', network: true}, undefined, {platform: 'win32'});
 
   assert.equal(readOnly?.provider, null);
   assert.equal(readOnly?.available, false);
@@ -62,6 +83,12 @@ test('createSandboxRuntimeNote describes only effective sandbox boundaries', () 
 
 test('createSandboxRuntimeNote stays silent when the sandbox tool is unavailable', () => {
   const note = createSandboxRuntimeNote(SANDBOX_CONFIG, undefined, {platform: 'darwin', providerOptions: {exists: () => false}});
+
+  assert.equal(note, null);
+});
+
+test('createSandboxRuntimeNote stays silent when the bubblewrap trial fails', () => {
+  const note = createSandboxRuntimeNote(SANDBOX_CONFIG, undefined, {platform: 'linux', providerOptions: {bwrapPath: '/usr/bin/bwrap', exists: () => true, probe: () => false}});
 
   assert.equal(note, null);
 });

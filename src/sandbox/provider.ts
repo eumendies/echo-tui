@@ -1,23 +1,32 @@
+import {createLinuxBubblewrapSandboxProvider} from './linux-bubblewrap';
 import {createMacosSeatbeltSandboxProvider} from './macos-seatbelt';
 
 import type {AgentExecutionMode, SandboxToolConfig} from '../types/agent';
+import type {LinuxBubblewrapProviderOptions} from './linux-bubblewrap';
 import type {MacosSeatbeltProviderOptions} from './macos-seatbelt';
 import type {EffectiveSandbox, SandboxProvider, SandboxRuntimeContext} from './types';
 
+// 两个平台 provider 可注入依赖的并集;公共字段签名一致,按平台各自取用不冲突。
+type SandboxProviderOptions = MacosSeatbeltProviderOptions & LinuxBubblewrapProviderOptions;
+
 type SandboxResolutionOptions = {
   platform?: NodeJS.Platform; // 运行平台;缺省取当前进程平台,测试可注入。
-  providerOptions?: MacosSeatbeltProviderOptions; // 透传给 Seatbelt provider 的可注入依赖。
+  providerOptions?: SandboxProviderOptions; // 透传给平台 provider 的可注入依赖。
 };
 
 /**
- * 按平台解析沙箱 provider;macOS 返回 Seatbelt 实现,其他平台返回 null 表示不支持。
+ * 按平台解析沙箱 provider;macOS 返回 Seatbelt 实现,Linux 返回 bubblewrap 实现,其他平台返回 null 表示不支持。
  */
-function resolveSandboxProvider(platform: NodeJS.Platform = process.platform, options: MacosSeatbeltProviderOptions = {}): SandboxProvider | null {
-  if (platform !== 'darwin') {
-    return null;
+function resolveSandboxProvider(platform: NodeJS.Platform = process.platform, options: SandboxProviderOptions = {}): SandboxProvider | null {
+  if (platform === 'darwin') {
+    return createMacosSeatbeltSandboxProvider(options);
   }
 
-  return createMacosSeatbeltSandboxProvider(options);
+  if (platform === 'linux') {
+    return createLinuxBubblewrapSandboxProvider(options);
+  }
+
+  return null;
 }
 
 function isHeadlessFullAccess(executionMode?: AgentExecutionMode): boolean {
@@ -89,5 +98,6 @@ export {
 };
 
 export type {
+  SandboxProviderOptions,
   SandboxResolutionOptions
 };
