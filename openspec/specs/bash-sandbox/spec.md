@@ -128,7 +128,12 @@ TBD - created by archiving change add-macos-bash-sandbox. Update Purpose after a
 - **THEN** `/status` SHALL 展示沙箱不可用状态
 
 ### Requirement: Linux bubblewrap 沙箱执行包装
-在 linux 且沙箱配置启用时,系统 SHALL 以 bubblewrap 参数集包装 `<shell> -lc <command>` 执行 `run_bash_command` 的命令。参数 SHALL 按"先全局只读、后定向放行"的顺序组织:最小设备集 `/dev`(含 `/dev/null`,不绑定宿主全量 `/dev`)、`/proc`、`--ro-bind / /`、`--tmpfs /tmp`,再按策略追加仅 `workspace-write` 档的可写 bind(当前工作区、`~/.echo/agent-memory`、`extraWritablePaths` 逐条)以及禁网参数 `--unshare-net`(策略禁网时)。进程 TMPDIR 不在 `/tmp` 下时 SHALL 补充对应 bind,位于 `/tmp` 下时由 tmpfs 覆盖。可写路径 SHALL 按 realpath 归一化,不存在的目录 SHALL 保留原路径。沙箱包装 SHALL NOT 改变既有 bash 执行语义:timeout、Esc 中断、进程组终止、stdout/stderr 捕获、截断与 offload SHALL 保持既有行为。
+在 linux 且沙箱配置启用时,系统 SHALL 以 bubblewrap 参数集包装 `<shell> -lc <command>` 执行 `run_bash_command` 的命令。参数 SHALL 按"先全局只读、后定向放行"的顺序组织(bwrap 的文件系统选项按命令行顺序生效):`--ro-bind / /` SHALL 先于设备与临时文件系统挂载,依次为全局只读绑定 `--ro-bind / /`、最小设备集 `--dev /dev`(含 `/dev/null`,不绑定宿主全量 `/dev`)、`--proc /proc`、`--tmpfs /tmp`、`--tmpfs /dev/shm`,再按策略追加仅 `workspace-write` 档的可写 bind(当前工作区、`~/.echo/agent-memory`、`extraWritablePaths` 逐条)以及禁网参数 `--unshare-net`(策略禁网时)。进程 TMPDIR 不在 `/tmp` 下时 SHALL 补充对应 bind,位于 `/tmp` 下时由 tmpfs 覆盖。可写路径 SHALL 按 realpath 归一化,不存在的目录 SHALL 保留原路径。沙箱包装 SHALL NOT 改变既有 bash 执行语义:timeout、Esc 中断、进程组终止、stdout/stderr 捕获、截断与 offload SHALL 保持既有行为。
+
+#### Scenario: /dev 与 /proc 不被全盘只读绑定覆盖
+- **WHEN** 沙箱 argv 以 `--ro-bind / /` 在前、`--dev`/`--proc`/tmpfs 挂载在后的顺序组织
+- **THEN** 沙箱内 `/dev` SHALL 是新的最小设备集且 `/dev/null` 可写
+- **AND** `/proc` SHALL 是新挂载的 procfs
 
 #### Scenario: workspace-write 下写工作区成功
 - **WHEN** 沙箱为 `workspace-write` 档且命令在工作区内创建或修改文件

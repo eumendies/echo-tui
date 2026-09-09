@@ -71,10 +71,11 @@ test('wrapCommand emits the readonly root before writable binds in order', () =>
     '/usr/bin/bwrap',
     '--die-with-parent',
     '--unshare-net',
+    '--ro-bind', '/', '/',
     '--dev', '/dev',
     '--proc', '/proc',
-    '--ro-bind', '/', '/',
     '--tmpfs', '/tmp',
+    '--tmpfs', '/dev/shm',
     '--bind-try', '/var/tmp', '/var/tmp',
     '--bind', '/workspace', '/workspace',
     '--bind-try', '/home/tester/.echo/agent-memory', '/home/tester/.echo/agent-memory',
@@ -97,10 +98,11 @@ test('read-only policy drops workspace binds and forces network off', () => {
     '/usr/bin/bwrap',
     '--die-with-parent',
     '--unshare-net',
+    '--ro-bind', '/', '/',
     '--dev', '/dev',
     '--proc', '/proc',
-    '--ro-bind', '/', '/',
     '--tmpfs', '/tmp',
+    '--tmpfs', '/dev/shm',
     '--bind-try', '/var/tmp', '/var/tmp',
     '/bin/bash', '-lc', 'ls'
   ]);
@@ -119,10 +121,11 @@ test('allowed network policy skips unshare-net and tmp tmpfs covers nested tmpdi
   ), [
     '/usr/bin/bwrap',
     '--die-with-parent',
+    '--ro-bind', '/', '/',
     '--dev', '/dev',
     '--proc', '/proc',
-    '--ro-bind', '/', '/',
     '--tmpfs', '/tmp',
+    '--tmpfs', '/dev/shm',
     '--bind', '/workspace', '/workspace',
     '--bind-try', '/home/tester/.echo/agent-memory', '/home/tester/.echo/agent-memory',
     '/bin/bash', '-lc', 'curl example.com'

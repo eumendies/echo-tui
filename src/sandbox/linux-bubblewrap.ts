@@ -8,7 +8,9 @@ import type {SandboxCommandInput, SandboxPolicy, SandboxProvider} from './types'
 const LINUX_BWRAP_PATH = '/usr/bin/bwrap'; // 大多数发行版的标准安装位置;发现优先级最高,缺失时继续按 PATH 探测。
 const LINUX_BUBBLEWRAP_PROVIDER_NAME = 'linux-bubblewrap';
 const BWRAP_TRIAL_TIMEOUT_MS = 5_000;
-const BWRAP_TRIAL_COMMAND = ['/bin/true']; // 试运行目标命令;/bin/true 在主流发行版必然存在,只验证能否建立只读根。
+// 试运行复刻真实命令的 mount 形态(ro-bind 在前 + dev/proc/tmpfs 覆盖);嵌套容器等受限环境
+// 会在探测期直接失败并显式降级,而不是让每条命令执行期才报错。/bin/true 在主流发行版必然存在。
+const BWRAP_TRIAL_ARGS = ['--ro-bind', '/', '/', '--dev', '/dev', '--proc', '/proc', '--tmpfs', '/tmp', '/bin/true'];
 
 type LinuxBubblewrapProviderOptions = {
   bwrapPath?: string; // 固定使用的 bwrap 路径;设置时跳过自动发现,测试可注入。
@@ -23,8 +25,10 @@ type LinuxBubblewrapProviderOptions = {
 
 /**
  * 创建 Linux bubblewrap 沙箱 provider;把 (shell -lc command) 包装为 bwrap spawn argv。
- * mount 顺序按"先全局只读、后定向放行"组织:ro-bind 全盘只读后,tmpfs/bind 覆盖出可写边界,
- * 读取全盘放行以保住常规工具链;不做 PID namespace 隔离,保持进程组终止语义最简单。
+ * bwrap 的文件系统选项按命令行顺序生效,mount 顺序按"先全局只读、后定向放行"组织:
+ * --ro-bind / / 必须最先挂,否则会把后到的 --dev/--proc 盖成宿主只读视图(/dev/null 变只读);
+ * ro-bind 之后用 dev/proc/tmpfs 覆盖出可写边界,读取全盘放行以保住常规工具链;
+ * 不做 PID namespace 隔离,保持进程组终止语义最简单。
  */
 function createLinuxBubblewrapSandboxProvider(options: LinuxBubblewrapProviderOptions = {}): SandboxProvider {
   const exists = options.exists || fs.existsSync;
@@ -74,10 +78,13 @@ function createLinuxBubblewrapSandboxProvider(options: LinuxBubblewrapProviderOp
       const argv = [
         '--die-with-parent',
         ...(network ? [] : ['--unshare-net']),
+        '--ro-bind', '/', '/',
+        // 全盘只读之后才能覆盖挂载;顺序颠倒会让 ro-bind 把 /dev、/proc 盖成宿主只读视图。
         '--dev', '/dev',
         '--proc', '/proc',
-        '--ro-bind', '/', '/',
         '--tmpfs', '/tmp',
+        // 最小设备集不含 /dev/shm;node/java/chrome 等工具链依赖 POSIX 共享内存,补一个私有 tmpfs。
+        '--tmpfs', '/dev/shm',
         ...buildWritableBinds({
           cwd: input.cwd,
           extraWritablePaths: policy.extraWritablePaths,
@@ -124,7 +131,7 @@ function discoverBwrapPath(exists: (targetPath: string) => boolean, options: Lin
  * 试运行探测真实建沙能力;通过后结果由调用方缓存,不在每条命令路径上重复执行。
  */
 function probeBubblewrapSandbox(bwrapPath: string): boolean {
-  const trial = spawnSync(bwrapPath, ['--ro-bind', '/', '/', ...BWRAP_TRIAL_COMMAND], {stdio: 'ignore', timeout: BWRAP_TRIAL_TIMEOUT_MS});
+  const trial = spawnSync(bwrapPath, BWRAP_TRIAL_ARGS, {stdio: 'ignore', timeout: BWRAP_TRIAL_TIMEOUT_MS});
   return trial.error === undefined && trial.status === 0;
 }
 
