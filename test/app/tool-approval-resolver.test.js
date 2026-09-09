@@ -21,7 +21,7 @@ function createConfig(overrides = {}) {
     apiKey: 'secret',
     model: 'gpt-review',
     contextWindow: 128000,
-    tools: {autoCompressImages: true, bash: {timeoutMs: null, maxOutputBytes: 65536}, fileEditMode: 'apply_patch'},
+    tools: {autoCompressImages: true, bash: {timeoutMs: null, maxOutputBytes: 65536}, fileEditMode: 'apply_patch', sandbox: {mode: 'off', network: false, extraWritablePaths: []}},
     ...overrides
   };
 }

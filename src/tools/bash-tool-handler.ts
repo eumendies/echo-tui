@@ -7,6 +7,7 @@ import {isChangeHistoryReadonlyBashCommand, isPlanReadonlyBashCommand} from './r
 import type {BashToolExecutionResult, ToolCall, ToolExecutionOptions, ToolHandler} from '../types/tool';
 import type {BashCommandRunResult} from './bash-command-runner';
 import type {ToolResultStore} from './tool-result-offloading';
+import type {SandboxRuntimeContext} from '../sandbox/types';
 
 const RUN_BASH_COMMAND_TOOL_NAME = 'run_bash_command';
 const PLAN_READONLY_BASH_REJECTION = 'In plan mode, run_bash_command may only run readonly inspection commands: pwd; file inspection commands such as ls, cat, head, tail, wc, grep, rg, echo, printf, and find without write options; readonly git inspection commands such as git status, git diff, git log, git show, git branch -a, git grep, git config --get, and git stash list; and combinations of readonly commands with |, &&, ;, ||, or newlines. This command may modify the workspace or system state, so it was rejected. To run it, exit plan mode first.';
@@ -15,6 +16,7 @@ type BashToolHandlerOptions = {
   cwd?: string | (() => string);
   timeoutMs?: number | null;
   maxOutputBytes?: number;
+  sandbox?: SandboxRuntimeContext; // run_bash_command 的沙箱运行上下文;缺省或 provider 不可用时按无沙箱执行。
   shell?: string;
   toolResultStore?: ToolResultStore;
 };
@@ -47,6 +49,7 @@ function createBashToolHandler(options: BashToolHandlerOptions = {}): ToolHandle
         abortSignal: executionOptions?.abortSignal,
         cwd: resolveCwd(options.cwd),
         maxOutputBytes,
+        sandbox: options.sandbox,
         shell,
         timeoutMs,
         toolResultStore: options.toolResultStore,
@@ -62,7 +65,7 @@ function createBashToolHandler(options: BashToolHandlerOptions = {}): ToolHandle
 function executeBashCommand(
   args: Record<string, unknown>,
   call: ToolCall,
-  options: Required<Pick<BashToolHandlerOptions, 'shell'>> & Pick<ToolExecutionOptions, 'changeRecorder'> & {abortSignal?: AbortSignal; cwd: string; maxOutputBytes: number; timeoutMs: number | null; toolResultStore?: ToolResultStore}
+  options: Required<Pick<BashToolHandlerOptions, 'shell'>> & Pick<ToolExecutionOptions, 'changeRecorder'> & {abortSignal?: AbortSignal; cwd: string; maxOutputBytes: number; sandbox?: SandboxRuntimeContext; timeoutMs: number | null; toolResultStore?: ToolResultStore}
 ): Promise<BashToolExecutionResult> {
   const command = args.command;
 
@@ -85,6 +88,7 @@ function executeBashCommand(
     abortSignal: options.abortSignal,
     cwd: options.cwd,
     maxOutputBytes: options.maxOutputBytes,
+    sandbox: options.sandbox,
     shell: options.shell,
     toolResultStore: options.toolResultStore,
     timeoutMs: options.timeoutMs

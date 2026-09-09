@@ -12,7 +12,7 @@ const {createDefaultToolRegistry} = require('../../src/tools/tool-registry');
 function createConfig(fileEditMode) {
   return {
     agentType: 'fake', apiKey: '', model: 'fake',
-    tools: {bash: {timeoutMs: null, maxOutputBytes: 65_536}, fileEditMode}
+    tools: {bash: {timeoutMs: null, maxOutputBytes: 65_536}, fileEditMode, sandbox: {mode: 'off', network: false, extraWritablePaths: []}}
   };
 }
 

@@ -23,6 +23,91 @@ function renderConfigPanel(state, width, options = {}) {
   }, width, options).lines;
 }
 
+function renderSandboxPanel(state, width, options = {}) {
+  return renderConfigSurface({
+    kind: 'config',
+    view: 'sandbox',
+    activeTab: 'sandbox',
+    tabs: [
+      {id: 'general', label: '常规'},
+      {id: 'models', label: '模型与 Provider'},
+      {id: 'sandbox', label: '沙箱', status: 'dirty'},
+      {id: 'appearance', label: '外观'}
+    ],
+    state
+  }, width, options).lines;
+}
+
+test('renderConfigSurface projects sandbox tab rows, selection, and dirty tab marker', () => {
+  const draft = {mode: 'workspace-write', network: true, extraWritablePaths: ['/Users/me/code']};
+  const lines = renderSandboxPanel({
+    draft,
+    initialDraftFingerprint: JSON.stringify(draft),
+    selectedIndex: 3
+  }, 100).map((line) => stripAnsi(line));
+  const text = lines.join('\n');
+
+  assert.match(text, /\[● 沙箱\]/);
+  assert.match(text, /沙箱档位\s+工作区可写/);
+  assert.match(text, /允许网络访问\s+开/);
+  assert.match(text, /\/Users\/me\/code/);
+  assert.match(text, /额外可写目录/);
+  assert.match(text, /↳ \/Users\/me\/code/);
+  assert.match(text, /Enter 移除/);
+  assert.match(text, /\+ 添加可写目录/);
+  assert.match(text, /保存沙箱设置/);
+  assert.match(text, /写入 ~\/\.echo\/config\.json/);
+});
+
+test('renderConfigSurface renders sandbox path input with cursor, error, and cancel hint', () => {
+  const lines = renderSandboxPanel({
+    draft: {mode: 'off', network: false, extraWritablePaths: []},
+    initialDraftFingerprint: '',
+    pathInput: '/Users/me/cod',
+    selectedIndex: 2,
+    error: '路径必须是绝对路径'
+  }, 100).map((line) => stripAnsi(line));
+  const text = lines.join('\n');
+
+  assert.match(text, /新目录路径\s+\/Users\/me\/cod█/);
+  assert.match(text, /路径必须是绝对路径/);
+  assert.match(text, /Enter 确认添加 · Esc 取消/);
+  assert.doesNotMatch(text, /保存沙箱设置/);
+});
+
+test('renderConfigSurface keeps the tail of long sandbox path input visible', () => {
+  const lines = renderSandboxPanel({
+    draft: {mode: 'off', network: false, extraWritablePaths: []},
+    initialDraftFingerprint: '',
+    pathInput: 'HEAD' + 'a'.repeat(600) + 'TAIL',
+    selectedIndex: 2,
+    error: '路径必须是绝对路径'
+  }, 100).map((line) => stripAnsi(line));
+  const text = lines.join('\n');
+
+  // 显示保留结尾(光标与最新输入),开头被截断并带省略号。
+  assert.match(text, /TAIL█/);
+  assert.doesNotMatch(text, /HEAD/);
+});
+
+test('renderConfigSurface shows sandbox save feedback and windows long path lists', () => {
+  const paths = Array.from({length: 12}, (_value, index) => `/tmp/sandbox-${index + 1}`);
+  const draft = {mode: 'read-only', network: false, extraWritablePaths: paths};
+  const lines = renderSandboxPanel({
+    draft,
+    initialDraftFingerprint: JSON.stringify(draft),
+    feedback: '✓ 沙箱设置已保存',
+    selectedIndex: 0
+  }, 100, {maxLines: 12}).map((line) => stripAnsi(line));
+  const text = lines.join('\n');
+
+  assert.match(text, /沙箱档位\s+只读/);
+  assert.match(text, /✓ 沙箱设置已保存/);
+  assert.match(text, /更多/);
+  assert.match(text, /额外可写目录/);
+  assert.match(text, /↳ \/tmp\/sandbox-1/);
+});
+
 function createDraft() {
   return {
     providers: [{

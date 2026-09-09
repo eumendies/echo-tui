@@ -19,6 +19,7 @@ import {loadSystemPromptOverride} from '../context/system-prompt';
 import {prepareAgent} from '../agent-setup';
 import {createCompactionNoticeRecord, runCompaction} from '../context/context-compaction';
 import {createUsageCwdHash} from '../../persistence/usage-store';
+import {createSandboxRuntimeNote} from '../../sandbox/provider';
 import {createSubagentToolPort} from '../subagent/runtime';
 import {createSubagentLoopRuntime} from './subagent-loop-runtime';
 import {
@@ -215,6 +216,7 @@ type AgentLoopRunState = {
   observationScope: AgentRunScope; // 当前运行复用的语义 scope。
   toolPolicy: AgentToolPolicy; // default 或 readonly 执行策略。
   registry: ToolRegistry; // provider schema 查询和 commit mode 查询的权威目录。
+  sandboxNote: string | null; // bash 沙箱生效时的 transient 边界说明;null 表示本次运行未包装沙箱。
 };
 
 /**
@@ -233,6 +235,7 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
     const {agent, config, registry} = prepareAgent({
       configSnapshot,
       cwd,
+      executionMode,
       mcpManager,
       modelProfileId,
       reasoningEffortOverride,
@@ -278,6 +281,7 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
       },
       observationScope: {conversationKind, interactionMode},
       toolPolicy,
+      sandboxNote: createSandboxRuntimeNote(config.tools.sandbox, executionMode),
     };
   }
 
@@ -428,7 +432,18 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
       const activeRecords = recordRegion.slice(activeStartIndex);
       const memoryPrompt = resolveMemoryPrompt(cwd, state.contextWindow);
       currentMemoryPrompt = memoryPrompt;
-      const providerRecords = buildProviderRecords(activeRecords, cwd, compactionState, state.skillCatalog, state.agentInstructions, state.todoState, memoryPrompt.sections, state.basePrompt, session.sessionJournalPath);
+      const providerRecords = buildProviderRecords({
+        activeRecords,
+        agentInstructions: state.agentInstructions,
+        basePrompt: state.basePrompt,
+        compaction: compactionState,
+        cwd,
+        memoryPrompts: memoryPrompt.sections,
+        sandboxNote: state.sandboxNote ?? undefined,
+        sessionJournalPath: session.sessionJournalPath,
+        skillCatalog: state.skillCatalog,
+        todoState: state.todoState
+      });
       state.observation.providerRequestBuilt({
         scope: state.observationScope,
         request: {

@@ -4,12 +4,14 @@ import {queryCodexUsage} from '../../config/codex-oauth';
 import {isDeepseekBaseUrl, queryDeepseekBalance as fetchDeepseekBalance} from '../../config/deepseek-balance';
 import {listEffectiveAgentMemoryCatalogs} from '../../memory/agent-memory-store';
 import {readUserMemories} from '../../memory/memory-store';
+import {resolveEffectiveSandbox} from '../../sandbox/provider';
 import {createCommandViewport} from './command-viewport';
 
 import type {CodexUsage} from '../../config/codex-oauth';
 import type {DeepseekBalance} from '../../config/deepseek-balance';
-import type {CommandHostApp, CommandStatusSnapshot} from '../../types/command';
+import type {CommandHostApp, CommandStatusSandboxState, CommandStatusSnapshot} from '../../types/command';
 import type {UserConfigContext} from '../../config/user-config-context';
+import type {SandboxToolConfig} from '../../types/agent';
 import type {UsageStore} from '../../types/usage';
 import type {AppContext} from '../state/app-context';
 
@@ -118,6 +120,7 @@ function createStatusSnapshot(appContext: StatusCommandContext, userConfigContex
     agentInstructionFileName: appSettings.agentInstructionFileName,
     sessionId: appContext.transcriptContext.getCurrentSessionId(),
     model: 'error' in modelResult ? null : {...modelResult},
+    sandbox: createStatusSandboxState(userConfigContext.capture().getSandboxToolConfig()),
     agentInstructions: loadAgentInstructions({cwd, fileName: appSettings.agentInstructionFileName}).map((instruction) => ({
       filePath: instruction.filePath,
       label: instruction.label,
@@ -131,6 +134,31 @@ function createStatusSnapshot(appContext: StatusCommandContext, userConfigContex
       : [],
     diagnostics: diagnostics.map((diagnostic) => redactSensitiveText(diagnostic))
   };
+}
+
+/**
+ * 聚合沙箱展示事实:归一化后的生效档位/网络 + 当前环境是否真正可用;降级必须带原因,不允许静默。
+ */
+function createStatusSandboxState(config: SandboxToolConfig): CommandStatusSandboxState {
+  if (config.mode === 'off') {
+    return {mode: 'off', network: false, provider: null, available: false};
+  }
+
+  const effective = resolveEffectiveSandbox(config);
+  if (effective === null) {
+    // status 仅由交互式命令构造,不会命中 headless full-access 豁免;此分支只为类型完备兜底。
+    return {mode: config.mode, network: false, provider: null, available: false, unavailableReason: '当前平台不支持沙箱'};
+  }
+
+  if (effective.provider === null) {
+    return {mode: effective.policy.mode, network: effective.policy.network, provider: null, available: false, unavailableReason: '当前平台不支持沙箱'};
+  }
+
+  if (!effective.available) {
+    return {mode: effective.policy.mode, network: effective.policy.network, provider: effective.provider.name, available: false, unavailableReason: effective.provider.describeUnavailable()};
+  }
+
+  return {mode: effective.policy.mode, network: effective.policy.network, provider: effective.provider.name, available: true};
 }
 
 function createAvailableCodexUsage(usage: CodexUsage) {

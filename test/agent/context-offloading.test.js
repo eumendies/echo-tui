@@ -13,7 +13,7 @@ const CODEX_CONFIG = {
   baseURL: 'https://chatgpt.com/backend-api/codex',
   codexOAuth: {authFilePath: '/tmp/codex-auth.json'},
   model: 'test-model',
-  tools: {bash: {timeoutMs: null, maxOutputBytes: 65536}}
+  tools: {bash: {timeoutMs: null, maxOutputBytes: 65536}, sandbox: {mode: 'off', network: false, extraWritablePaths: []}}
 };
 
 function createRecords(resultText) {

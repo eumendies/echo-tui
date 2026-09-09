@@ -54,3 +54,25 @@ test('createApp isolates background main streaming while BTW owns the terminal p
     fs.rmSync(home, {recursive: true, force: true});
   }
 });
+
+
+test('createApp suppresses timed footer redraws while a user question surface is open', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-main-question-timer-'));
+
+  try {
+    const fixturePath = path.join(__dirname, 'fixtures/main-question-timed-render-scenario.js');
+    const output = childProcess.execFileSync(process.execPath, [fixturePath], {
+      cwd: path.resolve(__dirname, '../../..'),
+      encoding: 'utf8',
+      env: {...process.env, HOME: home},
+      timeout: 15_000
+    });
+    const result = JSON.parse(output);
+
+    assert.equal(result.composerTimedRenders > 0, true);
+    assert.equal(result.rendersDuringQuestion, 0);
+    assert.equal(result.rendersAfterCancel > 0, true);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});

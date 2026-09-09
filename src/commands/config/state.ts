@@ -13,6 +13,8 @@ import type {
   ConfigTabId,
   GeneralConfigState,
   LlmConfigDraft,
+  SandboxConfigDraft,
+  SandboxConfigState,
   ToolApprovalModelProfile
 } from '../../types/command';
 import type {AppSettings} from '../../config/app-settings-config';
@@ -32,6 +34,7 @@ type ConfigCommandData = {
   };
   general?: ConfigStateSlot<GeneralConfigState>;
   models?: ConfigStateSlot<ConfigCommandState>;
+  sandbox?: ConfigStateSlot<SandboxConfigState>;
 };
 
 const GENERAL_CONFIG_BASE_ROW_IDS = [
@@ -63,6 +66,7 @@ function getGeneralConfigRowIds(state: Pick<GeneralConfigState, 'draft'>): Gener
 const CONFIG_TABS: ReadonlyArray<{id: ConfigTabId; label: string}> = [
   {id: 'general', label: '常规'},
   {id: 'models', label: '模型与 Provider'},
+  {id: 'sandbox', label: '沙箱'},
   {id: 'appearance', label: '外观'}
 ];
 
@@ -139,6 +143,10 @@ function createConfigSurface(data: ConfigCommandData): ConfigCommandSurface {
     return {kind: 'config', view: 'appearance', activeTab: data.activeTab, tabs, state: structuredClone(data.appearance.state)};
   }
 
+  if (data.activeTab === 'sandbox' && data.sandbox?.state) {
+    return {kind: 'config', view: 'sandbox', activeTab: data.activeTab, tabs, state: structuredClone(data.sandbox.state)};
+  }
+
   return {kind: 'config', view: 'error', activeTab: data.activeTab, tabs, error: '配置页面未初始化'};
 }
 
@@ -175,6 +183,50 @@ function createInitialAppearanceConfigState(themes: AppearanceConfigState['theme
   return {
     selectedIndex: Math.max(0, themes.findIndex((theme) => theme.selected)),
     themes: themes.map((theme) => ({...theme}))
+  };
+}
+
+const SANDBOX_MODE_CYCLE: readonly SandboxConfigDraft['mode'][] = ['off', 'read-only', 'workspace-write'];
+
+type SandboxConfigRowId = 'mode' | 'network' | 'header' | 'addPath' | 'save' | `path:${number}`;
+// header:「额外可写目录」分组标题行,仅用于渲染分组,焦点移动时必须跳过它。
+
+/**
+ * 根据沙箱草稿投影当前真实行集合；handler 和 renderer 必须共享该结果以避免动态焦点错位。
+ */
+function getSandboxConfigRowIds(state: Pick<SandboxConfigState, 'draft'>): SandboxConfigRowId[] {
+  const rows: SandboxConfigRowId[] = ['mode', 'network'];
+  if (state.draft.extraWritablePaths.length > 0) {
+    // 仅在存在路径行时插入标题行,让额外可写目录区在面板中自解释。
+    rows.push('header');
+  }
+  state.draft.extraWritablePaths.forEach((_path, index) => rows.push(`path:${index}`));
+  rows.push('addPath', 'save');
+  return rows;
+}
+
+function createInitialSandboxConfigState(draft: SandboxConfigDraft): SandboxConfigState {
+  return {
+    draft,
+    initialDraftFingerprint: createSandboxDraftFingerprint(draft),
+    selectedIndex: 0
+  };
+}
+
+function createSandboxDraftFingerprint(draft: SandboxConfigDraft): string {
+  return JSON.stringify(draft);
+}
+
+function isSandboxConfigDirty(state: SandboxConfigState | undefined): boolean {
+  return Boolean(state && createSandboxDraftFingerprint(state.draft) !== state.initialDraftFingerprint);
+}
+
+function markSandboxConfigSaved(state: SandboxConfigState): SandboxConfigState {
+  return {
+    ...structuredClone(state),
+    error: undefined,
+    feedback: '✓ 沙箱设置已保存',
+    initialDraftFingerprint: createSandboxDraftFingerprint(state.draft)
   };
 }
 
@@ -255,12 +307,20 @@ function getConfigRows(state: ConfigCommandState): ConfigFormRow[] {
 
 function createConfigTabs(data: ConfigCommandData): ConfigSurfaceTab[] {
   return CONFIG_TABS.map((tab) => {
-    const slot = tab.id === 'general' ? data.general : tab.id === 'models' ? data.models : data.appearance;
+    const slot = tab.id === 'general'
+      ? data.general
+      : tab.id === 'models'
+        ? data.models
+        : tab.id === 'sandbox'
+          ? data.sandbox
+          : data.appearance;
     const dirty = tab.id === 'general'
       ? isGeneralConfigDirty(data.general?.state)
       : tab.id === 'models'
         ? isModelConfigDirty(data.models?.state)
-        : false;
+        : tab.id === 'sandbox'
+          ? isSandboxConfigDirty(data.sandbox?.state)
+          : false;
     return {
       ...tab,
       ...(slot?.error ? {status: 'error' as const} : dirty ? {status: 'dirty' as const} : {})
@@ -269,13 +329,23 @@ function createConfigTabs(data: ConfigCommandData): ConfigSurfaceTab[] {
 }
 
 function getActiveSlot(data: ConfigCommandData): ConfigStateSlot<unknown> | undefined {
-  return data.activeTab === 'general' ? data.general : data.activeTab === 'models' ? data.models : data.appearance;
+  if (data.activeTab === 'general') {
+    return data.general;
+  }
+  if (data.activeTab === 'models') {
+    return data.models;
+  }
+  if (data.activeTab === 'sandbox') {
+    return data.sandbox;
+  }
+  return data.appearance;
 }
 
 export {
   CONFIG_MODEL_EFFORT_OPTIONS,
   getGeneralConfigRowIds,
   CONFIG_TABS,
+  SANDBOX_MODE_CYCLE,
   cloneConfigState,
   configProviderSupportsReasoningEffort,
   createConfigSurface,
@@ -283,12 +353,16 @@ export {
   createInitialAppearanceConfigState,
   createInitialConfigState,
   createInitialGeneralConfigState,
+  createInitialSandboxConfigState,
   getConfigRows,
   getConfigModelReasoningEffort,
+  getSandboxConfigRowIds,
   isGeneralConfigDirty,
   isModelConfigDirty,
+  isSandboxConfigDirty,
   markGeneralConfigSaved,
   markModelConfigSaved,
+  markSandboxConfigSaved,
   setConfigModelReasoningEffort
 };
 

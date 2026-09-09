@@ -26,7 +26,8 @@ const TEST_CONFIG = {
     bash: {
       timeoutMs: null,
       maxOutputBytes: 65536
-    }
+    },
+    sandbox: {mode: 'off', network: false, extraWritablePaths: []}
   }
 };
 const RETRYABLE_PROCESSING_ERROR = 'An error occurred while processing your request. You can retry your request';

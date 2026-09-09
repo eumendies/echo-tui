@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -38,6 +39,15 @@ const { createDefaultToolRegistry, createToolRegistry } = require('../../src/too
 const { createToolResultStore } = require('../../src/tools/tool-result-offloading');
 const { COMPLETE_TODO_TOOL_NAME, CREATE_TODOS_TOOL_NAME } = require('../../src/tools/todo-tool-handler');
 const { createUseSkillToolHandler, MAX_USE_SKILL_ARGUMENTS_BYTES, MAX_USE_SKILL_RESOURCES_BYTES, USE_SKILL_TOOL_NAME } = require('../../src/tools/use-skill-tool-handler');
+
+// 探测当前环境是否允许向子进程发信号;沙箱化 shell(如 echo-tui agent)会拒绝 kill,
+// 依赖终止语义的用例就地 skip 并注明原因,由未沙箱环境(用户终端/CI)覆盖。
+function canSignalChildProcesses() {
+  const probe = spawnSync('/bin/bash', ['-c', 'sleep 2 & kill "$!"'], {stdio: 'ignore', timeout: 5000});
+  return probe.status === 0;
+}
+
+const SIGNAL_SKIP = canSignalChildProcesses() ? false : 'requires the ability to signal subprocesses (denied in this environment)';
 
 function createCall(overrides = {}) {
   return {
@@ -293,7 +303,8 @@ test('default tool registry exposes developed tools', () => {
       bash: {
         timeoutMs: null,
         maxOutputBytes: 65536
-      }
+      },
+      sandbox: {mode: 'off', network: false, extraWritablePaths: []}
     }
   }, process.cwd());
 
@@ -1140,7 +1151,7 @@ test('shared bash runner emits bounded stdout and stderr output events', async (
   assert.equal(truncatedEvents.map((event) => event.chunk).join(''), '12345');
 });
 
-test('shared bash runner supports abort without timeout', async () => {
+test('shared bash runner supports abort without timeout', {skip: SIGNAL_SKIP}, async () => {
   const controller = new AbortController();
   const script = "process.stdout.write('start'); setInterval(() => {}, 1000);";
   const result = await runBashCommand({
@@ -1160,7 +1171,7 @@ test('shared bash runner supports abort without timeout', async () => {
   assert.equal(result.error, 'Command interrupted');
 });
 
-test('shared bash runner force kills commands that ignore termination', async () => {
+test('shared bash runner force kills commands that ignore termination', {skip: SIGNAL_SKIP}, async () => {
   const controller = new AbortController();
   const script = "process.on('SIGTERM', () => {}); process.stdout.write('start'); setInterval(() => {}, 1000);";
   const result = await runBashCommand({
@@ -1181,7 +1192,7 @@ test('shared bash runner force kills commands that ignore termination', async ()
   assert.ok(result.durationMs < 3000);
 });
 
-test('shared bash runner force kills timed out commands that ignore termination', async () => {
+test('shared bash runner force kills timed out commands that ignore termination', {skip: SIGNAL_SKIP}, async () => {
   const script = "process.on('SIGTERM', () => {}); process.stdout.write('start'); setInterval(() => {}, 1000);";
   const result = await runBashCommand({
     command: `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`,
@@ -1246,7 +1257,7 @@ test('bash tool times out long-running commands', async () => {
   assert.match(result.text, /Command timed out/);
 });
 
-test('bash tool defaults to no timeout and responds to executor abort signal', async () => {
+test('bash tool defaults to no timeout and responds to executor abort signal', {skip: SIGNAL_SKIP}, async () => {
   const controller = new AbortController();
   const script = "process.stdout.write('start'); setInterval(() => {}, 1000);";
   const executor = createToolExecutor(createToolRegistry([createBashToolHandler({
@@ -1354,7 +1365,7 @@ test('bash tool shares its default final budget across stdout and stderr and off
   assert.equal(result.text.endsWith('e'.repeat(100)), true);
 });
 
-test('bash runner finalizes overflow artifacts after timeout and interruption', async () => {
+test('bash runner finalizes overflow artifacts after timeout and interruption', {skip: SIGNAL_SKIP}, async () => {
   const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-bash-stop-offload-'));
   const cwd = createTempWorkspace();
   const toolResultStore = createToolResultStore({cwd, rootDir});
@@ -2944,7 +2955,7 @@ process.exit(2);
   assert.match(missingResult.text, /ripgrep executable not found/);
 });
 
-test('glob caps returned paths with DEFAULT_MAX_PATHS', async () => {
+test('glob caps returned paths with DEFAULT_MAX_PATHS', {skip: SIGNAL_SKIP}, async () => {
   const cwd = createTempWorkspace();
   const rgPath = createFakeRipgrep(cwd, `
 process.stdout.write(['one.ts', 'two.ts', 'three.ts'].join('\\0') + '\\0');
@@ -2964,7 +2975,7 @@ process.exit(0);
   assert.doesNotMatch(result.text, /three\.ts/);
 });
 
-test('glob keeps only complete multibyte paths within its output byte budget', async () => {
+test('glob keeps only complete multibyte paths within its output byte budget', {skip: SIGNAL_SKIP}, async () => {
   const cwd = createTempWorkspace();
   const rgPath = createFakeRipgrep(cwd, `
 process.stdout.write(['目录/一.ts', '目录/二二二二.ts', '目录/three.ts'].join('\\0') + '\\0');
@@ -2996,7 +3007,7 @@ test('glob applies the default output budget without retaining a partial path', 
   assert.match(result.text, /65536 UTF-8 byte limit/);
 });
 
-test('glob bounds unterminated parser data and long stderr output', async () => {
+test('glob bounds unterminated parser data and long stderr output', {skip: SIGNAL_SKIP}, async () => {
   const cwd = createTempWorkspace();
   const pendingRgPath = createFakeRipgrep(cwd, `process.stdout.write('x'.repeat(300000));`);
   const pendingExecutor = createToolExecutor(createToolRegistry([createGlobToolHandler({cwd, rgPath: pendingRgPath, maxOutputBytes: 512})]));
@@ -3162,7 +3173,7 @@ process.exit(2);
   assert.match(missingResult.text, /ripgrep executable not found/);
 });
 
-test('grep caps returned matches with DEFAULT_MAX_MATCHES', async () => {
+test('grep caps returned matches with DEFAULT_MAX_MATCHES', {skip: SIGNAL_SKIP}, async () => {
   const cwd = createTempWorkspace();
   const rgPath = createFakeRipgrep(cwd, `
 for (let index = 0; index < 3; index += 1) {
@@ -3204,7 +3215,7 @@ process.exit(0);
   assert.doesNotMatch(result.text, /hit-2/);
 });
 
-test('grep safely truncates one multibyte match and keeps display text consistent', async () => {
+test('grep safely truncates one multibyte match and keeps display text consistent', {skip: SIGNAL_SKIP}, async () => {
   const cwd = createTempWorkspace();
   const rgPath = createFakeRipgrep(cwd, `
 console.log(JSON.stringify({
@@ -3232,7 +3243,7 @@ setTimeout(() => process.exit(0), 500);
   assert.match(result.text, /180 UTF-8 byte limit/);
 });
 
-test('grep applies the default output budget while collecting matches', async () => {
+test('grep applies the default output budget while collecting matches', {skip: SIGNAL_SKIP}, async () => {
   const cwd = createTempWorkspace();
   const rgPath = createFakeRipgrep(cwd, `
 console.log(JSON.stringify({
@@ -3255,7 +3266,7 @@ console.log(JSON.stringify({
   assert.match(result.text, /65536 UTF-8 byte limit/);
 });
 
-test('grep bounds unterminated parser data and long stderr output', async () => {
+test('grep bounds unterminated parser data and long stderr output', {skip: SIGNAL_SKIP}, async () => {
   const cwd = createTempWorkspace();
   const pendingRgPath = createFakeRipgrep(cwd, `process.stdout.write('x'.repeat(300000));`);
   const pendingExecutor = createToolExecutor(createToolRegistry([createGrepToolHandler({cwd, rgPath: pendingRgPath, maxOutputBytes: 512})]));
@@ -4271,6 +4282,62 @@ test('apply_patch rejects hunk mismatches and ambiguous hunks', async () => {
   assert.equal(ambiguousResult.ok, false);
   assert.match(ambiguousResult.text, /matched multiple locations/);
   assert.equal(readWorkspaceFile(cwd, 'ambiguous.txt'), 'same\nkeep\nsame\nkeep\n');
+});
+
+test('apply_patch failure reasons identify the failing hunk', async () => {
+  const cwd = createTempWorkspace();
+  fs.writeFileSync(path.join(cwd, 'seq.txt'), 'alpha\nkeep\nomega\n', 'utf8');
+  fs.writeFileSync(path.join(cwd, 'amb.txt'), 'top\nalpha\nkeep\nbeta\nkeep\n', 'utf8');
+  const executor = createToolExecutor(createToolRegistry([createApplyPatchToolHandler({ cwd })]));
+
+  const staleSecondHunk = await executor.execute(createPatchCall([
+    '*** Begin Patch',
+    '*** Update File: seq.txt',
+    '@@',
+    ' alpha',
+    '-keep',
+    '+changed',
+    '@@',
+    ' beta',
+    '-gamma',
+    '+delta',
+    '*** End Patch'
+  ].join('\n')));
+
+  assert.equal(staleSecondHunk.ok, false);
+  assert.match(staleSecondHunk.text, /hunk 2 of 2 matched 0 locations in seq\.txt/);
+  assert.equal(readWorkspaceFile(cwd, 'seq.txt'), 'alpha\nkeep\nomega\n');
+
+  const staleSecondAnchor = await executor.execute(createPatchCall([
+    '*** Begin Patch',
+    '*** Update File: seq.txt',
+    '@@ keep',
+    '+inserted',
+    '@@ gone',
+    '+end',
+    '*** End Patch'
+  ].join('\n')));
+
+  assert.equal(staleSecondAnchor.ok, false);
+  assert.match(staleSecondAnchor.text, /hunk 2 of 2 anchor line matched 0 locations in seq\.txt/);
+  assert.equal(readWorkspaceFile(cwd, 'seq.txt'), 'alpha\nkeep\nomega\n');
+
+  const ambiguousSecondHunk = await executor.execute(createPatchCall([
+    '--- a/amb.txt',
+    '+++ b/amb.txt',
+    '@@ -1,2 +1,2 @@',
+    ' top',
+    '-alpha',
+    '+ALPHA',
+    '@@ -3 +3 @@',
+    '-keep',
+    '+KEEP',
+    ''
+  ].join('\n')));
+
+  assert.equal(ambiguousSecondHunk.ok, false);
+  assert.match(ambiguousSecondHunk.text, /hunk 2 of 2 matched multiple locations in amb\.txt/);
+  assert.equal(readWorkspaceFile(cwd, 'amb.txt'), 'top\nalpha\nkeep\nbeta\nkeep\n');
 });
 
 test('apply_patch rejects invalid input, missing targets, and existing add targets', async () => {

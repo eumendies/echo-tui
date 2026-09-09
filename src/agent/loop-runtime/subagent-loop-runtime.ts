@@ -9,6 +9,7 @@ import {classifySubagentToolCall, classifyToolCallRisk} from '../../tools/tool-r
 import {createToolCallTranscriptRecord, createToolResultTranscriptRecord} from '../../tools/tool-transcript-record';
 import {executeTodoToolCall, isTodoToolName} from '../../tools/todo-tool-handler';
 import {throwIfAborted} from '../../types/agent';
+import {createSandboxRuntimeNote} from '../../sandbox/provider';
 import {prepareAgent} from '../agent-setup';
 import {normalizeError} from '../agent-errors';
 import {createCompactionNoticeRecord, runCompaction} from '../context/context-compaction';
@@ -44,6 +45,7 @@ type SubagentLoopRunState = {
   registry: ToolRegistry; // 子 provider schema与执行器共用的裁剪目录。
   todoState: TodoState | undefined; // general 子 Agent 独立维护的待办状态；readonly 子 Agent 始终为空。
   toolDefinitions: ToolDefinition[]; // 真正发送给子 provider的工具 schema。
+  sandboxNote: string | null; // bash 沙箱生效时的 transient 边界说明;null 表示本次子运行未包装沙箱。
 };
 
 /** 生成保留原工具身份的拒绝结果，保证子 provider continuation协议完整。 */
@@ -176,6 +178,7 @@ function createSubagentLoopRuntime(cwd: string, inheritedContext: InheritedAgent
         allowedToolNames: new Set(definition.localToolNames),
         config: resolvedConfig,
         cwd,
+        executionMode: input.executionMode,
         ...(definition.includeMcpTools && mcpManager ? {mcpManager} : {}),
       });
       state = {
@@ -201,7 +204,8 @@ function createSubagentLoopRuntime(cwd: string, inheritedContext: InheritedAgent
         reasoningEffort: config.reasoningEffort,
         registry,
         todoState: undefined,
-        toolDefinitions: registry.listDefinitions()
+        toolDefinitions: registry.listDefinitions(),
+        sandboxNote: createSandboxRuntimeNote(config.tools.sandbox, input.executionMode)
       };
     } catch (error: unknown) {
       throw normalizeError(error, '无法加载子 Agent LLM 配置');
@@ -267,18 +271,18 @@ function createSubagentLoopRuntime(cwd: string, inheritedContext: InheritedAgent
       const activeStartIndex = compactionState ? compactionState.activeStartIndex : 0;
       const activeRecords = recordRegion.slice(activeStartIndex);
       const memoryPrompt = inheritedContext.memoryPrompt;
-      const providerRecords = buildProviderRecords(
+      const providerRecords = buildProviderRecords({
         activeRecords,
+        agentInstructions: inheritedContext.agentInstructions,
+        basePrompt: inheritedContext.basePrompt,
+        compaction: compactionState,
         cwd,
-        compactionState,
-        inheritedContext.skillCatalog,
-        inheritedContext.agentInstructions,
-        state.todoState,
-        memoryPrompt.sections,
-        inheritedContext.basePrompt,
-        undefined,
-        definition.prompt
-      );
+        memoryPrompts: memoryPrompt.sections,
+        rolePrompt: definition.prompt,
+        sandboxNote: state.sandboxNote ?? undefined,
+        skillCatalog: inheritedContext.skillCatalog,
+        todoState: state.todoState
+      });
       state.observation.providerRequestBuilt({
         scope: state.observationScope,
         request: {

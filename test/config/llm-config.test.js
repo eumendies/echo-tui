@@ -47,7 +47,8 @@ const DEFAULT_TOOLS = {
     timeoutMs: DEFAULT_BASH_TOOL_TIMEOUT_MS,
     maxOutputBytes: DEFAULT_BASH_TOOL_MAX_OUTPUT_BYTES
   },
-  fileEditMode: 'apply_patch'
+  fileEditMode: 'apply_patch',
+  sandbox: {mode: 'workspace-write', network: true, extraWritablePaths: []}
 };
 
 const OPENAI_PRESET = 'openai-responses-api';
@@ -549,8 +550,40 @@ test('readLlmConfig reads explicit bash tool limits without the previous 30s tim
       timeoutMs: 120000,
       maxOutputBytes: 4096
     },
-    fileEditMode: 'apply_patch'
+    fileEditMode: 'apply_patch',
+    sandbox: {mode: 'workspace-write', network: true, extraWritablePaths: []}
   });
+});
+
+test('readLlmConfig parses sandbox tool config with workspace-write defaults', () => {
+  const base = {
+    llm: {
+      providers: {shared: {preset: OPENAI_PRESET, apiKey: 'key'}},
+      models: [{id: 'fast', provider: 'shared', model: 'gpt-fast'}]
+    }
+  };
+  const explicit = readLlmConfig({readFile: readConfigFrom(JSON.stringify({
+    ...base,
+    tools: {sandbox: {mode: 'read-only', network: true, extraWritablePaths: ['/Users/me/code']}}
+  }))});
+  const off = readLlmConfig({readFile: readConfigFrom(JSON.stringify({...base, tools: {sandbox: {mode: 'off'}}}))});
+
+  assert.deepEqual(explicit.tools.sandbox, {mode: 'read-only', network: true, extraWritablePaths: ['/Users/me/code']});
+  assert.deepEqual(off.tools.sandbox, {mode: 'off', network: true, extraWritablePaths: []});
+});
+
+test('readLlmConfig rejects invalid sandbox tool config values', () => {
+  const base = {
+    llm: {
+      providers: {shared: {preset: OPENAI_PRESET, apiKey: 'key'}},
+      models: [{id: 'fast', provider: 'shared', model: 'gpt-fast'}]
+    }
+  };
+
+  assert.throws(() => readLlmConfig({readFile: readConfigFrom(JSON.stringify({...base, tools: {sandbox: {mode: 'strict'}}}))}), /tools.sandbox.mode/);
+  assert.throws(() => readLlmConfig({readFile: readConfigFrom(JSON.stringify({...base, tools: {sandbox: {network: 'yes'}}}))}), /tools.sandbox.network/);
+  assert.throws(() => readLlmConfig({readFile: readConfigFrom(JSON.stringify({...base, tools: {sandbox: {extraWritablePaths: ['relative/path']}}}))}), /extraWritablePaths\[0\]/);
+  assert.throws(() => readLlmConfig({readFile: readConfigFrom(JSON.stringify({...base, tools: {sandbox: 'off'}}))}), /tools.sandbox/);
 });
 
 test('readLlmConfig reads and normalizes file edit tool mode', () => {

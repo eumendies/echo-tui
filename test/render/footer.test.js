@@ -909,6 +909,7 @@ test('renderFooterLayout renders runtime status and Codex usage progress bars', 
         cwd: '/work/echo-tui',
         sessionId: 'session-123',
         model: {agentType: 'codex', model: 'gpt-codex', provider: 'codex-main'},
+        sandbox: {mode: 'workspace-write', network: true, provider: 'macos-seatbelt', available: true},
         agentInstructions: [
           {sourceKind: 'global', label: 'AGENTS.md', filePath: '/home/user/.echo/AGENTS.md'},
           {sourceKind: 'project', label: 'AGENTS.md', filePath: '/work/echo-tui/AGENTS.md'}
@@ -955,6 +956,7 @@ test('renderStatusSurface handles loading, unavailable, not-applicable, and empt
     cwd: '/tmp/project',
     sessionId: null,
     model: null,
+    sandbox: {mode: 'off', network: false, provider: null, available: false},
     agentInstructions: [],
     userMemoryCount: 0,
     agentMemoryCatalogs: [],
@@ -990,6 +992,7 @@ test('renderStatusSurface preserves both quota labels, bars, and percentages in 
       cwd: '/a/very/long/project/path/that/will/be/clamped',
       sessionId: null,
       model: {agentType: 'codex', model: 'gpt-codex', provider: 'codex'},
+      sandbox: {mode: 'workspace-write', network: true, provider: 'macos-seatbelt', available: true},
       agentInstructions: [],
       userMemoryCount: 0,
       agentMemoryCatalogs: [],
@@ -1019,6 +1022,7 @@ test('renderStatusSurface keeps primary progress when Codex omits weekly window'
       cwd: '/tmp/project',
       sessionId: null,
       model: {agentType: 'codex', model: 'gpt-codex', provider: 'codex'},
+      sandbox: {mode: 'workspace-write', network: true, provider: 'macos-seatbelt', available: true},
       agentInstructions: [],
       userMemoryCount: 0,
       agentMemoryCatalogs: [],
@@ -1035,12 +1039,36 @@ test('renderStatusSurface keeps primary progress when Codex omits weekly window'
   assert.match(plain, /每周\s+暂无数据/);
 });
 
+test('renderStatusSurface renders sandbox state variants', () => {
+  const snapshot = {
+    agentInstructionFileName: 'AGENTS.md',
+    cwd: '/tmp/project',
+    sessionId: null,
+    model: null,
+    agentInstructions: [],
+    userMemoryCount: 0,
+    agentMemoryCatalogs: [],
+    diagnostics: []
+  };
+  const render = (sandbox) => renderStatusSurface(
+    {kind: 'status', snapshot: {...snapshot, sandbox}, usage: {status: 'not_applicable'}},
+    70,
+    20,
+    CUSTOM_THEME.footer
+  ).lines.map((line) => stripAnsi(line)).join('\n');
+
+  assert.match(render({mode: 'workspace-write', network: true, provider: 'macos-seatbelt', available: true}), /沙箱\s+workspace-write · 网络开 · macos-seatbelt/);
+  assert.match(render({mode: 'off', network: false, provider: null, available: false}), /沙箱\s+关闭/);
+  assert.match(render({mode: 'read-only', network: false, provider: 'macos-seatbelt', available: false, unavailableReason: 'sandbox-exec 不可用'}), /沙箱\s+read-only · 不可用\(sandbox-exec 不可用\)/);
+});
+
 test('renderStatusSurface renders DeepSeek balance section and its state variants', () => {
   const snapshot = {
     agentInstructionFileName: 'AGENTS.md',
     cwd: '/tmp/project',
     sessionId: null,
     model: {agentType: 'openai-chat', model: 'deepseek-chat', provider: 'deepseek'},
+    sandbox: {mode: 'workspace-write', network: false, provider: 'macos-seatbelt', available: false, unavailableReason: 'sandbox-exec 不可用'},
     agentInstructions: [],
     userMemoryCount: 0,
     agentMemoryCatalogs: [],

@@ -6,6 +6,7 @@ import type {
   ToolHandler
 } from '../types/tool';
 
+import {sanitizeTerminalText} from '../terminal/control-chars';
 import {DEFAULT_TOOL_RESULT_MAX_OUTPUT_BYTES, capUtf8Text} from './tool-handler-utils';
 
 const ASK_USER_QUESTIONS_TOOL_NAME = 'ask_user_questions';
@@ -128,7 +129,8 @@ function parseAskUserQuestionsArgs(args: Record<string, unknown>): ParseAskUserQ
       return {ok: false, message: `questions[${questionIndex}].question must be a non-empty string`};
     }
 
-    const normalizedQuestion = question.trim();
+    // 模型参数是外部文本,先剥离 CR/ESC 等控制符再入库,避免交互卡片与 tool record 渲染被覆盖破坏。
+    const normalizedQuestion = sanitizeTerminalText(question).trim();
     const questionBytes = Buffer.byteLength(normalizedQuestion, 'utf8');
     if (questionBytes > MAX_ASK_USER_QUESTION_BYTES) {
       return {ok: false, message: `questions[${questionIndex}].question must not exceed ${MAX_ASK_USER_QUESTION_BYTES} UTF-8 bytes`};
@@ -165,7 +167,7 @@ function parseAskUserQuestionsArgs(args: Record<string, unknown>): ParseAskUserQ
         return {ok: false, message: `questions[${questionIndex}].options[${optionIndex}].label must be a non-empty string`};
       }
 
-      const normalizedLabel = label.trim();
+      const normalizedLabel = sanitizeTerminalText(label).trim();
       const labelBytes = Buffer.byteLength(normalizedLabel, 'utf8');
       if (labelBytes > MAX_ASK_USER_OPTION_LABEL_BYTES) {
         return {ok: false, message: `questions[${questionIndex}].options[${optionIndex}].label must not exceed ${MAX_ASK_USER_OPTION_LABEL_BYTES} UTF-8 bytes`};
@@ -178,7 +180,7 @@ function parseAskUserQuestionsArgs(args: Record<string, unknown>): ParseAskUserQ
         return {ok: false, message: `questions[${questionIndex}].options[${optionIndex}].description must be a string`};
       }
 
-      const normalizedDescription = typeof description === 'string' ? description.trim() : '';
+      const normalizedDescription = typeof description === 'string' ? sanitizeTerminalText(description).trim() : '';
       if (Buffer.byteLength(normalizedDescription, 'utf8') > MAX_ASK_USER_OPTION_DESCRIPTION_BYTES) {
         return {ok: false, message: `questions[${questionIndex}].options[${optionIndex}].description must not exceed ${MAX_ASK_USER_OPTION_DESCRIPTION_BYTES} UTF-8 bytes`};
       }
@@ -215,14 +217,14 @@ function createAskUserQuestionsSuccessResult(call: ToolCall, answers: AskUserQue
           index,
           multiSelect: true,
           selectedOptions: answer.selectedOptions.map((option) => option.label),
-          ...(answer.customText ? {customText: answer.customText} : {})
+          ...(answer.customText ? {customText: sanitizeTerminalText(answer.customText)} : {})
         };
       }
 
       return {
         index,
         selected: answer.selectedOption.label,
-        ...(answer.customText ? {customText: answer.customText} : {})
+        ...(answer.customText ? {customText: sanitizeTerminalText(answer.customText)} : {})
       };
     })
   });

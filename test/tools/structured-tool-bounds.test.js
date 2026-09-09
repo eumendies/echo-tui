@@ -249,3 +249,30 @@ test('edit_file bounds UTF-8 success paths, hints, and filesystem exceptions whi
     fs.writeFileSync = originalWriteFileSync;
   }
 });
+
+test('ask_user_questions normalizes control characters in question fields and custom answers', () => {
+  const parsed = parseAskUserQuestionsArgs({
+    questions: [{
+      question: '你用的是哪个终端\r?(用于确认\r Ambiguous\r 字符渲染行为\r)',
+      options: [
+        {label: '方案\r A\r(推荐\r)', description: '帧级\r diff\r+原位覆写\r,收益最大'},
+        {label: 'Other'}
+      ]
+    }]
+  });
+
+  assert.equal(parsed.ok, true);
+  const question = parsed.value.questions[0];
+  assert.equal(question.question, '你用的是哪个终端?(用于确认 Ambiguous 字符渲染行为)');
+  assert.equal(question.options[0].label, '方案 A(推荐)');
+  assert.equal(question.options[0].description, '帧级 diff+原位覆写,收益最大');
+
+  const success = createAskUserQuestionsSuccessResult(createCall(ASK_USER_QUESTIONS_TOOL_NAME, {}), [{
+    question: 'Q',
+    selectedOption: {label: '默认'},
+    customText: '粘贴文本\r\n第二行\r第三行'
+  }]);
+  assert.equal(success.ok, true);
+  const payload = JSON.parse(success.text);
+  assert.equal(payload.answers[0].customText, '粘贴文本\n第二行第三行');
+});

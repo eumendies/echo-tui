@@ -1,7 +1,10 @@
+import {isAbsolute} from 'node:path';
+
 import {REASONING_EFFORTS, REASONING_SUMMARIES} from '../types/agent';
 import {getProviderPreset, providerRequiresApiKey} from './provider-presets';
 import {DEFAULT_APP_SETTINGS} from './app-settings-config';
-import type {AgentType, BashToolConfig, LlmConfig, ReasoningEffort, ReasoningSummary, ToolRuntimeConfig} from '../types/agent';
+import type {SandboxMode} from '../sandbox/types';
+import type {AgentType, BashToolConfig, LlmConfig, ReasoningEffort, ReasoningSummary, SandboxToolConfig, ToolRuntimeConfig} from '../types/agent';
 import type {ProviderPreset} from './provider-presets';
 
 const DEFAULT_BASH_TOOL_TIMEOUT_MS = null;
@@ -547,13 +550,20 @@ function parseToolRuntimeConfig(rootConfig: ConfigSource): ToolRuntimeConfig {
   const readFilesConfig = toolsConfig.readFiles && typeof toolsConfig.readFiles === 'object' && !Array.isArray(toolsConfig.readFiles)
     ? toolsConfig.readFiles as ConfigSource
     : {};
+  if (toolsConfig.sandbox !== undefined && toolsConfig.sandbox !== null && toolsConfig.sandbox !== '') {
+    assertPlainObject(toolsConfig.sandbox, 'tools.sandbox');
+  }
+  const sandboxConfig = toolsConfig.sandbox && typeof toolsConfig.sandbox === 'object' && !Array.isArray(toolsConfig.sandbox)
+    ? toolsConfig.sandbox as ConfigSource
+    : {};
 
   return {
     autoCompressImages: typeof readFilesConfig.autoCompressImages === 'boolean'
       ? readFilesConfig.autoCompressImages
       : DEFAULT_APP_SETTINGS.autoCompressImages,
     bash: readBashToolConfig(bashConfig),
-    fileEditMode: fileEditConfig.mode === 'edit_file' ? 'edit_file' : 'apply_patch'
+    fileEditMode: fileEditConfig.mode === 'edit_file' ? 'edit_file' : 'apply_patch',
+    sandbox: readSandboxToolConfig(sandboxConfig)
   };
 }
 
@@ -561,6 +571,45 @@ function readBashToolConfig(bashConfig: ConfigSource): BashToolConfig {
   return {
     timeoutMs: readOptionalPositiveInteger(bashConfig, 'timeoutMs') ?? DEFAULT_BASH_TOOL_TIMEOUT_MS,
     maxOutputBytes: readOptionalIntegerInRange(bashConfig, 'maxOutputBytes', 1_024, 65_536, DEFAULT_BASH_TOOL_MAX_OUTPUT_BYTES)
+  };
+}
+
+const SANDBOX_MODES: readonly string[] = ['off', 'read-only', 'workspace-write'];
+// 默认档位:macOS 上默认提供工作区可写沙箱并放行网络;变更默认值属于行为变更。
+const DEFAULT_SANDBOX_MODE = 'workspace-write';
+const DEFAULT_SANDBOX_NETWORK = true;
+
+/**
+ * 解析 tools.sandbox;默认 workspace-write 且网络开启,任何结构或取值非法都显式失败,不静默降级。
+ */
+function readSandboxToolConfig(sandboxConfig: ConfigSource): SandboxToolConfig {
+  const mode = sandboxConfig.mode;
+  if (mode !== undefined && mode !== null && mode !== '' && !(typeof mode === 'string' && SANDBOX_MODES.includes(mode))) {
+    throw new LlmConfigError(`tools.sandbox.mode 必须是 ${SANDBOX_MODES.join('、')}`);
+  }
+
+  const network = sandboxConfig.network;
+  if (network !== undefined && network !== null && network !== '' && typeof network !== 'boolean') {
+    throw new LlmConfigError('tools.sandbox.network 必须是布尔值');
+  }
+
+  const extraWritablePaths = sandboxConfig.extraWritablePaths;
+  if (extraWritablePaths !== undefined && extraWritablePaths !== null && extraWritablePaths !== '' && !Array.isArray(extraWritablePaths)) {
+    throw new LlmConfigError('tools.sandbox.extraWritablePaths 必须是字符串数组');
+  }
+
+  return {
+    mode: (mode as SandboxMode) || DEFAULT_SANDBOX_MODE,
+    network: typeof network === 'boolean' ? network : DEFAULT_SANDBOX_NETWORK,
+    extraWritablePaths: Array.isArray(extraWritablePaths)
+      ? extraWritablePaths.map((item, index) => {
+          if (typeof item !== 'string' || item.trim() === '' || !isAbsolute(item)) {
+            throw new LlmConfigError(`tools.sandbox.extraWritablePaths[${index}] 必须是绝对路径`);
+          }
+
+          return item;
+        })
+      : []
   };
 }
 
@@ -643,6 +692,7 @@ export {
   createLlmModelConfigInfo,
   parseLlmConfiguration,
   parseToolRuntimeConfig,
+  SANDBOX_MODES,
   resolveLlmConfig,
   resolveLlmConfigForProfile,
   resolveLlmConfigStrict,

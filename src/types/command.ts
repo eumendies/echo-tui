@@ -1,5 +1,6 @@
 import type { InputEvent } from './input';
 import type { AgentInstructionFileName, AgentType, ContextUsage, InteractionMode, ReasoningEffort } from './agent';
+import type { SandboxMode } from '../sandbox/types';
 import type {DiffFile, DiffSourceInfo, DiffSourceResult} from './diff';
 import type { CompactionState, PendingConversationReference, PreparedConversationReference, TranscriptForkResult, TranscriptRecord, TranscriptSessionSummary, TranscriptSessionPreview, UserTranscriptMetadata } from './transcript';
 import type {UndoExecuteResult, UndoSummary} from './change-history';
@@ -360,7 +361,7 @@ export type ConfigCommandState = {
   providerIndex: number;
 };
 
-export type ConfigTabId = 'general' | 'models' | 'appearance';
+export type ConfigTabId = 'general' | 'models' | 'sandbox' | 'appearance';
 
 export type ConfigSurfaceTab = {
   id: ConfigTabId;
@@ -383,6 +384,21 @@ export type ToolApprovalModelProfile = {
   provider: string; // 所属 provider id，仅用于帮助用户区分候选。
 };
 
+export type SandboxConfigDraft = {
+  mode: SandboxMode; // 沙箱档位：off / read-only / workspace-write。
+  network: boolean; // 配置原值；read-only 档由 runtime 归一化为禁网。
+  extraWritablePaths: string[]; // 用户追加的可写目录绝对路径。
+};
+
+export type SandboxConfigState = {
+  draft: SandboxConfigDraft; // 当前沙箱草稿；保存前不落盘。
+  error?: string; // 最近一次操作的就地错误；由下一次操作清除。
+  feedback?: string; // 最近一次成功保存的提示。
+  initialDraftFingerprint: string; // 打开或保存成功时的草稿指纹；脏跟踪基线。
+  pathInput?: string; // 新目录行内输入缓冲；undefined 表示列表模式，'' 表示空输入。
+  selectedIndex: number; // 列表选中行；输入模式下忽略。
+};
+
 export type AppearanceConfigState = {
   error?: string;
   feedback?: string;
@@ -394,6 +410,7 @@ export type ConfigCommandSurface =
   | {kind: 'config'; view: 'general'; activeTab: ConfigTabId; tabs: ConfigSurfaceTab[]; state: GeneralConfigState}
   | {kind: 'config'; view: 'models'; activeTab: ConfigTabId; tabs: ConfigSurfaceTab[]; state: ConfigCommandState; rows: ConfigFormRow[]}
   | {kind: 'config'; view: 'appearance'; activeTab: ConfigTabId; tabs: ConfigSurfaceTab[]; state: AppearanceConfigState}
+  | {kind: 'config'; view: 'sandbox'; activeTab: ConfigTabId; tabs: ConfigSurfaceTab[]; state: SandboxConfigState}
   | {kind: 'config'; view: 'error'; activeTab: ConfigTabId; tabs: ConfigSurfaceTab[]; error: string}
   | {kind: 'config'; view: 'discardConfirm'; activeTab: ConfigTabId; tabs: ConfigSurfaceTab[]; dirtyTabs: string[]; selectedIndex: number};
 
@@ -430,8 +447,17 @@ export type CommandStatusSnapshot = {
     model: string;
     provider: string;
   } | null;
+  sandbox: CommandStatusSandboxState;
   sessionId: string | null;
   userMemoryCount: number;
+};
+
+export type CommandStatusSandboxState = {
+  mode: SandboxMode; // 配置的沙箱档位。
+  network: boolean; // 沙箱生效后的实际网络状态;read-only 恒为 false,与配置原值无关。
+  provider: string | null; // 沙箱实现标识;平台不支持时为 null。
+  available: boolean; // 沙箱在当前环境是否实际生效。
+  unavailableReason?: string; // 配置生效但沙箱不可用时的降级原因;available 时缺省。
 };
 
 export type CommandCodexUsageWindow = {
@@ -724,6 +750,8 @@ export type CommandHostApp = {
     listModels(provider: ConfigProviderDraft): Promise<CommandConfigListModelsResult>;
     saveSettings(draft: AppSettings): CommandConfigSaveResult;
     saveDraft(draft: LlmConfigDraft): CommandConfigSaveResult;
+    readSandboxDraft(): SandboxConfigDraft;
+    saveSandboxDraft(draft: SandboxConfigDraft): CommandConfigSaveResult;
   };
   skills: {
     createSkillInvocation(skillName: string, argumentsText?: string): CommandSkillInvocationResult;

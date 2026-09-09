@@ -35,6 +35,7 @@ type BuiltInSystemPromptContext = {
   agentInstructions?: AgentInstruction[]; // 当前 cwd 适用且已按层级排序的项目指令。
   basePrompt?: string; // 用户 system prompt override；缺省使用内置主 prompt。
   cwd: string; // 进入每次 provider 请求的运行工作目录。
+  sandboxNote?: string; // bash 沙箱生效时的边界说明;缺省表示本次运行未包装沙箱。
   skillCatalog?: SkillCatalogEntry[]; // 当前 revision 的有界 enabled skill目录。
   memoryPrompts?: string[]; // 当前请求动态解析的 user/agent memory sections。
   rolePrompt?: string; // 子 Agent等隔离运行追加的明确角色边界 section。
@@ -46,10 +47,14 @@ type BuiltInSystemPromptContext = {
 function createBuiltInSystemPrompt(context: BuiltInSystemPromptContext): string {
   const agentInstructionsPrompt = formatAgentInstructionsPrompt(context.agentInstructions || []);
   const skillCatalogPrompt = formatSkillCatalogPrompt(context.skillCatalog || []);
+  const runtimeEnvironmentLines = [
+    'Runtime environment:',
+    `- Current working directory: ${context.cwd}`,
+    ...(context.sandboxNote ? [`- Bash sandbox: ${context.sandboxNote}`] : [])
+  ];
   const sections = [`${context.basePrompt || BUILT_IN_SYSTEM_PROMPT}
 
-Runtime environment:
-- Current working directory: ${context.cwd}`];
+${runtimeEnvironmentLines.join('\n')}`];
 
   if (agentInstructionsPrompt !== '') {
     sections.push(agentInstructionsPrompt);

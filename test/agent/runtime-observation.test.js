@@ -278,7 +278,13 @@ test('agent runtime exposes only allowlisted provider facts to observation', asy
       headers: {authorization: 'header-secret'},
       baseURL: 'https://example.com',
       model: 'fake',
-      contextWindow: 128000
+      contextWindow: 128000,
+      tools: {
+        autoCompressImages: true,
+        bash: {timeoutMs: null, maxOutputBytes: 65536},
+        fileEditMode: 'apply_patch',
+        sandbox: {mode: 'off', network: false, extraWritablePaths: []}
+      }
     },
     registry: {getHandler() {}, listDefinitions() { return []; }, listSkillCatalog() { return []; }}
   });

@@ -61,6 +61,7 @@ function createFakeHost(options = {}) {
     renders: 0,
     savedConfigDrafts: [],
     savedSettingsDrafts: [],
+    savedSandboxDrafts: [],
     savedHookDrafts: [],
     hookTests: [],
     savedMcpServers: [],
@@ -222,6 +223,17 @@ function createFakeHost(options = {}) {
       saveSettings(draft) {
         calls.savedSettingsDrafts.push(structuredClone(draft));
         return options.saveSettings ? options.saveSettings(draft) : {ok: true};
+      },
+      readSandboxDraft() {
+        if (options.sandboxReadError) {
+          throw new Error(options.sandboxReadError);
+        }
+
+        return structuredClone(options.sandboxDraft || {mode: 'workspace-write', network: true, extraWritablePaths: []});
+      },
+      saveSandboxDraft(draft) {
+        calls.savedSandboxDrafts.push(structuredClone(draft));
+        return options.saveSandbox ? options.saveSandbox(draft) : {ok: true};
       }
     },
     skills: {
@@ -1330,6 +1342,156 @@ test('configCommandHandler cancels without saving', () => {
   assert.equal(calls.savedConfigDrafts.length, 0);
 });
 
+test('configCommandHandler edits sandbox draft, saves, and reaches discard confirm', () => {
+  const configCommandHandler = new ConfigCommandHandler();
+  const {calls, host} = createFakeHost();
+  let session = startCommand(configCommandHandler, '/config', host);
+
+  // Tab 循环覆盖四个 Tab:general → models → sandbox。
+  configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.TAB}, host);
+  session = host.session.getActive();
+  configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.TAB}, host);
+  session = host.session.getActive();
+  assert.equal(session.surface.view, 'sandbox');
+  assert.deepEqual(session.surface.state.draft, {mode: 'workspace-write', network: true, extraWritablePaths: []});
+
+  // 档位三档循环。
+  configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_RIGHT}, host);
+  session = host.session.getActive();
+  assert.equal(session.surface.state.draft.mode, 'off');
+  assert.notEqual(session.surface.state.initialDraftFingerprint, JSON.stringify(session.surface.state.draft));
+  configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_RIGHT}, host);
+  session = host.session.getActive();
+  assert.equal(session.surface.state.draft.mode, 'read-only');
+  configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_LEFT}, host);
+  configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_RIGHT}, host);
+  configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_RIGHT}, host);
+  session = host.session.getActive();
+  assert.equal(session.surface.state.draft.mode, 'workspace-write');
+
+  // 网络开关:SUBMIT 与左右方向键都能切换。
+  configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_DOWN}, host);
+  session = host.session.getActive();
+  configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.SUBMIT}, host);
+  session = host.session.getActive();
+  assert.equal(session.surface.state.draft.network, false);
+  configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_RIGHT}, host);
+  session = host.session.getActive();
+  assert.equal(session.surface.state.draft.network, true);
+
+  // 添加目录:相对路径被拒,输入缓冲保留供修正。
+  configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_DOWN}, host);
+  configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
+  session = host.session.getActive();
+  assert.equal(session.surface.state.pathInput, '');
+  configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: './build'}, host);
+  configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
+  session = host.session.getActive();
+  assert.equal(session.surface.state.error, '路径必须是绝对路径');
+  assert.equal(session.surface.state.pathInput, './build');
+  assert.deepEqual(session.surface.state.draft.extraWritablePaths, []);
+
+  // Esc 取消输入,重新输入绝对路径后加入并选中该行。
+  configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.ESCAPE}, host);
+  session = host.session.getActive();
+  assert.equal(session.surface.state.pathInput, undefined);
+  configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.SUBMIT}, host);
+  session = host.session.getActive();
+  configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: '/Users/me/code'}, host);
+  configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
+  session = host.session.getActive();
+  assert.deepEqual(session.surface.state.draft.extraWritablePaths, ['/Users/me/code']);
+  assert.equal(session.surface.state.selectedIndex, 3);
+
+  // Enter 移除选中目录,焦点留在路径区(添加行),不漂到保存行。
+  configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.SUBMIT}, host);
+  session = host.session.getActive();
+  assert.deepEqual(session.surface.state.draft.extraWritablePaths, []);
+  assert.equal(session.surface.state.selectedIndex, 2);
+
+  // 重新添加并保存。
+  configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.SUBMIT}, host);
+  session = host.session.getActive();
+  configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: '/Users/me/code'}, host);
+  configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
+  session = host.session.getActive();
+  configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_DOWN}, host);
+  configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
+  configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
+  session = host.session.getActive();
+  assert.equal(calls.savedSandboxDrafts.length, 1);
+  assert.deepEqual(calls.savedSandboxDrafts[0], {mode: 'workspace-write', network: true, extraWritablePaths: ['/Users/me/code']});
+  assert.match(session.surface.state.feedback, /已保存/);
+
+  // 未保存修改 → Esc 触发统一放弃确认,仅列出沙箱。
+  configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_UP}, host);
+  configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_UP}, host);
+  configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_UP}, host);
+  configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_RIGHT}, host);
+  session = host.session.getActive();
+  assert.equal(session.surface.state.selectedIndex, 1);
+  assert.equal(session.surface.state.draft.network, false);
+  configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.ESCAPE}, host);
+  session = host.session.getActive();
+  assert.equal(session.surface.view, 'discardConfirm');
+  assert.deepEqual(session.surface.dirtyTabs, ['沙箱']);
+
+  // Esc 返回继续编辑,再次 Esc 后选择放弃并关闭。
+  configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.ESCAPE}, host);
+  session = host.session.getActive();
+  assert.equal(session.surface.view, 'sandbox');
+  configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.ESCAPE}, host);
+  session = host.session.getActive();
+  assert.equal(session.surface.view, 'discardConfirm');
+  configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_DOWN}, host);
+  configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
+  assert.equal(calls.sessionCloses, 1);
+  assert.equal(calls.savedSandboxDrafts.length, 1);
+});
+
+test('configCommandHandler rejects sandbox path input beyond the limit without dropping characters', () => {
+  const configCommandHandler = new ConfigCommandHandler();
+  const {host} = createFakeHost();
+  let session = startCommand(configCommandHandler, '/config', host);
+
+  // Tab 两次进入沙箱面板,再两次下移进入添加目录输入模式(空列表时无标题行)。
+  configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.TAB}, host);
+  session = host.session.getActive();
+  configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.TAB}, host);
+  session = host.session.getActive();
+  configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_DOWN}, host);
+  configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
+  configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
+  session = host.session.getActive();
+  assert.equal(session.surface.state.pathInput, '');
+
+  // 上限(4096 个字符)内正常接受。
+  configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: '/x' + 'a'.repeat(4094)}, host);
+  session = host.session.getActive();
+  assert.equal(session.surface.state.pathInput, '/x' + 'a'.repeat(4094));
+
+  // 超过上限:缓冲保持不变并明确报错,不静默丢弃任何已输入字符。
+  configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: 'tail'}, host);
+  session = host.session.getActive();
+  assert.equal(session.surface.state.pathInput, '/x' + 'a'.repeat(4094));
+  assert.equal(session.surface.state.error, '路径太长：最多 4096 个字符');
+
+  // 退格腾出空间后可以继续输入,错误提示随之清除。
+  configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.BACKSPACE}, host);
+  session = host.session.getActive();
+  assert.equal(session.surface.state.pathInput, '/x' + 'a'.repeat(4093));
+  configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: 'l'}, host);
+  session = host.session.getActive();
+  assert.equal(session.surface.state.pathInput, '/x' + 'a'.repeat(4093) + 'l');
+  assert.equal(session.surface.state.error, undefined);
+
+  // Esc 取消后回到面板,输入不进入草稿。
+  configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.ESCAPE}, host);
+  session = host.session.getActive();
+  assert.equal(session.surface.state.pathInput, undefined);
+  assert.deepEqual(session.surface.state.draft.extraWritablePaths, []);
+});
+
 test('configCommandHandler lists provider models and adds a selected model without saving', async () => {
   let resolveListModels;
   const configCommandHandler = new ConfigCommandHandler();
@@ -1483,7 +1645,7 @@ test('createSlashCommandDescriptors derives display metadata from handlers', () 
   assert.deepEqual(descriptors, [
     { name: 'help', description: '查看帮助', allowDuringAssistantTurn: true },
     { name: 'btw', description: '打开临时只读旁路会话', allowDuringAssistantTurn: true },
-    { name: 'config', description: '配置常规设置、指令文件、模型和主题' },
+    { name: 'config', description: '配置常规设置、指令文件、模型、沙箱和主题' },
     { name: 'model', description: '切换模型' },
     { name: 'effort', description: '调整推理等级' },
     { name: 'mode', description: '切换交互模式' },

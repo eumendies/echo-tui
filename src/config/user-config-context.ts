@@ -14,15 +14,16 @@ import {
 } from './llm-config';
 import {LlmConfigEditorError, applyLlmConfigDraft, createLlmConfigDraft} from './llm-config-editor';
 import {applyMcpEnabledStateDraft, createMcpConfig, createMcpConfigDraft, parseMcpConfigModel} from './mcp-config';
+import {applySandboxConfigDraft, createSandboxConfigDraft} from './sandbox-config-editor';
 import {getDefaultUserConfigPath, watchUserConfig} from './user-config';
 import {applyLifecycleHookConfigDraft, parseLifecycleHookConfig, parseLifecycleHookConfigDraft} from '../hooks/config';
 
 import type {AppSettings} from './app-settings-config';
 import type {JsonConfigFileOptions, JsonConfigObject, JsonConfigFileErrorKind} from './json-config-file';
 import type {LlmModelConfigInfo, ParsedLlmConfiguration, ResolveLlmConfigOptions} from './llm-config';
-import type {LlmConfig, ToolRuntimeConfig} from '../types/agent';
+import type {LlmConfig, SandboxToolConfig, ToolRuntimeConfig} from '../types/agent';
 import type {LifecycleHookConfig, LifecycleHookConfigDraft} from '../types/hooks';
-import type {LlmConfigDraft} from '../types/command';
+import type {LlmConfigDraft, SandboxConfigDraft} from '../types/command';
 import type {McpConfig, McpConfigDraft, McpEnabledStateDraft} from '../types/mcp';
 import type {UserConfigWatcher} from './user-config';
 
@@ -97,6 +98,7 @@ class UserConfigSnapshot {
   private mcpDraftCache?: McpConfigDraft;
   private mcpRuntimeCache?: McpConfig;
   private modelInfoCache?: LlmModelConfigInfo;
+  private sandboxDraftCache?: SandboxConfigDraft;
   private readonly configPath: string;
   private readonly root: JsonConfigObject;
   private toolsCache?: ToolRuntimeConfig;
@@ -125,6 +127,11 @@ class UserConfigSnapshot {
   getLlmModelConfigInfo(): LlmModelConfigInfo {
     this.modelInfoCache ||= freezeValue(createLlmModelConfigInfo(this.getParsedLlm()));
     return this.modelInfoCache;
+  }
+
+  /** 返回 bash 工具沙箱策略;供 /status 等只读展示使用,不依赖 provider 解析。 */
+  getSandboxToolConfig(): SandboxToolConfig {
+    return this.getToolRuntimeConfig().sandbox;
   }
 
   /** 解析宽松 per-run profile/effort 覆盖，并复用当前 revision 的 provider 图。 */
@@ -159,6 +166,13 @@ class UserConfigSnapshot {
   getMcpConfigDraft(): McpConfigDraft {
     this.mcpDraftCache ||= freezeValue(createMcpConfigDraft(parseMcpConfigModel(this.getOptionalRoot())));
     return structuredClone(this.mcpDraftCache);
+  }
+
+  /** 返回 bash 沙箱配置草稿；只有 valid/missing 可读，损坏文件继续抛出分类错误。 */
+  getSandboxConfigDraft(): SandboxConfigDraft {
+    this.assertDraftReadable();
+    this.sandboxDraftCache ||= freezeValue(createSandboxConfigDraft(this.root));
+    return structuredClone(this.sandboxDraftCache);
   }
 
   /** 返回启用且有效的 lifecycle hooks runtime 配置。 */
@@ -332,6 +346,11 @@ class UserConfigContext {
   /** 保存 MCP 开关；与旧 writer 一致，目标配置文件必须已经存在且有效。 */
   saveMcpEnabledStateDraft(draft: McpEnabledStateDraft): UserConfigRefreshResult {
     return this.updateRoot((root) => applyMcpEnabledStateDraft(root, draft), {allowMissing: false});
+  }
+
+  /** 保存 bash 沙箱草稿并立即发布安装后的 snapshot。 */
+  saveSandboxConfigDraft(draft: SandboxConfigDraft): UserConfigRefreshResult {
+    return this.updateRoot((root) => applySandboxConfigDraft(root, draft));
   }
 
   /** 保存 lifecycle hooks 草稿并立即发布安装后的 snapshot。 */
