@@ -370,7 +370,9 @@ function readReasoningSummaryFromMap(parts: Map<number, PartialThinkingBlock>): 
 function finalizeThinkingRecords(parts: PartialThinkingBlock[]): TranscriptRecord[] {
   return parts
     .map((part): AnthropicProviderThinkingBlock | null => {
-      if (part.type === 'thinking' && part.thinking !== '' && part.signature) {
+      // 空 thinking 文本的 block（omitted display 或空 progress update）同样携带有效签名，
+      // 多轮工具循环必须原样回传；丢弃会被 API 判定为 thinking 未传回并拒绝请求。
+      if (part.type === 'thinking' && part.signature) {
         return {type: 'thinking', thinking: part.thinking, signature: part.signature};
       }
 

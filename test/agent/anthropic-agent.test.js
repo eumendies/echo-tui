@@ -224,6 +224,118 @@ test('convertTranscriptToAnthropicMessages replays Anthropic thinking blocks bef
   );
 });
 
+test('convertTranscriptToAnthropicMessages replays empty thinking blocks before tool use', () => {
+  assert.deepEqual(
+    convertTranscriptToAnthropicMessages([
+      createAnthropicThinkingProviderRecord({ type: 'thinking', thinking: '', signature: 'sig-empty' }),
+      { role: 'tool_call', text: '', toolCallId: 'call_1', toolName: 'run_bash_command', argumentsText: '{"command":"pwd"}' },
+      { role: 'tool_result', text: 'exit_code: 0', toolCallId: 'call_1', toolName: 'run_bash_command', ok: true, details: {kind: 'bash'} }
+    ]),
+    {
+      messages: [
+        {
+          role: 'assistant',
+          content: [
+            { type: 'thinking', thinking: '', signature: 'sig-empty' },
+            { type: 'tool_use', id: 'call_1', name: 'run_bash_command', input: { command: 'pwd' } }
+          ]
+        },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call_1', content: 'exit_code: 0' }] }
+      ]
+    }
+  );
+});
+
+test('convertTranscriptToAnthropicMessages groups parallel tool calls into one assistant turn', () => {
+  assert.deepEqual(
+    convertTranscriptToAnthropicMessages([
+      createAnthropicThinkingProviderRecord({ type: 'thinking', thinking: 'Need parallel calls.', signature: 'sig-1' }),
+      { role: 'assistant', text: 'Running parallel tools.' },
+      { role: 'tool_call', text: '', toolCallId: 'call_00', toolName: 'run_bash_command', argumentsText: '{"command":"pwd"}' },
+      { role: 'tool_result', text: 'exit_code: 0', toolCallId: 'call_00', toolName: 'run_bash_command', ok: true, details: {kind: 'bash'} },
+      { role: 'tool_call', text: '', toolCallId: 'call_01', toolName: 'glob', argumentsText: '{"pattern":"*.ts"}' },
+      { role: 'tool_result', text: 'no matches', toolCallId: 'call_01', toolName: 'glob', ok: true, details: {kind: 'glob'} }
+    ]),
+    {
+      messages: [
+        {
+          role: 'assistant',
+          content: [
+            { type: 'thinking', thinking: 'Need parallel calls.', signature: 'sig-1' },
+            { type: 'text', text: 'Running parallel tools.' },
+            { type: 'tool_use', id: 'call_00', name: 'run_bash_command', input: { command: 'pwd' } },
+            { type: 'tool_use', id: 'call_01', name: 'glob', input: { pattern: '*.ts' } }
+          ]
+        },
+        {
+          role: 'user',
+          content: [
+            { type: 'tool_result', tool_use_id: 'call_00', content: 'exit_code: 0' },
+            { type: 'tool_result', tool_use_id: 'call_01', content: 'no matches' }
+          ]
+        }
+      ]
+    }
+  );
+});
+
+test('convertTranscriptToAnthropicMessages splits sequential thinking turns around buffered tool results', () => {
+  assert.deepEqual(
+    convertTranscriptToAnthropicMessages([
+      createAnthropicThinkingProviderRecord({ type: 'thinking', thinking: 'First step.', signature: 'sig-a' }),
+      { role: 'tool_call', text: '', toolCallId: 'call_a', toolName: 'run_bash_command', argumentsText: '{"command":"pwd"}' },
+      { role: 'tool_result', text: 'exit_code: 0', toolCallId: 'call_a', toolName: 'run_bash_command', ok: true, details: {kind: 'bash'} },
+      createAnthropicThinkingProviderRecord({ type: 'thinking', thinking: 'Second step.', signature: 'sig-b' }),
+      { role: 'tool_call', text: '', toolCallId: 'call_b', toolName: 'glob', argumentsText: '{"pattern":"*.ts"}' },
+      { role: 'tool_result', text: 'no matches', toolCallId: 'call_b', toolName: 'glob', ok: true, details: {kind: 'glob'} }
+    ]),
+    {
+      messages: [
+        {
+          role: 'assistant',
+          content: [
+            { type: 'thinking', thinking: 'First step.', signature: 'sig-a' },
+            { type: 'tool_use', id: 'call_a', name: 'run_bash_command', input: { command: 'pwd' } }
+          ]
+        },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call_a', content: 'exit_code: 0' }] },
+        {
+          role: 'assistant',
+          content: [
+            { type: 'thinking', thinking: 'Second step.', signature: 'sig-b' },
+            { type: 'tool_use', id: 'call_b', name: 'glob', input: { pattern: '*.ts' } }
+          ]
+        },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call_b', content: 'no matches' }] }
+      ]
+    }
+  );
+});
+
+test('convertTranscriptToAnthropicMessages flushes buffered tool results before user messages', () => {
+  assert.deepEqual(
+    convertTranscriptToAnthropicMessages([
+      createAnthropicThinkingProviderRecord({ type: 'thinking', thinking: 'Plan.', signature: 'sig-1' }),
+      { role: 'tool_call', text: '', toolCallId: 'call_00', toolName: 'run_bash_command', argumentsText: '{"command":"pwd"}' },
+      { role: 'tool_result', text: 'exit_code: 0', toolCallId: 'call_00', toolName: 'run_bash_command', ok: true, details: {kind: 'bash'} },
+      { role: 'user', text: 'continue with the next step' }
+    ]),
+    {
+      messages: [
+        {
+          role: 'assistant',
+          content: [
+            { type: 'thinking', thinking: 'Plan.', signature: 'sig-1' },
+            { type: 'tool_use', id: 'call_00', name: 'run_bash_command', input: { command: 'pwd' } }
+          ]
+        },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call_00', content: 'exit_code: 0' }] },
+        { role: 'user', content: [{ type: 'text', text: 'continue with the next step' }] }
+      ]
+    }
+  );
+});
+
 test('convertTranscriptToAnthropicMessages skips unknown extension records', () => {
   assert.deepEqual(
     convertTranscriptToAnthropicMessages([
@@ -632,6 +744,60 @@ test('createAnthropicAgent preserves redacted thinking without visible summary',
   assert.equal(Object.hasOwn(result, 'reasoningSummary'), false);
   assert.deepEqual(result.providerRecords, [createAnthropicThinkingProviderRecord({ type: 'redacted_thinking', data: 'redacted-data' })]);
   assert.deepEqual(harness.callbacks, []);
+});
+
+test('createAnthropicAgent preserves empty thinking blocks with signatures', async () => {
+  const harness = createHarness([
+    { type: 'content_block_start', index: 0, content_block: { type: 'thinking' } },
+    { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 'sig-empty' } },
+    { type: 'content_block_stop', index: 0 },
+    { type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } },
+    { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'No thinking needed.' } },
+    { type: 'content_block_stop', index: 1 },
+    { type: 'message_delta', delta: { stop_reason: 'end_turn' } },
+    { type: 'message_stop' }
+  ]);
+
+  const result = await harness.runTurn([{ role: 'user', text: 'hello' }], {
+    onReasoningUpdate(update) {
+      harness.callbacks.push(['reasoning', update]);
+    }
+  });
+
+  assert.equal(result.draft, 'No thinking needed.');
+  assert.deepEqual(result.providerRecords, [createAnthropicThinkingProviderRecord({ type: 'thinking', thinking: '', signature: 'sig-empty' })]);
+  // 空文本 block 不产生 reasoning summary 展示，但记录必须保留以供多轮回传。
+  assert.deepEqual(harness.callbacks, []);
+});
+
+test('createAnthropicAgent keeps empty progress-update blocks beside summarized thinking', async () => {
+  const harness = createHarness([
+    { type: 'content_block_start', index: 0, content_block: { type: 'thinking' } },
+    { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'Reasoning first.' } },
+    { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 'sig-reasoning' } },
+    { type: 'content_block_stop', index: 0 },
+    { type: 'content_block_start', index: 1, content_block: { type: 'thinking' } },
+    { type: 'content_block_delta', index: 1, delta: { type: 'signature_delta', signature: 'sig-empty' } },
+    { type: 'content_block_stop', index: 1 },
+    {
+      type: 'content_block_start',
+      index: 2,
+      content_block: { type: 'tool_use', id: 'call_1', name: 'run_bash_command', input: {} }
+    },
+    { type: 'content_block_delta', index: 2, delta: { type: 'input_json_delta', partial_json: '{"command":"pwd"}' } },
+    { type: 'content_block_stop', index: 2 },
+    { type: 'message_delta', delta: { stop_reason: 'tool_use' } },
+    { type: 'message_stop' }
+  ], createToolRegistry());
+
+  const result = await harness.runTurn([{ role: 'user', text: 'inspect' }]);
+
+  // 同一 assistant turn 内的 thinking 序列必须完整：空 progress-update 丢弃会导致 API 判定部分丢失。
+  assert.deepEqual(result.providerRecords, [
+    createAnthropicThinkingProviderRecord({ type: 'thinking', thinking: 'Reasoning first.', signature: 'sig-reasoning' }),
+    createAnthropicThinkingProviderRecord({ type: 'thinking', thinking: '', signature: 'sig-empty' })
+  ]);
+  assert.deepEqual(result.toolCalls, [{ callId: 'call_1', toolName: 'run_bash_command', argumentsText: '{"command":"pwd"}' }]);
 });
 
 test('createAnthropicAgent preserves partial tool input for runtime validation', async () => {
