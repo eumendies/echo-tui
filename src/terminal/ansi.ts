@@ -51,6 +51,14 @@ export function clearLine(): string {
 }
 
 /**
+ * 清除光标到行尾(EL 0),供 footer 增量重绘在原位覆写后清理行尾残余。
+ *
+ */
+export function clearEndOfLine(): string {
+  return `${ESC}K`;
+}
+
+/**
  * 清理当前可见屏幕内容。
  *
  */
