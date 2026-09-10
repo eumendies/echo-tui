@@ -31,4 +31,4 @@
 - [x] 4.1 完整验证序列:`npm run typecheck`、`npm test`、`find bin src test scripts -name '*.js' -exec node --check {} \;` 全过
 - [x] 4.2 手动验证:连续英文/CJK 输入、Ctrl+J 换行、slash 建议逐字变化、@文件选择器、流式响应并行输入均无可感知频闪(用户已确认;并复验 slash 建议贴底展开与审批/提问/@选择器/子 agent 全链路)
 - [x] 4.3 若实测单行覆写期间光标可见跳动,启用"总是 hide"回退开关并在 design 记录(条件未触发:实测无可见光标跳动,回退开关未启用)
-- [ ] 4.4 经用户确认后提交 dev;archive 时同步 delta 到主 spec(`openspec/specs/terminal-tui-prototype/spec.md`)
+- [x] 4.4 经用户确认后提交 dev;archive 时同步 delta 到主 spec(`openspec/specs/terminal-tui-prototype/spec.md`)
