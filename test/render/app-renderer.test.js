@@ -2278,8 +2278,9 @@ test('createAppRenderer keeps a persisted subagent call transient until its resu
       argumentsText: '{"command":"git status --short"}'
     }
   }], ...state});
-  assert.equal(stripAnsi(output.writes.at(-1)).includes('Bash'), false);
-  assert.equal(output.writes.length, writesBeforeCall + 1);
+  // 帧级增量重绘:内部 call 缓冲为 footer 瞬态且 state 未变化时,本次渲染零输出。
+  assert.equal(output.writes.some((chunk) => stripAnsi(chunk).includes('Bash')), false);
+  assert.equal(output.writes.length, writesBeforeCall);
 
   renderer.renderRecords({records: [{
     ...base, text: 'clean', event: {

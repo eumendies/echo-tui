@@ -178,7 +178,8 @@ test('createFooterRenderer writes each complete redraw as one frame and preserve
   const shortLayout = renderFooterLayout(baseState);
   renderer.render(baseState);
   assert.equal(output.writes.length, 3);
-  assert.equal((output.writes[2].match(/\x1b\[2K/g) || []).length, tallLayout.lines.length);
+  // 增量重绘:从高帧回到矮帧只清理底部多出来的行,不再整帧擦写。
+  assert.equal((output.writes[2].match(/\x1b\[2K/g) || []).length, tallLayout.lines.length - shortLayout.lines.length);
   assert.ok(stripAnsi(output.writes[2]).includes('draft'));
   assert.ok(output.writes[2].endsWith(
     `${ansi.cursorUp(shortLayout.lines.length - 1 - shortLayout.cursorRow)}${ansi.carriageReturn()}${ansi.cursorForward(shortLayout.cursorColumn)}${ansi.showCursor()}`
@@ -245,7 +246,7 @@ test('createFooterRenderer safely transitions from response suggestions through 
   renderer.render(surfaceState);
 
   assert.equal(surfaceLayout.lines.length <= surfaceState.rows - 2, true);
-  assert.equal((output.writes[1].match(/\x1b\[2K/g) || []).length, suggestionLayout.lines.length);
+  assert.equal((output.writes[1].match(/\x1b\[2K/g) || []).length, Math.max(0, suggestionLayout.lines.length - surfaceLayout.lines.length));
   assert.ok(stripAnsi(output.writes[1]).includes('/help'));
 
   const restoredState = {
@@ -256,7 +257,7 @@ test('createFooterRenderer safely transitions from response suggestions through 
   const restoredLayout = renderFooterLayout(restoredState);
   renderer.render(restoredState);
 
-  assert.equal((output.writes[2].match(/\x1b\[2K/g) || []).length, surfaceLayout.lines.length);
+  assert.equal((output.writes[2].match(/\x1b\[2K/g) || []).length, Math.max(0, surfaceLayout.lines.length - restoredLayout.lines.length));
   assert.ok(stripAnsi(output.writes[2]).includes('latest restored draft'));
   assert.equal(restoredLayout.lines.length <= restoredState.rows - 2, true);
   assert.ok(output.writes[2].endsWith(
@@ -398,12 +399,14 @@ test('createFooterRenderer clears the remembered pending-card height when the ca
   };
   const pendingState = {...baseState, pendingMessage: {preview: 'queued message'}};
   const pendingLayout = renderFooterLayout(pendingState);
+  const baseLayout = renderFooterLayout(baseState);
 
   renderer.render(baseState);
   renderer.render(pendingState);
   renderer.render(baseState);
 
-  assert.equal((output.writes[2].match(/\x1b\[2K/g) || []).length, pendingLayout.lines.length);
+  // 增量重绘:卡片消失只清理底部多出来的行,不整帧擦写。
+  assert.equal((output.writes[2].match(/\x1b\[2K/g) || []).length, pendingLayout.lines.length - baseLayout.lines.length);
   assert.equal(stripAnsi(output.writes[2]).includes('待发送消息'), false);
 });
 
