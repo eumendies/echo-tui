@@ -6,6 +6,7 @@ import type {
   CommandSession,
   CommandStatusSnapshot,
   StatusCommandDeepseekBalanceState,
+  StatusCommandOpencodeUsageState,
   StatusCommandSurface,
   StatusCommandUsageState
 } from '../types/command';
@@ -16,15 +17,17 @@ type StatusCommandData = {
   snapshot: CommandStatusSnapshot;
   usage: StatusCommandUsageState;
   deepseekBalance: StatusCommandDeepseekBalanceState;
+  opencodeUsage: StatusCommandOpencodeUsageState;
 };
 
-function createStatusSurface(snapshot: CommandStatusSnapshot, usage: StatusCommandUsageState, deepseekBalance: StatusCommandDeepseekBalanceState): StatusCommandSurface {
+function createStatusSurface(snapshot: CommandStatusSnapshot, usage: StatusCommandUsageState, deepseekBalance: StatusCommandDeepseekBalanceState, opencodeUsage: StatusCommandOpencodeUsageState): StatusCommandSurface {
   return {
     kind: 'status',
     title: 'Status',
     snapshot,
     usage,
     deepseekBalance,
+    opencodeUsage,
     dismissHint: 'Esc / Enter / q 关闭'
   };
 }
@@ -52,18 +55,20 @@ export class StatusCommandHandler implements CommandHandler<StatusCommandData> {
       requestId,
       snapshot,
       usage: {status: 'loading'},
-      deepseekBalance: {status: 'loading'}
+      deepseekBalance: {status: 'loading'},
+      opencodeUsage: {status: 'loading'}
     };
 
     host.session.open({
       commandName: 'status',
       handler: this,
-      surface: createStatusSurface(snapshot, data.usage, data.deepseekBalance),
+      surface: createStatusSurface(snapshot, data.usage, data.deepseekBalance, data.opencodeUsage),
       data
     });
 
     void this.loadCodexUsage(data, host);
     void this.loadDeepseekBalance(data, host);
+    void this.loadOpencodeUsage(data, host);
   }
 
   /**
@@ -105,6 +110,19 @@ export class StatusCommandHandler implements CommandHandler<StatusCommandData> {
     this.updateSurface(data, host);
   }
 
+  private async loadOpencodeUsage(data: StatusCommandData, host: CommandHost): Promise<void> {
+    try {
+      data.opencodeUsage = await host.status.queryOpencodeUsage();
+    } catch (error: unknown) {
+      data.opencodeUsage = {
+        status: 'unavailable',
+        error: error instanceof Error && error.message.trim() !== '' ? error.message : 'OpenCode Go 用量不可用'
+      };
+    }
+
+    this.updateSurface(data, host);
+  }
+
   /**
    * 把最新用量/余额写入仍处于激活状态的 surface；会话关闭或 requestId 过期时丢弃结果。
    */
@@ -117,7 +135,7 @@ export class StatusCommandHandler implements CommandHandler<StatusCommandData> {
 
     host.session.update({
       data,
-      surface: createStatusSurface(data.snapshot, data.usage, data.deepseekBalance)
+      surface: createStatusSurface(data.snapshot, data.usage, data.deepseekBalance, data.opencodeUsage)
     });
     host.ui.render();
   }

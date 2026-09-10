@@ -71,6 +71,7 @@ function createFakeHost(options = {}) {
     sessionUpdates: [],
     deepseekBalanceQueries: 0,
     statusQueries: 0,
+    opencodeUsageQueries: 0,
     clipboardWrites: [],
     transcriptAppends: [],
     themeSelections: [],
@@ -347,6 +348,12 @@ function createFakeHost(options = {}) {
         return options.queryStatusUsage
           ? options.queryStatusUsage()
           : Promise.resolve({status: 'unavailable', error: 'Codex 用量不可用'});
+      },
+      queryOpencodeUsage() {
+        calls.opencodeUsageQueries += 1;
+        return options.queryOpencodeUsage
+          ? options.queryOpencodeUsage()
+          : Promise.resolve({status: 'not_applicable'});
       }
     },
     usage: {
@@ -558,8 +565,10 @@ test('statusCommandHandler loads Codex usage and isolates late results', async (
   assert.equal(session.surface.kind, 'status');
   assert.equal(session.surface.usage.status, 'loading');
   assert.equal(session.surface.deepseekBalance.status, 'loading');
+  assert.equal(session.surface.opencodeUsage.status, 'loading');
   assert.equal(harness.calls.statusQueries, 1);
   assert.equal(harness.calls.deepseekBalanceQueries, 1);
+  assert.equal(harness.calls.opencodeUsageQueries, 1);
   assert.deepEqual(harness.calls.transcriptAppends, []);
 
   resolveUsage({
@@ -572,8 +581,9 @@ test('statusCommandHandler loads Codex usage and isolates late results', async (
   assert.equal(session.surface.usage.status, 'available');
   assert.equal(session.surface.usage.primary.usedPercent, 25);
   assert.equal(session.surface.deepseekBalance.status, 'not_applicable');
-  assert.equal(harness.calls.sessionUpdates.length, 2);
-  assert.equal(harness.calls.renders, 2);
+  assert.equal(session.surface.opencodeUsage.status, 'not_applicable');
+  assert.equal(harness.calls.sessionUpdates.length, 3);
+  assert.equal(harness.calls.renders, 3);
 
   handler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: 'q'}, harness.host);
   assert.equal(harness.calls.sessionCloses, 1);

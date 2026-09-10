@@ -494,10 +494,28 @@ export type CommandDeepseekBalanceResult =
 
 export type StatusCommandDeepseekBalanceState = CommandDeepseekBalanceResult | {status: 'loading'};
 
+export type CommandOpencodeUsageWindow = {
+  name: string; // 窗口键名:rolling/weekly/monthly,未知键原样展示。
+  status: string; // 窗口状态原文,展示层不做枚举假设。
+  percent: number; // 已用百分比,规范到 0–100。
+  resetsAtMs: number; // 重置时间点毫秒值。
+};
+
+export type CommandOpencodeUsageResult =
+  | {
+      status: 'available';
+      windows: CommandOpencodeUsageWindow[];
+    }
+  | {status: 'not_applicable'}
+  | {status: 'unavailable'; error: string};
+
+export type StatusCommandOpencodeUsageState = CommandOpencodeUsageResult | {status: 'loading'};
+
 export type StatusCommandSurface = {
   deepseekBalance: StatusCommandDeepseekBalanceState;
   dismissHint: string;
   kind: 'status';
+  opencodeUsage: StatusCommandOpencodeUsageState;
   snapshot: CommandStatusSnapshot;
   title: string;
   usage: StatusCommandUsageState;
@@ -808,6 +826,7 @@ export type CommandHostApp = {
     createSnapshot(): CommandStatusSnapshot;
     queryDeepseekBalance(): Promise<CommandDeepseekBalanceResult>;
     queryCodexUsage(): Promise<CommandCodexUsageResult>;
+    queryOpencodeUsage(): Promise<CommandOpencodeUsageResult>;
   };
   usage: {
     listDailyUsage(options?: UsageQueryOptions): UsageDailyAggregate[];
