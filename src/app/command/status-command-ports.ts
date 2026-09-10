@@ -2,6 +2,7 @@ import {redactSensitiveText} from '../../agent/agent-errors';
 import {loadAgentInstructions} from '../../agent/agent-instructions';
 import {queryCodexUsage} from '../../config/codex-oauth';
 import {isDeepseekBaseUrl, queryDeepseekBalance as fetchDeepseekBalance} from '../../config/deepseek-balance';
+import {isOpencodeGoBaseUrl, queryOpencodeUsage as fetchOpencodeUsage} from '../../config/opencode-usage';
 import {listEffectiveAgentMemoryCatalogs} from '../../memory/agent-memory-store';
 import {readUserMemories} from '../../memory/memory-store';
 import {resolveEffectiveSandbox} from '../../sandbox/provider';
@@ -9,6 +10,7 @@ import {createCommandViewport} from './command-viewport';
 
 import type {CodexUsage} from '../../config/codex-oauth';
 import type {DeepseekBalance} from '../../config/deepseek-balance';
+import type {OpencodeUsage} from '../../config/opencode-usage';
 import type {CommandHostApp, CommandStatusSandboxState, CommandStatusSnapshot} from '../../types/command';
 import type {UserConfigContext} from '../../config/user-config-context';
 import type {SandboxToolConfig} from '../../types/agent';
@@ -78,6 +80,23 @@ function createStatusCommandPorts(options: StatusCommandPortOptions): Pick<Comma
           return createAvailableCodexUsage(await queryCodexUsage(config.codexOAuth || {}));
         } catch (error: unknown) {
           return {status: 'unavailable' as const, error: formatStatusError(error, 'Codex 用量不可用')};
+        }
+      },
+      async queryOpencodeUsage() {
+        const config = appContext.modelContext.createActiveLlmConfig();
+
+        if ('error' in config) {
+          return {status: 'unavailable' as const, error: config.error};
+        }
+
+        if (!isOpencodeGoBaseUrl(config.baseURL)) {
+          return {status: 'not_applicable' as const};
+        }
+
+        try {
+          return createAvailableOpencodeUsage(await fetchOpencodeUsage(config.apiKey));
+        } catch (error: unknown) {
+          return {status: 'unavailable' as const, error: formatStatusError(error, 'OpenCode Go 用量不可用')};
         }
       }
     },
@@ -174,6 +193,13 @@ function createAvailableDeepseekBalance(balance: DeepseekBalance) {
     status: 'available' as const,
     isAvailable: balance.isAvailable,
     balanceInfos: balance.balanceInfos.map((info) => ({...info}))
+  };
+}
+
+function createAvailableOpencodeUsage(usage: OpencodeUsage) {
+  return {
+    status: 'available' as const,
+    windows: usage.windows.map((window) => ({...window}))
   };
 }
 

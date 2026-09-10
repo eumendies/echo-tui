@@ -81,7 +81,7 @@ function completeCommandSurfaceFixture(surface) {
     case 'usage':
       return {title: 'Token 用量', offset: 0, dismissHint: 'Esc 关闭', ...surface};
     case 'status':
-      return {title: 'Status', dismissHint: 'Esc 关闭', deepseekBalance: {status: 'not_applicable'}, ...surface};
+      return {title: 'Status', dismissHint: 'Esc 关闭', deepseekBalance: {status: 'not_applicable'}, opencodeUsage: {status: 'not_applicable'}, ...surface};
     case 'copy':
       return {title: '/copy', focus: 'list', previewScroll: 0, dismissHint: 'Esc 关闭', ...surface};
     case 'file_picker':
@@ -1063,6 +1063,62 @@ test('renderStatusSurface renders sandbox state variants', () => {
   assert.match(render({mode: 'workspace-write', network: true, provider: 'macos-seatbelt', available: true}), /沙箱\s+workspace-write · 网络开 · macos-seatbelt/);
   assert.match(render({mode: 'off', network: false, provider: null, available: false}), /沙箱\s+关闭/);
   assert.match(render({mode: 'read-only', network: false, provider: 'macos-seatbelt', available: false, unavailableReason: 'sandbox-exec 不可用'}), /沙箱\s+read-only · 不可用\(sandbox-exec 不可用\)/);
+});
+
+test('renderStatusSurface renders OpenCode Go usage windows with money, percent, and reset', () => {
+  const snapshot = {
+    agentInstructionFileName: 'AGENTS.md',
+    cwd: '/tmp/project',
+    sessionId: null,
+    model: {agentType: 'openai-chat', model: 'qwen', provider: 'opencode'},
+    sandbox: {mode: 'off', network: false, provider: null, available: false},
+    agentInstructions: [],
+    userMemoryCount: 0,
+    agentMemoryCatalogs: [],
+    diagnostics: []
+  };
+  const layout = renderStatusSurface({
+    kind: 'status',
+    snapshot,
+    usage: {status: 'not_applicable'},
+    opencodeUsage: {
+      status: 'available',
+      windows: [
+        {name: 'rolling', status: 'ok', percent: 70, resetsAtMs: Date.parse('2026-09-10T10:09:43.223Z')},
+        {name: 'weekly', status: 'ok', percent: 61.5, resetsAtMs: Date.parse('2026-09-14T00:00:00.223Z')},
+        {name: 'mystery', status: 'unknown', percent: 100, resetsAtMs: Date.parse('2026-10-07T14:07:29.223Z')}
+      ]
+    }
+  }, 70, 20, CUSTOM_THEME.footer);
+  const plain = layout.lines.map((line) => stripAnsi(line)).join('\n');
+
+  assert.match(plain, /OpenCode Go 用量/);
+  assert.match(plain, /5 小时\s+70% · 重置 2026-09-10 10:09/);
+  assert.match(plain, /每周\s+61\.5% · 重置 2026-09-14 00:00/);
+  assert.match(plain, /mystery\s+100% · 重置 2026-10-07 14:07/);
+});
+
+test('renderStatusSurface renders OpenCode Go usage loading, unavailable, and hides not-applicable', () => {
+  const snapshot = {
+    agentInstructionFileName: 'AGENTS.md',
+    cwd: '/tmp/project',
+    sessionId: null,
+    model: null,
+    sandbox: {mode: 'off', network: false, provider: null, available: false},
+    agentInstructions: [],
+    userMemoryCount: 0,
+    agentMemoryCatalogs: [],
+    diagnostics: []
+  };
+  const toPlain = (layout) => layout.lines.map((line) => stripAnsi(line)).join('\n');
+  const loading = renderStatusSurface({kind: 'status', snapshot, usage: {status: 'not_applicable'}, opencodeUsage: {status: 'loading'}}, 70, 20, CUSTOM_THEME.footer);
+  assert.match(toPlain(loading), /正在查询/);
+
+  const unavailable = renderStatusSurface({kind: 'status', snapshot, usage: {status: 'not_applicable'}, opencodeUsage: {status: 'unavailable', error: 'HTTP 401'}}, 70, 20, CUSTOM_THEME.footer);
+  assert.match(toPlain(unavailable), /不可用\s+HTTP 401/);
+
+  const notApplicable = renderStatusSurface({kind: 'status', snapshot, usage: {status: 'not_applicable'}}, 70, 20, CUSTOM_THEME.footer);
+  assert.doesNotMatch(toPlain(notApplicable), /OpenCode Go 用量/);
 });
 
 test('renderStatusSurface renders DeepSeek balance section and its state variants', () => {
