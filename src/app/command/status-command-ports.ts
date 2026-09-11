@@ -11,7 +11,8 @@ import {createCommandViewport} from './command-viewport';
 import type {CodexUsage} from '../../config/codex-oauth';
 import type {DeepseekBalance} from '../../config/deepseek-balance';
 import type {OpencodeUsage} from '../../config/opencode-usage';
-import type {CommandHostApp, CommandStatusSandboxState, CommandStatusSnapshot} from '../../types/command';
+import type {CommandHostApp, CommandStatusGoalSummary, CommandStatusSandboxState, CommandStatusSnapshot} from '../../types/command';
+import type {GoalState} from '../../types/goal';
 import type {UserConfigContext} from '../../config/user-config-context';
 import type {SandboxToolConfig} from '../../types/agent';
 import type {UsageStore} from '../../types/usage';
@@ -120,6 +121,7 @@ function createStatusSnapshot(appContext: StatusCommandContext, userConfigContex
   const agentMemoryResult = listEffectiveAgentMemoryCatalogs(cwd);
   const modelResult = appContext.modelContext.createStatusInfo();
   const appSettings = userConfigContext.capture().getAppSettings();
+  const goalState = appContext.transcriptContext.goalState;
   const diagnostics: string[] = [];
 
   if (!userMemoryResult.ok) {
@@ -139,6 +141,7 @@ function createStatusSnapshot(appContext: StatusCommandContext, userConfigContex
     agentInstructionFileName: appSettings.agentInstructionFileName,
     sessionId: appContext.transcriptContext.getCurrentSessionId(),
     model: 'error' in modelResult ? null : {...modelResult},
+    goal: goalState ? createStatusGoalSummary(goalState) : null,
     sandbox: createStatusSandboxState(userConfigContext.capture().getSandboxToolConfig()),
     agentInstructions: loadAgentInstructions({cwd, fileName: appSettings.agentInstructionFileName}).map((instruction) => ({
       filePath: instruction.filePath,
@@ -153,6 +156,35 @@ function createStatusSnapshot(appContext: StatusCommandContext, userConfigContex
       : [],
     diagnostics: diagnostics.map((diagnostic) => redactSensitiveText(diagnostic))
   };
+}
+
+/** 条件摘要按字符数上限截断；更宽卡片的二次裁剪由渲染层负责。 */
+const STATUS_GOAL_CONDITION_SUMMARY_MAX_LENGTH = 80;
+
+/**
+ * 生成 status 卡的只读 goal 摘要:状态与轮次直接取自 GoalState,条件只带走有界的单行副本。
+ */
+function createStatusGoalSummary(goalState: GoalState): CommandStatusGoalSummary {
+  return {
+    conditionSummary: createGoalConditionSummary(goalState.condition),
+    maxTurns: goalState.maxTurns,
+    status: goalState.status,
+    turns: goalState.turns
+  };
+}
+
+/**
+ * 截断只作用于摘要副本,不修改 GoalState 中保存的完整条件。
+ */
+function createGoalConditionSummary(condition: string): string {
+  const singleLine = condition.replace(/\s+/gu, ' ').trim();
+  const characters = Array.from(singleLine);
+
+  if (characters.length <= STATUS_GOAL_CONDITION_SUMMARY_MAX_LENGTH) {
+    return singleLine;
+  }
+
+  return `${characters.slice(0, STATUS_GOAL_CONDITION_SUMMARY_MAX_LENGTH - 1).join('')}…`;
 }
 
 /**

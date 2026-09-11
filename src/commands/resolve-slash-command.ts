@@ -11,6 +11,7 @@ import { CopyCommandHandler } from './copy-command-handler';
 import { DiffCommandHandler } from './diff-command-handler';
 import { EffortCommandHandler } from './effort-command-handler';
 import { ForkCommandHandler } from './fork-command-handler';
+import { GoalCommandHandler } from './goal-command-handler';
 import { HelpCommandHandler } from './help-command-handler';
 import { HooksCommandHandler } from './hooks-command-handler';
 import { McpCommandHandler } from './mcp-command-handler';
@@ -37,6 +38,7 @@ export function createDefaultSlashCommandHandlers(getAgentInstructionFileName?: 
     new ModelCommandHandler(),
     new EffortCommandHandler(),
     new ModeCommandHandler(),
+    new GoalCommandHandler(),
     new StatusCommandHandler(),
     new ContextCommandHandler(),
     new UsageCommandHandler(),

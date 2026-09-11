@@ -251,6 +251,7 @@ function cloneSession(session) {
     ...(session.changeHistory ? {changeHistory: structuredClone(session.changeHistory)} : {}),
     ...(session.compaction ? {compaction: {...session.compaction}} : {}),
     ...(session.todoState ? {todoState: structuredClone(session.todoState)} : {}),
+    ...(session.goalState ? {goalState: structuredClone(session.goalState)} : {}),
     records: (session.records || []).map((record) => ({ ...record }))
   };
 }
@@ -277,6 +278,12 @@ function applyOperation(session, operation) {
     }
   } else if (operation.op === 'set_todo_state') {
     session.todoState = structuredClone(operation.todoState);
+  } else if (operation.op === 'set_goal_state') {
+    if (operation.goalState) {
+      session.goalState = structuredClone(operation.goalState);
+    } else {
+      delete session.goalState;
+    }
   }
 }
 
@@ -790,6 +797,34 @@ test('AppContext projects tool approval allow-all state into status line', () =>
   assert.equal(context.createRenderState({ toolApproval }).statusLine.allowAllTools, undefined);
 });
 
+test('AppContext projects goal state and evaluation activity into status line', () => {
+  const context = createContext();
+
+  assert.equal(context.createRenderState().statusLine.goal, undefined);
+
+  context.transcriptContext.setGoalState({
+    condition: 'make tests green',
+    status: 'active',
+    revision: 1,
+    startedAt: '2026-05-19T00:00:00.000Z',
+    turns: 2,
+    maxTurns: 20
+  });
+  assert.deepEqual(context.createRenderState().statusLine.goal, {
+    status: 'active',
+    turns: 2,
+    maxTurns: 20,
+    evaluationElapsedMs: null
+  });
+
+  const goalActivity = {getEvaluationActivity: () => ({elapsedMs: 1234})};
+  assert.equal(context.createRenderState({goalActivity}).statusLine.goal.evaluationElapsedMs, 1234);
+  assert.equal(context.createRenderState().statusLine.goal.evaluationElapsedMs, null);
+
+  context.transcriptContext.setGoalState(null);
+  assert.equal(context.createRenderState().statusLine.goal, undefined);
+});
+
 test('AppContext snapshots app settings into render state and agent sessions', () => {
   const context = createContext({
     appSettings: {
@@ -1289,6 +1324,58 @@ test('AppContext persists, resumes, clears, and snapshots todo state', () => {
   context.clearTranscriptRecords();
 
   assert.deepEqual(context.getAgentSession().todoState, {items: [], updatedAt: ''});
+});
+
+test('AppContext persists, resumes, forks, and clears goal state', () => {
+  const goalState = {
+    condition: 'make tests green',
+    status: 'active',
+    revision: 3,
+    startedAt: '2026-05-19T00:00:01.000Z',
+    turns: 4,
+    maxTurns: 20,
+    lastEvaluation: {outcome: 'not_met', reason: 'still red', at: '2026-05-19T00:00:02.000Z'}
+  };
+  const transcriptStore = createFakeTranscriptStore([
+    {
+      sessionId: 'session-1',
+      cwd: '/tmp/echo_tui',
+      createdAt: '2026-05-19T00:00:00.000Z',
+      updatedAt: '2026-05-19T00:00:00.000Z',
+      records: [{ role: 'user', text: 'resume me' }],
+      goalState
+    }
+  ]);
+  const context = createContext({ transcriptStore });
+
+  // resume 归一化：条件、回合上限与最近评估保留，状态置 paused 且运行时基线重置。
+  assert.ok(context.loadTranscriptSession('session-1'));
+  const resumed = context.getAgentSession().goalState;
+  assert.equal(resumed.condition, 'make tests green');
+  assert.equal(resumed.status, 'paused');
+  assert.equal(resumed.turns, 0);
+  assert.equal(resumed.maxTurns, 20);
+  assert.deepEqual(resumed.lastEvaluation, goalState.lastEvaluation);
+  assert.notEqual(resumed.startedAt, goalState.startedAt);
+
+  // 快照隔离：外部修改不污染 context 状态。
+  resumed.turns = 99;
+  assert.equal(context.getAgentSession().goalState.turns, 0);
+
+  // 更新与生命周期通知同批经 journal 落盘（对齐 goal controller 的真实写入路径）。
+  const nextGoal = {...context.getAgentSession().goalState, status: 'active', turns: 1};
+  context.transcriptContext.setGoalState(nextGoal);
+  context.transcriptContext.appendRecord({role: 'local_notice', text: '目标已恢复：自动继续推进'});
+  assert.deepEqual(transcriptStore.saveCalls.at(-1).goalState, nextGoal);
+
+  // fork 继承 goal 状态并保持分支独立。
+  const forkResult = context.forkTranscriptSession();
+  assert.equal(forkResult.ok, true);
+  assert.deepEqual(transcriptStore.loadSession('/tmp/echo_tui', forkResult.sessionId).session.goalState, nextGoal);
+
+  // 清空会话同步清空 goal。
+  context.clearTranscriptRecords();
+  assert.equal(context.getAgentSession().goalState, undefined);
 });
 
 test('AppContext includes TUI theme in render state', () => {

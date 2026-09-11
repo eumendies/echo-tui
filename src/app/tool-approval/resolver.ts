@@ -1,8 +1,10 @@
 import {createConfiguredAgent} from '../../agent/agent-setup';
 import {createUsageCwdHash} from '../../persistence/usage-store';
-import {AgentAbortError, throwIfAborted} from '../../types/agent';
+import {createDeadlineAbortScope} from '../deadline-scope';
+import {throwIfAborted} from '../../types/agent';
 import {createToolApprovalPrompt, projectToolApprovalAction} from './projection';
 
+import type {DeadlineAbortScope} from '../deadline-scope';
 import type {ToolApprovalSettings} from '../../config/app-settings-config';
 import type {Observation} from '../../observation/observation';
 import type {AgentUserConfigSnapshot, InteractionMode, LlmConfig, ProviderAgent, ToolApprovalDecision} from '../../types/agent';
@@ -70,13 +72,6 @@ type ToolApprovalResolver = {
   request(call: ToolCall, request?: ToolApprovalRequest): ToolApprovalDecision | Promise<ToolApprovalDecision>; // 解析单次 approval-required 调用。
 };
 
-type ReviewAbortScope = {
-  dispose: () => void; // 清理 deadline timer 和 parent abort listener。
-  run: <Value>(operation: Promise<Value>) => Promise<Value>; // 在 deadline 或 parent abort 前等待 provider operation。
-  signal: AbortSignal; // 同时反映 deadline 和 parent abort 的 provider-facing signal。
-  timedOut: () => boolean; // 区分独立 deadline 与父回合中断。
-};
-
 /** 严格解析审批响应；仅 trim 后忽略大小写精确等于 yes 才允许。 */
 function parseToolApprovalResponse(text: string): boolean {
   return text.trim().toLowerCase() === 'yes';
@@ -98,7 +93,7 @@ function createToolApprovalReviewer(dependencies: ToolApprovalReviewerDependenci
     });
     const startedAt = Date.now();
     let config: LlmConfig | undefined;
-    let reviewScope: ReviewAbortScope | undefined;
+    let reviewScope: DeadlineAbortScope | undefined;
 
     try {
       throwIfAborted(input.abortSignal);
@@ -113,7 +108,7 @@ function createToolApprovalReviewer(dependencies: ToolApprovalReviewerDependenci
       const agent = dependencies.createAgent
         ? dependencies.createAgent(config)
         : createConfiguredAgent(config);
-      reviewScope = createReviewAbortScope(input.abortSignal, dependencies.reviewTimeoutMs ?? TOOL_APPROVAL_REVIEW_TIMEOUT_MS);
+      reviewScope = createDeadlineAbortScope(input.abortSignal, dependencies.reviewTimeoutMs ?? TOOL_APPROVAL_REVIEW_TIMEOUT_MS, 'tool approval reviewer timed out');
       const result = await reviewScope.run(agent.runTurn([
         {role: 'system', text: TOOL_APPROVAL_SYSTEM_PROMPT},
         {role: 'user', text: prompt.text}
@@ -173,38 +168,6 @@ function createToolApprovalReviewer(dependencies: ToolApprovalReviewerDependenci
       return false;
     } finally {
       reviewScope?.dispose();
-    }
-  };
-}
-
-/** 创建 parent abort 与独立 deadline 的组合信号，并用 Promise.race 约束忽略 signal 的 adapter。 */
-function createReviewAbortScope(parentSignal: AbortSignal | undefined, timeoutMs: number): ReviewAbortScope {
-  const controller = new AbortController();
-  let timeoutReached = false;
-  let rejectAbort: ((error: Error) => void) | undefined;
-  const abortPromise = new Promise<never>((_resolve, reject) => {
-    rejectAbort = reject;
-  });
-  const abortFromParent = () => {
-    controller.abort();
-    rejectAbort?.(new AgentAbortError());
-  };
-  if (parentSignal?.aborted) abortFromParent();
-  else parentSignal?.addEventListener('abort', abortFromParent, {once: true});
-  const timer = setTimeout(() => {
-    timeoutReached = true;
-    controller.abort();
-    rejectAbort?.(new AgentAbortError('tool approval reviewer timed out'));
-  }, Math.max(0, timeoutMs));
-
-  return {
-    signal: controller.signal,
-    timedOut: () => timeoutReached,
-    run: <Value>(operation: Promise<Value>) => Promise.race([operation, abortPromise]),
-    dispose() {
-      clearTimeout(timer);
-      parentSignal?.removeEventListener('abort', abortFromParent);
-      rejectAbort = undefined;
     }
   };
 }

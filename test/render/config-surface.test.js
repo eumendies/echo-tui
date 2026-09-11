@@ -187,7 +187,7 @@ test('config center renders general tabs, settings, and constrained width', () =
       {id: 'appearance', label: '外观'}
     ],
     state
-  }, 42, {maxLines: 15});
+  }, 42, {maxLines: 16});
   const text = layout.lines.map(stripAnsi).join('\n');
 
   assert.match(text, /常规/);
@@ -266,6 +266,32 @@ test('config center only renders approval model for auto draft', () => {
   const unavailable = createInitialGeneralConfigState({...settings, toolApprovalMode: 'auto', toolApprovalModelProfileId: undefined}, []);
   const unavailableText = renderConfigSurface({kind: 'config', view: 'general', activeTab: 'general', tabs, state: unavailable}, 90).lines.map(stripAnsi).join('\n');
   assert.match(unavailableText, /未配置（无法保存 auto）/);
+});
+
+test('config center renders goal evaluation model selection or unconfigured state', () => {
+  const settings = {
+    agentInstructionFileName: 'AGENTS.md',
+    autoCompressImages: true,
+    compactionThresholdRatio: 0.8,
+    defaultInteractionMode: 'normal',
+    fileEditMode: 'apply_patch',
+    skillCatalogContextRatio: 0.02,
+    showReasoningSummary: true,
+    slashSuggestionMaxVisible: 8,
+    toolApprovalMode: 'manual'
+  };
+  const profiles = [{id: 'goal-review', model: 'gpt-review', provider: 'openai'}];
+  const tabs = [{id: 'general', label: '常规'}];
+
+  const unconfigured = createInitialGeneralConfigState(settings, profiles);
+  const unconfiguredText = renderConfigSurface({kind: 'config', view: 'general', activeTab: 'general', tabs, state: unconfigured}, 90).lines.map(stripAnsi).join('\n');
+  assert.match(unconfiguredText, /goal 评估模型/);
+  assert.match(unconfiguredText, /未配置（无法设置 goal）/);
+
+  const configured = createInitialGeneralConfigState({...settings, goalEvaluationModelProfileId: 'goal-review'}, profiles);
+  const configuredText = renderConfigSurface({kind: 'config', view: 'general', activeTab: 'general', tabs, state: configured}, 90).lines.map(stripAnsi).join('\n');
+  assert.match(configuredText, /goal 评估模型/);
+  assert.match(configuredText, /gpt-review \(openai\)/);
 });
 
 test('config center renders approval API model name and provider without the profile id', () => {

@@ -214,3 +214,33 @@ test('auto approval settings require an existing model profile and preserve appr
   saveAppSettingsDraft({...DEFAULT_APP_SETTINGS, toolApprovalModelProfileId: 'deleted'}, options);
   assert.equal(writes[1].tools.approval.modelProfileId, 'deleted');
 });
+
+test('goal evaluation model settings round-trip, reject unknown profiles, and preserve goal siblings', () => {
+  const writes = [];
+  const base = {
+    llm: {models: [{id: 'reviewer', provider: 'openai', model: 'gpt-review'}]},
+    goal: {evaluationModelProfileId: 'reviewer', kept: true}
+  };
+  const options = {
+    configPath: '/tmp/echo/config.json',
+    mkdir() {},
+    readFile() { return JSON.stringify(base); },
+    writeFile(_path, data) { writes.push(JSON.parse(data)); },
+    rename() {}
+  };
+
+  assert.equal(readAppSettings(options).goalEvaluationModelProfileId, 'reviewer');
+
+  saveAppSettingsDraft({...DEFAULT_APP_SETTINGS, goalEvaluationModelProfileId: 'reviewer'}, options);
+  assert.deepEqual(writes[0].goal, {evaluationModelProfileId: 'reviewer', kept: true});
+  assert.deepEqual(writes[0].llm, base.llm);
+
+  assert.throws(
+    () => saveAppSettingsDraft({...DEFAULT_APP_SETTINGS, goalEvaluationModelProfileId: 'deleted'}, options),
+    /goal 评估模型必须引用已保存的模型 profile/
+  );
+
+  saveAppSettingsDraft({...DEFAULT_APP_SETTINGS}, options);
+  assert.equal(writes.length, 2);
+  assert.deepEqual(writes[1].goal, {kept: true});
+});

@@ -83,8 +83,12 @@ function renderGeneralView(state: GeneralConfigState, tabs: ConfigSurfaceTab[], 
     if (rowId === 'fileEditMode') return {label: '文件编辑工具', value: state.draft.fileEditMode};
     if (rowId === 'toolApprovalMode') return {label: '工具审批模式', value: state.draft.toolApprovalMode};
     if (rowId === 'toolApprovalModel') {
-      const profile = state.approvalModelProfiles.find((candidate) => candidate.id === state.draft.toolApprovalModelProfileId);
+      const profile = state.savedModelProfiles.find((candidate) => candidate.id === state.draft.toolApprovalModelProfileId);
       return {label: '自动审批模型', value: profile ? `${profile.model} (${profile.provider})` : '未配置（无法保存 auto）'};
+    }
+    if (rowId === 'goalEvaluationModel') {
+      const profile = state.savedModelProfiles.find((candidate) => candidate.id === state.draft.goalEvaluationModelProfileId);
+      return {label: 'goal 评估模型', value: profile ? `${profile.model} (${profile.provider})` : '未配置（无法设置 goal）'};
     }
     if (rowId === 'instructionFile') return {label: '项目指令文件', value: state.draft.agentInstructionFileName};
     return {label: '保存常规设置', value: '写入 ~/.echo/config.json', action: true};

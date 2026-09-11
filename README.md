@@ -79,6 +79,7 @@ echo-tui --once --full-access "按要求修改文件并运行检查"
 | `/config` | 配置模型、常规偏好和主题 |
 | `/model` `/effort` | 切换当前会话的模型和推理等级 |
 | `/mode` | 切换交互模式 |
+| `/goal` | 声明常驻完成条件，每回合后由独立评估模型判定，未达成自动继续；`/goal pause` / `resume` / `clear` 管理目标生命周期 |
 | `/status` | 查看当前项目、模型和会话状态 |
 | `/context` `/usage` | 查看上下文占用和本地 Token 用量 |
 | `/clear` `/compact` `/resume` | 开始新会话、压缩上下文、恢复历史会话 |

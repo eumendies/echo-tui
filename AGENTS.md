@@ -6,8 +6,8 @@ This repository is a Node.js terminal TUI prototype with a real LLM adapter.
 
 - `bin/echo-tui.ts`: source CLI entry shim; compiled output runs from `dist/bin/echo-tui.js`.
 - `src/cli/`: command-line argument parsing for `echo-tui`, user setup bootstrap, help/version output, TUI startup handoff, and the non-interactive `--once` runner.
-- `src/app/`: application orchestration, runtime state contexts, command host/runtime, tool approval, and user-question flows.
-- `src/commands/`: slash command handlers for `/help`, `/config`, `/model`, `/effort`, `/mode`, `/status`, `/context`, `/usage`, `/clear`, `/compact`, `/diff`, `/undo`, `/fork`, `/resume`, `/mcp`, `/skills`, `/init`, `/review`, and direct skill invocation.
+- `src/app/`: application orchestration, runtime state contexts, command host/runtime, tool approval, user-question flows, and the session goal auto-continuation controller.
+- `src/commands/`: slash command handlers for `/help`, `/config`, `/model`, `/effort`, `/mode`, `/goal`, `/status`, `/context`, `/usage`, `/clear`, `/compact`, `/diff`, `/undo`, `/fork`, `/resume`, `/mcp`, `/skills`, `/init`, `/review`, and direct skill invocation.
 - `src/agent/`: provider-neutral agent loop, context compaction, AGENTS.md instruction loading, reasoning summaries, OpenAI Responses/OpenAI Chat/Anthropic adapters, and fake agent fixture.
 - `src/tools/`: built-in tool registry, executors, risk classification, local shell/file/web tools, web fetch/search, patching, skill loading, and user-question tool support.
 - `src/skills/`: project/user skill discovery, enablement state, and skill instruction loading.
@@ -67,7 +67,7 @@ For interactive TUI changes, also do targeted manual verification:
 1. `npm start`
 2. Input editing, `Ctrl+J` newline insertion, Enter submit, and real/fake streaming response
 3. Colored role prefixes, Markdown/table/code rendering, tool call/result rendering, footer status line, footer redraw, resize behavior, and `Ctrl+C` / `Ctrl+D` cleanup
-4. Slash commands and surfaces: `/help`, `/config`, `/model`, `/effort`, `/mode`, `/status`, `/context`, `/usage`, `/clear`, `/compact`, `/diff`, `/undo`, `/fork`, `/resume`, `/mcp`, `/skills`, `/init`, `/review`, slash suggestions, Tab completion, direct `/<skill-name>` invocation, and theme switching through `/config` → 外观；对 `/fork` 额外验证空会话提示、session id 切换、新旧分支独立恢复，以及共享工作目录边界
+4. Slash commands and surfaces: `/help`, `/config`, `/model`, `/effort`, `/mode`, `/goal`, `/status`, `/context`, `/usage`, `/clear`, `/compact`, `/diff`, `/undo`, `/fork`, `/resume`, `/mcp`, `/skills`, `/init`, `/review`, slash suggestions, Tab completion, direct `/<skill-name>` invocation, and theme switching through `/config` → 外观；对 `/fork` 额外验证空会话提示、session id 切换、新旧分支独立恢复，以及共享工作目录边界；对 `/goal` 额外验证评估模型未配置时的拒绝提示、footer goal 段三态（active `N/M`、paused、评估中）、Esc 中断后的暂停与 `/goal resume` 恢复、`/clear` 清除与 `/fork`/`/resume` 的继承语义
 5. Interaction modes and local flows: Tab mode cycling, `/mode normal|plan|shell|shell-local`, shell/shell-local execution, `@` file picker selection, and Esc cancellation/interruption where supported
 6. Tool/user interaction flows: apply-patch approval, high-risk bash approval, MCP approval where configured, `ask_user_questions` choice/inline input, `/skills` checkbox state changes, and Esc cancellation where supported
 7. Response lifecycle edges: response lock blocking Enter, Esc interrupting an active assistant turn, partial assistant persistence, local notices, and late callback isolation
@@ -77,13 +77,17 @@ For interactive TUI changes, also do targeted manual verification:
 
 Transcript records are append-only, but the visible app snapshot is re-renderable.
 
+Session-scoped goal state (condition, status, revision, turns, last evaluation) is persisted through the same session journal instead of a separate file, using a `set_goal_state` operation that mirrors `todoState`; transcript fork carries the goal over, `/clear` drops it, and resume normalization forces `paused` in memory only.
+
 Transcript roles include user, assistant, system, error, local notice, reasoning summary, shell, tool call, tool result, and provider-private reasoning records such as OpenAI Responses, OpenAI Chat, and Anthropic thinking records. Local notices, errors, shell records, and reasoning summaries are visible/persisted app facts; provider adapters filter records according to their own request model.
 
 Provider requests prepend transient built-in context with runtime environment, AGENTS.md instructions loaded from `~/.echo/AGENTS.md` and applicable project paths, plan-mode constraints when active, and the current skill catalog. These instructions do not become transcript records.
 
 Footer state is transient and re-renderable: normal input shows composer, optional slash suggestions, optional file picker, and a status line with model/project/mode/key hints; command, approval, and user-question flows replace the input area with surfaces such as `info`, `select`, `resume`, `checkbox`, `skills`, `mcp`, `scale`, `choice`, `confirm`, `config`, `context`, `usage`, `file_picker`, and `diff`.
 
-The `--once` CLI path is separate from the TUI lifecycle: `src/cli/one-shot.ts` reuses the agent loop, MCP manager, hooks, debug context, and usage store without creating terminal raw mode, renderer, stdin listeners, or transcript sessions. Its per-run `executionMode` is headless with `approvalPolicy: 'deny'` by default and `full-access` only when explicitly requested; `ask_user_questions` returns cancellation instead of waiting for stdin.
+When a session goal exists the status line also shows a goal segment: `active` renders turn progress (`N/M`), `paused` renders a pause marker, an in-flight evaluation request renders an evaluating indication (reusing the activity animation semantics), and the segment is hidden when no goal exists. `/status` additionally reports a read-only goal summary (status, condition excerpt, `N/M`) that never issues a model request, mutates the goal, or appends transcript records.
+
+The `--once` CLI path is separate from the TUI lifecycle: `src/cli/one-shot.ts` reuses the agent loop, MCP manager, hooks, debug context, and usage store without creating terminal raw mode, renderer, stdin listeners, or transcript sessions. Its per-run `executionMode` is headless with `approvalPolicy: 'deny'` by default and `full-access` only when explicitly requested; `ask_user_questions` returns cancellation instead of waiting for stdin. Goal auto-continuation is not wired into this headless path.
 
 Normal redraw clears the previous app-owned region before writing the next snapshot. When terminal columns change, or terminal rows shrink, the app may perform destructive recovery by clearing the visible screen and scrollback, then repainting from the top-left. **The app must not switch to alternate screen.**
 

@@ -108,6 +108,12 @@ function applyOperation(session, operation) {
     }
   } else if (operation.op === 'set_todo_state') {
     session.todoState = structuredClone(operation.todoState);
+  } else if (operation.op === 'set_goal_state') {
+    if (operation.goalState) {
+      session.goalState = structuredClone(operation.goalState);
+    } else {
+      delete session.goalState;
+    }
   }
 }
 
@@ -1325,4 +1331,36 @@ test('runAssistantTurn emits one notice for an effort-only override after stale 
   assert.deepEqual(harness.appended.map((record) => record.role), ['user', 'local_notice', 'assistant']);
   assert.equal(harness.appended[1].text, '当前 skill 本轮使用 gpt-global，effort none。');
   assert.equal(harness.appContext.createRenderState().statusLine.model.skillOverride, undefined);
+});
+
+test('runAssistantTurn classifies completed, cancelled, and failed outcomes', async () => {
+  const completed = createHarness();
+  const completedOutcome = await runAssistantTurn({
+    ...completed.input,
+    async runAgent(_session, callbacks) {
+      callbacks.onComplete('done');
+      return 'done';
+    }
+  });
+  assert.equal(completedOutcome, 'completed');
+
+  const cancelled = createHarness();
+  const cancelledOutcome = await runAssistantTurn({
+    ...cancelled.input,
+    async runAgent() {
+      // 模拟 Esc 中断流程已接管 turn：abort 信号触发且 turn 身份已被清理。
+      cancelled.appContext.interruptActiveAssistantTurn();
+      throw new AgentAbortError();
+    }
+  });
+  assert.equal(cancelledOutcome, 'cancelled');
+
+  const failed = createHarness();
+  const failedOutcome = await runAssistantTurn({
+    ...failed.input,
+    async runAgent() {
+      throw new Error('provider exploded');
+    }
+  });
+  assert.equal(failedOutcome, 'failed');
 });

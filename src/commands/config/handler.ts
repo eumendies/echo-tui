@@ -352,7 +352,7 @@ class ConfigCommandHandler implements CommandHandler<ConfigCommandData> {
       ? markModelConfigSaved({...result.state, draft: result.draft})
       : {...result.state, error: saveResult.error || '无法保存配置'};
     const general = saveResult.ok && data.general?.state
-      ? {state: {...data.general.state, approvalModelProfiles: host.config.listApprovalModelProfiles()}}
+      ? {state: {...data.general.state, savedModelProfiles: host.config.listSavedModelProfiles()}}
       : data.general;
     this.update({...data, general, models: {state: nextState}}, host);
   }
@@ -406,7 +406,7 @@ class ConfigCommandHandler implements CommandHandler<ConfigCommandData> {
 function initializeTab(data: ConfigCommandData, tab: ConfigTabId, host: CommandHost): ConfigCommandData {
   if (tab === 'general' && !data.general) {
     try {
-      return {...data, general: {state: createInitialGeneralConfigState(host.config.readSettings(), host.config.listApprovalModelProfiles())}};
+      return {...data, general: {state: createInitialGeneralConfigState(host.config.readSettings(), host.config.listSavedModelProfiles())}};
     } catch (error: unknown) {
       return {...data, general: {error: toErrorMessage(error)}};
     }
@@ -460,13 +460,18 @@ function adjustGeneralValue(state: GeneralConfigState, direction: number): Gener
   } else if (selectedRow === 'toolApprovalMode') {
     state.draft.toolApprovalMode = state.draft.toolApprovalMode === 'manual' ? 'auto' : 'manual';
     if (state.draft.toolApprovalMode === 'auto'
-      && !state.approvalModelProfiles.some((profile) => profile.id === state.draft.toolApprovalModelProfileId)) {
-      state.draft.toolApprovalModelProfileId = state.approvalModelProfiles[0]?.id;
+      && !state.savedModelProfiles.some((profile) => profile.id === state.draft.toolApprovalModelProfileId)) {
+      state.draft.toolApprovalModelProfileId = state.savedModelProfiles[0]?.id;
     }
-  } else if (selectedRow === 'toolApprovalModel' && state.approvalModelProfiles.length > 0) {
-    const current = state.approvalModelProfiles.findIndex((profile) => profile.id === state.draft.toolApprovalModelProfileId);
-    const next = (Math.max(0, current) + direction + state.approvalModelProfiles.length) % state.approvalModelProfiles.length;
-    state.draft.toolApprovalModelProfileId = state.approvalModelProfiles[next].id;
+  } else if (selectedRow === 'toolApprovalModel' && state.savedModelProfiles.length > 0) {
+    const current = state.savedModelProfiles.findIndex((profile) => profile.id === state.draft.toolApprovalModelProfileId);
+    const next = (Math.max(0, current) + direction + state.savedModelProfiles.length) % state.savedModelProfiles.length;
+    state.draft.toolApprovalModelProfileId = state.savedModelProfiles[next].id;
+  } else if (selectedRow === 'goalEvaluationModel') {
+    const candidates = [undefined, ...state.savedModelProfiles.map((profile) => profile.id)];
+    const current = candidates.indexOf(state.draft.goalEvaluationModelProfileId);
+    const next = (Math.max(0, current) + direction + candidates.length) % candidates.length;
+    state.draft.goalEvaluationModelProfileId = candidates[next];
   } else if (selectedRow === 'instructionFile') {
     state.draft.agentInstructionFileName = state.draft.agentInstructionFileName === 'AGENTS.md' ? 'CLAUDE.md' : 'AGENTS.md';
   }

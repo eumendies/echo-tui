@@ -1,4 +1,5 @@
 import type {ChangeCheckpoint} from '../types/change-history';
+import type {GoalState} from '../types/goal';
 import type {
   AppendRecordsJournalOperation,
   BatchJournalOperation,
@@ -6,6 +7,7 @@ import type {
   LoadedTranscriptSession,
   SetChangeHistoryJournalOperation,
   SetCompactionJournalOperation,
+  SetGoalStateJournalOperation,
   SetTodoStateJournalOperation,
   TodoState,
   TranscriptJournalEntry,
@@ -23,6 +25,7 @@ type ReplayState = {
   changeHistory: ChangeCheckpoint[];
   compaction: CompactionState | null;
   todoState: TodoState;
+  goalState: GoalState | null;
   updatedAt: string;
 };
 
@@ -64,6 +67,10 @@ function createSetTodoStateOperation(todoState: TodoState): SetTodoStateJournalO
   return {op: 'set_todo_state', todoState};
 }
 
+function createSetGoalStateOperation(goalState: GoalState | null): SetGoalStateJournalOperation {
+  return {op: 'set_goal_state', goalState};
+}
+
 function createBatchOperation(operations: TranscriptJournalSubOperation[]): BatchJournalOperation {
   return {op: 'batch', operations};
 }
@@ -102,6 +109,7 @@ function replayTranscriptJournal(text: string): TranscriptJournalReplayResult | 
     changeHistory: [],
     compaction: null,
     todoState: createEmptyTodoState(),
+    goalState: null,
     updatedAt: start.createdAt
   };
   let sequence = 0;
@@ -149,7 +157,8 @@ function replayTranscriptJournal(text: string): TranscriptJournalReplayResult | 
       records: state.records,
       ...(state.changeHistory.length > 0 ? {changeHistory: state.changeHistory} : {}),
       ...(state.compaction ? {compaction: state.compaction} : {}),
-      todoState: state.todoState
+      todoState: state.todoState,
+      ...(state.goalState ? {goalState: state.goalState} : {})
     },
     reference: {
       sessionId: start.sessionId,
@@ -213,6 +222,8 @@ function isTranscriptJournalOperation(value: unknown): value is TranscriptJourna
       return value.compaction === null || isCompactionState(value.compaction);
     case 'set_todo_state':
       return isTodoState(value.todoState);
+    case 'set_goal_state':
+      return value.goalState === null || isGoalState(value.goalState);
     case 'batch':
       return Array.isArray(value.operations) && value.operations.length > 0 && value.operations.every(isTranscriptJournalSubOperation);
     default:
@@ -301,7 +312,8 @@ function isUserTranscriptMetadata(value: unknown): boolean {
   return (value.interactionMode === undefined || isInteractionMode(value.interactionMode)) &&
     (value.modeTransition === undefined || isModeTransition(value.modeTransition)) &&
     (value.agentWorkflow === undefined || (isRecord(value.agentWorkflow) && value.agentWorkflow.source === 'builtin' && isNonEmptyString(value.agentWorkflow.name))) &&
-    (value.skillInvocation === undefined || (isRecord(value.skillInvocation) && value.skillInvocation.source === 'slash' && isNonEmptyString(value.skillInvocation.skillName)));
+    (value.skillInvocation === undefined || (isRecord(value.skillInvocation) && value.skillInvocation.source === 'slash' && isNonEmptyString(value.skillInvocation.skillName))) &&
+    (value.goalContinuation === undefined || (isRecord(value.goalContinuation) && isPositiveInteger(value.goalContinuation.turn) && isPositiveInteger(value.goalContinuation.maxTurns)));
 }
 
 function isModeTransition(value: unknown): boolean {
@@ -396,6 +408,27 @@ function isTodoState(value: unknown): value is TodoState {
     value.items.every((item) => isRecord(item) && isNonEmptyString(item.id) && isNonEmptyString(item.text) && (item.status === 'open' || item.status === 'completed'));
 }
 
+function isGoalState(value: unknown): value is GoalState {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return isNonEmptyString(value.condition) &&
+    (value.status === 'active' || value.status === 'paused') &&
+    isNonNegativeInteger(value.revision) &&
+    isNonEmptyString(value.startedAt) &&
+    isNonNegativeInteger(value.turns) &&
+    isPositiveInteger(value.maxTurns) &&
+    (value.lastEvaluation === undefined || isGoalEvaluation(value.lastEvaluation));
+}
+
+function isGoalEvaluation(value: unknown): boolean {
+  return isRecord(value) &&
+    (value.outcome === 'met' || value.outcome === 'not_met' || value.outcome === 'unavailable') &&
+    typeof value.reason === 'string' &&
+    isNonEmptyString(value.at);
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -438,6 +471,9 @@ function applyTranscriptJournalOperation(operation: TranscriptJournalOperation, 
     case 'set_todo_state':
       state.todoState = structuredClone(operation.todoState);
       return true;
+    case 'set_goal_state':
+      state.goalState = operation.goalState ? structuredClone(operation.goalState) : null;
+      return true;
   }
 }
 
@@ -451,6 +487,7 @@ export {
   createBatchOperation,
   createSetChangeHistoryOperation,
   createSetCompactionOperation,
+  createSetGoalStateOperation,
   createSetTodoStateOperation,
   createTranscriptJournalEntry,
   createTranscriptJournalStart,

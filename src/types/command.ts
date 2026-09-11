@@ -2,6 +2,7 @@ import type { InputEvent } from './input';
 import type { AgentInstructionFileName, AgentType, ContextUsage, InteractionMode, ReasoningEffort } from './agent';
 import type { SandboxMode } from '../sandbox/types';
 import type {DiffFile, DiffSourceInfo, DiffSourceResult} from './diff';
+import type {GoalState, GoalStatus} from './goal';
 import type { CompactionState, PendingConversationReference, PreparedConversationReference, TranscriptForkResult, TranscriptRecord, TranscriptSessionSummary, TranscriptSessionPreview, UserTranscriptMetadata } from './transcript';
 import type {UndoExecuteResult, UndoSummary} from './change-history';
 import type {UsageDailyAggregate, UsageQueryOptions} from './usage';
@@ -370,7 +371,7 @@ export type ConfigSurfaceTab = {
 };
 
 export type GeneralConfigState = {
-  approvalModelProfiles: ToolApprovalModelProfile[]; // 当前配置文件中可供自动审批引用的非敏感模型目录。
+  savedModelProfiles: SavedModelProfile[]; // 当前配置文件中可供自动审批与 goal 评估引用的非敏感模型目录。
   draft: AppSettings;
   error?: string;
   feedback?: string;
@@ -378,7 +379,7 @@ export type GeneralConfigState = {
   selectedIndex: number;
 };
 
-export type ToolApprovalModelProfile = {
+export type SavedModelProfile = {
   id: string; // 持久化模型 profile 的稳定引用 id。
   model: string; // Provider 请求使用的 API model 展示名。
   provider: string; // 所属 provider id，仅用于帮助用户区分候选。
@@ -447,9 +448,17 @@ export type CommandStatusSnapshot = {
     model: string;
     provider: string;
   } | null;
+  goal: CommandStatusGoalSummary | null;
   sandbox: CommandStatusSandboxState;
   sessionId: string | null;
   userMemoryCount: number;
+};
+
+export type CommandStatusGoalSummary = {
+  conditionSummary: string; // 压成单行的条件摘要；渲染层再按卡片宽度裁剪，不回写 GoalState。
+  maxTurns: number; // 自动推进回合上限。
+  status: GoalStatus; // goal 生命周期状态；paused 与 active 在摘要行中可区分。
+  turns: number; // 已发起的自动推进回合数。
 };
 
 export type CommandStatusSandboxState = {
@@ -730,6 +739,10 @@ export type CommandReferenceSubmissionResult =
       error?: string; // 仅失败状态携带的脱敏展示文案。
     };
 
+export type CommandGoalMutationResult =
+  | {ok: true} // 表示 goal 状态已按要求变更或已经是该状态。
+  | {ok: false; error: string}; // 携带可直接展示在错误 surface 中的失败原因。
+
 export type CommandHostApp = {
   btw: {
     open(initialQuestion?: string): void; // 捕获主会话快照并切换到 BTW 投影。
@@ -762,7 +775,7 @@ export type CommandHostApp = {
     selectEffort(effort: ReasoningEffort): CommandSelectEffortResult;
   };
   config: {
-    listApprovalModelProfiles(): ToolApprovalModelProfile[];
+    listSavedModelProfiles(): SavedModelProfile[];
     readSettings(): AppSettings;
     readDraft(): LlmConfigDraft;
     listModels(provider: ConfigProviderDraft): Promise<CommandConfigListModelsResult>;
@@ -814,6 +827,13 @@ export type CommandHostApp = {
   mode: {
     getInteractionMode(): InteractionMode;
     setInteractionMode(mode: InteractionMode): void;
+  };
+  goal: {
+    getGoal(): GoalState | null; // 当前会话 goal 只读快照；无目标时返回 null。
+    setGoal(condition: string): CommandGoalMutationResult; // 设置或替换常驻目标；条件不合法或缺少评估模型配置时返回可展示错误。
+    pauseGoal(): CommandGoalMutationResult; // 暂停目标并停止后续自动推进；已暂停时为幂等成功。
+    resumeGoal(): CommandGoalMutationResult; // 恢复目标并重新激活推进流程；需要有效的评估模型配置。
+    clearGoal(): CommandGoalMutationResult; // 清除目标状态；已清除的目标不可恢复。
   };
   theme: {
     listThemes(): CommandThemeInfo[];

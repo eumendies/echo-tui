@@ -317,6 +317,10 @@ function createRightStatusSegments(statusLine: StatusLineState, theme: FooterThe
     });
   }
 
+  if (statusLine.goal) {
+    segments.push(createGoalStatusSegment(statusLine.goal, theme));
+  }
+
   if (statusLine.mode === 'btw') {
     segments.push(createModeSegment({...statusLine, activity: undefined}, theme));
     if (statusLine.activity) segments.push(createActivitySegment(statusLine.activity, theme));
@@ -405,6 +409,33 @@ function createShellModeSegment(statusLine: StatusLineState, theme: FooterTheme)
   return {
     plain: text,
     rendered: tokenText(theme, 'success', ansi.bold(text))
+  };
+}
+
+/**
+ * goal 段：active 展示轮次进度；评估请求进行中复用 activity 扫光语义展示评估中指示；
+ * paused 展示暂停标记，与 active 的进度形态区分。
+ */
+function createGoalStatusSegment(goal: NonNullable<StatusLineState['goal']>, theme: FooterTheme): StatusSegment {
+  if (goal.status === 'paused') {
+    return {
+      plain: 'goal paused',
+      rendered: `${ansi.dim('goal')} ${tokenText(theme, 'warning', 'paused')}`
+    };
+  }
+
+  const progress = `${goal.turns}/${goal.maxTurns}`;
+
+  if (goal.evaluationElapsedMs !== null) {
+    return {
+      plain: `goal ${progress} 评估中`,
+      rendered: `${ansi.dim('goal')} ${tokenText(theme, 'accent', progress)} ${renderActivityText('评估中', normalizeElapsedMs(goal.evaluationElapsedMs), theme)}`
+    };
+  }
+
+  return {
+    plain: `goal ${progress}`,
+    rendered: `${ansi.dim('goal')} ${tokenText(theme, 'accent', progress)}`
   };
 }
 

@@ -1,4 +1,5 @@
 import type {CompactionState, SubagentTranscriptRecord, TodoState, TranscriptRecord} from './transcript';
+import type {GoalState} from './goal';
 import type {AskUserQuestionsRequest, ToolApprovalRequest, ToolCall, ToolExecutionOptions, ToolExecutionResult} from './tool';
 import type {ChangeFileRecorder} from './change-history';
 import type {SandboxMode} from '../sandbox/types';
@@ -11,6 +12,8 @@ export type AgentExecutionMode =
 
 export type AgentToolPolicy = 'default' | 'readonly';
 export type AgentConversationKind = 'primary' | 'btw' | 'subagent';
+
+export type AssistantTurnOutcome = 'completed' | 'cancelled' | 'failed'; // 一次 assistant turn 的最终结果分类，供生命周期编排消费。
 
 export type SubagentRunMetadata = {
   agentName: string; // 当前内置或自定义子 Agent 名称，用于 prompt、审批和可见投影。
@@ -122,6 +125,7 @@ export type AgentSessionInput = {
   records: TranscriptRecord[]; // 当前回合开始时提供给 agent 的完整 transcript 快照。
   compaction?: CompactionState; // 已持久化的上下文压缩状态，缺省时从未压缩状态开始。
   todoState?: TodoState; // 当前会话的待办状态，供 agent 在工具调用间延续。
+  goalState?: GoalState; // 当前会话的常驻目标，供 runtime 注入 goal transient suffix；无目标时省略。
   sessionJournalPath?: string; // 当前 session 的 transcript journal 文件绝对路径，供压缩后模型按需回读原始记录；headless 无 session 时缺省。
   sessionId?: string; // 当前会话的稳定身份；sessionHeader 类 provider 用它注入会话亲和 header，fork/resume/clear 后自动换新。
   abortSignal?: AbortSignal; // 取消当前 agent 运行及其可中断下游操作的信号。
@@ -144,6 +148,7 @@ export type AgentUserConfigSnapshot = {
     skillCatalogContextRatio: number; // 本回合 skill catalog 的上下文预算比例。
     toolApprovalMode: 'manual' | 'auto'; // 本回合工具审批策略。
     toolApprovalModelProfileId?: string; // 本回合自动审批严格引用的 profile。
+    goalEvaluationModelProfileId?: string; // 本回合 goal 评估器严格引用的 profile；未配置时 goal 命令拒绝设置目标。
   };
   getLlmModelConfigInfo(): {
     kind: 'profiles'; // 当前配置使用 profile 目录模型。

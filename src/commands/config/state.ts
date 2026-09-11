@@ -15,7 +15,7 @@ import type {
   LlmConfigDraft,
   SandboxConfigDraft,
   SandboxConfigState,
-  ToolApprovalModelProfile
+  SavedModelProfile
 } from '../../types/command';
 import type {AppSettings} from '../../config/app-settings-config';
 import type {ReasoningEffort} from '../../types/agent';
@@ -46,6 +46,7 @@ const GENERAL_CONFIG_BASE_ROW_IDS = [
   'autoCompressImages',
   'fileEditMode',
   'toolApprovalMode',
+  'goalEvaluationModel',
   'instructionFile',
   'save'
 ] as const;
@@ -169,10 +170,10 @@ function createInitialConfigState(initialDraft: LlmConfigDraft): ConfigCommandSt
   };
 }
 
-function createInitialGeneralConfigState(settings: AppSettings, approvalModelProfiles: ToolApprovalModelProfile[] = []): GeneralConfigState {
+function createInitialGeneralConfigState(settings: AppSettings, savedModelProfiles: SavedModelProfile[] = []): GeneralConfigState {
   const draft = structuredClone(settings) as AppSettings;
   return {
-    approvalModelProfiles: approvalModelProfiles.map((profile) => ({...profile})),
+    savedModelProfiles: savedModelProfiles.map((profile) => ({...profile})),
     draft,
     initialDraftFingerprint: createGeneralDraftFingerprint(draft),
     selectedIndex: 0

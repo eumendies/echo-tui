@@ -7,6 +7,7 @@ import {
 import {throwIfAborted} from '../../types/agent';
 
 import type {AgentExecutionMode, AgentInstruction, ProviderUsage} from '../../types/agent';
+import type {GoalState} from '../../types/goal';
 import type {SkillCatalogEntry} from '../../types/skill';
 import type {AskUserQuestionsRequest, ToolCall, ToolExecutionResult} from '../../types/tool';
 import type {CompactionState, TodoState, TranscriptRecord} from '../../types/transcript';
@@ -60,13 +61,14 @@ type ProviderRecordOptions = {
   sessionJournalPath?: string; // 会话 journal 路径;压缩摘要附带完整历史回读提示。
   skillCatalog?: SkillCatalogEntry[]; // 当前 revision 的有界 enabled skill 目录。
   todoState?: TodoState; // 待办状态;存在 open 项时追加 runtime context 后缀记录。
+  goalState?: GoalState; // 常驻目标;存在时追加 runtime context 后缀记录。
 };
 
 /**
  * 构造 provider请求上下文；函数只投影输入事实，不判断主/子运行身份或提交 callback。
  */
 function buildProviderRecords(options: ProviderRecordOptions): TranscriptRecord[] {
-  const {activeRecords, agentInstructions = [], basePrompt, compaction, cwd, memoryPrompts = [], rolePrompt, sandboxNote, sessionJournalPath, skillCatalog = [], todoState} = options;
+  const {activeRecords, agentInstructions = [], basePrompt, compaction, cwd, goalState, memoryPrompts = [], rolePrompt, sandboxNote, sessionJournalPath, skillCatalog = [], todoState} = options;
   const prefix: TranscriptRecord[] = [{
     role: 'system',
     text: createBuiltInSystemPrompt({agentInstructions, basePrompt, cwd, ...(sandboxNote ? {sandboxNote} : {}), skillCatalog, memoryPrompts, rolePrompt})
@@ -91,13 +93,19 @@ function buildProviderRecords(options: ProviderRecordOptions): TranscriptRecord[
   return [
     ...prefix,
     ...activeRecords.filter((record) => record.role !== 'subagent' && record.role !== 'reasoning_summary'),
-    ...createRuntimeContextSuffixRecords(todoState)
+    ...createRuntimeContextSuffixRecords(todoState, goalState)
   ];
 }
 
-function createRuntimeContextSuffixRecords(todoState: TodoState | undefined): TranscriptRecord[] {
+function createRuntimeContextSuffixRecords(todoState: TodoState | undefined, goalState: GoalState | undefined): TranscriptRecord[] {
+  const sections = createGoalSectionLines(goalState);
   const openTodos = (todoState?.items || []).filter((item) => item.status === 'open');
-  if (openTodos.length === 0) {
+
+  if (openTodos.length > 0) {
+    sections.push('## Todos', 'Open:', ...openTodos.map((item) => `- [${item.id}] ${item.text}`));
+  }
+
+  if (sections.length === 0) {
     return [];
   }
 
@@ -108,11 +116,30 @@ function createRuntimeContextSuffixRecords(todoState: TodoState | undefined): Tr
       '',
       RUNTIME_CONTEXT_NOTICE,
       '',
-      '## Todos',
-      'Open:',
-      ...openTodos.map((item) => `- [${item.id}] ${item.text}`)
+      ...sections
     ].join('\n')
   }];
+}
+
+/**
+ * 把当前 goal 投影为 runtime context 的 Goal section；未设置目标时返回空数组。
+ * active 目标提示继续按条件推进，paused 目标明确等待用户恢复、不得自动继续。
+ */
+function createGoalSectionLines(goalState: GoalState | undefined): string[] {
+  if (!goalState) {
+    return [];
+  }
+
+  const statusLine = goalState.status === 'active'
+    ? `Status: active; continuation turn ${goalState.turns}/${goalState.maxTurns}. Work toward the objective; an independent evaluator judges whether it is met after each turn.`
+    : 'Status: paused; waiting for the user to resume. Do not continue working toward the objective automatically.';
+
+  return [
+    '## Goal',
+    `Objective: ${goalState.condition}`,
+    statusLine,
+    ...(goalState.lastEvaluation ? [`Last evaluation: ${goalState.lastEvaluation.outcome} — ${goalState.lastEvaluation.reason}`] : [])
+  ];
 }
 
 function hasRecordableProviderUsage(usage: ProviderUsage | undefined, usageInputTokens: number | undefined): boolean {

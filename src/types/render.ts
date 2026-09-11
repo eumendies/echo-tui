@@ -5,6 +5,7 @@ import type { TuiTheme } from '../config/theme-config';
 import type { ContextUsage, ReasoningEffort } from './agent';
 import type { AppRenderPreferences } from '../config/app-settings-config';
 import type { ConversationReferenceProjectionMode } from './transcript';
+import type { GoalStatus } from './goal';
 
 export type TerminalSize = {
   columns: number;
@@ -129,6 +130,13 @@ export type StatusLineActivityState = {
   elapsedMs: number;
 };
 
+export type StatusLineGoalState = {
+  status: GoalStatus; // 目标生命周期状态；paused 时状态段展示暂停标记而非轮次进度。
+  turns: number; // 已发起的自动推进回合数。
+  maxTurns: number; // 自动推进回合上限。
+  evaluationElapsedMs: number | null; // 进行中评估请求的已耗时；没有评估进行时为 null。
+};
+
 export type StatusLineState = {
   projectName: string;
   model: StatusLineModelRenderState;
@@ -137,6 +145,7 @@ export type StatusLineState = {
   contextUsage?: ContextUsage;
   detail?: string;
   activity?: StatusLineActivityState;
+  goal?: StatusLineGoalState; // 常驻目标状态段；当前不存在目标时缺省。
   keyHint?: string;
 };
 

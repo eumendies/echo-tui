@@ -694,6 +694,125 @@ test('buildProviderRecords omits runtime context when no runtime state exists', 
   assert.deepEqual(records.slice(1), [{ role: 'user', text: 'continue' }]);
 });
 
+test('buildProviderRecords injects goal runtime context without changing system prompt', () => {
+  const goalState = {
+    condition: 'make auth tests green',
+    status: 'active',
+    revision: 2,
+    startedAt: '2026-06-30T00:00:00.000Z',
+    turns: 3,
+    maxTurns: 20,
+    lastEvaluation: {outcome: 'not_met', reason: 'auth spec still failing', at: '2026-06-30T00:00:01.000Z'}
+  };
+  const normalRecords = buildProviderRecords({activeRecords: [{role: 'user', text: 'continue'}], cwd: TEST_CWD});
+  const goalRecords = buildProviderRecords({activeRecords: [{role: 'user', text: 'continue'}], cwd: TEST_CWD, goalState});
+
+  assert.equal(goalRecords[0].text, normalRecords[0].text);
+  assert.deepEqual(goalRecords.slice(0, normalRecords.length), normalRecords);
+  const suffix = goalRecords.at(-1);
+  assert.equal(suffix.role, 'user');
+  assert.match(suffix.text, /# Echo Runtime Context/);
+  assert.match(suffix.text, /## Goal/);
+  assert.match(suffix.text, /Objective: make auth tests green/);
+  assert.match(suffix.text, /Status: active; continuation turn 3\/20/);
+  assert.match(suffix.text, /Last evaluation: not_met — auth spec still failing/);
+});
+
+test('buildProviderRecords marks paused goal as waiting for user resume', () => {
+  const records = buildProviderRecords({
+    activeRecords: [{role: 'user', text: 'continue'}],
+    cwd: TEST_CWD,
+    goalState: {
+      condition: 'make auth tests green',
+      status: 'paused',
+      revision: 3,
+      startedAt: '2026-06-30T00:00:00.000Z',
+      turns: 1,
+      maxTurns: 20
+    }
+  });
+
+  const suffix = records.at(-1);
+  assert.match(suffix.text, /## Goal/);
+  assert.match(suffix.text, /Status: paused; waiting for the user to resume/);
+  assert.match(suffix.text, /Do not continue working toward the objective automatically/);
+  assert.equal(suffix.text.includes('Last evaluation'), false);
+});
+
+test('buildProviderRecords combines goal and todo sections in one runtime context record', () => {
+  const records = buildProviderRecords({
+    activeRecords: [{role: 'user', text: 'continue'}],
+    cwd: TEST_CWD,
+    goalState: {
+      condition: 'make auth tests green',
+      status: 'active',
+      revision: 1,
+      startedAt: '2026-06-30T00:00:00.000Z',
+      turns: 0,
+      maxTurns: 20
+    },
+    todoState: {
+      updatedAt: '2026-06-30T00:00:00.000Z',
+      items: [{id: 'todo_1', text: 'first task', status: 'open'}]
+    }
+  });
+
+  const runtimeContextRecords = records.filter((record) => record.text.includes('# Echo Runtime Context'));
+  assert.equal(runtimeContextRecords.length, 1);
+  assert.match(runtimeContextRecords[0].text, /## Goal/);
+  assert.match(runtimeContextRecords[0].text, /## Todos/);
+  assert.match(runtimeContextRecords[0].text, /\[todo_1\] first task/);
+});
+
+test('buildProviderRecords omits goal section when no goal exists', () => {
+  const records = buildProviderRecords({
+    activeRecords: [{role: 'user', text: 'continue'}],
+    cwd: TEST_CWD,
+    todoState: {
+      updatedAt: '2026-06-30T00:00:00.000Z',
+      items: [{id: 'todo_1', text: 'first task', status: 'open'}]
+    }
+  });
+
+  const suffix = records.at(-1);
+  assert.match(suffix.text, /## Todos/);
+  assert.equal(suffix.text.includes('## Goal'), false);
+});
+
+test('createAgentLoopRuntime injects goal suffix into provider records without persisting it', async () => {
+  const providerRecords = [];
+  const sessionRecords = [{role: 'user', text: 'work'}];
+  const agent = {
+    async runTurn(records) {
+      providerRecords.push(records);
+      return {draft: 'done', toolCalls: []};
+    }
+  };
+
+  const result = await withPatchedAgentRuntime(agent, () => {
+    const runAgent = createAgentLoopRuntime(TEST_CWD);
+    return runAgent({
+      records: sessionRecords,
+      goalState: {
+        condition: 'ship the migration',
+        status: 'active',
+        revision: 1,
+        startedAt: '2026-06-30T00:00:00.000Z',
+        turns: 1,
+        maxTurns: 20
+      }
+    });
+  });
+
+  assert.equal(result, 'done');
+  const runtimeContext = providerRecords[0].at(-1);
+  assert.match(runtimeContext.text, /## Goal/);
+  assert.match(runtimeContext.text, /Objective: ship the migration/);
+  assert.match(runtimeContext.text, /Status: active; continuation turn 1\/20/);
+  // suffix 只存在于请求投影中，不写回调用方传入的 transcript records。
+  assert.deepEqual(sessionRecords, [{role: 'user', text: 'work'}]);
+});
+
 test('buildProviderRecords does not append mode context after compacted active records', () => {
   const records = buildProviderRecords({
     activeRecords: [{role: 'user', text: 'next task'}],

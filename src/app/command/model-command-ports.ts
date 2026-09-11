@@ -45,7 +45,7 @@ function createModelCommandPorts(options: ModelCommandPortOptions): Pick<Command
       }
     },
     config: {
-      listApprovalModelProfiles() {
+      listSavedModelProfiles() {
         try {
           return userConfigContext.capture().getLlmConfigDraft().providers.flatMap((provider) => provider.models.map((model) => ({
             id: model.id,

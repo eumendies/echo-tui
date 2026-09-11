@@ -37,6 +37,7 @@ import type {SkillCatalogEntry} from '../../types/skill';
 import type {SkillCatalogPromptProjection} from '../../skills/skill-catalog-prompt';
 import type {ToolApprovalRequest, ToolCall, ToolDefinition, ToolExecutionResult, ToolExecutor, ToolRegistry} from '../../types/tool';
 import type {CompactionState, SubagentTranscriptRecord, TodoState, TranscriptRecord} from '../../types/transcript';
+import type {GoalState} from '../../types/goal';
 import type {McpManager} from '../../mcp/manager';
 import type {AgentRunScope, Observation, ProviderObservationConfig} from '../../observation/observation';
 
@@ -207,6 +208,7 @@ type AgentLoopRunState = {
   skillCatalogProjection: Pick<SkillCatalogPromptProjection, 'budgetTokens' | 'mode' | 'originalTokens'>; // 调试使用的 skill预算事实。
   basePrompt?: string; // 用户 system prompt override，缺省使用内置主 prompt。
   todoState: TodoState | undefined; // 主运行的 open todo 状态。
+  goalState: GoalState | undefined; // 主运行的常驻目标；无目标时为 undefined。
   toolDefinitions: ToolDefinition[]; // 真正发送给当前 provider 的工具 schema。
   mcpManager?: McpManager; // 主运行可用的共享 MCP manager；子运行缺省。
   abortSignal?: AbortSignal; // 贯穿 provider、审批和工具执行的父级取消信号。
@@ -266,6 +268,7 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
         originalTokens: skillCatalogProjection.originalTokens
       },
       todoState: undefined,
+      goalState: undefined,
       toolDefinitions: registry.listDefinitions(),
       mcpManager,
       abortSignal,
@@ -352,6 +355,7 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
     throwIfAborted(abortSignal);
 
     state.todoState = session.todoState;
+    state.goalState = session.goalState;
 
     /**
      * 发请求前检查：调用共享压缩核心，压缩发生时回填运行态并通知 app。
@@ -442,7 +446,8 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
         sandboxNote: state.sandboxNote ?? undefined,
         sessionJournalPath: session.sessionJournalPath,
         skillCatalog: state.skillCatalog,
-        todoState: state.todoState
+        todoState: state.todoState,
+        goalState: state.goalState
       });
       state.observation.providerRequestBuilt({
         scope: state.observationScope,

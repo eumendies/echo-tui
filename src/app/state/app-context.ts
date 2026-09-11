@@ -22,13 +22,14 @@ import type {ToolApprovalSettings} from '../../config/app-settings-config';
 import type {DiffSourceResult} from '../../types/diff';
 import type {CommandSurface, SlashCommandDescriptor} from '../../types/command';
 import type {InputEvent} from '../../types/input';
-import type {RenderState, SlashSuggestionState, StatusLineModelRenderState} from '../../types/render';
+import type {RenderState, SlashSuggestionState, StatusLineGoalState, StatusLineModelRenderState} from '../../types/render';
 import type {ToolExecutionResult} from '../../types/tool';
 import type {TranscriptForkResult, TranscriptRecord, TranscriptSession, TranscriptStore, UserTranscriptMetadata} from '../../types/transcript';
 import type {SessionModelSettingsStore} from '../../types/session-model-settings';
 import type {UndoExecuteResult} from '../../types/change-history';
 import type {ToolApprovalContext} from './tool-approval-context';
 import type {AssistantTurnHandle, InterruptAssistantTurnResult} from './turn-context';
+import type {GoalController} from '../goal/goal-controller';
 
 type AgentInteractionMode = 'normal' | 'plan';
 
@@ -260,7 +261,7 @@ class AppContext {
   /**
    * 组合渲染层需要的瞬时状态，避免 main.ts 反复散落访问实例字段。
    */
-  createRenderState(options: {commandSurface?: CommandSurface | null; toolApproval?: Pick<ToolApprovalContext, 'isAllowAllForSession'> | null} = {}): RenderState {
+  createRenderState(options: {commandSurface?: CommandSurface | null; goalActivity?: Pick<GoalController, 'getEvaluationActivity'> | null; toolApproval?: Pick<ToolApprovalContext, 'isAllowAllForSession'> | null} = {}): RenderState {
     const appSettings = this.userConfigContext.capture().getAppSettings();
     const commandSurface = options.commandSurface ?? null;
     const modelTuningSnapshot = commandSurface ? null : this.modelTuningContext.getRenderState();
@@ -276,11 +277,21 @@ class AppContext {
             ...(modelTuningSnapshot.error ? {error: modelTuningSnapshot.error} : {})
           }
         : this.createStatusLineModelRenderState();
+    const goalState = this.transcriptContext.goalState;
+    const goal: StatusLineGoalState | undefined = goalState
+      ? {
+          status: goalState.status,
+          turns: goalState.turns,
+          maxTurns: goalState.maxTurns,
+          evaluationElapsedMs: options.goalActivity?.getEvaluationActivity()?.elapsedMs ?? null
+        }
+      : undefined;
 
     return this.renderContext.createRenderState({
       commandSurface,
       conversationReference: this.conversationReferenceContext.getRenderState(),
       contextUsage: this.contextUsage,
+      goal,
       model,
       pendingMessage: this.pendingMessageContext.getRenderState(),
       renderPreferences: {
@@ -493,9 +504,29 @@ class AppContext {
       this.changeHistoryContext.restoreHistory(this.transcriptContext.changeHistory);
       this.modelContext.restoreSession(sessionId);
       this.rebuildLastSubmittedAgentMode();
+      this.normalizeGoalStateForResume();
     }
 
     return loadedSession;
+  }
+
+  /**
+   * resume 归一会话目标：条件、回合上限与最近评估保留，但强制暂停并重置运行时基线，
+   * 避免恢复会话就自动燃烧模型请求；归一化结果随下一次 journal 写入自然落盘。
+   */
+  private normalizeGoalStateForResume(): void {
+    const goalState = this.transcriptContext.goalState;
+
+    if (!goalState) {
+      return;
+    }
+
+    this.transcriptContext.setGoalState({
+      ...goalState,
+      status: 'paused',
+      turns: 0,
+      startedAt: new Date().toISOString()
+    });
   }
 
   /**
@@ -614,6 +645,7 @@ class AppContext {
       records: structuredClone(this.transcriptContext.getRecords()),
       compaction: this.transcriptContext.compaction ? {...this.transcriptContext.compaction} : undefined,
       todoState: structuredClone(this.transcriptContext.todoState),
+      ...(this.transcriptContext.goalState ? {goalState: structuredClone(this.transcriptContext.goalState)} : {}),
       interactionMode: this.interactionMode,
       compactionThresholdRatio: appSettings.compactionThresholdRatio,
       skillCatalogContextRatio: appSettings.skillCatalogContextRatio,

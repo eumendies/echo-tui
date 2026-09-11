@@ -3,6 +3,7 @@ import {
   createBatchOperation,
   createSetChangeHistoryOperation,
   createSetCompactionOperation,
+  createSetGoalStateOperation,
   createSetTodoStateOperation,
   createTruncateRecordsOperation
 } from '../../persistence/transcript-journal';
@@ -10,6 +11,7 @@ import {createCompactionNoticeRecord} from '../../agent/context/context-compacti
 import {cloneChangeHistory} from './change-history-context';
 
 import type {ChangeCheckpoint} from '../../types/change-history';
+import type {GoalState} from '../../types/goal';
 import type {
   CompactionState,
   ConversationReferenceSource,
@@ -39,9 +41,11 @@ class TranscriptContext {
   changeHistory: ChangeCheckpoint[];
   compaction: CompactionState | null;
   todoState: TodoState;
+  goalState: GoalState | null;
   pendingChangeHistory: ChangeCheckpoint[] | undefined;
   pendingCompaction: CompactionState | null | undefined;
   pendingTodoState: TodoState | undefined;
+  pendingGoalState: GoalState | null | undefined;
 
   constructor(transcriptStore: TranscriptStore, getCurrentCwd: () => string) {
     this.transcriptStore = transcriptStore;
@@ -52,9 +56,11 @@ class TranscriptContext {
     this.changeHistory = [];
     this.compaction = null;
     this.todoState = createEmptyTodoState();
+    this.goalState = null;
     this.pendingChangeHistory = undefined;
     this.pendingCompaction = undefined;
     this.pendingTodoState = undefined;
+    this.pendingGoalState = undefined;
   }
 
   /**
@@ -176,7 +182,8 @@ class TranscriptContext {
       createAppendRecordsOperation(structuredClone(this.records)),
       createSetChangeHistoryOperation(cloneChangeHistory(this.changeHistory)),
       createSetCompactionOperation(this.compaction ? {...this.compaction} : null),
-      createSetTodoStateOperation(cloneTodoState(this.todoState))
+      createSetTodoStateOperation(cloneTodoState(this.todoState)),
+      createSetGoalStateOperation(cloneGoalState(this.goalState))
     ]);
     const nextSession = this.transcriptStore.createSession(this.getCurrentCwd(), operation);
 
@@ -210,6 +217,7 @@ class TranscriptContext {
     this.changeHistory = cloneChangeHistory(session.changeHistory);
     this.compaction = session.compaction ? {...session.compaction} : null;
     this.todoState = cloneTodoState(session.todoState);
+    this.goalState = cloneGoalState(session.goalState);
     this.clearPendingState();
 
     return structuredClone(session);
@@ -225,6 +233,7 @@ class TranscriptContext {
     this.changeHistory = [];
     this.compaction = null;
     this.todoState = createEmptyTodoState();
+    this.goalState = null;
     this.clearPendingState();
   }
 
@@ -284,6 +293,14 @@ class TranscriptContext {
   updateTodoState(todoState: TodoState): void {
     this.setTodoState(todoState);
     this.persistCurrentSession();
+  }
+
+  /**
+   * 更新当前会话的 goal 状态；调用方决定何时追加独立状态操作。
+   */
+  setGoalState(goalState: GoalState | null | undefined): void {
+    this.goalState = cloneGoalState(goalState);
+    this.pendingGoalState = cloneGoalState(this.goalState);
   }
 
   /**
@@ -363,6 +380,10 @@ class TranscriptContext {
       operations.push(createSetTodoStateOperation(this.pendingTodoState));
     }
 
+    if (this.pendingGoalState !== undefined) {
+      operations.push(createSetGoalStateOperation(this.pendingGoalState));
+    }
+
     if (operations.length === 0) {
       return null;
     }
@@ -374,11 +395,13 @@ class TranscriptContext {
     this.pendingChangeHistory = undefined;
     this.pendingCompaction = undefined;
     this.pendingTodoState = undefined;
+    this.pendingGoalState = undefined;
   }
 }
 
 export {
   TranscriptContext,
+  cloneGoalState,
   cloneTodoState,
   createEmptyTodoState
 };
@@ -405,4 +428,15 @@ function cloneTodoState(todoState: TodoState | null | undefined): TodoState {
         status: item.status
       }))
   };
+}
+
+/**
+ * 克隆会话级 goal 状态；来源为控制器写入或 journal 校验后的值，仅守卫条件非空后深拷贝。
+ */
+function cloneGoalState(goalState: GoalState | null | undefined): GoalState | null {
+  if (!goalState || typeof goalState.condition !== 'string' || goalState.condition.trim() === '') {
+    return null;
+  }
+
+  return structuredClone(goalState);
 }

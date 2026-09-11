@@ -638,6 +638,50 @@ test('renderFooterLayout renders allow-all tools status as warning segment', () 
   assert.ok(layout.lines.at(-1).includes('\x1b[38;2;13;14;15m'));
 });
 
+test('renderFooterLayout renders goal progress, pause marker, and evaluating indicator', () => {
+  const baseOptions = {
+    composer: createComposer('hello'),
+    commandSurface: null,
+    pending: null,
+    theme: CUSTOM_THEME,
+    width: 100
+  };
+  const active = renderFooterLayout({
+    ...baseOptions,
+    statusLine: {
+      ...DEFAULT_STATUS_LINE,
+      goal: {status: 'active', turns: 3, maxTurns: 20, evaluationElapsedMs: null}
+    }
+  });
+  const activePlain = stripAnsi(active.lines.at(-1));
+  assert.ok(activePlain.includes('goal 3/20'));
+  assert.ok(activePlain.indexOf('dir echo_tui') < activePlain.indexOf('goal 3/20'));
+
+  const evaluating = renderFooterLayout({
+    ...baseOptions,
+    statusLine: {
+      ...DEFAULT_STATUS_LINE,
+      goal: {status: 'active', turns: 3, maxTurns: 20, evaluationElapsedMs: 1200}
+    }
+  });
+  assert.ok(stripAnsi(evaluating.lines.at(-1)).includes('goal 3/20 评估中'));
+
+  const paused = renderFooterLayout({
+    ...baseOptions,
+    statusLine: {
+      ...DEFAULT_STATUS_LINE,
+      goal: {status: 'paused', turns: 3, maxTurns: 20, evaluationElapsedMs: null}
+    }
+  });
+  const pausedPlain = stripAnsi(paused.lines.at(-1));
+  assert.ok(pausedPlain.includes('goal paused'));
+  assert.equal(pausedPlain.includes('3/20'), false);
+  assert.ok(paused.lines.at(-1).includes('\x1b[38;2;13;14;15m'));
+
+  const withoutGoal = renderFooterLayout({...baseOptions, statusLine: DEFAULT_STATUS_LINE});
+  assert.equal(stripAnsi(withoutGoal.lines.at(-1)).includes('goal'), false);
+});
+
 test('renderFooterLayout applies custom theme to composer status and active suggestions', () => {
   const layout = renderFooterLayout({
     composer: createComposer('/'),
@@ -985,6 +1029,37 @@ test('renderStatusSurface handles loading, unavailable, not-applicable, and empt
   assert.doesNotMatch(notApplicablePlain, /Codex/);
   assert.doesNotMatch(notApplicablePlain, /5 小时|每周/);
   assert.doesNotMatch(notApplicablePlain, /DeepSeek 账户余额/);
+});
+
+test('renderStatusSurface shows goal summary only when a goal exists', () => {
+  const snapshot = {
+    agentInstructionFileName: 'AGENTS.md',
+    cwd: '/tmp/project',
+    sessionId: 'session-1',
+    model: null,
+    sandbox: {mode: 'off', network: false, provider: null, available: false},
+    agentInstructions: [],
+    userMemoryCount: 0,
+    agentMemoryCatalogs: [],
+    diagnostics: []
+  };
+  const active = renderStatusSurface({
+    kind: 'status',
+    snapshot: {...snapshot, goal: {conditionSummary: 'make tests green', maxTurns: 20, status: 'active', turns: 3}},
+    usage: {status: 'not_applicable'}
+  }, 70, 20, CUSTOM_THEME.footer);
+  assert.match(active.lines.map((line) => stripAnsi(line)).join('\n'), /Goal\s+active · 3\/20 · make tests green/);
+
+  const paused = renderStatusSurface({
+    kind: 'status',
+    snapshot: {...snapshot, goal: {conditionSummary: 'make tests green', maxTurns: 20, status: 'paused', turns: 3}},
+    usage: {status: 'not_applicable'}
+  }, 70, 20, CUSTOM_THEME.footer);
+  assert.match(paused.lines.map((line) => stripAnsi(line)).join('\n'), /Goal\s+paused · 3\/20 · make tests green/);
+  assert.ok(paused.lines.join('\n').includes('\x1b[38;2;13;14;15m'));
+
+  const withoutGoal = renderStatusSurface({kind: 'status', snapshot, usage: {status: 'not_applicable'}}, 70, 20, CUSTOM_THEME.footer);
+  assert.doesNotMatch(withoutGoal.lines.map((line) => stripAnsi(line)).join('\n'), /Goal/);
 });
 
 test('renderStatusSurface preserves both quota labels, bars, and percentages in narrow terminal', () => {

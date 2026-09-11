@@ -24,6 +24,7 @@ type CommandHostOptions = {
   appContext: AppContext;
   renderRecords: (records: TranscriptRecord[]) => void;
   exit: () => void;
+  goal: CommandHostApp['goal']; // 组合根持有的 goal 受控实例；回合通知与自动续跑由 app 层衔接。
   hooks: LifecycleHookDispatcher;
   mcpManager: McpManager;
   render: () => void;
@@ -41,7 +42,7 @@ type CommandHostOptions = {
  * 在 app 组合根装配 command handler 可用的受控领域端口。
  */
 function createCommandHost(options: CommandHostOptions): CommandHostApp {
-  const {appContext, renderRecords, btw, exit, hooks, mcpManager, render, renderResizeRecovery, usageStore} = options;
+  const {appContext, renderRecords, btw, exit, goal, hooks, mcpManager, render, renderResizeRecovery, usageStore} = options;
   const userConfigContext = options.userConfigContext;
   if (appContext.captureUserConfigSnapshot() !== userConfigContext.capture()) {
     throw new Error('CommandHost 与 AppContext 必须共享同一个 UserConfigContext');
@@ -77,6 +78,7 @@ function createCommandHost(options: CommandHostOptions): CommandHostApp {
       userConfigContext
     }),
     mode: settingsPorts.mode,
+    goal,
     theme: settingsPorts.theme,
     context: statusPorts.context,
     status: statusPorts.status,

@@ -6,7 +6,7 @@ import {DEFAULT_RENDER_PREFERENCES} from '../../config/app-settings-config';
 import type {TerminalController} from '../../types/app';
 import type {CommandSurface} from '../../types/command';
 import type {InteractionMode} from '../../types/agent';
-import type {BannerContext, PendingState, RenderPreferences, RenderState, SlashSuggestionState, StatusLineMode, StatusLineModelRenderState, StatusLineState, WorkingState} from '../../types/render';
+import type {BannerContext, PendingState, RenderPreferences, RenderState, SlashSuggestionState, StatusLineGoalState, StatusLineMode, StatusLineModelRenderState, StatusLineState, WorkingState} from '../../types/render';
 import type {TuiTheme} from '../../config/theme-config';
 
 type ContextUsageState = StatusLineState['contextUsage'];
@@ -80,7 +80,7 @@ class RenderContext {
   /**
    * 组合渲染层需要的瞬时状态，避免 main.ts 反复散落访问实例字段。
    */
-  createRenderState(options: {allowAllTools?: boolean; commandSurface?: CommandSurface | null; contextUsage?: ContextUsageState | null; conversationReference?: RenderState['conversationReference']; model?: StatusLineModelRenderState; pendingMessage?: RenderState['pendingMessage']; renderPreferences?: RenderPreferences; slashSuggestions?: SlashSuggestionState | null} = {}): RenderState {
+  createRenderState(options: {allowAllTools?: boolean; commandSurface?: CommandSurface | null; contextUsage?: ContextUsageState | null; conversationReference?: RenderState['conversationReference']; goal?: StatusLineGoalState | null; model?: StatusLineModelRenderState; pendingMessage?: RenderState['pendingMessage']; renderPreferences?: RenderPreferences; slashSuggestions?: SlashSuggestionState | null} = {}): RenderState {
     const terminalSize = this.terminal.getSize();
     const commandSurface = options.commandSurface ?? null;
     const slashSuggestions = options.slashSuggestions ?? null;
@@ -98,7 +98,7 @@ class RenderContext {
       working,
       theme: this.theme,
       renderPreferences: options.renderPreferences || DEFAULT_RENDER_PREFERENCES,
-      statusLine: commandSurface ? undefined : this.createStatusLineState(options.model, pending, working, slashSuggestions, options.contextUsage ?? null, options.allowAllTools || false, Boolean(pendingMessage)),
+      statusLine: commandSurface ? undefined : this.createStatusLineState(options.model, pending, working, slashSuggestions, options.contextUsage ?? null, options.allowAllTools || false, Boolean(pendingMessage), options.goal ?? null),
       rows: terminalSize.rows,
       width: terminalSize.columns
     };
@@ -107,7 +107,7 @@ class RenderContext {
   /**
    * 根据当前普通 composer 上下文派生 status line；command surface 使用自身提示，不创建全局状态栏。
    */
-  private createStatusLineState(model: StatusLineModelRenderState | undefined, pending: PendingState | null, working: WorkingState | null, slashSuggestions: SlashSuggestionState | null, contextUsage: ContextUsageState | null, allowAllTools: boolean, hasPendingMessage: boolean): StatusLineState {
+  private createStatusLineState(model: StatusLineModelRenderState | undefined, pending: PendingState | null, working: WorkingState | null, slashSuggestions: SlashSuggestionState | null, contextUsage: ContextUsageState | null, allowAllTools: boolean, hasPendingMessage: boolean, goal: StatusLineGoalState | null): StatusLineState {
     const mode = this.bootstrapStateOwner.getMcpBootstrapStatus() === 'initializing'
       ? 'mcp'
       : resolveStatusLineMode(pending, slashSuggestions, this.getInteractionMode());
@@ -127,6 +127,7 @@ class RenderContext {
       mode,
       ...(allowAllTools ? {allowAllTools: true} : {}),
       ...(contextUsage ? {contextUsage} : {}),
+      ...(goal ? {goal} : {}),
       detail: pending?.kind === 'tool_call'
         ? pending.toolName
         : pending?.kind === 'tool_calls'

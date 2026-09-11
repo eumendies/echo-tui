@@ -7,6 +7,7 @@ type AppSettings = {
   compactionThresholdRatio: number;
   defaultInteractionMode: DefaultInteractionMode;
   fileEditMode: FileEditToolMode;
+  goalEvaluationModelProfileId?: string; // goal 自动续跑评估器严格引用的已保存模型 profile；未配置时 /goal 拒绝设置目标。
   skillCatalogContextRatio: number;
   showReasoningSummary: boolean;
   slashSuggestionMaxVisible: number;
@@ -102,6 +103,15 @@ function validateAppSettingsDraft(draft: AppSettings, modelProfileIds?: Readonly
     return {ok: false, error: '自动工具审批需要选择一个已保存的有效模型 profile'};
   }
 
+  if (draft.goalEvaluationModelProfileId !== undefined
+    && (typeof draft.goalEvaluationModelProfileId !== 'string' || draft.goalEvaluationModelProfileId.trim() === '')) {
+    return {ok: false, error: 'goal 评估模型必须引用有效的模型 profile'};
+  }
+
+  if (draft.goalEvaluationModelProfileId !== undefined && !modelProfileIds?.has(draft.goalEvaluationModelProfileId)) {
+    return {ok: false, error: 'goal 评估模型必须引用已保存的模型 profile'};
+  }
+
   return {ok: true};
 }
 
@@ -118,6 +128,7 @@ function applyAppSettingsDraft(rootConfig: UserConfigSource, draft: AppSettings)
   const compaction = isPlainObject(rootConfig.compaction) ? {...rootConfig.compaction} : {};
   const instructions = isPlainObject(rootConfig.instructions) ? {...rootConfig.instructions} : {};
   const skills = isPlainObject(rootConfig.skills) ? {...rootConfig.skills} : {};
+  const goal = isPlainObject(rootConfig.goal) ? {...rootConfig.goal} : {};
   const ui = isPlainObject(rootConfig.ui) ? {...rootConfig.ui} : {};
   const tools = isPlainObject(rootConfig.tools) ? {...rootConfig.tools} : {};
   const fileEdit = isPlainObject(tools.fileEdit) ? {...tools.fileEdit} : {};
@@ -136,12 +147,22 @@ function applyAppSettingsDraft(rootConfig: UserConfigSource, draft: AppSettings)
   if (draft.toolApprovalModelProfileId !== undefined) {
     approval.modelProfileId = draft.toolApprovalModelProfileId;
   }
+  if (draft.goalEvaluationModelProfileId !== undefined) {
+    goal.evaluationModelProfileId = draft.goalEvaluationModelProfileId;
+  } else {
+    delete goal.evaluationModelProfileId;
+  }
   tools.fileEdit = fileEdit;
   tools.readFiles = readFiles;
   tools.approval = approval;
   rootConfig.compaction = compaction;
   rootConfig.instructions = instructions;
   rootConfig.skills = skills;
+  if (Object.keys(goal).length > 0) {
+    rootConfig.goal = goal;
+  } else {
+    delete rootConfig.goal;
+  }
   rootConfig.ui = ui;
   rootConfig.tools = tools;
 }
@@ -150,6 +171,7 @@ function normalizeAppSettings(rootConfig: UserConfigSource): AppSettings {
   const compaction = isPlainObject(rootConfig.compaction) ? rootConfig.compaction : {};
   const instructions = isPlainObject(rootConfig.instructions) ? rootConfig.instructions : {};
   const skills = isPlainObject(rootConfig.skills) ? rootConfig.skills : {};
+  const goal = isPlainObject(rootConfig.goal) ? rootConfig.goal : {};
   const ui = isPlainObject(rootConfig.ui) ? rootConfig.ui : {};
   const tools = isPlainObject(rootConfig.tools) ? rootConfig.tools : {};
   const fileEdit = isPlainObject(tools.fileEdit) ? tools.fileEdit : {};
@@ -187,6 +209,9 @@ function normalizeAppSettings(rootConfig: UserConfigSource): AppSettings {
     toolApprovalMode: isToolApprovalMode(approval.mode) ? approval.mode : DEFAULT_APP_SETTINGS.toolApprovalMode,
     ...(typeof approval.modelProfileId === 'string' && approval.modelProfileId.trim() !== ''
       ? {toolApprovalModelProfileId: approval.modelProfileId}
+      : {}),
+    ...(typeof goal.evaluationModelProfileId === 'string' && goal.evaluationModelProfileId.trim() !== ''
+      ? {goalEvaluationModelProfileId: goal.evaluationModelProfileId}
       : {})
   };
 }

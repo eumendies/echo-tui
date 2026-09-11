@@ -100,7 +100,7 @@ class BtwConversationController {
   open(initialQuestion?: string): void {
     if (this.state) return;
     const parent = this.dependencies.getParentSession();
-    const {records, compaction, todoState: _todoState, sessionJournalPath: _journalPath, abortSignal: _abortSignal, interactionMode, toolPolicy: _toolPolicy, conversationKind: _conversationKind, userConfigSnapshot: _userConfigSnapshot, ...agentOptions} = parent;
+    const {records, compaction, todoState: _todoState, goalState: _goalState, sessionJournalPath: _journalPath, abortSignal: _abortSignal, interactionMode, toolPolicy: _toolPolicy, conversationKind: _conversationKind, userConfigSnapshot: _userConfigSnapshot, ...agentOptions} = parent;
     this.state = {
       conversationId: this.nextConversationId++,
       baseRecords: structuredClone(records),

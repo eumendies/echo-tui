@@ -1,5 +1,6 @@
 import type {ApplyPatchDisplayMetadata, EditFileDisplayMetadata, GlobDisplayMetadata, GrepDisplayMetadata, ToolResultAttachment} from './tool';
 import type {ChangeCheckpoint} from './change-history';
+import type {GoalState} from './goal';
 import type {InteractionMode} from './agent';
 import type {SkillSourceKind} from './skill';
 
@@ -36,6 +37,10 @@ export type UserTranscriptMetadata = {
     sourcePath: string;
   };
   conversationReference?: ConversationReferenceMetadata; // 标识该用户消息附加了一段历史会话引用。
+  goalContinuation?: {
+    turn: number; // 自动推进回合序号。
+    maxTurns: number; // 自动推进回合上限。
+  }; // 标识该用户记录由 goal 自动续跑生成。
 };
 
 export type ConversationReferenceProjectionMode = 'full' | 'summary';
@@ -252,6 +257,7 @@ export type TranscriptSession = {
   changeHistory?: ChangeCheckpoint[];
   compaction?: CompactionState;
   todoState?: TodoState;
+  goalState?: GoalState; // 会话级 goal 状态；无目标时省略，clear 后不恢复。
 };
 
 export type TranscriptSessionPreviewRecord = {
@@ -324,11 +330,17 @@ export type SetTodoStateJournalOperation = {
   todoState: TodoState;
 };
 
+export type SetGoalStateJournalOperation = {
+  op: 'set_goal_state';
+  goalState: GoalState | null; // null 表示该会话当前没有目标（清除后的显式事实）。
+};
+
 export type TranscriptJournalSubOperation =
   | AppendRecordsJournalOperation
   | TruncateRecordsJournalOperation
   | SetChangeHistoryJournalOperation
   | SetCompactionJournalOperation
+  | SetGoalStateJournalOperation
   | SetTodoStateJournalOperation;
 
 export type BatchJournalOperation = {

@@ -6,6 +6,7 @@ const {
   createBatchOperation,
   createSetChangeHistoryOperation,
   createSetCompactionOperation,
+  createSetGoalStateOperation,
   createSetTodoStateOperation,
   createTranscriptJournalEntry,
   createTranscriptJournalStart,
@@ -193,4 +194,80 @@ test('replayTranscriptJournal rejects a corrupt middle line and non-contiguous s
     lines[1],
     serializeTranscriptJournalLine(createTranscriptJournalEntry(createAppendRecordsOperation([{role: 'assistant', text: 'later'}]), 3, '2026-07-01T00:00:03.000Z'))
   ].join('\n')), null);
+});
+
+test('replayTranscriptJournal replays goal state set, update, and clear operations', () => {
+  const goalState = {
+    condition: 'tests/auth exits 0',
+    status: 'active',
+    revision: 1,
+    startedAt: '2026-07-01T00:00:01.000Z',
+    turns: 1,
+    maxTurns: 20
+  };
+
+  const set = replayTranscriptJournal(createJournalLines([
+    createAppendRecordsOperation([{role: 'user', text: 'before goal'}]),
+    createSetGoalStateOperation(goalState)
+  ]).join('\n'));
+  assert.deepEqual(set.session.goalState, goalState);
+
+  const updated = replayTranscriptJournal(createJournalLines([
+    createSetGoalStateOperation(goalState),
+    createSetGoalStateOperation({
+      ...goalState,
+      turns: 2,
+      lastEvaluation: {outcome: 'not_met', reason: 'auth spec still failing', at: '2026-07-01T00:00:02.000Z'}
+    })
+  ]).join('\n'));
+  assert.deepEqual(updated.session.goalState, {
+    ...goalState,
+    turns: 2,
+    lastEvaluation: {outcome: 'not_met', reason: 'auth spec still failing', at: '2026-07-01T00:00:02.000Z'}
+  });
+
+  const cleared = replayTranscriptJournal(createJournalLines([
+    createSetGoalStateOperation(goalState),
+    createSetGoalStateOperation(null)
+  ]).join('\n'));
+  assert.equal(cleared.session.goalState, undefined);
+
+  const legacy = replayTranscriptJournal(createJournalLines([
+    createAppendRecordsOperation([{role: 'user', text: 'legacy journal'}])
+  ]).join('\n'));
+  assert.equal(legacy.session.goalState, undefined);
+});
+
+test('replayTranscriptJournal keeps a goal update atomic with its paired notice record', () => {
+  const goalState = {
+    condition: 'make lint clean',
+    status: 'active',
+    revision: 2,
+    startedAt: '2026-07-01T00:00:01.000Z',
+    turns: 2,
+    maxTurns: 20,
+    lastEvaluation: {outcome: 'not_met', reason: 'lint still reports errors', at: '2026-07-01T00:00:02.000Z'}
+  };
+  const journal = createJournalLines([
+    createBatchOperation([
+      createSetGoalStateOperation(goalState),
+      createAppendRecordsOperation([{role: 'local_notice', text: 'goal 评估（第 2/20 轮）：未达成 — lint still reports errors，继续执行'}])
+    ])
+  ]).join('\n');
+
+  const loaded = replayTranscriptJournal(journal);
+
+  assert.deepEqual(loaded.session.goalState, goalState);
+  assert.equal(loaded.session.records.length, 1);
+  assert.equal(loaded.session.records[0].role, 'local_notice');
+});
+
+test('replayTranscriptJournal rejects a malformed goal state operation', () => {
+  const malformed = {condition: '', status: 'active', revision: 0, startedAt: '2026-07-01T00:00:01.000Z', turns: 0, maxTurns: 20};
+  const journal = createJournalLines([
+    createSetGoalStateOperation(malformed),
+    createAppendRecordsOperation([{role: 'assistant', text: 'later'}])
+  ]).join('\n');
+
+  assert.equal(replayTranscriptJournal(journal), null);
 });

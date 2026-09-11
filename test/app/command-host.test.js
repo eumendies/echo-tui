@@ -119,6 +119,7 @@ function createHostHarness(options = {}) {
         };
       },
       transcriptContext: {
+        goalState: options.goalState || null,
         getCurrentSessionId() {
           return options.sessionId || null;
         },
@@ -179,6 +180,23 @@ function createHostHarness(options = {}) {
     appContext,
     renderRecords() {},
     exit() {},
+    goal: {
+      getGoal() {
+        return null;
+      },
+      setGoal() {
+        return {ok: true};
+      },
+      pauseGoal() {
+        return {ok: true};
+      },
+      resumeGoal() {
+        return {ok: true};
+      },
+      clearGoal() {
+        return {ok: true};
+      }
+    },
     hooks: {
       updateConfig(config) {
         calls.hookConfigs.push(config);
@@ -250,6 +268,7 @@ test('createCommandHost composes the complete command protocol from domain ports
     'agents',
     'hooks',
     'mode',
+    'goal',
     'theme',
     'context',
     'status',
@@ -635,7 +654,53 @@ test('CommandHost status facade aggregates non-sensitive runtime state', () => {
     assert.equal(snapshot.userMemoryCount, 1);
     assert.deepEqual(snapshot.agentMemoryCatalogs, [{name: 'runtime', scope: 'global'}]);
     assert.deepEqual(snapshot.diagnostics, []);
+    assert.equal(snapshot.goal, null);
   });
+});
+
+test('CommandHost status facade exposes goal summary without touching the stored goal state', () => {
+  const goalState = {
+    condition: 'make tests green',
+    status: 'active',
+    revision: 2,
+    startedAt: '2026-05-19T00:00:00.000Z',
+    turns: 4,
+    maxTurns: 20
+  };
+  const {host} = createHostHarness({goalState});
+
+  const snapshot = host.status.createSnapshot();
+
+  assert.deepEqual(snapshot.goal, {conditionSummary: 'make tests green', maxTurns: 20, status: 'active', turns: 4});
+  assert.deepEqual(goalState, {
+    condition: 'make tests green',
+    status: 'active',
+    revision: 2,
+    startedAt: '2026-05-19T00:00:00.000Z',
+    turns: 4,
+    maxTurns: 20
+  });
+});
+
+test('CommandHost status facade truncates the goal condition summary without rewriting the condition', () => {
+  const condition = `${'x'.repeat(120)}\nsecond line`;
+  const goalState = {
+    condition,
+    status: 'paused',
+    revision: 1,
+    startedAt: '2026-05-19T00:00:00.000Z',
+    turns: 2,
+    maxTurns: 20
+  };
+  const {host} = createHostHarness({goalState});
+
+  const snapshot = host.status.createSnapshot();
+
+  assert.equal(snapshot.goal.status, 'paused');
+  assert.equal(snapshot.goal.conditionSummary.endsWith('…'), true);
+  assert.equal(snapshot.goal.conditionSummary.length, 80);
+  assert.equal(snapshot.goal.conditionSummary.includes('\n'), false);
+  assert.equal(goalState.condition, condition);
 });
 
 test('CommandHost status facade preserves empty state and reports local read failures', async () => {

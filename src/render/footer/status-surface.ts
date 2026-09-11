@@ -4,7 +4,7 @@ import {tokenText, type FooterTheme} from '../colors';
 import {clampPlainText, padVisibleText} from './text';
 import {constrainLayoutTail} from './window';
 
-import type {CommandCodexUsageWindow, CommandDeepseekBalanceInfo, CommandOpencodeUsageWindow, CommandStatusSandboxState, StatusCommandSurface} from '../../types/command';
+import type {CommandCodexUsageWindow, CommandDeepseekBalanceInfo, CommandOpencodeUsageWindow, CommandStatusGoalSummary, CommandStatusSandboxState, StatusCommandSurface} from '../../types/command';
 import type {FooterLayout} from '../../types/render';
 
 const FILL = '█';
@@ -27,6 +27,7 @@ function renderStatusSurface(surface: StatusCommandSurface, width: number, maxLi
     plainRow(cardWidth, `模型  ${model?.model || '不可用'}`, theme),
     plainRow(cardWidth, `Provider  ${model ? `${model.provider} (${model.agentType})` : '不可用'}`, theme),
     plainRow(cardWidth, `Session  ${snapshot.sessionId || '未创建'}`, theme),
+    ...(snapshot.goal ? [goalSummaryRow(snapshot.goal, cardWidth, theme)] : []),
     plainRow(cardWidth, `Instructions  ${snapshot.agentInstructionFileName} · ${instructionLabels.length > 0 ? instructionLabels.join(', ') : '无'}`, theme),
     plainRow(cardWidth, `Memory  user:${snapshot.userMemoryCount} · catalogs:${catalogLabels.length > 0 ? catalogLabels.join(', ') : '无'}`, theme),
     plainRow(cardWidth, `沙箱  ${formatSandboxState(snapshot.sandbox)}`, theme, snapshot.sandbox.available || snapshot.sandbox.mode === 'off' ? 'text' : 'warning')
@@ -121,6 +122,14 @@ function formatSandboxState(state: CommandStatusSandboxState): string {
   }
 
   return `${state.mode} · 网络${state.network ? '开' : '关'} · ${state.provider}`;
+}
+
+/**
+ * goal 摘要行:状态、轮次进度与条件摘要;paused 用 warning 色彩与 active 区分,超宽由行裁剪。
+ */
+function goalSummaryRow(goal: CommandStatusGoalSummary, cardWidth: number, theme: FooterTheme): string {
+  const text = `Goal  ${goal.status} · ${goal.turns}/${goal.maxTurns} · ${goal.conditionSummary}`;
+  return plainRow(cardWidth, text, theme, goal.status === 'paused' ? 'warning' : 'text');
 }
 
 function balanceRowText(info: CommandDeepseekBalanceInfo): string {

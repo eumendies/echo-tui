@@ -1,7 +1,7 @@
 import {isAbortError} from '../types/agent';
 import {createToolApprovalResolver} from './tool-approval/resolver';
 
-import type {AgentCallbacks, ReasoningEffort, RunAgent, ToolApprovalDecision} from '../types/agent';
+import type {AgentCallbacks, AssistantTurnOutcome, ReasoningEffort, RunAgent, ToolApprovalDecision} from '../types/agent';
 import type {AssistantTurnScope, Observation} from '../observation/observation';
 import type {ToolApprovalRequest, ToolCall, ToolResultAttachment} from '../types/tool';
 import type {SubagentTranscriptRecord, TranscriptRecord, UserTranscriptMetadata} from '../types/transcript';
@@ -31,9 +31,10 @@ type AssistantTurnRunnerInput = {
 
 /**
  * 驱动一次普通 assistant turn，把 agent callback 翻译为 app 状态变化和 transcript 追加。
- * 调用方负责提交前路由；本模块只处理 user record 之后的模型响应生命周期。
+ * 调用方负责提交前路由；本模块只处理 user record 之后的模型响应生命周期，
+ * 并以 completed/cancelled/failed 分类返回给生命周期编排方。
  */
-async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> {
+async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<AssistantTurnOutcome> {
   const {
     appContext,
     runAgent,
@@ -97,6 +98,7 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
   renderRecords([userRecord]);
   const activeStatusLineModel = appContext.turnContext.getActiveStatusLineModelState();
   const hasSkillOverride = Boolean(activeStatusLineModel?.skillOverride);
+  let outcome: AssistantTurnOutcome | null = null;
 
   if (activeStatusLineModel && hasSkillOverride) {
     const effortText = activeStatusLineModel.reasoningEffort ? `，effort ${activeStatusLineModel.reasoningEffort}` : '';
@@ -300,6 +302,7 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
           return;
         }
 
+        outcome = 'completed';
         appContext.turnContext.stopSpinner();
         const assistant = appContext.turnContext.finishAssistantTurn(finalText);
 
@@ -314,7 +317,8 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
 
   } catch (error: unknown) {
     if (!isCurrentTurn()) {
-      return;
+      // 中断或收尾流程已接管该 turn：只按错误性质分类，交由调用方编排。
+      return isAbortError(error) || turn.abortSignal.aborted ? 'cancelled' : 'failed';
     }
 
     appContext.turnContext.stopSpinner();
@@ -331,9 +335,11 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
     if (isAbortError(error) || turn.abortSignal.aborted) {
       renderRecords([appContext.turnContext.cancelAssistantTurn()]);
       observation.assistantTurnCancelled({scope: observationScope});
+      outcome = 'cancelled';
     } else {
       renderRecords([appContext.turnContext.failAssistantTurn(error)]);
       observation.assistantTurnFailed({scope: observationScope, error});
+      outcome = 'failed';
     }
   } finally {
     turn.abortSignal.removeEventListener('abort', cancelQuestionOnAbort);
@@ -352,6 +358,8 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
       render();
     }
   }
+
+  return outcome ?? 'cancelled';
 }
 
 export {

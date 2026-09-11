@@ -16,6 +16,8 @@ import {runAssistantTurn} from './assistant-turn-runner';
 import {ComposerSubmissionController} from './composer-submission-controller';
 import {InputEventController} from './input-event-controller';
 import {createCommandHost} from './command/command-host';
+import {createGoalCommandPort} from './command/goal-command-port';
+import {createGoalContinuationTurn} from './goal/goal-controller';
 import {createCommandRuntime} from './command/command-runtime';
 import {AppContext} from './state/app-context';
 import {FilePickerContext} from './state/file-picker-context';
@@ -24,9 +26,10 @@ import {UserQuestionContext} from './state/user-question-context';
 import {BtwConversationController} from './btw-conversation-controller';
 import {createToolApprovalReviewer} from './tool-approval/resolver';
 
-import type {RunAgent} from '../types/agent';
+import type {AssistantTurnOutcome, RunAgent} from '../types/agent';
 import type {AppController} from '../types/app';
 import type {CommandSurface} from '../types/command';
+import type {GoalContinuationRequest} from '../types/goal';
 import type {LifecycleHookDispatcher} from '../types/hooks';
 import type {AssistantTurnScope, Observation} from '../observation/observation';
 import type {RenderState} from '../types/render';
@@ -83,7 +86,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     // 本地诊断 surface 的输入优先级低于 command session；BTW 活跃时先隐藏，避免显示与输入所有者错位。
     const modalSurface = highPrioritySurface || (btwConversation.isActive() ? null : referenceErrorSurface || mcpDiagnosticSurface);
     const commandSurface = modalSurface || (btwConversation.isActive() ? null : commandRuntime.getSurface());
-    const base = appContext.createRenderState({commandSurface, toolApproval});
+    const base = appContext.createRenderState({commandSurface, goalActivity: goalController, toolApproval});
     return btwConversation.isActive()
       ? btwConversation.createRenderState({...base, streamingOwner: 'btw'})
       : {...base, streamingOwner: 'main'};
@@ -129,15 +132,17 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
    * 避免等待输入期间整帧擦写静态卡片造成频闪。
    */
   function renderTimedActivity(): void {
-    const hasTimedActivity = btwConversation.isActive()
-      ? btwConversation.hasTimedActivity()
-      : appContext.turnContext.hasTimedActivity() || appContext.subagentRunContext.hasTimedActivity();
+    const btwActive = btwConversation.isActive();
+    const hasTurnActivity = appContext.turnContext.hasTimedActivity() || appContext.subagentRunContext.hasTimedActivity();
+    const hasGoalEvaluation = goalController.getEvaluationActivity() !== null;
+    const hasTimedActivity = btwActive ? btwConversation.hasTimedActivity() : hasTurnActivity || hasGoalEvaluation;
     if (!hasTimedActivity) {
       return;
     }
 
     // 用户问题/工具审批/文件选择挂起时 spinner 状态行并不展示,周期重绘没有可见变化,只会整帧擦写高多行卡片造成频闪;按键路径仍会即时 render()。
-    if (getActiveModalSurface()) {
+    // goal 评估不占用回合锁,用户可以同时打开 command surface;此时评估中指示同样不可见,跳过重绘。
+    if (getActiveModalSurface() || (!btwActive && hasGoalEvaluation && !hasTurnActivity && commandRuntime.getSurface())) {
       return;
     }
 
@@ -202,6 +207,16 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     rememberTerminalSize();
   }
 
+  const goalController = createGoalCommandPort({
+    appContext,
+    captureUserConfigSnapshot: () => userConfigContext.capture(),
+    renderRecords: (records) => renderRecords(records, 'main'),
+    usageStore,
+    canStartContinuation: () => !appContext.turnContext.responding
+      && !appContext.pendingMessageContext.getPending()
+      && !commandRuntime.hasActiveSession(),
+    continueTurn: runGoalContinuationTurn
+  });
   const commandHost = createCommandHost({
     appContext,
     renderRecords: (records) => renderRecords(records, 'main'),
@@ -211,6 +226,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
       close: () => btwConversation.close()
     },
     exit,
+    goal: goalController,
     hooks,
     mcpManager,
     render,
@@ -254,8 +270,9 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
         attachmentCount: submission.attachments?.length || 0,
         recordCount: appContext.transcriptContext.records.length
       });
+      let outcome: AssistantTurnOutcome = 'failed';
       try {
-        await runAssistantTurn({
+        outcome = await runAssistantTurn({
           appContext,
           runAgent,
           toolApproval,
@@ -270,6 +287,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
       } finally {
         if (activeTurnObservationScope === turnObservationScope) activeTurnObservationScope = null;
       }
+      goalController.handleTurnFinished(outcome);
     },
     submitShellCommand,
     showReferenceError(error: string): void {
@@ -282,6 +300,39 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     },
     render
   });
+
+  /**
+   * 执行一次 goal 自动推进回合：独立入口，不经过 ComposerSubmissionController 与 pending 单槽；
+   * 回合结束后先按既有语义派发 pending 用户消息，再把 outcome 交还 goal 推进流程。
+   */
+  async function runGoalContinuationTurn(request: GoalContinuationRequest): Promise<AssistantTurnOutcome> {
+    const continuation = createGoalContinuationTurn(request);
+    const turnObservationScope: AssistantTurnScope = {interactionMode: appContext.getInteractionMode(), runtimeKind: 'tui'};
+    activeTurnObservationScope = turnObservationScope;
+
+    try {
+      const outcome = await runAssistantTurn({
+        appContext,
+        runAgent,
+        toolApproval,
+        toolApprovalReviewer,
+        userQuestion,
+        userText: continuation.userText,
+        userRequestText: continuation.userRequestText,
+        displayText: continuation.displayText,
+        metadata: continuation.metadata,
+        observation,
+        observationScope: turnObservationScope,
+        renderRecords: (records) => renderRecords(records, 'main'),
+        render: (finalizeRecord) => render(finalizeRecord, 'main')
+      });
+      await submissionController.dispatchPendingMessage();
+      return outcome;
+    } finally {
+      if (activeTurnObservationScope === turnObservationScope) activeTurnObservationScope = null;
+    }
+  }
+
   const inputController = new InputEventController({
     appContext,
     userQuestion,
