@@ -391,10 +391,26 @@ test('createTranscriptStore lists lightweight summaries and loads bounded previe
   assert.equal(sessions[0].messageCount, 25);
   assert.equal(sessions[0].title.startsWith('record-0 '), true);
   assert.equal('previewRecords' in sessions[0], false);
-  assert.equal(preview.previewRecords.length, 20);
-  assert.equal(preview.previewRecords[0].text.startsWith('record-5 '), true);
+  assert.equal(preview.previewRecords.length, 25);
+  assert.equal(preview.previewRecords[0].text.startsWith('record-0 '), true);
   assert.equal(preview.previewRecords[0].text.length, 500);
   assert.equal(sessions[1].sessionId, first.sessionId);
+});
+
+test('session preview keeps every visible record beyond the legacy 20 record limit', async () => {
+  const rootDir = createTempRoot();
+  const store = createTranscriptStore({rootDir});
+  const cwd = '/tmp/example/preview-full';
+  const records = Array.from({length: 45}, (_value, index) => ({
+    role: index % 2 === 0 ? 'user' : 'assistant',
+    text: `record-${index}`
+  }));
+  const reference = store.createSession(cwd, createAppendRecordsOperation(records), '2026-07-01T00:00:00.000Z');
+
+  const preview = await store.loadSessionPreview(cwd, reference.sessionId);
+
+  assert.equal(preview.previewRecords.length, 45);
+  assert.deepEqual(preview.previewRecords.map((record) => record.text), records.map((record) => record.text));
 });
 
 test('session preview compacts one subagent run instead of exposing every process event', async () => {

@@ -25,7 +25,6 @@ import type {
 
 const STORE_SCHEMA_VERSION = 1 as const;
 const SESSION_INDEX_SCHEMA_VERSION = 1 as const;
-const SESSION_PREVIEW_RECORD_LIMIT = 20;
 const SESSION_PREVIEW_TEXT_LIMIT = 500;
 
 type TranscriptStoreOptions = {
@@ -422,7 +421,7 @@ function createSessionPreviewRecords(records: TranscriptRecord[]): import('../ty
   const previewRecords: import('../types/transcript').TranscriptSessionPreviewRecord[] = [];
   let index = records.length - 1;
 
-  while (index >= 0 && previewRecords.length < SESSION_PREVIEW_RECORD_LIMIT) {
+  while (index >= 0) {
     const record = records[index];
     if (record.role === 'subagent') {
       let startIndex = index;

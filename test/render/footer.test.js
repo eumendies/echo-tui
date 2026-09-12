@@ -1640,20 +1640,19 @@ test('renderFooterLayout renders select command surfaces by kind instead of comm
 });
 
 test('renderFooterLayout renders resume command surfaces with two columns and preview', () => {
+  const sessions = Array.from({length: 25}, (_value, index) => ({
+    label: `2026-05-${String(28 - index).padStart(2, '0')} 10:00 · ${index} 条消息`
+  }));
   const layout = renderFooterLayout({
     composer: createComposer('ignored'),
     commandSurface: {
       kind: 'resume',
-      title: '/resume 恢复会话 (7)',
-      sessions: [
-        { label: '2026-05-19 10:00 · 4 条消息' },
-        { label: '2026-05-18 09:00 · 1 条消息' }
-      ],
-      hiddenSessionCountAbove: 2,
-      hiddenSessionCountBelow: 3,
+      title: '/resume 恢复会话 (25)',
+      sessions,
       focus: 'list',
-      selectedIndex: 0,
+      selectedIndex: 12,
       previewScroll: 0,
+      previewStatus: 'ready',
       previewRecords: [
         { role: 'user', text: 'resume me' },
         { role: 'tool_result', text: 'found resume result' },
@@ -1665,6 +1664,7 @@ test('renderFooterLayout renders resume command surfaces with two columns and pr
     },
     pending: null,
     statusLine: DEFAULT_STATUS_LINE,
+    rows: 20,
     width: 100
   });
 
@@ -1673,26 +1673,30 @@ test('renderFooterLayout renders resume command surfaces with two columns and pr
   assert.equal(layout.showCursor, false);
   assert.ok(plainLines.some((line) => line.startsWith('╭')));
   assert.ok(plainLines.some((line) => line.startsWith('╰')));
-  assert.ok(plainLines.some((line) => line.includes('/resume 恢复会话 (7)')));
+  assert.ok(plainLines.some((line) => line.includes('/resume 恢复会话 (25)')));
   assert.ok(plainLines.some((line) => line.includes('▌ 会话') && line.includes('预览')));
   const headerIndex = plainLines.findIndex((line) => line.includes('▌ 会话') && line.includes('预览'));
   assert.ok(plainLines[headerIndex + 1].includes('────'));
-  assert.ok(plainLines.some((line) => line.includes('▌ 2026-05-19')));
-  assert.ok(plainLines.some((line) => line.includes('↑ 2 更多')));
-  assert.ok(plainLines.some((line) => line.includes('↓ 3 更多')));
+  assert.ok(plainLines.some((line) => line.includes('▌ 2026-05-16')));
+  assert.ok(plainLines.some((line) => line.includes('↑ 8 更多')));
+  assert.ok(plainLines.some((line) => line.includes('↓ 8 更多')));
   assert.ok(!plainLines.some((line) => line.includes('● 2026-05-19') || line.includes('○ 2026-05-18')));
-  assert.ok(!plainLines.some((line) => line.includes('2026-05-19') && line.includes('restored reply')));
+  const previewLine = layout.lines.find((line) => stripAnsi(line).includes('restored reply'));
+  const columns = stripAnsi(previewLine).split('│');
+  assert.ok(columns[1].includes('2026-05-'));
+  assert.ok(columns[2].includes('restored reply'));
   assert.ok(plainLines.some((line) => line.includes('USER resume me')));
   assert.ok(plainLines.some((line) => line.includes('RESULT found resume result')));
   assert.ok(plainLines.some((line) => line.includes('ASSISTANT restored reply')));
   assert.ok(plainLines.some((line) => line.includes('NOTICE response interrupted')));
   assert.ok(plainLines.some((line) => line.includes('ERROR failed locally')));
   assert.ok(plainLines.some((line) => line.includes('Enter 恢复')));
+  assert.equal(layout.lines.length, 18);
   assert.ok(layout.lines.some((line) => line.includes('\x1b[48;5;23m') && stripAnsi(line).includes('▌')));
 
   const resumeFrameColor = '\x1b[38;2;40;110;125m';
   const topLine = layout.lines[plainLines.findIndex((line) => line.startsWith('╭'))];
-  const titleLine = layout.lines[plainLines.findIndex((line) => line.includes('/resume 恢复会话 (7)'))];
+  const titleLine = layout.lines[plainLines.findIndex((line) => line.includes('/resume 恢复会话 (25)'))];
   const bottomLine = layout.lines[plainLines.findIndex((line) => line.startsWith('╰'))];
   assert.ok(topLine.startsWith(`${resumeFrameColor}╭─`));
   assert.ok(titleLine.startsWith(`${resumeFrameColor}│`));
@@ -1707,8 +1711,6 @@ test('renderFooterLayout expands resume surface close to the wide terminal width
       kind: 'resume',
       title: '/resume 恢复会话 (1)',
       sessions: [{label: '2026-05-19 10:00 · 4 条消息'}],
-      hiddenSessionCountAbove: 0,
-      hiddenSessionCountBelow: 0,
       focus: 'list',
       selectedIndex: 0,
       previewScroll: 0,
@@ -1733,8 +1735,6 @@ test('renderFooterLayout renders resume loading and error preview states', () =>
       kind: 'resume',
       title: '/resume 恢复会话 (1)',
       sessions: [{label: '2026-05-19 10:00 · 4 条消息'}],
-      hiddenSessionCountAbove: 0,
-      hiddenSessionCountBelow: 0,
       focus: 'list',
       selectedIndex: 0,
       previewScroll: 0,
@@ -2007,8 +2007,6 @@ test('renderFooterLayout clamps resume surface on narrow width and renders empty
       sessions: [
         { label: '2026-05-19 10:00 · 0 条消息' }
       ],
-      hiddenSessionCountAbove: 0,
-      hiddenSessionCountBelow: 0,
       focus: 'list',
       selectedIndex: 0,
       previewScroll: 0,
@@ -2038,8 +2036,6 @@ test('renderFooterLayout renders scrolled single-line resume preview with previe
       sessions: [
         { label: '2026-05-19 10:00 · 12 条消息' }
       ],
-      hiddenSessionCountAbove: 0,
-      hiddenSessionCountBelow: 0,
       focus: 'preview',
       selectedIndex: 0,
       previewScroll: 3,
@@ -2052,6 +2048,7 @@ test('renderFooterLayout renders scrolled single-line resume preview with previe
     },
     pending: null,
     statusLine: DEFAULT_STATUS_LINE,
+    rows: 16,
     width: 78
   });
 
