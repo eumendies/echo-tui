@@ -2,6 +2,7 @@ import {randomUUID} from 'node:crypto';
 
 import {normalizeError} from '../agent-errors';
 import {AgentAbortError} from '../../types/agent';
+import {resolveSubagentLlmConfig} from '../loop-runtime/subagent-loop-runtime';
 import {formatSubagentDisplayName} from './name';
 import {loadSubagentCatalog} from './catalog';
 import {SubagentFailureHandoffAccumulator, buildSubagentFailureHandoff} from './failure-handoff';
@@ -71,22 +72,33 @@ function createSubagentToolPort(options: SubagentToolPortOptions): SubagentToolP
         handoffAccumulator.record(records);
         options.publishRecords(records);
       };
-      publishRecords([createSubagentStartRecord(metadata, task)]);
+      const loopInput = {
+        abortSignal: executionOptions.abortSignal,
+        configSnapshot: options.configSnapshot,
+        executionMode: options.executionMode,
+        interactionMode: options.interactionMode,
+        metadata,
+        modelProfileId: options.modelProfileId,
+        reasoningEffortOverride: options.reasoningEffortOverride,
+        ...(options.sessionId ? {sessionId: options.sessionId} : {}),
+        task
+      };
+      // 预先解析子运行的最终模型策略；失败时保持缺省并交给子 loop 内部统一抛错，维持既有失败路径。
+      let resolvedLlmConfig: LlmConfig | undefined;
+      try {
+        resolvedLlmConfig = resolveSubagentLlmConfig(loopInput, definition);
+      } catch {
+        resolvedLlmConfig = undefined;
+      }
+      publishRecords([createSubagentStartRecord(metadata, task, executionOptions.subagentGroupSize, resolvedLlmConfig)]);
       publishActivity(options.callbacks, metadata, task, 'thinking');
 
       try {
         const inherited = options.getInheritedContext();
         const runAgent = options.createRuntime(inherited, definition);
         const answer = await runAgent({
-          abortSignal: executionOptions.abortSignal,
-          configSnapshot: options.configSnapshot,
-          executionMode: options.executionMode,
-          interactionMode: options.interactionMode,
-          metadata,
-          modelProfileId: options.modelProfileId,
-          reasoningEffortOverride: options.reasoningEffortOverride,
-          ...(options.sessionId ? {sessionId: options.sessionId} : {}),
-          task
+          ...loopInput,
+          ...(resolvedLlmConfig ? {resolvedLlmConfig} : {})
         }, createChildCallbacks(options, metadata, task, executionOptions.changeRecorder, publishRecords, handoffAccumulator));
 
         publishRecords([createSubagentTerminalRecord(metadata, 'completed', Date.now() - startedAt)]);

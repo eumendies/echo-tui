@@ -1,6 +1,6 @@
 import {createToolCallTranscriptRecord, createToolResultTranscriptRecord} from '../../tools/tool-transcript-record';
 
-import type {SubagentRunMetadata} from '../../types/agent';
+import type {LlmConfig, SubagentRunMetadata} from '../../types/agent';
 import type {ToolCall, ToolExecutionResult} from '../../types/tool';
 import type {SubagentTranscriptRecord} from '../../types/transcript';
 
@@ -15,8 +15,18 @@ function createBase(metadata: SubagentRunMetadata, text: string): Omit<SubagentT
   };
 }
 
-function createSubagentStartRecord(metadata: SubagentRunMetadata, task: string): SubagentTranscriptRecord {
-  return {...createBase(metadata, task), event: {kind: 'start', task}};
+function createSubagentStartRecord(metadata: SubagentRunMetadata, task: string, parallelSize?: number, resolvedConfig?: LlmConfig): SubagentTranscriptRecord {
+  return {
+    ...createBase(metadata, task),
+    event: {
+      kind: 'start',
+      task,
+      ...(parallelSize === undefined ? {} : {parallelSize}),
+      // 窗口与回看展示的子运行实际模型事实；旧会话记录缺省时渲染层回退主模型。
+      ...(resolvedConfig === undefined ? {} : {model: resolvedConfig.model}),
+      ...(resolvedConfig?.reasoningEffort === undefined ? {} : {reasoningEffort: resolvedConfig.reasoningEffort})
+    }
+  };
 }
 
 function createSubagentReasoningRecord(metadata: SubagentRunMetadata, text: string): SubagentTranscriptRecord {

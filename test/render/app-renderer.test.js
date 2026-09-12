@@ -2328,6 +2328,77 @@ test('createAppRenderer preserves the transient subagent tool boundary across de
   assert.equal((stripAnsi(output.writes.at(-1)).match(/Bash · complete/gu) || []).length, 1);
 });
 
+test('createAppRenderer filters parallel subagent rails and expands their outer results', () => {
+  const output = {writes: [], write(chunk) { this.writes.push(String(chunk)); }};
+  const renderer = createAppRenderer(output);
+  const state = {
+    composer: createComposer(''), pending: null, working: null,
+    statusLine: DEFAULT_STATUS_LINE, width: 80
+  };
+  const first = {role: 'subagent', agentName: 'explorer', parentToolCallId: 'outer-1', runId: 'parallel-run-1'};
+  const second = {role: 'subagent', agentName: 'explorer', parentToolCallId: 'outer-2', runId: 'parallel-run-2'};
+
+  renderer.renderRecords({records: [
+    {...first, text: 'first investigation', event: {kind: 'start', task: 'first investigation', parallelSize: 2}},
+    {...second, text: 'second investigation', event: {kind: 'start', task: 'second investigation', parallelSize: 2}},
+    {...first, text: 'First report.', event: {kind: 'assistant'}},
+    {...first, text: '', event: {kind: 'completed', durationMs: 10}}
+  ], ...state});
+  renderer.renderRecords({records: [
+    {...second, text: 'Second report.', event: {kind: 'assistant'}},
+    {...second, text: '', event: {kind: 'completed', durationMs: 12}}
+  ], ...state});
+
+  // 并行 run 的过程记录不进入主窗口投影
+  const filtered = stripAnsi(output.writes.join(''));
+  assert.equal(filtered.includes('first investigation'), false);
+  assert.equal(filtered.includes('First report.'), false);
+
+  // 外层 pair 保持展开，报告正文在主窗口可见
+  renderer.renderRecords({records: [
+    {role: 'tool_call', text: '', toolCallId: 'outer-1', toolName: 'run_subagent', argumentsText: '{"agent":"explorer","task":"first investigation"}'},
+    {role: 'tool_result', text: 'First report.', toolCallId: 'outer-1', toolName: 'run_subagent', ok: true, details: {kind: 'generic'}},
+    {role: 'tool_call', text: '', toolCallId: 'outer-2', toolName: 'run_subagent', argumentsText: '{"agent":"explorer","task":"second investigation"}'},
+    {role: 'tool_result', text: 'Second report.', toolCallId: 'outer-2', toolName: 'run_subagent', ok: true, details: {kind: 'generic'}}
+  ], ...state});
+
+  const written = stripAnsi(output.writes.join(''));
+  assert.equal((written.match(/First report\./gu) || []).length, 1);
+  assert.equal((written.match(/Second report\./gu) || []).length, 1);
+});
+
+test('createAppRenderer keeps parallel subagent records filtered across destructive recovery', () => {
+  const output = {writes: [], write(chunk) { this.writes.push(String(chunk)); }};
+  const renderer = createAppRenderer(output);
+  const base = {role: 'subagent', agentName: 'explorer', parentToolCallId: 'outer-1', runId: 'parallel-run-1'};
+  const state = {
+    composer: createComposer(''), pending: null, working: null,
+    statusLine: DEFAULT_STATUS_LINE, rows: 24, width: 80
+  };
+
+  renderer.renderRecords({records: [
+    {...base, text: 'parallel investigation', event: {kind: 'start', task: 'parallel investigation', parallelSize: 2}},
+    {...base, text: 'Parallel report.', event: {kind: 'assistant'}}
+  ], ...state});
+
+  renderer.renderDestructive({
+    ...state,
+    bannerContext: {cwd: '/tmp/project', nodeVersion: 'v20', terminalSize: {columns: 80, rows: 24}, mode: 'current terminal'},
+    records: [
+      {role: 'user', text: 'delegate'},
+      {...base, text: 'parallel investigation', event: {kind: 'start', task: 'parallel investigation', parallelSize: 2}},
+      {...base, text: 'Parallel report.', event: {kind: 'assistant'}},
+      {...base, text: '', event: {kind: 'completed', durationMs: 10}},
+      {role: 'tool_call', text: '', toolCallId: 'outer-1', toolName: 'run_subagent', argumentsText: '{}'},
+      {role: 'tool_result', text: 'Parallel report.', toolCallId: 'outer-1', toolName: 'run_subagent', ok: true, details: {kind: 'generic'}}
+    ]
+  });
+
+  const written = stripAnsi(output.writes.at(-1));
+  assert.equal(written.includes('parallel investigation'), false);
+  assert.equal((written.match(/Parallel report\./gu) || []).length, 1);
+});
+
 test('glob pending preview and successful pair render query, scope, and ordered flat paths', () => {
   const args = {pattern: '**/*.ts', paths: ['src', 'test']};
   const preview = renderToolCallPreviewLines('glob', JSON.stringify(args), 100).map(stripAnsi);
@@ -3241,3 +3312,28 @@ function formatWebFetchEnvelope(options) {
     '```'
   ].join('\n');
 }
+
+test('createAppRenderer renders the subagent view body without the parallel filter', () => {
+  const output = {writes: [], write(chunk) { this.writes.push(String(chunk)); }};
+  const renderer = createAppRenderer(output);
+  const base = {role: 'subagent', agentName: 'explorer', parentToolCallId: 'outer-1', runId: 'parallel-run-1'};
+  const state = {
+    composer: createComposer(''), pending: null, working: null,
+    statusLine: DEFAULT_STATUS_LINE, rows: 24, width: 80
+  };
+
+  renderer.renderDestructive({
+    ...state,
+    skipParallelSubagentFilter: true,
+    bannerContext: {cwd: '/tmp/project', nodeVersion: 'v20', terminalSize: {columns: 80, rows: 24}, mode: 'current terminal'},
+    records: [
+      {...base, text: 'view investigation', event: {kind: 'start', task: 'view investigation', parallelSize: 2}},
+      {...base, text: 'View report.', event: {kind: 'assistant'}}
+    ]
+  });
+
+  const written = stripAnsi(output.writes.at(-1));
+  assert.match(written, /view investigation/u);
+  assert.match(written, /View report\./u);
+});
+

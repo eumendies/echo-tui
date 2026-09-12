@@ -6,6 +6,7 @@ import type {
   AgentInstruction,
   AgentUserConfigSnapshot,
   InteractionMode,
+  LlmConfig,
   ReasoningEffort,
   ReasoningUpdate,
   SubagentRunMetadata,
@@ -33,6 +34,7 @@ type SubagentLoopInput = {
   modelProfileId?: string; // 父 run 已解析选择的模型 profile。
   reasoningEffortOverride?: ReasoningEffort; // 父 run 本轮固定的推理强度覆盖。
   sessionId?: string; // 父会话稳定身份；子运行继承它以保持 provider 会话亲和。
+  resolvedLlmConfig?: LlmConfig; // 父端口预解析的最终子运行配置；缺省时子 loop 自行解析，保证解析结果与 start record 一致。
   task: string; // 唯一进入子 transcript 的委派任务。
 };
 

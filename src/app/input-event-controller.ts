@@ -19,11 +19,18 @@ type LocalSurfacePort = {
   dismiss(): void; // 按 main 定义的优先级关闭当前本地 surface。
 };
 
+type SubagentViewPort = {
+  isActive(): boolean; // subagent 会话窗口是否接管输入。
+  toggle(): void; // Ctrl+O 打开/关闭窗口。
+  handleEvent(event: InputEvent): boolean; // 窗口内按键消费；返回 false 放行（仅 EXIT）。
+};
+
 type InputEventControllerOptions = {
   appContext: AppContext; // 提供 composer、turn、mode、pending 和 suggestion 语义状态。
   userQuestion: Pick<UserQuestionContext, 'hasActiveRequest' | 'handleEvent'>; // 最高优先级的用户问题 modal。
   toolApproval: Pick<ToolApprovalContext, 'hasActiveRequest' | 'handleEvent' | 'toggleAllowAllForSession'>; // 工具审批 modal 与会话快捷键。
   filePicker: Pick<FilePickerContext, 'hasActiveRequest' | 'handleEvent' | 'open'>; // 文件选择 surface 与 @ 触发入口。
+  subagentView: SubagentViewPort; // subagent 会话窗口输入端口；优先级位于 modal 之后、command session 之前。
   command: InputCommandPort; // 活跃 slash command session 的输入端口。
   localSurface: LocalSurfacePort; // main 持有的 reference error 和 MCP diagnostic surface。
   cancelReferencePreparation(): void; // 取消发送前运行中的会话引用总结。
@@ -43,6 +50,7 @@ class InputEventController {
   private readonly userQuestion: Pick<UserQuestionContext, 'hasActiveRequest' | 'handleEvent'>;
   private readonly toolApproval: Pick<ToolApprovalContext, 'hasActiveRequest' | 'handleEvent' | 'toggleAllowAllForSession'>;
   private readonly filePicker: Pick<FilePickerContext, 'hasActiveRequest' | 'handleEvent' | 'open'>;
+  private readonly subagentView: SubagentViewPort;
   private readonly command: InputCommandPort;
   private readonly localSurface: LocalSurfacePort;
   private readonly cancelReferencePreparation: () => void;
@@ -59,6 +67,7 @@ class InputEventController {
     this.userQuestion = options.userQuestion;
     this.toolApproval = options.toolApproval;
     this.filePicker = options.filePicker;
+    this.subagentView = options.subagentView;
     this.command = options.command;
     this.localSurface = options.localSurface;
     this.cancelReferencePreparation = options.cancelReferencePreparation;
@@ -103,6 +112,17 @@ class InputEventController {
 
     if (this.filePicker.hasActiveRequest()) {
       this.filePicker.handleEvent(event);
+      return undefined;
+    }
+
+    if (this.subagentView.isActive()) {
+      // 窗口内 Esc/↑/↓/Ctrl+O 由窗口消费且不触达 turn 中断；EXIT 返回 false 继续走退出路径。
+      if (this.subagentView.handleEvent(event)) {
+        return undefined;
+      }
+    } else if (event.type === INPUT_EVENTS.OPEN_SUBAGENT_VIEW && !this.command.hasActiveSession()) {
+      // Ctrl+O 打开 subagent 会话窗口；command session（含 BTW）活跃时保持互斥。
+      this.subagentView.toggle();
       return undefined;
     }
 
@@ -241,5 +261,6 @@ export {
 export type {
   InputCommandPort,
   InputEventControllerOptions,
-  LocalSurfacePort
+  LocalSurfacePort,
+  SubagentViewPort
 };

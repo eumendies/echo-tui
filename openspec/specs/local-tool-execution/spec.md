@@ -1165,27 +1165,27 @@ Readonly policy SHALL 拒绝 `apply_patch`、`edit_file`、非只读 bash、所�
 
 
 ### Requirement: 工具调用并发分类
-系统 SHALL 在风险审批分类之外为每个 provider tool call 计算独立的执行并发类别。`glob`、`grep`、`read_files`、`web_fetch`、`web_search`、`use_skill` 以及通过严格只读 Bash 判定的 `run_bash_command` SHALL 可归类为只读并行调用；写入型、会话状态型、交互型、需要审批、MCP、subagent 和未知工具 SHALL 归类为独占调用。无法可靠判定时系统 SHALL 默认选择独占执行，且并发分类 SHALL NOT 放宽既有 mode、readonly policy 或审批边界。
+判断工具调用能否与相邻只读调用重叠执行；未知或无法证明只读的调用一律独占。`read_files`、`glob`、`grep`、`web_fetch`、`web_search`、`use_skill` SHALL 分类为 `parallel_read`。`run_bash_command` SHALL 按严格只读 Bash 策略判定：命中只读 allowlist 为 `parallel_read`，否则 `exclusive`。`run_subagent` SHALL 在调用参数可解析为目标 readonly executionPolicy subagent 时分类为 `parallel_read`；参数 JSON 解析失败、agent 名称未知或目标为 general_purpose 时 SHALL 分类为 `exclusive`。其余工具一律 `exclusive`。分类器 SHALL 通过注入的只读 subagent 名称谓词获取策略，不携带目录依赖。
 
-#### Scenario: 已知观察工具可并行
-- **WHEN** provider 在同一 turn 返回多个 `glob`、`grep`、`read_files`、`web_fetch`、`web_search` 或 `use_skill` 调用
-- **THEN** 并发分类器 SHALL 将这些调用标记为只读并行调用
-- **THEN** 系统 SHALL 继续对每个调用应用既有参数校验、结果截断和失败归一化语义
+#### Scenario: 观察工具保持并行分类
+- **WHEN** 分类器收到 `grep`、`read_files`、`glob`、`web_fetch`、`web_search` 或 `use_skill` 调用
+- **THEN** 分类结果 SHALL 为 `parallel_read`
 
-#### Scenario: 只读 Bash 可并行
-- **WHEN** `run_bash_command` 的 command 通过现有严格 plan-mode 只读 Bash 判定
-- **THEN** 并发分类器 SHALL 将该调用标记为只读并行调用
-- **THEN** 并发分类 SHALL NOT 使用 normal mode 的低风险判断替代严格只读判定
+#### Scenario: 只读 Bash 与风险 Bash 分类不变
+- **WHEN** 分类器收到只读 allowlist 内外的 `run_bash_command` 调用
+- **THEN** 前者 SHALL 为 `parallel_read`，后者 SHALL 为 `exclusive`
 
-#### Scenario: 有副作用或交互的工具保持独占
-- **WHEN** provider 返回文件编辑、非只读 Bash、todo 状态更新、`ask_user_questions`、需要审批的工具或其他可能产生副作用的调用
-- **THEN** 并发分类器 SHALL 将该调用标记为独占调用
-- **THEN** 系统 SHALL NOT 与其他工具同时执行该调用
+#### Scenario: 只读子 Agent 委派并行分类
+- **WHEN** 分类器收到 `agent` 参数指向 readonly executionPolicy subagent 的 `run_subagent` 调用
+- **THEN** 分类结果 SHALL 为 `parallel_read`
 
-#### Scenario: MCP、subagent 和未知工具默认独占
-- **WHEN** provider 返回 MCP tool、`run_subagent` 或 registry 无法提供已知只读语义的工具
-- **THEN** 并发分类器 SHALL 将该调用标记为独占调用
-- **THEN** server 信任配置、无需审批或未知工具失败结果 SHALL NOT 自动使该调用变为只读并行调用
+#### Scenario: 未知或解析失败的委派保持独占
+- **WHEN** `run_subagent` 参数不是合法 JSON object、`agent` 名称不在目录中，或目标为 general_purpose
+- **THEN** 分类结果 SHALL 为 `exclusive`
+
+#### Scenario: 无委派目录的运行保持独占
+- **WHEN** 当前运行没有注入 subagent 委派目录
+- **THEN** 所有 `run_subagent` 调用 SHALL 分类为 `exclusive`
 
 ### Requirement: 连续只读段有序工具调度
 系统 SHALL 按 provider 返回顺序直接处理一次 turn 的 tool calls。相邻的连续只读调用 SHALL 作为一个执行段全部并行启动，不得使用缺少实际观测依据的固定本地并发上限对该段再次分批；遇到独占调用时，系统 SHALL 先等待此前已启动的只读调用全部结束，再独占执行该调用，并 SHALL 在完成后才继续处理后续调用。系统 SHALL NOT 为该调度引入 provider-visible 分组概念、创建 subagent 或改变工具参数。

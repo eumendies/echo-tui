@@ -229,6 +229,7 @@ export type ToolExecutionResult =
 export type ToolExecutionOptions = {
   abortSignal?: AbortSignal;
   changeRecorder?: ChangeFileRecorder;
+  subagentGroupSize?: number; // 并行只读段内 run_subagent 调用总数；仅父 loop 在 ≥2 时设置，供委派端口写入并行渲染事实。
 };
 
 export type ToolHandler = {

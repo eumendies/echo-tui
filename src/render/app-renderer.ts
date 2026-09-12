@@ -39,6 +39,8 @@ type TranscriptSubagentRunBlock = {
 type TranscriptBlock = TranscriptRecordBlock | TranscriptToolPairBlock | TranscriptSubagentRunBlock;
 
 type SubagentAppendRenderState = {
+  parallelParentToolCallIds: Set<string>; // 并行分组内 run_subagent 外层 call id；其 tool pair 保持展开报告正文。
+  parallelRunIds: Set<string>; // 并行分组子运行身份；其过程记录不进入主窗口投影，由增量批次间共享。
   pendingToolCalls: Map<string, SubagentTranscriptRecord>; // 已持久化但仍由 footer 展示的内部调用，等待 result 后成对写入历史区。
   runIds: Set<string>; // 已经把标题写入终端历史区的子运行，后续 callback 只追加事件行。
   terminalCallIds: Set<string>; // 已经出现终态的外层 call，用于稍后到达的 outer pair 压缩重复报告。
@@ -90,6 +92,19 @@ export function sanitizePendingDisplayText(pending: PendingState): PendingState 
     };
   }
 
+  if (pending.kind === 'subagents') {
+    return {
+      ...pending,
+      runs: pending.runs.map((run) => ({
+        ...run,
+        argumentsText: run.argumentsText === undefined ? undefined : sanitizeTerminalText(run.argumentsText),
+        draft: run.draft === undefined ? undefined : sanitizeTerminalText(run.draft),
+        task: sanitizeTerminalText(run.task),
+        toolName: run.toolName === undefined ? undefined : sanitizeTerminalText(run.toolName)
+      }))
+    };
+  }
+
   // thinking 无文本,shell 输出的 CR 具有进度条语义,subagent 由专属 renderer 处理,均保持原样。
   return pending;
 }
@@ -134,6 +149,8 @@ class DefaultAppRenderer implements AppRenderer {
   private readonly footer: ReturnType<typeof createFooterRenderer>;
   private readonly streamingByOwner = new Map<string, StreamingDisplayState>();
   private readonly subagentAppendState: SubagentAppendRenderState = {
+    parallelParentToolCallIds: new Set(),
+    parallelRunIds: new Set(),
     pendingToolCalls: new Map(),
     runIds: new Set(),
     terminalCallIds: new Set()
@@ -268,8 +285,21 @@ class DefaultAppRenderer implements AppRenderer {
   /** transcript 成组新增时一次性追加所有可见块并重绘 footer。 */
   renderRecords({records, ...rawState}: RenderRecordsOptions): void {
     const options = rawState.pending ? {...rawState, pending: sanitizePendingDisplayText(rawState.pending)} : rawState;
-    const blocks = renderTranscriptBlocks(records, options.width, options.theme, options.renderPreferences, false, this.subagentAppendState);
+    // 并行子运行的 start 到达后登记身份，同 run 的后续批次持续被过滤，与快照投影保持一致。
+    this.trackParallelSubagentRecords(records);
+    const visibleRecords = filterParallelSubagentRecords(records, this.subagentAppendState.parallelRunIds);
+    const blocks = renderTranscriptBlocks(visibleRecords, options.width, options.theme, options.renderPreferences, false, this.subagentAppendState);
     this.footer.append(blocks.join(''), this.prepareRenderState(options));
+  }
+
+  /** 登记并行子运行的 start 事实；增量批次之间共享，保证后续事件批次持续被过滤。 */
+  private trackParallelSubagentRecords(records: TranscriptRecord[]): void {
+    for (const record of records) {
+      if (record.role === 'subagent' && record.event.kind === 'start' && record.event.parallelSize !== undefined) {
+        this.subagentAppendState.parallelRunIds.add(record.runId);
+        this.subagentAppendState.parallelParentToolCallIds.add(record.parentToolCallId);
+      }
+    }
   }
 
   /** 清屏后按当前宽度重画完整界面，并重新计算尚未生成正式记录的流式内容。 */
@@ -278,10 +308,16 @@ class DefaultAppRenderer implements AppRenderer {
     const activeSubagentRunId = options.pending?.kind === 'subagent' ? options.pending.runId : undefined;
     this.subagentAppendState.runIds.clear();
     this.subagentAppendState.terminalCallIds.clear();
+    this.subagentAppendState.parallelRunIds.clear();
+    this.subagentAppendState.parallelParentToolCallIds.clear();
     this.subagentAppendState.pendingToolCalls.clear();
     for (const record of records) {
       if (record.role === 'subagent') {
         this.subagentAppendState.runIds.add(record.runId);
+        if (record.event.kind === 'start' && record.event.parallelSize !== undefined) {
+          this.subagentAppendState.parallelRunIds.add(record.runId);
+          this.subagentAppendState.parallelParentToolCallIds.add(record.parentToolCallId);
+        }
         if (record.event.kind === 'completed' || record.event.kind === 'failed' || record.event.kind === 'cancelled') {
           this.subagentAppendState.terminalCallIds.add(record.parentToolCallId);
         }
@@ -298,8 +334,13 @@ class DefaultAppRenderer implements AppRenderer {
     const prepared = this.prepareRenderState(options, next);
     const footerLayout = renderFooterLayout(prepared);
     const bannerLines = splitRenderedBlock(renderBanner(bannerContext, options.theme));
-    const projectedRecords = records.filter((record) => record.role !== 'subagent' || record.event.kind !== 'tool_call' ||
-      !this.subagentAppendState.pendingToolCalls.has(createSubagentToolCallKey(record.runId, record.event.toolCallId)));
+    // 会话窗口 body 已由调用方按 runId 选定记录，跳过主窗口的并行过滤；主投影保持既有过滤语义。
+    const viewProjectionRecords = options.skipParallelSubagentFilter
+      ? records
+      : filterParallelSubagentRecords(records, this.subagentAppendState.parallelRunIds);
+    const projectedRecords = viewProjectionRecords
+      .filter((record) => record.role !== 'subagent' || record.event.kind !== 'tool_call' ||
+        !this.subagentAppendState.pendingToolCalls.has(createSubagentToolCallKey(record.runId, record.event.toolCallId)));
     const transcriptLines = renderTranscriptLines(projectedRecords, options.width, options.theme, options.renderPreferences, true, activeSubagentRunId);
     const reasoningLines = next.reasoning === '' ? [] : renderReasoningSummaryLines(next.reasoning, options.width, options.theme);
     const assistantLines = next.assistant === '' ? [] : renderAssistantMessageLines(next.assistant, options.width, options.theme);
@@ -328,7 +369,8 @@ class DefaultAppRenderer implements AppRenderer {
 
   /** 输出退出时使用的最终静态内容；调用方应先移除临时 footer。 */
   renderFinal({bannerContext, records, theme, renderPreferences, width}: RenderFinalOptions): void {
-    const lines = [...renderBannerLines(bannerContext, theme), ...renderTranscriptLines(records, width, theme, renderPreferences)];
+    const visibleRecords = filterParallelSubagentRecords(records, collectParallelSubagentRunIds(records));
+    const lines = [...renderBannerLines(bannerContext, theme), ...renderTranscriptLines(visibleRecords, width, theme, renderPreferences)];
     this.output.write(`${ansi.showCursor()}${lines.join('\n')}\n`);
   }
 }
@@ -385,7 +427,7 @@ function renderTranscriptBlocks(
   const renderRecords = subagentAppendState
     ? prepareSubagentAppendRecords(visibleRecords, subagentAppendState)
     : visibleRecords;
-  return groupTranscriptRecords(renderRecords, showUnexpectedSubagentInterruption, subagentAppendState?.terminalCallIds, activeSubagentRunId)
+  return groupTranscriptRecords(renderRecords, showUnexpectedSubagentInterruption, subagentAppendState?.terminalCallIds, activeSubagentRunId, subagentAppendState?.parallelParentToolCallIds)
     .map((block) => renderTranscriptBlock(block, width, theme, subagentAppendState?.runIds))
     .filter((block) => block.length > 0);
 }
@@ -440,18 +482,43 @@ function createSubagentToolCallKey(runId: string, toolCallId: string): string {
   return `${runId}\u0000${toolCallId}`;
 }
 
+/** 收集记录中的并行子运行身份；增量批次可能不含 start，因此与已知集合合并。 */
+function collectParallelSubagentRunIds(records: TranscriptRecord[], known?: Set<string>): Set<string> {
+  const runIds = new Set(known || []);
+  for (const record of records) {
+    if (record.role === 'subagent' && record.event.kind === 'start' && record.event.parallelSize !== undefined) {
+      runIds.add(record.runId);
+    }
+  }
+  return runIds;
+}
+
+/** 主窗口投影过滤并行子运行的全部过程记录；外层 tool pair 保留并负责展示最终报告。 */
+function filterParallelSubagentRecords(records: TranscriptRecord[], parallelRunIds: Set<string>): TranscriptRecord[] {
+  if (parallelRunIds.size === 0) {
+    return records;
+  }
+  return records.filter((record) => record.role !== 'subagent' || !parallelRunIds.has(record.runId));
+}
 /**
  * 顺序扫描 transcript，把相邻且同 call id 的工具调用和结果聚合为一个渲染块。
  */
-function groupTranscriptRecords(records: TranscriptRecord[], showUnexpectedSubagentInterruption = false, knownTerminalCallIds?: Set<string>, activeSubagentRunId?: string): TranscriptBlock[] {
+function groupTranscriptRecords(records: TranscriptRecord[], showUnexpectedSubagentInterruption = false, knownTerminalCallIds?: Set<string>, activeSubagentRunId?: string, knownParallelToolCallIds?: Set<string>): TranscriptBlock[] {
   const blocks: TranscriptBlock[] = [];
   const subagentTerminalCallIds = new Set(knownTerminalCallIds || []);
+  const parallelToolCallIds = new Set(knownParallelToolCallIds || []);
   for (const parentToolCallId of records
     .filter((record): record is SubagentTranscriptRecord => record.role === 'subagent')
     .filter((record) => record.event.kind === 'completed' || record.event.kind === 'failed' || record.event.kind === 'cancelled')
     .map((record) => record.parentToolCallId)) {
     subagentTerminalCallIds.add(parentToolCallId);
     knownTerminalCallIds?.add(parentToolCallId);
+  }
+  for (const record of records) {
+    if (record.role === 'subagent' && record.event.kind === 'start' && record.event.parallelSize !== undefined) {
+      // start 在场的路径（快照/重放/退出）自行携带并行事实；增量批次由 appendState 传入补充。
+      parallelToolCallIds.add(record.parentToolCallId);
+    }
   }
 
   for (let index = 0; index < records.length; index += 1) {
@@ -486,7 +553,8 @@ function groupTranscriptRecords(records: TranscriptRecord[], showUnexpectedSubag
         kind: 'tool_pair',
         call: record,
         result: nextRecord,
-        compactSubagentResult: record.toolName === 'run_subagent' && subagentTerminalCallIds.has(record.toolCallId)
+        // 并行 run 的过程 rail 不进主窗口，外层 pair 必须展开报告正文，避免父 Agent 结论无处可看。
+        compactSubagentResult: record.toolName === 'run_subagent' && subagentTerminalCallIds.has(record.toolCallId) && !parallelToolCallIds.has(record.toolCallId)
       });
       index += 1;
       continue;

@@ -3861,3 +3861,90 @@ test('renderFooterLayout constrains choice message and keeps inline input cursor
     assert.ok(displayWidth(line) <= safeRenderWidth(70));
   }
 });
+
+test('renderFooterLayout keeps plural subagent rows physical single-line with multi-line tasks', () => {
+  const layout = renderRuntimeFooterLayout({
+    composer: createComposer(''),
+    commandSurface: null,
+    slashSuggestions: null,
+    pending: {
+      kind: 'subagents',
+      runs: [
+        {kind: 'subagent', agentName: 'explorer', elapsedMs: 1200, phase: 'thinking', runId: 'r1', task: '第一行任务\n请回答：echo-tui.ts 与 compaction'},
+        {kind: 'subagent', agentName: 'explorer', elapsedMs: 2400, phase: 'tool', runId: 'r2', task: '第二个\n任务', toolName: 'grep'}
+      ]
+    },
+    working: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    rows: 24,
+    width: 80
+  });
+
+  assert.ok(layout.lines.length >= 3);
+  assert.ok(layout.lines.every((line) => !line.includes('\n')));
+  assert.ok(layout.lines.every((line) => displayWidth(line) <= safeRenderWidth(80)));
+});
+
+test('renderFooterLayout shows the subagent view detail instead of the working spinner', () => {
+  const layout = renderRuntimeFooterLayout({
+    composer: createComposer(''),
+    commandSurface: null,
+    slashSuggestions: null,
+    pending: null,
+    working: null,
+    statusLine: {
+      projectName: 'echo_tui',
+      model: {kind: 'default', label: 'GPT-4o'},
+      mode: 'subagent_view',
+      detail: 'subagent 1/2 · explorer · 调查任务 · thinking · 1.2s',
+      keyHint: '↑/↓ 切换 · Ctrl+O/Esc 返回',
+      activity: {kind: 'working', elapsedMs: 57000}
+    },
+    rows: 24,
+    width: 120
+  });
+
+  const statusText = stripAnsi(layout.lines.join('\n'));
+  assert.match(statusText, /subagent 1\/2 · explorer · 调查任务/u);
+  assert.ok(!statusText.includes('working 00:57'));
+  assert.match(statusText, /↑\/↓ 切换/u);
+});
+
+test('renderFooterLayout renders the subagent view surface without a composer box', () => {
+  const statusLine = {projectName: 'echo_tui', model: {kind: 'default', label: 'GPT-4o'}, mode: 'subagent_view', detail: 'subagent 2/3'};
+  const layout = renderRuntimeFooterLayout({
+    composer: createComposer(''),
+    commandSurface: null,
+    slashSuggestions: null,
+    pending: null,
+    working: null,
+    statusLine,
+    viewIndexLines: ['◆ subagent 会话 · 运行中 2 · 共 3 个 · ↑/↓ 切换 · Ctrl+O/Esc 返回', ''],
+    rows: 24,
+    width: 80
+  });
+
+  // 只读窗口不渲染 composer 输入框与光标；run 索引块直接贴状态行
+  const plain = layout.lines.map(stripAnsi);
+  assert.equal(layout.showCursor, false);
+  assert.equal(plain.length, 4); // spacer + 索引 2 行 + 状态行
+  assert.equal(plain[0], '');
+  assert.match(plain[1], /运行中 2 · 共 3 个/u);
+  assert.ok(plain[plain.length - 1].includes('subagent 2/3'));
+  assert.ok(!plain.some((line) => line.startsWith('╰')));
+
+  // 普通模式不受影响：composer 正常渲染且状态行保持在最后一行
+  const normal = renderRuntimeFooterLayout({
+    composer: createComposer(''),
+    commandSurface: null,
+    slashSuggestions: null,
+    pending: null,
+    working: null,
+    statusLine: {...statusLine, mode: 'idle'},
+    rows: 24,
+    width: 80
+  }).lines.map(stripAnsi);
+  assert.ok(normal.some((line) => line.startsWith('╰')));
+  // idle 模式下状态行不展示 detail，改为校验模型标签
+  assert.ok(normal[normal.length - 1].includes('GPT-4o'));
+});

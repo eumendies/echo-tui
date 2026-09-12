@@ -22,6 +22,7 @@ import {FilePickerContext} from './state/file-picker-context';
 import {ToolApprovalContext} from './state/tool-approval-context';
 import {UserQuestionContext} from './state/user-question-context';
 import {BtwConversationController} from './btw-conversation-controller';
+import {SubagentViewController} from './subagent-view-controller';
 import {createToolApprovalReviewer} from './tool-approval/resolver';
 
 import type {RunAgent} from '../types/agent';
@@ -74,17 +75,29 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     repaint: renderResizeRecovery
   });
 
+  // subagent 会话窗口：按 runId 过滤主 transcript 的只读全屏投影；优先级低于 modal、高于 BTW。
+  const subagentView = new SubagentViewController({
+    getRecords: () => appContext.transcriptContext.records,
+    getActivity: (runId) => appContext.subagentRunContext.getActivity(runId),
+    hasActiveRuns: () => appContext.subagentRunContext.hasTimedActivity(),
+    repaint: renderResizeRecovery
+  });
+
   /**
    * 组合 AppContext 与 command runtime 的瞬时状态，交给 renderer 统一投影。
    */
   function createRenderState(): RenderState {
     // 渲染投影优先展示 modal 和本地诊断 surface；输入消费顺序由 input controller 独立维护。
     const highPrioritySurface = getActiveModalSurface();
-    // 本地诊断 surface 的输入优先级低于 command session；BTW 活跃时先隐藏，避免显示与输入所有者错位。
-    const modalSurface = highPrioritySurface || (btwConversation.isActive() ? null : referenceErrorSurface || mcpDiagnosticSurface);
-    const commandSurface = modalSurface || (btwConversation.isActive() ? null : commandRuntime.getSurface());
+    // 当前 owner 接管 footer 输入区时，主会话专属 surface 必须让位，避免显示与输入所有者错位。
+    const owner = currentOwner();
+    const modalSurface = highPrioritySurface || (owner === 'main' ? referenceErrorSurface || mcpDiagnosticSurface : null);
+    const commandSurface = modalSurface || (owner === 'main' ? commandRuntime.getSurface() : null);
     const base = appContext.createRenderState({commandSurface, toolApproval});
-    return btwConversation.isActive()
+    if (owner === 'view') {
+      return subagentView.createRenderState({...base, streamingOwner: 'view'});
+    }
+    return owner === 'btw'
       ? btwConversation.createRenderState({...base, streamingOwner: 'btw'})
       : {...base, streamingOwner: 'main'};
   }
@@ -92,6 +105,14 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
   /** 用户问题、工具审批与文件选择按优先级取第一个激活的 modal 表面;激活时 footer 输入区为静态卡片。 */
   function getActiveModalSurface(): CommandSurface | null {
     return userQuestion.getSurface() || toolApproval.getSurface() || filePicker.getSurface() || null;
+  }
+
+  /** 当前接管可见投影的 owner；view 优先于 btw，都不活跃时为 main。 */
+  function currentOwner(): 'view' | 'btw' | 'main' {
+    if (subagentView.isActive()) {
+      return 'view';
+    }
+    return btwConversation.isActive() ? 'btw' : 'main';
   }
 
   /**
@@ -102,6 +123,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     activeShellController?.abort();
     if (activityTimer) clearInterval(activityTimer);
     activityTimer = null;
+    subagentView.close();
     btwConversation.close();
     appContext.conversationReferenceContext.clear();
     userConfigContext.close();
@@ -119,7 +141,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     finalizeRecord?: Extract<TranscriptRecord, {role: 'assistant' | 'reasoning_summary'}>,
     owner?: 'main' | 'btw'
   ): void {
-    const visibleOwner = btwConversation.isActive() ? 'btw' : 'main';
+    const visibleOwner = currentOwner();
     renderer.render(createRenderState(), owner === undefined || owner === visibleOwner ? finalizeRecord : undefined);
     rememberTerminalSize();
   }
@@ -129,9 +151,12 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
    * 避免等待输入期间整帧擦写静态卡片造成频闪。
    */
   function renderTimedActivity(): void {
-    const hasTimedActivity = btwConversation.isActive()
-      ? btwConversation.hasTimedActivity()
-      : appContext.turnContext.hasTimedActivity() || appContext.subagentRunContext.hasTimedActivity();
+    const owner = currentOwner();
+    const hasTimedActivity = owner === 'view'
+      ? subagentView.hasTimedActivity()
+      : owner === 'btw'
+        ? btwConversation.hasTimedActivity()
+        : appContext.turnContext.hasTimedActivity() || appContext.subagentRunContext.hasTimedActivity();
     if (!hasTimedActivity) {
       return;
     }
@@ -151,7 +176,18 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
       observation.transcriptBatchRendered({records});
     }
 
-    const visibleOwner = btwConversation.isActive() ? 'btw' : 'main';
+    // 窗口活跃时命中当前 run 的新记录用 destructive 重绘刷新 body；其余批次只刷新 footer。
+    if (subagentView.isActive()) {
+      if (subagentView.containsRunRecords(records)) {
+        renderResizeRecovery();
+      } else {
+        render();
+      }
+      return;
+    }
+
+    // 递归到这里 subagent 窗口一定未激活；owner 只可能是 btw 或 main。
+    const visibleOwner = currentOwner();
     if (owner !== visibleOwner) {
       render();
       return;
@@ -166,14 +202,16 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
    */
   function renderResizeRecovery(): void {
     observation.resizeRecovered({recordCount: appContext.transcriptContext.records.length, terminalSize: terminal.getSize()});
-    const btwActive = btwConversation.isActive();
+    const owner = currentOwner();
     const renderState = createRenderState();
-    // BTW 活跃时重画临时会话，否则重画主会话；流式显示进度由 renderer 同步。
+    // 窗口/BTW/主会话三态重绘；窗口投影当前 run 的稳定记录，流式 draft 由 footer pending 呈现。
+    // 窗口的 banner 与主会话形态相同，只有 BTW 需要 variant 覆盖。
     renderer.renderDestructive({
-      bannerContext: btwActive
+      bannerContext: owner === 'btw'
         ? {...appContext.renderContext.createBannerContext(), variant: 'btw', parentActivity: btwConversation.getParentActivity()}
         : appContext.renderContext.createBannerContext(),
-      records: btwActive ? btwConversation.getRecords() : appContext.transcriptContext.records,
+      records: owner === 'view' ? subagentView.getViewRecords() : owner === 'btw' ? btwConversation.getRecords() : appContext.transcriptContext.records,
+      skipParallelSubagentFilter: owner === 'view',
       ...renderState
     });
     rememberTerminalSize();
@@ -206,7 +244,11 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     appContext,
     renderRecords: (records) => renderRecords(records, 'main'),
     btw: {
-      open: (initialQuestion) => btwConversation.open(initialQuestion),
+      open: (initialQuestion) => {
+        // /btw 与 subagent 会话窗口互斥；打开临时会话前先静默关闭窗口。
+        subagentView.close();
+        btwConversation.open(initialQuestion);
+      },
       handleEvent: (event) => btwConversation.handleEvent(event),
       close: () => btwConversation.close()
     },
@@ -287,6 +329,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     userQuestion,
     toolApproval,
     filePicker,
+    subagentView,
     command: commandRuntime,
     localSurface: {
       hasActive: () => Boolean(referenceErrorSurface || mcpDiagnosticSurface),

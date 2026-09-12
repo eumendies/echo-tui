@@ -87,10 +87,17 @@ export type SubagentPendingState = {
   phase: 'thinking' | 'reasoning' | 'streaming' | 'tool' | 'waiting_approval' | 'waiting_question'; // 当前活动阶段。
   runId: string; // 当前子运行身份，仅用于本地渲染隔离。
   task: string; // 当前委派任务摘要来源。
+  model?: string; // 子运行实际使用的模型名；旧记录缺省时窗口回退主模型显示。
+  reasoningEffort?: ReasoningEffort; // 解析 effortPolicy 后实际生效的推理强度。
   toolName?: string; // tool 阶段的内部工具名称。
 };
 
-export type PendingState = ThinkingPendingState | ReasoningStreamingPendingState | StreamingPendingState | ToolCallPendingState | ToolCallsPendingState | ShellOutputPendingState | SubagentPendingState;
+export type SubagentsPendingState = {
+  kind: 'subagents'; // 并行子 Agent 群组的 footer 紧凑活动块。
+  runs: SubagentPendingState[]; // 按 start 顺序排列的全部活跃并行子运行。
+};
+
+export type PendingState = ThinkingPendingState | ReasoningStreamingPendingState | StreamingPendingState | ToolCallPendingState | ToolCallsPendingState | ShellOutputPendingState | SubagentPendingState | SubagentsPendingState;
 
 export type WorkingState = {
   elapsedMs: number;
@@ -101,7 +108,7 @@ export type SlashSuggestionState = {
   selectedIndex: number;
 };
 
-export type StatusLineMode = 'idle' | 'command' | 'thinking' | 'streaming' | 'tool' | 'plan' | 'shell' | 'shell-local' | 'mcp' | 'btw';
+export type StatusLineMode = 'idle' | 'command' | 'thinking' | 'streaming' | 'tool' | 'plan' | 'shell' | 'shell-local' | 'mcp' | 'btw' | 'subagent_view';
 
 export type StatusLineModelState = {
   modelLabel: string;
@@ -159,6 +166,7 @@ export type RenderState = {
   pendingMessage?: PendingMessageRenderState | null; // composer 上方展示的单条 transient 待发送消息。
   commandSurface: CommandSurface | null;
   slashSuggestions?: SlashSuggestionState | null;
+  viewIndexLines?: string[]; // subagent 会话窗口输入区下方的 run 索引块；命令 surface 浮层激活时保持为空。
   pending: PendingState | null;
   working: WorkingState | null;
   theme: TuiTheme;
@@ -188,6 +196,7 @@ export type RenderRecordsOptions = RenderState & {
 export type RenderDestructiveOptions = RenderState & {
   bannerContext: BannerContext;
   records: TranscriptRecord[];
+  skipParallelSubagentFilter?: boolean; // subagent 会话窗口 body 专用：调用方已按 runId 选定记录，跳过主窗口的并行 run 过滤，否则窗口内容会被自己的过滤规则滤空。
 };
 
 export type RenderFinalOptions = {
