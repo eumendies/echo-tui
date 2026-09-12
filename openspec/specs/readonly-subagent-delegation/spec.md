@@ -165,24 +165,6 @@
 - **THEN** 系统 SHALL 返回需要交互式人工审批的失败 tool result
 - **THEN** 系统 SHALL NOT 等待 stdin，也 SHALL NOT 因父 run 使用 full-access 而静默放行该子 Agent command
 
-### Requirement: 子 Agent 委派预算与父级取消
-系统 SHALL 为每个父 agent run 最多接受四次 `run_subagent` 委派。超过委派预算的调用 SHALL 以失败 tool result 结束。子 Agent SHALL 沿用主 Agent相同的 provider continuation 语义，不设置子 Agent专属 provider turn 上限。父 assistant turn 的取消信号 SHALL 传播到正在等待的子 Agent provider 请求和 Bash 进程；父级取消 SHALL 继续按主 turn 中断语义收尾，而不是转换成普通子 Agent失败结果。
-
-#### Scenario: 父 run 超过委派次数预算
-- **WHEN** 同一个父 agent run 已经接受四次子 Agent 委派后再次调用 `run_subagent`
-- **THEN** 系统 SHALL NOT 启动第五个子 Agent
-- **THEN** 系统 SHALL 返回预算耗尽的失败 tool result
-
-#### Scenario: Esc 取消正在运行的子 Agent
-- **WHEN** 交互式父 assistant turn 正在等待子 Agent且用户在无更高优先级 surface 时按 Esc
-- **THEN** 父 turn abort signal SHALL 取消子 Agent provider 请求和可中断工具
-- **THEN** 系统 SHALL 释放父 response lock并按既有用户中断语义收尾
-
-#### Scenario: 审批 surface 优先消费 Esc
-- **WHEN** 子 Agent Bash permission surface 活跃且用户按 Esc
-- **THEN** 当前 Esc SHALL 先拒绝该 Bash 调用并关闭 surface
-- **THEN** 父 assistant turn SHALL 保持运行，除非用户在 surface 关闭后再次请求中断
-
 ### Requirement: Explorer 保持现有严格只读策略
 新增Worker SHALL NOT改变Explorer的工具allowlist、固定Bash人工升级、headless fail-closed或不接收父interaction mode的行为。Explorer定义 SHALL继续只包含读取搜索、Bash、只读Web和Skill工具，并 SHALL继续禁用Todo、提问、MCP、文件编辑和再次委派。
 
@@ -190,3 +172,32 @@
 - **WHEN** Worker已注册且主Agent选择`explorer`
 - **THEN** Explorer provider-visible和executable registry SHALL与新增Worker前的严格只读集合一致
 - **THEN** Explorer非只读Bash的interactive/headless行为 SHALL保持不变
+
+### Requirement: 只读子 Agent 的并行委派执行
+主 Agent runtime SHALL 把同一并行只读段内的多个 `run_subagent` 调用并发执行，当且仅当每个调用目标 subagent 定义的 executionPolicy 为 `readonly_investigation`（内置 explorer 与自定义 readonly 均适用）。general_purpose 目标的 `run_subagent` SHALL 保持独占执行。系统 SHALL NOT 对并行子 Agent 运行数量设置固定上限。并行段 SHALL 维持现有并行只读语义：父 loop 等待全部调用完成后再继续 provider continuation，结果与取消行为与并行只读工具一致。
+
+#### Scenario: 同轮并行委派两个只读 Agent
+- **WHEN** 主 provider turn 返回连续的 `parallel_read` 分类段且包含两个目标为 readonly executionPolicy 的 `run_subagent` 调用
+- **THEN** 两个子 Agent loop SHALL 同时启动并并发执行
+- **THEN** 父 loop SHALL 等待两个子运行全部结束后再进入下一 provider turn
+
+#### Scenario: 并行段中的独占调用保持屏障
+- **WHEN** 同轮工具调用序列中 readonly `run_subagent` 与 `exclusive` 分类调用交替出现
+- **THEN** `exclusive` 调用 SHALL 作为屏障，前后只读段分别调度
+- **THEN** general_purpose 委派 SHALL NOT 与任何其他调用重叠执行
+
+#### Scenario: 父级取消传播到全部并行子运行
+- **WHEN** 父 assistant turn 在并行子运行期间被取消
+- **THEN** 所有正在运行的子 Agent SHALL 接收到取消信号
+- **THEN** 每个子运行 SHALL 以 cancelled 终态收尾并产生各自的工具结果
+
+### Requirement: 并行分组的渲染事实记录
+主 loop 在调度包含两个及以上 `run_subagent` 调用的并行只读段时，SHALL 通过工具执行选项向委派端口传递分组规模，端口 SHALL 把 `parallelSize` 写入每个子运行的 start record。单委派或不含 `run_subagent` 的并行段 SHALL NOT 写入 `parallelSize`。`parallelSize` SHALL 随子 Agent start record 持久化，供实时投影、快照重绘与会话重放读取。
+
+#### Scenario: 并行分组写入 parallelSize
+- **WHEN** 一个并行只读段包含两个 `run_subagent` 调用并开始执行
+- **THEN** 每个子运行的 start record SHALL 携带 `parallelSize` 为 2
+
+#### Scenario: 单委派不携带并行标记
+- **WHEN** 一个并行只读段仅包含一个 `run_subagent` 调用与若干观察工具
+- **THEN** 该子运行的 start record SHALL NOT 携带 `parallelSize`
