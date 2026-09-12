@@ -1,5 +1,4 @@
 import {DEFAULT_TUI_THEME, type TuiTheme} from '../config/theme-config';
-import {formatSubagentTerminalIdentity} from '../agent/subagent/name';
 import {blockText} from './colors';
 import {stripAnsi} from './layout';
 import {
@@ -40,6 +39,11 @@ import {
   renderWebFetchToolPairLines
 } from './tool-message-renderers/web-fetch';
 import {
+  RUN_SUBAGENT_TOOL_NAME,
+  renderRunSubagentCompactPairLines,
+  renderRunSubagentToolPairLines
+} from './tool-message-renderers/run-subagent';
+import {
   TOOL_RESULT_MAX_DISPLAY_LINES,
   formatToolDisplayName,
   renderPrefixedLines,
@@ -51,7 +55,6 @@ import type {ToolCallTranscriptRecord, ToolResultTranscriptRecord} from '../type
 import type {ToolRecordRenderOptions} from './tool-message-renderers/shared';
 
 const BASH_TOOL_NAME = 'run_bash_command';
-const RUN_SUBAGENT_TOOL_NAME = 'run_subagent';
 const COMPACT_PREVIEW_SOURCE_WIDTH = 4096;
 type ToolTranscriptRecord = ToolCallTranscriptRecord | ToolResultTranscriptRecord;
 
@@ -70,31 +73,9 @@ export function renderToolRecordBlock(record: ToolTranscriptRecord, width = 80, 
  */
 export function renderToolPairBlock(call: ToolCallTranscriptRecord, result: ToolResultTranscriptRecord, width = 80, theme: TuiTheme = DEFAULT_TUI_THEME, compactResult = false): string {
   if (compactResult && call.toolName === RUN_SUBAGENT_TOOL_NAME && result.toolName === RUN_SUBAGENT_TOOL_NAME) {
-    const agentName = resolveSubagentName(call.argumentsText);
-    const lines = renderPrefixedLines({
-      text: formatSubagentTerminalIdentity(agentName, result.ok ? 'completed' : 'failed'),
-      width,
-      firstPrefix: '◆ ',
-      continuationPrefix: '  ',
-      colorizeFirstSymbol: resolveToolCallPrefixStyle(result.ok, theme),
-      colorizeLine: (line) => blockText(theme, 'toolOutput', line)
-    });
-    return renderToolPairLinesBlock(lines);
+    return renderToolPairLinesBlock(renderRunSubagentCompactPairLines(call, result, width, theme));
   }
   return renderToolPairLinesBlock(renderToolPairLines(call, result, width, theme));
-}
-
-/** 从外层参数中恢复待安全格式化的 Agent 名称；解析失败时交给共享 formatter 回退。 */
-function resolveSubagentName(argumentsText: string): unknown {
-  try {
-    const parsed: unknown = JSON.parse(argumentsText);
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? (parsed as {agent?: unknown}).agent
-      : undefined;
-  } catch {
-    // 外层参数可能来自旧记录或损坏journal，只影响可见回退文案。
-  }
-  return undefined;
 }
 
 /** 返回不带 block 尾部空行的完整工具对，供子 Agent rail 复用现有专属投影。 */
@@ -133,6 +114,10 @@ function renderPairAwareToolPairLines(call: ToolCallTranscriptRecord, result: To
 
   if (call.toolName === GLOB_TOOL_NAME && result.toolName === GLOB_TOOL_NAME) {
     return renderGlobToolPairLines(call, result, width, theme);
+  }
+
+  if (call.toolName === RUN_SUBAGENT_TOOL_NAME && result.toolName === RUN_SUBAGENT_TOOL_NAME) {
+    return renderRunSubagentToolPairLines(call, result, width, theme);
   }
 
   return null;

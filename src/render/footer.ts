@@ -1,7 +1,7 @@
 import * as ansi from '../terminal/ansi';
 import { renderPendingAssistantLines } from './blocks';
 import { renderCommandSurface } from './footer/command-surfaces';
-import { renderComposerSurface } from './footer/composer-surface';
+import { renderComposerSurface, renderSubagentViewSurface } from './footer/composer-surface';
 import { constrainLayoutTail } from './footer/window';
 import { DEFAULT_RENDER_PREFERENCES } from '../config/app-settings-config';
 import { DEFAULT_TUI_THEME } from '../config/theme-config';
@@ -12,6 +12,10 @@ const DEFAULT_TERMINAL_ROWS = 24;
 // composer 自带边框；这里保留语义空行，分隔 transcript 与输入区而不画额外实线。
 const TRANSCRIPT_COMPOSER_SPACER_LINE = '';
 const TRANSCRIPT_COMPOSER_SPACER_LINE_COUNT = 1;
+// run 索引之外必须保住的 footer 行数：普通 composer 分支为 spacer 1 + composer 最小框 3 + 状态行 1。
+const VIEW_INDEX_RESERVED_LINES = 5;
+// 只读窗口分支没有 composer 框：仅预留 spacer 1 + 状态行 1。
+const VIEW_SURFACE_RESERVED_LINES = 2;
 
 /**
  * 管理 footer 临时区域的局部重绘，并记录上一帧行内容与光标位置；帧高由行数组长度推导。
@@ -208,16 +212,22 @@ export function createFooterRenderer(output: NodeJS.WriteStream = process.stdout
  * 根据当前状态生成 footer 的逐行布局和光标坐标。
  *
  */
-export function renderFooterLayout({ composer, conversationReference, pendingMessage, commandSurface, slashSuggestions, pending, working, theme = DEFAULT_TUI_THEME, renderPreferences = DEFAULT_RENDER_PREFERENCES, statusLine, rows, width }: RenderState): FooterLayout {
+export function renderFooterLayout({ composer, conversationReference, pendingMessage, commandSurface, slashSuggestions, pending, working, viewIndexLines, theme = DEFAULT_TUI_THEME, renderPreferences = DEFAULT_RENDER_PREFERENCES, statusLine, rows, width }: RenderState): FooterLayout {
   const footerWidth = width || 80;
   const maxFooterLines = calculateFooterMaxLines(rows);
   const transcriptComposerSpacerLine = TRANSCRIPT_COMPOSER_SPACER_LINE;
   const fixedLineCount = TRANSCRIPT_COMPOSER_SPACER_LINE_COUNT;
   const inputMaxLines = calculateCommandSurfaceMaxLines(rows);
+  // 只读会话窗口不渲染 composer 框；run 索引块直接贴状态行，仅预留 spacer 与状态行。
+  const isSubagentViewSurface = !commandSurface && statusLine?.mode === 'subagent_view';
+  // run 索引按终端高度封顶；普通 composer 分支额外预留 composer 最小框，避免索引把状态行挤出预算。
+  const boundedViewIndexLines = (viewIndexLines ?? []).slice(0, Math.max(0, maxFooterLines - fixedLineCount - (isSubagentViewSurface ? VIEW_SURFACE_RESERVED_LINES : VIEW_INDEX_RESERVED_LINES)));
   const effectiveStatusLine = attachStatusLineActivity(statusLine, pending, working);
   const inputSurface = commandSurface
     ? renderCommandSurface(commandSurface, footerWidth, {maxLines: inputMaxLines, theme})
-    : renderComposerSurface(composer, effectiveStatusLine, footerWidth, slashSuggestions ?? null, inputMaxLines, theme, renderPreferences.slashSuggestionMaxVisible, conversationReference, pendingMessage);
+    : isSubagentViewSurface
+      ? renderSubagentViewSurface(effectiveStatusLine, footerWidth, boundedViewIndexLines, theme)
+      : renderComposerSurface(composer, effectiveStatusLine, footerWidth, slashSuggestions ?? null, inputMaxLines, theme, renderPreferences.slashSuggestionMaxVisible, conversationReference, pendingMessage);
   const pendingMaxLines = Math.max(0, maxFooterLines - fixedLineCount - inputSurface.lines.length);
   const pendingLines = pending ? renderPendingAssistantLines(pending, footerWidth, pendingMaxLines, theme) : [];
   const layout = {
@@ -253,8 +263,11 @@ function attachStatusLineActivity(statusLine: StatusLineState | undefined, pendi
     return undefined;
   }
 
-  if (pending?.kind === 'subagent') {
-    return {...statusLine, activity: {kind: 'working', elapsedMs: pending.elapsedMs}};
+  if (pending?.kind === 'subagent' || pending?.kind === 'subagents') {
+    const elapsedMs = pending.kind === 'subagent'
+      ? pending.elapsedMs
+      : Math.max(0, ...pending.runs.map((run) => run.elapsedMs));
+    return {...statusLine, activity: {kind: 'working', elapsedMs}};
   }
 
   if (working) {

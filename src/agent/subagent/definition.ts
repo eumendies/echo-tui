@@ -1,6 +1,6 @@
 import {isValidSubagentName} from './name';
 
-import type {ReasoningEffort} from '../../types/agent';
+import type {ReasoningEffort, SubagentExecutionPolicy} from '../../types/agent';
 
 type SubagentDefinition = {
   description: string; // 投影给主 Agent 的能力与适用场景说明。
@@ -12,8 +12,6 @@ type SubagentDefinition = {
   name: string; // 工具参数、transcript 和审批来源共用的稳定名称。
   prompt: string; // 注入子 provider system context 的专属行为约束。
 };
-
-type SubagentExecutionPolicy = 'readonly_investigation' | 'general_purpose';
 
 type CustomSubagentCapability = 'readonly' | 'general';
 

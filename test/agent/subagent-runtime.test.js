@@ -110,6 +110,14 @@ function createTestAgentLoopRuntime(cwd, configContext, mcpManager, observation,
   return createAgentLoopRuntime(cwd, configContext, mcpManager, observation, usageStore);
 }
 
+function createDeferred() {
+  let resolve;
+  const promise = new Promise((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return {promise, resolve};
+}
+
 async function withPatchedAgents(cwd, createAgent, callback) {
   const originalPrepareAgent = agentSetupModule.prepareAgent;
   const preparations = [];
@@ -330,6 +338,216 @@ test('runtime returns a bounded failure handoff with stable work and the interru
     assert.match(terminal.text, /Explorer failed：termination error/u);
     assert.doesNotMatch(terminal.text, /Subagent failure:/u);
     assert.equal(parentRequests.length, 2);
+  } finally {
+    fs.rmSync(cwd, {recursive: true, force: true});
+  }
+});
+
+test('runtime runs two readonly delegations concurrently and records the parallel group size', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-subagent-parallel-'));
+  const childEvents = [];
+  const releases = {
+    'first investigation': createDeferred(),
+    'second investigation': createDeferred()
+  };
+  const allStarted = createDeferred();
+  const persisted = [];
+  const outerEvents = [];
+  let parentTurn = 0;
+
+  try {
+    await withPatchedAgents(cwd, (kind) => ({
+      async runTurn(records) {
+        if (kind === 'primary') {
+          parentTurn += 1;
+          if (parentTurn === 1) {
+            return {
+              draft: '',
+              toolCalls: [
+                {callId: 'outer-1', toolName: 'run_subagent', argumentsText: JSON.stringify({agent: 'explorer', task: 'first investigation'})},
+                {callId: 'outer-2', toolName: 'run_subagent', argumentsText: JSON.stringify({agent: 'explorer', task: 'second investigation'})}
+              ]
+            };
+          }
+          return {draft: 'parent continued', toolCalls: []};
+        }
+
+        const task = records.filter((record) => record.role === 'user').at(-1).text;
+        childEvents.push(`start:${task}`);
+        if (childEvents.length === 2) allStarted.resolve();
+        await releases[task].promise;
+        childEvents.push(`end:${task}`);
+        return {draft: `report for ${task}`, toolCalls: []};
+      }
+    }), async () => {
+      const snapshot = createConfigSnapshot();
+      const runAgent = createTestAgentLoopRuntime(cwd, {capture: () => snapshot});
+      const runPromise = runAgent({
+        records: [{role: 'user', text: 'delegate twice'}],
+        userConfigSnapshot: snapshot
+      }, {
+        onSubagentRecords(records) {
+          persisted.push(...records);
+        },
+        onToolCall(call) {
+          outerEvents.push(`call:${call.callId}`);
+        },
+        onToolResult(result) {
+          outerEvents.push(`result:${result.callId}:${result.ok}`);
+        }
+      });
+
+      await allStarted.promise;
+      // 两个子运行同时处于运行中，任何一个都未结束
+      assert.deepEqual(childEvents, ['start:first investigation', 'start:second investigation']);
+      releases['first investigation'].resolve();
+      releases['second investigation'].resolve();
+      const result = await runPromise;
+
+      assert.equal(result, 'parent continued');
+      const startRecords = persisted.filter((record) => record.event.kind === 'start');
+      assert.equal(startRecords.length, 2);
+      assert.deepEqual(startRecords.map((record) => record.event.parallelSize), [2, 2]);
+      // 结果按 provider 原始顺序成对提交
+      assert.deepEqual(outerEvents, [
+        'call:outer-1',
+        'call:outer-2',
+        'result:outer-1:true',
+        'result:outer-2:true'
+      ]);
+    });
+  } finally {
+    fs.rmSync(cwd, {recursive: true, force: true});
+  }
+});
+
+test('runtime keeps exclusive delegations as barriers and omits parallelSize for single delegations', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-subagent-barrier-'));
+  const events = [];
+  const explorerStarted = createDeferred();
+  const explorerReleased = createDeferred();
+  const workerStarted = createDeferred();
+  const workerReleased = createDeferred();
+  const persisted = [];
+  let parentTurn = 0;
+
+  try {
+    await withPatchedAgents(cwd, (kind) => ({
+      async runTurn(records) {
+        if (kind === 'primary') {
+          parentTurn += 1;
+          if (parentTurn === 1) {
+            return {
+              draft: '',
+              toolCalls: [
+                {callId: 'outer-explore', toolName: 'run_subagent', argumentsText: JSON.stringify({agent: 'explorer', task: 'solo investigation'})},
+                {callId: 'outer-worker', toolName: 'run_subagent', argumentsText: JSON.stringify({agent: 'worker', task: 'exclusive work'})}
+              ]
+            };
+          }
+          return {draft: 'parent continued', toolCalls: []};
+        }
+
+        const task = records.filter((record) => record.role === 'user').at(-1).text;
+        events.push(`start:${task}`);
+        if (task === 'solo investigation') {
+          explorerStarted.resolve();
+          await explorerReleased.promise;
+        } else {
+          workerStarted.resolve();
+          await workerReleased.promise;
+        }
+        events.push(`end:${task}`);
+        return {draft: `report for ${task}`, toolCalls: []};
+      }
+    }), async () => {
+      const snapshot = createConfigSnapshot();
+      const runAgent = createTestAgentLoopRuntime(cwd, {capture: () => snapshot});
+      const runPromise = runAgent({
+        records: [{role: 'user', text: 'delegate in sequence'}],
+        userConfigSnapshot: snapshot
+      }, {
+        onSubagentRecords(records) {
+          persisted.push(...records);
+        }
+      });
+
+      await explorerStarted.promise;
+      // worker 是 exclusive 屏障，不得与 explorer 重叠执行
+      assert.equal(events.includes('start:exclusive work'), false);
+      explorerReleased.resolve();
+      await workerStarted.promise;
+      assert.ok(events.indexOf('end:solo investigation') < events.indexOf('start:exclusive work'));
+      workerReleased.resolve();
+      const result = await runPromise;
+
+      assert.equal(result, 'parent continued');
+      const startRecords = persisted.filter((record) => record.event.kind === 'start');
+      assert.equal(startRecords.length, 2);
+      assert.equal(startRecords.every((record) => record.event.parallelSize === undefined), true);
+    });
+  } finally {
+    fs.rmSync(cwd, {recursive: true, force: true});
+  }
+});
+
+test('runtime aborts all running parallel delegations when the parent turn is cancelled', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-subagent-parallel-abort-'));
+  const controller = new AbortController();
+  const childSignals = [];
+  const allStarted = createDeferred();
+  const persisted = [];
+  let parentTurn = 0;
+
+  try {
+    await withPatchedAgents(cwd, (kind) => ({
+      async runTurn(records, _callbacks, options) {
+        if (kind === 'primary') {
+          parentTurn += 1;
+          if (parentTurn === 1) {
+            return {
+              draft: '',
+              toolCalls: [
+                {callId: 'outer-1', toolName: 'run_subagent', argumentsText: JSON.stringify({agent: 'explorer', task: 'first investigation'})},
+                {callId: 'outer-2', toolName: 'run_subagent', argumentsText: JSON.stringify({agent: 'explorer', task: 'second investigation'})}
+              ]
+            };
+          }
+          return {draft: 'parent continued', toolCalls: []};
+        }
+
+        childSignals.push(options.abortSignal);
+        if (childSignals.length === 2) allStarted.resolve();
+        await new Promise((resolve, reject) => {
+          if (options.abortSignal.aborted) {
+            reject(new AgentAbortError());
+            return;
+          }
+          options.abortSignal.addEventListener('abort', () => reject(new AgentAbortError()), {once: true});
+        });
+        return {draft: 'unreachable', toolCalls: []};
+      }
+    }), async () => {
+      const snapshot = createConfigSnapshot();
+      const runAgent = createTestAgentLoopRuntime(cwd, {capture: () => snapshot});
+      const runPromise = runAgent({
+        records: [{role: 'user', text: 'delegate twice'}],
+        userConfigSnapshot: snapshot,
+        abortSignal: controller.signal
+      }, {
+        onSubagentRecords(records) {
+          persisted.push(...records);
+        }
+      });
+
+      await allStarted.promise;
+      controller.abort();
+      await assert.rejects(runPromise, AgentAbortError);
+
+      assert.equal(childSignals.length, 2);
+      assert.equal(childSignals.every((signal) => signal.aborted), true);
+      assert.equal(persisted.filter((record) => record.event.kind === 'cancelled').length, 2);
+    });
   } finally {
     fs.rmSync(cwd, {recursive: true, force: true});
   }
@@ -1169,4 +1387,42 @@ test('Worker asks through the run-aware callback while headless returns cancella
     assert.equal(activities.some((activity) => activity.phase === 'waiting_question'), !headless);
     assert.equal(records.some((record) => record.event.kind === 'tool_result' && record.event.toolName === 'ask_user_questions'), true);
   }
+});
+
+test('subagent port publishes the resolved model facts in the start record and hands them to the child loop', async () => {
+  const snapshot = createConfigSnapshot();
+  const records = [];
+  const childInputs = [];
+  const port = createSubagentToolPort({
+    callbacks: {},
+    configSnapshot: snapshot,
+    createRuntime(_inherited, definition) {
+      assert.equal(definition.name, 'worker');
+      return async (input) => {
+        childInputs.push(input);
+        return 'done';
+      };
+    },
+    cwd: '/tmp/echo-subagent-model-info',
+    executionMode: {kind: 'headless', approvalPolicy: 'deny'},
+    interactionMode: 'normal',
+    getInheritedContext() { return {}; },
+    observation: disabledObservation,
+    publishRecords(batch) { records.push(...batch); }
+  });
+
+  const result = await port.run('worker', 'inspect docs', {
+    callId: 'outer-model-info', toolName: 'run_subagent',
+    argumentsText: '{"agent":"worker","task":"inspect docs"}'
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.text, 'done');
+  assert.deepEqual(records.map((record) => record.event.kind), ['start', 'completed']);
+  // start record 携带解析后的实际模型与 effort
+  assert.equal(records[0].event.model, 'parent-model');
+  assert.equal(records[0].event.reasoningEffort, 'low');
+  // 子 loop 复用预解析配置，窗口展示与实际请求使用同一份结果
+  assert.equal(childInputs[0].resolvedLlmConfig.model, 'parent-model');
+  assert.equal(childInputs[0].resolvedLlmConfig.reasoningEffort, 'low');
 });

@@ -41,8 +41,11 @@ export type SubagentRunResult =
       text: string; // 进入外层 tool result 的失败交接；runtime 启动前拒绝保持简洁诊断。
     };
 
+export type SubagentExecutionPolicy = 'readonly_investigation' | 'general_purpose'; // 子运行固定的工具风险与执行边界策略。
+
 export type SubagentDescriptor = {
   description: string; // 主 Agent工具目录中展示的子 Agent能力说明。
+  executionPolicy: SubagentExecutionPolicy; // 并发分类与渲染分叉使用的子运行执行策略。
   name: string; // `run_subagent` 参数使用的稳定子 Agent名称。
 };
 

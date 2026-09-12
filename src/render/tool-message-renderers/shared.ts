@@ -354,8 +354,43 @@ function clampToDisplayWidth(value: string, maximumWidth: number): string {
   return `${output}${ellipsis}`;
 }
 
+const SUBAGENT_TEXT_MAX_DISPLAY_LINES = 12;
+
+/** 稳定区与 footer 共享同一 rail 列和内容宽度，避免局部重绘边界发生横向跳变。 */
+function createSubagentRailLayout(width: number) {
+  const safeWidth = safeRenderWidth(width);
+  const outerPrefix = safeWidth >= 12 ? '  ▌ ' : safeWidth >= 3 ? '› ' : '';
+  const firstPrefix = safeWidth >= 12 ? '◆ ▌ ' : safeWidth >= 3 ? '◆ ' : '';
+  return {
+    firstPrefix,
+    innerWidth: Math.max(1, safeWidth - displayWidth(outerPrefix)),
+    outerPrefix
+  };
+}
+
+/** 外层 rail/prefix 与子 Agent标题使用专属色，其余工作内容统一弱化。 */
+function renderRailText(text: string, width: number, firstPrefix: string, continuationPrefix: string, theme: TuiTheme, maxLines: number | null = SUBAGENT_TEXT_MAX_DISPLAY_LINES, tone: 'title' | 'work' = 'work'): string[] {
+  const lines = renderPrefixedLines({
+    text: maxLines === null ? text : truncateDisplayText(text, maxLines),
+    width,
+    firstPrefix,
+    continuationPrefix
+  });
+  return lines.map((line, index) => {
+    const prefix = index === 0 ? firstPrefix : continuationPrefix;
+    const content = line.slice(prefix.length);
+    return `${blockText(theme, 'subagentRail', prefix)}${blockText(theme, tone === 'title' ? 'subagentRail' : 'toolOutput', content)}`;
+  });
+}
+
+/** 逻辑工作块之间保留一条不断开的最外层 rail 空行。 */
+function renderSubagentRailSpacer(outerPrefix: string, theme: TuiTheme): string {
+  return blockText(theme, 'subagentRail', outerPrefix);
+}
+
 export {
   clampToDisplayWidth,
+  createSubagentRailLayout,
   createToolCallTitle,
   TOOL_RESULT_MAX_DISPLAY_LINES,
   TOOL_RESULT_TRUNCATION_TEXT,
@@ -364,7 +399,9 @@ export {
   formatToolDisplayName,
   normalizeContentText,
   renderPrefixedLines,
+  renderRailText,
   renderToolRailRows,
+  renderSubagentRailSpacer,
   resolveToolCallPrefixStyle,
   truncateDisplayText,
   wrapContentLine

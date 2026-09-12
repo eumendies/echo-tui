@@ -16,7 +16,7 @@ import {isBuiltinSubagentName, isValidSubagentName} from './name';
 import {inspectSafeDirectory} from './safe-storage';
 import {loadAgentsSettingsSources, selectBuiltinSubagentOverride} from './settings';
 
-import type {AgentUserConfigSnapshot} from '../../types/agent';
+import type {AgentUserConfigSnapshot, SubagentExecutionPolicy} from '../../types/agent';
 import type {BuiltinSubagentName, SelectedBuiltinSubagentOverride} from './settings';
 import type {CustomSubagentManifest} from './manifest';
 import type {SubagentDefinition} from './definition';
@@ -27,6 +27,7 @@ const MAX_SUBAGENT_DIAGNOSTIC_MESSAGE_CODE_POINTS = 500;
 
 type SubagentCatalogDescriptor = {
   description: string; // 主 Agent schema 可见的有界能力说明。
+  executionPolicy: SubagentExecutionPolicy; // 并发分类与渲染分叉使用的执行策略。
   name: string; // 运行期查找定义使用的稳定名称。
 };
 
@@ -138,6 +139,7 @@ function loadSubagentCatalog(options: SubagentCatalogLoadOptions = {}): Readonly
   const definitions = Object.freeze(Array.from(definitionsByName.values()));
   const descriptors = Object.freeze(definitions.map((definition) => Object.freeze({
     description: definition.description,
+    executionPolicy: definition.executionPolicy,
     name: definition.name
   })));
   const frozenDiagnostics = Object.freeze(diagnostics.map((diagnostic) => Object.freeze({...diagnostic})));

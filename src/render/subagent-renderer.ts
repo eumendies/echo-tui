@@ -1,14 +1,12 @@
 import {DEFAULT_TUI_THEME, type TuiTheme} from '../config/theme-config';
 import {formatSubagentRawName} from '../agent/subagent/name';
 import {blockText} from './colors';
-import {displayWidth, safeRenderWidth, stripAnsi} from './layout';
+import {stripAnsi} from './layout';
 import {renderToolPairLines, renderToolRecordLines} from './tool-message-renderer';
-import {renderPrefixedLines, truncateDisplayText} from './tool-message-renderers/shared';
+import {createSubagentRailLayout, renderRailText, renderSubagentRailSpacer} from './tool-message-renderers/shared';
 
 import type {SubagentPendingState} from '../types/render';
 import type {ToolCallTranscriptRecord, ToolResultTranscriptRecord, SubagentTranscriptRecord} from '../types/transcript';
-
-const SUBAGENT_TEXT_MAX_DISPLAY_LINES = 12;
 
 type SubagentRunRenderOptions = {
   continuation: boolean; // true 表示同一 run 的标题已经写入终端历史区，本批只追加后续事件。
@@ -146,42 +144,10 @@ function renderSubagentPendingLines(pending: SubagentPendingState, width: number
   return [...rows.slice(0, maxLines - 1), omitted];
 }
 
-/** 稳定区与 footer 共享同一 rail 列和内容宽度，避免局部重绘边界发生横向跳变。 */
-function createSubagentRailLayout(width: number) {
-  const safeWidth = safeRenderWidth(width);
-  const outerPrefix = safeWidth >= 12 ? '  ▌ ' : safeWidth >= 3 ? '› ' : '';
-  const firstPrefix = safeWidth >= 12 ? '◆ ▌ ' : safeWidth >= 3 ? '◆ ' : '';
-  return {
-    firstPrefix,
-    innerWidth: Math.max(1, safeWidth - displayWidth(outerPrefix)),
-    outerPrefix
-  };
-}
-
-/** 外层 rail/prefix 与子 Agent标题使用专属色，其余工作内容统一弱化。 */
-function renderRailText(text: string, width: number, firstPrefix: string, continuationPrefix: string, theme: TuiTheme, maxLines: number | null = SUBAGENT_TEXT_MAX_DISPLAY_LINES, tone: 'title' | 'work' = 'work'): string[] {
-  const lines = renderPrefixedLines({
-    text: maxLines === null ? text : truncateDisplayText(text, maxLines),
-    width,
-    firstPrefix,
-    continuationPrefix
-  });
-  return lines.map((line, index) => {
-    const prefix = index === 0 ? firstPrefix : continuationPrefix;
-    const content = line.slice(prefix.length);
-    return `${blockText(theme, 'subagentRail', prefix)}${blockText(theme, tone === 'title' ? 'subagentRail' : 'toolOutput', content)}`;
-  });
-}
-
 /** 内部工具保留既有布局，但其标题、状态、prefix 和正文都统一映射为工作过程暗色。 */
 function prefixNestedToolLines(lines: string[], outerPrefix: string, theme: TuiTheme): string[] {
   const prefix = blockText(theme, 'subagentRail', outerPrefix);
   return lines.map((line) => `${prefix}${blockText(theme, 'toolOutput', stripAnsi(line))}`);
-}
-
-/** 逻辑工作块之间保留一条不断开的最外层 rail 空行。 */
-function renderSubagentRailSpacer(outerPrefix: string, theme: TuiTheme): string {
-  return blockText(theme, 'subagentRail', outerPrefix);
 }
 
 function toToolCallRecord(record: Extract<SubagentTranscriptRecord, {event: {kind: 'tool_call'}}> | SubagentTranscriptRecord): ToolCallTranscriptRecord {

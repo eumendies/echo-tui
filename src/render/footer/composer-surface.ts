@@ -78,6 +78,20 @@ export function renderComposerSurface(
 }
 
 /**
+ * 渲染只读会话窗口的 footer 输入区：run 索引块直接贴状态行，不提供 composer 输入框，也不显示光标。
+ */
+export function renderSubagentViewSurface(statusLine: StatusLineState | undefined, width: number, viewIndexLines: string[], tuiTheme?: TuiTheme): FooterLayout {
+  const theme = resolveFooterTheme(tuiTheme);
+  const statusLineText = renderStatusLineText(statusLine, width, theme);
+  return {
+    lines: [...viewIndexLines, statusLineText],
+    cursorRow: viewIndexLines.length,
+    cursorColumn: 0,
+    showCursor: false
+  };
+}
+
+/**
  * 渲染固定高度的待发送卡片；紧张空间退化为单行，正文永不按自然换行扩张。
  */
 function renderPendingMessageLines(message: RenderState['pendingMessage'], width: number, theme: FooterTheme, maxLines: number): string[] {
@@ -194,6 +208,7 @@ function resolveComposerTheme(statusLine: StatusLineState | undefined, theme: Fo
   if (statusLine?.mode === 'btw') {
     return {border: (text) => tokenText(theme, 'btw', text), placeholder: BTW_COMPOSER_PLACEHOLDER, prefix: 'btw ›'};
   }
+
 
   if (statusLine?.mode === 'plan') {
     return {border: (text) => tokenText(theme, 'plan', text), placeholder: PLAN_COMPOSER_PLACEHOLDER, prefix: '?'};
@@ -342,6 +357,13 @@ function createRightStatusSegments(statusLine: StatusLineState, theme: FooterThe
 function createModeSegment(statusLine: StatusLineState, theme: FooterTheme): StatusSegment {
   if (statusLine.mode === 'mcp' && statusLine.activity) {
     return createMcpInitializationSegment(statusLine.activity, theme);
+  }
+
+  if (statusLine.mode === 'subagent_view') {
+    // detail 已携带位置/agent/任务/phase/elapsed 全量信息；必须先于 activity 分支，
+    // 否则窗口 draft 尾部附加的 working activity 会把 detail 永久抢占成 spinner。
+    const text = statusLine.detail || 'subagent view';
+    return {plain: text, rendered: tokenText(theme, 'btw', ansi.bold(text))};
   }
 
   if (statusLine.activity) {

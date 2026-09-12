@@ -134,6 +134,16 @@ export function stripAnsi(text: string): string {
   return text.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
 }
 
+/**
+ * 把多行文本折叠为物理单行摘要。
+ * compact footer 行与状态行 detail 的行数契约是"一条逻辑行 = 一个物理行";
+ * displayWidth 对 LF 记零宽,宽度钳制不会在换行处断行,内嵌换行会让 footer 帧的
+ * 光标几何(擦除行数、cursorUp/Down、逐行 diff)整体错位,旧帧残留进滚动区。
+ */
+export function collapseToSingleLine(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
 // grapheme 切分是 input 编辑层与 render 宽度层共用口径，从 input/graphemes 再导出保持既有调用点不变。
 export {splitGraphemes};
 
