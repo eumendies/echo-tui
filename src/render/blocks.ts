@@ -1,11 +1,13 @@
 import * as ansi from '../terminal/ansi';
 import {DEFAULT_TUI_THEME, type ThemeColor, type TuiTheme} from '../config/theme-config';
 import {blockBackground, blockText, colorText} from './colors';
-import { charWidth, displayWidth, safeRenderWidth, splitGraphemes, tabWidthAt } from './layout';
+import { charWidth, collapseToSingleLine, displayWidth, safeRenderWidth, splitGraphemes, tabWidthAt } from './layout';
 import { getCommittableMarkdownText, renderMarkdownLinesWithOptions } from './markdown';
 import {createCompactToolCallPreviewText, renderToolCallPreviewLines} from './tool-message-renderer';
 import {renderSubagentPendingLines} from './subagent-renderer';
-import type { BannerContext, PendingState, PendingToolCall, TerminalSize } from '../types/render';
+import { createSelectedWindowRows } from './footer/window';
+import {sanitizeTerminalText} from '../terminal/control-chars';
+import type { BannerContext, PendingState, PendingToolCall, SubagentPendingState, TerminalSize } from '../types/render';
 
 type BannerRenderContext = Partial<Omit<BannerContext, 'terminalSize'>> & {
   terminalSize?: TerminalSize;
@@ -472,6 +474,10 @@ export function renderPendingAssistantLines(
     return renderSubagentPendingLines(pending, width, normalizedMaxLines, theme);
   }
 
+  if (pending.kind === 'subagents') {
+    return renderSubagentsPendingLines(pending.runs, width, normalizedMaxLines, theme);
+  }
+
   return renderStreamingPendingLines(pending.text, pending.historyText || '', width, normalizedMaxLines, theme);
 }
 
@@ -518,20 +524,121 @@ function renderPendingToolCallsLines(calls: PendingToolCall[], width: number, ma
 
 /** 渲染多工具 compact 块的共享标题，并让状态文本遵守 safe width。 */
 function renderCompactPendingToolHeader(count: number, width: number, theme: TuiTheme): string {
-  const plain = clampToDisplayWidth(`◆ ${count} tools · running`, width);
+  return renderCompactPendingHeader(`${count} tools · running`, width, theme);
+}
+
+/** 渲染 compact pending 块的共享标题；标记符使用工具输出色，其余文本遵守 safe width。 */
+function renderCompactPendingHeader(label: string, width: number, theme: TuiTheme): string {
+  const plain = clampToDisplayWidth(`◆ ${label}`, width);
   return plain.startsWith('◆') ? `${blockText(theme, 'toolOutput', '◆')}${plain.slice(1)}` : plain;
 }
 
 /** 渲染一个单行工具摘要或隐藏数量行；树形前缀使用 muted 色降低视觉噪声。 */
 function renderCompactPendingToolRow(text: string, prefix: '├─ ' | '└─ ', width: number, theme: TuiTheme, dimText = false): string {
   const structuralPrefix = `  ${prefix}`;
-  const plain = clampToDisplayWidth(`${structuralPrefix}${text}`, width);
+  // 行文本来自任务/参数等外部来源,可能含换行;单行摘要契约在此收口。
+  const plain = clampToDisplayWidth(`${structuralPrefix}${collapseToSingleLine(text)}`, width);
   if (!plain.startsWith(structuralPrefix)) {
     return blockText(theme, 'muted', plain);
   }
 
   const content = plain.slice(structuralPrefix.length);
   return `${blockText(theme, 'muted', structuralPrefix)}${dimText ? ansi.dim(blockText(theme, 'muted', content)) : content}`;
+}
+
+/**
+ * 将多个并行子 Agent 投影为一个 compact 活动块；每行固定展示名称、任务摘要、阶段与 elapsed。
+ * 行序按 start 顺序稳定排列，预算不足时折叠为隐藏数量行。
+ */
+function renderSubagentsPendingLines(runs: SubagentPendingState[], width: number, maxLines: number, theme: TuiTheme): string[] {
+  if (maxLines <= 0 || runs.length === 0) {
+    return [];
+  }
+
+  const safeWidth = safeRenderWidth(width);
+  const totalSeconds = (Math.max(...runs.map((run) => run.elapsedMs)) / 1000).toFixed(1);
+  const header = renderCompactPendingHeader(`${runs.length} agents · ${totalSeconds}s · ctrl+o 详情`, safeWidth, theme);
+  if (maxLines === 1) {
+    return [header];
+  }
+
+  const rows = runs.map((run) => createSubagentRunRowText(run));
+  const availableRows = maxLines - 1;
+  if (rows.length <= availableRows) {
+    return [
+      header,
+      ...rows.map((text, index) => renderCompactPendingToolRow(
+        text,
+        index === rows.length - 1 ? '└─ ' : '├─ ',
+        safeWidth,
+        theme
+      ))
+    ];
+  }
+
+  const visibleCount = Math.max(0, availableRows - 1);
+  const hiddenCount = rows.length - visibleCount;
+  return [
+    header,
+    ...rows.slice(0, visibleCount).map((text) => renderCompactPendingToolRow(text, '├─ ', safeWidth, theme)),
+    renderCompactPendingToolRow(`… +${hiddenCount} more`, '└─ ', safeWidth, theme, true)
+  ];
+}
+
+/** subagent 会话窗口 body 顶部 run 索引的行输入；statusText 由控制器按瞬时活动或稳定终态准备。 */
+export type SubagentViewIndexEntry = {
+  runId: string; // run 身份，用于标注当前观看行。
+  agentName: string; // 已安全格式化的 agent 显示名。
+  task: string; // 委派任务摘要原文；渲染时折叠为单行并按宽度截断。
+  statusText: string; // 活跃 phase/耗时或终态标签。
+  active: boolean; // run 是否仍在活动；结束行置灰。
+};
+
+// 索引窗口的最大物理行数（含上下折叠提示行）；越窗行以提示行承载，标题行始终给出总量。
+const SUBAGENT_VIEW_INDEX_MAX_ROWS = 8;
+
+/**
+ * 渲染会话窗口顶部的 run 索引块：标题行给出运行中/总量计数，行清单以当前观看行为中心开窗。
+ * 当前行使用 subagentRail 主题色与 ▸ 标记，结束行置灰，越窗行以上下折叠提示承载。
+ */
+export function renderSubagentViewIndex(entries: SubagentViewIndexEntry[], currentRunId: string | null, width = 80, theme: TuiTheme = DEFAULT_TUI_THEME): string[] {
+  if (entries.length === 0) {
+    return [];
+  }
+
+  const safeWidth = safeRenderWidth(width);
+  const activeCount = entries.filter((entry) => entry.active).length;
+  const headerPlain = clampToDisplayWidth(`◆ subagent 会话 · 运行中 ${activeCount} · 共 ${entries.length} 个 · ↑/↓ 切换 · Ctrl+O/Esc 返回`, safeWidth);
+  const header = `${blockText(theme, 'subagentRail', '◆')}${headerPlain.slice(1)}`;
+
+  const currentIndex = entries.findIndex((entry) => entry.runId === currentRunId);
+  const windowRows = createSelectedWindowRows(entries, currentIndex === -1 ? undefined : currentIndex, SUBAGENT_VIEW_INDEX_MAX_ROWS);
+  const rows = windowRows.map((row) => {
+    if (row.kind === 'more') {
+      const hintPlain = clampToDisplayWidth(`    … ${row.direction === 'up' ? '↑ 上方' : '↓ 下方'} ${row.count} 个`, safeWidth);
+      return ansi.dim(blockText(theme, 'muted', hintPlain));
+    }
+
+    const entry = row.item;
+    const marker = row.index === currentIndex ? '  ▸ ' : '    ';
+    const text = `${row.index + 1}. ${entry.agentName} · ${collapseToSingleLine(entry.task)} · ${entry.statusText}`;
+    const plain = clampToDisplayWidth(`${marker}${text}`, safeWidth);
+    const content = plain.slice(marker.length);
+
+    if (row.index === currentIndex) {
+      return `${blockText(theme, 'subagentRail', '  ▸ ')}${blockText(theme, 'subagentRail', content)}`;
+    }
+    return `${blockText(theme, 'muted', '    ')}${entry.active ? content : ansi.dim(blockText(theme, 'muted', content))}`;
+  });
+
+  return [header, ...rows];
+}
+
+/** 组装单行子 Agent 摘要：名称、任务摘要、阶段、可选工具名与 elapsed；外部文本先经控制字符净化。 */
+function createSubagentRunRowText(run: SubagentPendingState): string {
+  const phaseText = run.phase.replace('_', ' ');
+  const toolText = run.toolName ? ` · ${run.toolName}` : '';
+  return sanitizeTerminalText(`${run.agentName} · ${run.task} · ${phaseText}${toolText} · ${(run.elapsedMs / 1000).toFixed(1)}s`);
 }
 
 /**

@@ -27,6 +27,11 @@ function createHarness(overrides = {}) {
       handleEvent: () => calls.push('picker-event'),
       open: (index) => calls.push(`picker-open:${index}`)
     },
+    subagentView: overrides.subagentView || {
+      isActive: () => false,
+      toggle: () => calls.push('subagent-view-toggle'),
+      handleEvent: () => false
+    },
     command: overrides.command || {
       hasActiveSession: () => false,
       handleEvent: () => undefined
@@ -202,4 +207,89 @@ test('InputEventController handles tuning, approval shortcut, slash completion, 
   harness.appContext.composerContext.recordInput('previous input');
   harness.controller.handleEvent({type: INPUT_EVENTS.MOVE_UP});
   assert.equal(composerOps.getText(harness.appContext.composerContext.composer), 'previous input');
+});
+
+test('InputEventController routes Esc to the subagent view without touching turn interruption', () => {
+  const viewEvents = [];
+  const harness = createHarness({
+    subagentView: {
+      isActive: () => true,
+      toggle: () => {},
+      handleEvent: (event) => {
+        viewEvents.push(event.type);
+        return event.type !== INPUT_EVENTS.EXIT;
+      }
+    }
+  });
+  harness.controller.handleEvent({type: INPUT_EVENTS.ESCAPE});
+  harness.controller.handleEvent({type: INPUT_EVENTS.TEXT, value: 'x'});
+
+  assert.deepEqual(viewEvents, ['escape', 'text']);
+  assert.deepEqual(harness.calls, []);
+});
+
+test('InputEventController opens the subagent view with Ctrl+O and keeps it exclusive with command sessions', () => {
+  const toggles = [];
+  const first = createHarness({
+    subagentView: {
+      isActive: () => false,
+      toggle: () => toggles.push('toggle'),
+      handleEvent: () => false
+    }
+  });
+  first.controller.handleEvent({type: INPUT_EVENTS.OPEN_SUBAGENT_VIEW});
+  assert.deepEqual(toggles, ['toggle']);
+
+  const commandEvents = [];
+  const busy = createHarness({
+    command: {
+      hasActiveSession: () => true,
+      handleEvent: (event) => {
+        commandEvents.push(event.type);
+        return undefined;
+      }
+    },
+    subagentView: {
+      isActive: () => false,
+      toggle: () => toggles.push('toggle-busy'),
+      handleEvent: () => false
+    }
+  });
+  busy.controller.handleEvent({type: INPUT_EVENTS.OPEN_SUBAGENT_VIEW});
+  assert.deepEqual(toggles, ['toggle']);
+  assert.deepEqual(commandEvents, ['open_subagent_view']);
+});
+
+test('InputEventController keeps tool approval above the subagent view', () => {
+  let viewEvents = 0;
+  const harness = createHarness({
+    toolApproval: {
+      hasActiveRequest: () => true,
+      handleEvent: () => harness.calls.push('approval'),
+      toggleAllowAllForSession: () => harness.calls.push('toggle-approval')
+    },
+    subagentView: {
+      isActive: () => true,
+      toggle: () => {},
+      handleEvent: () => {
+        viewEvents += 1;
+        return true;
+      }
+    }
+  });
+  harness.controller.handleEvent({type: INPUT_EVENTS.ESCAPE});
+  assert.deepEqual(harness.calls, ['approval']);
+  assert.equal(viewEvents, 0);
+});
+
+test('InputEventController releases EXIT through the subagent view to the exit path', () => {
+  const harness = createHarness({
+    subagentView: {
+      isActive: () => true,
+      toggle: () => {},
+      handleEvent: (event) => event.type !== INPUT_EVENTS.EXIT
+    }
+  });
+  harness.controller.handleEvent({type: INPUT_EVENTS.EXIT});
+  assert.deepEqual(harness.calls, ['exit']);
 });

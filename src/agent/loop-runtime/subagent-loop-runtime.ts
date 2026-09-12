@@ -173,7 +173,8 @@ function createSubagentLoopRuntime(cwd: string, inheritedContext: InheritedAgent
     let state: SubagentLoopRunState;
 
     try {
-      const resolvedConfig = resolveSubagentLlmConfig(input, definition);
+      // 端口已预解析时直接复用，保证窗口展示与实际请求使用同一份解析结果。
+      const resolvedConfig = input.resolvedLlmConfig ?? resolveSubagentLlmConfig(input, definition);
       const {agent, config, registry} = prepareAgent({
         allowedToolNames: new Set(definition.localToolNames),
         config: resolvedConfig,
@@ -376,4 +377,4 @@ function resolveSubagentLlmConfig(input: SubagentLoopInput, definition: Subagent
   });
 }
 
-export {createSubagentLoopRuntime};
+export {createSubagentLoopRuntime, resolveSubagentLlmConfig};

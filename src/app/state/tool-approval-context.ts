@@ -34,12 +34,14 @@ const TOOL_APPROVAL_OPTIONS: ToolApprovalOption[] = [
 ];
 
 const TOOL_APPROVAL_FEEDBACK_PLACEHOLDER = 'Type instruction for the model...';
+const INTERRUPTED_APPROVAL_DECISION: ToolApprovalDecision = {kind: 'deny', message: 'Tool execution was interrupted.'};
 
 /**
  * 管理 agent 工具执行前的用户授权 modal；只持有授权态，不触碰工具执行或主 composer。
  */
 class ToolApprovalContext {
   activeRequest: ActiveToolApprovalRequest | null;
+  private pendingRequests: ActiveToolApprovalRequest[];
   allowAllForSession: boolean;
   allowedToolsForSession: Set<string>;
   allowedBashCommandsForSession: Set<string>;
@@ -47,6 +49,7 @@ class ToolApprovalContext {
 
   constructor(onUpdate: () => void) {
     this.activeRequest = null;
+    this.pendingRequests = [];
     this.allowAllForSession = false;
     this.allowedToolsForSession = new Set();
     this.allowedBashCommandsForSession = new Set();
@@ -55,12 +58,9 @@ class ToolApprovalContext {
 
   /**
    * 处理一次工具授权请求；命中会话缓存时同步返回，只有真实打开选择界面时才返回 Promise。
+   * 已有活跃请求时新请求进入 FIFO 队列等待，不抢占式拒绝现有请求。
    */
   request(call: ToolCall, display?: ToolApprovalRequest): ToolApprovalDecision | Promise<ToolApprovalDecision> {
-    if (this.activeRequest) {
-      this.resolveActive({kind: 'deny', message: 'Tool execution was rejected because another approval request replaced it.'});
-    }
-
     const cachedDecision = this.getCachedDecision(call);
 
     if (cachedDecision) {
@@ -88,22 +88,43 @@ class ToolApprovalContext {
       : null;
   }
 
-  /** 创建现有人工审批 modal；调用方应先自行检查会话缓存。 */
+  /** 创建现有人工审批 modal；活跃请求存在时排队等待，调用方应先自行检查会话缓存。 */
   requestManual(call: ToolCall, display?: ToolApprovalRequest): Promise<ToolApprovalDecision> {
-    if (this.activeRequest) {
-      this.resolveActive({kind: 'deny', message: 'Tool execution was rejected because another approval request replaced it.'});
-    }
-
     return new Promise((resolve) => {
-      this.activeRequest = {
+      const request: ActiveToolApprovalRequest = {
         call,
         display,
         feedbackComposer: createComposer(),
         selectedIndex: 0,
         resolve
       };
+
+      if (this.activeRequest) {
+        this.pendingRequests.push(request);
+        return;
+      }
+
+      this.activeRequest = request;
       this.onUpdate();
     });
+  }
+
+  /** 父 turn 中断时清算活跃与排队请求；全部以 interrupted 决议收尾，避免并行子 Agent 等待悬挂。 */
+  cancelAllPending(): void {
+    const request = this.activeRequest;
+    const queued = this.pendingRequests;
+
+    if (!request && queued.length === 0) {
+      return;
+    }
+
+    this.activeRequest = null;
+    this.pendingRequests = [];
+    request?.resolve(INTERRUPTED_APPROVAL_DECISION);
+    for (const entry of queued) {
+      entry.resolve(INTERRUPTED_APPROVAL_DECISION);
+    }
+    this.onUpdate();
   }
 
   /**
@@ -305,7 +326,8 @@ class ToolApprovalContext {
       return;
     }
 
-    this.activeRequest = null;
+    // FIFO 提升下一个排队请求；没有排队时回到空闲态。
+    this.activeRequest = this.pendingRequests.shift() || null;
     request.resolve(decision);
     this.onUpdate();
   }

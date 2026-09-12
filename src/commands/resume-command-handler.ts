@@ -1,6 +1,5 @@
 import {INPUT_EVENTS} from '../input/event-types';
 import {
-  SESSION_BROWSER_PAGE_SIZE,
   createLoadingSessionPreviewState,
   createSessionBrowserSurface,
   formatSessionUpdatedAt,
@@ -13,8 +12,6 @@ import type {CommandHandler, CommandHost, CommandSession, InfoCommandSurface, Re
 import type {InputEvent} from '../types/input';
 import type {TranscriptSessionSummary} from '../types/transcript';
 import type {SessionBrowserData} from './session/session-browser';
-
-export const RESUME_PAGE_SIZE = SESSION_BROWSER_PAGE_SIZE;
 
 type ResumeData = SessionBrowserData<TranscriptSessionSummary>;
 

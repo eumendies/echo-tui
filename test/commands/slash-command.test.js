@@ -19,7 +19,7 @@ const { McpCommandHandler } = require('../../src/commands/mcp-command-handler');
 const { MemoryCommandHandler } = require('../../src/commands/memory-command-handler');
 const { MODEL_CONFIG_PATH_HINT, ModelCommandHandler } = require('../../src/commands/model-command-handler');
 const { ModeCommandHandler } = require('../../src/commands/mode-command-handler');
-const { ResumeCommandHandler, RESUME_PAGE_SIZE } = require('../../src/commands/resume-command-handler');
+const { ResumeCommandHandler } = require('../../src/commands/resume-command-handler');
 const { ReferenceCommandHandler } = require('../../src/commands/reference-command-handler');
 const { SkillsCommandHandler } = require('../../src/commands/skills-command-handler');
 const { SkillInvocationCommandHandler } = require('../../src/commands/skill-invocation-command-handler');
@@ -71,6 +71,7 @@ function createFakeHost(options = {}) {
     sessionUpdates: [],
     deepseekBalanceQueries: 0,
     statusQueries: 0,
+    opencodeUsageQueries: 0,
     clipboardWrites: [],
     transcriptAppends: [],
     themeSelections: [],
@@ -347,6 +348,12 @@ function createFakeHost(options = {}) {
         return options.queryStatusUsage
           ? options.queryStatusUsage()
           : Promise.resolve({status: 'unavailable', error: 'Codex 用量不可用'});
+      },
+      queryOpencodeUsage() {
+        calls.opencodeUsageQueries += 1;
+        return options.queryOpencodeUsage
+          ? options.queryOpencodeUsage()
+          : Promise.resolve({status: 'not_applicable'});
       }
     },
     usage: {
@@ -558,8 +565,10 @@ test('statusCommandHandler loads Codex usage and isolates late results', async (
   assert.equal(session.surface.kind, 'status');
   assert.equal(session.surface.usage.status, 'loading');
   assert.equal(session.surface.deepseekBalance.status, 'loading');
+  assert.equal(session.surface.opencodeUsage.status, 'loading');
   assert.equal(harness.calls.statusQueries, 1);
   assert.equal(harness.calls.deepseekBalanceQueries, 1);
+  assert.equal(harness.calls.opencodeUsageQueries, 1);
   assert.deepEqual(harness.calls.transcriptAppends, []);
 
   resolveUsage({
@@ -572,8 +581,9 @@ test('statusCommandHandler loads Codex usage and isolates late results', async (
   assert.equal(session.surface.usage.status, 'available');
   assert.equal(session.surface.usage.primary.usedPercent, 25);
   assert.equal(session.surface.deepseekBalance.status, 'not_applicable');
-  assert.equal(harness.calls.sessionUpdates.length, 2);
-  assert.equal(harness.calls.renders, 2);
+  assert.equal(session.surface.opencodeUsage.status, 'not_applicable');
+  assert.equal(harness.calls.sessionUpdates.length, 3);
+  assert.equal(harness.calls.renders, 3);
 
   handler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: 'q'}, harness.host);
   assert.equal(harness.calls.sessionCloses, 1);
@@ -2487,15 +2497,12 @@ test('resumeCommandHandler opens empty state, selectable sessions, moves, confir
   const emptySession = startCommand(resumeCommandHandler, '/resume', empty.host);
   assert.equal(emptySession.surface.kind, 'info');
   assert.ok(emptySession.surface.lines.some((line) => line.includes('没有可恢复会话')));
-  assert.equal(emptySession.data.pageSize, RESUME_PAGE_SIZE);
 
   const sessions = createSessionSummarys(7);
   const selectable = createFakeHost({ sessions });
   const session = startCommand(resumeCommandHandler, '/resume', selectable.host);
   assert.equal(session.surface.kind, 'resume');
-  assert.equal(session.surface.sessions.length, 5);
-  assert.equal(session.surface.hiddenSessionCountAbove, 0);
-  assert.equal(session.surface.hiddenSessionCountBelow, 2);
+  assert.equal(session.surface.sessions.length, 7);
   assert.equal(session.surface.focus, 'list');
   assert.equal(session.surface.previewScroll, 0);
   assert.equal(session.data.selectedIndex, 0);
@@ -2512,11 +2519,8 @@ test('resumeCommandHandler opens empty state, selectable sessions, moves, confir
   }
 
   assert.equal(activeSession.data.selectedIndex, 5);
-  assert.equal(activeSession.data.windowStart, 1);
   assert.equal(activeSession.data.previewScroll, 0);
-  assert.equal(activeSession.surface.selectedIndex, 4);
-  assert.equal(activeSession.surface.hiddenSessionCountAbove, 1);
-  assert.equal(activeSession.surface.hiddenSessionCountBelow, 1);
+  assert.equal(activeSession.surface.selectedIndex, 5);
   assert.equal(activeSession.surface.previewStatus, 'loading');
   await new Promise((resolve) => setTimeout(resolve, 140));
   activeSession = selectable.host.session.getActive();
@@ -2558,7 +2562,6 @@ test('resumeCommandHandler switches focus and scrolls preview without moving ses
   session = selectable.host.session.getActive();
   assert.equal(session.data.previewScroll, 1);
   assert.equal(session.data.selectedIndex, 0);
-  assert.equal(session.data.windowStart, 0);
 
   resumeCommandHandler.handleEvent(session, { type: INPUT_EVENTS.MOVE_UP }, selectable.host);
   session = selectable.host.session.getActive();
@@ -2572,11 +2575,11 @@ test('resumeCommandHandler switches focus and scrolls preview without moving ses
     resumeCommandHandler.handleEvent(session, { type: INPUT_EVENTS.MOVE_DOWN }, selectable.host);
     session = selectable.host.session.getActive();
   }
-  assert.equal(session.data.previewScroll, 4);
+  assert.equal(session.data.previewScroll, 20);
 
   resumeCommandHandler.handleEvent(session, { type: INPUT_EVENTS.MOVE_UP }, selectable.host);
   session = selectable.host.session.getActive();
-  assert.equal(session.data.previewScroll, 3);
+  assert.equal(session.data.previewScroll, 19);
 
   resumeCommandHandler.handleEvent(session, { type: INPUT_EVENTS.MOVE_LEFT }, selectable.host);
   session = selectable.host.session.getActive();
@@ -2673,9 +2676,7 @@ test('referenceCommandHandler selects one whole session without loading the curr
   const selectable = createFakeHost({referenceSessions: sessions});
   session = startCommand(handler, '/reference', selectable.host);
   assert.equal(session.surface.kind, 'resume');
-  assert.equal(session.surface.sessions.length, 5);
-  assert.equal(session.surface.hiddenSessionCountAbove, 0);
-  assert.equal(session.surface.hiddenSessionCountBelow, 2);
+  assert.equal(session.surface.sessions.length, 7);
   assert.match(session.surface.sessions[0].label, /conversation 7/);
   assert.equal(session.surface.previewStatus, 'loading');
   assert.deepEqual(session.surface.previewRecords, []);

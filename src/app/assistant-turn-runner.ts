@@ -341,6 +341,7 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
 
     if (wasCurrentTurn) {
       userQuestion.cancelActiveRequest('User question was interrupted because the assistant turn ended.');
+      toolApproval.cancelAllPending();
       appContext.subagentRunContext.clear();
       appContext.finalizeChangeCheckpoint();
     }

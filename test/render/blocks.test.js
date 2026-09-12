@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 
 const { createTuiTheme } = require('../../src/config/theme-config');
 const { displayWidth, safeRenderWidth, stripAnsi } = require('../../src/render/layout');
-const { getCommittableReasoningText, getCommittableStreamingText, renderAssistantMessageLines, renderBanner, renderPendingAssistantLines, renderReasoningSummaryLines, renderShellBlock, renderStreamingCommitLines, renderUserBlock, renderUserMessageLines, renderErrorMessageLines } = require('../../src/render/blocks');
+const { getCommittableReasoningText, getCommittableStreamingText, renderAssistantMessageLines, renderBanner, renderPendingAssistantLines, renderReasoningSummaryLines, renderShellBlock, renderStreamingCommitLines, renderSubagentViewIndex, renderUserBlock, renderUserMessageLines, renderErrorMessageLines } = require('../../src/render/blocks');
 const {getCommittableMarkdownText} = require('../../src/render/markdown');
 
 test('renderBanner returns a large startup header at wide widths', () => {
@@ -149,6 +149,37 @@ test('renderPendingAssistantLines bounds compact tools by hidden call count and 
   assert.deepEqual(titleOnly, ['◆ 4 tools · running']);
   assert.ok(constrained.every((line) => displayWidth(line) <= safeRenderWidth(32)));
   assert.ok(extremelyNarrow.every((line) => displayWidth(line) <= safeRenderWidth(4)));
+});
+
+test('renderPendingAssistantLines groups parallel subagents into compact ordered rows', () => {
+  const pending = {
+    kind: 'subagents',
+    runs: [
+      {kind: 'subagent', agentName: 'explorer', elapsedMs: 14100, phase: 'tool', runId: 'r1', task: 'first investigation', toolName: 'grep'},
+      {kind: 'subagent', agentName: 'explorer', elapsedMs: 9800, phase: 'waiting_approval', runId: 'r2', task: 'second investigation'}
+    ]
+  };
+  const lines = renderPendingAssistantLines(pending, 120, 10).map(stripAnsi);
+
+  assert.deepEqual(lines, [
+    '◆ 2 agents · 14.1s · ctrl+o 详情',
+    '  ├─ explorer · first investigation · tool · grep · 14.1s',
+    '  └─ explorer · second investigation · waiting approval · 9.8s'
+  ]);
+});
+
+test('renderPendingAssistantLines bounds parallel subagent rows by budget and safe width', () => {
+  const runs = Array.from({length: 5}, (_, index) => ({
+    kind: 'subagent', agentName: 'explorer', elapsedMs: (index + 1) * 1000, phase: 'thinking', runId: `r${index}`, task: `task ${index}`
+  }));
+  const constrained = renderPendingAssistantLines({kind: 'subagents', runs}, 60, 3).map(stripAnsi);
+  const titleOnly = renderPendingAssistantLines({kind: 'subagents', runs}, 60, 1).map(stripAnsi);
+
+  assert.deepEqual(constrained.slice(0, 1), ['◆ 5 agents · 5.0s · ctrl+o 详情']);
+  assert.equal(constrained[1], '  ├─ explorer · task 0 · thinking · 1.0s');
+  assert.equal(constrained[2], '  └─ … +4 more');
+  assert.deepEqual(titleOnly, ['◆ 5 agents · 5.0s · ctrl+o 详情']);
+  assert.ok(constrained.every((line) => displayWidth(line) <= safeRenderWidth(60)));
 });
 
 test('renderPendingAssistantLines keeps streaming preview as plain text without thinking label', () => {
@@ -449,4 +480,52 @@ test('message blocks pad and wrap composite emoji at grapheme width', () => {
   const composed = 'e\u0301';
   const padded = renderUserMessageLines(`${composed}a`, 10).map((line) => stripAnsi(line))[0];
   assert.equal(displayWidth(padded), 9);
+});
+
+test('renderPendingAssistantLines collapses multi-line subagent tasks into physical single rows', () => {
+  const pending = {
+    kind: 'subagents',
+    runs: [
+      {kind: 'subagent', agentName: 'explorer', elapsedMs: 1200, phase: 'thinking', runId: 'r1', task: '第一行任务\n请回答：echo-tui.ts 与 compaction'},
+      {kind: 'subagent', agentName: 'explorer', elapsedMs: 2400, phase: 'tool', runId: 'r2', task: '第二个\n任务', toolName: 'grep'}
+    ]
+  };
+  const lines = renderPendingAssistantLines(pending, 80, 10);
+
+  assert.equal(lines.length, 3);
+  assert.ok(lines.every((line) => !line.includes('\n')));
+  assert.ok(lines.every((line) => displayWidth(line) <= safeRenderWidth(80)));
+  assert.match(stripAnsi(lines[1]), /第一行任务 请回答：echo-tui\.ts 与 compaction · thinking/u);
+});
+
+test('renderSubagentViewIndex lists all runs with totals and highlights the watched run', () => {
+  const entries = [
+    {runId: 'r1', agentName: 'explorer', task: '第一行\n第二行', statusText: '已结束 · 12.0s', active: false},
+    {runId: 'r2', agentName: 'explorer', task: '调查任务', statusText: 'thinking · 57.5s', active: true},
+    {runId: 'r3', agentName: 'worker', task: '另一任务', statusText: 'tool · grep · 3.0s', active: true}
+  ];
+
+  const lines = renderSubagentViewIndex(entries, 'r2', 80).map(stripAnsi);
+
+  assert.equal(lines.length, 4);
+  assert.match(lines[0], /◆ subagent 会话 · 运行中 2 · 共 3 个 · ↑\/↓ 切换/u);
+  assert.match(lines[1], /1\. explorer · 第一行 第二行 · 已结束 · 12\.0s/u);
+  assert.match(lines[2], /▸ 2\. explorer · 调查任务 · thinking · 57\.5s/u);
+  assert.match(lines[3], /3\. worker · 另一任务 · tool · grep · 3\.0s/u);
+  assert.ok(lines.every((line) => !line.includes('\n')));
+  assert.ok(lines.every((line) => displayWidth(line) <= safeRenderWidth(80)));
+});
+
+test('renderSubagentViewIndex folds long run lists around the watched run', () => {
+  const entries = Array.from({length: 12}, (_, index) => ({
+    runId: `r${index}`, agentName: 'explorer', task: `任务 ${index}`, statusText: '已结束', active: false
+  }));
+
+  const lines = renderSubagentViewIndex(entries, 'r5', 80).map(stripAnsi);
+
+  assert.match(lines[0], /共 12 个/u);
+  assert.ok(lines.length <= 9);
+  assert.ok(lines.some((line) => /▸ 6\. /u.test(line)));
+  assert.ok(lines.some((line) => /↑ 上方/u.test(line)));
+  assert.ok(lines.some((line) => /↓ 下方/u.test(line)));
 });

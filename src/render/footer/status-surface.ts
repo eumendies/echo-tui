@@ -4,7 +4,7 @@ import {tokenText, type FooterTheme} from '../colors';
 import {clampPlainText, padVisibleText} from './text';
 import {constrainLayoutTail} from './window';
 
-import type {CommandCodexUsageWindow, CommandDeepseekBalanceInfo, CommandStatusSandboxState, StatusCommandSurface} from '../../types/command';
+import type {CommandCodexUsageWindow, CommandDeepseekBalanceInfo, CommandOpencodeUsageWindow, CommandStatusSandboxState, StatusCommandSurface} from '../../types/command';
 import type {FooterLayout} from '../../types/render';
 
 const FILL = '█';
@@ -77,6 +77,25 @@ function renderStatusSurface(surface: StatusCommandSurface, width: number, maxLi
     }
   }
 
+  if (surface.opencodeUsage.status !== 'not_applicable') {
+    lines.push(dividerLine(cardWidth, theme));
+    lines.push(plainRow(cardWidth, 'OpenCode Go 用量', theme, 'accentStrong', true));
+
+    if (surface.opencodeUsage.status === 'available') {
+      if (surface.opencodeUsage.windows.length === 0) {
+        lines.push(plainRow(cardWidth, '暂无窗口数据', theme, 'muted'));
+      } else {
+        for (const window of surface.opencodeUsage.windows) {
+          lines.push(...opencodeWindowLines(window, cardWidth, inner, theme));
+        }
+      }
+    } else if (surface.opencodeUsage.status === 'loading') {
+      lines.push(plainRow(cardWidth, '正在查询…', theme, 'accent'));
+    } else {
+      lines.push(plainRow(cardWidth, `不可用  ${surface.opencodeUsage.error}`, theme, 'warning'));
+    }
+  }
+
   lines.push(dividerLine(cardWidth, theme));
   lines.push(plainRow(cardWidth, surface.dismissHint, theme, 'muted'));
   lines.push(bottomLine(cardWidth, theme));
@@ -110,9 +129,22 @@ function balanceRowText(info: CommandDeepseekBalanceInfo): string {
 
 function usageWindowLines(label: string, usage: CommandCodexUsageWindow, cardWidth: number, inner: number, theme: FooterTheme): string[] {
   const percent = Math.min(100, Math.max(0, usage.usedPercent));
+  const fullStat = `${formatPercent(percent)}% · 重置 ${formatResetAt(usage.resetAt)}`;
+  return usageWindowRowLines(label, fullStat, percent, cardWidth, inner, theme);
+}
+
+/**
+ * OpenCode Go 窗口行:归一化为 {usedPercent, resetAt} 后与 Codex 用量行完全同构,标签按已知键翻译。
+ */
+function opencodeWindowLines(window: CommandOpencodeUsageWindow, cardWidth: number, inner: number, theme: FooterTheme): string[] {
+  return usageWindowLines(formatOpencodeWindowLabel(window.name), {resetAt: window.resetsAtMs, usedPercent: window.percent}, cardWidth, inner, theme);
+}
+
+/**
+ * 共享窗口行构造:头部宽度不足时把完整统计降级为纯百分比,进度条按 75/90 阈值分档着色。
+ */
+function usageWindowRowLines(label: string, fullStat: string, percent: number, cardWidth: number, inner: number, theme: FooterTheme): string[] {
   const percentText = `${formatPercent(percent)}%`;
-  const resetText = `重置 ${formatResetAt(usage.resetAt)}`;
-  const fullStat = `${percentText} · ${resetText}`;
   const stat = displayWidth(label) + 1 + displayWidth(fullStat) <= inner ? fullStat : percentText;
   const gap = Math.max(1, inner - displayWidth(label) - displayWidth(stat));
   const header = `${label}${' '.repeat(gap)}${stat}`;
@@ -130,6 +162,23 @@ function formatPercent(value: number): string {
 function formatResetAt(timestamp: number): string {
   const date = new Date(timestamp);
   return Number.isFinite(date.getTime()) ? date.toISOString().slice(0, 16).replace('T', ' ') : '未知';
+}
+
+/**
+ * 窗口标签映射集中在渲染层:已知命名翻译为中文,未知名称原样展示,避免对上游枚举做硬假设。
+ */
+function formatOpencodeWindowLabel(name: string): string {
+  const normalized = name.toLowerCase();
+  if (normalized === 'rolling') {
+    return '5 小时';
+  }
+  if (normalized === 'weekly') {
+    return '每周';
+  }
+  if (normalized === 'monthly') {
+    return '每月';
+  }
+  return name;
 }
 
 function topLine(width: number, title: string, theme: FooterTheme): string {

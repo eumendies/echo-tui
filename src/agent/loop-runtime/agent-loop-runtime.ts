@@ -6,6 +6,7 @@ import {
 import {classifyReadonlyToolCall, classifyToolCallRisk} from '../../tools/tool-risk-classifier';
 import {createToolExecutor} from '../../tools/tool-executor';
 import {classifyToolCallConcurrency} from '../../tools/tool-concurrency-classifier';
+import {RUN_SUBAGENT_TOOL_NAME} from '../../tools/run-subagent-tool-handler';
 import {createToolCallTranscriptRecord, createToolResultTranscriptRecord} from '../../tools/tool-transcript-record';
 import {executeTodoToolCall, isTodoToolName} from '../../tools/todo-tool-handler';
 import {getMcpToolApproval} from '../../mcp/manager';
@@ -81,7 +82,7 @@ type ToolApprovalResolution = {
 /**
  * 执行单个 tool call；交互式工具在这里短路到 app callback，避免普通 executor 持有 UI 状态。
  */
-async function executeToolCall(toolCall: ToolCall, state: AgentLoopRunState, callbacks: AgentCallbacks): Promise<ToolExecutionResult> {
+async function executeToolCall(toolCall: ToolCall, state: AgentLoopRunState, callbacks: AgentCallbacks, subagentGroupSize?: number): Promise<ToolExecutionResult> {
   throwIfAborted(state.abortSignal);
 
   if (state.toolPolicy === 'readonly') {
@@ -140,9 +141,19 @@ async function executeToolCall(toolCall: ToolCall, state: AgentLoopRunState, cal
     return createRejectedToolResultFromDecision(toolCall, approvalDecision);
   }
 
-  const result = await state.executor.execute(toolCall, {abortSignal: state.abortSignal, changeRecorder: callbacks.changeRecorder});
+  const result = await state.executor.execute(toolCall, {
+    abortSignal: state.abortSignal,
+    changeRecorder: callbacks.changeRecorder,
+    ...(subagentGroupSize === undefined ? {} : {subagentGroupSize})
+  });
   throwIfAborted(state.abortSignal);
   return result;
+}
+
+/** 统计并行只读段内的 run_subagent 调用数量；达到两个才作为并行分组事实下行到委派端口。 */
+function countRunSubagentGroupSize(toolCalls: ToolCall[]): number | undefined {
+  const count = toolCalls.filter((toolCall) => toolCall.toolName === RUN_SUBAGENT_TOOL_NAME).length;
+  return count >= 2 ? count : undefined;
 }
 
 /**
@@ -150,9 +161,10 @@ async function executeToolCall(toolCall: ToolCall, state: AgentLoopRunState, cal
  */
 async function executeConcurrentReadonlyCalls(toolCalls: ToolCall[], state: AgentLoopRunState, callbacks: AgentCallbacks): Promise<ToolExecutionResult[]> {
   throwIfAborted(state.abortSignal);
+  const subagentGroupSize = countRunSubagentGroupSize(toolCalls);
   const settled = await Promise.allSettled(toolCalls.map(async (toolCall) => {
     state.observation.toolStarted({scope: state.observationScope, call: toolCall});
-    const result = await executeToolCall(toolCall, state, callbacks);
+    const result = await executeToolCall(toolCall, state, callbacks, subagentGroupSize);
     state.observation.toolCompleted({scope: state.observationScope, result});
     return result;
   }));
@@ -216,6 +228,7 @@ type AgentLoopRunState = {
   observationScope: AgentRunScope; // 当前运行复用的语义 scope。
   toolPolicy: AgentToolPolicy; // default 或 readonly 执行策略。
   registry: ToolRegistry; // provider schema 查询和 commit mode 查询的权威目录。
+  readonlySubagentNames?: ReadonlySet<string>; // run 启动时固定的 readonly 执行策略 agent 名称集合；无委派端口时缺省。
   sandboxNote: string | null; // bash 沙箱生效时的 transient 边界说明;null 表示本次运行未包装沙箱。
 };
 
@@ -232,6 +245,12 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
    * 初始化单次调用的 loop 状态；provider、配置和 registry 由统一装配入口提供。
    */
   function initializeRunState(interactionMode: InteractionMode, abortSignal: AbortSignal | undefined, executionMode: AgentExecutionMode, compactionThresholdRatio: number, skillCatalogContextRatio: number, agentInstructionFileName: AgentInstructionFileName, toolPolicy: AgentToolPolicy, conversationKind: AgentConversationKind, configSnapshot: AgentUserConfigSnapshot, modelProfileId?: string, reasoningEffortOverride?: LlmConfig['reasoningEffort'], subagentPort?: SubagentToolPort, sessionId?: string): AgentLoopRunState {
+    // 只读 subagent 名称集合在 run 启动时固定；并发分类不得在运行中重新读取目录。
+    const readonlySubagentNames = subagentPort
+      ? new Set(subagentPort.listDefinitions()
+          .filter((descriptor) => descriptor.executionPolicy === 'readonly_investigation')
+          .map((descriptor) => descriptor.name))
+      : undefined;
     const {agent, config, registry} = prepareAgent({
       configSnapshot,
       cwd,
@@ -256,6 +275,7 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
       interactionMode,
       executor: createToolExecutor(registry),
       registry,
+      ...(readonlySubagentNames ? {readonlySubagentNames} : {}),
       contextWindow,
       compactionThresholdRatio,
       skillCatalog: skillCatalogProjection.catalog,
@@ -513,9 +533,9 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
         throwIfAborted(abortSignal);
         const toolCall = toolCalls[toolIndex];
 
-        if (classifyToolCallConcurrency(toolCall) === 'parallel_read') {
+        if (classifyToolCallConcurrency(toolCall, state.readonlySubagentNames) === 'parallel_read') {
           const readonlyCalls: ToolCall[] = [];
-          while (toolIndex < toolCalls.length && classifyToolCallConcurrency(toolCalls[toolIndex]) === 'parallel_read') {
+          while (toolIndex < toolCalls.length && classifyToolCallConcurrency(toolCalls[toolIndex], state.readonlySubagentNames) === 'parallel_read') {
             readonlyCalls.push(toolCalls[toolIndex]);
             toolIndex += 1;
           }

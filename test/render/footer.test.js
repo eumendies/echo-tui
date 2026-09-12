@@ -81,7 +81,7 @@ function completeCommandSurfaceFixture(surface) {
     case 'usage':
       return {title: 'Token 用量', offset: 0, dismissHint: 'Esc 关闭', ...surface};
     case 'status':
-      return {title: 'Status', dismissHint: 'Esc 关闭', deepseekBalance: {status: 'not_applicable'}, ...surface};
+      return {title: 'Status', dismissHint: 'Esc 关闭', deepseekBalance: {status: 'not_applicable'}, opencodeUsage: {status: 'not_applicable'}, ...surface};
     case 'copy':
       return {title: '/copy', focus: 'list', previewScroll: 0, dismissHint: 'Esc 关闭', ...surface};
     case 'file_picker':
@@ -178,7 +178,8 @@ test('createFooterRenderer writes each complete redraw as one frame and preserve
   const shortLayout = renderFooterLayout(baseState);
   renderer.render(baseState);
   assert.equal(output.writes.length, 3);
-  assert.equal((output.writes[2].match(/\x1b\[2K/g) || []).length, tallLayout.lines.length);
+  // 增量重绘:从高帧回到矮帧只清理底部多出来的行,不再整帧擦写。
+  assert.equal((output.writes[2].match(/\x1b\[2K/g) || []).length, tallLayout.lines.length - shortLayout.lines.length);
   assert.ok(stripAnsi(output.writes[2]).includes('draft'));
   assert.ok(output.writes[2].endsWith(
     `${ansi.cursorUp(shortLayout.lines.length - 1 - shortLayout.cursorRow)}${ansi.carriageReturn()}${ansi.cursorForward(shortLayout.cursorColumn)}${ansi.showCursor()}`
@@ -245,7 +246,7 @@ test('createFooterRenderer safely transitions from response suggestions through 
   renderer.render(surfaceState);
 
   assert.equal(surfaceLayout.lines.length <= surfaceState.rows - 2, true);
-  assert.equal((output.writes[1].match(/\x1b\[2K/g) || []).length, suggestionLayout.lines.length);
+  assert.equal((output.writes[1].match(/\x1b\[2K/g) || []).length, Math.max(0, suggestionLayout.lines.length - surfaceLayout.lines.length));
   assert.ok(stripAnsi(output.writes[1]).includes('/help'));
 
   const restoredState = {
@@ -256,7 +257,7 @@ test('createFooterRenderer safely transitions from response suggestions through 
   const restoredLayout = renderFooterLayout(restoredState);
   renderer.render(restoredState);
 
-  assert.equal((output.writes[2].match(/\x1b\[2K/g) || []).length, surfaceLayout.lines.length);
+  assert.equal((output.writes[2].match(/\x1b\[2K/g) || []).length, Math.max(0, surfaceLayout.lines.length - restoredLayout.lines.length));
   assert.ok(stripAnsi(output.writes[2]).includes('latest restored draft'));
   assert.equal(restoredLayout.lines.length <= restoredState.rows - 2, true);
   assert.ok(output.writes[2].endsWith(
@@ -398,12 +399,14 @@ test('createFooterRenderer clears the remembered pending-card height when the ca
   };
   const pendingState = {...baseState, pendingMessage: {preview: 'queued message'}};
   const pendingLayout = renderFooterLayout(pendingState);
+  const baseLayout = renderFooterLayout(baseState);
 
   renderer.render(baseState);
   renderer.render(pendingState);
   renderer.render(baseState);
 
-  assert.equal((output.writes[2].match(/\x1b\[2K/g) || []).length, pendingLayout.lines.length);
+  // 增量重绘:卡片消失只清理底部多出来的行,不整帧擦写。
+  assert.equal((output.writes[2].match(/\x1b\[2K/g) || []).length, pendingLayout.lines.length - baseLayout.lines.length);
   assert.equal(stripAnsi(output.writes[2]).includes('待发送消息'), false);
 });
 
@@ -1062,6 +1065,62 @@ test('renderStatusSurface renders sandbox state variants', () => {
   assert.match(render({mode: 'read-only', network: false, provider: 'macos-seatbelt', available: false, unavailableReason: 'sandbox-exec 不可用'}), /沙箱\s+read-only · 不可用\(sandbox-exec 不可用\)/);
 });
 
+test('renderStatusSurface renders OpenCode Go usage windows with money, percent, and reset', () => {
+  const snapshot = {
+    agentInstructionFileName: 'AGENTS.md',
+    cwd: '/tmp/project',
+    sessionId: null,
+    model: {agentType: 'openai-chat', model: 'qwen', provider: 'opencode'},
+    sandbox: {mode: 'off', network: false, provider: null, available: false},
+    agentInstructions: [],
+    userMemoryCount: 0,
+    agentMemoryCatalogs: [],
+    diagnostics: []
+  };
+  const layout = renderStatusSurface({
+    kind: 'status',
+    snapshot,
+    usage: {status: 'not_applicable'},
+    opencodeUsage: {
+      status: 'available',
+      windows: [
+        {name: 'rolling', status: 'ok', percent: 70, resetsAtMs: Date.parse('2026-09-10T10:09:43.223Z')},
+        {name: 'weekly', status: 'ok', percent: 61.5, resetsAtMs: Date.parse('2026-09-14T00:00:00.223Z')},
+        {name: 'mystery', status: 'unknown', percent: 100, resetsAtMs: Date.parse('2026-10-07T14:07:29.223Z')}
+      ]
+    }
+  }, 70, 20, CUSTOM_THEME.footer);
+  const plain = layout.lines.map((line) => stripAnsi(line)).join('\n');
+
+  assert.match(plain, /OpenCode Go 用量/);
+  assert.match(plain, /5 小时\s+70% · 重置 2026-09-10 10:09/);
+  assert.match(plain, /每周\s+61\.5% · 重置 2026-09-14 00:00/);
+  assert.match(plain, /mystery\s+100% · 重置 2026-10-07 14:07/);
+});
+
+test('renderStatusSurface renders OpenCode Go usage loading, unavailable, and hides not-applicable', () => {
+  const snapshot = {
+    agentInstructionFileName: 'AGENTS.md',
+    cwd: '/tmp/project',
+    sessionId: null,
+    model: null,
+    sandbox: {mode: 'off', network: false, provider: null, available: false},
+    agentInstructions: [],
+    userMemoryCount: 0,
+    agentMemoryCatalogs: [],
+    diagnostics: []
+  };
+  const toPlain = (layout) => layout.lines.map((line) => stripAnsi(line)).join('\n');
+  const loading = renderStatusSurface({kind: 'status', snapshot, usage: {status: 'not_applicable'}, opencodeUsage: {status: 'loading'}}, 70, 20, CUSTOM_THEME.footer);
+  assert.match(toPlain(loading), /正在查询/);
+
+  const unavailable = renderStatusSurface({kind: 'status', snapshot, usage: {status: 'not_applicable'}, opencodeUsage: {status: 'unavailable', error: 'HTTP 401'}}, 70, 20, CUSTOM_THEME.footer);
+  assert.match(toPlain(unavailable), /不可用\s+HTTP 401/);
+
+  const notApplicable = renderStatusSurface({kind: 'status', snapshot, usage: {status: 'not_applicable'}}, 70, 20, CUSTOM_THEME.footer);
+  assert.doesNotMatch(toPlain(notApplicable), /OpenCode Go 用量/);
+});
+
 test('renderStatusSurface renders DeepSeek balance section and its state variants', () => {
   const snapshot = {
     agentInstructionFileName: 'AGENTS.md',
@@ -1581,20 +1640,19 @@ test('renderFooterLayout renders select command surfaces by kind instead of comm
 });
 
 test('renderFooterLayout renders resume command surfaces with two columns and preview', () => {
+  const sessions = Array.from({length: 25}, (_value, index) => ({
+    label: `2026-05-${String(28 - index).padStart(2, '0')} 10:00 · ${index} 条消息`
+  }));
   const layout = renderFooterLayout({
     composer: createComposer('ignored'),
     commandSurface: {
       kind: 'resume',
-      title: '/resume 恢复会话 (7)',
-      sessions: [
-        { label: '2026-05-19 10:00 · 4 条消息' },
-        { label: '2026-05-18 09:00 · 1 条消息' }
-      ],
-      hiddenSessionCountAbove: 2,
-      hiddenSessionCountBelow: 3,
+      title: '/resume 恢复会话 (25)',
+      sessions,
       focus: 'list',
-      selectedIndex: 0,
+      selectedIndex: 12,
       previewScroll: 0,
+      previewStatus: 'ready',
       previewRecords: [
         { role: 'user', text: 'resume me' },
         { role: 'tool_result', text: 'found resume result' },
@@ -1606,6 +1664,7 @@ test('renderFooterLayout renders resume command surfaces with two columns and pr
     },
     pending: null,
     statusLine: DEFAULT_STATUS_LINE,
+    rows: 20,
     width: 100
   });
 
@@ -1614,26 +1673,30 @@ test('renderFooterLayout renders resume command surfaces with two columns and pr
   assert.equal(layout.showCursor, false);
   assert.ok(plainLines.some((line) => line.startsWith('╭')));
   assert.ok(plainLines.some((line) => line.startsWith('╰')));
-  assert.ok(plainLines.some((line) => line.includes('/resume 恢复会话 (7)')));
+  assert.ok(plainLines.some((line) => line.includes('/resume 恢复会话 (25)')));
   assert.ok(plainLines.some((line) => line.includes('▌ 会话') && line.includes('预览')));
   const headerIndex = plainLines.findIndex((line) => line.includes('▌ 会话') && line.includes('预览'));
   assert.ok(plainLines[headerIndex + 1].includes('────'));
-  assert.ok(plainLines.some((line) => line.includes('▌ 2026-05-19')));
-  assert.ok(plainLines.some((line) => line.includes('↑ 2 更多')));
-  assert.ok(plainLines.some((line) => line.includes('↓ 3 更多')));
+  assert.ok(plainLines.some((line) => line.includes('▌ 2026-05-16')));
+  assert.ok(plainLines.some((line) => line.includes('↑ 8 更多')));
+  assert.ok(plainLines.some((line) => line.includes('↓ 8 更多')));
   assert.ok(!plainLines.some((line) => line.includes('● 2026-05-19') || line.includes('○ 2026-05-18')));
-  assert.ok(!plainLines.some((line) => line.includes('2026-05-19') && line.includes('restored reply')));
+  const previewLine = layout.lines.find((line) => stripAnsi(line).includes('restored reply'));
+  const columns = stripAnsi(previewLine).split('│');
+  assert.ok(columns[1].includes('2026-05-'));
+  assert.ok(columns[2].includes('restored reply'));
   assert.ok(plainLines.some((line) => line.includes('USER resume me')));
   assert.ok(plainLines.some((line) => line.includes('RESULT found resume result')));
   assert.ok(plainLines.some((line) => line.includes('ASSISTANT restored reply')));
   assert.ok(plainLines.some((line) => line.includes('NOTICE response interrupted')));
   assert.ok(plainLines.some((line) => line.includes('ERROR failed locally')));
   assert.ok(plainLines.some((line) => line.includes('Enter 恢复')));
+  assert.equal(layout.lines.length, 18);
   assert.ok(layout.lines.some((line) => line.includes('\x1b[48;5;23m') && stripAnsi(line).includes('▌')));
 
   const resumeFrameColor = '\x1b[38;2;40;110;125m';
   const topLine = layout.lines[plainLines.findIndex((line) => line.startsWith('╭'))];
-  const titleLine = layout.lines[plainLines.findIndex((line) => line.includes('/resume 恢复会话 (7)'))];
+  const titleLine = layout.lines[plainLines.findIndex((line) => line.includes('/resume 恢复会话 (25)'))];
   const bottomLine = layout.lines[plainLines.findIndex((line) => line.startsWith('╰'))];
   assert.ok(topLine.startsWith(`${resumeFrameColor}╭─`));
   assert.ok(titleLine.startsWith(`${resumeFrameColor}│`));
@@ -1648,8 +1711,6 @@ test('renderFooterLayout expands resume surface close to the wide terminal width
       kind: 'resume',
       title: '/resume 恢复会话 (1)',
       sessions: [{label: '2026-05-19 10:00 · 4 条消息'}],
-      hiddenSessionCountAbove: 0,
-      hiddenSessionCountBelow: 0,
       focus: 'list',
       selectedIndex: 0,
       previewScroll: 0,
@@ -1674,8 +1735,6 @@ test('renderFooterLayout renders resume loading and error preview states', () =>
       kind: 'resume',
       title: '/resume 恢复会话 (1)',
       sessions: [{label: '2026-05-19 10:00 · 4 条消息'}],
-      hiddenSessionCountAbove: 0,
-      hiddenSessionCountBelow: 0,
       focus: 'list',
       selectedIndex: 0,
       previewScroll: 0,
@@ -1948,8 +2007,6 @@ test('renderFooterLayout clamps resume surface on narrow width and renders empty
       sessions: [
         { label: '2026-05-19 10:00 · 0 条消息' }
       ],
-      hiddenSessionCountAbove: 0,
-      hiddenSessionCountBelow: 0,
       focus: 'list',
       selectedIndex: 0,
       previewScroll: 0,
@@ -1979,8 +2036,6 @@ test('renderFooterLayout renders scrolled single-line resume preview with previe
       sessions: [
         { label: '2026-05-19 10:00 · 12 条消息' }
       ],
-      hiddenSessionCountAbove: 0,
-      hiddenSessionCountBelow: 0,
       focus: 'preview',
       selectedIndex: 0,
       previewScroll: 3,
@@ -1993,6 +2048,7 @@ test('renderFooterLayout renders scrolled single-line resume preview with previe
     },
     pending: null,
     statusLine: DEFAULT_STATUS_LINE,
+    rows: 16,
     width: 78
   });
 
@@ -3801,4 +3857,91 @@ test('renderFooterLayout constrains choice message and keeps inline input cursor
   for (const line of layout.lines) {
     assert.ok(displayWidth(line) <= safeRenderWidth(70));
   }
+});
+
+test('renderFooterLayout keeps plural subagent rows physical single-line with multi-line tasks', () => {
+  const layout = renderRuntimeFooterLayout({
+    composer: createComposer(''),
+    commandSurface: null,
+    slashSuggestions: null,
+    pending: {
+      kind: 'subagents',
+      runs: [
+        {kind: 'subagent', agentName: 'explorer', elapsedMs: 1200, phase: 'thinking', runId: 'r1', task: '第一行任务\n请回答：echo-tui.ts 与 compaction'},
+        {kind: 'subagent', agentName: 'explorer', elapsedMs: 2400, phase: 'tool', runId: 'r2', task: '第二个\n任务', toolName: 'grep'}
+      ]
+    },
+    working: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    rows: 24,
+    width: 80
+  });
+
+  assert.ok(layout.lines.length >= 3);
+  assert.ok(layout.lines.every((line) => !line.includes('\n')));
+  assert.ok(layout.lines.every((line) => displayWidth(line) <= safeRenderWidth(80)));
+});
+
+test('renderFooterLayout shows the subagent view detail instead of the working spinner', () => {
+  const layout = renderRuntimeFooterLayout({
+    composer: createComposer(''),
+    commandSurface: null,
+    slashSuggestions: null,
+    pending: null,
+    working: null,
+    statusLine: {
+      projectName: 'echo_tui',
+      model: {kind: 'default', label: 'GPT-4o'},
+      mode: 'subagent_view',
+      detail: 'subagent 1/2 · explorer · 调查任务 · thinking · 1.2s',
+      keyHint: '↑/↓ 切换 · Ctrl+O/Esc 返回',
+      activity: {kind: 'working', elapsedMs: 57000}
+    },
+    rows: 24,
+    width: 120
+  });
+
+  const statusText = stripAnsi(layout.lines.join('\n'));
+  assert.match(statusText, /subagent 1\/2 · explorer · 调查任务/u);
+  assert.ok(!statusText.includes('working 00:57'));
+  assert.match(statusText, /↑\/↓ 切换/u);
+});
+
+test('renderFooterLayout renders the subagent view surface without a composer box', () => {
+  const statusLine = {projectName: 'echo_tui', model: {kind: 'default', label: 'GPT-4o'}, mode: 'subagent_view', detail: 'subagent 2/3'};
+  const layout = renderRuntimeFooterLayout({
+    composer: createComposer(''),
+    commandSurface: null,
+    slashSuggestions: null,
+    pending: null,
+    working: null,
+    statusLine,
+    viewIndexLines: ['◆ subagent 会话 · 运行中 2 · 共 3 个 · ↑/↓ 切换 · Ctrl+O/Esc 返回', ''],
+    rows: 24,
+    width: 80
+  });
+
+  // 只读窗口不渲染 composer 输入框与光标；run 索引块直接贴状态行
+  const plain = layout.lines.map(stripAnsi);
+  assert.equal(layout.showCursor, false);
+  assert.equal(plain.length, 4); // spacer + 索引 2 行 + 状态行
+  assert.equal(plain[0], '');
+  assert.match(plain[1], /运行中 2 · 共 3 个/u);
+  assert.ok(plain[plain.length - 1].includes('subagent 2/3'));
+  assert.ok(!plain.some((line) => line.startsWith('╰')));
+
+  // 普通模式不受影响：composer 正常渲染且状态行保持在最后一行
+  const normal = renderRuntimeFooterLayout({
+    composer: createComposer(''),
+    commandSurface: null,
+    slashSuggestions: null,
+    pending: null,
+    working: null,
+    statusLine: {...statusLine, mode: 'idle'},
+    rows: 24,
+    width: 80
+  }).lines.map(stripAnsi);
+  assert.ok(normal.some((line) => line.startsWith('╰')));
+  // idle 模式下状态行不展示 detail，改为校验模型标签
+  assert.ok(normal[normal.length - 1].includes('GPT-4o'));
 });

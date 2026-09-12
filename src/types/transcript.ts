@@ -1,6 +1,6 @@
 import type {ApplyPatchDisplayMetadata, EditFileDisplayMetadata, GlobDisplayMetadata, GrepDisplayMetadata, ToolResultAttachment} from './tool';
 import type {ChangeCheckpoint} from './change-history';
-import type {InteractionMode} from './agent';
+import type {InteractionMode, ReasoningEffort} from './agent';
 import type {SkillSourceKind} from './skill';
 
 export const OPENAI_REASONING_EXTENSION_KIND = 'openai_reasoning';
@@ -130,6 +130,9 @@ export type SubagentTranscriptEvent =
   | {
       kind: 'start'; // 子 Agent 已通过校验并开始运行。
       task: string; // 外层 handler 交付的完整调查任务。
+      parallelSize?: number; // 并行分组内的 run_subagent 调用总数；缺省表示单委派，渲染据此分叉。
+      model?: string; // 子运行实际使用的模型名；旧记录缺省时窗口回退主模型显示。
+      reasoningEffort?: ReasoningEffort; // 解析 effortPolicy 后实际生效的推理强度。
     }
   | {
       kind: 'reasoning_summary'; // Provider 已确认稳定的可见推理摘要。

@@ -46,7 +46,7 @@ export function renderCommandSurface(commandSurface: CommandSurface, width: numb
   }
 
   if (commandSurface.kind === 'resume') {
-    return constrainLayoutTail(renderResumeSurface(commandSurface, width, theme), options.maxLines);
+    return constrainLayoutTail(renderResumeSurface(commandSurface, width, options.maxLines, theme), options.maxLines);
   }
 
   if (commandSurface.kind === 'skills') {
