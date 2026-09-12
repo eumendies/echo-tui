@@ -1,7 +1,8 @@
 import * as ansi from '../../terminal/ansi';
-import { displayWidth, safeRenderWidth } from '../layout';
+import { displayWidth, safeRenderWidth, stripAnsi } from '../layout';
 import { activeBackground, renderFocusBar, resolveFooterTheme, tokenText, type FooterTheme } from '../colors';
 import { clampPlainText, padVisibleText } from './text';
+import { createSelectedWindowRows } from './window';
 import type { ResumeCommandSurface, ResumeCommandSurfacePreviewRecord, ResumeCommandSurfaceSession } from '../../types/command';
 import type { FooterLayout } from '../../types/render';
 
@@ -23,13 +24,14 @@ type SessionListRow =
       direction: 'up' | 'down'; // 隐藏会话相对当前窗口的方向。
     };
 
-const RESUME_BODY_HEIGHT = 8;
+const RESUME_BODY_HEIGHT = 8; // 未提供 maxLines 行数预算时保持的默认主体高度。
+const RESUME_FIXED_ROW_COUNT = 6; // 顶边、标题、表头、分割线、键位提示、底边的固定外壳行数。
 const WIDE_BOX_HORIZONTAL_MARGIN = 4;
 
 /**
- * 渲染 /resume 历史恢复面板；左侧是 session 窗口，右侧是当前选中项消息预览。
+ * 渲染 /resume 历史恢复面板；左侧是渲染层投影的候选窗口，右侧是当前选中项的多行预览。
  */
-export function renderResumeSurface(commandSurface: ResumeCommandSurface, width: number, theme: FooterTheme = resolveFooterTheme(undefined)): FooterLayout {
+export function renderResumeSurface(commandSurface: ResumeCommandSurface, width: number, maxLines: number | undefined = Number.POSITIVE_INFINITY, theme: FooterTheme = resolveFooterTheme(undefined)): FooterLayout {
   const safeWidth = safeRenderWidth(width);
   const boxWidth = calculateBoxWidth(safeWidth);
   const splitWidth = Math.max(2, boxWidth - 7);
@@ -37,8 +39,8 @@ export function renderResumeSurface(commandSurface: ResumeCommandSurface, width:
   const rightWidth = Math.max(1, splitWidth - leftWidth);
   const sessions = commandSurface.sessions;
   const selectedIndex = clampIndex(commandSurface.selectedIndex, sessions.length);
-  const bodyHeight = RESUME_BODY_HEIGHT;
-  const sessionRows = createSessionListRows(commandSurface, selectedIndex);
+  const bodyHeight = calculateBodyHeight(maxLines);
+  const sessionRows = createSessionListRows(commandSurface, selectedIndex, bodyHeight);
   const previewStatus = commandSurface.previewStatus || 'ready';
   const previewHint = previewStatus === 'loading'
     ? '正在加载会话预览…'
@@ -93,24 +95,12 @@ export function renderResumeSurface(commandSurface: ResumeCommandSurface, width:
 }
 
 /**
- * 组合左栏会话和窗口提示；page size 为提示预留空间，因此上下提示不会挤掉候选项。
+ * 用渲染层窗口投影左栏候选；以选中项为中心，more 提示计入主体高度预算。
  */
-function createSessionListRows(commandSurface: ResumeCommandSurface, selectedIndex: number): SessionListRow[] {
-  const rows: SessionListRow[] = [];
-  const hiddenAbove = Math.max(0, Number(commandSurface.hiddenSessionCountAbove) || 0);
-  const hiddenBelow = Math.max(0, Number(commandSurface.hiddenSessionCountBelow) || 0);
-
-  if (hiddenAbove > 0) {
-    rows.push({kind: 'more', count: hiddenAbove, direction: 'up'});
-  }
-
-  rows.push(...commandSurface.sessions.map((session, index) => ({kind: 'session' as const, session, selected: index === selectedIndex})));
-
-  if (hiddenBelow > 0) {
-    rows.push({kind: 'more', count: hiddenBelow, direction: 'down'});
-  }
-
-  return rows;
+function createSessionListRows(commandSurface: ResumeCommandSurface, selectedIndex: number, height: number): SessionListRow[] {
+  return createSelectedWindowRows(commandSurface.sessions, selectedIndex, height).map((row) => row.kind === 'more'
+    ? {kind: 'more' as const, count: row.count, direction: row.direction}
+    : {kind: 'session' as const, session: row.item, selected: row.index === selectedIndex});
 }
 
 /**
@@ -133,6 +123,17 @@ function calculateLeftWidth(splitWidth: number): number {
   }
 
   return Math.min(38, Math.max(22, Math.floor(splitWidth * 0.38)), Math.max(1, splitWidth - 12));
+}
+
+/**
+ * 计算双栏主体高度：footer 的 maxLines 行数预算扣除固定外壳 6 行；无预算时保持默认 8 行。
+ */
+function calculateBodyHeight(maxLines: number | undefined): number {
+  if (maxLines === undefined || !Number.isFinite(maxLines)) {
+    return RESUME_BODY_HEIGHT;
+  }
+
+  return Math.max(1, Math.floor(Number(maxLines)) - RESUME_FIXED_ROW_COUNT);
 }
 
 /**
@@ -222,13 +223,13 @@ function createPreviewRows(records: ResumeCommandSurfacePreviewRecord[], emptyPr
 }
 
 /**
- * 渲染单条消息预览，role 高亮，正文按右栏宽度截断。
+ * 渲染单条消息预览：role 高亮，正文去掉 ANSI 序列后按右栏宽度截断为单行。
  */
 function renderPreviewRecord(record: ResumeCommandSurfacePreviewRecord, width: number, theme: FooterTheme): string {
   const role = formatRole(record.role);
   const roleLabel = clampPlainText(role, Math.max(1, width - 2));
   const prefix = `${roleLabel} `;
-  const text = clampPlainText(record.text, Math.max(1, width - displayWidth(prefix)));
+  const text = clampPlainText(stripAnsi(record.text || ''), Math.max(1, width - displayWidth(prefix)));
 
   if (!text) {
     return '';

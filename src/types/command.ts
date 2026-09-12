@@ -67,18 +67,16 @@ export type ResumeCommandSurfacePreviewRecord = {
 
 export type ResumeCommandSurface = {
   kind: 'resume';
-  focus: 'list' | 'preview';
-  title: string;
-  sessions: ResumeCommandSurfaceSession[];
-  hiddenSessionCountAbove: number; // 当前左栏窗口之前尚未显示的会话数量。
-  hiddenSessionCountBelow: number; // 当前左栏窗口之后尚未显示的会话数量。
-  selectedIndex: number;
-  previewScroll: number;
+  focus: 'list' | 'preview'; // 当前焦点栏，决定上下方向键作用对象。
+  title: string; // 面板顶部标题。
+  sessions: ResumeCommandSurfaceSession[]; // 完整候选列表，可见窗口由渲染层投影。
+  selectedIndex: number; // 选中项在完整候选列表中的绝对索引。
+  previewScroll: number; // 右栏预览相对首条渲染行的滚动偏移，上界由渲染层钳制。
   previewStatus: 'loading' | 'ready' | 'error'; // 当前右栏预览的异步生命周期状态。
-  previewRecords: ResumeCommandSurfacePreviewRecord[];
+  previewRecords: ResumeCommandSurfacePreviewRecord[]; // ready 状态下按渲染行折行显示的预览记录。
   previewError?: string; // 预览读取失败时展示的稳定错误文案。
-  emptyPreviewHint: string;
-  dismissHint: string;
+  emptyPreviewHint: string; // 预览无记录时的占位文案。
+  dismissHint: string; // 面板底部键位提示。
 };
 
 export type SkillsCommandSurface = {
