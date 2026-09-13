@@ -9,6 +9,7 @@ import {createOpenAiAgent} from './openai-responses/agent';
 
 import type {AgentExecutionMode, AgentUserConfigSnapshot, LlmConfig, ProviderAgent, ReasoningEffort, SubagentToolPort} from '../types/agent';
 import type {McpManager} from '../mcp/manager';
+import type {SkillRegistry} from '../types/skill';
 import type {ToolRegistry} from '../types/tool';
 
 type PrepareAgentOptions = {
@@ -19,6 +20,7 @@ type PrepareAgentOptions = {
   mcpManager?: McpManager; // 可选共享 MCP 连接目录，不由本函数管理生命周期。
   modelProfileId?: string; // 从 snapshot 解析本次 provider 时使用的模型 profile。
   reasoningEffortOverride?: ReasoningEffort; // 仅本次准备生效的推理强度覆盖。
+  skillRegistry?: SkillRegistry; // 注入运行级 Skill 快照 scope；缺省时由默认装配重新创建 SkillManager。
   allowedToolNames?: ReadonlySet<string>; // 存在时 registry 只保留该运行明确允许的本地工具。
   sessionId?: string; // 当前会话稳定身份；preset 声明 sessionHeader 时用它注入会话亲和 header。
   subagentPort?: SubagentToolPort; // 仅允许委派的父 run 注入的同步子运行端口。
@@ -80,6 +82,7 @@ function prepareAgent(options: PrepareAgentOptions): PreparedAgent {
   const baseRegistry = createDefaultToolRegistry(config, options.cwd, toolResultStore, {
     allowedToolNames: options.allowedToolNames,
     executionMode: options.executionMode,
+    ...(options.skillRegistry ? {skillRegistry: options.skillRegistry} : {}),
     subagentPort: options.subagentPort
   });
   const registry = options.mcpManager

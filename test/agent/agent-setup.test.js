@@ -43,6 +43,39 @@ test('prepareAgent consumes the supplied runtime config and merges MCP tools', (
   assert.ok(toolNames.includes('mcp__docs__search'));
 });
 
+test('prepareAgent injects the run skill registry and honors allowed tool filtering', () => {
+  const injected = {
+    listCatalog() {
+      return [{name: 'alpha', description: 'Alpha', sourceKind: 'project', sourcePath: '/x/alpha/SKILL.md'}];
+    },
+    loadSkill(name) {
+      return name === 'alpha'
+        ? {ok: true, skill: {name: 'alpha', description: 'Alpha', sourceKind: 'project', sourcePath: '/x/alpha/SKILL.md', content: '# Alpha body', resources: []}}
+        : {ok: false, reason: 'missing', message: `Unknown skill: ${name}`, availableSkills: this.listCatalog()};
+    }
+  };
+
+  const full = agentSetupModule.prepareAgent({config: TEST_CONFIG, cwd: '/tmp/echo-agent-setup', skillRegistry: injected});
+  assert.deepEqual(full.registry.listSkillCatalog().map(({name}) => name), ['alpha']);
+  const handler = full.registry.getHandler('use_skill');
+  assert.equal(handler !== undefined, true);
+  const call = {callId: 'call-1', toolName: 'use_skill', argumentsText: ''};
+  const loaded = handler.execute({name: 'alpha'}, call);
+  assert.equal(loaded.ok, true);
+  assert.match(loaded.text, /# Alpha body/u);
+  const rejected = handler.execute({name: 'other'}, call);
+  assert.equal(rejected.ok, false);
+  assert.match(rejected.text, /available_skills:\n- alpha/u);
+
+  const filtered = agentSetupModule.prepareAgent({
+    allowedToolNames: new Set(['read_files']),
+    config: TEST_CONFIG,
+    cwd: '/tmp/echo-agent-setup',
+    skillRegistry: injected
+  });
+  assert.equal(filtered.registry.getHandler('use_skill'), undefined);
+});
+
 test('prepareAgent injects runtime session id into the preset-declared session header', () => {
   const prepared = agentSetupModule.prepareAgent({
     config: {

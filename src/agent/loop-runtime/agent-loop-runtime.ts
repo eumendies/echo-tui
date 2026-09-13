@@ -11,6 +11,8 @@ import {createToolCallTranscriptRecord, createToolResultTranscriptRecord} from '
 import {executeTodoToolCall, isTodoToolName} from '../../tools/todo-tool-handler';
 import {getMcpToolApproval} from '../../mcp/manager';
 import {createSkillCatalogPromptProjection} from '../../skills/skill-catalog-prompt';
+import {createSkillManager} from '../../skills/skill-manager';
+import {captureSkillSnapshot} from '../../skills/skill-snapshot';
 import {throwIfAborted} from '../../types/agent';
 import {normalizeError} from '../agent-errors';
 import {loadAgentInstructions} from '../agent-instructions';
@@ -36,6 +38,7 @@ import type {AgentCallbacks, AgentConversationKind, AgentExecutionMode, AgentIns
 import type {UsageStore} from '../../types/usage';
 import type {SkillCatalogEntry} from '../../types/skill';
 import type {SkillCatalogPromptProjection} from '../../skills/skill-catalog-prompt';
+import type {SkillSnapshot} from '../../skills/skill-snapshot';
 import type {ToolApprovalRequest, ToolCall, ToolDefinition, ToolExecutionResult, ToolExecutor, ToolRegistry} from '../../types/tool';
 import type {CompactionState, SubagentTranscriptRecord, TodoState, TranscriptRecord} from '../../types/transcript';
 import type {McpManager} from '../../mcp/manager';
@@ -217,6 +220,7 @@ type AgentLoopRunState = {
   skillCatalog: SkillCatalogEntry[]; // 本次 system context 可见的有界 skill目录。
   skillCatalogTokens: number; // 当前 skill目录投影的估算 token数。
   skillCatalogProjection: Pick<SkillCatalogPromptProjection, 'budgetTokens' | 'mode' | 'originalTokens'>; // 调试使用的 skill预算事实。
+  skillSnapshot: SkillSnapshot; // run 启动时捕获的不可变 enabled Skill 快照；primary 与全部子运行同源。
   basePrompt?: string; // 用户 system prompt override，缺省使用内置主 prompt。
   todoState: TodoState | undefined; // 主运行的 open todo 状态。
   toolDefinitions: ToolDefinition[]; // 真正发送给当前 provider 的工具 schema。
@@ -251,6 +255,8 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
           .filter((descriptor) => descriptor.executionPolicy === 'readonly_investigation')
           .map((descriptor) => descriptor.name))
       : undefined;
+    // 单次 assistant run 只在启动时物化 Skill 快照；primary catalog、use_skill 与全部子 scope 共用同源。
+    const skillSnapshot = captureSkillSnapshot(createSkillManager({cwd}));
     const {agent, config, registry} = prepareAgent({
       configSnapshot,
       cwd,
@@ -258,6 +264,7 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
       mcpManager,
       modelProfileId,
       reasoningEffortOverride,
+      skillRegistry: skillSnapshot,
       ...(subagentPort ? {subagentPort} : {}),
       ...(sessionId ? {sessionId} : {})
     });
@@ -285,6 +292,7 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
         mode: skillCatalogProjection.mode,
         originalTokens: skillCatalogProjection.originalTokens
       },
+      skillSnapshot,
       todoState: undefined,
       toolDefinitions: registry.listDefinitions(),
       mcpManager,
@@ -346,9 +354,8 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
             agentInstructions: state.agentInstructions,
             basePrompt: state.basePrompt,
             memoryPrompt: currentMemoryPrompt || resolveMemoryPrompt(cwd, state.contextWindow),
-            skillCatalog: state.skillCatalog,
-            skillCatalogProjection: state.skillCatalogProjection,
-            skillCatalogTokens: state.skillCatalogTokens
+            skillCatalogContextRatio,
+            skillSnapshot: state.skillSnapshot
           }),
           modelProfileId: session.modelProfileId,
           observation,

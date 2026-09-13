@@ -157,7 +157,7 @@ function renderToolRow(row: AgentsCommandRow, active: boolean, contentWidth: num
     : '';
   const separator = contentBudget > 1 ? ' ' : '';
   const visibleLabel = clampCellText(row.label, Math.max(0, contentBudget - displayWidth(marker) - displayWidth(separator)));
-  const labelToken = row.status === 'invalid' ? 'warning' : active ? 'accentStrong' : 'accent';
+  const labelToken = row.status === 'invalid' || row.status === 'stale' ? 'warning' : active ? 'accentStrong' : 'accent';
   const label = tokenText(theme, labelToken, active ? ansi.bold(visibleLabel) : visibleLabel);
   const detailText = detailWidth > 0 ? ansi.dim(clampCellText(detail, detailWidth)) : '';
   const body = `${padVisibleText(`${prefix}${marker}${separator}${label}`, labelWidth)}${padLeftVisibleText(detailText, detailWidth)}`;
@@ -169,7 +169,7 @@ function renderAgentRow(row: AgentsCommandRow, active: boolean, contentWidth: nu
   const source = (row.sourceKind || 'unknown').toUpperCase();
   const status = row.status || 'unknown';
   const policy = row.capability
-    ? `${row.capability} · ${row.model || 'parent model'} · ${row.effort || 'inherit'} · ${row.toolCount || 0} tools · MCP ${row.mcp ? 'on' : 'off'}`
+    ? `${row.capability} · ${row.model || 'parent model'} · ${row.effort || 'inherit'} · ${row.toolCount || 0} tools · ${row.skillSummary || 'all skills'} · MCP ${row.mcp ? 'on' : 'off'}`
     : row.description || '定义无效';
   const label = `${row.label}  ${source} · ${status}`;
   const detail = row.capability && row.description ? `${policy} · ${row.description}` : policy;

@@ -124,6 +124,7 @@ async function withPatchedAgents(cwd, createAgent, callback) {
   agentSetupModule.prepareAgent = (options) => {
     const localRegistry = createDefaultToolRegistry(TEST_CONFIG, cwd, undefined, {
       allowedToolNames: options.allowedToolNames,
+      ...(options.skillRegistry ? {skillRegistry: options.skillRegistry} : {}),
       subagentPort: options.subagentPort
     });
     const registry = options.mcpManager

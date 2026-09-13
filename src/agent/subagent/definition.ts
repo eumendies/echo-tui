@@ -11,6 +11,7 @@ type SubagentDefinition = {
   modelProfileId?: string; // 已由父 run 配置 snapshot 严格验证的显式模型 profile。
   name: string; // 工具参数、transcript 和审批来源共用的稳定名称。
   prompt: string; // 注入子 provider system context 的专属行为约束。
+  skillNames?: readonly string[]; // 三态 Skill allowlist：缺省允许父运行快照全部 enabled Skills，空数组明确禁止，非空按名称收窄。
 };
 
 type CustomSubagentCapability = 'readonly' | 'general';
@@ -81,6 +82,9 @@ function createCustomSubagentPrompt(capability: CustomSubagentCapability, name: 
 /** 冻结定义的嵌套授权字段，避免共享目录被调用方原地修改。 */
 function freezeSubagentDefinition(definition: SubagentDefinition): Readonly<SubagentDefinition> {
   Object.freeze(definition.localToolNames);
+  if (definition.skillNames !== undefined) {
+    Object.freeze(definition.skillNames);
+  }
   return Object.freeze(definition);
 }
 

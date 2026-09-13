@@ -168,7 +168,7 @@ export type HooksCommandSurface = {
 };
 
 export type AgentsCommandTab = 'overview' | 'project' | 'user' | 'builtin';
-type AgentsCommandMode = 'list' | 'detail' | 'form' | 'tools' | 'instructions' | 'confirm';
+type AgentsCommandMode = 'list' | 'detail' | 'form' | 'tools' | 'skills' | 'instructions' | 'confirm';
 
 type AgentsCommandTabInfo = {
   id: AgentsCommandTab; // 顶层来源范围的稳定标识。
@@ -186,6 +186,7 @@ export type AgentsCommandRow = {
   model?: string; // Agent 列表行的显式模型 profile；缺省表示继承父模型。
   readonly?: boolean; // true 表示该字段仅展示且不得进入编辑状态。
   selected?: boolean; // tools 多选时表示当前工具是否已纳入草稿。
+  skillSummary?: string; // Agent 列表行的 Skill 策略摘要，区分全部、无与已配置数量。
   sourceKind?: 'builtin' | AgentManagementScope; // Agent 列表行的物理来源。
   status?: string; // Agent 的 active、shadowed、invalid 或 reserved 等状态摘要。
   toolCount?: number; // Agent 列表行当前本地工具数量。
@@ -199,6 +200,7 @@ export type AgentsCommandDraft = {
   mcp: boolean; // 通用 Agent 是否请求父运行已初始化的全部 MCP tools。
   modelProfileId?: string; // 当前配置 snapshot 中的显式模型 profile；缺省表示继承。
   name: string; // 新建时可编辑、已有定义编辑时只读的文件基础名。
+  skillNames?: string[]; // 三态 Skill allowlist：缺省允许全部 enabled Skills，空数组明确禁止，非空按名称收窄。
   tools: string[]; // 当前 capability ceiling 内选择的 provider-neutral 工具名。
 };
 
@@ -226,6 +228,13 @@ export type CommandAgentBuiltinInfo = {
   localToolNames: string[]; // 内置定义固定的本地工具白名单，只读展示。
   modelProfileId?: string; // 当前有效 override 的显式模型 profile。
   name: BuiltinSubagentName; // Explorer 或 Worker 的固定保留名称。
+  skillNames?: string[]; // 当前有效 override 的 Skill allowlist；缺省表示全部 enabled Skills。
+};
+
+export type CommandAgentSkillInfo = {
+  enabled: boolean; // 当前全局 /skills 状态；disabled 名称保留在 allowlist 中但不在 effective 集合内。
+  name: string; // 与 manifest `skills` 序列和 `use_skill` 参数一致的稳定名称。
+  sourceKind: SkillSourceKind; // 当前按 project、user、builtin 优先级胜出的来源。
 };
 
 export type CommandAgentsSnapshot = {
@@ -234,6 +243,7 @@ export type CommandAgentsSnapshot = {
   items: Readonly<AgentManagementItem>[]; // Built-in、User 与 Project 物理项及覆盖状态。
   models: Array<{id: string}>; // 当前用户配置 snapshot 中可供表单选择的模型 profile ID。
   overrides: readonly Readonly<AgentsSettingsScopeReadResult>[]; // 两个固定 sidecar 的物理读取状态和冲突指纹。
+  skills: CommandAgentSkillInfo[]; // 管理会话捕获的当前 Skill 目录，供 Skills 多选层展示与选择。
 };
 
 export type ScaleCommandSurface = {
