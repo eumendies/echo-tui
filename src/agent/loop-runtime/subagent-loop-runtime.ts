@@ -1,6 +1,9 @@
 import {resolveContextWindow} from '../../config/llm-config';
 import {getMcpToolApproval} from '../../mcp/manager';
 import {createUsageCwdHash} from '../../persistence/usage-store';
+import {USE_SKILL_TOOL_NAME} from '../../tools/use-skill-tool-handler';
+import {createSkillCatalogPromptProjection} from '../../skills/skill-catalog-prompt';
+import {createScopedSkillRegistry} from '../../skills/skill-snapshot';
 import {
   ASK_USER_QUESTIONS_TOOL_NAME
 } from '../../tools/ask-user-questions-tool-handler';
@@ -22,6 +25,8 @@ import {disabledObservation} from '../../observation/observation';
 
 import type {TokenUsageAnchor} from '../context/context-compaction';
 import type {AgentTurnCallbacks, LlmConfig, ProviderAgent, ProviderRetry, ProviderUsage, ToolApprovalDecision} from '../../types/agent';
+import type {SkillCatalogEntry} from '../../types/skill';
+import type {SkillCatalogPromptProjection} from '../../skills/skill-catalog-prompt';
 import type {ToolCall, ToolDefinition, ToolExecutionResult, ToolExecutor, ToolRegistry} from '../../types/tool';
 import type {CompactionState, TodoState, TranscriptRecord} from '../../types/transcript';
 import type {UsageStore} from '../../types/usage';
@@ -43,6 +48,9 @@ type SubagentLoopRunState = {
   providerType: LlmConfig['agentType']; // usage记录使用的 provider协议类型。
   reasoningEffort?: LlmConfig['reasoningEffort']; // 子运行固定的推理强度。
   registry: ToolRegistry; // 子 provider schema与执行器共用的裁剪目录。
+  skillCatalog: SkillCatalogEntry[]; // 子 scope 内一次投影后的有界 skill 目录。
+  skillCatalogTokens: number; // 子 skill 目录投影的估算 token数。
+  skillCatalogProjection: Pick<SkillCatalogPromptProjection, 'budgetTokens' | 'mode' | 'originalTokens'>; // 子运行自身窗口的预算诊断事实。
   todoState: TodoState | undefined; // general 子 Agent 独立维护的待办状态；readonly 子 Agent 始终为空。
   toolDefinitions: ToolDefinition[]; // 真正发送给子 provider的工具 schema。
   sandboxNote: string | null; // bash 沙箱生效时的 transient 边界说明;null 表示本次子运行未包装沙箱。
@@ -175,16 +183,23 @@ function createSubagentLoopRuntime(cwd: string, inheritedContext: InheritedAgent
     try {
       // 端口已预解析时直接复用，保证窗口展示与实际请求使用同一份解析结果。
       const resolvedConfig = input.resolvedLlmConfig ?? resolveSubagentLlmConfig(input, definition);
+      // 定义不含 use_skill 时 effective Skill 集合强制为空；否则按三态 allowlist 从父快照派生 scope。
+      const exposesUseSkill = definition.localToolNames.includes(USE_SKILL_TOOL_NAME);
+      const scopedSkillRegistry = createScopedSkillRegistry(inheritedContext.skillSnapshot, exposesUseSkill ? definition.skillNames : []);
       const {agent, config, registry} = prepareAgent({
         allowedToolNames: new Set(definition.localToolNames),
         config: resolvedConfig,
         cwd,
         executionMode: input.executionMode,
         ...(definition.includeMcpTools && mcpManager ? {mcpManager} : {}),
+        skillRegistry: scopedSkillRegistry
       });
+      const contextWindow = resolveContextWindow(config);
+      // 子运行在最终模型解析后按自身窗口创建一次 catalog 投影，全部 continuation 复用。
+      const skillCatalogProjection = createSkillCatalogPromptProjection(scopedSkillRegistry.listCatalog(), contextWindow, inheritedContext.skillCatalogContextRatio);
       state = {
         agent,
-        contextWindow: resolveContextWindow(config),
+        contextWindow,
         executor: createToolExecutor(registry),
         model: config.model,
         observation,
@@ -204,6 +219,13 @@ function createSubagentLoopRuntime(cwd: string, inheritedContext: InheritedAgent
         providerType: config.agentType,
         reasoningEffort: config.reasoningEffort,
         registry,
+        skillCatalog: skillCatalogProjection.catalog,
+        skillCatalogTokens: skillCatalogProjection.estimatedTokens,
+        skillCatalogProjection: {
+          budgetTokens: skillCatalogProjection.budgetTokens,
+          mode: skillCatalogProjection.mode,
+          originalTokens: skillCatalogProjection.originalTokens
+        },
         todoState: undefined,
         toolDefinitions: registry.listDefinitions(),
         sandboxNote: createSandboxRuntimeNote(config.tools.sandbox, input.executionMode)
@@ -281,7 +303,7 @@ function createSubagentLoopRuntime(cwd: string, inheritedContext: InheritedAgent
         memoryPrompts: memoryPrompt.sections,
         rolePrompt: definition.prompt,
         sandboxNote: state.sandboxNote ?? undefined,
-        skillCatalog: inheritedContext.skillCatalog,
+        skillCatalog: state.skillCatalog,
         todoState: state.todoState
       });
       state.observation.providerRequestBuilt({
@@ -294,9 +316,9 @@ function createSubagentLoopRuntime(cwd: string, inheritedContext: InheritedAgent
           memoryPrompt,
           provider: state.observationProvider,
           providerRecords,
-          skillCatalog: inheritedContext.skillCatalog,
-          skillCatalogProjection: inheritedContext.skillCatalogProjection,
-          skillCatalogTokens: inheritedContext.skillCatalogTokens,
+          skillCatalog: state.skillCatalog,
+          skillCatalogProjection: state.skillCatalogProjection,
+          skillCatalogTokens: state.skillCatalogTokens,
           toolDefinitions: state.toolDefinitions
         }
       });

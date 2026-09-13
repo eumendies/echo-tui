@@ -3,6 +3,7 @@ import type {CustomSubagentCapability, SubagentEffortPolicy} from './definition'
 const MAX_CUSTOM_SUBAGENT_FILE_BYTES = 40 * 1024;
 const MAX_CUSTOM_SUBAGENT_BODY_BYTES = 32 * 1024;
 const MAX_CUSTOM_SUBAGENT_DESCRIPTION_CODE_POINTS = 500;
+const MAX_CUSTOM_SUBAGENT_SKILL_NAME_CODE_POINTS = 128;
 
 type CustomSubagentManifest = {
   capability: CustomSubagentCapability; // 选择系统拥有的只读或通用权限模板。
@@ -11,6 +12,7 @@ type CustomSubagentManifest = {
   instructions: string; // 追加在系统基础约束后的非空 Markdown 角色正文。
   mcp: boolean; // 通用能力是否请求父运行已初始化的 MCP 工具；只读能力后续强制拒绝。
   modelProfileId?: string; // 同一用户配置 snapshot 内严格引用的非敏感模型 profile id。
+  skillNames?: readonly string[]; // 三态 Skill allowlist：缺省允许全部 enabled Skills，空数组明确禁止，非空按名称收窄。
   tools: readonly string[]; // manifest 声明的 provider-neutral 本地能力名称。
 };
 
@@ -29,6 +31,7 @@ type ParsedFrontmatter = {
   effort?: string; // 尚未完成策略枚举校验的 effort 标量。
   mcp?: string; // 尚未完成布尔校验的可选 mcp 标量。
   model?: string; // 尚未完成非空校验的模型 profile 标量。
+  skills?: string[]; // 按声明顺序收集的 Skill 名称序列；存在但无条目表示显式空 allowlist。
   tools?: string[]; // 按声明顺序收集的工具序列。
 };
 
@@ -92,7 +95,7 @@ function parseCustomSubagentManifest(rawContent: string): CustomSubagentManifest
 function parseFrontmatterLines(lines: readonly string[]): {ok: true; fields: ParsedFrontmatter} | {ok: false; error: Readonly<CustomSubagentManifestParseError>} {
   const fields: ParsedFrontmatter = {};
   const seen = new Set<string>();
-  let collectingTools = false;
+  let collecting: 'tools' | 'skills' | undefined;
 
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
@@ -100,15 +103,19 @@ function parseFrontmatterLines(lines: readonly string[]): {ok: true; fields: Par
       continue;
     }
 
-    if (collectingTools && /^  - /u.test(line)) {
-      const toolResult = parseScalar(line.slice(4), 'tools item');
-      if (!toolResult.ok) {
-        return toolResult;
+    if (collecting && /^  - /u.test(line)) {
+      const itemResult = parseScalar(line.slice(4), `${collecting} item`);
+      if (!itemResult.ok) {
+        return itemResult;
       }
-      fields.tools!.push(toolResult.value);
+      if (collecting === 'tools') {
+        fields.tools!.push(itemResult.value);
+      } else {
+        fields.skills!.push(itemResult.value);
+      }
       continue;
     }
-    collectingTools = false;
+    collecting = undefined;
 
     if (/^[ \t]/u.test(line)) {
       return parseFailure('unsupported_structure', `Unsupported indentation on frontmatter line ${index + 2}.`);
@@ -121,7 +128,7 @@ function parseFrontmatterLines(lines: readonly string[]): {ok: true; fields: Par
 
     const key = match[1];
     const rawValue = match[2];
-    if (!['description', 'capability', 'model', 'effort', 'tools', 'mcp'].includes(key)) {
+    if (!['description', 'capability', 'model', 'effort', 'tools', 'skills', 'mcp'].includes(key)) {
       return parseFailure('unknown_field', 'Unknown frontmatter field.');
     }
     if (seen.has(key)) {
@@ -129,12 +136,12 @@ function parseFrontmatterLines(lines: readonly string[]): {ok: true; fields: Par
     }
     seen.add(key);
 
-    if (key === 'tools') {
+    if (key === 'tools' || key === 'skills') {
       if (rawValue.trim() !== '') {
-        return parseFailure('unsupported_structure', 'tools must use an indented string sequence, not an inline value.');
+        return parseFailure('unsupported_structure', `${key} must use an indented string sequence, not an inline value.`);
       }
-      fields.tools = [];
-      collectingTools = true;
+      fields[key] = [];
+      collecting = key;
       continue;
     }
 
@@ -215,6 +222,12 @@ function validateParsedFrontmatter(fields: ParsedFrontmatter, body: string): Cus
     }
     seenTools.add(tool);
   }
+  if (fields.skills !== undefined) {
+    const skillValidation = validateSkillAllowlist(fields.skills);
+    if (!skillValidation.ok) {
+      return parseFailure(skillValidation.code, skillValidation.message);
+    }
+  }
 
   const manifest: CustomSubagentManifest = {
     capability: fields.capability,
@@ -223,9 +236,28 @@ function validateParsedFrontmatter(fields: ParsedFrontmatter, body: string): Cus
     instructions: body,
     mcp: fields.mcp === 'true',
     ...(fields.model !== undefined ? {modelProfileId: fields.model} : {}),
+    ...(fields.skills !== undefined ? {skillNames: fields.skills} : {}),
     tools: fields.tools!
   };
   return {ok: true, manifest};
+}
+
+/** 校验 Skill allowlist 名称的非空、控制字符、长度与重复约束；非法序列使整个定义失效。 */
+function validateSkillAllowlist(values: readonly string[]): {ok: true} | {ok: false; code: string; message: string} {
+  const seen = new Set<string>();
+  for (const value of values) {
+    if (value === '' || /[\u0000-\u001f\u007f-\u009f]/u.test(value)) {
+      return {ok: false, code: 'invalid_skill', message: `Invalid skill name: ${safeDiagnosticValue(value)}.`};
+    }
+    if (Array.from(value).length > MAX_CUSTOM_SUBAGENT_SKILL_NAME_CODE_POINTS) {
+      return {ok: false, code: 'skill_name_too_long', message: `Skill name exceeds ${MAX_CUSTOM_SUBAGENT_SKILL_NAME_CODE_POINTS} Unicode code points.`};
+    }
+    if (seen.has(value)) {
+      return {ok: false, code: 'duplicate_skill', message: `Duplicate skill name: ${value}.`};
+    }
+    seen.add(value);
+  }
+  return {ok: true};
 }
 
 /**
@@ -240,6 +272,7 @@ function serializeCustomSubagentManifest(manifest: Readonly<CustomSubagentManife
     `effort: ${manifest.effort}`,
     'tools:',
     ...manifest.tools.map((tool) => `  - ${tool}`),
+    ...(manifest.skillNames !== undefined ? ['skills:', ...manifest.skillNames.map((skill) => `  - ${skill}`)] : []),
     `mcp: ${String(manifest.mcp)}`,
     '---',
     '',
@@ -267,9 +300,11 @@ export {
   MAX_CUSTOM_SUBAGENT_BODY_BYTES,
   MAX_CUSTOM_SUBAGENT_DESCRIPTION_CODE_POINTS,
   MAX_CUSTOM_SUBAGENT_FILE_BYTES,
+  MAX_CUSTOM_SUBAGENT_SKILL_NAME_CODE_POINTS,
   SUBAGENT_EFFORT_POLICIES,
   parseCustomSubagentManifest,
-  serializeCustomSubagentManifest
+  serializeCustomSubagentManifest,
+  validateSkillAllowlist
 };
 
 export type {CustomSubagentManifest, CustomSubagentManifestParseError, CustomSubagentManifestParseResult};

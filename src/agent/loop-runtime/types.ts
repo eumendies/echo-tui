@@ -1,5 +1,5 @@
 import type {MemoryPromptResolution} from '../context/memory-prompt';
-import type {SkillCatalogPromptProjection} from '../../skills/skill-catalog-prompt';
+import type {SkillSnapshot} from '../../skills/skill-snapshot';
 import type {ChangeFileRecorder} from '../../types/change-history';
 import type {
   AgentExecutionMode,
@@ -12,7 +12,6 @@ import type {
   SubagentRunMetadata,
   ToolApprovalDecision
 } from '../../types/agent';
-import type {SkillCatalogEntry} from '../../types/skill';
 import type {AskUserQuestionsRequest, ToolApprovalRequest, ToolCall, ToolExecutionResult} from '../../types/tool';
 import type {SubagentDefinition} from '../subagent/definition';
 
@@ -20,9 +19,8 @@ type InheritedAgentRunContext = {
   agentInstructions: AgentInstruction[]; // 父运行启动时已经解析的项目/用户指令链。
   basePrompt?: string; // 父运行已经选择的 system prompt override。
   memoryPrompt: MemoryPromptResolution; // 触发委派的父 provider turn 使用的 memory 投影。
-  skillCatalog: SkillCatalogEntry[]; // 父运行已经按预算裁剪的 skill 目录。
-  skillCatalogProjection: Pick<SkillCatalogPromptProjection, 'budgetTokens' | 'mode' | 'originalTokens'>; // 父 skill 目录的预算诊断事实。
-  skillCatalogTokens: number; // 父 skill 目录投影的估算 token 数。
+  skillCatalogContextRatio: number; // 父 run 冻结的 skill catalog 预算比例；子运行用自身模型窗口重新投影。
+  skillSnapshot: SkillSnapshot; // 父 run 捕获的不可变 enabled Skill 快照；primary catalog、use_skill 与子 scope 同源。
 };
 
 type SubagentLoopInput = {

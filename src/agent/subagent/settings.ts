@@ -1,14 +1,14 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import {SUBAGENT_EFFORT_POLICIES} from './manifest';
+import {SUBAGENT_EFFORT_POLICIES, validateSkillAllowlist} from './manifest';
 import {atomicWriteFile, createContentFingerprint, ensureSafeDirectory, inspectSafeDirectory, readRegularFile} from './safe-storage';
 
 import type {AgentUserConfigSnapshot} from '../../types/agent';
 import type {SubagentEffortPolicy} from './definition';
 import type {SafeStorageOperations} from './safe-storage';
 
-const AGENTS_SETTINGS_SCHEMA_VERSION = 1;
+const AGENTS_SETTINGS_SCHEMA_VERSION = 2;
 const MAX_AGENTS_SETTINGS_FILE_BYTES = 16 * 1024;
 
 type BuiltinSubagentName = 'explorer' | 'worker';
@@ -16,11 +16,12 @@ type BuiltinSubagentName = 'explorer' | 'worker';
 type BuiltinSubagentOverride = {
   effort: SubagentEffortPolicy; // 缺省归一化为 inherit；default 与固定档位保留原策略。
   modelProfileId?: string; // 同一父 run 配置 snapshot 内待严格验证的模型引用。
+  skillNames?: readonly string[]; // 三态 Skill allowlist：缺省允许全部 enabled Skills，空数组明确禁止，非空按名称收窄。
 };
 
 type ParsedAgentsSettings = {
   overrides: Readonly<Partial<Record<BuiltinSubagentName, Readonly<BuiltinSubagentOverride>>>>; // 当前物理文件声明的内置策略条目。
-  schemaVersion: 1; // 已验证且受当前 runtime 支持的固定格式版本。
+  schemaVersion: 1 | 2; // 已验证的读取版本；version 1 归一化缺省 Skill 策略，写入端固定输出 version 2。
 };
 
 type AgentsSettingsError = {
@@ -81,8 +82,9 @@ function parseAgentsSettings(rawContent: string): AgentsSettingsParseResult {
   if (!hasOnlyKeys(root, ['schemaVersion', 'overrides'])) {
     return settingsFailure('unknown_settings_field', 'Agents settings contains an unknown root field.');
   }
-  if (root.schemaVersion !== AGENTS_SETTINGS_SCHEMA_VERSION) {
-    return settingsFailure('unsupported_settings_version', `Agents settings schemaVersion must be ${AGENTS_SETTINGS_SCHEMA_VERSION}.`);
+  const schemaVersion = root.schemaVersion;
+  if (schemaVersion !== 1 && schemaVersion !== 2) {
+    return settingsFailure('unsupported_settings_version', 'Agents settings schemaVersion must be 1 or 2.');
   }
   if (!isPlainObject(root.overrides) || !hasOnlyKeys(root.overrides, ['explorer', 'worker'])) {
     return settingsFailure('invalid_settings_overrides', 'Agents settings overrides must contain only explorer or worker objects.');
@@ -93,7 +95,7 @@ function parseAgentsSettings(rawContent: string): AgentsSettingsParseResult {
     if (!Object.hasOwn(root.overrides, name)) {
       continue;
     }
-    const parsed = parseBuiltinOverride(root.overrides[name], name);
+    const parsed = parseBuiltinOverride(root.overrides[name], name, schemaVersion);
     if (!parsed.ok) {
       return parsed;
     }
@@ -104,7 +106,7 @@ function parseAgentsSettings(rawContent: string): AgentsSettingsParseResult {
     ok: true,
     settings: Object.freeze({
       overrides: Object.freeze(overrides),
-      schemaVersion: AGENTS_SETTINGS_SCHEMA_VERSION
+      schemaVersion
     })
   };
 }
@@ -119,7 +121,9 @@ function serializeAgentsSettings(settings: Readonly<ParsedAgentsSettings>): stri
     }
     overrides[name] = {
       ...(override.modelProfileId ? {modelProfileId: override.modelProfileId} : {}),
-      effort: override.effort
+      effort: override.effort,
+      // 文件字段名是 skills；领域对象内的 skillNames 只在内存中使用。
+      ...(override.skillNames !== undefined ? {skills: [...override.skillNames]} : {})
     };
   }
   const serialized = `${JSON.stringify({schemaVersion: AGENTS_SETTINGS_SCHEMA_VERSION, overrides}, null, 2)}\n`;
@@ -212,7 +216,8 @@ function writeBuiltinSubagentOverride(
   if (name !== 'explorer' && name !== 'worker') {
     return settingsMutationFailure('validation', 'invalid_builtin_name', 'Built-in override name must be explorer or worker.', sourcePath);
   }
-  const normalized = parseBuiltinOverride(override, name);
+  // 写入端口接收领域草稿；序列化前把三态 skillNames 映射回文件字段 skills。
+  const normalized = parseBuiltinOverride(toRawBuiltinOverride(override), name, AGENTS_SETTINGS_SCHEMA_VERSION);
   if (!normalized.ok) {
     return settingsMutationFailure('validation', normalized.error.code, normalized.error.message, sourcePath);
   }
@@ -281,12 +286,15 @@ function deleteBuiltinSubagentOverride(
   }
 }
 
-/** 校验单个内置条目，字段缺省只代表继承父策略，不从低优先级条目补齐。 */
-function parseBuiltinOverride(value: unknown, name: BuiltinSubagentName):
+/** 校验单个内置条目；字段缺省只代表继承父策略，version 1 不允许携带 Skill allowlist。 */
+function parseBuiltinOverride(value: unknown, name: BuiltinSubagentName, schemaVersion: 1 | 2):
   | {ok: true; override: BuiltinSubagentOverride}
   | {ok: false; error: Readonly<AgentsSettingsError>} {
-  if (!isPlainObject(value) || !hasOnlyKeys(value, ['modelProfileId', 'effort'])) {
+  if (!isPlainObject(value) || !hasOnlyKeys(value, ['modelProfileId', 'effort', 'skills'])) {
     return settingsFailure('invalid_builtin_override', `Agents settings override for ${name} contains unsupported fields.`);
+  }
+  if (schemaVersion === 1 && value.skills !== undefined) {
+    return settingsFailure('invalid_builtin_override', `Agents settings version 1 override for ${name} must not declare skills.`);
   }
   if (value.modelProfileId !== undefined && (
     typeof value.modelProfileId !== 'string'
@@ -299,13 +307,32 @@ function parseBuiltinOverride(value: unknown, name: BuiltinSubagentName):
     && (typeof value.effort !== 'string' || !(SUBAGENT_EFFORT_POLICIES as readonly string[]).includes(value.effort))) {
     return settingsFailure('invalid_override_effort', `Agents settings override for ${name} has an unsupported effort policy.`);
   }
+  if (value.skills !== undefined) {
+    if (!Array.isArray(value.skills) || !value.skills.every((skill) => typeof skill === 'string')) {
+      return settingsFailure('invalid_override_skills', `Agents settings override for ${name} requires a skills array of skill name strings.`);
+    }
+    const skillValidation = validateSkillAllowlist(value.skills);
+    if (!skillValidation.ok) {
+      return settingsFailure(skillValidation.code, `Agents settings override for ${name}: ${skillValidation.message}`);
+    }
+  }
 
   return {
     ok: true,
     override: {
       effort: (value.effort || 'inherit') as SubagentEffortPolicy,
-      ...(typeof value.modelProfileId === 'string' ? {modelProfileId: value.modelProfileId} : {})
+      ...(typeof value.modelProfileId === 'string' ? {modelProfileId: value.modelProfileId} : {}),
+      ...(Array.isArray(value.skills) ? {skillNames: Object.freeze([...value.skills])} : {})
     }
+  };
+}
+
+/** 把领域内置 override 草稿转换为严格 JSON 文件形状；skillNames 是内存字段名。 */
+function toRawBuiltinOverride(override: Readonly<BuiltinSubagentOverride>): Record<string, unknown> {
+  return {
+    ...(override.modelProfileId ? {modelProfileId: override.modelProfileId} : {}),
+    effort: override.effort,
+    ...(override.skillNames !== undefined ? {skills: [...override.skillNames]} : {})
   };
 }
 

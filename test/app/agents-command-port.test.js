@@ -101,3 +101,39 @@ test('AgentsCommandPort reads, writes and removes built-in overrides with confli
     fs.rmSync(root, {recursive: true, force: true});
   }
 });
+
+test('AgentsCommandPort exposes the current skill catalog and builtin skill policies', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-agents-port-skills-'));
+  const home = path.join(root, 'home');
+  const project = path.join(root, 'project');
+  fs.mkdirSync(home, {recursive: true});
+  fs.mkdirSync(path.join(project, '.git'), {recursive: true});
+  const skillsDir = path.join(project, '.echo', 'skills');
+  fs.mkdirSync(path.join(skillsDir, 'review-skill'), {recursive: true});
+  fs.writeFileSync(path.join(skillsDir, 'review-skill', 'SKILL.md'), '---\nname: review-skill\ndescription: Review code.\n---\n\n# Review\n', 'utf8');
+  fs.mkdirSync(path.join(skillsDir, 'disabled-skill'), {recursive: true});
+  fs.writeFileSync(path.join(skillsDir, 'disabled-skill', 'SKILL.md'), '---\nname: disabled-skill\ndescription: Disabled skill.\n---\n\n# Disabled\n', 'utf8');
+  fs.writeFileSync(path.join(skillsDir, 'skills.json'), JSON.stringify({schemaVersion: 3, disabled: ['disabled-skill'], effortOverrides: {}, modelOverrides: {}}), 'utf8');
+  fs.mkdirSync(path.join(home, '.echo'), {recursive: true});
+  fs.writeFileSync(
+    path.join(home, '.echo', 'agents.settings.json'),
+    JSON.stringify({schemaVersion: 2, overrides: {explorer: {effort: 'low', skills: ['review-skill', 'missing-skill']}}}),
+    'utf8'
+  );
+  try {
+    const port = createAgentsCommandPort({captureUserConfigSnapshot: createSnapshot, cwd: () => project, homedir: () => home});
+    const snapshot = port.list();
+    assert.deepEqual(snapshot.skills.find((skill) => skill.name === 'review-skill'), {enabled: true, name: 'review-skill', sourceKind: 'project'});
+    assert.equal(snapshot.skills.find((skill) => skill.name === 'disabled-skill').enabled, false);
+    const explorer = snapshot.builtins.find((builtin) => builtin.name === 'explorer');
+    assert.deepEqual(explorer.skillNames, ['review-skill', 'missing-skill']);
+
+    const userFingerprint = port.list().overrides.find((source) => source.sourceKind === 'user').fingerprint;
+    // 端口接收领域草稿形状（skillNames），由存储层映射回文件字段 skills。
+    const written = port.writeBuiltinOverride('user', 'worker', {effort: 'high', skillNames: ['review-skill']}, userFingerprint);
+    assert.equal(written.ok, true);
+    assert.deepEqual(port.list().builtins.find((builtin) => builtin.name === 'worker').skillNames, ['review-skill']);
+  } finally {
+    fs.rmSync(root, {recursive: true, force: true});
+  }
+});

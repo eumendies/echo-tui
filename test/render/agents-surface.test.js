@@ -95,6 +95,27 @@ test('renderAgentsSurface keeps the selected action and feedback visible under w
   assert.ok(layout.lines.every((line) => displayWidth(line) <= 53));
 });
 
+test('renderAgentsSurface shows the configured skill summary and marks stale skill rows', () => {
+  const agentRow = createSurface().rows[0];
+  const layout = renderAgentsSurface(createSurface({
+    mode: 'skills',
+    rows: [
+      {...agentRow, skillSummary: '无 Skills'},
+      {id: 'skill:review-skill', kind: 'tool', label: 'review-skill', selected: true},
+      {id: 'skill:missing-skill', kind: 'tool', label: 'missing-skill', selected: true, status: 'stale', description: '已配置但当前 disabled 或缺失；保留以备再次启用'},
+      {id: 'skills:done', kind: 'action', label: '完成 Skills 选择'}
+    ],
+    title: 'AGENTS · SKILLS'
+  }), 100);
+  const text = stripAnsi(layout.lines.join('\n'));
+
+  assert.match(text, /7 tools.*无 Skills.*MCP off/u);
+  assert.match(text, /review-skill/u);
+  assert.match(text, /missing-skill/u);
+  assert.match(text, /完成 Skills 选择/u);
+  assert.equal(new Set(layout.lines.map(displayWidth)).size, 1);
+});
+
 test('renderAgentsSurface follows the file picker width and keeps complete built-in policy labels', () => {
   const layout = renderAgentsSurface(createSurface({
     mode: 'detail',
