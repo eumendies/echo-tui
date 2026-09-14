@@ -2494,14 +2494,16 @@ test('AppContext lists reference sessions without current session and clears pen
   assert.equal(transcriptStore.listCallCount, listCallCount);
 
   context.conversationReferenceContext.setPending({
-    materialText: 'source', projectionMode: 'full', sourcePath: source.sourcePath, sourceSessionId: 'source-session', title: source.title
+    materialSegments: [{kind: 'record', header: '[user]', text: 'source'}],
+    projectionMode: 'full', sourcePath: source.sourcePath, sourceSessionId: 'source-session', title: source.title
   });
   assert.ok(context.conversationReferenceContext.getPending());
   context.clearTranscriptRecords();
   assert.equal(context.conversationReferenceContext.getPending(), null);
 
   context.conversationReferenceContext.setPending({
-    materialText: 'source', projectionMode: 'full', sourcePath: source.sourcePath, sourceSessionId: 'source-session', title: source.title
+    materialSegments: [{kind: 'record', header: '[user]', text: 'source'}],
+    projectionMode: 'full', sourcePath: source.sourcePath, sourceSessionId: 'source-session', title: source.title
   });
   assert.ok(context.loadTranscriptSession('source-session'));
   assert.equal(context.conversationReferenceContext.getPending(), null);

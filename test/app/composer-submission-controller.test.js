@@ -152,7 +152,7 @@ test('ComposerSubmissionController keeps slash command and conversation referenc
     sourcePath: '/tmp/old.jsonl',
     sourceSessionId: 'old',
     title: 'Old session',
-    materialText: 'history'
+    materialSegments: [{kind: 'record', header: '[user]', text: 'history'}]
   };
   const harness = createHarness({
     startFromText(text) {
@@ -200,7 +200,7 @@ test('ComposerSubmissionController restores composer and reports failed referenc
     sourcePath: '/tmp/session.jsonl',
     sourceSessionId: 'old-session',
     title: 'Old session',
-    records: []
+    materialSegments: []
   });
   harness.appContext.composerContext.setText('continue');
 
