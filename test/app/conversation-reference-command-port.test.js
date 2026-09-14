@@ -30,7 +30,7 @@ test('conversation reference finalization uses the current turn model override',
   try {
     const conversationReferenceContext = new ConversationReferenceContext();
     conversationReferenceContext.setPending({
-      materialText: '中'.repeat(8_000),
+      materialSegments: [{kind: 'record', header: '[user]', text: '中'.repeat(8_000)}],
       projectionMode: 'summary',
       sourcePath: '/tmp/history.jsonl',
       sourceSessionId: 'history-id',
@@ -76,7 +76,8 @@ test('conversation reference finalization uses the current turn model override',
 
     assert.equal(result.ok, true);
     assert.equal(result.reference.projectionMode, 'full');
-    assert.equal(result.reference.projectionText.length, 8_000);
+    assert.equal(result.reference.omittedRecordCount, 0);
+    assert.equal(result.reference.projectionText.length, 8_007);
   } finally {
     os.homedir = originalHomedir;
     fs.rmSync(homeDir, {recursive: true, force: true});
