@@ -8,11 +8,11 @@ import {
   ASK_USER_QUESTIONS_TOOL_NAME
 } from '../../tools/ask-user-questions-tool-handler';
 import {createToolExecutor} from '../../tools/tool-executor';
-import {classifySubagentToolCall, classifyToolCallRisk} from '../../tools/tool-risk-classifier';
+import {classifyReadonlyToolCall, classifySubagentToolCall, classifyToolCallRisk} from '../../tools/tool-risk-classifier';
 import {createToolCallTranscriptRecord, createToolResultTranscriptRecord} from '../../tools/tool-transcript-record';
 import {executeTodoToolCall, isTodoToolName} from '../../tools/todo-tool-handler';
 import {throwIfAborted} from '../../types/agent';
-import {createSandboxRuntimeNote} from '../../sandbox/provider';
+import {createSandboxRuntimeNote, isReadonlyBashSandboxEffective} from '../../sandbox/provider';
 import {prepareAgent} from '../agent-setup';
 import {normalizeError} from '../agent-errors';
 import {createCompactionNoticeRecord, runCompaction} from '../context/context-compaction';
@@ -54,6 +54,7 @@ type SubagentLoopRunState = {
   todoState: TodoState | undefined; // general 子 Agent 独立维护的待办状态；readonly 子 Agent 始终为空。
   toolDefinitions: ToolDefinition[]; // 真正发送给子 provider的工具 schema。
   sandboxNote: string | null; // bash 沙箱生效时的 transient 边界说明;null 表示本次子运行未包装沙箱。
+  readonlyBashSandboxed: boolean; // 只读父运行且 bash 沙箱实际生效;true 时子 bash 豁免文本白名单与审批。
 };
 
 /** 生成保留原工具身份的拒绝结果，保证子 provider continuation协议完整。 */
@@ -79,6 +80,7 @@ function isToolExecutionAllowed(kind: string): boolean {
 
 /**
  * 执行子 Agent内部工具；定义策略决定Todo/提问、风险分类、审批和headless边界。
+ * 父 run 为 readonly 时,只读子代理改用 fail-closed 分类:未知 Bash 直接拒绝,不进入人工审批。
  */
 async function executeSubagentToolCall(toolCall: ToolCall, input: SubagentLoopInput, state: SubagentLoopRunState, callbacks: SubagentLoopCallbacks, definition: SubagentDefinition, mcpManager?: McpManager): Promise<ToolExecutionResult> {
   throwIfAborted(input.abortSignal);
@@ -110,7 +112,9 @@ async function executeSubagentToolCall(toolCall: ToolCall, input: SubagentLoopIn
 
   const assessment = generalPurpose
     ? classifyToolCallRisk(toolCall, input.interactionMode, (toolName) => getMcpToolApproval(definition.includeMcpTools ? mcpManager : undefined, toolName))
-    : classifySubagentToolCall(toolCall, input.metadata);
+    : input.toolPolicy === 'readonly'
+      ? classifyReadonlyToolCall(toolCall, undefined, state.readonlyBashSandboxed)
+      : classifySubagentToolCall(toolCall, input.metadata);
   state.observation.toolRiskAssessed({scope: state.observationScope, call: toolCall, assessment});
 
   if (assessment.risk === 'rejected') {
@@ -191,12 +195,14 @@ function createSubagentLoopRuntime(cwd: string, inheritedContext: InheritedAgent
         config: resolvedConfig,
         cwd,
         executionMode: input.executionMode,
+        ...(input.sandboxModeOverride ? {sandboxModeOverride: input.sandboxModeOverride} : {}),
         ...(definition.includeMcpTools && mcpManager ? {mcpManager} : {}),
         skillRegistry: scopedSkillRegistry
       });
       const contextWindow = resolveContextWindow(config);
       // 子运行在最终模型解析后按自身窗口创建一次 catalog 投影，全部 continuation 复用。
       const skillCatalogProjection = createSkillCatalogPromptProjection(scopedSkillRegistry.listCatalog(), contextWindow, inheritedContext.skillCatalogContextRatio);
+      const sandboxResolutionOptions = input.sandboxModeOverride ? {modeOverride: input.sandboxModeOverride} : {};
       state = {
         agent,
         contextWindow,
@@ -228,7 +234,8 @@ function createSubagentLoopRuntime(cwd: string, inheritedContext: InheritedAgent
         },
         todoState: undefined,
         toolDefinitions: registry.listDefinitions(),
-        sandboxNote: createSandboxRuntimeNote(config.tools.sandbox, input.executionMode)
+        readonlyBashSandboxed: input.toolPolicy === 'readonly' && isReadonlyBashSandboxEffective(config.tools.sandbox, input.executionMode, sandboxResolutionOptions),
+        sandboxNote: createSandboxRuntimeNote(config.tools.sandbox, input.executionMode, sandboxResolutionOptions)
       };
     } catch (error: unknown) {
       throw normalizeError(error, '无法加载子 Agent LLM 配置');

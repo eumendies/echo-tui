@@ -254,6 +254,24 @@ test('runAssistantTurn keeps manual approval unchanged and does not call auto re
   assert.equal(harness.hookEvents[2].payload.decision, 'allow_once');
 });
 
+test('runAssistantTurn forwards workflow run policies into the agent session', async () => {
+  const harness = createHarness();
+  let session;
+
+  await runAssistantTurn({
+    ...harness.input,
+    toolPolicy: 'readonly',
+    sandboxModeOverride: 'read-only',
+    async runAgent(runSession, callbacks) {
+      session = runSession;
+      callbacks.onComplete('done');
+    }
+  });
+
+  assert.equal(session.toolPolicy, 'readonly');
+  assert.equal(session.sandboxModeOverride, 'read-only');
+});
+
 test('runAssistantTurn auto approval allows once for file, bash, and MCP calls without opening modal', async () => {
   for (const call of [
     {callId: 'patch-1', toolName: 'apply_patch', argumentsText: '*** patch'},

@@ -1,11 +1,12 @@
 const test = require('node:test');
 const assert = require('node:assert');
 
-const {createSandboxRuntimeNote, resolveBashSandboxContext, resolveEffectiveSandbox, resolveSandboxProvider} = require('../../src/sandbox/provider');
+const {createSandboxRuntimeNote, isReadonlyBashSandboxEffective, resolveBashSandboxContext, resolveEffectiveSandbox, resolveSandboxProvider} = require('../../src/sandbox/provider');
 
 const AVAILABLE_PROVIDER_OPTIONS = {
   exists: () => true,
   homedir: () => '/Users/tester',
+  probe: () => true,
   realpath: (targetPath) => targetPath,
   tmpdir: () => '/private/tmp'
 };
@@ -59,6 +60,39 @@ test('resolveBashSandboxContext keeps sandbox for headless deny runs and forces 
   assert.equal(readOnlyContext.policy.network, false);
 });
 
+test('run-level mode override tightens any enabled sandbox to read-only', () => {
+  const context = resolveBashSandboxContext(SANDBOX_CONFIG, undefined, {platform: 'darwin', providerOptions: AVAILABLE_PROVIDER_OPTIONS, modeOverride: 'read-only'});
+
+  assert.equal(context?.policy.mode, 'read-only');
+  assert.equal(context?.policy.network, false);
+
+  const note = createSandboxRuntimeNote(SANDBOX_CONFIG, undefined, {platform: 'darwin', providerOptions: AVAILABLE_PROVIDER_OPTIONS, modeOverride: 'read-only'});
+  assert.match(note, /the workspace is read-only/);
+  assert.match(note, /network access is denied/);
+});
+
+test('run-level mode override keeps explicit off and full-access exemptions', () => {
+  const options = {platform: 'darwin', providerOptions: AVAILABLE_PROVIDER_OPTIONS, modeOverride: 'read-only'};
+
+  assert.equal(resolveBashSandboxContext({...SANDBOX_CONFIG, mode: 'off'}, undefined, options), null);
+  assert.equal(resolveBashSandboxContext(SANDBOX_CONFIG, {kind: 'headless', approvalPolicy: 'full-access'}, options), null);
+});
+
+test('isReadonlyBashSandboxEffective requires an available provider tightened to read-only', () => {
+  const options = {platform: 'darwin', providerOptions: AVAILABLE_PROVIDER_OPTIONS};
+  const readOnly = {...SANDBOX_CONFIG, mode: 'read-only'};
+
+  // workspace-write 档即使可用也不构成只读边界,不得据此放行 bash。
+  assert.equal(isReadonlyBashSandboxEffective(SANDBOX_CONFIG, undefined, options), false);
+  assert.equal(isReadonlyBashSandboxEffective(readOnly, undefined, options), true);
+  // 运行级收紧把 workspace-write 收紧为 read-only 后成立。
+  assert.equal(isReadonlyBashSandboxEffective(SANDBOX_CONFIG, undefined, {...options, modeOverride: 'read-only'}), true);
+  // 试运行失败、显式 off、headless full-access 都保持关闭。
+  assert.equal(isReadonlyBashSandboxEffective(readOnly, undefined, {platform: 'darwin', providerOptions: {...AVAILABLE_PROVIDER_OPTIONS, probe: () => false}}), false);
+  assert.equal(isReadonlyBashSandboxEffective({...SANDBOX_CONFIG, mode: 'off'}, undefined, options), false);
+  assert.equal(isReadonlyBashSandboxEffective(readOnly, {kind: 'headless', approvalPolicy: 'full-access'}, options), false);
+});
+
 test('resolveEffectiveSandbox keeps the normalized policy visible without a platform provider', () => {
   const readOnly = resolveEffectiveSandbox({...SANDBOX_CONFIG, mode: 'read-only', network: true}, undefined, {platform: 'win32'});
 
@@ -89,6 +123,12 @@ test('createSandboxRuntimeNote stays silent when the sandbox tool is unavailable
 
 test('createSandboxRuntimeNote stays silent when the bubblewrap trial fails', () => {
   const note = createSandboxRuntimeNote(SANDBOX_CONFIG, undefined, {platform: 'linux', providerOptions: {bwrapPath: '/usr/bin/bwrap', exists: () => true, probe: () => false}});
+
+  assert.equal(note, null);
+});
+
+test('createSandboxRuntimeNote stays silent when the seatbelt trial fails', () => {
+  const note = createSandboxRuntimeNote(SANDBOX_CONFIG, undefined, {platform: 'darwin', providerOptions: {...AVAILABLE_PROVIDER_OPTIONS, probe: () => false}});
 
   assert.equal(note, null);
 });

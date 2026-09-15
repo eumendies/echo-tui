@@ -5,6 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const agentSetupModule = require('../../src/agent/agent-setup');
+const sandboxProviderModule = require('../../src/sandbox/provider');
 const {createAgentLoopRuntime} = require('../../src/agent/loop-runtime/agent-loop-runtime');
 const {createSubagentToolPort} = require('../../src/agent/subagent/runtime');
 const {createObservation} = require('../../src/observation/observation-projector');
@@ -139,6 +140,17 @@ async function withPatchedAgents(cwd, createAgent, callback) {
     return await callback(preparations);
   } finally {
     agentSetupModule.prepareAgent = originalPrepareAgent;
+  }
+}
+
+async function withPatchedSandboxEffectiveness(effective, callback) {
+  const original = sandboxProviderModule.isReadonlyBashSandboxEffective;
+  sandboxProviderModule.isReadonlyBashSandboxEffective = () => effective;
+
+  try {
+    return await callback();
+  } finally {
+    sandboxProviderModule.isReadonlyBashSandboxEffective = original;
   }
 }
 
@@ -1062,6 +1074,51 @@ test('subagent approval-required Bash remains denied in headless full-access mod
   }
 });
 
+test('readonly run lets readonly subagent run arbitrary bash without approval when the sandbox is effective', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-subagent-readonly-sandboxed-'));
+  const snapshot = createConfigSnapshot();
+  let childTurn = 0;
+  let approvalRequests = 0;
+
+  try {
+    await withPatchedSandboxEffectiveness(true, () => withPatchedAgents(cwd, (kind) => ({
+      async runTurn(records) {
+        if (kind === 'primary') {
+          const outerResult = records.find((record) => record.role === 'tool_result' && record.toolName === 'run_subagent');
+          return outerResult
+            ? {draft: 'parent done', toolCalls: []}
+            : {draft: '', toolCalls: [{callId: 'outer_bash', toolName: 'run_subagent', argumentsText: JSON.stringify({agent: 'explorer', task: 'inspect with script'})}]};
+        }
+
+        childTurn += 1;
+        if (childTurn === 1) {
+          return {draft: '', toolCalls: [{callId: 'inner_sandboxed', toolName: 'run_bash_command', argumentsText: JSON.stringify({command: 'true'})}]};
+        }
+        // 沙箱生效时子运行的 bash 交由内核边界兜底,既有白名单与审批都不再参与。
+        const executed = records.find((record) => record.role === 'tool_result' && record.toolCallId === 'inner_sandboxed');
+        assert.equal(executed.ok, true);
+        return {draft: 'Sandboxed inspection done.', toolCalls: []};
+      }
+    }), async () => {
+      const runAgent = createTestAgentLoopRuntime(cwd, {capture: () => snapshot});
+      await runAgent({
+        records: [{role: 'user', text: 'review this diff'}],
+        userConfigSnapshot: snapshot,
+        toolPolicy: 'readonly'
+      }, {
+        onToolApprovalRequest() {
+          approvalRequests += 1;
+          return {kind: 'allow_once'};
+        }
+      });
+    }));
+
+    assert.equal(approvalRequests, 0);
+  } finally {
+    fs.rmSync(cwd, {recursive: true, force: true});
+  }
+});
+
 test('Worker receives the full local registry, keeps Todo local, and rejects forged nested delegation', async () => {
   const snapshot = createConfigSnapshot();
   let parentTurn = 0;
@@ -1426,4 +1483,115 @@ test('subagent port publishes the resolved model facts in the start record and h
   // 子 loop 复用预解析配置，窗口展示与实际请求使用同一份结果
   assert.equal(childInputs[0].resolvedLlmConfig.model, 'parent-model');
   assert.equal(childInputs[0].resolvedLlmConfig.reasoningEffort, 'low');
+});
+
+test('readonly run delegates only to readonly subagents and lets the child inherit the sandbox override', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-subagent-readonly-run-'));
+  const outerResults = [];
+  let parentTurn = 0;
+
+  try {
+    await withPatchedAgents(cwd, (kind) => ({
+      async runTurn() {
+        if (kind === 'primary') {
+          parentTurn += 1;
+          if (parentTurn === 1) {
+            return {
+              draft: '',
+              toolCalls: [
+                {callId: 'outer-explorer', toolName: 'run_subagent', argumentsText: JSON.stringify({agent: 'explorer', task: 'inspect'})},
+                {callId: 'outer-worker', toolName: 'run_subagent', argumentsText: JSON.stringify({agent: 'worker', task: 'edit code'})}
+              ]
+            };
+          }
+          return {draft: 'parent continued', toolCalls: []};
+        }
+        return {draft: 'child report', toolCalls: []};
+      }
+    }), async (preparations) => {
+      const snapshot = createConfigSnapshot();
+      const runAgent = createTestAgentLoopRuntime(cwd, {capture: () => snapshot});
+      const result = await runAgent({
+        records: [{role: 'user', text: 'review this diff'}],
+        userConfigSnapshot: snapshot,
+        toolPolicy: 'readonly',
+        sandboxModeOverride: 'read-only'
+      }, {
+        onToolResult(toolResult) {
+          outerResults.push(toolResult);
+        }
+      });
+
+      assert.equal(result, 'parent continued');
+      const allowed = outerResults.find((toolResult) => toolResult.callId === 'outer-explorer');
+      assert.equal(allowed.ok, true);
+      assert.equal(allowed.text, 'child report');
+      // general_purpose 目标在只读运行中被拒绝,且不产生子运行
+      const denied = outerResults.find((toolResult) => toolResult.callId === 'outer-worker');
+      assert.equal(denied.ok, false);
+      assert.match(denied.text, /read-only subagents/);
+      // 父 run 与子运行使用同一沙箱收紧
+      assert.equal(preparations.find((entry) => entry.kind === 'primary').options.sandboxModeOverride, 'read-only');
+      assert.equal(preparations.find((entry) => entry.kind === 'subagent').options.sandboxModeOverride, 'read-only');
+    });
+  } finally {
+    fs.rmSync(cwd, {recursive: true, force: true});
+  }
+});
+
+test('readonly run makes readonly subagent unknown bash fail closed without an approval path', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-subagent-readonly-fail-closed-'));
+  const snapshot = createConfigSnapshot();
+  let childTurn = 0;
+  let approvalRequests = 0;
+
+  try {
+    await withPatchedAgents(cwd, (kind) => ({
+      async runTurn(records) {
+        if (kind === 'primary') {
+          const outerResult = records.find((record) => record.role === 'tool_result' && record.toolName === 'run_subagent');
+          return outerResult
+            ? {draft: 'parent done', toolCalls: []}
+            : {draft: '', toolCalls: [{callId: 'outer_bash', toolName: 'run_subagent', argumentsText: JSON.stringify({agent: 'explorer', task: 'inspect with script'})}]};
+        }
+
+        childTurn += 1;
+        if (childTurn === 1) {
+          return {
+            draft: '',
+            toolCalls: [
+              {callId: 'inner_unknown', toolName: 'run_bash_command', argumentsText: JSON.stringify({command: 'printf changed > should-not-exist.txt'})},
+              {callId: 'inner_allowed', toolName: 'run_bash_command', argumentsText: JSON.stringify({command: 'echo readonly-allowed'})}
+            ]
+          };
+        }
+        // 父 run 为 readonly 时,未知 Bash 在子运行中直接 fail-closed,不进入人工审批。
+        const denied = records.find((record) => record.role === 'tool_result' && record.toolCallId === 'inner_unknown');
+        assert.equal(denied.ok, false);
+        assert.match(denied.text, /only allows read-only tools/);
+        // 严格只读 allowlist 内的命令照常放行并执行。
+        const allowed = records.find((record) => record.role === 'tool_result' && record.toolCallId === 'inner_allowed');
+        assert.equal(allowed.ok, true);
+        assert.match(allowed.text, /readonly-allowed/);
+        return {draft: 'Readonly inspection done.', toolCalls: []};
+      }
+    }), async () => {
+      const runAgent = createTestAgentLoopRuntime(cwd, {capture: () => snapshot});
+      await runAgent({
+        records: [{role: 'user', text: 'review this diff'}],
+        userConfigSnapshot: snapshot,
+        toolPolicy: 'readonly'
+      }, {
+        onToolApprovalRequest() {
+          approvalRequests += 1;
+          return {kind: 'allow_once'};
+        }
+      });
+    });
+
+    assert.equal(approvalRequests, 0);
+    assert.equal(fs.existsSync(path.join(cwd, 'should-not-exist.txt')), false);
+  } finally {
+    fs.rmSync(cwd, {recursive: true, force: true});
+  }
 });

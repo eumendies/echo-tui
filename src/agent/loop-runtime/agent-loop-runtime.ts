@@ -22,9 +22,10 @@ import {loadSystemPromptOverride} from '../context/system-prompt';
 import {prepareAgent} from '../agent-setup';
 import {createCompactionNoticeRecord, runCompaction} from '../context/context-compaction';
 import {createUsageCwdHash} from '../../persistence/usage-store';
-import {createSandboxRuntimeNote} from '../../sandbox/provider';
+import {createSandboxRuntimeNote, isReadonlyBashSandboxEffective} from '../../sandbox/provider';
 import {createSubagentToolPort} from '../subagent/runtime';
 import {createSubagentLoopRuntime} from './subagent-loop-runtime';
+import type {SandboxModeOverride} from '../../sandbox/types';
 import {
   buildProviderRecords,
   executeUserQuestionToolCall,
@@ -39,7 +40,7 @@ import type {UsageStore} from '../../types/usage';
 import type {SkillCatalogEntry} from '../../types/skill';
 import type {SkillCatalogPromptProjection} from '../../skills/skill-catalog-prompt';
 import type {SkillSnapshot} from '../../skills/skill-snapshot';
-import type {ToolApprovalRequest, ToolCall, ToolDefinition, ToolExecutionResult, ToolExecutor, ToolRegistry} from '../../types/tool';
+import type {ToolApprovalRequest, ToolCall, ToolDefinition, ToolExecutionResult, ToolExecutor, ToolRegistry, ToolRiskAssessment} from '../../types/tool';
 import type {CompactionState, SubagentTranscriptRecord, TodoState, TranscriptRecord} from '../../types/transcript';
 import type {McpManager} from '../../mcp/manager';
 import type {AgentRunScope, Observation, ProviderObservationConfig} from '../../observation/observation';
@@ -88,12 +89,15 @@ type ToolApprovalResolution = {
 async function executeToolCall(toolCall: ToolCall, state: AgentLoopRunState, callbacks: AgentCallbacks, subagentGroupSize?: number): Promise<ToolExecutionResult> {
   throwIfAborted(state.abortSignal);
 
-  if (state.toolPolicy === 'readonly') {
-    const readonlyAssessment = classifyReadonlyToolCall(toolCall);
-    if (readonlyAssessment.risk === 'rejected') {
-      state.observation.toolRiskAssessed({scope: state.observationScope, call: toolCall, assessment: readonlyAssessment});
-      return createRejectedToolResult(toolCall, readonlyAssessment.message);
-    }
+  // 只读运行由 readonly classifier 一次性判定:rejected 立即短路,safe 直接沿用到执行链路,
+  // 不再回落普通风险分类——否则 allowlist 内的只读命令会被启发式写风险规则二次误判为需要审批。
+  const readonlyAssessment = state.toolPolicy === 'readonly'
+    ? classifyReadonlyToolCall(toolCall, state.readonlySubagentNames, state.readonlyBashSandboxed)
+    : null;
+
+  if (readonlyAssessment !== null && readonlyAssessment.risk === 'rejected') {
+    state.observation.toolRiskAssessed({scope: state.observationScope, call: toolCall, assessment: readonlyAssessment});
+    return createRejectedToolResult(toolCall, readonlyAssessment.message);
   }
 
   if (isTodoToolName(toolCall.toolName)) {
@@ -117,7 +121,9 @@ async function executeToolCall(toolCall: ToolCall, state: AgentLoopRunState, cal
     });
   }
 
-  const riskAssessment = classifyToolCallRisk(toolCall, state.interactionMode, (toolName) => getMcpToolApproval(state.mcpManager, toolName));
+  // 默认运行在这里执行普通风险分类;只读运行复用 readonly 判定结果,不进入审批分支。
+  const riskAssessment: ToolRiskAssessment = readonlyAssessment
+    ?? classifyToolCallRisk(toolCall, state.interactionMode, (toolName) => getMcpToolApproval(state.mcpManager, toolName));
   state.observation.toolRiskAssessed({scope: state.observationScope, call: toolCall, assessment: riskAssessment});
 
   if (riskAssessment.risk === 'rejected') {
@@ -233,6 +239,7 @@ type AgentLoopRunState = {
   toolPolicy: AgentToolPolicy; // default 或 readonly 执行策略。
   registry: ToolRegistry; // provider schema 查询和 commit mode 查询的权威目录。
   readonlySubagentNames?: ReadonlySet<string>; // run 启动时固定的 readonly 执行策略 agent 名称集合；无委派端口时缺省。
+  readonlyBashSandboxed: boolean; // 只读运行且 bash 沙箱实际生效;true 时 bash 豁免文本白名单与审批,效果由内核边界保证。
   sandboxNote: string | null; // bash 沙箱生效时的 transient 边界说明;null 表示本次运行未包装沙箱。
 };
 
@@ -248,7 +255,7 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
   /**
    * 初始化单次调用的 loop 状态；provider、配置和 registry 由统一装配入口提供。
    */
-  function initializeRunState(interactionMode: InteractionMode, abortSignal: AbortSignal | undefined, executionMode: AgentExecutionMode, compactionThresholdRatio: number, skillCatalogContextRatio: number, agentInstructionFileName: AgentInstructionFileName, toolPolicy: AgentToolPolicy, conversationKind: AgentConversationKind, configSnapshot: AgentUserConfigSnapshot, modelProfileId?: string, reasoningEffortOverride?: LlmConfig['reasoningEffort'], subagentPort?: SubagentToolPort, sessionId?: string): AgentLoopRunState {
+  function initializeRunState(interactionMode: InteractionMode, abortSignal: AbortSignal | undefined, executionMode: AgentExecutionMode, compactionThresholdRatio: number, skillCatalogContextRatio: number, agentInstructionFileName: AgentInstructionFileName, toolPolicy: AgentToolPolicy, sandboxModeOverride: SandboxModeOverride | undefined, conversationKind: AgentConversationKind, configSnapshot: AgentUserConfigSnapshot, modelProfileId?: string, reasoningEffortOverride?: LlmConfig['reasoningEffort'], subagentPort?: SubagentToolPort, sessionId?: string): AgentLoopRunState {
     // 只读 subagent 名称集合在 run 启动时固定；并发分类不得在运行中重新读取目录。
     const readonlySubagentNames = subagentPort
       ? new Set(subagentPort.listDefinitions()
@@ -265,12 +272,15 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
       modelProfileId,
       reasoningEffortOverride,
       skillRegistry: skillSnapshot,
+      ...(sandboxModeOverride ? {sandboxModeOverride} : {}),
       ...(subagentPort ? {subagentPort} : {}),
       ...(sessionId ? {sessionId} : {})
     });
     const contextWindow = resolveContextWindow(config);
     const skillCatalogProjection = createSkillCatalogPromptProjection(registry.listSkillCatalog?.() || [], contextWindow, skillCatalogContextRatio);
     const basePrompt = loadSystemPromptOverride({cwd})?.content;
+    // 执行链路、transient 注记与只读 bash 边界共用同一份沙箱解析输入。
+    const sandboxResolutionOptions = sandboxModeOverride ? {modeOverride: sandboxModeOverride} : {};
 
     return {
       agent,
@@ -309,7 +319,8 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
       },
       observationScope: {conversationKind, interactionMode},
       toolPolicy,
-      sandboxNote: createSandboxRuntimeNote(config.tools.sandbox, executionMode),
+      readonlyBashSandboxed: toolPolicy === 'readonly' && isReadonlyBashSandboxEffective(config.tools.sandbox, executionMode, sandboxResolutionOptions),
+      sandboxNote: createSandboxRuntimeNote(config.tools.sandbox, executionMode, sandboxResolutionOptions),
     };
   }
 
@@ -318,6 +329,7 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
     const interactionMode = session.interactionMode || 'normal';
     const executionMode = session.executionMode || INTERACTIVE_EXECUTION_MODE;
     const toolPolicy = session.toolPolicy || 'default';
+    const sandboxModeOverride = session.sandboxModeOverride;
     const conversationKind = session.conversationKind || 'primary';
     const configSnapshot = session.userConfigSnapshot || configContext.capture();
     const appSettings = configSnapshot.getAppSettings() || DEFAULT_APP_SETTINGS;
@@ -361,12 +373,14 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
           observation,
           publishRecords: publishSubagentRecords,
           reasoningEffortOverride: session.reasoningEffortOverride,
+          ...(sandboxModeOverride ? {sandboxModeOverride} : {}),
+          toolPolicy,
           sessionId: session.sessionId
         })
       : undefined;
 
     try {
-      state = initializeRunState(interactionMode, abortSignal, executionMode, compactionThresholdRatio, skillCatalogContextRatio, appSettings.agentInstructionFileName, toolPolicy, conversationKind, configSnapshot, session.modelProfileId, session.reasoningEffortOverride, subagentPort, session.sessionId);
+      state = initializeRunState(interactionMode, abortSignal, executionMode, compactionThresholdRatio, skillCatalogContextRatio, appSettings.agentInstructionFileName, toolPolicy, sandboxModeOverride, conversationKind, configSnapshot, session.modelProfileId, session.reasoningEffortOverride, subagentPort, session.sessionId);
     } catch (error: unknown) {
       throw normalizeError(error, '无法加载 LLM 配置');
     }

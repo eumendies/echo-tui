@@ -962,9 +962,14 @@ test('built-in /review workflow wins before direct skill invocation fallback', (
 
   assert.equal(handler instanceof AgentWorkflowCommandHandler, true);
   assert.deepEqual(plan.calls.modeSelections, ['normal']);
-  assert.deepEqual(plan.calls.transcriptAppends, [{role: 'local_notice', text: '已从 plan mode 切换到 normal mode 以运行 /review 流程。'}]);
+  assert.deepEqual(plan.calls.transcriptAppends, [
+    {role: 'local_notice', text: '已从 plan mode 切换到 normal mode 以运行 /review 流程。'},
+    {role: 'local_notice', text: '已为本次 /review 运行启用只读边界：写操作会被阻止。'}
+  ]);
   assert.equal(result.kind, 'submit_user_message');
   assert.equal(result.displayText, '/review');
+  assert.equal(result.toolPolicy, 'readonly');
+  assert.equal(result.sandboxModeOverride, 'read-only');
   assert.deepEqual(result.metadata, {
     agentWorkflow: {
       source: 'builtin',
@@ -983,11 +988,13 @@ test('built-in /review workflow wins before direct skill invocation fallback', (
     }
   });
   assert.equal('skillInvocation' in argumentResult.metadata, false);
+  assert.equal(argumentResult.toolPolicy, 'readonly');
+  assert.equal(argumentResult.sandboxModeOverride, 'read-only');
 
   const normal = createFakeHost({interactionMode: 'normal'});
   handler.start('/review', normal.host);
   assert.deepEqual(normal.calls.modeSelections, []);
-  assert.deepEqual(normal.calls.transcriptAppends, []);
+  assert.deepEqual(normal.calls.transcriptAppends, [{role: 'local_notice', text: '已为本次 /review 运行启用只读边界：写操作会被阻止。'}]);
 });
 
 test('direct skill invocation returns typed per-turn model and effort overrides', () => {

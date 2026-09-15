@@ -198,3 +198,30 @@ test('registry forces sandbox off for headless full-access runs', SKIP_OPTIONS, 
     removePath(deniedPath);
   }
 });
+
+test('registry applies the run-level read-only override to an enabled sandbox', SKIP_OPTIONS, async () => {
+  const workspace = createWorkspace();
+  const config = {
+    agentType: 'fake',
+    apiKey: '',
+    model: 'sandbox-test',
+    tools: {
+      autoCompressImages: true,
+      bash: {timeoutMs: null, maxOutputBytes: 65536},
+      fileEditMode: 'apply_patch',
+      sandbox: {mode: 'workspace-write', network: false, extraWritablePaths: []}
+    }
+  };
+  try {
+    const registry = createDefaultToolRegistry(config, workspace, undefined, {sandboxModeOverride: 'read-only'});
+    const result = await registry.getHandler('run_bash_command').execute(
+      {command: `echo blocked > "${path.join(workspace, 'inside.txt')}"`},
+      {callId: 'call-1', toolName: 'run_bash_command', argumentsText: '{}'}
+    );
+
+    assert.equal(result.ok, false);
+    assert.equal(fs.existsSync(path.join(workspace, 'inside.txt')), false);
+  } finally {
+    removePath(workspace);
+  }
+});

@@ -3,7 +3,8 @@ import {isShellInteractionMode} from '../types/agent';
 import {expandConversationReferenceForUserText} from '../agent/context/conversation-reference';
 import {expandFileMentionsForUserText} from './utils';
 
-import type {ReasoningEffort} from '../types/agent';
+import type {AgentToolPolicy, ReasoningEffort} from '../types/agent';
+import type {SandboxModeOverride} from '../sandbox/types';
 import type {CommandHostApp, CommandStartOptions, CommandStartResult} from '../types/command';
 import type {ToolResultAttachment} from '../types/tool';
 import type {PendingConversationReference, UserTranscriptMetadata} from '../types/transcript';
@@ -16,6 +17,8 @@ type AssistantTurnSubmission = {
   metadata?: UserTranscriptMetadata; // 与本次用户消息一起持久化的领域元数据。
   modelProfileIdOverride?: string; // skill 或 workflow 为本轮指定的模型配置。
   reasoningEffortOverride?: ReasoningEffort; // skill 或 workflow 为本轮指定的推理强度。
+  toolPolicy?: AgentToolPolicy; // workflow 为本轮声明的运行级工具策略。
+  sandboxModeOverride?: SandboxModeOverride; // workflow 为本轮声明的运行级沙箱收紧。
   attachments?: ToolResultAttachment[]; // 文件 mention 产生的多模态附件。
 };
 
@@ -189,6 +192,8 @@ class ComposerSubmissionController {
     let userAttachments: ToolResultAttachment[] | undefined;
     let modelProfileIdOverride: string | undefined;
     let reasoningEffortOverride: ReasoningEffort | undefined;
+    let toolPolicy: AgentToolPolicy | undefined;
+    let sandboxModeOverride: SandboxModeOverride | undefined;
 
     // shell mode，当作 shell command 执行。
     if (commandResult.kind === 'not_matched' && isShellInteractionMode(this.appContext.getInteractionMode())) {
@@ -203,6 +208,8 @@ class ComposerSubmissionController {
       userMetadata = commandResult.metadata;
       modelProfileIdOverride = commandResult.modelProfileId;
       reasoningEffortOverride = commandResult.reasoningEffortOverride;
+      toolPolicy = commandResult.toolPolicy;
+      sandboxModeOverride = commandResult.sandboxModeOverride;
     }
 
     // file mention 在真正发送时读取文件
@@ -257,6 +264,8 @@ class ComposerSubmissionController {
       metadata: userMetadata,
       modelProfileIdOverride,
       reasoningEffortOverride,
+      toolPolicy,
+      sandboxModeOverride,
       attachments: userAttachments
     });
     options.onAssistantTurnStarted?.();
