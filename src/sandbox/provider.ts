@@ -4,7 +4,7 @@ import {createMacosSeatbeltSandboxProvider} from './macos-seatbelt';
 import type {AgentExecutionMode, SandboxToolConfig} from '../types/agent';
 import type {LinuxBubblewrapProviderOptions} from './linux-bubblewrap';
 import type {MacosSeatbeltProviderOptions} from './macos-seatbelt';
-import type {EffectiveSandbox, SandboxProvider, SandboxRuntimeContext} from './types';
+import type {EffectiveSandbox, SandboxModeOverride, SandboxProvider, SandboxRuntimeContext} from './types';
 
 // 两个平台 provider 可注入依赖的并集;公共字段签名一致,按平台各自取用不冲突。
 type SandboxProviderOptions = MacosSeatbeltProviderOptions & LinuxBubblewrapProviderOptions;
@@ -12,6 +12,7 @@ type SandboxProviderOptions = MacosSeatbeltProviderOptions & LinuxBubblewrapProv
 type SandboxResolutionOptions = {
   platform?: NodeJS.Platform; // 运行平台;缺省取当前进程平台,测试可注入。
   providerOptions?: SandboxProviderOptions; // 透传给平台 provider 的可注入依赖。
+  modeOverride?: SandboxModeOverride; // 运行级沙箱收紧;仅配置非 off 时把生效档位收紧为 read-only。
 };
 
 /**
@@ -37,6 +38,7 @@ function isHeadlessFullAccess(executionMode?: AgentExecutionMode): boolean {
  * 解析归一化后的生效沙箱状态;off 与 headless full-access 豁免在此统一收敛为 null,
  * read-only 禁网归一化也只在这里发生,供执行链路、transient 注记与 /status 共用。
  * 平台不支持时仍返回对象(provider 为 null),让展示层能区分降级原因而不是丢失策略。
+ * 运行级 modeOverride 仅对已启用沙箱生效:配置 off 时保持显式关闭,其余档位统一收紧为 read-only。
  */
 function resolveEffectiveSandbox(config: SandboxToolConfig, executionMode?: AgentExecutionMode, options: SandboxResolutionOptions = {}): EffectiveSandbox | null {
   if (config.mode === 'off' || isHeadlessFullAccess(executionMode)) {
@@ -44,12 +46,13 @@ function resolveEffectiveSandbox(config: SandboxToolConfig, executionMode?: Agen
   }
 
   const provider = resolveSandboxProvider(options.platform ?? process.platform, options.providerOptions);
+  const mode = options.modeOverride ?? config.mode;
 
   return {
     policy: {
-      mode: config.mode,
-      // read-only 档语义恒为禁网,忽略配置中的 network 取值。
-      network: config.mode === 'read-only' ? false : config.network,
+      mode,
+      // read-only 档语义恒为禁网,忽略配置中的 network 取值;运行级收紧复用同一归一化。
+      network: mode === 'read-only' ? false : config.network,
       extraWritablePaths: [...config.extraWritablePaths]
     },
     provider,
@@ -90,8 +93,19 @@ function createSandboxRuntimeNote(config: SandboxToolConfig, executionMode?: Age
   return `filesystem writes are limited to the workspace, temp directories${extraPhrase}; network access is ${effective.policy.network ? 'allowed' : 'denied'}`;
 }
 
+/**
+ * 判断只读运行的 bash 是否由生效的 read-only 沙箱包装:provider 可用且生效档位已是 read-only;
+ * 满足时 bash 从文本白名单切换到内核边界,与执行链路共用同一可用性判定,避免判定与包装不同源。
+ * 档位检查不可省略:未收紧的 workspace-write 沙箱不构成只读边界,不得据此放行白名单外的命令。
+ */
+function isReadonlyBashSandboxEffective(config: SandboxToolConfig, executionMode?: AgentExecutionMode, options: SandboxResolutionOptions = {}): boolean {
+  const effective = resolveEffectiveSandbox(config, executionMode, options);
+  return effective?.available === true && effective.policy.mode === 'read-only';
+}
+
 export {
   createSandboxRuntimeNote,
+  isReadonlyBashSandboxEffective,
   resolveBashSandboxContext,
   resolveEffectiveSandbox,
   resolveSandboxProvider

@@ -5,6 +5,8 @@
 
 export type SandboxMode = 'off' | 'read-only' | 'workspace-write'; // 沙箱档位:关闭 / 仅临时目录可写并禁网 / 工作区可写。
 
+export type SandboxModeOverride = 'read-only'; // 运行级沙箱收紧:当前唯一支持的覆盖是把已启用沙箱收紧为 read-only。
+
 export type SandboxPolicy = {
   mode: SandboxMode; // 当前生效档位;off 时调用方不得请求包装。
   network: boolean; // 是否放行命令网络访问;read-only 档恒为 false。

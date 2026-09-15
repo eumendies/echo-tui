@@ -6,14 +6,16 @@ const {
   createReviewWorkflowPrompt
 } = require('../../src/commands/agent-workflows/review-workflow');
 
-test('/review workflow definition is an optional-argument plan-to-normal workflow', () => {
+test('/review workflow definition is an optional-argument plan-to-normal readonly workflow', () => {
   assert.equal(REVIEW_WORKFLOW.name, 'review');
   assert.equal(REVIEW_WORKFLOW.description, '审查当前代码变更');
   assert.equal(REVIEW_WORKFLOW.argumentPolicy, 'optional');
   assert.equal(REVIEW_WORKFLOW.modePolicy, 'switch_plan_to_normal');
+  assert.equal(REVIEW_WORKFLOW.toolPolicy, 'readonly');
+  assert.equal(REVIEW_WORKFLOW.sandboxModeOverride, 'read-only');
 });
 
-test('/review prompt defines Git scope and read-only review boundaries', () => {
+test('/review prompt defines Git scope and enforced read-only boundaries', () => {
   const prompt = createReviewWorkflowPrompt();
 
   assert.match(prompt, /Baseline is HEAD/);
@@ -21,11 +23,17 @@ test('/review prompt defines Git scope and read-only review boundaries', () => {
   assert.match(prompt, /git status --short/);
   assert.match(prompt, /git diff --cached/);
   assert.match(prompt, /Stay read-only/);
-  assert.match(prompt, /no output redirection, no commands that modify the workspace or system/);
+  assert.match(prompt, /enforces a read-only boundary at runtime/);
+  assert.match(prompt, /rejected before execution/);
+  assert.match(prompt, /run inside a read-only sandbox/);
+  assert.match(prompt, /strict read-only inspection allowlist/);
+  assert.match(prompt, /Read-only subagents remain available for isolated investigation/);
+  assert.match(prompt, /Do not attempt output redirection, installs, builds, or test runs/);
   assert.match(prompt, /If this is not a Git workspace/);
   assert.match(prompt, /there are no changes vs HEAD/);
   assert.match(prompt, /do not call apply_patch/);
   assert.match(prompt, /write, format, auto-fix, or delete files/);
+  assert.match(prompt, /the runtime rejects those calls/);
   assert.match(prompt, /do not load or supplement it with a skill named review/);
 });
 
@@ -39,7 +47,7 @@ test('/review prompt asks for pragmatic actionable findings without exhaustive c
   assert.match(prompt, /grounded in changed code/);
   assert.match(prompt, /realistic trigger, broken contract, user-visible impact, or concrete maintenance cost/);
   assert.match(prompt, /broad refactor ideas, and nits/);
-  assert.match(prompt, /you need not run tests for every finding/);
+  assert.match(prompt, /do not attempt test or build runs, which the read-only boundary blocks/);
   assert.match(prompt, /do not treat it as a finding/);
   assert.match(prompt, /No actionable issues found/);
   assert.match(prompt, /at most one short sentence on the checked scope/);

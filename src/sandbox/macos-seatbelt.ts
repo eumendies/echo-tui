@@ -1,3 +1,4 @@
+import {spawnSync} from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -6,7 +7,12 @@ import type {SandboxCommandInput, SandboxPolicy, SandboxProvider} from './types'
 
 const MACOS_SANDBOX_EXEC_PATH = '/usr/bin/sandbox-exec'; // macOS 自带 Seatbelt 前端;已 deprecated,缺失时按不可用降级。
 const MACOS_SEATBELT_PROVIDER_NAME = 'macos-seatbelt';
-const MACOS_SANDBOX_UNAVAILABLE_REASON = 'sandbox-exec 不可用'; // /status 降级说明;保持既有展示文案不变。
+const MACOS_SANDBOX_UNAVAILABLE_REASON = 'sandbox-exec 不可用'; // 二进制缺失时的降级说明。
+const MACOS_SANDBOX_TRIAL_FAILED_REASON = 'sandbox-exec 试运行失败(可能嵌套在另一个沙箱内)'; // 二进制存在但内核拒绝 apply 时的降级说明。
+const SANDBOX_EXEC_TRIAL_TIMEOUT_MS = 5_000;
+// 试运行只验证"当前环境能否 apply seatbelt"(嵌套在另一个沙箱内时内核会拒绝二次 sandbox_apply);
+// 使用最小 profile,不引入真实规则差异,失败时按无沙箱显式降级。
+const SANDBOX_EXEC_TRIAL_ARGS = ['-p', '(version 1)(allow default)', '/bin/true'];
 
 type MacosSeatbeltProviderOptions = {
   sandboxExecPath?: string; // 沙箱前端可执行文件路径;测试可注入。
@@ -14,6 +20,7 @@ type MacosSeatbeltProviderOptions = {
   realpath?: (targetPath: string) => string; // 路径归一化;测试可注入。
   homedir?: () => string; // 用户主目录;用于内置 agent-memory 写入路径。
   tmpdir?: () => string; // 进程临时目录;realpath 后进入可写集。
+  probe?: (sandboxExecPath: string) => boolean; // 试运行探测;测试可注入。
 };
 
 /**
@@ -26,13 +33,35 @@ function createMacosSeatbeltSandboxProvider(options: MacosSeatbeltProviderOption
   const realpath = options.realpath || fs.realpathSync;
   const homedir = options.homedir || os.homedir;
   const tmpdir = options.tmpdir || os.tmpdir;
+  const probeTrial = options.probe || probeSandboxExec;
+  // 试运行结果缓存在实例内:二进制存在不代表内核允许 apply(嵌套沙箱会拒绝 sandbox_apply),
+  // 首次探测后同一 provider 不再重复 spawnSync。
+  let discoveredPath: string | null = null;
+  let probeResult: boolean | null = null;
+
+  const resolveProbe = (): {path: string | null; ok: boolean} => {
+    if (probeResult === null) {
+      discoveredPath = exists(sandboxExecPath) ? sandboxExecPath : null;
+      probeResult = discoveredPath !== null && probeTrial(discoveredPath);
+    }
+
+    return {path: discoveredPath, ok: probeResult};
+  };
 
   return {
     name: MACOS_SEATBELT_PROVIDER_NAME,
-    isAvailable: () => exists(sandboxExecPath),
-    describeUnavailable: () => MACOS_SANDBOX_UNAVAILABLE_REASON,
+    isAvailable: () => resolveProbe().ok,
+    describeUnavailable() {
+      // 两级降级原因分开展示,便于用户区分"没装"与"装了但当前环境拒绝 apply"。
+      return resolveProbe().path === null ? MACOS_SANDBOX_UNAVAILABLE_REASON : MACOS_SANDBOX_TRIAL_FAILED_REASON;
+    },
     wrapCommand(input: SandboxCommandInput, policy: SandboxPolicy): string[] | null {
-      if (policy.mode === 'off' || !exists(sandboxExecPath)) {
+      if (policy.mode === 'off') {
+        return null;
+      }
+
+      const probe = resolveProbe();
+      if (!probe.ok || probe.path === null) {
         return null;
       }
 
@@ -52,9 +81,15 @@ function createMacosSeatbeltSandboxProvider(options: MacosSeatbeltProviderOption
           tmpdir
         })
       });
-      return [sandboxExecPath, '-p', profile, input.shell, '-lc', input.command];
+      return [probe.path, '-p', profile, input.shell, '-lc', input.command];
     }
   };
+}
+
+/** 最小 profile 试运行 sandbox-exec;失败说明当前环境(如嵌套沙箱)不允许应用 seatbelt。 */
+function probeSandboxExec(sandboxExecPath: string): boolean {
+  const trial = spawnSync(sandboxExecPath, SANDBOX_EXEC_TRIAL_ARGS, {stdio: 'ignore', timeout: SANDBOX_EXEC_TRIAL_TIMEOUT_MS});
+  return trial.status === 0;
 }
 
 /**

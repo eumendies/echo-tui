@@ -1,6 +1,6 @@
 import type { InputEvent } from './input';
-import type { AgentInstructionFileName, AgentType, ContextUsage, InteractionMode, ReasoningEffort } from './agent';
-import type { SandboxMode } from '../sandbox/types';
+import type { AgentInstructionFileName, AgentToolPolicy, AgentType, ContextUsage, InteractionMode, ReasoningEffort } from './agent';
+import type { SandboxMode, SandboxModeOverride } from '../sandbox/types';
 import type {DiffFile, DiffSourceInfo, DiffSourceResult} from './diff';
 import type { CompactionState, PendingConversationReference, PreparedConversationReference, TranscriptForkResult, TranscriptRecord, TranscriptSessionSummary, TranscriptSessionPreview, UserTranscriptMetadata } from './transcript';
 import type {UndoExecuteResult, UndoSummary} from './change-history';
@@ -884,7 +884,7 @@ export type CommandHandler<TData extends object = Record<string, unknown>> = {
 export type CommandStartResult =
   | {kind: 'not_matched'}
   | {kind: 'handled'}
-  | {kind: 'submit_user_message'; text: string; displayText?: string; metadata?: UserTranscriptMetadata; modelProfileId?: string; reasoningEffortOverride?: ReasoningEffort};
+  | {kind: 'submit_user_message'; text: string; displayText?: string; metadata?: UserTranscriptMetadata; modelProfileId?: string; reasoningEffortOverride?: ReasoningEffort; toolPolicy?: AgentToolPolicy; sandboxModeOverride?: SandboxModeOverride};
 
 export type CommandStartOptions = {
   duringAssistantTurn?: boolean; // 指示本次启动发生于仍可中断的 active assistant turn。

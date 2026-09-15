@@ -1,4 +1,5 @@
-import type {AgentInstructionFileName} from './agent';
+import type {AgentInstructionFileName, AgentToolPolicy} from './agent';
+import type {SandboxModeOverride} from '../sandbox/types';
 
 export type AgentWorkflowArgumentPolicy = 'none' | 'optional';
 
@@ -14,5 +15,7 @@ export type AgentWorkflowDefinition = {
   description: string;
   argumentPolicy: AgentWorkflowArgumentPolicy;
   modePolicy: AgentWorkflowModePolicy;
+  toolPolicy?: AgentToolPolicy; // 运行级工具策略;readonly 让该 workflow turn 走 fail-closed 只读边界。
+  sandboxModeOverride?: SandboxModeOverride; // 运行级沙箱收紧;只读 workflow 把已启用 bash 沙箱收紧为 read-only。
   createPrompt(context: AgentWorkflowPromptContext): string;
 };

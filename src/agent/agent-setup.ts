@@ -9,6 +9,7 @@ import {createOpenAiAgent} from './openai-responses/agent';
 
 import type {AgentExecutionMode, AgentUserConfigSnapshot, LlmConfig, ProviderAgent, ReasoningEffort, SubagentToolPort} from '../types/agent';
 import type {McpManager} from '../mcp/manager';
+import type {SandboxModeOverride} from '../sandbox/types';
 import type {SkillRegistry} from '../types/skill';
 import type {ToolRegistry} from '../types/tool';
 
@@ -17,6 +18,7 @@ type PrepareAgentOptions = {
   configSnapshot?: AgentUserConfigSnapshot; // 未直接传 config 时用于同 revision 解析配置的快照。
   cwd?: string | (() => string); // 本地工具解析相对路径时使用的当前工作目录。
   executionMode?: AgentExecutionMode; // 本次运行执行模式;headless full-access 时 bash 工具强制关闭沙箱。
+  sandboxModeOverride?: SandboxModeOverride; // 本次运行的沙箱收紧;只读 workflow 用它强制 bash 走 read-only 档。
   mcpManager?: McpManager; // 可选共享 MCP 连接目录，不由本函数管理生命周期。
   modelProfileId?: string; // 从 snapshot 解析本次 provider 时使用的模型 profile。
   reasoningEffortOverride?: ReasoningEffort; // 仅本次准备生效的推理强度覆盖。
@@ -82,6 +84,7 @@ function prepareAgent(options: PrepareAgentOptions): PreparedAgent {
   const baseRegistry = createDefaultToolRegistry(config, options.cwd, toolResultStore, {
     allowedToolNames: options.allowedToolNames,
     executionMode: options.executionMode,
+    ...(options.sandboxModeOverride ? {sandboxModeOverride: options.sandboxModeOverride} : {}),
     ...(options.skillRegistry ? {skillRegistry: options.skillRegistry} : {}),
     subagentPort: options.subagentPort
   });

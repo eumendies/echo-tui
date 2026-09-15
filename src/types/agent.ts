@@ -1,7 +1,7 @@
 import type {CompactionState, SubagentTranscriptRecord, TodoState, TranscriptRecord} from './transcript';
 import type {AskUserQuestionsRequest, ToolApprovalRequest, ToolCall, ToolExecutionOptions, ToolExecutionResult} from './tool';
 import type {ChangeFileRecorder} from './change-history';
-import type {SandboxMode} from '../sandbox/types';
+import type {SandboxMode, SandboxModeOverride} from '../sandbox/types';
 
 export type InteractionMode = 'normal' | 'plan' | 'shell' | 'shell-local';
 
@@ -135,6 +135,7 @@ export type AgentSessionInput = {
   compactionThresholdRatio?: number; // 触发自动上下文压缩时占模型窗口的比例覆盖。
   skillCatalogContextRatio?: number; // 技能目录 prompt 可占模型上下文窗口的比例覆盖。
   toolPolicy?: AgentToolPolicy; // 本次运行的工具执行边界；readonly 保持 schema 但拒绝副作用调用。
+  sandboxModeOverride?: SandboxModeOverride; // 本次运行对 bash 沙箱的只读收紧；配置 off 时保持关闭。
   conversationKind?: AgentConversationKind; // 本地生命周期标识，不得改变 built-in system prompt。
   userConfigSnapshot?: AgentUserConfigSnapshot; // 本回合捕获的用户配置 revision；仅驻留内存，不得持久化到 transcript。
 };

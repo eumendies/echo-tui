@@ -15,6 +15,7 @@ import {createRunSubagentToolHandler} from './run-subagent-tool-handler';
 import {resolveBashSandboxContext} from '../sandbox/provider';
 
 import type {AgentExecutionMode, LlmConfig, SubagentToolPort} from '../types/agent';
+import type {SandboxModeOverride} from '../sandbox/types';
 import type {SkillRegistry} from '../types/skill';
 import type {ToolHandler, ToolRegistry} from '../types/tool';
 import type {ToolResultStore} from './tool-result-offloading';
@@ -22,6 +23,7 @@ import type {ToolResultStore} from './tool-result-offloading';
 type DefaultToolRegistryOptions = {
   allowedToolNames?: ReadonlySet<string>; // 缺省暴露完整默认目录；存在时只创建明确允许的 handler。
   executionMode?: AgentExecutionMode; // 本次运行执行模式;headless full-access 强制关闭沙箱包装。
+  sandboxModeOverride?: SandboxModeOverride; // 本次运行的沙箱收紧;非 off 配置收紧为 read-only。
   skillRegistry?: SkillRegistry; // 注入运行级 Skill 快照 scope；缺省时按旧行为重新创建 SkillManager。
   subagentPort?: SubagentToolPort; // 仅父 run 注入，缺省时不注册 run_subagent。
 };
@@ -57,7 +59,7 @@ function createDefaultToolRegistry(config: LlmConfig, cwd: string | (() => strin
   const fileEditHandler = config.tools.fileEditMode === 'edit_file'
     ? createEditFileToolHandler({cwd})
     : createApplyPatchToolHandler({cwd});
-  const bashSandbox = resolveBashSandboxContext(config.tools.sandbox, options.executionMode);
+  const bashSandbox = resolveBashSandboxContext(config.tools.sandbox, options.executionMode, options.sandboxModeOverride ? {modeOverride: options.sandboxModeOverride} : {});
   const handlers = [
     createBashToolHandler({
       cwd,

@@ -19,6 +19,7 @@ import type {InheritedAgentRunContext, SubagentLoopCallbacks, SubagentLoopRuntim
 import type {
   AgentCallbacks,
   AgentExecutionMode,
+  AgentToolPolicy,
   AgentUserConfigSnapshot,
   InteractionMode,
   LlmConfig,
@@ -27,6 +28,7 @@ import type {
 } from '../../types/agent';
 import type {SubagentTranscriptRecord} from '../../types/transcript';
 import type {Observation} from '../../observation/observation';
+import type {SandboxModeOverride} from '../../sandbox/types';
 
 type SubagentToolPortOptions = {
   callbacks: AgentCallbacks; // 父 run 的观察回调，承载审批和 TUI 活动投影。
@@ -40,6 +42,8 @@ type SubagentToolPortOptions = {
   observation: Observation; // 接收本次目录加载形成的诊断快照。
   publishRecords: (records: SubagentTranscriptRecord[]) => void; // 把稳定过程同步提交到父 runtime 与 app transcript。
   reasoningEffortOverride?: LlmConfig['reasoningEffort']; // 父 run 本轮固定的推理强度覆盖。
+  sandboxModeOverride?: SandboxModeOverride; // 父 run 的运行级沙箱收紧;子运行继承同一 bash 边界。
+  toolPolicy?: AgentToolPolicy; // 父 run 的运行级工具策略;readonly 时只读子运行继承 fail-closed 分类。
   sessionId?: string; // 父会话稳定身份，透传给子 loop 注入会话亲和 header。
 };
 
@@ -80,6 +84,8 @@ function createSubagentToolPort(options: SubagentToolPortOptions): SubagentToolP
         metadata,
         modelProfileId: options.modelProfileId,
         reasoningEffortOverride: options.reasoningEffortOverride,
+        ...(options.sandboxModeOverride ? {sandboxModeOverride: options.sandboxModeOverride} : {}),
+        ...(options.toolPolicy ? {toolPolicy: options.toolPolicy} : {}),
         ...(options.sessionId ? {sessionId: options.sessionId} : {}),
         task
       };

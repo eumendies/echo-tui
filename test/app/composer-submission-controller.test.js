@@ -190,6 +190,24 @@ test('ComposerSubmissionController keeps workflow prompt expansion out of userRe
   assert.equal(harness.submissions[0].userText, 'long internal review workflow prompt');
 });
 
+test('ComposerSubmissionController forwards workflow run policies to the assistant turn', async () => {
+  const harness = createHarness({
+    startFromText(text) {
+      return text === '/review'
+        ? {kind: 'submit_user_message', text: 'review prompt', displayText: text, toolPolicy: 'readonly', sandboxModeOverride: 'read-only'}
+        : {kind: 'not_matched'};
+    }
+  });
+  harness.appContext.setMcpBootstrapStatus('ready');
+  harness.appContext.composerContext.setText('/review');
+
+  await harness.controller.submitComposer();
+
+  assert.equal(harness.submissions.length, 1);
+  assert.equal(harness.submissions[0].toolPolicy, 'readonly');
+  assert.equal(harness.submissions[0].sandboxModeOverride, 'read-only');
+});
+
 test('ComposerSubmissionController restores composer and reports failed reference preparation', async () => {
   const harness = createHarness({
     prepareForSubmission: async () => ({ok: false, reason: 'failed', error: 'summary failed'})

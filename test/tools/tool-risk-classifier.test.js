@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { classifyReadonlyToolCall, classifySubagentToolCall, classifyToolCallRisk, parseBashCommand } = require('../../src/tools/tool-risk-classifier');
+const { READONLY_SUBAGENT_REJECTION, classifyReadonlyToolCall, classifySubagentToolCall, classifyToolCallRisk, parseBashCommand } = require('../../src/tools/tool-risk-classifier');
 
 test('readonly tool policy keeps explicit observations and rejects all other tools', () => {
   const call = (toolName, argumentsText = '{}') => ({callId: `call-${toolName}`, toolName, argumentsText});
@@ -18,6 +18,40 @@ test('readonly tool policy keeps explicit observations and rejects all other too
   }
   assert.equal(classifyReadonlyToolCall(call('run_bash_command', '{"command":"npm test"}')).risk, 'rejected');
   assert.equal(classifyReadonlyToolCall(call('run_bash_command', 'not-json')).risk, 'rejected');
+});
+
+test('readonly tool policy delegates only to injected readonly subagent names', () => {
+  const call = (agentName, argumentsText) => ({
+    callId: 'call-run_subagent',
+    toolName: 'run_subagent',
+    argumentsText: argumentsText ?? JSON.stringify({agent: agentName, task: 'inspect'})
+  });
+
+  assert.deepEqual(classifyReadonlyToolCall(call('explorer'), new Set(['explorer'])), {risk: 'safe'});
+
+  // 名称集合缺省、为空或不命中目标时一律 fail-closed,并给出专用拒绝文案。
+  for (const names of [undefined, new Set(), new Set(['worker'])]) {
+    const result = classifyReadonlyToolCall(call('explorer'), names);
+    assert.equal(result.risk, 'rejected');
+    assert.equal(result.reason, 'readonly_policy');
+    assert.equal(result.message, READONLY_SUBAGENT_REJECTION);
+  }
+
+  assert.equal(classifyReadonlyToolCall(call('explorer', 'not-json'), new Set(['explorer'])).risk, 'rejected');
+  assert.equal(classifyReadonlyToolCall(call('explorer', '{"task":"missing agent"}'), new Set(['explorer'])).risk, 'rejected');
+});
+
+test('readonly tool policy hands sandboxed bash to the kernel boundary', () => {
+  const call = (command) => ({callId: 'call-run_bash_command', toolName: 'run_bash_command', argumentsText: JSON.stringify({command})});
+
+  // 只读沙箱生效:任意 bash 直接放行,文本白名单不再参与判定。
+  assert.deepEqual(classifyReadonlyToolCall(call('npm install left-pad'), undefined, true), {risk: 'safe'});
+  assert.deepEqual(classifyReadonlyToolCall(call('rm -rf /'), undefined, true), {risk: 'safe'});
+  // bash 沙箱不改变其他工具的只读边界。
+  assert.equal(classifyReadonlyToolCall({callId: 'call-patch', toolName: 'apply_patch', argumentsText: '{}'}, undefined, true).risk, 'rejected');
+  // 沙箱不可用时保持 fail-closed 白名单。
+  assert.equal(classifyReadonlyToolCall(call('npm install left-pad')).risk, 'rejected');
+  assert.equal(classifyReadonlyToolCall(call('npm install left-pad'), undefined, false).risk, 'rejected');
 });
 
 test('subagent policy allows proven readonly Bash and requests normal approval for unknown Bash', () => {
