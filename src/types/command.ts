@@ -461,7 +461,7 @@ export type CommandStatusSnapshot = {
 };
 
 export type CommandStatusSandboxState = {
-  mode: SandboxMode; // 配置的沙箱档位。
+  mode: SandboxMode; // 归一化后的生效档位;plan interaction mode 派生的只读收紧也反映在这里。
   network: boolean; // 沙箱生效后的实际网络状态;read-only 恒为 false,与配置原值无关。
   provider: string | null; // 沙箱实现标识;平台不支持时为 null。
   available: boolean; // 沙箱在当前环境是否实际生效。

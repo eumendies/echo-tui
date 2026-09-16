@@ -8,11 +8,14 @@ import type {SandboxCommandInput, SandboxPolicy, SandboxProvider} from './types'
 const MACOS_SANDBOX_EXEC_PATH = '/usr/bin/sandbox-exec'; // macOS 自带 Seatbelt 前端;已 deprecated,缺失时按不可用降级。
 const MACOS_SEATBELT_PROVIDER_NAME = 'macos-seatbelt';
 const MACOS_SANDBOX_UNAVAILABLE_REASON = 'sandbox-exec 不可用'; // 二进制缺失时的降级说明。
-const MACOS_SANDBOX_TRIAL_FAILED_REASON = 'sandbox-exec 试运行失败(可能嵌套在另一个沙箱内)'; // 二进制存在但内核拒绝 apply 时的降级说明。
+const MACOS_SANDBOX_TRIAL_FAILED_REASON = 'sandbox-exec 试运行失败(当前环境不允许应用沙箱,例如嵌套在另一个沙箱内)'; // 二进制存在但内核拒绝 apply 时的降级说明。
 const SANDBOX_EXEC_TRIAL_TIMEOUT_MS = 5_000;
+// 探针目标必须选择 macOS 恒定存在的二进制:`true`/`false` 位于 /usr/bin(macOS 的 /bin 不含 true),
+// 误用不存在路径会让 execvp 以 ENOENT 失败,沙箱在整台机器上静默不可用。
+const MACOS_SANDBOX_TRIAL_BINARY = '/usr/bin/true';
 // 试运行只验证"当前环境能否 apply seatbelt"(嵌套在另一个沙箱内时内核会拒绝二次 sandbox_apply);
 // 使用最小 profile,不引入真实规则差异,失败时按无沙箱显式降级。
-const SANDBOX_EXEC_TRIAL_ARGS = ['-p', '(version 1)(allow default)', '/bin/true'];
+const SANDBOX_EXEC_TRIAL_ARGS = ['-p', '(version 1)(allow default)', MACOS_SANDBOX_TRIAL_BINARY];
 
 type MacosSeatbeltProviderOptions = {
   sandboxExecPath?: string; // 沙箱前端可执行文件路径;测试可注入。
@@ -157,6 +160,7 @@ function escapeSeatbeltString(value: string): string {
 export {
   MACOS_SANDBOX_EXEC_PATH,
   MACOS_SEATBELT_PROVIDER_NAME,
+  MACOS_SANDBOX_TRIAL_BINARY,
   buildSeatbeltProfile,
   createMacosSeatbeltSandboxProvider
 };

@@ -455,3 +455,31 @@ test('tool risk classifier rejects unsafe bash commands in plan mode without app
     assert.match(result.message, /readonly inspection/, command);
   }
 });
+
+test('tool risk classifier hands plan bash to the kernel boundary when the read-only sandbox is effective', () => {
+  // 生效只读沙箱下 plan 的 bash 不再经过文本白名单,写入与网络由内核边界拒绝。
+  for (const command of ['jq . package.json', 'node -e "console.log(1)"', 'npm test', 'printf hi > out.txt']) {
+    assert.deepEqual(classifyToolCallRisk(createCall(command), 'plan', undefined, true), {risk: 'safe'}, command);
+  }
+
+  // 白名单内命令与写入型工具的行为不因沙箱生效而改变。
+  assert.deepEqual(classifyToolCallRisk(createCall('git status --short'), 'plan', undefined, true), {risk: 'safe'});
+  assert.equal(classifyToolCallRisk({callId: 'call-patch', toolName: 'apply_patch', argumentsText: '{}'}, 'plan', undefined, true).risk, 'rejected');
+  assert.equal(classifyToolCallRisk({callId: 'call-mcp', toolName: 'mcp__docs__search', argumentsText: '{}'}, 'plan', undefined, true).risk, 'rejected');
+
+  // 沙箱未生效时保持严格 allowlist 与既有拒绝文案。
+  const fallback = classifyToolCallRisk(createCall('jq . package.json'), 'plan', undefined, false);
+  assert.equal(fallback.risk, 'rejected');
+  assert.equal(fallback.reason, 'plan_mode');
+  assert.match(fallback.message, /readonly inspection/);
+});
+
+test('tool risk classifier keeps ordinary approval orthogonal to the bash sandbox flag', () => {
+  const riskyCall = createCall('rm -rf build');
+
+  // normal 分支刻意忽略 bashSandboxed:沙箱不改变普通运行的风险分类与审批。
+  for (const bashSandboxed of [true, false]) {
+    assert.equal(classifyToolCallRisk(riskyCall, 'normal', undefined, bashSandboxed).risk, 'approval_required');
+  }
+  assert.deepEqual(classifyToolCallRisk(createCall('ls'), 'normal', undefined, true), {risk: 'safe'});
+});

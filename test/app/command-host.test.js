@@ -90,7 +90,7 @@ function createHostHarness(options = {}) {
         return options.cwd || '/tmp/echo_tui';
       },
       getInteractionMode() {
-        return 'plan';
+        return options.interactionMode || 'plan';
       },
       setMcpBootstrapStatus() {},
       modelContext: options.modelContext || {
@@ -635,6 +635,26 @@ test('CommandHost status facade aggregates non-sensitive runtime state', () => {
     assert.equal(snapshot.userMemoryCount, 1);
     assert.deepEqual(snapshot.agentMemoryCatalogs, [{name: 'runtime', scope: 'global'}]);
     assert.deepEqual(snapshot.diagnostics, []);
+  });
+});
+
+test('CommandHost status facade reflects the plan-mode read-only sandbox tightening', () => {
+  withTemporaryUserConfig(JSON.stringify({tools: {sandbox: {mode: 'workspace-write', network: true}}}), () => {
+    const planSnapshot = createHostHarness({interactionMode: 'plan'}).host.status.createSnapshot();
+    const normalSnapshot = createHostHarness({interactionMode: 'normal'}).host.status.createSnapshot();
+
+    assert.equal(planSnapshot.sandbox.mode, 'read-only');
+    assert.equal(planSnapshot.sandbox.network, false);
+    assert.equal(normalSnapshot.sandbox.mode, 'workspace-write');
+    assert.equal(normalSnapshot.sandbox.network, true);
+  });
+});
+
+test('CommandHost status facade keeps an explicit sandbox off in plan mode', () => {
+  withTemporaryUserConfig(JSON.stringify({tools: {sandbox: {mode: 'off'}}}), () => {
+    const snapshot = createHostHarness({interactionMode: 'plan'}).host.status.createSnapshot();
+
+    assert.deepEqual(snapshot.sandbox, {mode: 'off', network: false, provider: null, available: false});
   });
 });
 

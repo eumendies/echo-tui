@@ -1,7 +1,18 @@
 const test = require('node:test');
 const assert = require('node:assert');
+const fs = require('node:fs');
+const path = require('node:path');
 
-const {MACOS_SANDBOX_EXEC_PATH, buildSeatbeltProfile, createMacosSeatbeltSandboxProvider} = require('../../src/sandbox/macos-seatbelt');
+const {MACOS_SANDBOX_EXEC_PATH, MACOS_SANDBOX_TRIAL_BINARY, buildSeatbeltProfile, createMacosSeatbeltSandboxProvider} = require('../../src/sandbox/macos-seatbelt');
+
+test('seatbelt trial probes a binary that exists on macOS', () => {
+  // macOS 的 /bin 不含 true(它在 /usr/bin):探针指向不存在的路径会让沙箱在整台机器上静默不可用。
+  assert.equal(path.isAbsolute(MACOS_SANDBOX_TRIAL_BINARY), true);
+
+  if (process.platform === 'darwin') {
+    assert.equal(fs.existsSync(MACOS_SANDBOX_TRIAL_BINARY), true);
+  }
+});
 
 test('buildSeatbeltProfile denies network when disabled', () => {
   const profile = buildSeatbeltProfile({mode: 'workspace-write', network: false, writablePaths: ['/private/tmp', '/Users/me/proj']});

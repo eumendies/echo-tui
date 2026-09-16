@@ -122,8 +122,9 @@ async function executeToolCall(toolCall: ToolCall, state: AgentLoopRunState, cal
   }
 
   // 默认运行在这里执行普通风险分类;只读运行复用 readonly 判定结果,不进入审批分支。
+  // plan 运行的 bash 分层事实由 runtime 初始化时一次性解析,分类器不自行读取配置。
   const riskAssessment: ToolRiskAssessment = readonlyAssessment
-    ?? classifyToolCallRisk(toolCall, state.interactionMode, (toolName) => getMcpToolApproval(state.mcpManager, toolName));
+    ?? classifyToolCallRisk(toolCall, state.interactionMode, (toolName) => getMcpToolApproval(state.mcpManager, toolName), state.planBashSandboxed);
   state.observation.toolRiskAssessed({scope: state.observationScope, call: toolCall, assessment: riskAssessment});
 
   if (riskAssessment.risk === 'rejected') {
@@ -240,6 +241,7 @@ type AgentLoopRunState = {
   registry: ToolRegistry; // provider schema 查询和 commit mode 查询的权威目录。
   readonlySubagentNames?: ReadonlySet<string>; // run 启动时固定的 readonly 执行策略 agent 名称集合；无委派端口时缺省。
   readonlyBashSandboxed: boolean; // 只读运行且 bash 沙箱实际生效;true 时 bash 豁免文本白名单与审批,效果由内核边界保证。
+  planBashSandboxed: boolean; // plan 运行(default 工具策略)且生效沙箱为可用 read-only 档;true 时 plan bash 由内核边界兜底。
   sandboxNote: string | null; // bash 沙箱生效时的 transient 边界说明;null 表示本次运行未包装沙箱。
 };
 
@@ -281,6 +283,7 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
     const basePrompt = loadSystemPromptOverride({cwd})?.content;
     // 执行链路、transient 注记与只读 bash 边界共用同一份沙箱解析输入。
     const sandboxResolutionOptions = sandboxModeOverride ? {modeOverride: sandboxModeOverride} : {};
+    const bashSandboxEffective = isReadonlyBashSandboxEffective(config.tools.sandbox, executionMode, sandboxResolutionOptions);
 
     return {
       agent,
@@ -319,7 +322,9 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
       },
       observationScope: {conversationKind, interactionMode},
       toolPolicy,
-      readonlyBashSandboxed: toolPolicy === 'readonly' && isReadonlyBashSandboxEffective(config.tools.sandbox, executionMode, sandboxResolutionOptions),
+      readonlyBashSandboxed: toolPolicy === 'readonly' && bashSandboxEffective,
+      // 收紧派生只发生在 default 工具策略的 plan 运行,因此该分层事实也只在同样的组合下成立。
+      planBashSandboxed: toolPolicy === 'default' && interactionMode === 'plan' && bashSandboxEffective,
       sandboxNote: createSandboxRuntimeNote(config.tools.sandbox, executionMode, sandboxResolutionOptions),
     };
   }
@@ -329,7 +334,10 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
     const interactionMode = session.interactionMode || 'normal';
     const executionMode = session.executionMode || INTERACTIVE_EXECUTION_MODE;
     const toolPolicy = session.toolPolicy || 'default';
-    const sandboxModeOverride = session.sandboxModeOverride;
+    // plan 运行默认派生运行级 read-only 收紧:plan 的 bash 分层需要该收紧作为主边界,
+    // 否则沙箱生效后会放行工作区写入。显式声明优先,off 与 headless full-access 豁免仍由 resolver 统一收敛。
+    const sandboxModeOverride = session.sandboxModeOverride
+      ?? (interactionMode === 'plan' && toolPolicy === 'default' ? 'read-only' : undefined);
     const conversationKind = session.conversationKind || 'primary';
     const configSnapshot = session.userConfigSnapshot || configContext.capture();
     const appSettings = configSnapshot.getAppSettings() || DEFAULT_APP_SETTINGS;

@@ -39,6 +39,7 @@ function createAgentLoopRuntime(cwd, mcpManager, hooks, debug, usageStore, confi
 
 async function withPatchedAgentRuntime(agentOrFactory, callback, config = TEST_CONFIG) {
   const originalPrepareAgent = agentSetupModule.prepareAgent;
+  const preparations = [];
 
   agentSetupModule.prepareAgent = (options = {}) => {
     const resolvedConfig = typeof config === 'function'
@@ -52,11 +53,12 @@ async function withPatchedAgentRuntime(agentOrFactory, callback, config = TEST_C
       ? agentOrFactory(resolvedConfig, registry)
       : agentOrFactory;
 
+    preparations.push(options);
     return {agent, config: resolvedConfig, registry};
   };
 
   try {
-    return await callback();
+    return await callback(preparations);
   } finally {
     agentSetupModule.prepareAgent = originalPrepareAgent;
   }
@@ -330,6 +332,115 @@ test('readonly runtime keeps fail-closed bash rejection when the sandbox is not 
     assert.equal(results.length, 1);
     assert.equal(results[0].ok, false);
     assert.match(results[0].text, /only allows read-only tools/);
+  } finally {
+    fs.rmSync(cwd, {recursive: true, force: true});
+  }
+});
+
+test('plan runtime derives the run-level read-only sandbox tightening for default tool policy', async () => {
+  const agent = {
+    async runTurn() {
+      return {draft: 'done', toolCalls: []};
+    }
+  };
+  const derived = [];
+  // prepareAgent 在 run 启动时才被调用,断言必须等 run 结束后再读取捕获结果。
+  const runWith = (session) => withPatchedAgentRuntime(agent, async (preparations) => {
+    const result = await createAgentLoopRuntime(TEST_CWD)({records: [{role: 'user', text: 'inspect'}], ...session});
+    derived.push(preparations[0].sandboxModeOverride);
+    return result;
+  });
+
+  await runWith({interactionMode: 'plan'});
+  await runWith({interactionMode: 'normal'});
+  // readonly 工具策略的运行(BTW 等)继续只读取用户配置或自身声明,不因 UI 处于 plan 而被收紧。
+  await runWith({interactionMode: 'plan', toolPolicy: 'readonly'});
+  // workflow 显式声明的收紧优先于 plan 派生。
+  await runWith({interactionMode: 'plan', sandboxModeOverride: 'read-only'});
+
+  assert.deepEqual(derived, ['read-only', undefined, undefined, 'read-only']);
+});
+
+test('plan runtime hands bash to the kernel boundary when the derived read-only sandbox is effective', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-plan-sandboxed-'));
+  let turn = 0;
+  let approvals = 0;
+  const results = [];
+  const boundaryOptions = [];
+  const originalEffectiveness = sandboxProviderModule.isReadonlyBashSandboxEffective;
+  sandboxProviderModule.isReadonlyBashSandboxEffective = (_config, _executionMode, options = {}) => {
+    boundaryOptions.push(options.modeOverride);
+    return true;
+  };
+  const agent = {
+    async runTurn() {
+      turn += 1;
+      return turn === 1
+        ? {draft: '', toolCalls: [{callId: 'plan-sandbox-bash', toolName: 'run_bash_command', argumentsText: JSON.stringify({command: 'printf plan > plan-marker.txt'})}]}
+        : {draft: 'done', toolCalls: []};
+    }
+  };
+
+  try {
+    // 写入重定向不在 plan 白名单内:沙箱生效时命令直接进入执行链路,边界判定与执行包装使用同一份派生收紧。
+    const result = await withPatchedAgentRuntime(agent, () => createAgentLoopRuntime(cwd)({
+      records: [{role: 'user', text: 'inspect'}],
+      interactionMode: 'plan'
+    }, {
+      onToolApprovalRequest() {
+        approvals += 1;
+        return {kind: 'allow_once'};
+      },
+      onToolResult(toolResult) {
+        results.push(toolResult);
+      }
+    }));
+
+    assert.equal(result, 'done');
+    assert.deepEqual(boundaryOptions, ['read-only']);
+    assert.equal(approvals, 0);
+    assert.equal(results.length, 1);
+    assert.equal(results[0].ok, true);
+    assert.equal(fs.readFileSync(path.join(cwd, 'plan-marker.txt'), 'utf8'), 'plan');
+  } finally {
+    sandboxProviderModule.isReadonlyBashSandboxEffective = originalEffectiveness;
+    fs.rmSync(cwd, {recursive: true, force: true});
+  }
+});
+
+test('plan runtime keeps the strict readonly allowlist fallback when the sandbox is not effective', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-plan-unsandboxed-'));
+  let turn = 0;
+  let approvals = 0;
+  const results = [];
+  const agent = {
+    async runTurn() {
+      turn += 1;
+      return turn === 1
+        ? {draft: '', toolCalls: [{callId: 'plan-fallback-bash', toolName: 'run_bash_command', argumentsText: JSON.stringify({command: 'printf plan > fallback-marker.txt'})}]}
+        : {draft: 'done', toolCalls: []};
+    }
+  };
+
+  try {
+    await withPatchedSandboxEffectiveness(false, () => withPatchedAgentRuntime(agent, () => createAgentLoopRuntime(cwd)({
+      records: [{role: 'user', text: 'inspect'}],
+      interactionMode: 'plan'
+    }, {
+      onToolApprovalRequest() {
+        approvals += 1;
+        return {kind: 'allow_once'};
+      },
+      onToolResult(toolResult) {
+        results.push(toolResult);
+      }
+    })));
+
+    assert.equal(approvals, 0);
+    assert.equal(results.length, 1);
+    assert.equal(results[0].ok, false);
+    assert.match(results[0].text, /readonly inspection/);
+    assert.equal(fs.existsSync(path.join(cwd, 'fallback-marker.txt')), false);
   } finally {
     fs.rmSync(cwd, {recursive: true, force: true});
   }
