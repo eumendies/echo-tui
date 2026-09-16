@@ -41,7 +41,7 @@ type AppSettingsApplyResult = {
   toolApprovalChanged: boolean; // 审批模式或 reviewer profile 是否变化，不代表需要 transcript 重绘。
 };
 
-const PLAN_MODE_INSTRUCTIONS = 'Plan mode is active. Discuss and inspect only; do not modify files, run mutating commands, run tests or builds, install dependencies, change branch or repository state, or use MCP tools. Ask the user to switch to /mode normal before implementing.';
+const PLAN_MODE_INSTRUCTIONS = 'Plan mode is active. Discuss and inspect only; do not modify files, install dependencies, change branch or repository state, run tests or builds, or use MCP tools. Shell commands either run inside a read-only sandbox (no workspace writes, no network access) or, when no sandbox is available, must stay within readonly inspection commands. Ask the user to switch to /mode normal before implementing.';
 const NORMAL_MODE_INSTRUCTIONS = 'Normal mode is active. Previous Plan Mode restrictions no longer apply. You may implement changes and use mutation tools, subject to the normal tool approval and risk policies.';
 
 function isInteractionMode(value: unknown): value is InteractionMode {

@@ -79,7 +79,12 @@ function executeBashCommand(
     });
   }
 
-  if (!isChangeHistoryReadonlyBashCommand(command)) {
+  // 生效只读沙箱内的命令无法写工作区,不构成不可追踪写入;判定条件与 runner 的包装同源(同一 provider 实例与缓存探测)。
+  const sandboxedReadonly = options.sandbox !== undefined
+    && options.sandbox.policy.mode === 'read-only'
+    && options.sandbox.provider.isAvailable();
+
+  if (!sandboxedReadonly && !isChangeHistoryReadonlyBashCommand(command)) {
     options.changeRecorder?.invalidate('上一轮执行过不可追踪的 bash 命令，无法安全回退文件修改');
   }
 

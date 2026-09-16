@@ -55,6 +55,7 @@ type SubagentLoopRunState = {
   toolDefinitions: ToolDefinition[]; // 真正发送给子 provider的工具 schema。
   sandboxNote: string | null; // bash 沙箱生效时的 transient 边界说明;null 表示本次子运行未包装沙箱。
   readonlyBashSandboxed: boolean; // 只读父运行且 bash 沙箱实际生效;true 时子 bash 豁免文本白名单与审批。
+  planBashSandboxed: boolean; // plan 父运行(default 工具策略)且继承的沙箱收紧实际生效;true 时 general Worker bash 由内核边界兜底。
 };
 
 /** 生成保留原工具身份的拒绝结果，保证子 provider continuation协议完整。 */
@@ -111,7 +112,7 @@ async function executeSubagentToolCall(toolCall: ToolCall, input: SubagentLoopIn
   }
 
   const assessment = generalPurpose
-    ? classifyToolCallRisk(toolCall, input.interactionMode, (toolName) => getMcpToolApproval(definition.includeMcpTools ? mcpManager : undefined, toolName))
+    ? classifyToolCallRisk(toolCall, input.interactionMode, (toolName) => getMcpToolApproval(definition.includeMcpTools ? mcpManager : undefined, toolName), state.planBashSandboxed)
     : input.toolPolicy === 'readonly'
       ? classifyReadonlyToolCall(toolCall, undefined, state.readonlyBashSandboxed)
       : classifySubagentToolCall(toolCall, input.metadata);
@@ -203,6 +204,7 @@ function createSubagentLoopRuntime(cwd: string, inheritedContext: InheritedAgent
       // 子运行在最终模型解析后按自身窗口创建一次 catalog 投影，全部 continuation 复用。
       const skillCatalogProjection = createSkillCatalogPromptProjection(scopedSkillRegistry.listCatalog(), contextWindow, inheritedContext.skillCatalogContextRatio);
       const sandboxResolutionOptions = input.sandboxModeOverride ? {modeOverride: input.sandboxModeOverride} : {};
+      const bashSandboxEffective = isReadonlyBashSandboxEffective(config.tools.sandbox, input.executionMode, sandboxResolutionOptions);
       state = {
         agent,
         contextWindow,
@@ -234,7 +236,9 @@ function createSubagentLoopRuntime(cwd: string, inheritedContext: InheritedAgent
         },
         todoState: undefined,
         toolDefinitions: registry.listDefinitions(),
-        readonlyBashSandboxed: input.toolPolicy === 'readonly' && isReadonlyBashSandboxEffective(config.tools.sandbox, input.executionMode, sandboxResolutionOptions),
+        readonlyBashSandboxed: input.toolPolicy === 'readonly' && bashSandboxEffective,
+        // Worker 继承的是父运行同一份收紧与 interaction mode,分层事实按同样的组合重算,保证与主 Agent 一致。
+        planBashSandboxed: (input.toolPolicy ?? 'default') === 'default' && input.interactionMode === 'plan' && bashSandboxEffective,
         sandboxNote: createSandboxRuntimeNote(config.tools.sandbox, input.executionMode, sandboxResolutionOptions)
       };
     } catch (error: unknown) {

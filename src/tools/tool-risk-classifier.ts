@@ -90,8 +90,10 @@ function classifySubagentToolCall(call: ToolCall, metadata: SubagentRunMetadata)
 
 /**
  * 对 provider 产出的 tool call 做执行前策略分类：安全执行、请求审批，或按当前 mode 直接拒绝。
+ * bashSandboxed 只在 plan 分支被消费:生效只读沙箱已由内核兜底时,plan 的 bash 不再需要文本白名单;
+ * normal 分支刻意忽略该参数,保持"沙箱不改变普通审批"的正交性。
  */
-function classifyToolCallRisk(call: ToolCall, interactionMode: InteractionMode = 'normal', getMcpApproval?: (toolName: string) => 'always' | 'never' | undefined): ToolRiskAssessment {
+function classifyToolCallRisk(call: ToolCall, interactionMode: InteractionMode = 'normal', getMcpApproval?: (toolName: string) => 'always' | 'never' | undefined, bashSandboxed = false): ToolRiskAssessment {
   if (call.toolName === APPLY_PATCH_TOOL_NAME || call.toolName === EDIT_FILE_TOOL_NAME) {
     if (interactionMode === 'plan') {
       return {risk: 'rejected', reason: 'plan_mode', message: PLAN_WRITE_TOOL_REJECTION};
@@ -136,7 +138,8 @@ function classifyToolCallRisk(call: ToolCall, interactionMode: InteractionMode =
   }
 
   if (interactionMode === 'plan') {
-    return isPlanReadonlyBashCommand(command)
+    // 沙箱生效时任意命令进入执行链路,越界效果由内核边界拒绝;不生效才回退严格 allowlist。
+    return bashSandboxed || isPlanReadonlyBashCommand(command)
       ? {risk: 'safe'}
       : {risk: 'rejected', reason: 'plan_mode', message: PLAN_READONLY_BASH_REJECTION};
   }

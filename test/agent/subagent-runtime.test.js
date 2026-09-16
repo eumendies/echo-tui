@@ -1323,6 +1323,42 @@ test('Worker plan and headless policies match the parent general-purpose boundar
   }
 });
 
+test('plan Worker inherits the parent read-only sandbox tightening for bash', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-worker-plan-sandbox-'));
+  const snapshot = createConfigSnapshot();
+  let parentTurn = 0;
+  let childTurn = 0;
+  let approvals = 0;
+  try {
+    // 父运行在 plan 下派生 read-only 收紧;Worker 的越界 Bash 由继承的同一边界直接执行,不进入审批。
+    await withPatchedSandboxEffectiveness(true, () => withPatchedAgents(cwd, (kind) => ({
+      async runTurn() {
+        if (kind === 'primary') {
+          parentTurn += 1;
+          return parentTurn === 1
+            ? {draft: '', toolCalls: [{callId: 'outer-plan-sandbox', toolName: 'run_subagent', argumentsText: JSON.stringify({agent: 'worker', task: 'inspect workspace'})}]}
+            : {draft: 'parent done', toolCalls: []};
+        }
+        childTurn += 1;
+        return childTurn === 1
+          ? {draft: '', toolCalls: [{callId: 'inner-plan-sandbox', toolName: 'run_bash_command', argumentsText: JSON.stringify({command: 'printf worker > worker-sandboxed.txt'})}]}
+          : {draft: 'worker done', toolCalls: []};
+      }
+    }), async (preparations) => {
+      const runAgent = createTestAgentLoopRuntime(cwd, {capture: () => snapshot});
+      await runAgent({
+        records: [{role: 'user', text: 'delegate'}], interactionMode: 'plan', userConfigSnapshot: snapshot
+      }, {onToolApprovalRequest() { approvals += 1; return {kind: 'allow_once'}; }});
+
+      assert.deepEqual(preparations.map((entry) => entry.options.sandboxModeOverride), ['read-only', 'read-only']);
+    }));
+    assert.equal(approvals, 0);
+    assert.equal(fs.readFileSync(path.join(cwd, 'worker-sandboxed.txt'), 'utf8'), 'worker');
+  } finally {
+    fs.rmSync(cwd, {recursive: true, force: true});
+  }
+});
+
 test('headless custom catalog uses the public runtime path and preserves readonly and general approval boundaries', async () => {
   for (const scenario of [
     {agent: 'readonly-shell', policy: 'full-access', expectedOk: false},
