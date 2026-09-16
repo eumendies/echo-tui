@@ -1,7 +1,7 @@
 import * as ansi from '../terminal/ansi';
 import {DEFAULT_TUI_THEME, type ThemeColor, type TuiTheme} from '../config/theme-config';
 import {blockBackground, blockText, colorText} from './colors';
-import { charWidth, collapseToSingleLine, displayWidth, safeRenderWidth, splitGraphemes, tabWidthAt } from './layout';
+import { charWidth, collapseToSingleLine, displayWidth, isPlainAsciiLine, safeRenderWidth, splitGraphemes, tabWidthAt } from './layout';
 import { getCommittableMarkdownText, renderMarkdownLinesWithOptions } from './markdown';
 import {createCompactToolCallPreviewText, renderToolCallPreviewLines} from './tool-message-renderer';
 import {renderSubagentPendingLines} from './subagent-renderer';
@@ -847,6 +847,19 @@ function padToDisplayWidth(text: string, width: number): string {
  *
  */
 function wrapContentLine(text: string, width: number, prefixWidth: number): string[] {
+  // 可打印 ASCII 行每字符一列且无制表符，按预算切片与逐 grapheme 换行等价；
+  // 预算非正时退化为每行一个字符，与逐 grapheme 分支的 column > prefixWidth 判定一致。
+  if (isPlainAsciiLine(text)) {
+    const budget = Math.max(1, width - prefixWidth);
+    const asciiLines: string[] = [];
+
+    for (let start = 0; start < text.length; start += budget) {
+      asciiLines.push(text.slice(start, start + budget));
+    }
+
+    return asciiLines.length > 0 ? asciiLines : [''];
+  }
+
   const lines = [''];
   let column = prefixWidth;
 

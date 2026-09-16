@@ -774,3 +774,29 @@ export const EMOJI_BASE_RANGES: readonly (readonly [number, number])[] = [
   [0x1FAF0, 0x1FAF8],
 ];
 
+/**
+ * 判断码点是否落在排序区间表内，二分查找。
+ *
+ * 宽度判定与 grapheme 快路径判据共用同一实现：所有表都是排序且不重叠的闭区间，
+ * 因此查找不需要预处理，也不需要额外的索引结构。
+ */
+export function isInRanges(codePoint: number, ranges: readonly (readonly [number, number])[]): boolean {
+  let low = 0;
+  let high = ranges.length - 1;
+
+  while (low <= high) {
+    const mid = (low + high) >>> 1;
+    const [start, end] = ranges[mid];
+
+    if (codePoint < start) {
+      high = mid - 1;
+    } else if (codePoint > end) {
+      low = mid + 1;
+    } else {
+      return true;
+    }
+  }
+
+  return false;
+}
+
