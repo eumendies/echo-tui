@@ -176,25 +176,6 @@
 - **THEN** status line SHALL NOT 显示 `/plan off` 或等价退出提示
 - **THEN** status line MAY 显示 `/mode normal` 或等价 mode 命令提示
 
-### Requirement: Plan mode supports readonly workspace inspection
-系统 SHALL 在 plan mode 中允许模型使用只读工具和受限 readonly bash inspection 来理解代码库、工作区状态和未提交变更，同时继续禁止执行实现、修改文件或运行可能产生副作用的命令。
-
-#### Scenario: Agent can inspect git state in plan mode
-- **WHEN** 用户在 plan mode 中要求模型 review 代码变更或制定实现计划
-- **THEN** 模型 SHALL 可以通过 plan mode 可用工具读取文件、搜索代码并执行允许的 readonly bash inspection 命令
-- **AND** 允许的 bash inspection SHALL 包括常见 git 状态和差异查询，例如 `git status`、`git diff`、`git log`、`git show`、`git rev-parse`、`git branch --show-current`、`git ls-files` 和 `git merge-base`
-
-#### Scenario: Plan mode still forbids execution and mutation
-- **WHEN** 用户或模型尝试在 plan mode 中运行会修改工作区、修改 `.git` 状态、安装依赖、运行测试、运行构建、提交代码或执行实现计划的命令
-- **THEN** 系统 SHALL 阻止该命令执行
-- **AND** 系统 SHALL 告知需要先退出 plan mode 才能执行该操作
-
-#### Scenario: Plan mode guidance mentions readonly bash boundary
-- **WHEN** 系统为 plan mode 构建 provider system prompt
-- **THEN** system prompt SHALL 说明当前可使用只读工具和受限 readonly bash inspection
-- **AND** system prompt SHALL 明确禁止运行测试、构建、安装、提交、切换分支、重置状态或其他可能产生副作用的命令
-- **AND** system prompt SHALL 指引用户通过 `/mode normal` 退出 plan mode
-
 #### Scenario: slash suggestion 显示 command status line
 - **WHEN** 普通 composer 正在显示 slash suggestion
 - **THEN** status line SHALL 显示 command 或等价命令输入状态
@@ -241,6 +222,26 @@
 - **THEN** status line SHALL 被裁剪到 safe render width 内
 - **THEN** status line SHALL NOT 因写满终端最后一列而触发额外自动换行
 - **THEN** status line SHALL 优先保留左侧模型、effort 和目录信息，右侧动态状态 MAY 被整体省略或裁剪
+
+### Requirement: Plan mode supports readonly workspace inspection
+系统 SHALL 在 plan mode 中允许模型使用只读工具和分层约束的 bash 来理解代码库、工作区状态和未提交变更。生效 `read-only` 沙箱可用时，bash 命令可进入执行链路，但工作区写入、网络访问与其他越界效果 SHALL 由内核沙箱边界拒绝；沙箱不可用时，系统 SHALL 只允许命中严格只读 allowlist 的命令。plan mode SHALL 继续禁止实现、修改文件或产生其他副作用。
+
+#### Scenario: Agent can inspect git state in plan mode
+- **WHEN** 用户在 plan mode 中要求模型 review 代码变更或制定实现计划
+- **THEN** 模型 SHALL 可以通过 plan mode 可用工具读取文件、搜索代码并执行允许的 readonly bash inspection 命令
+- **AND** 允许的 bash inspection SHALL 包括常见 git 状态和差异查询，例如 `git status`、`git diff`、`git log`、`git show`、`git rev-parse`、`git branch --show-current`、`git ls-files` 和 `git merge-base`
+
+#### Scenario: Plan mode still forbids execution and mutation
+- **WHEN** 用户或模型尝试在 plan mode 中运行会修改工作区、修改 `.git` 状态、安装依赖、运行测试、运行构建、提交代码或执行实现计划的命令
+- **THEN** 生效 `read-only` 沙箱可用时，该命令 MAY 进入执行链路，但其工作区写入、网络访问与状态变更 SHALL 被内核沙箱边界拒绝
+- **THEN** 生效沙箱不可用时，系统 SHALL 拒绝该命令执行
+- **AND** 系统 SHALL 在拒绝时告知需要先退出 plan mode 才能执行该操作
+
+#### Scenario: Plan mode guidance mentions readonly bash boundary
+- **WHEN** 系统为 plan mode 构建模型可见的只读约束说明
+- **THEN** 该说明 SHALL 描述 bash 分层边界：生效只读沙箱下命令在沙箱内运行，无沙箱时仅允许 readonly inspection allowlist 命令
+- **AND** 该说明 SHALL 明确禁止运行测试、构建、安装、提交、切换分支、重置状态或其他可能产生副作用的命令
+- **AND** 该说明 SHALL 指引用户通过 `/mode normal` 退出 plan mode
 
 ### Requirement: Status line 使用缓存模型展示状态
 普通 composer status line SHALL 使用应用内缓存的模型展示状态显示当前 selected model 和当前模型 profile 显式配置的 reasoning effort。该缓存 SHALL 在应用内模型配置写入成功后更新；系统 SHALL NOT 承诺在外部进程或用户手动编辑 `~/.echo/config.json` 后实时更新当前 status line。
@@ -1122,20 +1123,20 @@ slash suggestion 列表 SHALL 在 footer 高度预算内渲染。当候选数量
 - **THEN** 系统 SHALL NOT 修改真实 LLM adapter 的 reasoning effort 配置
 
 ### Requirement: plan mode 只读 agent 边界
-系统 SHALL 在 plan mode 下运行 assistant turn 时为 provider 注入 plan-mode system prompt，并只向 provider 暴露只读工具。plan mode SHALL 允许模型使用只读工具进行代码和资料探索，但 SHALL 禁止模型获得会修改文件、执行命令、安装依赖、提交代码或改变系统状态的工具。
+系统 SHALL 在 plan mode 的 mode transition 说明中注入 plan-mode 只读约束，并 SHALL 保持 provider-visible tool schema 与 normal mode 一致以稳定 tools schema。plan mode SHALL 允许模型使用只读工具和受分层边界约束的 bash 进行代码和资料探索，但 SHALL 在执行边界禁止写入型工具、MCP 工具与越界 bash 生效。
 
-#### Scenario: plan mode 注入 system prompt
-- **WHEN** 当前 interaction mode 为 plan，且用户提交普通消息启动 assistant turn
-- **THEN** provider input SHALL 包含 plan-mode system prompt
-- **THEN** 该 system prompt SHALL 告知模型当前处于只读探索和规划阶段
-- **THEN** 该 system prompt SHALL 告知模型不能修改文件、应用 patch、提交 commit、安装依赖、运行变更系统状态的命令或执行计划
-- **THEN** 该 system prompt SHALL 告知模型如果用户要求执行计划，应提示用户使用 `/mode normal` 退出 plan mode
-- **THEN** 该 system prompt SHALL NOT 写入 app transcript 或持久化 session records
+#### Scenario: plan mode 注入只读约束
+- **WHEN** 用户切换到 plan mode 并提交第一条 assistant user message
+- **THEN** 该 user record 的 provider-facing text SHALL 包含 plan-mode 只读约束说明
+- **THEN** 该说明 SHALL 告知模型当前处于只读探索和规划阶段
+- **THEN** 该说明 SHALL 告知模型不能修改文件、应用 patch、提交 commit、安装依赖或执行计划
+- **THEN** 该说明 SHALL 描述 shell 命令受生效只读沙箱或严格只读 allowlist 约束
+- **THEN** 该说明 SHALL 告知模型如果用户要求执行计划，应提示用户使用 `/mode normal` 退出 plan mode
 
-#### Scenario: plan mode 只暴露只读工具
+#### Scenario: plan mode 保持 tools schema 与 normal 一致
 - **WHEN** 当前 interaction mode 为 plan，且 agent runtime 初始化 provider tools
-- **THEN** provider SHALL 只收到 `glob`、`grep`、`read_files`、`web_fetch`、`web_search` 和 `use_skill` 工具定义
-- **THEN** provider SHALL NOT 收到 `run_bash_command`、`apply_patch` 或 `ask_user_questions` 工具定义
+- **THEN** provider SHALL 收到与 normal mode 相同的工具定义集合，包含 `run_bash_command` 与 `apply_patch`
+- **AND** plan mode 的只读语义 SHALL 由执行前风险分类、沙箱边界与严格 allowlist 强制，SHALL NOT 依赖裁剪 provider-visible tool schema
 
 #### Scenario: normal mode 保持完整工具能力
 - **WHEN** 当前 interaction mode 为 normal，且 agent runtime 初始化 provider tools
@@ -1143,7 +1144,7 @@ slash suggestion 列表 SHALL 在 footer 高度预算内渲染。当候选数量
 - **THEN** 普通模式 SHALL 保持既有 tool approval、tool result 和 continuation 行为
 
 #### Scenario: plan mode 不执行写入工具
-- **WHEN** 当前 interaction mode 为 plan，且 provider 返回未暴露的写入或执行类 tool call
+- **WHEN** 当前 interaction mode 为 plan，且 provider 返回写入型 tool call
 - **THEN** 系统 SHALL NOT 执行该 tool call
 - **THEN** 系统 SHALL 以安全失败结果或本地错误方式继续，不产生文件修改、命令执行或配置写入
 

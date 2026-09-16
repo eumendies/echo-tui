@@ -100,15 +100,20 @@ TBD - created by archiving change add-undo-command. Update Purpose after archive
 - **THEN** `/undo` SHALL 可以回退上一进程中的受控文件修改
 
 ### Requirement: 不可追踪写入保护和确认恢复
-包含不可追踪写入型 shell 命令的 assistant loop SHALL 使 change checkpoint 失效。对于 ready checkpoint 中由受控文件工具记录的文件，用户确认 `/undo` 后系统 SHALL 恢复 checkpoint 的 snapshot 状态，即使这些文件在 loop 结束后又被手动修改。
+包含不可追踪写入型 shell 命令的 assistant loop SHALL 使 change checkpoint 失效；但当命令实际在生效 `read-only` 沙箱内执行时，工作区写入已被内核边界排除，系统 SHALL NOT 因该命令使 checkpoint 失效。对于 ready checkpoint 中由受控文件工具记录的文件，用户确认 `/undo` 后系统 SHALL 恢复 checkpoint 的 snapshot 状态，即使这些文件在 loop 结束后又被手动修改。
 
 #### Scenario: 写入型 bash 使 undo 不可用
-- **WHEN** assistant loop 执行了无法声明文件修改集合的写入型 `run_bash_command`
+- **WHEN** assistant loop 执行了无法声明文件修改集合的写入型 `run_bash_command`，且该命令未在生效 `read-only` 沙箱内执行
 - **THEN** 系统 SHALL 将本轮 change checkpoint 标记为 invalid
 - **THEN** 系统 SHALL 丢弃该 invalid checkpoint 之前的 checkpoint
 - **WHEN** 用户随后提交 `/undo`
 - **THEN** 系统 SHALL 说明本轮包含不可追踪写入命令，无法安全回退
 - **THEN** 系统 SHALL NOT 修改文件系统或 transcript records
+
+#### Scenario: 生效只读沙箱内执行不使 undo 失效
+- **WHEN** assistant loop 在生效 `read-only` 沙箱内执行了无法声明文件修改集合的 bash 命令，例如 `jq . package.json` 或 `node -e "..."`
+- **THEN** 系统 SHALL NOT 使本轮 change checkpoint 失效
+- **THEN** `/undo` MAY 继续回退该 loop 中受控文件工具产生的修改
 
 #### Scenario: invalid checkpoint 作为多轮 undo 边界
 - **GIVEN** 当前 session change history 内存在一个 invalid checkpoint
