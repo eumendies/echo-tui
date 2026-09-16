@@ -529,3 +529,19 @@ test('renderSubagentViewIndex folds long run lists around the watched run', () =
   assert.ok(lines.some((line) => /↑ 上方/u.test(line)));
   assert.ok(lines.some((line) => /↓ 下方/u.test(line)));
 });
+
+test('renderErrorMessageLines wraps long printable ASCII lines by width budget', () => {
+  const text = 'a'.repeat(100);
+  const lines = renderErrorMessageLines(text, 20);
+
+  // 安全宽度 19,前缀 '✕ ' 宽 2 → 每行 17 个字符。
+  assert.equal(lines.length, 6);
+  assert.ok(lines.every((line) => displayWidth(line) <= safeRenderWidth(20)));
+  assert.equal(lines.map((line) => stripAnsi(line).slice(2)).join(''), text);
+
+  // 极窄宽度下前缀已占满整行,退化为每行一个字符。
+  assert.deepEqual(renderErrorMessageLines('abc', 3).map(stripAnsi), ['✕ a', '  b', '  c']);
+
+  // 含制表符的行不走切片快路径,仍按当前列展开制表位。
+  assert.deepEqual(renderErrorMessageLines('a\tb', 20).map(stripAnsi), ['✕ a     b']);
+});

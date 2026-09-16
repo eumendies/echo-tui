@@ -574,6 +574,7 @@ renderer 只理解这些 surface kind，不理解具体命令、tool approval、
 | `src/render/blocks.ts` | `renderBanner`、`renderUserBlock`、`renderAssistantBlock`、`renderShellBlock`、`renderErrorBlock`、`renderCompactionNoticeBlock`、`renderLocalNoticeBlock`、`renderReasoningSummaryBlock`、`renderPendingAssistantLines` | 按当前宽度渲染 banner、transcript projection 和 pending preview 消息行 |
 | `src/render/colors.ts` | `colorText`、`colorBackground`、`styleText`、`resolveFooterTheme` | color/style 到 ANSI 的统一应用 helper |
 | `src/render/tool-message-renderer.ts`、`src/render/tool-message-renderers/` | 顶层路由、`apply-patch.ts`、`bash.ts`、`memory.ts`、`use-skill.ts`、`shared.ts` | 顶层公共入口和通用 fallback；子模块负责专属工具投影与共享换行 |
+| `src/input/graphemes.ts`、`src/render/layout.ts`、`src/render/width-data.ts` | `splitGraphemes`、`charWidth`、`displayWidth`、`isPlainAsciiLine`、`isInRanges` | 字符宽度口径单点：Unicode 数据表与区间查找集中在 `width-data.ts`，`splitGraphemes` 对不含 cluster 边界码点的文本按码点切分，其余回退 `Intl.Segmenter` |
 
 ## 光标和重绘细节
 
@@ -585,6 +586,8 @@ footer renderer 保存两类局部状态：
 普通重绘时，`app-renderer.render` 先把当前可提交的流式前缀追加到历史区，再委托 footer renderer 清理并重绘 footer 临时区域；没有新增前缀时自然退化为纯 footer redraw。transcript 发生事实新增时，`app-renderer` 统一执行“clear footer → append block → redraw footer”，保持历史输出 append-only；相邻且同 call id 的 tool_call/tool_result 会聚合为一个渲染块。
 
 当检测到 terminal columns 变化或 terminal rows 变小时，`app-renderer` 走 destructive recovery：重置滚动区域与样式，清可见屏幕，清 scrollback，回到左上角后再输出完整 app snapshot，并同步 footer 的局部形状。行数变小时旧 footer 可能已被挤入 scrollback，因此不能只依赖 footer 局部清理；仅 rows 变大时只同步尺寸，不主动清屏重放。这个策略让 transcript 内容记录保持 append-only，同时避免依赖输出物理行数估算。
+
+grapheme 切分与会话文本宽度判定走等价快路径，用来压低 destructive recovery、`/resume` 恢复和 resize 这类全量重绘的成本。`splitGraphemes` 只在文本不含 cluster 边界相关码点时按码点切分（保守白名单 + 零宽表守卫，未覆盖的脚本一律回退 `Intl.Segmenter`）；`displayWidth` 与消息块换行对纯可打印 ASCII 直接按长度或宽度预算处理，含 ANSI 序列、制表符、换行或非 ASCII 时回到逐 grapheme 路径。两条路径的切分结果逐元素一致，换行点与宽度结果不变：实测 32MB / 3372 条记录的会话在 120 列下全量投影耗时从 3.6s 降到 1.2s，投影输出 sha1 与优化前一致。
 
 slash runtime 与 modal 状态接入后，footer 的重绘规则是：
 
