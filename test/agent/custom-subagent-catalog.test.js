@@ -13,10 +13,11 @@ const {
   MAX_CUSTOM_SUBAGENT_BODY_BYTES,
   MAX_CUSTOM_SUBAGENT_DESCRIPTION_CODE_POINTS,
   MAX_CUSTOM_SUBAGENT_FILE_BYTES,
+  MAX_CUSTOM_SUBAGENT_SKILL_NAME_CODE_POINTS,
   parseCustomSubagentManifest,
   serializeCustomSubagentManifest
 } = require('../../src/agent/subagent/manifest');
-const {parseAgentsSettings} = require('../../src/agent/subagent/settings');
+const {parseAgentsSettings, serializeAgentsSettings} = require('../../src/agent/subagent/settings');
 const {
   formatSubagentDisplayName,
   formatSubagentRawName,
@@ -42,6 +43,9 @@ function createManifest(overrides = {}) {
   const mcpLine = Object.hasOwn(overrides, 'mcp') ? `mcp: ${String(overrides.mcp)}\n` : '';
   const modelLine = Object.hasOwn(overrides, 'model') ? `model: ${overrides.model}\n` : '';
   const effortLine = Object.hasOwn(overrides, 'effort') ? `effort: ${overrides.effort}\n` : '';
+  const skillsLine = Object.hasOwn(overrides, 'skills')
+    ? ['skills:', ...overrides.skills.map((skill) => `  - ${skill}`)].join('\n')
+    : '';
   const body = overrides.body || '# Role\n\nReturn concise findings.';
   return [
     '---',
@@ -51,6 +55,7 @@ function createManifest(overrides = {}) {
     effortLine.trimEnd(),
     'tools:',
     ...tools.map((tool) => `  - ${tool}`),
+    skillsLine.trimEnd(),
     mcpLine.trimEnd(),
     '---',
     '',
@@ -191,6 +196,40 @@ test('manifest parser and canonical serializer round-trip model, effort, and Mar
   assert.deepEqual(parseCustomSubagentManifest(serialized), parsed);
 });
 
+test('manifest skills sequence keeps the three-state policy and round-trips safely', () => {
+  const absent = parseCustomSubagentManifest(createManifest());
+  assert.equal(absent.ok, true);
+  assert.equal(absent.manifest.skillNames, undefined);
+
+  const allowlist = parseCustomSubagentManifest(createManifest({skills: ['code-review', 'unit-test']}));
+  assert.equal(allowlist.ok, true);
+  assert.deepEqual(allowlist.manifest.skillNames, ['code-review', 'unit-test']);
+
+  const explicitEmpty = parseCustomSubagentManifest(createManifest({skills: []}));
+  assert.equal(explicitEmpty.ok, true);
+  assert.deepEqual(explicitEmpty.manifest.skillNames, []);
+  assert.notDeepEqual(explicitEmpty.manifest.skillNames, absent.manifest.skillNames);
+
+  const serialized = serializeCustomSubagentManifest(allowlist.manifest);
+  assert.equal(serialized.includes('skills:\n  - code-review\n  - unit-test\n'), true);
+  assert.deepEqual(parseCustomSubagentManifest(serialized), allowlist);
+  assert.deepEqual(parseCustomSubagentManifest(serializeCustomSubagentManifest(explicitEmpty.manifest)), explicitEmpty);
+  assert.equal(serializeCustomSubagentManifest(absent.manifest).includes('skills:'), false);
+});
+
+test('manifest parser rejects illegal skill sequences without dropping entries', () => {
+  for (const [code, raw] of [
+    ['unsupported_structure', '---\ndescription: x\ncapability: readonly\ntools:\n  - grep\nskills: [code-review]\n---\nbody'],
+    ['empty_field', '---\ndescription: x\ncapability: readonly\ntools:\n  - grep\nskills:\n  - \n---\nbody'],
+    ['skill_name_too_long', `---\ndescription: x\ncapability: readonly\ntools:\n  - grep\nskills:\n  - ${'x'.repeat(MAX_CUSTOM_SUBAGENT_SKILL_NAME_CODE_POINTS + 1)}\n---\nbody`],
+    ['duplicate_skill', '---\ndescription: x\ncapability: readonly\ntools:\n  - grep\nskills:\n  - code-review\n  - code-review\n---\nbody']
+  ]) {
+    const parsed = parseCustomSubagentManifest(raw);
+    assert.equal(parsed.ok, false, raw);
+    assert.equal(parsed.error.code, code, raw);
+  }
+});
+
 test('agents settings parser is versioned and rejects unknown or malformed override fields', () => {
   const valid = parseAgentsSettings(JSON.stringify({
     schemaVersion: 1,
@@ -208,14 +247,44 @@ test('agents settings parser is versioned and rejects unknown or malformed overr
     }
   });
 
+  const version2 = parseAgentsSettings(JSON.stringify({
+    schemaVersion: 2,
+    overrides: {
+      explorer: {effort: 'low', skills: ['code-review', 'unit-test']},
+      worker: {skills: []}
+    }
+  }));
+  assert.equal(version2.ok, true);
+  assert.deepEqual(version2.settings, {
+    schemaVersion: 2,
+    overrides: {
+      explorer: {effort: 'low', skillNames: ['code-review', 'unit-test']},
+      worker: {effort: 'inherit', skillNames: []}
+    }
+  });
+
   for (const [code, value] of [
-    ['unsupported_settings_version', {schemaVersion: 2, overrides: {}}],
+    ['unsupported_settings_version', {schemaVersion: 3, overrides: {}}],
     ['unknown_settings_field', {schemaVersion: 1, overrides: {}, secret: true}],
     ['invalid_settings_overrides', {schemaVersion: 1, overrides: {other: {}}}],
     ['invalid_builtin_override', {schemaVersion: 1, overrides: {worker: {tools: ['apply_patch']}}}],
     ['invalid_override_model', {schemaVersion: 1, overrides: {worker: {modelProfileId: ''}}}],
     ['invalid_override_model', {schemaVersion: 1, overrides: {worker: {modelProfileId: 'unsafe\u001b[31m'}}}],
     ['invalid_override_effort', {schemaVersion: 1, overrides: {worker: {effort: 'extreme'}}}]
+  ]) {
+    const parsedSettings = parseAgentsSettings(JSON.stringify(value));
+    assert.equal(parsedSettings.ok, false);
+    assert.equal(parsedSettings.error.code, code);
+  }
+
+  for (const [code, value] of [
+    ['invalid_builtin_override', {schemaVersion: 1, overrides: {worker: {skills: ['code-review']}}}],
+    ['invalid_override_skills', {schemaVersion: 2, overrides: {worker: {skills: 'code-review'}}}],
+    ['invalid_override_skills', {schemaVersion: 2, overrides: {worker: {skills: [42]}}}],
+    ['invalid_skill', {schemaVersion: 2, overrides: {worker: {skills: ['']}}}],
+    ['invalid_skill', {schemaVersion: 2, overrides: {worker: {skills: ['bad\u001b[31m']}}}],
+    ['skill_name_too_long', {schemaVersion: 2, overrides: {worker: {skills: ['x'.repeat(MAX_CUSTOM_SUBAGENT_SKILL_NAME_CODE_POINTS + 1)]}}}],
+    ['duplicate_skill', {schemaVersion: 2, overrides: {worker: {skills: ['a', 'a']}}}]
   ]) {
     const parsedSettings = parseAgentsSettings(JSON.stringify(value));
     assert.equal(parsedSettings.ok, false);
@@ -249,6 +318,102 @@ test('definition exports preserve built-ins and expose readonly general ceilings
   assert.equal(GENERAL_SUBAGENT_TOOL_CEILING.includes('file_edit'), true);
   assert.equal(Object.isFrozen(builtins), true);
   assert.equal(Object.isFrozen(builtins[0].localToolNames), true);
+  assert.equal(builtins[0].skillNames, undefined);
+  assert.equal(builtins[1].skillNames, undefined);
+});
+
+test('agents settings version 2 normalizes to version 2 on the next serialized write', () => {
+  const parsed = parseAgentsSettings(JSON.stringify({
+    schemaVersion: 1,
+    overrides: {explorer: {modelProfileId: 'fast', effort: 'low'}}
+  }));
+  assert.equal(parsed.ok, true);
+  const serialized = serializeAgentsSettings(parsed.settings);
+  assert.deepEqual(JSON.parse(serialized), {
+    schemaVersion: 2,
+    overrides: {explorer: {modelProfileId: 'fast', effort: 'low'}}
+  });
+  const roundTrip = parseAgentsSettings(serialized);
+  assert.equal(roundTrip.ok, true);
+  assert.deepEqual(roundTrip.settings.overrides.explorer, parsed.settings.overrides.explorer);
+});
+
+test('agents settings serialization emits the raw skills field and round-trips allowlists', () => {
+  const parsed = parseAgentsSettings(JSON.stringify({
+    schemaVersion: 2,
+    overrides: {worker: {effort: 'high', skills: ['code-review', 'missing-skill']}}
+  }));
+  assert.equal(parsed.ok, true);
+  const serialized = serializeAgentsSettings(parsed.settings);
+  assert.deepEqual(JSON.parse(serialized), {
+    schemaVersion: 2,
+    overrides: {worker: {effort: 'high', skills: ['code-review', 'missing-skill']}}
+  });
+  const roundTrip = parseAgentsSettings(serialized);
+  assert.equal(roundTrip.ok, true);
+  assert.deepEqual(roundTrip.settings.overrides.worker, {effort: 'high', skillNames: ['code-review', 'missing-skill']});
+});
+
+test('catalog freezes configured skill allowlists for custom and built-in definitions', () => {
+  const workspace = createWorkspace();
+  try {
+    writeAgent(workspace.home, 'skill-picker', createManifest({
+      capability: 'general',
+      tools: ['read_files', 'use_skill'],
+      skills: ['code-review', 'missing-skill']
+    }));
+    writeAgentsSettings(workspace.home, {
+      schemaVersion: 2,
+      overrides: {
+        explorer: {effort: 'low', skills: ['code-review']},
+        worker: {skills: []}
+      }
+    });
+    writeAgentsSettings(workspace.project, {
+      schemaVersion: 2,
+      overrides: {explorer: {effort: 'high'}}
+    });
+    const catalog = loadSubagentCatalog({
+      configSnapshot: createConfigSnapshot(['parent']),
+      cwd: workspace.project,
+      homedir: workspace.home
+    });
+    const custom = catalog.get('skill-picker');
+    const explorer = catalog.get('explorer');
+    const worker = catalog.get('worker');
+
+    assert.deepEqual(custom.skillNames, ['code-review', 'missing-skill']);
+    assert.equal(Object.isFrozen(custom.skillNames), true);
+    // 项目级条目整体遮蔽用户级；省略 skills 表示该项目恢复缺省的全部 enabled Skills。
+    assert.equal(explorer.skillNames, undefined);
+    assert.equal(explorer.effortPolicy, 'high');
+    assert.deepEqual(worker.skillNames, []);
+    assert.equal(Object.isFrozen(worker.skillNames), true);
+  } finally {
+    fs.rmSync(workspace.root, {recursive: true, force: true});
+  }
+});
+
+test('invalid builtin model references fall back to the default skill policy without user fallback', () => {
+  const workspace = createWorkspace();
+  try {
+    writeAgentsSettings(workspace.project, {
+      schemaVersion: 2,
+      overrides: {explorer: {modelProfileId: 'deleted', skills: ['code-review']}}
+    });
+    const catalog = loadSubagentCatalog({
+      configSnapshot: createConfigSnapshot(['parent']),
+      cwd: workspace.project,
+      homedir: workspace.home
+    });
+    const explorer = catalog.get('explorer');
+    assert.equal(explorer.modelProfileId, undefined);
+    assert.equal(explorer.effortPolicy, 'inherit');
+    assert.equal(explorer.skillNames, undefined);
+    assert.equal(catalog.diagnostics.some(({code}) => code === 'builtin_model_profile_not_found'), true);
+  } finally {
+    fs.rmSync(workspace.root, {recursive: true, force: true});
+  }
 });
 
 test('catalog discovers both scopes in deterministic order', () => {

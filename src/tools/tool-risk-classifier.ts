@@ -3,6 +3,7 @@ import {PLAN_READONLY_BASH_REJECTION, RUN_BASH_COMMAND_TOOL_NAME, isPlanReadonly
 import {isMcpToolName} from '../mcp/manager';
 import {EDIT_FILE_TOOL_NAME, createEditFileCallLabel} from './edit-file-tool-handler';
 import {isTodoToolName} from './todo-tool-handler';
+import {RUN_SUBAGENT_TOOL_NAME} from './run-subagent-tool-handler';
 
 import type {InteractionMode, SubagentRunMetadata} from '../types/agent';
 import type {ToolCall, ToolRiskAssessment} from '../types/tool';
@@ -24,18 +25,33 @@ const BASH_RISK_PATTERNS: RegExp[] = [
   /\b(?:curl|wget)\b[^|]*\|\s*(?:sudo\s+)?(?:sh|bash|zsh)\b/
 ];
 const PLAN_WRITE_TOOL_REJECTION = 'In plan mode, tools that modify files or system state are not available. To make changes, exit plan mode first.';
-const READONLY_TOOL_REJECTION = 'This BTW conversation only allows read-only tools. The requested tool was not executed.';
+const READONLY_TOOL_REJECTION = 'This run only allows read-only tools. The requested tool was not executed.';
+const READONLY_SUBAGENT_REJECTION = 'This run only allows delegating to read-only subagents. The requested subagent was not started.';
 const READONLY_OBSERVATION_TOOL_NAMES: ReadonlySet<string> = new Set(['read_files', 'glob', 'grep', 'web_fetch', 'web_search', 'use_skill']);
 
 /**
- * 对 BTW 等单次 readonly run 做 fail-closed 分类；工具 schema 保持不变，执行边界在本地强制。
+ * 对 BTW、/review 等单次 readonly run 做 fail-closed 分类；工具 schema 保持不变，执行边界在本地强制。
+ * run_subagent 仅当目标属于本轮只读 subagent 名称集合时放行，缺省集合视为不可委派。
+ * bashSandboxed 为 true 时 bash 已由生效的只读沙箱兜底:豁免文本白名单,效果边界由内核保证。
  */
-function classifyReadonlyToolCall(call: ToolCall): ToolRiskAssessment {
+function classifyReadonlyToolCall(call: ToolCall, readonlySubagentNames?: ReadonlySet<string>, bashSandboxed = false): ToolRiskAssessment {
   if (isTodoToolName(call.toolName) || READONLY_OBSERVATION_TOOL_NAMES.has(call.toolName)) {
     return {risk: 'safe'};
   }
 
+  if (call.toolName === RUN_SUBAGENT_TOOL_NAME) {
+    const agentName = parseRunSubagentAgentName(call.argumentsText);
+    return agentName !== null && readonlySubagentNames?.has(agentName) === true
+      ? {risk: 'safe'}
+      : {risk: 'rejected', reason: 'readonly_policy', message: READONLY_SUBAGENT_REJECTION};
+  }
+
   if (call.toolName === RUN_BASH_COMMAND_TOOL_NAME) {
+    if (bashSandboxed) {
+      // 由readonly沙箱兜底的bash命令,不再做文本白名单检查,直接放行。
+      return {risk: 'safe'};
+    }
+
     const command = parseBashCommand(call.argumentsText);
     return command && isPlanReadonlyBashCommand(command)
       ? {risk: 'safe'}
@@ -74,8 +90,10 @@ function classifySubagentToolCall(call: ToolCall, metadata: SubagentRunMetadata)
 
 /**
  * 对 provider 产出的 tool call 做执行前策略分类：安全执行、请求审批，或按当前 mode 直接拒绝。
+ * bashSandboxed 只在 plan 分支被消费:生效只读沙箱已由内核兜底时,plan 的 bash 不再需要文本白名单;
+ * normal 分支刻意忽略该参数,保持"沙箱不改变普通审批"的正交性。
  */
-function classifyToolCallRisk(call: ToolCall, interactionMode: InteractionMode = 'normal', getMcpApproval?: (toolName: string) => 'always' | 'never' | undefined): ToolRiskAssessment {
+function classifyToolCallRisk(call: ToolCall, interactionMode: InteractionMode = 'normal', getMcpApproval?: (toolName: string) => 'always' | 'never' | undefined, bashSandboxed = false): ToolRiskAssessment {
   if (call.toolName === APPLY_PATCH_TOOL_NAME || call.toolName === EDIT_FILE_TOOL_NAME) {
     if (interactionMode === 'plan') {
       return {risk: 'rejected', reason: 'plan_mode', message: PLAN_WRITE_TOOL_REJECTION};
@@ -120,7 +138,8 @@ function classifyToolCallRisk(call: ToolCall, interactionMode: InteractionMode =
   }
 
   if (interactionMode === 'plan') {
-    return isPlanReadonlyBashCommand(command)
+    // 沙箱生效时任意命令进入执行链路,越界效果由内核边界拒绝;不生效才回退严格 allowlist。
+    return bashSandboxed || isPlanReadonlyBashCommand(command)
       ? {risk: 'safe'}
       : {risk: 'rejected', reason: 'plan_mode', message: PLAN_READONLY_BASH_REJECTION};
   }
@@ -160,6 +179,24 @@ function parseBashCommand(argumentsText: string): string | null {
   return typeof command === 'string' && command.trim() !== '' ? command : null;
 }
 
+/** 解析 run_subagent 参数中的 agent 名称；provider 输出不可信，解析失败返回 null。 */
+function parseRunSubagentAgentName(argumentsText: string): string | null {
+  let args: unknown;
+
+  try {
+    args = JSON.parse(argumentsText);
+  } catch {
+    return null;
+  }
+
+  if (!args || typeof args !== 'object' || Array.isArray(args)) {
+    return null;
+  }
+
+  const agentName = (args as {agent?: unknown}).agent;
+  return typeof agentName === 'string' && agentName !== '' ? agentName : null;
+}
+
 function hasBashRisk(command: string): boolean {
   const normalizedCommand = command.replace(/\r\n?/g, '\n');
   return BASH_RISK_PATTERNS.some((pattern) => pattern.test(normalizedCommand));
@@ -167,10 +204,12 @@ function hasBashRisk(command: string): boolean {
 
 export {
   READONLY_OBSERVATION_TOOL_NAMES,
+  READONLY_SUBAGENT_REJECTION,
   READONLY_TOOL_REJECTION,
   classifyReadonlyToolCall,
   classifySubagentToolCall,
   classifyToolCallRisk,
   createMcpApprovalPreview,
-  parseBashCommand
+  parseBashCommand,
+  parseRunSubagentAgentName
 };

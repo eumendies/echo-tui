@@ -1021,6 +1021,33 @@ test('bash tool invalidates change history only for commands outside readonly in
   assert.match(writeLikeChange.calls.invalidations[0], /不可追踪/);
 });
 
+test('bash tool skips change history invalidation when the command runs in an effective read-only sandbox', async () => {
+  const createSandbox = (mode, isAvailable) => ({
+    policy: {mode, network: mode === 'workspace-write', extraWritablePaths: []},
+    provider: {
+      name: 'macos-seatbelt',
+      isAvailable: () => isAvailable,
+      describeUnavailable: () => '试运行失败',
+      wrapCommand: () => null
+    }
+  });
+  const command = 'node -e "console.log(1)"';
+
+  // 只在命令实际由生效只读沙箱执行时豁免失效:档位或可用性不满足时保持既有文本失效语义。
+  for (const [sandbox, expectedInvalidations, label] of [
+    [createSandbox('read-only', true), 0, 'effective read-only'],
+    [createSandbox('read-only', false), 1, 'unavailable read-only'],
+    [createSandbox('workspace-write', true), 1, 'workspace-write']
+  ]) {
+    const change = createRecordingChangeRecorder();
+    const executor = createToolExecutor(createToolRegistry([createBashToolHandler({ cwd: process.cwd(), sandbox })]));
+    const result = await executor.execute(createCall({ argumentsText: JSON.stringify({ command }) }), {changeRecorder: change.recorder});
+
+    assert.equal(result.ok, true, label);
+    assert.equal(change.calls.invalidations.length, expectedInvalidations, label);
+  }
+});
+
 test('builtin agent-memory script preserves change history without trusting composed shell commands', () => {
   const scriptPath = require.resolve('../../src/skills/builtin/agent-memory/scripts/memory');
 

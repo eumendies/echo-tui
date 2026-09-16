@@ -5,6 +5,7 @@ import * as fs from 'node:fs';
 import {findProjectRoot} from '../../agent/agent-instructions';
 import {createAgentManagementStore} from '../../agent/subagent/management-store';
 import {BUILTIN_SUBAGENT_DEFINITIONS} from '../../agent/subagent/definition';
+import {createSkillManager} from '../../skills/skill-manager';
 import {
   deleteBuiltinSubagentOverride,
   readAgentsSettingsScope,
@@ -13,7 +14,7 @@ import {
 } from '../../agent/subagent/settings';
 
 import type {AgentUserConfigSnapshot} from '../../types/agent';
-import type {CommandAgentBuiltinInfo, CommandHostApp} from '../../types/command';
+import type {CommandAgentBuiltinInfo, CommandAgentSkillInfo, CommandHostApp} from '../../types/command';
 import type {AgentsSettingsScopeReadResult, BuiltinSubagentName} from '../../agent/subagent/settings';
 
 type AgentsCommandPortOptions = {
@@ -44,6 +45,16 @@ function createAgentsCommandPort(options: AgentsCommandPortOptions): CommandHost
     };
   }
 
+  /** 列出当前按来源优先级胜出的 Skill 目录与 enabled 状态，供 Skills 多选层与摘要展示。 */
+  function listSkillInfos(): CommandAgentSkillInfo[] {
+    const skillManager = createSkillManager({cwd: options.cwd()});
+    return skillManager.listSkills().map((skill) => ({
+      enabled: skill.enabled,
+      name: skill.name,
+      sourceKind: skill.sourceKind
+    }));
+  }
+
   /** 按共享 fail-closed 选择规则投影内置定义，并同时报告失效模型引用。 */
   function createBuiltinProjection(
     overrides: readonly Readonly<AgentsSettingsScopeReadResult>[],
@@ -68,7 +79,8 @@ function createAgentsCommandPort(options: AgentsCommandPortOptions): CommandHost
         includeMcpTools: definition.includeMcpTools,
         localToolNames: [...definition.localToolNames],
         ...(selected?.override.modelProfileId ? {modelProfileId: selected.override.modelProfileId} : {}),
-        name
+        name,
+        ...(selected?.override.skillNames !== undefined ? {skillNames: [...selected.override.skillNames]} : {})
       };
     });
     return {builtins, diagnostics};
@@ -100,7 +112,8 @@ function createAgentsCommandPort(options: AgentsCommandPortOptions): CommandHost
         diagnostics,
         items: [...management.items],
         models,
-        overrides
+        overrides,
+        skills: listSkillInfos()
       };
     },
     validate(scope, name, draft) {

@@ -1,7 +1,18 @@
 const test = require('node:test');
 const assert = require('node:assert');
+const fs = require('node:fs');
+const path = require('node:path');
 
-const {MACOS_SANDBOX_EXEC_PATH, buildSeatbeltProfile, createMacosSeatbeltSandboxProvider} = require('../../src/sandbox/macos-seatbelt');
+const {MACOS_SANDBOX_EXEC_PATH, MACOS_SANDBOX_TRIAL_BINARY, buildSeatbeltProfile, createMacosSeatbeltSandboxProvider} = require('../../src/sandbox/macos-seatbelt');
+
+test('seatbelt trial probes a binary that exists on macOS', () => {
+  // macOS 的 /bin 不含 true(它在 /usr/bin):探针指向不存在的路径会让沙箱在整台机器上静默不可用。
+  assert.equal(path.isAbsolute(MACOS_SANDBOX_TRIAL_BINARY), true);
+
+  if (process.platform === 'darwin') {
+    assert.equal(fs.existsSync(MACOS_SANDBOX_TRIAL_BINARY), true);
+  }
+});
 
 test('buildSeatbeltProfile denies network when disabled', () => {
   const profile = buildSeatbeltProfile({mode: 'workspace-write', network: false, writablePaths: ['/private/tmp', '/Users/me/proj']});
@@ -32,6 +43,7 @@ test('seatbelt provider wraps shell command with sandbox-exec profile', () => {
   const provider = createMacosSeatbeltSandboxProvider({
     exists: () => true,
     homedir: () => '/Users/tester',
+    probe: () => true,
     realpath: (targetPath) => targetPath === '/tmp' ? '/private/tmp' : targetPath,
     tmpdir: () => '/tmp'
   });
@@ -55,6 +67,7 @@ test('seatbelt provider omits workspace roots in read-only mode', () => {
   const provider = createMacosSeatbeltSandboxProvider({
     exists: () => true,
     homedir: () => '/Users/tester',
+    probe: () => true,
     realpath: (targetPath) => targetPath,
     tmpdir: () => '/private/var/folders/T'
   });
@@ -69,11 +82,43 @@ test('seatbelt provider omits workspace roots in read-only mode', () => {
   assert.match(argv[2], /\(deny network\*\)/);
 });
 
-test('seatbelt provider returns null when unavailable or mode is off', () => {
+test('seatbelt provider returns null when unavailable, trial failed, or mode is off', () => {
   const unavailableProvider = createMacosSeatbeltSandboxProvider({exists: () => false});
-  const availableProvider = createMacosSeatbeltSandboxProvider({exists: () => true});
+  const trialFailedProvider = createMacosSeatbeltSandboxProvider({exists: () => true, probe: () => false});
+  const availableProvider = createMacosSeatbeltSandboxProvider({exists: () => true, probe: () => true});
+  const policy = {mode: 'workspace-write', network: false, extraWritablePaths: []};
 
   assert.equal(unavailableProvider.isAvailable(), false);
-  assert.equal(unavailableProvider.wrapCommand({command: 'ls', shell: '/bin/bash', cwd: '/tmp'}, {mode: 'workspace-write', network: false, extraWritablePaths: []}), null);
-  assert.equal(availableProvider.wrapCommand({command: 'ls', shell: '/bin/bash', cwd: '/tmp'}, {mode: 'off', network: false, extraWritablePaths: []}), null);
+  assert.equal(unavailableProvider.wrapCommand({command: 'ls', shell: '/bin/bash', cwd: '/tmp'}, policy), null);
+  assert.equal(trialFailedProvider.isAvailable(), false);
+  assert.equal(trialFailedProvider.wrapCommand({command: 'ls', shell: '/bin/bash', cwd: '/tmp'}, policy), null);
+  assert.equal(availableProvider.wrapCommand({command: 'ls', shell: '/bin/bash', cwd: '/tmp'}, {...policy, mode: 'off'}), null);
+});
+
+test('seatbelt provider distinguishes a missing binary from a failed trial run', () => {
+  const missing = createMacosSeatbeltSandboxProvider({exists: () => false});
+  const trialFailed = createMacosSeatbeltSandboxProvider({exists: () => true, probe: () => false});
+
+  assert.match(missing.describeUnavailable(), /sandbox-exec 不可用/);
+  assert.match(trialFailed.describeUnavailable(), /试运行失败/);
+  assert.doesNotMatch(trialFailed.describeUnavailable(), /sandbox-exec 不可用/);
+});
+
+test('seatbelt provider caches the trial run result', () => {
+  let probes = 0;
+  const provider = createMacosSeatbeltSandboxProvider({
+    exists: () => true,
+    homedir: () => '/Users/tester',
+    probe: () => {
+      probes += 1;
+      return true;
+    },
+    realpath: (targetPath) => targetPath,
+    tmpdir: () => '/private/tmp'
+  });
+
+  assert.equal(provider.isAvailable(), true);
+  assert.ok(provider.wrapCommand({command: 'ls', shell: '/bin/bash', cwd: '/Users/tester/proj'}, {mode: 'read-only', network: false, extraWritablePaths: []}));
+  assert.equal(provider.isAvailable(), true);
+  assert.equal(probes, 1);
 });

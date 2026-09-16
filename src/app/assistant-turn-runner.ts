@@ -1,7 +1,8 @@
 import {isAbortError} from '../types/agent';
 import {createToolApprovalResolver} from './tool-approval/resolver';
 
-import type {AgentCallbacks, ReasoningEffort, RunAgent, ToolApprovalDecision} from '../types/agent';
+import type {AgentCallbacks, AgentToolPolicy, ReasoningEffort, RunAgent, ToolApprovalDecision} from '../types/agent';
+import type {SandboxModeOverride} from '../sandbox/types';
 import type {AssistantTurnScope, Observation} from '../observation/observation';
 import type {ToolApprovalRequest, ToolCall, ToolResultAttachment} from '../types/tool';
 import type {SubagentTranscriptRecord, TranscriptRecord, UserTranscriptMetadata} from '../types/transcript';
@@ -21,6 +22,8 @@ type AssistantTurnRunnerInput = {
   metadata?: UserTranscriptMetadata;
   modelProfileIdOverride?: string;
   reasoningEffortOverride?: ReasoningEffort;
+  toolPolicy?: AgentToolPolicy; // workflow 为本轮声明的运行级工具策略。
+  sandboxModeOverride?: SandboxModeOverride; // workflow 为本轮声明的运行级沙箱收紧。
   attachments?: ToolResultAttachment[];
   observation: Observation;
   observationScope: AssistantTurnScope;
@@ -45,6 +48,8 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
     metadata,
     modelProfileIdOverride,
     reasoningEffortOverride,
+    toolPolicy,
+    sandboxModeOverride,
     attachments,
     observation,
     observationScope,
@@ -111,6 +116,8 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
     const session = appContext.getAgentSession({modelProfileIdOverride, reasoningEffortOverride}, userConfigSnapshot);
     await runAgent({
       ...session,
+      ...(toolPolicy ? {toolPolicy} : {}),
+      ...(sandboxModeOverride ? {sandboxModeOverride} : {}),
       abortSignal: turn.abortSignal
     }, {
       changeRecorder: appContext.changeHistoryContext.createRecorder(),

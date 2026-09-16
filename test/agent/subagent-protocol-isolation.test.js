@@ -2,7 +2,10 @@ const assert = require('node:assert/strict');
 const {test} = require('node:test');
 
 const {estimateRecordsTokens, generateCompactionSummary} = require('../../src/agent/context/context-compaction');
-const {renderConversationReferenceMaterial} = require('../../src/agent/context/conversation-reference');
+const {
+  renderConversationReferenceMaterial,
+  renderConversationReferenceSegments
+} = require('../../src/agent/context/conversation-reference');
 const {convertTranscriptToAnthropicMessages} = require('../../src/agent/anthropic/transcript-converter');
 const {convertTranscriptToOpenAiChatMessages} = require('../../src/agent/openai-chat/transcript-converter');
 const {convertTranscriptToOpenAiInput} = require('../../src/agent/openai-responses/transcript-converter');
@@ -41,7 +44,10 @@ test('subagent process is excluded from token estimates, conversation references
   const subagent = createSubagentRecord();
   const records = [{role: 'user', text: 'visible user'}, subagent, {role: 'assistant', text: 'visible answer'}];
   assert.equal(estimateRecordsTokens(records), estimateRecordsTokens([records[0], records[2]]));
-  assert.doesNotMatch(renderConversationReferenceMaterial(records), /PRIVATE-SUBAGENT-PROCESS|PRIVATE-INNER-ID/);
+  assert.doesNotMatch(
+    renderConversationReferenceMaterial(renderConversationReferenceSegments({records})),
+    /PRIVATE-SUBAGENT-PROCESS|PRIVATE-INNER-ID/
+  );
 
   let summaryInput = '';
   await generateCompactionSummary({

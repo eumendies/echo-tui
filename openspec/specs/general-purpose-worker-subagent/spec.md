@@ -30,6 +30,24 @@ Worker SHALL 获得当前主 Agent 用于完成任务的本地工具能力，包
 - **THEN** Explorer SHALL 继续只取得其严格只读本地 allowlist且不包含 MCP、Todo、提问或文件编辑
 - **THEN** Worker 的完整工具面 SHALL NOT 放宽 Explorer 的 schema 或执行策略
 
+### Requirement: 通用 Subagent 使用定义约束后的 Skill 作用域
+内置 Worker 与自定义 general Subagent SHALL 从父运行冻结的 enabled Skill snapshot 派生独立 scoped registry，并 SHALL 应用各自定义的 Skill allowlist。Worker 保留 `use_skill` 工具不等于允许全部 Skill；provider catalog 和实际加载范围 SHALL 以 effective scope 为准。Skill scope SHALL NOT 改变 Worker 的文件编辑、Bash、Todo、提问、MCP、normal/plan、interactive/headless 或审批语义。
+
+#### Scenario: Worker 只允许任务相关 Skill
+- **WHEN** Worker 定义只允许 `code-review` 且父 snapshot 还包含其他 enabled Skills
+- **THEN** Worker system prompt SHALL 只公布 `code-review`
+- **THEN** Worker 对其他 Skill 的 `use_skill` 调用 SHALL 失败且不影响后续 continuation
+
+#### Scenario: Worker Skill 不授予额外工具
+- **WHEN** Worker 加载的允许 Skill 指示调用一个未注册本地工具或不可用 MCP tool
+- **THEN** provider-visible schema与 executable registry SHALL 保持 Worker 定义及当前模式规定的范围
+- **THEN** Skill 正文 SHALL NOT 绕过 normal、plan 或 headless 审批策略
+
+#### Scenario: 连续 Worker 委派复用快照但隔离 scope
+- **WHEN** 同一父 run 先后委派两个使用不同 Skill 策略的 Worker 或 general 自定义 Agent
+- **THEN** 两次运行 SHALL 从同一冻结父 snapshot 派生各自 scoped registry
+- **THEN** 第二次运行 SHALL NOT 继承第一次运行的允许名称、已加载正文或 tool continuation
+
 ### Requirement: Worker Todo 独立于父会话
 Worker runtime SHALL 在自身 continuation 中维护独立 `TodoState`，并 SHALL 以与主 Agent 相同的语义处理 `create_todos` 和 `complete_todo`。Worker Todo SHALL 注入 Worker 后续 provider context，但 SHALL NOT 读取、覆盖或持久化为父 session TodoState。Todo call/result SHALL 作为普通内部工具过程镜像到 Worker Subagent records。
 
@@ -40,7 +58,7 @@ Worker runtime SHALL 在自身 continuation 中维护独立 `TodoState`，并 SH
 - **THEN** 父 session TodoState SHALL 保持不变
 
 ### Requirement: Worker 复用主 Agent 普通执行策略
-Worker SHALL 继承父 Agent 当前 normal或plan交互语义，并通过与主 Agent相同的风险分类处理本地写入、Bash 和 MCP。所有 approval-required Worker调用 SHALL 使用与主 Agent共享的会话授权缓存、manual/auto resolver和change recorder，同时附加 Worker run origin用于surface身份和迟到回调隔离。
+Worker SHALL 继承父 Agent 当前 normal或plan交互语义，并通过与主 Agent相同的风险分类处理本地写入、Bash 和 MCP。plan 父运行的 bash 沙箱分层 SHALL 通过委派端口传递给 Worker:生效 `read-only` 沙箱可用时,Worker 的 `run_bash_command` SHALL 与主 Agent 一样由内核边界执行;沙箱不可用时,Worker SHALL 按主 Agent plan mode语义拒绝越界命令。所有 approval-required Worker调用 SHALL 使用与主 Agent共享的会话授权缓存、manual/auto resolver和change recorder，同时附加 Worker run origin用于surface身份和迟到回调隔离。
 
 #### Scenario: Normal Worker 执行普通任务工具
 - **WHEN** normal mode Worker 请求安全工具或需要审批的文件编辑、高风险 Bash、MCP调用
@@ -48,10 +66,15 @@ Worker SHALL 继承父 Agent 当前 normal或plan交互语义，并通过与主 
 - **THEN** approval-required调用 SHALL 在共享会话缓存未命中时进入当前manual或auto审批流程
 - **THEN** 人工surface SHALL显示Worker身份，批准后的变更 SHALL沿用父turn change recorder
 
-#### Scenario: Plan Worker 不能绕过只读边界
-- **WHEN** plan mode Worker 请求文件编辑、非只读 Bash 或 MCP tool
+#### Scenario: Plan Worker 不能绕过写入与 MCP 边界
+- **WHEN** plan mode Worker 请求文件编辑或 MCP tool
 - **THEN** 系统 SHALL 按主 Agent plan mode语义直接拒绝该调用
 - **THEN** 系统 SHALL NOT 因调用来自Worker而进入写入审批或执行对应handler
+
+#### Scenario: Plan Worker 的 bash 继承父运行沙箱边界
+- **WHEN** plan mode Worker 请求严格只读 allowlist 之外的 Bash 命令
+- **THEN** 父运行生效沙箱为可用 `read-only` 档时,系统 SHALL 在继承的沙箱边界内直接执行该命令且 SHALL NOT 打开 approval surface
+- **THEN** 父运行沙箱未生效时,系统 SHALL 按主 Agent plan mode语义直接拒绝该调用
 
 #### Scenario: Headless Worker 沿用父策略
 - **WHEN** headless Worker产生approval-required工具调用
@@ -65,3 +88,4 @@ Worker SHALL 继承父 Agent 当前 normal或plan交互语义，并通过与主 
 - **WHEN** 同一个父run先后接受两个Worker委派
 - **THEN** 两次运行 SHALL分别创建新的runtime、record region、Todo、compaction和registry
 - **THEN** 第二个Worker SHALL NOT看到第一个Worker的对话、Todo或内部工具continuation
+

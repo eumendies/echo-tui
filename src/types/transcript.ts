@@ -40,6 +40,15 @@ export type UserTranscriptMetadata = {
 
 export type ConversationReferenceProjectionMode = 'full' | 'summary';
 
+// 引用素材单区块类型：record 来自单条源记录；compacted_summary 来自源会话压缩摘要；omission 是发送阶段头尾截断生成的中段省略标注。
+export type ConversationReferenceMaterialSegmentKind = 'record' | 'compacted_summary' | 'omission';
+
+export type ConversationReferenceMaterialSegment = {
+  kind: ConversationReferenceMaterialSegmentKind; // 决定区块语义与截断时的保留优先级；omission 段仅由发送阶段截断生成。
+  header: string; // 模型可见区块头（如 [user]、[compacted_summary]）；omission 段为空字符串。
+  text: string; // 已按单条记录上限截断的区块正文；omission 段为省略数量标注。
+};
+
 export type ConversationReferenceMetadata = {
   projectionMode: ConversationReferenceProjectionMode; // 记录该引用最终使用全文还是模型总结。
   sourcePath: string; // 指向被引用会话的源 journal，供精确细节回读。
@@ -48,11 +57,12 @@ export type ConversationReferenceMetadata = {
 };
 
 export type PendingConversationReference = ConversationReferenceMetadata & {
-  materialText: string; // 已完成角色过滤、等待在下一条消息发送前按预算处理的中立历史文本。
+  materialSegments: ConversationReferenceMaterialSegment[]; // 源会话活跃投影的按记录粒度中立段，发送前按当前模型预算与上限重组。
 };
 
 export type PreparedConversationReference = ConversationReferenceMetadata & {
   projectionText: string; // 已按预算保留全文或生成总结的 provider-facing 文本。
+  omittedRecordCount: number; // 总结素材头尾截断省略的中间记录段数量；0 表示未截断。
 };
 
 export type UserTranscriptRecord = TranscriptRecordBase & {

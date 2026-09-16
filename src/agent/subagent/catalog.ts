@@ -288,6 +288,7 @@ function convertManifest(candidate: CustomSubagentCandidate, manifest: Readonly<
     includeMcpTools: manifest.capability === 'general' && manifest.mcp,
     localToolNames,
     ...(manifest.modelProfileId ? {modelProfileId: manifest.modelProfileId} : {}),
+    ...(manifest.skillNames !== undefined ? {skillNames: [...manifest.skillNames]} : {}),
     name: candidate.name,
     prompt: createCustomSubagentPrompt(manifest.capability, candidate.name, manifest.instructions)
   };
@@ -337,7 +338,8 @@ function applyBuiltinOverride(
   return freezeSubagentDefinition({
     ...definition,
     effortPolicy: selected.override.effort,
-    ...(selected.override.modelProfileId ? {modelProfileId: selected.override.modelProfileId} : {})
+    ...(selected.override.modelProfileId ? {modelProfileId: selected.override.modelProfileId} : {}),
+    ...(selected.override.skillNames !== undefined ? {skillNames: [...selected.override.skillNames]} : {})
   });
 }
 

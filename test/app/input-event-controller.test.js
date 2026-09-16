@@ -150,7 +150,7 @@ test('InputEventController preserves pending, reference, shell, and assistant Es
   });
   harness.appContext.pendingMessageContext.enqueue('queued');
   harness.appContext.conversationReferenceContext.setPending({
-    projectionMode: 'full', sourcePath: '/tmp/a', sourceSessionId: 's', title: 'ref', records: []
+    projectionMode: 'full', sourcePath: '/tmp/a', sourceSessionId: 's', title: 'ref', materialSegments: []
   });
 
   harness.controller.handleEvent({type: INPUT_EVENTS.ESCAPE});

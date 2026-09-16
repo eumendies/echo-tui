@@ -119,6 +119,8 @@ tools:
   - glob
   - grep
   - run_bash_command
+skills:
+  - security-playbook
 mcp: false
 ---
 
@@ -127,15 +129,16 @@ mcp: false
 Inspect only authentication-related code. Cite file paths and return prioritized findings.
 ```
 
-- `description`、`capability`、`tools` 必填；`model`、`effort`、`mcp` 可选。`model` 引用 `/config` 中的模型 profile ID；引用失效时定义不会进入可委派目录，也不会静默回退。
+- `description`、`capability`、`tools` 必填；`model`、`effort`、`skills`、`mcp` 可选。`model` 引用 `/config` 中的模型 profile ID；引用失效时定义不会进入可委派目录，也不会静默回退。
 - `effort` 缺省或设为 `inherit` 时继承父 turn 的 effort，`default` 使用最终模型 profile 的默认值，也可固定为 `none`、`low`、`medium`、`high`、`xhigh` 或 `max`。未知、重复或类型不符的字段会使整个定义失效。
 - `capability: readonly` 只能从只读工具上限中选择能力，不能启用 MCP。严格白名单外的 Bash 在交互模式需要人工批准，在 headless 模式中即使使用 `--full-access` 也会拒绝。
 - `capability: general` 使用普通工具风险策略，并继承 `normal` / `plan` 和 headless 的 deny / `--full-access` 边界。`file_edit` 是能力别名，运行时会映射到当前配置选中的 `apply_patch` 或 `edit_file` 实现。
 - `mcp: true` 仅允许 general 定义使用当前父运行已经初始化的 MCP 工具；具体 MCP 风险和审批设置仍然生效。
-- 每次主 Agent 运行只加载一次目录并冻结快照；运行期间修改文件不会改变当前 schema 或已解析定义，下次运行才会生效。缺少用户或项目 agents 目录会被视为空目录。
+- `skills` 是三态 Skill allowlist：缺省不写时允许加载全部 enabled Skills；写成空列表明确禁止加载任何 Skill；写名称列表时只允许加载列出的 enabled Skills，disabled 或不存在的名称保留在配置中展示但不进入可加载目录。Skill 限制只收窄 `use_skill` 工具的可见范围，不改变工具、MCP、审批或委派边界，也不是文件路径保密边界——Bash 和文件读取工具仍可访问磁盘上的 Skill 文件。
+- 每次主 Agent 运行只加载一次目录并冻结快照；运行期间修改文件不会改变当前 schema 或已解析定义，下次运行才会生效。缺少用户或项目 agents 目录会被视为空目录。Skill 目录同样在 assistant turn 开始时冻结；各子运行共享同一不可变 Skill snapshot，但拥有独立的 scoped registry 与已加载正文，`/skills` 或 skills.json 的变更要到下一 turn 才生效。
 - 无效文件不会进入模型目录；启用 debug 后可通过 `subagent_catalog_diagnostic` 定位来源路径和有界错误信息，manifest 正文不会写入诊断。
 - 使用 `/agents` 可在 Overview、Project、User 和 Built-in 范围查看来源覆盖与诊断，并创建、编辑或删除定义。所有变更动作都是可聚焦选项：用方向键选择并按 Enter；创建、删除和移除内置 override 会进入默认选中“取消”的确认页，不使用 `a`、`d` 等隐藏快捷键。
-- `/agents` 允许为内置 `explorer`、`worker` 设置用户级或项目级 model/effort override；设置分别保存在 `~/.echo/agents.settings.json` 和项目根 `.echo/agents.settings.json`，不会改变内置 prompt、工具或权限策略。
+- `/agents` 允许为内置 `explorer`、`worker` 设置用户级或项目级 model/effort/Skills override；设置分别保存在 `~/.echo/agents.settings.json` 和项目根 `.echo/agents.settings.json`，内置条目的 Skills allowlist 使用 `skills` 字段，项目级文件中的同名条目整体遮蔽用户级条目。Skills override 同样不会改变内置 prompt、工具或权限策略。
 - Agent 文件和 override 使用原子写入与内容指纹冲突保护。保存成功后只影响下一次 assistant turn，已经启动的父 run 继续使用其冻结目录。
 
 自定义 Subagent 不支持覆盖内置名称、嵌套委派、绕过审批或提升 manifest 声明之外的权限；它也不是独立会话、插件沙箱或会话迁移机制。

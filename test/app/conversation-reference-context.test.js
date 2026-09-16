@@ -5,7 +5,7 @@ const {ConversationReferenceContext} = require('../../src/app/state/conversation
 
 function createReference(title = 'history') {
   return {
-    materialText: '[user]\nold request',
+    materialSegments: [{kind: 'record', header: '[user]', text: 'old request'}],
     projectionMode: 'full',
     sourcePath: '/tmp/history.jsonl',
     sourceSessionId: 'history-id',

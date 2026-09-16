@@ -5,7 +5,7 @@ const path = require('node:path');
 const test = require('node:test');
 const assert = require('node:assert');
 
-const {createMacosSeatbeltSandboxProvider} = require('../../src/sandbox/macos-seatbelt');
+const {MACOS_SANDBOX_EXEC_PATH, MACOS_SANDBOX_TRIAL_BINARY, createMacosSeatbeltSandboxProvider} = require('../../src/sandbox/macos-seatbelt');
 const {resolveBashSandboxContext} = require('../../src/sandbox/provider');
 const {runBashCommand} = require('../../src/tools/bash-command-runner');
 const {createDefaultToolRegistry} = require('../../src/tools/tool-registry');
@@ -13,11 +13,12 @@ const {createDefaultToolRegistry} = require('../../src/tools/tool-registry');
 // darwin 且 sandbox-exec 存在只是前提;嵌套在另一个沙箱内时内核会拒绝 sandbox_apply
 // (例如 echo-tui agent 的沙箱化 shell),用 trial 执行探测真实可用性,不可用就地带原因 skip。
 function canRunSandboxExec() {
-  if (process.platform !== 'darwin' || !fs.existsSync('/usr/bin/sandbox-exec')) {
+  if (process.platform !== 'darwin' || !fs.existsSync(MACOS_SANDBOX_EXEC_PATH)) {
     return false;
   }
 
-  const trial = spawnSync('/usr/bin/sandbox-exec', ['-p', '(version 1)(allow default)', '/bin/true'], {stdio: 'ignore', timeout: 5000});
+  // 探针参数与 provider 共用同一常量:路径写错会让整组真实执行用例静默 skip。
+  const trial = spawnSync(MACOS_SANDBOX_EXEC_PATH, ['-p', '(version 1)(allow default)', MACOS_SANDBOX_TRIAL_BINARY], {stdio: 'ignore', timeout: 5000});
   return trial.status === 0;
 }
 
@@ -196,5 +197,32 @@ test('registry forces sandbox off for headless full-access runs', SKIP_OPTIONS, 
   } finally {
     removePath(workspace);
     removePath(deniedPath);
+  }
+});
+
+test('registry applies the run-level read-only override to an enabled sandbox', SKIP_OPTIONS, async () => {
+  const workspace = createWorkspace();
+  const config = {
+    agentType: 'fake',
+    apiKey: '',
+    model: 'sandbox-test',
+    tools: {
+      autoCompressImages: true,
+      bash: {timeoutMs: null, maxOutputBytes: 65536},
+      fileEditMode: 'apply_patch',
+      sandbox: {mode: 'workspace-write', network: false, extraWritablePaths: []}
+    }
+  };
+  try {
+    const registry = createDefaultToolRegistry(config, workspace, undefined, {sandboxModeOverride: 'read-only'});
+    const result = await registry.getHandler('run_bash_command').execute(
+      {command: `echo blocked > "${path.join(workspace, 'inside.txt')}"`},
+      {callId: 'call-1', toolName: 'run_bash_command', argumentsText: '{}'}
+    );
+
+    assert.equal(result.ok, false);
+    assert.equal(fs.existsSync(path.join(workspace, 'inside.txt')), false);
+  } finally {
+    removePath(workspace);
   }
 });

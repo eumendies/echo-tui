@@ -1,6 +1,6 @@
 import {RUN_BASH_COMMAND_TOOL_NAME, isPlanReadonlyBashCommand} from './bash-tool-handler';
 import {RUN_SUBAGENT_TOOL_NAME} from './run-subagent-tool-handler';
-import {READONLY_OBSERVATION_TOOL_NAMES, parseBashCommand} from './tool-risk-classifier';
+import {READONLY_OBSERVATION_TOOL_NAMES, parseBashCommand, parseRunSubagentAgentName} from './tool-risk-classifier';
 
 import type {ToolCall} from '../types/tool';
 
@@ -26,24 +26,6 @@ function classifyToolCallConcurrency(call: ToolCall, readonlySubagentNames?: Rea
   }
 
   return 'exclusive';
-}
-
-/** 解析 run_subagent 参数中的 agent 名称；provider 输出不可信，解析失败返回 null。 */
-function parseRunSubagentAgentName(argumentsText: string): string | null {
-  let args: unknown;
-
-  try {
-    args = JSON.parse(argumentsText);
-  } catch {
-    return null;
-  }
-
-  if (!args || typeof args !== 'object' || Array.isArray(args)) {
-    return null;
-  }
-
-  const agentName = (args as {agent?: unknown}).agent;
-  return typeof agentName === 'string' && agentName !== '' ? agentName : null;
 }
 
 export {

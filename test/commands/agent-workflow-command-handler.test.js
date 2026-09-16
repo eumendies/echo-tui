@@ -128,6 +128,26 @@ test('AgentWorkflowCommandHandler appends mode switch notice for any actual plan
   assert.deepEqual(normal.transcriptAppends, []);
 });
 
+test('AgentWorkflowCommandHandler announces the readonly boundary and forwards run policies', () => {
+  const handler = new AgentWorkflowCommandHandler({
+    name: 'review',
+    description: 'Review',
+    argumentPolicy: 'optional',
+    modePolicy: 'preserve',
+    toolPolicy: 'readonly',
+    sandboxModeOverride: 'read-only',
+    createPrompt() {
+      return 'review prompt';
+    }
+  });
+  const plan = createHost('plan');
+  const result = handler.start('/review src/foo.ts', plan.host);
+
+  assert.deepEqual(plan.transcriptAppends, [{role: 'local_notice', text: '已为本次 /review 运行启用只读边界：写操作会被阻止。'}]);
+  assert.equal(result.toolPolicy, 'readonly');
+  assert.equal(result.sandboxModeOverride, 'read-only');
+});
+
 test('AgentWorkflowCommandHandler returns not_matched when start receives invalid text', () => {
   const handler = new AgentWorkflowCommandHandler({
     name: 'init',

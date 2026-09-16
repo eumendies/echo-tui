@@ -11,6 +11,8 @@ import {createToolCallTranscriptRecord, createToolResultTranscriptRecord} from '
 import {executeTodoToolCall, isTodoToolName} from '../../tools/todo-tool-handler';
 import {getMcpToolApproval} from '../../mcp/manager';
 import {createSkillCatalogPromptProjection} from '../../skills/skill-catalog-prompt';
+import {createSkillManager} from '../../skills/skill-manager';
+import {captureSkillSnapshot} from '../../skills/skill-snapshot';
 import {throwIfAborted} from '../../types/agent';
 import {normalizeError} from '../agent-errors';
 import {loadAgentInstructions} from '../agent-instructions';
@@ -20,9 +22,10 @@ import {loadSystemPromptOverride} from '../context/system-prompt';
 import {prepareAgent} from '../agent-setup';
 import {createCompactionNoticeRecord, runCompaction} from '../context/context-compaction';
 import {createUsageCwdHash} from '../../persistence/usage-store';
-import {createSandboxRuntimeNote} from '../../sandbox/provider';
+import {createSandboxRuntimeNote, isReadonlyBashSandboxEffective} from '../../sandbox/provider';
 import {createSubagentToolPort} from '../subagent/runtime';
 import {createSubagentLoopRuntime} from './subagent-loop-runtime';
+import type {SandboxModeOverride} from '../../sandbox/types';
 import {
   buildProviderRecords,
   executeUserQuestionToolCall,
@@ -36,7 +39,8 @@ import type {AgentCallbacks, AgentConversationKind, AgentExecutionMode, AgentIns
 import type {UsageStore} from '../../types/usage';
 import type {SkillCatalogEntry} from '../../types/skill';
 import type {SkillCatalogPromptProjection} from '../../skills/skill-catalog-prompt';
-import type {ToolApprovalRequest, ToolCall, ToolDefinition, ToolExecutionResult, ToolExecutor, ToolRegistry} from '../../types/tool';
+import type {SkillSnapshot} from '../../skills/skill-snapshot';
+import type {ToolApprovalRequest, ToolCall, ToolDefinition, ToolExecutionResult, ToolExecutor, ToolRegistry, ToolRiskAssessment} from '../../types/tool';
 import type {CompactionState, SubagentTranscriptRecord, TodoState, TranscriptRecord} from '../../types/transcript';
 import type {McpManager} from '../../mcp/manager';
 import type {AgentRunScope, Observation, ProviderObservationConfig} from '../../observation/observation';
@@ -85,12 +89,15 @@ type ToolApprovalResolution = {
 async function executeToolCall(toolCall: ToolCall, state: AgentLoopRunState, callbacks: AgentCallbacks, subagentGroupSize?: number): Promise<ToolExecutionResult> {
   throwIfAborted(state.abortSignal);
 
-  if (state.toolPolicy === 'readonly') {
-    const readonlyAssessment = classifyReadonlyToolCall(toolCall);
-    if (readonlyAssessment.risk === 'rejected') {
-      state.observation.toolRiskAssessed({scope: state.observationScope, call: toolCall, assessment: readonlyAssessment});
-      return createRejectedToolResult(toolCall, readonlyAssessment.message);
-    }
+  // 只读运行由 readonly classifier 一次性判定:rejected 立即短路,safe 直接沿用到执行链路,
+  // 不再回落普通风险分类——否则 allowlist 内的只读命令会被启发式写风险规则二次误判为需要审批。
+  const readonlyAssessment = state.toolPolicy === 'readonly'
+    ? classifyReadonlyToolCall(toolCall, state.readonlySubagentNames, state.readonlyBashSandboxed)
+    : null;
+
+  if (readonlyAssessment !== null && readonlyAssessment.risk === 'rejected') {
+    state.observation.toolRiskAssessed({scope: state.observationScope, call: toolCall, assessment: readonlyAssessment});
+    return createRejectedToolResult(toolCall, readonlyAssessment.message);
   }
 
   if (isTodoToolName(toolCall.toolName)) {
@@ -114,7 +121,10 @@ async function executeToolCall(toolCall: ToolCall, state: AgentLoopRunState, cal
     });
   }
 
-  const riskAssessment = classifyToolCallRisk(toolCall, state.interactionMode, (toolName) => getMcpToolApproval(state.mcpManager, toolName));
+  // 默认运行在这里执行普通风险分类;只读运行复用 readonly 判定结果,不进入审批分支。
+  // plan 运行的 bash 分层事实由 runtime 初始化时一次性解析,分类器不自行读取配置。
+  const riskAssessment: ToolRiskAssessment = readonlyAssessment
+    ?? classifyToolCallRisk(toolCall, state.interactionMode, (toolName) => getMcpToolApproval(state.mcpManager, toolName), state.planBashSandboxed);
   state.observation.toolRiskAssessed({scope: state.observationScope, call: toolCall, assessment: riskAssessment});
 
   if (riskAssessment.risk === 'rejected') {
@@ -217,6 +227,7 @@ type AgentLoopRunState = {
   skillCatalog: SkillCatalogEntry[]; // 本次 system context 可见的有界 skill目录。
   skillCatalogTokens: number; // 当前 skill目录投影的估算 token数。
   skillCatalogProjection: Pick<SkillCatalogPromptProjection, 'budgetTokens' | 'mode' | 'originalTokens'>; // 调试使用的 skill预算事实。
+  skillSnapshot: SkillSnapshot; // run 启动时捕获的不可变 enabled Skill 快照；primary 与全部子运行同源。
   basePrompt?: string; // 用户 system prompt override，缺省使用内置主 prompt。
   todoState: TodoState | undefined; // 主运行的 open todo 状态。
   toolDefinitions: ToolDefinition[]; // 真正发送给当前 provider 的工具 schema。
@@ -229,6 +240,8 @@ type AgentLoopRunState = {
   toolPolicy: AgentToolPolicy; // default 或 readonly 执行策略。
   registry: ToolRegistry; // provider schema 查询和 commit mode 查询的权威目录。
   readonlySubagentNames?: ReadonlySet<string>; // run 启动时固定的 readonly 执行策略 agent 名称集合；无委派端口时缺省。
+  readonlyBashSandboxed: boolean; // 只读运行且 bash 沙箱实际生效;true 时 bash 豁免文本白名单与审批,效果由内核边界保证。
+  planBashSandboxed: boolean; // plan 运行(default 工具策略)且生效沙箱为可用 read-only 档;true 时 plan bash 由内核边界兜底。
   sandboxNote: string | null; // bash 沙箱生效时的 transient 边界说明;null 表示本次运行未包装沙箱。
 };
 
@@ -244,13 +257,15 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
   /**
    * 初始化单次调用的 loop 状态；provider、配置和 registry 由统一装配入口提供。
    */
-  function initializeRunState(interactionMode: InteractionMode, abortSignal: AbortSignal | undefined, executionMode: AgentExecutionMode, compactionThresholdRatio: number, skillCatalogContextRatio: number, agentInstructionFileName: AgentInstructionFileName, toolPolicy: AgentToolPolicy, conversationKind: AgentConversationKind, configSnapshot: AgentUserConfigSnapshot, modelProfileId?: string, reasoningEffortOverride?: LlmConfig['reasoningEffort'], subagentPort?: SubagentToolPort, sessionId?: string): AgentLoopRunState {
+  function initializeRunState(interactionMode: InteractionMode, abortSignal: AbortSignal | undefined, executionMode: AgentExecutionMode, compactionThresholdRatio: number, skillCatalogContextRatio: number, agentInstructionFileName: AgentInstructionFileName, toolPolicy: AgentToolPolicy, sandboxModeOverride: SandboxModeOverride | undefined, conversationKind: AgentConversationKind, configSnapshot: AgentUserConfigSnapshot, modelProfileId?: string, reasoningEffortOverride?: LlmConfig['reasoningEffort'], subagentPort?: SubagentToolPort, sessionId?: string): AgentLoopRunState {
     // 只读 subagent 名称集合在 run 启动时固定；并发分类不得在运行中重新读取目录。
     const readonlySubagentNames = subagentPort
       ? new Set(subagentPort.listDefinitions()
           .filter((descriptor) => descriptor.executionPolicy === 'readonly_investigation')
           .map((descriptor) => descriptor.name))
       : undefined;
+    // 单次 assistant run 只在启动时物化 Skill 快照；primary catalog、use_skill 与全部子 scope 共用同源。
+    const skillSnapshot = captureSkillSnapshot(createSkillManager({cwd}));
     const {agent, config, registry} = prepareAgent({
       configSnapshot,
       cwd,
@@ -258,12 +273,17 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
       mcpManager,
       modelProfileId,
       reasoningEffortOverride,
+      skillRegistry: skillSnapshot,
+      ...(sandboxModeOverride ? {sandboxModeOverride} : {}),
       ...(subagentPort ? {subagentPort} : {}),
       ...(sessionId ? {sessionId} : {})
     });
     const contextWindow = resolveContextWindow(config);
     const skillCatalogProjection = createSkillCatalogPromptProjection(registry.listSkillCatalog?.() || [], contextWindow, skillCatalogContextRatio);
     const basePrompt = loadSystemPromptOverride({cwd})?.content;
+    // 执行链路、transient 注记与只读 bash 边界共用同一份沙箱解析输入。
+    const sandboxResolutionOptions = sandboxModeOverride ? {modeOverride: sandboxModeOverride} : {};
+    const bashSandboxEffective = isReadonlyBashSandboxEffective(config.tools.sandbox, executionMode, sandboxResolutionOptions);
 
     return {
       agent,
@@ -285,6 +305,7 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
         mode: skillCatalogProjection.mode,
         originalTokens: skillCatalogProjection.originalTokens
       },
+      skillSnapshot,
       todoState: undefined,
       toolDefinitions: registry.listDefinitions(),
       mcpManager,
@@ -301,7 +322,10 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
       },
       observationScope: {conversationKind, interactionMode},
       toolPolicy,
-      sandboxNote: createSandboxRuntimeNote(config.tools.sandbox, executionMode),
+      readonlyBashSandboxed: toolPolicy === 'readonly' && bashSandboxEffective,
+      // 收紧派生只发生在 default 工具策略的 plan 运行,因此该分层事实也只在同样的组合下成立。
+      planBashSandboxed: toolPolicy === 'default' && interactionMode === 'plan' && bashSandboxEffective,
+      sandboxNote: createSandboxRuntimeNote(config.tools.sandbox, executionMode, sandboxResolutionOptions),
     };
   }
 
@@ -310,6 +334,10 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
     const interactionMode = session.interactionMode || 'normal';
     const executionMode = session.executionMode || INTERACTIVE_EXECUTION_MODE;
     const toolPolicy = session.toolPolicy || 'default';
+    // plan 运行默认派生运行级 read-only 收紧:plan 的 bash 分层需要该收紧作为主边界,
+    // 否则沙箱生效后会放行工作区写入。显式声明优先,off 与 headless full-access 豁免仍由 resolver 统一收敛。
+    const sandboxModeOverride = session.sandboxModeOverride
+      ?? (interactionMode === 'plan' && toolPolicy === 'default' ? 'read-only' : undefined);
     const conversationKind = session.conversationKind || 'primary';
     const configSnapshot = session.userConfigSnapshot || configContext.capture();
     const appSettings = configSnapshot.getAppSettings() || DEFAULT_APP_SETTINGS;
@@ -346,20 +374,21 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
             agentInstructions: state.agentInstructions,
             basePrompt: state.basePrompt,
             memoryPrompt: currentMemoryPrompt || resolveMemoryPrompt(cwd, state.contextWindow),
-            skillCatalog: state.skillCatalog,
-            skillCatalogProjection: state.skillCatalogProjection,
-            skillCatalogTokens: state.skillCatalogTokens
+            skillCatalogContextRatio,
+            skillSnapshot: state.skillSnapshot
           }),
           modelProfileId: session.modelProfileId,
           observation,
           publishRecords: publishSubagentRecords,
           reasoningEffortOverride: session.reasoningEffortOverride,
+          ...(sandboxModeOverride ? {sandboxModeOverride} : {}),
+          toolPolicy,
           sessionId: session.sessionId
         })
       : undefined;
 
     try {
-      state = initializeRunState(interactionMode, abortSignal, executionMode, compactionThresholdRatio, skillCatalogContextRatio, appSettings.agentInstructionFileName, toolPolicy, conversationKind, configSnapshot, session.modelProfileId, session.reasoningEffortOverride, subagentPort, session.sessionId);
+      state = initializeRunState(interactionMode, abortSignal, executionMode, compactionThresholdRatio, skillCatalogContextRatio, appSettings.agentInstructionFileName, toolPolicy, sandboxModeOverride, conversationKind, configSnapshot, session.modelProfileId, session.reasoningEffortOverride, subagentPort, session.sessionId);
     } catch (error: unknown) {
       throw normalizeError(error, '无法加载 LLM 配置');
     }

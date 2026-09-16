@@ -12,6 +12,7 @@ import type {
   AgentsCommandRow,
   AgentsCommandSurface,
   AgentsCommandTab,
+  CommandAgentSkillInfo,
   CommandAgentsSnapshot,
   CommandHandler,
   CommandHost,
@@ -77,8 +78,8 @@ const AGENTS_TABS: AgentsCommandSurface['tabs'] = [
   {id: 'user', label: 'User'},
   {id: 'builtin', label: 'Built-in'}
 ];
-const CUSTOM_FORM_ROW_IDS = ['name', 'description', 'capability', 'model', 'effort', 'tools', 'mcp', 'instructions', 'save', 'cancel'] as const;
-const BUILTIN_FORM_ROW_IDS = ['model', 'effort', 'save', 'remove', 'cancel'] as const;
+const CUSTOM_FORM_ROW_IDS = ['name', 'description', 'capability', 'model', 'effort', 'tools', 'skills', 'mcp', 'instructions', 'save', 'cancel'] as const;
+const BUILTIN_FORM_ROW_IDS = ['model', 'effort', 'skills', 'save', 'remove', 'cancel'] as const;
 const NEXT_TURN_FEEDBACK = '✓ 已保存，将在下一次 assistant turn 生效';
 
 /** 把 controller 状态投影为与文件系统完全隔离的 Agents surface 快照。 */
@@ -107,6 +108,7 @@ function createAgentsSurface(data: AgentsManageData): AgentsCommandSurface {
 function createTitle(data: AgentsManageData, editText?: string): string {
   if (data.mode === 'instructions') return `AGENTS · INSTRUCTIONS · ${editText === undefined ? '' : 'EDIT'}`;
   if (data.mode === 'tools') return 'AGENTS · TOOLS';
+  if (data.mode === 'skills') return 'AGENTS · SKILLS';
   if (data.mode === 'confirm') return 'AGENTS · CONFIRM';
   if (data.customForm) return `AGENTS · ${data.customForm.kind.toUpperCase()} · ${data.customForm.scope}`;
   if (data.builtinForm) return `AGENTS · ${data.builtinForm.name} · ${data.builtinForm.scope} POLICY`;
@@ -118,6 +120,7 @@ function createDismissHint(data: AgentsManageData): string {
   if (data.edit) return '输入字段 · Enter 应用 · Esc 取消字段编辑';
   if (data.mode === 'instructions') return '编辑 instructions · Ctrl+J 换行 · Enter/Esc 返回表单';
   if (data.mode === 'tools') return '↑/↓ 选择 · Space 多选 · Enter 激活可见选项 · Esc 返回表单';
+  if (data.mode === 'skills') return '↑/↓ 选择 · Space 多选 · Enter 激活可见选项 · Esc 返回表单';
   if (data.mode === 'confirm') return '↑/↓ 选择 · Enter 激活 · Esc 取消并保留草稿';
   if (data.mode === 'form') return '↑/↓ 选择 · ←/→ 调整策略 · Enter 激活可见选项 · Esc 返回';
   if (data.mode === 'detail') return '↑/↓ 选择 · Enter 激活可见选项 · Esc 返回列表';
@@ -127,8 +130,9 @@ function createDismissHint(data: AgentsManageData): string {
 function getRows(data: AgentsManageData): AgentsCommandRow[] {
   if (data.mode === 'confirm' && data.confirm) return createConfirmRows(data);
   if (data.mode === 'tools' && data.customForm) return createToolRows(data.customForm.draft);
+  if (data.mode === 'skills' && (data.customForm || data.builtinForm)) return createSkillRows(data);
   if (data.mode === 'instructions') return [{id: 'instructions-done', kind: 'action', label: '完成 instructions 编辑'}];
-  if (data.mode === 'form' && data.customForm) return createCustomFormRows(data.customForm);
+  if (data.mode === 'form' && data.customForm) return createCustomFormRows(data);
   if (data.mode === 'form' && data.builtinForm) return createBuiltinFormRows(data);
   if (data.mode === 'detail') return createDetailRows(data);
   return createListRows(data);
@@ -158,6 +162,7 @@ function createListRows(data: AgentsManageData): AgentsCommandRow[] {
       label: item.name,
       ...(builtin || draft ? {mcp: builtin?.includeMcpTools || draft?.mcp || false} : {}),
       ...(builtin?.modelProfileId || draft?.modelProfileId ? {model: builtin?.modelProfileId || draft?.modelProfileId} : {}),
+      ...(builtin || draft ? {skillSummary: formatSkillSummary(builtin?.skillNames ?? draft?.skillNames, data.snapshot.skills)} : {}),
       sourceKind: item.sourceKind,
       status: item.status,
       ...(builtin || draft ? {toolCount: builtin?.localToolNames.length || draft?.tools.length || 0} : {})
@@ -190,6 +195,7 @@ function createDetailRows(data: AgentsManageData): AgentsCommandRow[] {
       {id: 'builtin:model', kind: 'field', label: 'model', description: builtin.modelProfileId || '继承父模型', readonly: true},
       {id: 'builtin:effort', kind: 'field', label: 'effort', description: builtin.effort, readonly: true},
       {id: 'builtin:tools', kind: 'field', label: 'tools', description: `${builtin.localToolNames.length} 个（只读）`, readonly: true},
+      {id: 'builtin:skills', kind: 'field', label: 'skills', description: formatSkillSummary(builtin.skillNames, data.snapshot.skills), readonly: true},
       {id: 'builtin:mcp', kind: 'field', label: 'MCP', description: builtin.includeMcpTools ? '启用（固定）' : '关闭（固定）', readonly: true},
       {id: 'builtin:project', kind: 'action', label: '配置项目级策略'},
       {id: 'builtin:user', kind: 'action', label: '配置用户级策略'}
@@ -198,6 +204,7 @@ function createDetailRows(data: AgentsManageData): AgentsCommandRow[] {
   const rows: AgentsCommandRow[] = [
     {id: 'custom:path', kind: 'field', label: 'source', description: item.sourcePath, readonly: true},
     {id: 'custom:status', kind: 'field', label: 'status', description: item.status, readonly: true},
+    ...(item.draft ? [{id: 'custom:skills', kind: 'field' as const, label: 'skills', description: formatSkillSummary(item.draft.skillNames, data.snapshot.skills), readonly: true}] : []),
     ...item.diagnostics.map((diagnostic, index) => ({id: `diagnostic:${index}`, kind: 'field' as const, label: diagnostic.code, description: diagnostic.message, readonly: true}))
   ];
   if (item.draft) {
@@ -207,7 +214,8 @@ function createDetailRows(data: AgentsManageData): AgentsCommandRow[] {
   return rows;
 }
 
-function createCustomFormRows(form: AgentsCustomForm): AgentsCommandRow[] {
+function createCustomFormRows(data: AgentsManageData): AgentsCommandRow[] {
+  const form = data.customForm!;
   const draft = form.draft;
   const ceiling = new Set(getToolCeiling(draft.capability));
   const disallowed = draft.tools.filter((tool) => !ceiling.has(tool));
@@ -218,6 +226,7 @@ function createCustomFormRows(form: AgentsCustomForm): AgentsCommandRow[] {
     {id: 'model', kind: 'field', label: 'model', description: draft.modelProfileId || '继承父模型'},
     {id: 'effort', kind: 'field', label: 'effort', description: draft.effort},
     {id: 'tools', kind: 'field', label: 'tools', description: disallowed.length > 0 ? `${draft.tools.length} 个；需移除 ${disallowed.join(', ')}` : `${draft.tools.length} 个`},
+    {id: 'skills', kind: 'field', label: 'skills', description: formatSkillSummary(draft.skillNames, data.snapshot.skills)},
     {id: 'mcp', kind: 'field', label: 'MCP', description: draft.capability === 'readonly' ? '关闭（readonly）' : draft.mcp ? '启用' : '关闭'},
     {id: 'instructions', kind: 'field', label: 'instructions', description: draft.instructions ? `${Array.from(draft.instructions).length} 字符` : '<必填>'},
     {id: 'save', kind: 'action', label: form.kind === 'edit' ? '保存更改' : '创建 Agent'},
@@ -232,10 +241,44 @@ function createBuiltinFormRows(data: AgentsManageData): AgentsCommandRow[] {
   return [
     {id: 'model', kind: 'field', label: 'model', description: form.draft.modelProfileId || '继承父模型'},
     {id: 'effort', kind: 'field', label: 'effort', description: form.draft.effort},
+    {id: 'skills', kind: 'field', label: 'skills', description: formatSkillSummary(form.draft.skillNames, data.snapshot.skills)},
     {id: 'save', kind: 'action', label: '保存策略'},
     {id: 'remove', kind: 'action', label: '移除 override', description: hasOverride ? '恢复低优先级或父策略' : '当前 scope 未配置'},
     {id: 'cancel', kind: 'action', label: '取消'}
   ];
+}
+
+/**
+ * Skills 多选层：首行表达“全部 enabled Skills”缺省策略，其余行为 enabled Skills 与已配置的 stale 名称。
+ */
+function createSkillRows(data: AgentsManageData): AgentsCommandRow[] {
+  const skillNames = getDraftSkillNames(data);
+  const allSkills = skillNames === undefined;
+  const enabledSkills = data.snapshot.skills.filter((skill) => skill.enabled);
+  const staleNames = (skillNames || []).filter((name) => !enabledSkills.some((skill) => skill.name === name));
+  const skillRow = (name: string, stale: boolean): AgentsCommandRow => ({
+    ...(stale ? {description: '已配置但当前 disabled 或缺失；保留以备再次启用'} : {description: `来源 ${data.snapshot.skills.find((skill) => skill.name === name)?.sourceKind || 'unknown'}`}),
+    id: `skill:${name}`,
+    kind: 'tool',
+    label: name,
+    selected: !allSkills && (skillNames || []).includes(name),
+    ...(stale ? {status: 'stale'} : {})
+  });
+  return [
+    {description: allSkills ? '关闭后改为逐项 allowlist' : '切换回缺省全部策略', id: 'skills:all', kind: 'tool', label: '全部 enabled Skills', selected: allSkills},
+    ...enabledSkills.map((skill) => skillRow(skill.name, false)),
+    ...staleNames.map((name) => skillRow(name, true)),
+    {id: 'skills:done', kind: 'action', label: '完成 Skills 选择'}
+  ];
+}
+
+/** Skill 摘要不把暂时不可用的配置名称计入当前 effective 数量。 */
+function formatSkillSummary(skillNames: readonly string[] | undefined, skills: CommandAgentSkillInfo[]): string {
+  if (skillNames === undefined) return '全部 enabled Skills';
+  if (skillNames.length === 0) return '无 Skills';
+  const enabledNames = new Set(skills.filter((skill) => skill.enabled).map((skill) => skill.name));
+  const staleCount = skillNames.filter((name) => !enabledNames.has(name)).length;
+  return `${skillNames.length - staleCount} 个${staleCount > 0 ? `；${staleCount} 个不可用` : ''}`;
 }
 
 function createToolRows(draft: AgentsCommandDraft): AgentsCommandRow[] {
@@ -309,6 +352,10 @@ export class AgentsCommandHandler implements CommandHandler<AgentsManageData> {
       this.handleTools(data, event, host);
       return;
     }
+    if (data.mode === 'skills') {
+      this.handleSkills(data, event, host);
+      return;
+    }
     if (data.mode === 'form') {
       this.handleForm(data, event, host);
       return;
@@ -327,8 +374,8 @@ export class AgentsCommandHandler implements CommandHandler<AgentsManageData> {
       this.update(host, {...data, customForm, edit: undefined, error: undefined});
       return;
     }
-    if (data.mode === 'instructions' || data.mode === 'tools') {
-      this.update(host, {...data, instructionsComposer: undefined, mode: 'form', selectedIndex: data.customForm?.fieldIndex || 0, error: undefined});
+    if (data.mode === 'instructions' || data.mode === 'tools' || data.mode === 'skills') {
+      this.update(host, {...data, instructionsComposer: undefined, mode: 'form', selectedIndex: data.customForm?.fieldIndex ?? data.builtinForm?.fieldIndex ?? 0, error: undefined});
       return;
     }
     if (data.mode === 'confirm') {
@@ -421,6 +468,8 @@ export class AgentsCommandHandler implements CommandHandler<AgentsManageData> {
       this.cycleFormField(data, 1, host);
     } else if (rowId === 'tools') {
       this.update(host, {...data, mode: 'tools', selectedIndex: 0, error: undefined});
+    } else if (rowId === 'skills') {
+      this.update(host, {...data, mode: 'skills', selectedIndex: 0, error: undefined});
     } else if (rowId === 'mcp') {
       if (form.draft.capability === 'general') this.updateCustomDraft(data, {...form.draft, mcp: !form.draft.mcp}, host);
     } else if (rowId === 'instructions') {
@@ -438,6 +487,8 @@ export class AgentsCommandHandler implements CommandHandler<AgentsManageData> {
     const rowId = BUILTIN_FORM_ROW_IDS[clampIndex(form.fieldIndex, BUILTIN_FORM_ROW_IDS.length)];
     if (rowId === 'model' || rowId === 'effort') {
       this.cycleFormField(data, 1, host);
+    } else if (rowId === 'skills') {
+      this.update(host, {...data, mode: 'skills', selectedIndex: 0, error: undefined});
     } else if (rowId === 'save') {
       const result = host.agents.writeBuiltinOverride(form.scope, form.name, form.draft, form.fingerprint);
       if (result.ok) this.finishSuccess(data, host);
@@ -526,6 +577,55 @@ export class AgentsCommandHandler implements CommandHandler<AgentsManageData> {
         : [...data.customForm!.draft.tools, tool];
       this.updateCustomDraft(data, {...data.customForm!.draft, tools}, host);
     }
+  }
+
+  /** Skills 多选层与 tools 层同构；“全部 enabled”开启时按任意 Skill 行会直接切换为逐项 allowlist。 */
+  private handleSkills(data: AgentsManageData, event: InputEvent, host: CommandHost): void {
+    if (isMove(event)) {
+      this.update(host, {...data, selectedIndex: data.selectedIndex + moveDirection(event), error: undefined});
+      return;
+    }
+    const rows = getRows(data);
+    const row = rows[clampIndex(data.selectedIndex, rows.length)];
+    if (!row) return;
+    const spacePressed = (event.type === INPUT_EVENTS.TEXT && event.value === ' ') || (event.type === INPUT_EVENTS.SUBMIT && row.kind === 'tool');
+    if (row.id === 'skills:all') {
+      if (spacePressed || event.type === INPUT_EVENTS.SUBMIT) {
+        this.setDraftSkillNames(data, getDraftSkillNames(data) === undefined ? [] : undefined, host);
+      }
+      return;
+    }
+    if (row.id === 'skills:done') {
+      if (event.type !== INPUT_EVENTS.SUBMIT) return;
+      this.update(host, {...data, mode: 'form', selectedIndex: data.customForm?.fieldIndex ?? data.builtinForm?.fieldIndex ?? 0, error: undefined});
+      return;
+    }
+    if (!row.id.startsWith('skill:') || !spacePressed) return;
+    const name = row.id.slice('skill:'.length);
+    const skillNames = getDraftSkillNames(data);
+    if (skillNames === undefined) {
+      this.setDraftSkillNames(data, [name], host);
+      return;
+    }
+    this.setDraftSkillNames(data, skillNames.includes(name)
+      ? skillNames.filter((candidate) => candidate !== name)
+      : [...skillNames, name], host);
+  }
+
+  /** 统一更新当前表单草稿的三态 Skill 策略；undefined 表示恢复缺省全部 enabled。 */
+  private setDraftSkillNames(data: AgentsManageData, skillNames: readonly string[] | undefined, host: CommandHost): void {
+    if (data.customForm) {
+      const draft = cloneDraft(data.customForm.draft);
+      if (skillNames === undefined) delete draft.skillNames;
+      else draft.skillNames = [...skillNames];
+      this.updateCustomDraft(data, draft, host);
+      return;
+    }
+    if (!data.builtinForm) return;
+    const draft = {...data.builtinForm.draft};
+    if (skillNames === undefined) delete draft.skillNames;
+    else draft.skillNames = [...skillNames];
+    this.update(host, {...data, builtinForm: {...data.builtinForm, draft}, error: undefined});
   }
 
   private handleConfirm(data: AgentsManageData, event: InputEvent, host: CommandHost): void {
@@ -637,15 +737,21 @@ function createEmptyDraft(): AgentsCommandDraft {
 }
 
 function fromManifest(name: string, manifest: Readonly<CustomSubagentManifest>): AgentsCommandDraft {
-  return {name, capability: manifest.capability, description: manifest.description, effort: manifest.effort, instructions: manifest.instructions, mcp: manifest.mcp, ...(manifest.modelProfileId ? {modelProfileId: manifest.modelProfileId} : {}), tools: [...manifest.tools]};
+  return {name, capability: manifest.capability, description: manifest.description, effort: manifest.effort, instructions: manifest.instructions, mcp: manifest.mcp, ...(manifest.modelProfileId ? {modelProfileId: manifest.modelProfileId} : {}), ...(manifest.skillNames !== undefined ? {skillNames: [...manifest.skillNames]} : {}), tools: [...manifest.tools]};
 }
 
 function toManifest(draft: AgentsCommandDraft): CustomSubagentManifest {
-  return {capability: draft.capability, description: draft.description, effort: draft.effort, instructions: draft.instructions, mcp: draft.mcp, ...(draft.modelProfileId ? {modelProfileId: draft.modelProfileId} : {}), tools: [...draft.tools]};
+  return {capability: draft.capability, description: draft.description, effort: draft.effort, instructions: draft.instructions, mcp: draft.mcp, ...(draft.modelProfileId ? {modelProfileId: draft.modelProfileId} : {}), ...(draft.skillNames !== undefined ? {skillNames: [...draft.skillNames]} : {}), tools: [...draft.tools]};
 }
 
 function cloneDraft(draft: AgentsCommandDraft): AgentsCommandDraft {
-  return {...draft, tools: [...draft.tools]};
+  return {...draft, tools: [...draft.tools], ...(draft.skillNames !== undefined ? {skillNames: [...draft.skillNames]} : {})};
+}
+
+/** 读取当前自定义或内置表单草稿的三态 Skill 策略。 */
+function getDraftSkillNames(data: AgentsManageData): string[] | undefined {
+  const skillNames = data.customForm ? data.customForm.draft.skillNames : data.builtinForm?.draft.skillNames;
+  return skillNames === undefined ? undefined : [...skillNames];
 }
 
 function getToolCeiling(capability: AgentsCommandDraft['capability']): string[] {

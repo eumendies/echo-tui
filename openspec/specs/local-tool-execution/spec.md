@@ -106,9 +106,9 @@
 - **THEN** 无效、缺失或越界 max output bytes 配置 SHALL 被归一化为安全默认值
 
 ### Requirement: plan mode readonly bash execution policy
-系统 SHALL 在 plan mode 中对 provider tool call 应用只读执行策略。Provider-visible tool registry SHALL 与 normal mode 保持一致以稳定 tools schema；但 provider tool call 在进入 executor 前 SHALL 经过 mode-aware classifier。不符合 plan mode 只读策略的命令或写入型工具 SHALL 被拒绝且不得执行。
+系统 SHALL 在 plan mode 中对 provider tool call 应用只读执行策略。Provider-visible tool registry SHALL 与 normal mode 保持一致以稳定 tools schema；但 provider tool call 在进入 executor 前 SHALL 经过 mode-aware classifier。plan 运行 SHALL 在配置档位非 `off` 时自动派生运行级 `read-only` 沙箱收紧。`run_bash_command` SHALL 分层执行：当生效沙箱可用且档位为 `read-only` 时,任意命令 SHALL 判定为 safe 并直接进入既有 executor,SHALL NOT 打开用户授权 surface,工作区写入、网络访问与状态变更由内核沙箱边界拒绝;当生效沙箱不可用时,命令 SHALL 仅在命中严格只读 allowlist 时执行,未命中命令 SHALL 被拒绝且不得执行。写入型工具与 MCP tools SHALL 无论沙箱是否生效都被拒绝且不得执行。
 
-只读命令判定 SHALL 覆盖四类命令：`pwd`；已知只读文件检查命令（`ls`、`cat`、`head`、`tail`、`wc`、`grep`、`rg`、`echo`、`printf` 与排除全部写选项后的 `find`）；只读 git 检查子命令（含按参数形态白名单的 `branch/tag/stash/config/remote`）；以及上述命令通过 `|`、`&&`、`;`、`||`、换行组成的纯只读组合命令。组合命令 SHALL 逐段独立判定，任一段不满足只读条件即整体拒绝。写类元字符（重定向、输入重定向、命令替换、反引号、`xargs`）SHALL 继续导致整条命令被拒绝。
+沙箱不可用时的只读命令判定 SHALL 覆盖四类命令：`pwd`；已知只读文件检查命令（`ls`、`cat`、`head`、`tail`、`wc`、`grep`、`rg`、`echo`、`printf` 与排除全部写选项后的 `find`）；只读 git 检查子命令（含按参数形态白名单的 `branch/tag/stash/config/remote`）；以及上述命令通过 `|`、`&&`、`;`、`||`、换行组成的纯只读组合命令。组合命令 SHALL 逐段独立判定，任一段不满足只读条件即整体拒绝。写类元字符（重定向、输入重定向、命令替换、反引号、`xargs`）SHALL 继续导致整条命令被拒绝。
 
 #### Scenario: Plan mode registry keeps default tool schema
 - **WHEN** 系统为 plan mode 创建 provider-visible tool registry
@@ -116,6 +116,20 @@
 - **AND** registry SHALL 包含 `run_bash_command`
 - **AND** registry SHALL 包含 `apply_patch`
 - **AND** registry SHALL 与 normal mode 在同一 MCP 状态下暴露相同的 provider-visible tool definition 集合
+
+#### Scenario: 生效只读沙箱下任意 bash 进入执行
+- **WHEN** plan 运行的生效沙箱可用且档位为 `read-only`
+- **AND** `run_bash_command` 收到严格只读 allowlist 之外的命令，例如 `jq . package.json`、`node -e "..."` 或 `awk '{print $1}'`
+- **THEN** classifier SHALL 将该 tool call 判定为 safe
+- **AND** executor SHALL 使用普通 bash handler 和共享 bash runner 执行该命令
+- **AND** runtime SHALL NOT 打开用户授权 surface
+- **AND** 命令的写入、网络与其他越界效果 SHALL 由内核沙箱边界拒绝
+
+#### Scenario: 生效只读沙箱下网络访问被拒绝
+- **WHEN** plan 运行的生效沙箱可用且档位为 `read-only`
+- **AND** `run_bash_command` 收到需要网络访问的只读命令，例如 `git ls-remote origin`
+- **THEN** 命令 SHALL 在沙箱边界内执行
+- **AND** 网络访问 SHALL 被内核沙箱边界拒绝，命令 SHALL 以失败结果返回
 
 #### Scenario: Execute allowed readonly git command
 - **WHEN** plan mode 下 `run_bash_command` 收到只读 git inspection 命令，例如 `git status --short`、`git diff --stat`、`git branch -a`、`git grep todo` 或 `git config --get user.name`
@@ -135,29 +149,33 @@
 - **AND** executor SHALL 使用普通 bash handler 和共享 bash runner 执行该组合命令
 
 #### Scenario: Reject command outside readonly allowlist
-- **WHEN** plan mode 下 `run_bash_command` 收到不在只读 allowlist 内的命令，例如 `npm test`、`git reset --hard HEAD`、`python script.py` 或 `node app.js`
+- **WHEN** plan 运行的生效沙箱不是可用 `read-only` 档
+- **AND** `run_bash_command` 收到不在只读 allowlist 内的命令，例如 `npm test`、`git reset --hard HEAD`、`python script.py` 或 `node app.js`
 - **THEN** classifier SHALL 将该 tool call 判定为 rejected
 - **AND** runtime SHALL NOT 调用 executor 执行该命令
 - **AND** runtime SHALL 返回 `ok: false` 的 tool result
 - **AND** result 文本 SHALL 说明当前处于 plan mode，bash 只允许 readonly inspection 命令，并提示需要退出 plan mode 才能执行该命令
 
 #### Scenario: Reject shell metacharacters that can cause side effects
-- **WHEN** plan mode 下 `run_bash_command` 收到包含写类 shell 元字符的命令，例如 `git status > out.txt`、`echo hi >> log.txt`、`cat "$(ls)"`、反引号命令替换或 `git ls-files -z | xargs -0 rm`
+- **WHEN** plan 运行的生效沙箱不是可用 `read-only` 档
+- **AND** `run_bash_command` 收到包含写类 shell 元字符的命令，例如 `git status > out.txt`、`echo hi >> log.txt`、`cat "$(ls)"`、反引号命令替换或 `git ls-files -z | xargs -0 rm`
 - **THEN** classifier SHALL 将该 tool call 判定为 rejected
 - **AND** runtime SHALL NOT 调用 executor 执行该命令
 
 #### Scenario: Reject git write-form subcommand or options
-- **WHEN** plan mode 下 `run_bash_command` 收到表面为只读 git 子命令但包含写入型参数或 mutation 子命令，例如 `git diff --output patch.txt`、`git fetch`、`git pull`、`git checkout branch`、`git branch feature`、`git tag v1`、`git stash push` 或 `git config user.email x`
+- **WHEN** plan 运行的生效沙箱不是可用 `read-only` 档
+- **AND** `run_bash_command` 收到表面为只读 git 子命令但包含写入型参数或 mutation 子命令，例如 `git diff --output patch.txt`、`git fetch`、`git pull`、`git checkout branch`、`git branch feature`、`git tag v1`、`git stash push` 或 `git config user.email x`
 - **THEN** classifier SHALL 将该 tool call 判定为 rejected
 - **AND** runtime SHALL NOT 调用 executor 执行该命令
 
 #### Scenario: Reject find commands with write options
-- **WHEN** plan mode 下 `run_bash_command` 收到含写选项的 `find` 命令，例如 `find . -exec touch {} \;`、`find . -delete`、`find . -fprint out.txt` 或 `find . -fprintf out.txt '%p\n'`
+- **WHEN** plan 运行的生效沙箱不是可用 `read-only` 档
+- **AND** `run_bash_command` 收到含写选项的 `find` 命令，例如 `find . -exec touch {} \;`、`find . -delete`、`find . -fprint out.txt` 或 `find . -fprintf out.txt '%p\n'`
 - **THEN** classifier SHALL 将该 tool call 判定为 rejected
 - **AND** runtime SHALL NOT 调用 executor 执行该命令
 
 #### Scenario: Reject write tools in plan mode
-- **WHEN** plan mode 下 provider 返回 `apply_patch` 或等价写入型本地 tool call
+- **WHEN** plan 运行下 provider 返回 `apply_patch` 或等价写入型本地 tool call
 - **THEN** classifier SHALL 将该 tool call 判定为 rejected
 - **AND** runtime SHALL NOT 打开用户授权 surface
 - **AND** runtime SHALL NOT 调用 executor 执行该 tool call
@@ -168,6 +186,7 @@
 - **THEN** `run_bash_command` SHALL 保持既有完整 bash tool 行为
 - **AND** 高风险 bash 命令 SHALL 继续按既有 approval 策略处理
 - **AND** `apply_patch` SHALL 继续按既有 approval 策略处理
+
 ### Requirement: apply_patch text editing tool
 系统 SHALL 提供本地工具 `apply_patch`，用于应用受支持的 patch 文本来新增、更新或删除 UTF-8 文本文件。该工具 SHALL 接收 JSON object 参数 `{ "patch": string }`，并 SHALL 返回可回传模型的结构化 tool execution result。单个 patch 中解析到同一绝对路径的多个文件操作 SHALL 按其声明顺序在同一虚拟文件状态上执行。
 
@@ -1118,17 +1137,30 @@
 - **THEN** 本地工具、MCP、approval、plan mode 和 headless policy SHALL 保持既有行为
 
 ### Requirement: Readonly policy 只允许明确安全的临时操作
-Readonly policy SHALL 允许明确列入只读集合的文件读取、glob/grep、网页读取/搜索和 skill 加载工具，并 SHALL 允许只修改当前 BTW 临时 todo state 的 todo 工具。`run_bash_command` SHALL 仅在共享 readonly classifier 明确认可为 inspection command 时执行；允许的调用 SHALL 继续使用既有 executor、abort、输出截断和 tool result 语义。
+Readonly policy SHALL 允许明确列入只读集合的文件读取、glob/grep、网页读取/搜索和 skill 加载工具，并 SHALL 允许只修改当前 BTW 临时 todo state 的 todo 工具。`run_bash_command` SHALL 按生效沙箱分层执行：当该次运行的生效沙箱可用且档位为 `read-only` 时，任意命令 SHALL 直接进入既有 executor，效果由内核沙箱边界约束；否则 SHALL 仅在共享 readonly classifier 明确认可为 inspection command 时执行。`run_subagent` SHALL 仅在调用目标属于该次运行冻结的 readonly 执行策略子代理集合时放行。允许的调用 SHALL 继续使用既有 executor、abort、输出截断和 tool result 语义。
 
 #### Scenario: 执行只读文件检查
 - **WHEN** readonly run 收到 `read_files`、`glob` 或 `grep` 的有效 tool call
 - **THEN** policy SHALL 允许调用进入普通 executor
 - **THEN** result SHALL 保持对应工具既有成功、失败和中断语义
 
-#### Scenario: 执行只读 bash inspection
-- **WHEN** readonly run 收到共享 classifier 认可的只读 bash 命令，例如 `git status --short` 或 `git diff --stat`
+#### Scenario: 沙箱未生效时执行只读 bash inspection
+- **WHEN** readonly run 的生效沙箱不是可用 `read-only` 档
+- **AND** 收到共享 classifier 认可的只读 bash 命令，例如 `git status --short` 或 `git diff --stat`
 - **THEN** policy SHALL 允许普通 bash executor 执行该命令
 - **THEN** result SHALL 保持既有 stdout、stderr、exit code、timeout 和 truncation 语义
+
+#### Scenario: 生效只读沙箱下任意 bash 进入执行
+- **WHEN** readonly run 的生效沙箱可用且档位为 `read-only`
+- **AND** 收到任意 `run_bash_command`，包括严格只读 allowlist 之外的命令
+- **THEN** policy SHALL 允许调用直接进入普通 bash executor
+- **THEN** 系统 SHALL NOT 请求人工审批或自动审批模型
+- **THEN** 命令副作用 SHALL 由内核沙箱边界约束
+
+#### Scenario: 只读运行仅委派只读子代理
+- **WHEN** readonly run 收到 `run_subagent` tool call
+- **THEN** 目标属于本轮 readonly 执行策略集合时 policy SHALL 放行
+- **THEN** 目标为 general_purpose、未知名称或参数无法解析时 runtime SHALL 返回失败 tool result
 
 #### Scenario: 更新临时 todo
 - **WHEN** readonly BTW run 收到有效 todo tool call
@@ -1136,15 +1168,16 @@ Readonly policy SHALL 允许明确列入只读集合的文件读取、glob/grep�
 - **THEN** 更新 SHALL NOT 写入主 todo state 或主 session journal
 
 ### Requirement: Readonly policy 拒绝写入、交互和未知工具
-Readonly policy SHALL 拒绝 `apply_patch`、`edit_file`、非只读 bash、所有 MCP tools、`ask_user_questions` 和未列入允许集合的未知工具。拒绝 SHALL 返回保留原 call id 与 tool name 的 `ok: false` tool result，并 SHALL NOT 调用 executor、change recorder、tool approval callback 或 user-question callback。
+Readonly policy SHALL 拒绝 `apply_patch`、`edit_file`、生效沙箱未覆盖的非只读 bash、所有 MCP tools、`ask_user_questions` 和未列入允许集合的未知工具。拒绝 SHALL 返回保留原 call id 与 tool name 的 `ok: false` tool result，并 SHALL NOT 调用 executor、change recorder、tool approval callback 或 user-question callback。
 
 #### Scenario: 写工具直接拒绝
 - **WHEN** readonly run 收到 `apply_patch` 或 `edit_file` tool call
-- **THEN** runtime SHALL 返回说明当前会话只允许只读工具的失败 result
+- **THEN** runtime SHALL 返回说明本次运行只允许只读工具的失败 result
 - **THEN** runtime SHALL NOT 打开 approval surface、执行 handler 或修改文件
 
-#### Scenario: 非只读 bash 直接拒绝
-- **WHEN** readonly run 收到包含写入、副作用或不在 readonly allowlist 的 bash command
+#### Scenario: 沙箱未生效时非只读 bash 直接拒绝
+- **WHEN** readonly run 的生效沙箱不是可用 `read-only` 档
+- **AND** 收到包含写入、副作用或不在 readonly allowlist 的 bash command
 - **THEN** runtime SHALL 返回失败 tool result
 - **THEN** runtime SHALL NOT 因会话级既有 allow decision 执行该 command
 
@@ -1162,7 +1195,6 @@ Readonly policy SHALL 拒绝 `apply_patch`、`edit_file`、非只读 bash、所�
 - **WHEN** readonly run 收到不在显式允许集合内的工具
 - **THEN** policy SHALL 拒绝该调用而不是回退到默认风险分类
 - **THEN** runtime SHALL 保留 tool continuation 所需的 call id 和 tool name
-
 
 ### Requirement: 工具调用并发分类
 判断工具调用能否与相邻只读调用重叠执行；未知或无法证明只读的调用一律独占。`read_files`、`glob`、`grep`、`web_fetch`、`web_search`、`use_skill` SHALL 分类为 `parallel_read`。`run_bash_command` SHALL 按严格只读 Bash 策略判定：命中只读 allowlist 为 `parallel_read`，否则 `exclusive`。`run_subagent` SHALL 在调用参数可解析为目标 readonly executionPolicy subagent 时分类为 `parallel_read`；参数 JSON 解析失败、agent 名称未知或目标为 general_purpose 时 SHALL 分类为 `exclusive`。其余工具一律 `exclusive`。分类器 SHALL 通过注入的只读 subagent 名称谓词获取策略，不携带目录依赖。
@@ -1225,3 +1257,4 @@ Readonly policy SHALL 拒绝 `apply_patch`、`edit_file`、非只读 bash、所�
 - **THEN** 同一 turn 的 abort signal SHALL 传递给全部已启动工具
 - **THEN** runtime SHALL 隔离中断后的迟到 callback
 - **THEN** app transcript SHALL NOT 包含只提交 call 而没有 result 的并行工具记录
+

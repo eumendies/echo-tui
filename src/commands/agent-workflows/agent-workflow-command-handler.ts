@@ -53,7 +53,7 @@ export class AgentWorkflowCommandHandler implements CommandHandler {
   }
 
   /**
-   * 应用 workflow mode 策略，并把内部 prompt 交回普通 user message 提交流程。
+   * 应用 workflow mode 与运行级策略，并把内部 prompt 交回普通 user message 提交流程。
    */
   start(text: string, host: CommandHost): CommandStartResult {
     const parsed = parseAgentWorkflowText(text, this.definition);
@@ -73,6 +73,13 @@ export class AgentWorkflowCommandHandler implements CommandHandler {
       });
     }
 
+    if (this.definition.toolPolicy === 'readonly') {
+      host.transcript.append({
+        role: 'local_notice',
+        text: `已为本次 /${this.definition.name} 运行启用只读边界：写操作会被阻止。`
+      });
+    }
+
     return {
       kind: 'submit_user_message',
       text: this.definition.createPrompt({
@@ -86,7 +93,9 @@ export class AgentWorkflowCommandHandler implements CommandHandler {
           name: this.definition.name,
           ...(parsed.argumentsText ? {argumentsText: parsed.argumentsText} : {})
         }
-      }
+      },
+      ...(this.definition.toolPolicy ? {toolPolicy: this.definition.toolPolicy} : {}),
+      ...(this.definition.sandboxModeOverride ? {sandboxModeOverride: this.definition.sandboxModeOverride} : {})
     };
   }
 }

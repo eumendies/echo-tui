@@ -360,7 +360,11 @@ function createAgentManagementStore(options: AgentManagementStoreOptions) {
 }
 
 function freezeDraft(draft: Readonly<CustomSubagentManifest>): Readonly<CustomSubagentManifest> {
-  return Object.freeze({...draft, tools: Object.freeze([...draft.tools])});
+  return Object.freeze({
+    ...draft,
+    tools: Object.freeze([...draft.tools]),
+    ...(draft.skillNames !== undefined ? {skillNames: Object.freeze([...draft.skillNames])} : {})
+  });
 }
 
 function freezeDiagnostic(diagnostic: AgentManagementDiagnostic): Readonly<AgentManagementDiagnostic> {

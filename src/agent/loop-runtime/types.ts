@@ -1,9 +1,10 @@
 import type {MemoryPromptResolution} from '../context/memory-prompt';
-import type {SkillCatalogPromptProjection} from '../../skills/skill-catalog-prompt';
+import type {SkillSnapshot} from '../../skills/skill-snapshot';
 import type {ChangeFileRecorder} from '../../types/change-history';
 import type {
   AgentExecutionMode,
   AgentInstruction,
+  AgentToolPolicy,
   AgentUserConfigSnapshot,
   InteractionMode,
   LlmConfig,
@@ -12,17 +13,16 @@ import type {
   SubagentRunMetadata,
   ToolApprovalDecision
 } from '../../types/agent';
-import type {SkillCatalogEntry} from '../../types/skill';
 import type {AskUserQuestionsRequest, ToolApprovalRequest, ToolCall, ToolExecutionResult} from '../../types/tool';
 import type {SubagentDefinition} from '../subagent/definition';
+import type {SandboxModeOverride} from '../../sandbox/types';
 
 type InheritedAgentRunContext = {
   agentInstructions: AgentInstruction[]; // 父运行启动时已经解析的项目/用户指令链。
   basePrompt?: string; // 父运行已经选择的 system prompt override。
   memoryPrompt: MemoryPromptResolution; // 触发委派的父 provider turn 使用的 memory 投影。
-  skillCatalog: SkillCatalogEntry[]; // 父运行已经按预算裁剪的 skill 目录。
-  skillCatalogProjection: Pick<SkillCatalogPromptProjection, 'budgetTokens' | 'mode' | 'originalTokens'>; // 父 skill 目录的预算诊断事实。
-  skillCatalogTokens: number; // 父 skill 目录投影的估算 token 数。
+  skillCatalogContextRatio: number; // 父 run 冻结的 skill catalog 预算比例；子运行用自身模型窗口重新投影。
+  skillSnapshot: SkillSnapshot; // 父 run 捕获的不可变 enabled Skill 快照；primary catalog、use_skill 与子 scope 同源。
 };
 
 type SubagentLoopInput = {
@@ -33,6 +33,8 @@ type SubagentLoopInput = {
   metadata: SubagentRunMetadata; // 当前子运行的稳定身份和父工具关联。
   modelProfileId?: string; // 父 run 已解析选择的模型 profile。
   reasoningEffortOverride?: ReasoningEffort; // 父 run 本轮固定的推理强度覆盖。
+  sandboxModeOverride?: SandboxModeOverride; // 父 run 生效的沙箱收紧;子运行继承同一 bash 只读边界。
+  toolPolicy?: AgentToolPolicy; // 父 run 的运行级工具策略;readonly 时非 general 子运行继承 fail-closed 分类。
   sessionId?: string; // 父会话稳定身份；子运行继承它以保持 provider 会话亲和。
   resolvedLlmConfig?: LlmConfig; // 父端口预解析的最终子运行配置；缺省时子 loop 自行解析，保证解析结果与 start record 一致。
   task: string; // 唯一进入子 transcript 的委派任务。
