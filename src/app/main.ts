@@ -421,6 +421,10 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
       render(result.partialRecord, 'main');
     }
 
+    if (result.interruptedToolRecords) {
+      renderRecords(result.interruptedToolRecords, 'main');
+    }
+
     if (result.noticeRecord) {
       renderRecords([result.noticeRecord], 'main');
     }

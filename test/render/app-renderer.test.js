@@ -429,6 +429,29 @@ test('renderTranscriptLines projects user, assistant, error, local notice, and r
   assert.ok(lines.some((line) => line.startsWith('◇ 我会先检查上下文。')));
 });
 
+test('renderTranscriptLines projects an interrupted tool pair as a failed tool result', () => {
+  const lines = renderTranscriptLines([
+    {
+      role: 'tool_call',
+      text: '$ sleep 30',
+      toolCallId: 'call_interrupted',
+      toolName: 'run_bash_command',
+      argumentsText: '{"command":"sleep 30"}'
+    },
+    {
+      role: 'tool_result',
+      text: 'Tool execution was interrupted by the user before it returned a result.',
+      toolCallId: 'call_interrupted',
+      toolName: 'run_bash_command',
+      ok: false,
+      details: {kind: 'generic'}
+    }
+  ], 80).map((line) => stripAnsi(line));
+
+  assert.ok(lines.some((line) => line.includes('Bash · failed')));
+  assert.ok(lines.some((line) => line.includes('Tool execution was interrupted by the user before it returned a result.')));
+});
+
 test('renderTranscriptLines filters reasoning summaries only at the render boundary', () => {
   const records = [
     {role: 'user', text: 'question'},

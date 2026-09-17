@@ -2627,8 +2627,9 @@ test('AppContext interrupts active assistant turn while thinking', () => {
   assert.deepEqual(result.noticeRecord, { role: 'local_notice', text: '已中断模型回答' });
 });
 
-test('AppContext interrupts active assistant turn while tool call is pending without orphan tool record', () => {
-  const context = createContext();
+test('AppContext closes a pending tool call as a paired interrupted result when the turn is interrupted', () => {
+  const transcriptStore = createFakeTranscriptStore();
+  const context = createContext({transcriptStore});
   const toolCall = {
     callId: 'call-tool',
     toolName: 'grep',
@@ -2647,9 +2648,68 @@ test('AppContext interrupts active assistant turn while tool call is pending wit
   assert.equal(context.turnContext.getPending(), null);
   assert.equal(result.partialRecord, undefined);
   assert.deepEqual(result.noticeRecord, { role: 'local_notice', text: '已中断模型回答' });
+  assert.deepEqual(result.interruptedToolRecords, [
+    {
+      role: 'tool_call',
+      text: 'grep({"pattern":"hello"})',
+      toolCallId: 'call-tool',
+      toolName: 'grep',
+      argumentsText: '{"pattern":"hello"}'
+    },
+    {
+      role: 'tool_result',
+      text: 'Tool execution was interrupted by the user before it returned a result.',
+      toolCallId: 'call-tool',
+      toolName: 'grep',
+      ok: false,
+      details: {kind: 'generic'}
+    }
+  ]);
   assert.deepEqual(context.transcriptContext.records, [
     { role: 'user', text: 'use tool', metadata: {} },
+    ...result.interruptedToolRecords,
     { role: 'local_notice', text: '已中断模型回答' }
+  ]);
+  const toolOperation = transcriptStore.operations
+    .flatMap((operation) => (operation.op === 'batch' ? operation.operations : [operation]))
+    .find((operation) => operation.op === 'append_records' && operation.records.some((record) => record.role === 'tool_call'));
+  assert.deepEqual(toolOperation.records.map((record) => `${record.role}:${record.toolCallId}`), [
+    'tool_call:call-tool',
+    'tool_result:call-tool'
+  ]);
+});
+
+test('AppContext closes every pending tool call in provider order with one journal batch', () => {
+  const transcriptStore = createFakeTranscriptStore();
+  const context = createContext({transcriptStore});
+  const first = {callId: 'call-1', toolName: 'grep', argumentsText: '{"pattern":"one"}'};
+  const second = {callId: 'call-2', toolName: 'read_files', argumentsText: '{"paths":["a.ts"]}'};
+
+  context.beginUserTurn('inspect');
+  context.beginAssistantTurn();
+  context.turnContext.setToolCallPending(first);
+  context.turnContext.setToolCallPending(second);
+
+  const result = context.interruptActiveAssistantTurn();
+
+  assert.deepEqual(result.interruptedToolRecords.map((record) => `${record.role}:${record.toolCallId}`), [
+    'tool_call:call-1',
+    'tool_result:call-1',
+    'tool_call:call-2',
+    'tool_result:call-2'
+  ]);
+  assert.deepEqual(
+    result.interruptedToolRecords.filter((record) => record.role === 'tool_result').map((record) => record.ok),
+    [false, false]
+  );
+  const toolOperation = transcriptStore.operations
+    .flatMap((operation) => (operation.op === 'batch' ? operation.operations : [operation]))
+    .find((operation) => operation.op === 'append_records' && operation.records.some((record) => record.role === 'tool_call'));
+  assert.deepEqual(toolOperation.records.map((record) => `${record.role}:${record.toolCallId}`), [
+    'tool_call:call-1',
+    'tool_result:call-1',
+    'tool_call:call-2',
+    'tool_result:call-2'
   ]);
 });
 
@@ -2667,6 +2727,7 @@ test('AppContext interrupts active assistant turn while waiting for provider wit
   assert.equal(context.turnContext.getPending(), null);
   assert.equal(result.partialRecord, undefined);
   assert.deepEqual(result.noticeRecord, { role: 'local_notice', text: '已中断模型回答' });
+  assert.equal(result.interruptedToolRecords, undefined);
 });
 
 test('UserQuestionContext Esc closes surface without interrupting assistant turn, then second Esc can interrupt', async () => {
