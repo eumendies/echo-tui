@@ -1,7 +1,7 @@
 import {redactSensitiveText} from '../../agent/agent-errors';
 
 import type {PendingState, StatusLineModelState, WorkingState} from '../../types/render';
-import {createToolCallTranscriptRecord, createToolResultTranscriptRecord} from '../../tools/tool-transcript-record';
+import {createInterruptedToolResultTranscriptRecord, createToolCallTranscriptRecord, createToolResultTranscriptRecord} from '../../tools/tool-transcript-record';
 import {createToolResultTruncationMarker} from '../../tools/tool-result-offloading';
 
 import type {ToolCall, ToolExecutionResult} from '../../types/tool';
@@ -10,6 +10,7 @@ import type {BashCommandOutputEvent, BashCommandRunResult} from '../../tools/bas
 
 type TranscriptTurnBridge = {
   appendRecord: <Record extends TranscriptRecord>(record: Record) => Record;
+  appendRecords: (records: TranscriptRecord[]) => TranscriptRecord[];
 };
 
 type SpinnerKind = 'thinking' | 'working';
@@ -29,6 +30,7 @@ type InterruptAssistantTurnResult = {
   interrupted: boolean; // 当前 Esc 是否实际取消了一个有效 assistant turn。
   reasoningRecord?: Extract<TranscriptRecord, {role: 'reasoning_summary'}>; // 中断时由完整 reasoning 草稿落成的 partial summary。
   partialRecord?: Extract<TranscriptRecord, {role: 'assistant'}>; // 中断时由完整 assistant 草稿落成的 partial record。
+  interruptedToolRecords?: TranscriptRecord[]; // 中断时按 provider 原始顺序补齐的相邻 tool call/result 对。
   noticeRecord?: TranscriptRecord; // 在 partial records 之后追加的本地中断提示。
 };
 
@@ -471,6 +473,7 @@ class TurnContext {
 
   /**
    * 中断当前 active assistant turn，并返回需要追加渲染的 partial 和本地提示记录。
+   * 已播报但未取得 result 的工具调用在这里成对补齐，避免模型已发起的调用从 transcript 中消失。
    */
   interruptActiveAssistantTurn(): InterruptAssistantTurnResult {
     const activeTurn = this.activeAssistantTurn;
@@ -484,6 +487,8 @@ class TurnContext {
 
     const reasoning = this.finalizeReasoning();
     const partial = this.finalizeAssistantSegment(this.streamingDraft);
+    // 必须在 clearPending 之前消费 pending 集合：它是本次中断唯一仍持有调用身份的来源。
+    const interruptedToolRecords = this.drainInterruptedToolCalls();
     const noticeRecord = this.cancelAssistantTurn();
     this.activeAssistantTurn = null;
 
@@ -491,8 +496,31 @@ class TurnContext {
       interrupted: true,
       ...(reasoning ? {reasoningRecord: reasoning} : {}),
       ...(partial ? {partialRecord: partial} : {}),
+      ...(interruptedToolRecords.length > 0 ? {interruptedToolRecords} : {}),
       noticeRecord
     };
+  }
+
+  /**
+   * 把中断时仍 pending 的工具调用按 provider 原始顺序成对落盘：相邻 call record 加合成失败 result。
+   * 一次性批量追加保证 journal 不会停在只有 tool_call 的中间状态，恢复后可直接参与 provider 转换。
+   */
+  private drainInterruptedToolCalls(): TranscriptRecord[] {
+    const pendingToolCalls = this.pendingToolCalls;
+
+    if (pendingToolCalls.length === 0) {
+      return [];
+    }
+
+    this.pendingToolCalls = [];
+    const records: TranscriptRecord[] = [];
+
+    for (const call of pendingToolCalls) {
+      records.push(createToolCallTranscriptRecord(call), createInterruptedToolResultTranscriptRecord(call));
+    }
+
+    this.transcriptContext.appendRecords(records);
+    return records;
   }
 }
 

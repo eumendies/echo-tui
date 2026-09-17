@@ -717,6 +717,52 @@ test('runAssistantTurn cancels an active Worker question when the parent turn is
   assert.equal(harness.appContext.turnContext.responding, false);
 });
 
+test('runAssistantTurn closes an interrupted tool call as a paired result and drops the late result', async () => {
+  const harness = createHarness();
+  let capturedCallbacks;
+  let toolResult;
+  const call = {callId: 'call-interrupt', toolName: 'run_bash_command', argumentsText: JSON.stringify({command: 'sleep 30'})};
+  const running = runAssistantTurn({
+    ...harness.input,
+    async runAgent(session, callbacks) {
+      capturedCallbacks = callbacks;
+      callbacks.onToolCall(call);
+      await new Promise((resolve, reject) => {
+        session.abortSignal.addEventListener('abort', () => {
+          reject(new AgentAbortError());
+        }, {once: true});
+      });
+    }
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(harness.appContext.turnContext.responding, true);
+  assert.equal(harness.appContext.interruptActiveAssistantTurn().interrupted, true);
+  await running;
+
+  const records = harness.appContext.transcriptContext.getRecords();
+  const callIndex = records.findIndex((record) => record.role === 'tool_call');
+  assert.deepEqual(records.slice(callIndex).map((record) => [record.role, record.toolCallId || null]), [
+    ['tool_call', 'call-interrupt'],
+    ['tool_result', 'call-interrupt'],
+    ['local_notice', null]
+  ]);
+  assert.equal(records[callIndex + 1].ok, false);
+  assert.equal(records[callIndex + 1].details.kind, 'generic');
+  assert.match(records[callIndex + 1].text, /interrupted by the user/u);
+
+  const recordCount = harness.appContext.transcriptContext.getRecords().length;
+  toolResult = capturedCallbacks.onToolResult({
+    callId: 'call-interrupt',
+    toolName: 'run_bash_command',
+    ok: true,
+    text: 'done',
+    details: {kind: 'bash', exitCode: 0}
+  });
+  assert.equal(toolResult, undefined);
+  assert.equal(harness.appContext.transcriptContext.getRecords().length, recordCount);
+});
+
 test('runAssistantTurn leaves high-frequency subagent activity rendering to the timer', async () => {
   const harness = createHarness();
   let renderCount = 0;
