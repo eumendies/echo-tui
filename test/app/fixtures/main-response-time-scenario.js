@@ -17,7 +17,6 @@ const renderer = {
   clearFooter() {},
   render: capture,
   renderDestructive: capture,
-  renderFinal() {},
   renderInitial: capture
 };
 

@@ -1,7 +1,11 @@
+import * as ansi from '../terminal/ansi';
+import {sanitizeTerminalText} from '../terminal/control-chars';
 import {DEFAULT_TUI_THEME, type TuiTheme} from '../config/theme-config';
 import {formatSubagentRawName} from '../agent/subagent/name';
+import {clampToDisplayWidth} from './blocks/symbol-message-renderer';
 import {blockText} from './colors';
-import {stripAnsi} from './layout';
+import {createSelectedWindowRows} from './footer/window';
+import {collapseToSingleLine, safeRenderWidth, stripAnsi} from './layout';
 import {renderToolPairLines, renderToolRecordLines} from './tool-message-renderer';
 import {createSubagentRailLayout, renderRailText, renderSubagentRailSpacer} from './tool-message-renderers/shared';
 
@@ -183,6 +187,62 @@ function formatDuration(durationMs: number): string {
     return `${durationMs}ms`;
   }
   return `${(durationMs / 1000).toFixed(durationMs < 10_000 ? 1 : 0)}s`;
+}
+
+/** subagent 会话窗口 body 顶部 run 索引的行输入；statusText 由控制器按瞬时活动或稳定终态准备。 */
+export type SubagentViewIndexEntry = {
+  runId: string; // run 身份，用于标注当前观看行。
+  agentName: string; // 已安全格式化的 agent 显示名。
+  task: string; // 委派任务摘要原文；渲染时折叠为单行并按宽度截断。
+  statusText: string; // 活跃 phase/耗时或终态标签。
+  active: boolean; // run 是否仍在活动；结束行置灰。
+};
+
+// 索引窗口的最大物理行数（含上下折叠提示行）；越窗行以提示行承载，标题行始终给出总量。
+const SUBAGENT_VIEW_INDEX_MAX_ROWS = 8;
+
+/**
+ * 渲染会话窗口顶部的 run 索引块：标题行给出运行中/总量计数，行清单以当前观看行为中心开窗。
+ * 当前行使用 subagentRail 主题色与 ▸ 标记，结束行置灰，越窗行以上下折叠提示承载。
+ */
+export function renderSubagentViewIndex(entries: SubagentViewIndexEntry[], currentRunId: string | null, width = 80, theme: TuiTheme = DEFAULT_TUI_THEME): string[] {
+  if (entries.length === 0) {
+    return [];
+  }
+
+  const safeWidth = safeRenderWidth(width);
+  const activeCount = entries.filter((entry) => entry.active).length;
+  const headerPlain = clampToDisplayWidth(`◆ subagent 会话 · 运行中 ${activeCount} · 共 ${entries.length} 个 · ↑/↓ 切换 · Ctrl+O/Esc 返回`, safeWidth);
+  const header = `${blockText(theme, 'subagentRail', '◆')}${headerPlain.slice(1)}`;
+
+  const currentIndex = entries.findIndex((entry) => entry.runId === currentRunId);
+  const windowRows = createSelectedWindowRows(entries, currentIndex === -1 ? undefined : currentIndex, SUBAGENT_VIEW_INDEX_MAX_ROWS);
+  const rows = windowRows.map((row) => {
+    if (row.kind === 'more') {
+      const hintPlain = clampToDisplayWidth(`    … ${row.direction === 'up' ? '↑ 上方' : '↓ 下方'} ${row.count} 个`, safeWidth);
+      return ansi.dim(blockText(theme, 'muted', hintPlain));
+    }
+
+    const entry = row.item;
+    const marker = row.index === currentIndex ? '  ▸ ' : '    ';
+    const text = `${row.index + 1}. ${entry.agentName} · ${collapseToSingleLine(entry.task)} · ${entry.statusText}`;
+    const plain = clampToDisplayWidth(`${marker}${text}`, safeWidth);
+    const content = plain.slice(marker.length);
+
+    if (row.index === currentIndex) {
+      return `${blockText(theme, 'subagentRail', '  ▸ ')}${blockText(theme, 'subagentRail', content)}`;
+    }
+    return `${blockText(theme, 'muted', '    ')}${entry.active ? content : ansi.dim(blockText(theme, 'muted', content))}`;
+  });
+
+  return [header, ...rows];
+}
+
+/** 组装单行子 Agent 摘要：名称、任务摘要、阶段、可选工具名与 elapsed；外部文本先经控制字符净化。 */
+export function createSubagentRunRowText(run: SubagentPendingState): string {
+  const phaseText = run.phase.replace('_', ' ');
+  const toolText = run.toolName ? ` · ${run.toolName}` : '';
+  return sanitizeTerminalText(`${run.agentName} · ${run.task} · ${phaseText}${toolText} · ${(run.elapsedMs / 1000).toFixed(1)}s`);
 }
 
 export {renderSubagentPendingLines, renderSubagentRunAppendBlock, renderSubagentRunBlock};

@@ -3384,7 +3384,7 @@ test('renderFooterLayout keeps shell live output bounded and status in shell wor
   const layout = renderFooterLayout({
     composer: createComposer(''),
     commandSurface: null,
-    pending: { kind: 'shell_output', command: 'npm test', output },
+    pending: { kind: 'shell_output', commandLine: '$ npm test [local]', output },
     working: { elapsedMs: 1000 },
     statusLine: {...DEFAULT_STATUS_LINE, mode: 'shell-local'},
     rows: 14,
@@ -3392,13 +3392,31 @@ test('renderFooterLayout keeps shell live output bounded and status in shell wor
   });
   const plainLines = layout.lines.map((line) => stripAnsi(line).trimEnd());
 
-  assert.equal(plainLines[0], '…已生成 22 行，显示最新 6 行');
+  assert.equal(plainLines[0], '…已生成 20 行，显示最新 6 行');
   assert.equal(layout.lines.length, 12);
   assert.ok(!plainLines.includes('$ npm test'));
   assert.ok(!plainLines.includes('line 1'));
   assert.ok(plainLines.some((line) => line.includes('line 20')));
   assert.ok(plainLines.at(-1).includes('SHELL local'));
   assert.ok(plainLines.at(-1).includes('working 00:01'));
+});
+
+test('renderFooterLayout projects only the uncommitted shell output tail', () => {
+  const committed = 'done 1\ndone 2\n';
+  const layout = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: null,
+    pending: {kind: 'shell_output', commandLine: '$ npm test', output: `${committed}partial`, historyRawLength: committed.length},
+    working: {elapsedMs: 1000},
+    statusLine: {...DEFAULT_STATUS_LINE, mode: 'shell'},
+    rows: 14,
+    width: 80
+  });
+  const plainLines = layout.lines.map((line) => stripAnsi(line).trimEnd());
+
+  assert.ok(plainLines.some((line) => line.includes('partial')));
+  assert.ok(!plainLines.some((line) => line.includes('done 1')));
+  assert.ok(!plainLines.some((line) => line.includes('$ npm test')));
 });
 
 test('renderFooterLayout expands streaming pending preview from terminal rows without a fixed cap', () => {

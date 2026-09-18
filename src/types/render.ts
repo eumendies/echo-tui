@@ -70,12 +70,13 @@ export type ToolCallsPendingState = {
 };
 
 /**
- * shell mode 命令运行中的本地输出预览，完成后才会落成 transcript record。
+ * shell mode 命令运行中的本地投影状态，完成后才会落成 transcript record。
  */
 export type ShellOutputPendingState = {
-  kind: 'shell_output';
-  command: string;
-  output: string;
+  kind: 'shell_output'; // 表示本地 shell 命令正在运行。
+  commandLine: string; // 运行期 echo 的完整命令行文本；与最终 shell record 首行同源（由 app 层生成）。
+  output: string; // 已到达的运行期合并输出原始文本（保留 CR 进度语义）。
+  historyRawLength?: number; // 仅由 renderer 注入：已确定投影对应的原始输出前缀长度。
 };
 
 export type SubagentPendingState = {
@@ -199,20 +200,11 @@ export type RenderDestructiveOptions = RenderState & {
   skipParallelSubagentFilter?: boolean; // subagent 会话窗口 body 专用：调用方已按 runId 选定记录，跳过主窗口的并行 run 过滤，否则窗口内容会被自己的过滤规则滤空。
 };
 
-export type RenderFinalOptions = {
-  bannerContext: BannerContext;
-  records: TranscriptRecord[];
-  theme: TuiTheme;
-  renderPreferences: RenderPreferences;
-  width: number;
-};
-
 export type AppRenderer = {
   renderRecords: (options: RenderRecordsOptions) => void;
   render: (options: RenderState, finalizeRecord?: Extract<TranscriptRecord, {role: 'assistant' | 'reasoning_summary'}>) => void;
   clearFooter: () => void;
   renderDestructive: (options: RenderDestructiveOptions) => void;
-  renderFinal: (options: RenderFinalOptions) => void;
   renderInitial: (options: RenderInitialOptions) => void;
 };
 

@@ -365,7 +365,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     const shellController = new AbortController();
     const includeInContext = appContext.getInteractionMode() === 'shell';
     activeShellController = shellController;
-    appContext.turnContext.beginShellCommand(command);
+    appContext.turnContext.beginShellCommand(command, includeInContext);
     appContext.turnContext.startSpinner('working');
     render();
 

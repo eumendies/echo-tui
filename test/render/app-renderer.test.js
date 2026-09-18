@@ -12,6 +12,7 @@ const DEFAULT_STATUS_LINE = {
 };
 const ASK_USER_QUESTIONS_TOOL_NAME = 'ask_user_questions';
 const appRenderer = require('../../src/render/app-renderer');
+const transcriptRenderer = require('../../src/render/transcript-renderer');
 const { renderToolCallPreviewLines } = require('../../src/render/tool-message-renderer');
 const ansi = require('../../src/terminal/ansi');
 
@@ -64,7 +65,7 @@ function normalizeTranscriptRecords(records) {
 }
 
 function renderTranscriptLines(records, ...args) {
-  return appRenderer.renderTranscriptLines(normalizeTranscriptRecords(records), ...args);
+  return transcriptRenderer.renderTranscriptLines(normalizeTranscriptRecords(records), ...args);
 }
 
 function createAppRenderer(output) {
@@ -79,9 +80,6 @@ function createAppRenderer(output) {
     },
     renderDestructive(options) {
       return renderer.renderDestructive({...options, records: normalizeTranscriptRecords(options.records)});
-    },
-    renderFinal(options) {
-      return renderer.renderFinal({...options, records: normalizeTranscriptRecords(options.records)});
     }
   };
 }
@@ -3358,5 +3356,228 @@ test('createAppRenderer renders the subagent view body without the parallel filt
   const written = stripAnsi(output.writes.at(-1));
   assert.match(written, /view investigation/u);
   assert.match(written, /View report\./u);
+});
+
+test('createAppRenderer commits the shell echo once and splices live output at completion', () => {
+  const output = {writes: [], write(chunk) { this.writes.push(String(chunk)); }};
+  const renderer = createAppRenderer(output);
+  const state = {
+    streamingOwner: 'main',
+    composer: createComposer(),
+    commandSurface: null,
+    slashSuggestions: null,
+    working: {elapsedMs: 10},
+    renderPreferences: {showReasoningSummary: true, slashSuggestionMaxVisible: 8},
+    statusLine: {...DEFAULT_STATUS_LINE, mode: 'shell'},
+    rows: 24,
+    width: 80
+  };
+  const pending = {kind: 'shell_output', commandLine: '$ mark_cmd', output: ''};
+  const record = {
+    role: 'shell',
+    text: '$ mark_cmd\n\nmark_beta\nmark_gamma',
+    command: 'mark_cmd',
+    includeInContext: true,
+    exitCode: 0,
+    output: 'mark_beta\nmark_gamma\n',
+    timedOut: false,
+    truncated: false
+  };
+
+  renderer.render({...state, pending});
+  renderer.render({...state, pending: {...pending, output: 'mark_beta\n'}});
+  renderer.render({...state, pending: {...pending, output: 'mark_beta\nmark_gamma'}});
+  renderer.renderRecords({...state, pending: null, working: null, records: [record]});
+
+  const plain = stripAnsi(output.writes.join(''));
+  // 命令行、已确定行都只写入一次；未确定尾部先留在 footer，completion 时只补写后缀。
+  assert.equal((plain.match(/mark_cmd/g) || []).length, 1);
+  assert.equal((plain.match(/mark_beta/g) || []).length, 1);
+  assert.ok(plain.indexOf('mark_cmd') < plain.indexOf('mark_beta'));
+  assert.ok(plain.indexOf('mark_beta') < plain.indexOf('mark_gamma'));
+  assert.equal(stripAnsi(output.writes.at(-1)).includes('mark_beta'), false);
+});
+
+test('createAppRenderer splices a quick shell command that completes before the first tick', () => {
+  const output = {writes: [], write(chunk) { this.writes.push(String(chunk)); }};
+  const renderer = createAppRenderer(output);
+  const state = {
+    streamingOwner: 'main',
+    composer: createComposer(),
+    commandSurface: null,
+    slashSuggestions: null,
+    working: {elapsedMs: 10},
+    renderPreferences: {showReasoningSummary: true, slashSuggestionMaxVisible: 8},
+    statusLine: {...DEFAULT_STATUS_LINE, mode: 'shell'},
+    rows: 24,
+    width: 80
+  };
+  const record = {
+    role: 'shell',
+    text: '$ mark_cmd\n\nmark_beta',
+    command: 'mark_cmd',
+    includeInContext: true,
+    exitCode: 0,
+    output: 'mark_beta',
+    timedOut: false,
+    truncated: false
+  };
+
+  renderer.render({...state, pending: {kind: 'shell_output', commandLine: '$ mark_cmd', output: ''}});
+  renderer.renderRecords({...state, pending: null, working: null, records: [record]});
+
+  const plain = stripAnsi(output.writes.join(''));
+  assert.equal((plain.match(/mark_cmd/g) || []).length, 1);
+  assert.equal((plain.match(/mark_beta/g) || []).length, 1);
+});
+
+test('createAppRenderer rebuilds shell in-flight projection during destructive recovery', () => {
+  const output = {writes: [], write(chunk) { this.writes.push(String(chunk)); }};
+  const renderer = createAppRenderer(output);
+  const state = {
+    streamingOwner: 'main',
+    composer: createComposer(),
+    commandSurface: null,
+    slashSuggestions: null,
+    working: {elapsedMs: 10},
+    renderPreferences: {showReasoningSummary: true, slashSuggestionMaxVisible: 8},
+    statusLine: {...DEFAULT_STATUS_LINE, mode: 'shell'},
+    rows: 24,
+    width: 80
+  };
+  const pending = {kind: 'shell_output', commandLine: '$ mark_cmd', output: 'mark_beta\nmark_gamma'};
+
+  renderer.render({...state, pending});
+  renderer.renderDestructive({
+    bannerContext: {cwd: '/tmp/echo_tui', nodeVersion: 'v20.0.0', terminalSize: {columns: 80, rows: 24}, mode: 'current terminal'},
+    records: [],
+    ...state,
+    pending
+  });
+
+  const rebuilt = stripAnsi(output.writes.at(-1));
+  assert.equal((rebuilt.match(/mark_cmd/g) || []).length, 1);
+  assert.equal((rebuilt.match(/mark_beta/g) || []).length, 1);
+  // 未确定尾部继续由 footer 展示。
+  assert.equal((rebuilt.match(/mark_gamma/g) || []).length, 1);
+});
+
+test('createAppRenderer appends the final record projection when the committed head diverges', () => {
+  const output = {writes: [], write(chunk) { this.writes.push(String(chunk)); }};
+  const renderer = createAppRenderer(output);
+  const state = {
+    streamingOwner: 'main',
+    composer: createComposer(),
+    commandSurface: null,
+    slashSuggestions: null,
+    working: {elapsedMs: 10},
+    renderPreferences: {showReasoningSummary: true, slashSuggestionMaxVisible: 8},
+    statusLine: {...DEFAULT_STATUS_LINE, mode: 'shell'},
+    rows: 24,
+    width: 80
+  };
+  const record = {
+    role: 'shell',
+    text: '$ mark_cmd\n\n[tool result truncated: /tmp/full.txt]\n\nmark_tail',
+    command: 'mark_cmd',
+    includeInContext: true,
+    exitCode: 0,
+    truncated: true,
+    output: '[tool result truncated: /tmp/full.txt]\n\nmark_tail',
+    timedOut: false
+  };
+
+  renderer.render({...state, pending: {kind: 'shell_output', commandLine: '$ mark_cmd', output: 'mark_beta\n'}});
+  renderer.renderRecords({...state, pending: null, working: null, records: [record]});
+
+  const completionWrite = stripAnsi(output.writes.at(-1));
+  assert.ok(completionWrite.includes('[tool result truncated: /tmp/full.txt]'));
+  assert.ok(completionWrite.includes('mark_tail'));
+  assert.equal(completionWrite.includes('mark_beta'), false);
+  assert.equal(completionWrite.includes('mark_cmd'), false);
+
+  const plain = stripAnsi(output.writes.join(''));
+  assert.equal((plain.match(/mark_cmd/g) || []).length, 1);
+});
+
+test('createAppRenderer splices shell completion after a destructive replay', () => {
+  const output = {writes: [], write(chunk) { this.writes.push(String(chunk)); }};
+  const renderer = createAppRenderer(output);
+  const state = {
+    streamingOwner: 'main',
+    composer: createComposer(),
+    commandSurface: null,
+    slashSuggestions: null,
+    working: {elapsedMs: 10},
+    renderPreferences: {showReasoningSummary: true, slashSuggestionMaxVisible: 8},
+    statusLine: {...DEFAULT_STATUS_LINE, mode: 'shell'},
+    rows: 24,
+    width: 80
+  };
+  const pending = {kind: 'shell_output', commandLine: '$ mark_cmd', output: 'mark_beta\nmark_gamma'};
+  const record = {
+    role: 'shell',
+    text: '$ mark_cmd\n\nmark_beta\nmark_gamma',
+    command: 'mark_cmd',
+    includeInContext: true,
+    exitCode: 0,
+    output: 'mark_beta\nmark_gamma\n',
+    timedOut: false,
+    truncated: false
+  };
+
+  renderer.render({...state, pending});
+  renderer.renderDestructive({
+    bannerContext: {cwd: '/tmp/echo_tui', nodeVersion: 'v20.0.0', terminalSize: {columns: 80, rows: 24}, mode: 'current terminal'},
+    records: [],
+    ...state,
+    pending
+  });
+  renderer.renderRecords({...state, pending: null, working: null, records: [record]});
+
+  const completionWrite = stripAnsi(output.writes.at(-1));
+  assert.equal(completionWrite.includes('mark_cmd'), false);
+  assert.equal(completionWrite.includes('mark_beta'), false);
+  assert.ok(completionWrite.includes('mark_gamma'));
+
+  const plain = stripAnsi(output.writes.join(''));
+  // destructive 重建会重paint一次，completion 不重复命令行与已确定行。
+  assert.equal((plain.match(/mark_cmd/g) || []).length, 2);
+  assert.equal((plain.match(/mark_beta/g) || []).length, 2);
+});
+
+test('createAppRenderer renders a shell record as a full block without live commit state', () => {
+  const output = {writes: [], write(chunk) { this.writes.push(String(chunk)); }};
+  const renderer = createAppRenderer(output);
+  const state = {
+    streamingOwner: 'main',
+    composer: createComposer(),
+    commandSurface: null,
+    slashSuggestions: null,
+    working: null,
+    renderPreferences: {showReasoningSummary: true, slashSuggestionMaxVisible: 8},
+    statusLine: {...DEFAULT_STATUS_LINE, mode: 'shell'},
+    rows: 24,
+    width: 80
+  };
+
+  renderer.renderRecords({
+    ...state,
+    pending: null,
+    records: [{
+      role: 'shell',
+      text: '$ mark_cmd\n\nmark_beta',
+      command: 'mark_cmd',
+      includeInContext: true,
+      exitCode: 0,
+      output: 'mark_beta',
+      timedOut: false,
+      truncated: false
+    }]
+  });
+
+  const written = stripAnsi(output.writes.at(-1));
+  assert.ok(written.includes('$ mark_cmd'));
+  assert.ok(written.includes('mark_beta'));
 });
 
