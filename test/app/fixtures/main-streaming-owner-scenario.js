@@ -27,7 +27,6 @@ const renderer = {
         : ''
     });
   },
-  renderFinal() {},
   renderInitial() {}
 };
 require(path.join(root, 'dist/src/render/app-renderer')).createAppRenderer = () => renderer;

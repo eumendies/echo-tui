@@ -954,15 +954,41 @@ test('TurnContext keeps only the latest assistant and reasoning drafts', () => {
 test('TurnContext accumulates shell output for the app activity clock', () => {
   const context = createContext();
 
-  context.turnContext.beginShellCommand('printf ab');
+  context.turnContext.beginShellCommand('printf ab', true);
+  assert.deepEqual(context.turnContext.getPending(), {kind: 'shell_output', commandLine: '$ printf ab', output: ''});
   context.turnContext.startSpinner('working');
   context.turnContext.appendShellOutputPending({stream: 'stdout', chunk: 'a'});
   context.turnContext.appendShellOutputPending({stream: 'stdout', chunk: 'b'});
 
   assert.equal(context.turnContext.hasTimedActivity(), true);
-  assert.deepEqual(context.createRenderState().pending, {kind: 'shell_output', command: 'printf ab', output: 'ab'});
+  assert.deepEqual(context.createRenderState().pending, {kind: 'shell_output', commandLine: '$ printf ab', output: 'ab'});
   context.turnContext.stopSpinner();
   assert.equal(context.turnContext.hasTimedActivity(), false);
+});
+
+test('TurnContext marks shell-local commands as local-only in pending state', () => {
+  const context = createContext();
+
+  context.setInteractionMode('shell-local');
+  context.turnContext.beginShellCommand('env', false);
+
+  assert.deepEqual(context.turnContext.getPending(), {kind: 'shell_output', commandLine: '$ env [local]', output: ''});
+
+  // pending 携带的 commandLine 就是运行期 echo 文本；必须与最终 record 首行逐字节一致。
+  const pending = context.turnContext.getPending();
+  assert.equal(pending.commandLine, '$ env [local]');
+
+  const record = context.turnContext.finishShellCommand({
+    command: 'env',
+    durationMs: 1,
+    exitCode: 0,
+    output: '',
+    stderr: '',
+    stdout: '',
+    timedOut: false,
+    truncated: false
+  }, false);
+  assert.equal(record.text.split('\n')[0], pending.commandLine);
 });
 
 test('AppContext keeps plan status line mode while waiting for first assistant token', () => {
@@ -1055,7 +1081,7 @@ test('AppContext status line shows Esc interrupt while a shell command is runnin
   const context = createContext();
 
   context.setInteractionMode('shell');
-  context.turnContext.beginShellCommand('npm test');
+  context.turnContext.beginShellCommand('npm test', true);
 
   assert.equal(context.createRenderState().statusLine.keyHint, 'Esc 中断');
 });
@@ -1094,7 +1120,7 @@ test('AppContext injects only effective model-visible mode transitions and ignor
   assert.deepEqual(enteringPlan.metadata?.modeTransition, {from: 'normal', to: 'plan'});
 
   context.setInteractionMode('shell');
-  context.turnContext.beginShellCommand('pwd');
+  context.turnContext.beginShellCommand('pwd', true);
   context.turnContext.finishShellCommand({
     command: 'pwd',
     durationMs: 1,
@@ -1116,7 +1142,7 @@ test('TurnContext persists shell offloading marker before the bounded terminal t
   const context = createContext();
   const offloadFilePath = '/tmp/echo-tool-results/full.txt';
 
-  context.turnContext.beginShellCommand('printf output');
+  context.turnContext.beginShellCommand('printf output', true);
   const record = context.turnContext.finishShellCommand({
     command: 'printf output',
     durationMs: 2,

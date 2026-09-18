@@ -1,5 +1,5 @@
 import * as ansi from '../terminal/ansi';
-import { renderPendingAssistantLines } from './blocks';
+import { renderPendingAssistantLines } from './blocks/pending-preview-renderer';
 import { renderCommandSurface } from './footer/command-surfaces';
 import { renderComposerSurface, renderSubagentViewSurface } from './footer/composer-surface';
 import { constrainLayoutTail } from './footer/window';

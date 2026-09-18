@@ -2,10 +2,10 @@ import {redactSensitiveText} from '../../agent/agent-errors';
 
 import type {PendingState, StatusLineModelState, WorkingState} from '../../types/render';
 import {createInterruptedToolResultTranscriptRecord, createToolCallTranscriptRecord, createToolResultTranscriptRecord} from '../../tools/tool-transcript-record';
-import {createToolResultTruncationMarker} from '../../tools/tool-result-offloading';
+import {createShellRecord, formatShellCommandLine} from '../../tools/shell-transcript-record';
 
 import type {ToolCall, ToolExecutionResult} from '../../types/tool';
-import type {ShellTranscriptRecord, TranscriptRecord, UserTranscriptMetadata} from '../../types/transcript';
+import type {TranscriptRecord, UserTranscriptMetadata} from '../../types/transcript';
 import type {BashCommandOutputEvent, BashCommandRunResult} from '../../tools/bash-command-runner';
 
 type TranscriptTurnBridge = {
@@ -14,6 +14,11 @@ type TranscriptTurnBridge = {
 };
 
 type SpinnerKind = 'thinking' | 'working';
+
+type ShellOutputDraft = {
+  commandLine: string; // 运行期 echo 的完整命令行文本；与最终 shell record 首行同源。
+  output: string; // 已到达的运行期合并输出原始文本。
+};
 
 type AssistantTurnHandle = {
   id: number;
@@ -47,7 +52,7 @@ class TurnContext {
   pendingKind: 'thinking' | 'reasoning_streaming' | 'streaming' | 'tool_calls' | 'shell_output' | null;
   streamingDraft: string;
   reasoningDraft: string;
-  shellOutputDraft: {command: string; output: string} | null;
+  shellOutputDraft: ShellOutputDraft | null;
   pendingToolCalls: ToolCall[];
   thinkingStartedAt: number | null;
   workingStartedAt: number | null;
@@ -179,7 +184,9 @@ class TurnContext {
 
     if (this.pendingKind === 'shell_output') {
       const draft = this.shellOutputDraft;
-      return draft ? {kind: 'shell_output', command: draft.command, output: draft.output} : null;
+      return draft
+        ? {kind: 'shell_output', commandLine: draft.commandLine, output: draft.output}
+        : null;
     }
 
     if (this.pendingToolCalls.length === 0) {
@@ -257,12 +264,16 @@ class TurnContext {
     this.clearWorking();
   }
 
-  /** 进入用户 shell 命令执行态，并用 working spinner 表示本地执行中。 */
-  beginShellCommand(command: string): void {
+  /**
+   * 进入用户 shell 命令执行态，并用 working spinner 表示本地执行中。
+   * 提交后立即进入 shell_output pending：首个投影即可展示命令行，而不是等第一个输出 chunk。
+   */
+  beginShellCommand(command: string, includeInContext: boolean): void {
     this.responding = true;
     this.clearPending();
     this.clearWorking();
-    this.shellOutputDraft = {command, output: ''};
+    this.shellOutputDraft = {commandLine: formatShellCommandLine(command, includeInContext), output: ''};
+    this.pendingKind = 'shell_output';
     this.enterSpinnerState('working');
   }
 
@@ -522,58 +533,6 @@ class TurnContext {
     this.transcriptContext.appendRecords(records);
     return records;
   }
-}
-
-function createShellRecord(result: BashCommandRunResult, includeInContext: boolean): ShellTranscriptRecord {
-  const output = formatShellOutput(result);
-
-  return {
-    role: 'shell',
-    text: formatShellRecordText(result, includeInContext, output),
-    command: result.command,
-    durationMs: result.durationMs,
-    ...(result.error ? {error: result.error} : {}),
-    exitCode: result.exitCode,
-    includeInContext,
-    output,
-    timedOut: result.timedOut,
-    truncated: result.truncated
-  };
-}
-
-function formatShellRecordText(result: BashCommandRunResult, includeInContext: boolean, output: string): string {
-  const lines = [`$ ${result.command}${includeInContext ? '' : ' [local]'}`];
-
-  if (output.trim() !== '') {
-    lines.push('', output.replace(/\n$/, ''));
-  }
-
-  if (result.error) {
-    lines.push('', result.error);
-  }
-
-  if (result.timedOut) {
-    lines.push('', `[timed out after ${result.durationMs}ms]`);
-  }
-
-  if (result.truncated && !result.offloadFilePath) {
-    lines.push('', '[output truncated]');
-  }
-
-  if (result.exitCode !== 0 || result.timedOut || output.trim() === '') {
-    lines.push('', `[exit ${result.exitCode === null ? 'null' : result.exitCode}]`);
-  }
-
-  return lines.join('\n');
-}
-
-function formatShellOutput(result: BashCommandRunResult): string {
-  if (!result.offloadFilePath) {
-    return result.output;
-  }
-
-  const marker = createToolResultTruncationMarker(result.offloadFilePath);
-  return result.output.trim() === '' ? marker : `${marker}\n\n${result.output}`;
 }
 
 export {

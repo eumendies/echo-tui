@@ -1,6 +1,6 @@
 import {INPUT_EVENTS} from '../input/event-types';
 import {collapseToSingleLine} from '../render/layout';
-import {renderSubagentViewIndex, type SubagentViewIndexEntry} from '../render/blocks';
+import {renderSubagentViewIndex, type SubagentViewIndexEntry} from '../render/subagent-renderer';
 
 
 import type {ReasoningEffort, SubagentActivity} from '../types/agent';

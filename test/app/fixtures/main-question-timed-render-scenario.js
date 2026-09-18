@@ -24,7 +24,6 @@ const renderer = {
   clearFooter() {},
   render: (options) => renders.push(capture(options)),
   renderDestructive: (options) => renders.push(capture(options)),
-  renderFinal() {},
   renderInitial: (options) => renders.push(capture(options))
 };
 const rendererModule = require(path.join(root, 'dist/src/render/app-renderer'));

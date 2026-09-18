@@ -30,7 +30,6 @@ const renderer = {
   renderDestructive(options) {
     capturePending(options);
   },
-  renderFinal() {},
   renderInitial(options) {
     capturePending(options);
   }

@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 
 const {sanitizeTerminalText} = require('../../src/terminal/control-chars');
 const appRenderer = require('../../src/render/app-renderer');
+const {renderTranscriptLines} = require('../../src/render/transcript-renderer');
 const {renderChoiceSurface} = require('../../src/render/footer/choice-surface');
 const {createComposer} = require('../../src/input/composer');
 const {createTuiTheme} = require('../../src/config/theme-config');
@@ -28,7 +29,7 @@ test('sanitizeTerminalText normalizes CR and strips control characters', () => {
 });
 
 test('transcript projection strips control characters from record text fields', () => {
-  const lines = appRenderer.renderTranscriptLines([
+  const lines = renderTranscriptLines([
     {role: 'user', text: '正文\r覆盖', displayText: '显式\r文本'},
     {role: 'tool_call', text: '', toolCallId: 'call-cr-1', toolName: 'ask_user_questions', argumentsText: '{"question":"问题\r?(带回车\r)"}'},
     {role: 'assistant', text: '回复\r\n第二行'}
@@ -51,8 +52,9 @@ test('pending drafts are sanitized before footer projection', () => {
   assert.equal(toolCallPending.argumentsText, '{"q":"带回车"}');
 
   // shell 输出的 CR 具有进度条语义,必须保持原样。
-  const shellPending = appRenderer.sanitizePendingDisplayText({kind: 'shell_output', command: 'watch\r进度', output: '50%'});
-  assert.equal(shellPending.command, 'watch\r进度');
+  const shellPending = appRenderer.sanitizePendingDisplayText({kind: 'shell_output', commandLine: 'watch\r进度', output: '50%', historyRawLength: 2});
+  assert.equal(shellPending.commandLine, 'watch\r进度');
+  assert.equal(shellPending.historyRawLength, 2);
 });
 
 test('renderer writes footer without control characters for control-laden pending drafts', () => {
