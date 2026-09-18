@@ -70,15 +70,20 @@ TBD - created by archiving change add-custom-subagents. Update Purpose after arc
 - **THEN** `run_subagent` 工具 schema 与 system context SHALL 保持在相应预算内
 
 ### Requirement: 能力模板只能收窄工具与执行权限
-解析后的自定义定义 SHALL 把 `capability` 映射到系统拥有的固定执行策略与工具上限。`readonly` 定义的 tools SHALL 只能是 Explorer 本地工具上限的子集且 SHALL 强制禁用 MCP；`general` 定义的 tools SHALL 只能是 Worker 本地工具上限的子集，并仅在 `mcp: true` 时合并父运行已初始化的 MCP tools。所有自定义定义 SHALL 禁止 `run_subagent`，且 SHALL NOT通过 description、正文、tools 或 mcp 字段改变风险分类、审批、interaction mode、headless policy、委派预算、取消传播或 transcript 隔离。
+解析后的自定义定义 SHALL 把 `capability` 映射到系统拥有的固定执行策略与工具上限。`readonly` 定义的 tools SHALL 只能是 Explorer 本地工具上限的子集（上限包含 MCP 资源读取工具）且 SHALL 强制不启用 MCP tools；`general` 定义的 tools SHALL 只能是 Worker 本地工具上限的子集，并仅在 `mcp: true` 时合并父运行已初始化的 MCP tools。所有自定义定义 SHALL 禁止 `run_subagent`，且 SHALL NOT通过 description、正文、tools 或 mcp 字段改变风险分类、审批、interaction mode、headless policy、委派预算、取消传播或 transcript 隔离。
 
 #### Scenario: 只读定义收窄工具集合
 - **WHEN** readonly 定义只声明 `read_files`、`glob` 与 `grep`
 - **THEN** 子 provider-visible schema和 executable registry SHALL 只包含这些可用本地工具
-- **THEN** 系统 SHALL NOT自动补入 Bash、Web、Skill、MCP、编辑、Todo、提问或委派工具
+- **THEN** 系统 SHALL NOT自动补入 Bash、Web、Skill、MCP tools、资源读取、编辑、Todo、提问或委派工具
+
+#### Scenario: 只读定义显式声明资源读取
+- **WHEN** readonly 定义在工具列表中声明 `read_mcp_resource`
+- **THEN** 该定义 SHALL 通过能力上限校验
+- **THEN** 子 registry SHALL 包含该资源读取工具且 SHALL NOT 包含任何 `mcp__` 工具
 
 #### Scenario: 只读定义请求越权工具
-- **WHEN** readonly 定义声明文件编辑、Todo、提问、MCP 或其他超出 Explorer 上限的能力
+- **WHEN** readonly 定义声明文件编辑、Todo、提问、MCP tools 或其他超出 Explorer 上限的能力
 - **THEN** 系统 SHALL 将整个定义标记为无效
 - **THEN** prompt 中关于写入或免审批的文字 SHALL NOT放宽该结果
 
@@ -231,3 +236,4 @@ TBD - created by archiving change add-custom-subagents. Update Purpose after arc
 - **WHEN** `--once` 运行发现引用合法 model profile 的自定义 Agent并委派给它
 - **THEN** 子runtime SHALL在该 headless run 的配置 snapshot 中严格解析同一 profile和effort策略
 - **THEN** headless审批、安全工具边界和不等待stdin的语义 SHALL保持不变
+
