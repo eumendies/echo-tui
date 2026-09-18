@@ -2664,3 +2664,23 @@ test('createAgentLoopRuntime skips absent usage and isolates usage store failure
 
   assert.deepEqual(skippedEvents, []);
 });
+
+test('createAgentLoopRuntime forwards the run session identity to setup and provider turns', async () => {
+  const turnOptions = [];
+  const agent = {
+    async runTurn(_records, _callbacks, options) {
+      turnOptions.push(options);
+      return {draft: 'done', toolCalls: []};
+    }
+  };
+
+  await withPatchedAgentRuntime(agent, async (preparations) => {
+    const runAgent = createAgentLoopRuntime(TEST_CWD);
+
+    await runAgent({records: [{role: 'user', text: 'hello'}], sessionId: 'session-123'});
+
+    assert.equal(preparations[0].sessionId, 'session-123');
+  });
+
+  assert.equal(turnOptions[0].sessionId, 'session-123');
+});

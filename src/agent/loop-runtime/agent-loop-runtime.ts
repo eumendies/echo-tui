@@ -233,6 +233,7 @@ type AgentLoopRunState = {
   toolDefinitions: ToolDefinition[]; // 真正发送给当前 provider 的工具 schema。
   mcpManager?: McpManager; // 主运行可用的共享 MCP manager；子运行缺省。
   abortSignal?: AbortSignal; // 贯穿 provider、审批和工具执行的父级取消信号。
+  sessionId?: string; // 本次运行的会话稳定身份；provider 用它生成会话级缓存键。
   executionMode: AgentExecutionMode; // interactive 或 headless 审批边界。
   observation: Observation; // 单一旁路观察边界。
   observationProvider: ProviderObservationConfig; // 从完整配置显式挑选的非敏感 provider 诊断事实。
@@ -310,6 +311,7 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
       toolDefinitions: registry.listDefinitions(),
       mcpManager,
       abortSignal,
+      ...(sessionId ? {sessionId} : {}),
       executionMode,
       observation,
       observationProvider: {
@@ -523,7 +525,10 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
         } : {}),
         onToken: callbacks.onToken
       };
-      const {draft, providerRecords: turnProviderRecords, toolCalls, usage, usageInputTokens} = await state.agent.runTurn(providerRecords, providerTurnCallbacks, {abortSignal});
+      const {draft, providerRecords: turnProviderRecords, toolCalls, usage, usageInputTokens} = await state.agent.runTurn(providerRecords, providerTurnCallbacks, {
+        abortSignal,
+        ...(state.sessionId ? {sessionId: state.sessionId} : {})
+      });
       throwIfAborted(abortSignal);
 
       if (typeof usageInputTokens === 'number') {

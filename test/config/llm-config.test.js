@@ -172,6 +172,7 @@ test('readLlmConfig accepts Codex OAuth provider without API key', () => {
     apiKey: '',
     agentType: 'codex',
     baseURL: 'https://chatgpt.com/backend-api/codex',
+    sessionHeader: 'session-id',
     codexOAuth: {authFilePath: '/tmp/codex-auth.json'},
     model: 'gpt-5.5',
     contextWindow: undefined,

@@ -566,6 +566,49 @@ test('runtime aborts all running parallel delegations when the parent turn is ca
   }
 });
 
+test('delegated runs inherit the parent session identity for setup and provider turns', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-subagent-session-'));
+  const childTurnOptions = [];
+  let parentTurn = 0;
+
+  try {
+    await withPatchedAgents(cwd, (kind) => ({
+      async runTurn(_records, _callbacks, options) {
+        if (kind === 'primary') {
+          parentTurn += 1;
+          if (parentTurn === 1) {
+            return {
+              draft: '',
+              toolCalls: [{callId: 'outer-session', toolName: 'run_subagent', argumentsText: JSON.stringify({agent: 'explorer', task: 'investigate'})}]
+            };
+          }
+          return {draft: 'parent continued', toolCalls: []};
+        }
+
+        childTurnOptions.push(options);
+        return {draft: 'child report', toolCalls: []};
+      }
+    }), async (preparations) => {
+      const snapshot = createConfigSnapshot();
+      const runAgent = createTestAgentLoopRuntime(cwd, {capture: () => snapshot});
+      const result = await runAgent({
+        records: [{role: 'user', text: 'delegate'}],
+        userConfigSnapshot: snapshot,
+        sessionId: 'session-parent'
+      }, {});
+
+      assert.equal(result, 'parent continued');
+      const childPreparation = preparations.find((preparation) => preparation.kind === 'subagent');
+      assert.equal(childPreparation.options.sessionId, 'session-parent');
+    });
+  } finally {
+    fs.rmSync(cwd, {recursive: true, force: true});
+  }
+
+  assert.equal(childTurnOptions.length, 1);
+  assert.equal(childTurnOptions[0].sessionId, 'session-parent');
+});
+
 test('headless Worker failure handoff needs no app callbacks and warns about an uncertain MCP call', async () => {
   const snapshot = createConfigSnapshot();
   const records = [];

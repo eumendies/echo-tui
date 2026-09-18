@@ -64,6 +64,7 @@ function assertCodexResponseClient(value: unknown): asserts value is CodexRespon
 
 /**
  * 创建 ChatGPT Codex 后端接受的 Responses 请求形态；压缩用途不暴露工具或 reasoning 配置。
+ * 请求带运行时会话身份时，缓存键绑定会话，与 session-id 亲和 header 保持一致。
  */
 function createCodexRequest(records: TranscriptRecord[], config: LlmConfig, registry?: ToolRegistry, options: AgentTurnOptions = {}): CodexCreateRequest {
   const toolDefinitions = !options.isCompaction && registry && !registry.isEmpty() ? registry.listDefinitions() : [];
@@ -74,7 +75,7 @@ function createCodexRequest(records: TranscriptRecord[], config: LlmConfig, regi
   const request: CodexCreateRequest = {
     input,
     model: config.model,
-    prompt_cache_key: createPromptCacheKey(records, config, toolDefinitions),
+    prompt_cache_key: createPromptCacheKey(records, config, toolDefinitions, options.sessionId),
     stream: true,
     store: false,
     instructions: instructions || 'You are a helpful assistant.',

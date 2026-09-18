@@ -5,9 +5,16 @@ import type {ToolDefinition} from '../types/tool';
 import type {TranscriptRecord} from '../types/transcript';
 
 /**
- * 生成 provider 路由用的 prompt cache key；只使用稳定前缀材料，避免用户消息变化打散缓存。
+ * 生成 provider 路由用的 prompt cache key。
+ * 传入会话身份时绑定会话，让 ChatGPT Codex 后端按会话保持缓存亲和；
+ * 缺省回退到只用稳定前缀材料，避免用户消息变化打散缓存。
  */
-function createPromptCacheKey(records: TranscriptRecord[], config: Pick<LlmConfig, 'model'>, toolDefinitions: ToolDefinition[] = []): string {
+function createPromptCacheKey(records: TranscriptRecord[], config: Pick<LlmConfig, 'model'>, toolDefinitions: ToolDefinition[] = [], sessionId?: string): string {
+  if (sessionId) {
+    // 会话级 key 不受 system prompt 重算（memory、skill 目录）影响；是否命中仍由 token 前缀决定。
+    return `echo-tui-${sessionId}`;
+  }
+
   const systemPrompt = records.find((record) => record.role === 'system')?.text || '';
   // system prompt 里面包含 cwd、项目指令文件等动态内容，各用户互不相同，所以相当于按照用户进行路由分组
   const payload = stableStringify({
