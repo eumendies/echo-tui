@@ -36,7 +36,7 @@
 
 #### Scenario: 默认 token 覆盖 block 和 Markdown 视觉语义
 - **WHEN** 默认 render theme 生效
-- **THEN** theme SHALL 为 blocks、Markdown 和 syntax highlight 提供 banner、user、assistant、pending、error、notice、reasoning、shell、tool、heading、list marker、blockquote、rule、table、inline code 和 syntax token 或等价语义 token
+- **THEN** theme SHALL 为 blocks、Markdown 和 syntax highlight 提供 banner、user、assistant、pending、error、notice、reasoning、shell、tool、heading、list marker、blockquote、rule、table、inline code、inline math 和 syntax token 或等价语义 token
 - **THEN** render 层 SHALL 使用这些 token 表达 transcript block、pending preview、banner、assistant Markdown 和 fenced code block 的可配置视觉
 
 #### Scenario: 用户覆盖部分 token
