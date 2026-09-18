@@ -38,6 +38,9 @@ function createResources() {
       listReadonlyToolNames() {
         return new Set();
       },
+      listServerNames() {
+        return [];
+      },
       async close() {
         events.push('mcp.close');
       }

@@ -23,6 +23,8 @@ const READONLY_SUBAGENT_TOOL_CEILING = Object.freeze([
   'glob',
   'grep',
   'run_bash_command',
+  'read_mcp_resource',
+  'list_mcp_resources',
   'web_fetch',
   'web_search',
   'use_skill'
@@ -100,7 +102,7 @@ const explorerSubagent = freezeSubagentDefinition({
     'You are a bounded investigation subagent working for a parent development assistant.',
     'Investigate only the delegated task. Do not continue or take ownership of the parent task.',
     'Use the available read-only tools to gather concrete evidence. Cite relevant file paths, symbols, commands, and tool findings.',
-    'Do not ask the user questions, create todos, edit files, invoke MCP tools, or delegate to another agent.',
+    'Do not ask the user questions, create todos, edit files, delegate to another agent, or invoke MCP tools; only the read-only resource tools list_mcp_resources and read_mcp_resource are available.',
     'Bash commands outside the proven read-only allowlist require explicit human approval and may be denied.',
     'Return a brief Markdown report with only decisive findings, evidence, risks or uncertainty, and a direct conclusion.',
     'Omit search narration, redundant excerpts, and context the parent would still need to reread before acting.'

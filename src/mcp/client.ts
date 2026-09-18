@@ -4,11 +4,40 @@ import {StreamableHTTPClientTransport} from '@modelcontextprotocol/sdk/client/st
 
 import type {McpServerConfig} from '../types/mcp';
 
+const MAX_MCP_RESOURCE_PAGES = 10;
+
 type McpListedTool = {
   name: string;
   description?: string;
   inputSchema: Record<string, unknown>;
   readOnly: boolean;
+};
+
+type McpListedResource = {
+  uri: string; // server 暴露的稳定资源标识，读取时原样回传。
+  name: string; // server 指定的资源名称。
+  title?: string; // 可选展示标题。
+  description?: string; // 可选人类可读描述。
+  mimeType?: string; // 可选内容类型。
+};
+
+type McpListedResourceTemplate = {
+  uriTemplate: string; // RFC 6570 模板，供模型构造具体 uri。
+  name: string;
+  title?: string;
+  description?: string;
+  mimeType?: string;
+};
+
+type McpResourceContent = {
+  uri: string; // 内容项对应的资源 uri。
+  mimeType?: string; // 可选内容类型。
+  text?: string; // 文本内容；与 blobBytes 互斥。
+  blobBytes?: number; // 二进制内容字节数；只保留大小,不保留 payload。
+};
+
+type McpResourceReadResult = {
+  contents: McpResourceContent[]; // 按 server 返回顺序排列的内容项。
 };
 
 type McpCallToolResult = {
@@ -19,12 +48,22 @@ type McpCallToolResult = {
 };
 
 type EchoMcpClient = {
+  supportsResources: () => boolean;
   listTools: () => Promise<McpListedTool[]>;
+  listResources: (limit: number) => Promise<McpListedResource[]>;
+  listResourceTemplates: (limit: number) => Promise<McpListedResourceTemplate[]>;
+  readResource: (uri: string) => Promise<McpResourceReadResult>;
   callTool: (toolName: string, args: Record<string, unknown>) => Promise<McpCallToolResult>;
   close: () => Promise<void>;
 };
 
 type CreateMcpClient = (server: McpServerConfig) => Promise<EchoMcpClient>;
+
+/** 只按 base64 长度推算原始字节数,避免为二进制占位符解码整个 payload。 */
+function base64ByteLength(value: string): number {
+  const padding = value.endsWith('==') ? 2 : value.endsWith('=') ? 1 : 0;
+  return Math.max(0, Math.floor((value.length * 3) / 4) - padding);
+}
 
 async function createSdkMcpClient(server: McpServerConfig): Promise<EchoMcpClient> {
   const client = new Client({name: 'echo_tui', version: '0.1.0'});
@@ -48,6 +87,9 @@ async function createSdkMcpClient(server: McpServerConfig): Promise<EchoMcpClien
   }
 
   return {
+    supportsResources() {
+      return client.getServerCapabilities()?.resources !== undefined;
+    },
     async listTools() {
       const result = await client.listTools(undefined, {timeout: server.timeoutMs, maxTotalTimeout: server.timeoutMs});
       return result.tools.map((tool) => ({
@@ -57,6 +99,73 @@ async function createSdkMcpClient(server: McpServerConfig): Promise<EchoMcpClien
         // annotations 是 server 提供的 hint；这里只归一出后续放行策略需要的只读布尔值，缺失按 false 处理。
         readOnly: tool.annotations?.readOnlyHint === true
       }));
+    },
+    // 分页上限与条目上限双重约束:server 持续返回游标时也不无限拉取。
+    async listResources(limit) {
+      const resources: McpListedResource[] = [];
+      let cursor: string | undefined;
+
+      for (let page = 0; page < MAX_MCP_RESOURCE_PAGES && resources.length < limit; page += 1) {
+        const result = await client.listResources(cursor ? {cursor} : undefined, {timeout: server.timeoutMs, maxTotalTimeout: server.timeoutMs});
+
+        for (const resource of result.resources) {
+          resources.push({
+            uri: resource.uri,
+            name: resource.name,
+            ...(resource.title ? {title: resource.title} : {}),
+            ...(resource.description ? {description: resource.description} : {}),
+            ...(resource.mimeType ? {mimeType: resource.mimeType} : {})
+          });
+        }
+
+        cursor = result.nextCursor;
+        if (!cursor) {
+          break;
+        }
+      }
+
+      return resources.slice(0, limit);
+    },
+    async listResourceTemplates(limit) {
+      const templates: McpListedResourceTemplate[] = [];
+      let cursor: string | undefined;
+
+      for (let page = 0; page < MAX_MCP_RESOURCE_PAGES && templates.length < limit; page += 1) {
+        const result = await client.listResourceTemplates(cursor ? {cursor} : undefined, {timeout: server.timeoutMs, maxTotalTimeout: server.timeoutMs});
+
+        for (const template of result.resourceTemplates) {
+          templates.push({
+            uriTemplate: template.uriTemplate,
+            name: template.name,
+            ...(template.title ? {title: template.title} : {}),
+            ...(template.description ? {description: template.description} : {}),
+            ...(template.mimeType ? {mimeType: template.mimeType} : {})
+          });
+        }
+
+        cursor = result.nextCursor;
+        if (!cursor) {
+          break;
+        }
+      }
+
+      return templates.slice(0, limit);
+    },
+    async readResource(uri) {
+      const result = await client.readResource({uri}, {timeout: server.timeoutMs, maxTotalTimeout: server.timeoutMs});
+
+      return {
+        contents: result.contents.map((content): McpResourceContent => {
+          const base: McpResourceContent = {
+            uri: content.uri,
+            ...(content.mimeType ? {mimeType: content.mimeType} : {})
+          };
+
+          return 'text' in content
+            ? {...base, text: content.text}
+            : {...base, blobBytes: base64ByteLength(content.blob)};
+        })
+      };
     },
     callTool(toolName, args) {
       return client.callTool({name: toolName, arguments: args}, undefined, {timeout: server.timeoutMs, maxTotalTimeout: server.timeoutMs}) as Promise<McpCallToolResult>;
@@ -75,5 +184,9 @@ export type {
   CreateMcpClient,
   EchoMcpClient,
   McpCallToolResult,
-  McpListedTool
+  McpListedResource,
+  McpListedResourceTemplate,
+  McpListedTool,
+  McpResourceContent,
+  McpResourceReadResult
 };

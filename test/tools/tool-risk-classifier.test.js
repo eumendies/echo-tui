@@ -6,7 +6,7 @@ const { READONLY_MCP_TOOL_REJECTION, READONLY_SUBAGENT_REJECTION, classifyReadon
 test('readonly tool policy keeps explicit observations and rejects all other tools', () => {
   const call = (toolName, argumentsText = '{}') => ({callId: `call-${toolName}`, toolName, argumentsText});
 
-  for (const toolName of ['read_files', 'glob', 'grep', 'web_fetch', 'web_search', 'use_skill', 'create_todos', 'complete_todo']) {
+  for (const toolName of ['read_files', 'glob', 'grep', 'web_fetch', 'web_search', 'use_skill', 'create_todos', 'complete_todo', 'list_mcp_resources', 'read_mcp_resource']) {
     assert.deepEqual(classifyReadonlyToolCall(call(toolName)), {risk: 'safe'});
   }
   assert.deepEqual(classifyReadonlyToolCall(call('run_bash_command', '{"command":"git status --short"}')), {risk: 'safe'});
@@ -33,6 +33,24 @@ test('readonly tool policy admits MCP tools only when the server declares a read
     assert.equal(result.reason, 'readonly_policy', toolName);
     assert.equal(result.message, READONLY_MCP_TOOL_REJECTION, toolName);
   }
+});
+
+test('MCP resource reads stay safe observations across modes and boundaries', () => {
+  const metadata = {agentName: 'explorer', depth: 1, parentToolCallId: 'outer', runId: 'run-1'};
+
+  for (const toolName of ['list_mcp_resources', 'read_mcp_resource']) {
+    const call = {callId: `call-${toolName}`, toolName, argumentsText: '{}'};
+
+    // 纯观察工具:normal 与 plan 都直接放行,不落入 mcp__ 工具的 plan 拒绝分支。
+    assert.deepEqual(classifyToolCallRisk(call, 'normal'), {risk: 'safe'}, toolName);
+    assert.deepEqual(classifyToolCallRisk(call, 'plan'), {risk: 'safe'}, toolName);
+    // 只读运行与只读子代理同样放行;MCP tools 与写入工具的边界不受影响。
+    assert.deepEqual(classifyReadonlyToolCall(call), {risk: 'safe'}, toolName);
+    assert.deepEqual(classifySubagentToolCall(call, metadata), {risk: 'safe'}, toolName);
+  }
+
+  assert.equal(classifyToolCallRisk({callId: 'plan-mcp', toolName: 'mcp__docs__write', argumentsText: '{}'}, 'plan').risk, 'rejected');
+  assert.equal(classifyReadonlyToolCall({callId: 'ro-mcp', toolName: 'mcp__docs__write', argumentsText: '{}'}).risk, 'rejected');
 });
 
 test('readonly tool policy delegates only to injected readonly subagent names', () => {

@@ -1137,7 +1137,7 @@
 - **THEN** 本地工具、MCP、approval、plan mode 和 headless policy SHALL 保持既有行为
 
 ### Requirement: Readonly policy 只允许明确安全的临时操作
-Readonly policy SHALL 允许明确列入只读集合的文件读取、glob/grep、网页读取/搜索和 skill 加载工具，并 SHALL 允许只修改当前 BTW 临时 todo state 的 todo 工具。`run_bash_command` SHALL 按生效沙箱分层执行：当该次运行的生效沙箱可用且档位为 `read-only` 时，任意命令 SHALL 直接进入既有 executor，效果由内核沙箱边界约束；否则 SHALL 仅在共享 readonly classifier 明确认可为 inspection command 时执行。`run_subagent` SHALL 仅在调用目标属于该次运行冻结的 readonly 执行策略子代理集合时放行。允许的调用 SHALL 继续使用既有 executor、abort、输出截断和 tool result 语义。
+Readonly policy SHALL 允许明确列入只读集合的文件读取、glob/grep、网页读取/搜索、skill 加载和 MCP 资源读取工具，并 SHALL 允许只修改当前 BTW 临时 todo state 的 todo 工具。`run_bash_command` SHALL 按生效沙箱分层执行：当该次运行的生效沙箱可用且档位为 `read-only` 时，任意命令 SHALL 直接进入既有 executor，效果由内核沙箱边界约束；否则 SHALL 仅在共享 readonly classifier 明确认可为 inspection command 时执行。`run_subagent` SHALL 仅在调用目标属于该次运行冻结的 readonly 执行策略子代理集合时放行。允许的调用 SHALL 继续使用既有 executor、abort、输出截断和 tool result 语义。
 
 #### Scenario: 执行只读文件检查
 - **WHEN** readonly run 收到 `read_files`、`glob` 或 `grep` 的有效 tool call
@@ -1156,6 +1156,11 @@ Readonly policy SHALL 允许明确列入只读集合的文件读取、glob/grep�
 - **THEN** policy SHALL 允许调用直接进入普通 bash executor
 - **THEN** 系统 SHALL NOT 请求人工审批或自动审批模型
 - **THEN** 命令副作用 SHALL 由内核沙箱边界约束
+
+#### Scenario: 只读运行放行 MCP 资源读取
+- **WHEN** readonly run 收到 `list_mcp_resources` 或 `read_mcp_resource` 的有效 tool call
+- **THEN** policy SHALL 允许调用进入普通 executor
+- **THEN** 系统 SHALL NOT 请求人工审批
 
 #### Scenario: 只读运行仅委派只读子代理
 - **WHEN** readonly run 收到 `run_subagent` tool call
@@ -1197,11 +1202,16 @@ Readonly policy SHALL 拒绝 `apply_patch`、`edit_file`、生效沙箱未覆盖
 - **THEN** runtime SHALL 保留 tool continuation 所需的 call id 和 tool name
 
 ### Requirement: 工具调用并发分类
-判断工具调用能否与相邻只读调用重叠执行；未知或无法证明只读的调用一律独占。`read_files`、`glob`、`grep`、`web_fetch`、`web_search`、`use_skill` SHALL 分类为 `parallel_read`。`run_bash_command` SHALL 按严格只读 Bash 策略判定：命中只读 allowlist 为 `parallel_read`，否则 `exclusive`。`run_subagent` SHALL 在调用参数可解析为目标 readonly executionPolicy subagent 时分类为 `parallel_read`；参数 JSON 解析失败、agent 名称未知或目标为 general_purpose 时 SHALL 分类为 `exclusive`。其余工具一律 `exclusive`。分类器 SHALL 通过注入的只读 subagent 名称谓词获取策略，不携带目录依赖。
+判断工具调用能否与相邻只读调用重叠执行；未知或无法证明只读的调用一律独占。`read_files`、`glob`、`grep`、`web_fetch`、`web_search`、`use_skill`、`list_mcp_resources`、`read_mcp_resource` SHALL 分类为 `parallel_read`。`run_bash_command` SHALL 按严格只读 Bash 策略判定：命中只读 allowlist 为 `parallel_read`，否则 `exclusive`。`run_subagent` SHALL 在调用参数可解析为目标 readonly executionPolicy subagent 时分类为 `parallel_read`；参数 JSON 解析失败、agent 名称未知或目标为 general_purpose 时 SHALL 分类为 `exclusive`。其余工具一律 `exclusive`。分类器 SHALL 通过注入的只读 subagent 名称谓词获取策略，不携带目录依赖。
 
 #### Scenario: 观察工具保持并行分类
 - **WHEN** 分类器收到 `grep`、`read_files`、`glob`、`web_fetch`、`web_search` 或 `use_skill` 调用
 - **THEN** 分类结果 SHALL 为 `parallel_read`
+
+#### Scenario: 资源读取参与并行分类
+- **WHEN** 分类器收到 `list_mcp_resources` 或 `read_mcp_resource` 调用
+- **THEN** 分类结果 SHALL 为 `parallel_read`
+- **THEN** 连续的资源读取与其它只读调用 SHALL 允许在同一并行段执行
 
 #### Scenario: 只读 Bash 与风险 Bash 分类不变
 - **WHEN** 分类器收到只读 allowlist 内外的 `run_bash_command` 调用

@@ -4,6 +4,7 @@ import {isMcpToolName} from '../mcp/manager';
 import {EDIT_FILE_TOOL_NAME, createEditFileCallLabel} from './edit-file-tool-handler';
 import {isTodoToolName} from './todo-tool-handler';
 import {RUN_SUBAGENT_TOOL_NAME} from './run-subagent-tool-handler';
+import {LIST_MCP_RESOURCES_TOOL_NAME, MCP_RESOURCE_TOOL_NAMES, READ_MCP_RESOURCE_TOOL_NAME} from './mcp-resource-tools';
 
 import type {InteractionMode, SubagentRunMetadata} from '../types/agent';
 import type {ToolCall, ToolRiskAssessment} from '../types/tool';
@@ -28,7 +29,7 @@ const PLAN_WRITE_TOOL_REJECTION = 'In plan mode, tools that modify files or syst
 const READONLY_TOOL_REJECTION = 'This run only allows read-only tools. The requested tool was not executed.';
 const READONLY_MCP_TOOL_REJECTION = 'This run only allows read-only tools. The requested MCP tool is not declared read-only by its server.';
 const READONLY_SUBAGENT_REJECTION = 'This run only allows delegating to read-only subagents. The requested subagent was not started.';
-const READONLY_OBSERVATION_TOOL_NAMES: ReadonlySet<string> = new Set(['read_files', 'glob', 'grep', 'web_fetch', 'web_search', 'use_skill']);
+const READONLY_OBSERVATION_TOOL_NAMES: ReadonlySet<string> = new Set(['read_files', 'glob', 'grep', 'web_fetch', 'web_search', 'use_skill', LIST_MCP_RESOURCES_TOOL_NAME, READ_MCP_RESOURCE_TOOL_NAME]);
 
 /**
  * 对 BTW、/review 等单次 readonly run 做 fail-closed 分类；工具 schema 保持不变，执行边界在本地强制。
@@ -103,6 +104,11 @@ function classifySubagentToolCall(call: ToolCall, metadata: SubagentRunMetadata)
  * normal 分支刻意忽略该参数,保持"沙箱不改变普通审批"的正交性。
  */
 function classifyToolCallRisk(call: ToolCall, interactionMode: InteractionMode = 'normal', readonlyMcpToolNames?: ReadonlySet<string>, bashSandboxed = false): ToolRiskAssessment {
+  // 资源读取是纯观察:plan 与普通模式都直接放行,不进入审批,也不落入 MCP tools 的只读注解判定。
+  if (MCP_RESOURCE_TOOL_NAMES.has(call.toolName)) {
+    return {risk: 'safe'};
+  }
+
   if (call.toolName === APPLY_PATCH_TOOL_NAME || call.toolName === EDIT_FILE_TOOL_NAME) {
     if (interactionMode === 'plan') {
       return {risk: 'rejected', reason: 'plan_mode', message: PLAN_WRITE_TOOL_REJECTION};
