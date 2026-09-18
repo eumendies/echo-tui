@@ -8,6 +8,7 @@ type McpListedTool = {
   name: string;
   description?: string;
   inputSchema: Record<string, unknown>;
+  readOnly: boolean;
 };
 
 type McpCallToolResult = {
@@ -52,7 +53,9 @@ async function createSdkMcpClient(server: McpServerConfig): Promise<EchoMcpClien
       return result.tools.map((tool) => ({
         name: tool.name,
         description: tool.description,
-        inputSchema: tool.inputSchema
+        inputSchema: tool.inputSchema,
+        // annotations 是 server 提供的 hint；这里只归一出后续放行策略需要的只读布尔值，缺失按 false 处理。
+        readOnly: tool.annotations?.readOnlyHint === true
       }));
     },
     callTool(toolName, args) {

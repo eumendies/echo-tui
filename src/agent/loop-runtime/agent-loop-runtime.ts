@@ -9,7 +9,6 @@ import {classifyToolCallConcurrency} from '../../tools/tool-concurrency-classifi
 import {RUN_SUBAGENT_TOOL_NAME} from '../../tools/run-subagent-tool-handler';
 import {createToolCallTranscriptRecord, createToolResultTranscriptRecord} from '../../tools/tool-transcript-record';
 import {executeTodoToolCall, isTodoToolName} from '../../tools/todo-tool-handler';
-import {getMcpToolApproval} from '../../mcp/manager';
 import {createSkillCatalogPromptProjection} from '../../skills/skill-catalog-prompt';
 import {createSkillManager} from '../../skills/skill-manager';
 import {captureSkillSnapshot} from '../../skills/skill-snapshot';
@@ -91,8 +90,9 @@ async function executeToolCall(toolCall: ToolCall, state: AgentLoopRunState, cal
 
   // 只读运行由 readonly classifier 一次性判定:rejected 立即短路,safe 直接沿用到执行链路,
   // 不再回落普通风险分类——否则 allowlist 内的只读命令会被启发式写风险规则二次误判为需要审批。
+  // 只读运行里的 MCP 工具沿用同一判定:命中 run 启动时固定的只读集合才放行,不进入审批。
   const readonlyAssessment = state.toolPolicy === 'readonly'
-    ? classifyReadonlyToolCall(toolCall, state.readonlySubagentNames, state.readonlyBashSandboxed)
+    ? classifyReadonlyToolCall(toolCall, state.readonlySubagentNames, state.readonlyBashSandboxed, state.readonlyMcpToolNames)
     : null;
 
   if (readonlyAssessment !== null && readonlyAssessment.risk === 'rejected') {
@@ -124,7 +124,7 @@ async function executeToolCall(toolCall: ToolCall, state: AgentLoopRunState, cal
   // 默认运行在这里执行普通风险分类;只读运行复用 readonly 判定结果,不进入审批分支。
   // plan 运行的 bash 分层事实由 runtime 初始化时一次性解析,分类器不自行读取配置。
   const riskAssessment: ToolRiskAssessment = readonlyAssessment
-    ?? classifyToolCallRisk(toolCall, state.interactionMode, (toolName) => getMcpToolApproval(state.mcpManager, toolName), state.planBashSandboxed);
+    ?? classifyToolCallRisk(toolCall, state.interactionMode, state.readonlyMcpToolNames, state.planBashSandboxed);
   state.observation.toolRiskAssessed({scope: state.observationScope, call: toolCall, assessment: riskAssessment});
 
   if (riskAssessment.risk === 'rejected') {
@@ -241,6 +241,7 @@ type AgentLoopRunState = {
   toolPolicy: AgentToolPolicy; // default 或 readonly 执行策略。
   registry: ToolRegistry; // provider schema 查询和 commit mode 查询的权威目录。
   readonlySubagentNames?: ReadonlySet<string>; // run 启动时固定的 readonly 执行策略 agent 名称集合；无委派端口时缺省。
+  readonlyMcpToolNames?: ReadonlySet<string>; // run 启动时固定的 MCP 只读工具名称集合；普通审批与只读运行准入共用，无 MCP manager 时缺省。
   readonlyBashSandboxed: boolean; // 只读运行且 bash 沙箱实际生效;true 时 bash 豁免文本白名单与审批,效果由内核边界保证。
   planBashSandboxed: boolean; // plan 运行(default 工具策略)且生效沙箱为可用 read-only 档;true 时 plan bash 由内核边界兜底。
   sandboxNote: string | null; // bash 沙箱生效时的 transient 边界说明;null 表示本次运行未包装沙箱。
@@ -265,6 +266,8 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
           .filter((descriptor) => descriptor.executionPolicy === 'readonly_investigation')
           .map((descriptor) => descriptor.name))
       : undefined;
+    // MCP 只读工具名称集合同样在 run 启动时固定,与本次 registry 同源;普通审批与只读运行准入共用同一份事实。
+    const readonlyMcpToolNames = mcpManager ? mcpManager.listReadonlyToolNames() : undefined;
     // 单次 assistant run 只在启动时物化 Skill 快照；primary catalog、use_skill 与全部子 scope 共用同源。
     const skillSnapshot = captureSkillSnapshot(createSkillManager({cwd}));
     const {agent, config, registry} = prepareAgent({
@@ -297,6 +300,7 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
       executor: createToolExecutor(registry),
       registry,
       ...(readonlySubagentNames ? {readonlySubagentNames} : {}),
+      ...(readonlyMcpToolNames ? {readonlyMcpToolNames} : {}),
       contextWindow,
       compactionThresholdRatio,
       skillCatalog: skillCatalogProjection.catalog,

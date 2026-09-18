@@ -1,10 +1,7 @@
-export type McpApprovalMode = 'always' | 'never';
-
 export type McpBaseServerConfig = {
   name: string;
   enabled: boolean;
   timeoutMs: number;
-  approval: McpApprovalMode;
 };
 
 export type McpStdioServerConfig = McpBaseServerConfig & {
@@ -67,5 +64,5 @@ export type McpToolReference = {
   serverName: string;
   toolName: string;
   namespacedName: string;
-  approval: McpApprovalMode;
+  readOnly: boolean; // server 通过 ToolAnnotations.readOnlyHint 声明的只读 hint，缺失按 false 归一。
 };

@@ -2,7 +2,7 @@ import {redactSensitiveText} from '../agent/agent-errors';
 import {createSdkMcpClient} from './client';
 
 import type {CreateMcpClient, EchoMcpClient, McpCallToolResult, McpListedTool} from './client';
-import type {McpApprovalMode, McpBootstrapDiagnostic, McpConfig, McpServerConfig, McpToolReference} from '../types/mcp';
+import type {McpBootstrapDiagnostic, McpConfig, McpServerConfig, McpToolReference} from '../types/mcp';
 
 type InitializedMcpServer = {
   config: McpServerConfig;
@@ -100,7 +100,7 @@ class McpManager {
       serverName: server.config.name,
       toolName: tool.name,
       namespacedName: createMcpToolName(server.config.name, tool.name),
-      approval: server.config.approval,
+      readOnly: tool.readOnly === true,
       description: tool.description,
       inputSchema: tool.inputSchema
     })));
@@ -108,6 +108,13 @@ class McpManager {
 
   getToolReference(namespacedName: string): McpToolReference | null {
     return this.listTools().find((tool) => tool.namespacedName === namespacedName) || null;
+  }
+
+  /**
+   * 物化当前工具目录的只读工具名称集合；普通审批判定与只读运行准入共用这份 run 启动事实。
+   */
+  listReadonlyToolNames(): ReadonlySet<string> {
+    return new Set(this.listTools().filter((tool) => tool.readOnly).map((tool) => tool.namespacedName));
   }
 
   async callTool(serverName: string, toolName: string, args: Record<string, unknown>): Promise<McpCallToolResult> {
@@ -150,14 +157,9 @@ function sanitizeMcpError(error: unknown): string {
   return redactSensitiveText(message);
 }
 
-function getMcpToolApproval(manager: McpManager | undefined, toolName: string): McpApprovalMode | undefined {
-  return manager?.getToolReference(toolName)?.approval;
-}
-
 export {
   McpManager,
   createMcpToolName,
-  getMcpToolApproval,
   isMcpToolName,
   redactSensitiveText,
   sanitizeMcpError

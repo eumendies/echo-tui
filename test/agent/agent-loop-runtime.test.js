@@ -1365,13 +1365,15 @@ test('createAgentLoopRuntime keeps provider-visible tool definitions stable acro
         serverName: 'docs',
         toolName: 'search',
         namespacedName: 'mcp__docs__search',
-        approval: 'always',
         description: 'Search docs',
         inputSchema: {type: 'object'}
       }];
     },
+    listReadonlyToolNames() {
+      return new Set(this.listTools().filter((tool) => tool.readOnly).map((tool) => tool.namespacedName));
+    },
     getToolReference() {
-      return {serverName: 'docs', toolName: 'search', namespacedName: 'mcp__docs__search', approval: 'always'};
+      return {serverName: 'docs', toolName: 'search', namespacedName: 'mcp__docs__search'};
     }
   };
 
@@ -1614,51 +1616,121 @@ test('createAgentLoopRuntime executes high-risk bash once after approval callbac
   }
 });
 
-test('createAgentLoopRuntime applies MCP always and never approval policies before proxy execution', async () => {
-  for (const approval of ['always', 'never']) {
-    let turnCount = 0;
-    let approvals = 0;
-    let calls = 0;
-    const namespacedName = `mcp__docs__${approval}`;
-    const mcpManager = {
-      listTools() {
-        return [{serverName: 'docs', toolName: approval, namespacedName, approval, description: 'MCP test', inputSchema: {type: 'object'}}];
-      },
-      getToolReference(toolName) {
-        return toolName === namespacedName ? {serverName: 'docs', toolName: approval, namespacedName, approval} : null;
-      },
-      async callTool() {
-        calls += 1;
-        return {content: [{type: 'text', text: 'mcp done'}]};
-      }
-    };
-    const agent = {
-      async runTurn() {
-        turnCount += 1;
-        return turnCount === 1
-          ? {draft: '', toolCalls: [{callId: `mcp-${approval}`, toolName: namespacedName, argumentsText: '{}'}]}
-          : {draft: 'done', toolCalls: []};
-      }
-    };
-    const results = [];
+test('createAgentLoopRuntime gates MCP tools by the server-declared read-only hint', async () => {
+  let turnCount = 0;
+  let approvals = 0;
+  let calls = 0;
+  const mcpTools = [
+    {serverName: 'docs', toolName: 'read', namespacedName: 'mcp__docs__read', readOnly: true, description: 'MCP read', inputSchema: {type: 'object'}},
+    {serverName: 'docs', toolName: 'write', namespacedName: 'mcp__docs__write', readOnly: false, description: 'MCP write', inputSchema: {type: 'object'}}
+  ];
+  const mcpManager = {
+    listTools() {
+      return mcpTools;
+    },
+    listReadonlyToolNames() {
+      return new Set(this.listTools().filter((tool) => tool.readOnly).map((tool) => tool.namespacedName));
+    },
+    getToolReference(toolName) {
+      return mcpTools.find((tool) => tool.namespacedName === toolName) || null;
+    },
+    async callTool() {
+      calls += 1;
+      return {content: [{type: 'text', text: 'mcp done'}]};
+    }
+  };
+  const agent = {
+    async runTurn() {
+      turnCount += 1;
 
-    await withPatchedAgentRuntime(agent, () => createAgentLoopRuntime(TEST_CWD, mcpManager)(
-      {records: [{role: 'user', text: 'call MCP'}]},
-      {
-        onToolApprovalRequest(_call, request) {
-          approvals += 1;
-          assert.match(request.preview, /Server: docs/);
-          return {kind: 'allow_once'};
-        },
-        onToolResult(result) { results.push(result); }
+      if (turnCount === 1) {
+        return {draft: '', toolCalls: [{callId: 'mcp-read', toolName: 'mcp__docs__read', argumentsText: '{}'}]};
       }
-    ));
 
-    assert.equal(approvals, approval === 'always' ? 1 : 0);
-    assert.equal(calls, 1);
-    assert.equal(results[0].ok, true);
-    assert.match(results[0].text, /mcp done/);
-  }
+      if (turnCount === 2) {
+        return {draft: '', toolCalls: [{callId: 'mcp-write', toolName: 'mcp__docs__write', argumentsText: '{}'}]};
+      }
+
+      return {draft: 'done', toolCalls: []};
+    }
+  };
+  const results = [];
+
+  await withPatchedAgentRuntime(agent, () => createAgentLoopRuntime(TEST_CWD, mcpManager)(
+    {records: [{role: 'user', text: 'call MCP'}]},
+    {
+      onToolApprovalRequest(_call, request) {
+        approvals += 1;
+        assert.match(request.preview, /Server: docs/);
+        return {kind: 'allow_once'};
+      },
+      onToolResult(result) { results.push(result); }
+    }
+  ));
+
+  // 只读工具直接执行不进入审批;写工具走同一预览,获批后才代理执行。
+  assert.equal(approvals, 1);
+  assert.equal(calls, 2);
+  assert.deepEqual(results.map((result) => result.ok), [true, true]);
+  assert.match(results[1].text, /mcp done/);
+});
+
+test('readonly runtime executes read-only hinted MCP tools without approval and keeps other MCP tools fail-closed', async () => {
+  let turnCount = 0;
+  let approvals = 0;
+  let calls = 0;
+  const results = [];
+  const mcpTools = [
+    {serverName: 'docs', toolName: 'read', namespacedName: 'mcp__docs__read', readOnly: true, description: 'Read docs', inputSchema: {type: 'object'}},
+    {serverName: 'docs', toolName: 'write', namespacedName: 'mcp__docs__write', readOnly: false, description: 'Write docs', inputSchema: {type: 'object'}}
+  ];
+  const mcpManager = {
+    listTools() {
+      return mcpTools;
+    },
+    listReadonlyToolNames() {
+      return new Set(this.listTools().filter((tool) => tool.readOnly).map((tool) => tool.namespacedName));
+    },
+    async callTool() {
+      calls += 1;
+      return {content: [{type: 'text', text: 'mcp done'}]};
+    }
+  };
+  const agent = {
+    async runTurn() {
+      turnCount += 1;
+
+      if (turnCount === 1) {
+        return {draft: '', toolCalls: [{callId: 'mcp-read', toolName: 'mcp__docs__read', argumentsText: '{}'}]};
+      }
+
+      if (turnCount === 2) {
+        return {draft: '', toolCalls: [{callId: 'mcp-write', toolName: 'mcp__docs__write', argumentsText: '{}'}]};
+      }
+
+      return {draft: 'done', toolCalls: []};
+    }
+  };
+
+  await withPatchedAgentRuntime(agent, () => createAgentLoopRuntime(TEST_CWD, mcpManager)(
+    {records: [{role: 'user', text: 'review this'}], toolPolicy: 'readonly'},
+    {
+      onToolApprovalRequest() {
+        approvals += 1;
+        return {kind: 'allow_once'};
+      },
+      onToolResult(result) { results.push(result); }
+    }
+  ));
+
+  // 只读 hint 的工具直接执行且不打开审批;server 级 never 的写工具在只读运行里仍然 fail-closed。
+  assert.equal(approvals, 0);
+  assert.equal(calls, 1);
+  assert.equal(results.length, 2);
+  assert.equal(results[0].ok, true);
+  assert.match(results[0].text, /mcp done/);
+  assert.equal(results[1].ok, false);
+  assert.match(results[1].text, /not declared read-only/);
 });
 
 test('createAgentLoopRuntime applies edit_file approvals across tool continuation', async () => {

@@ -886,7 +886,10 @@ test('custom general file_edit exposes only the configured edit handler and enab
   let mcpCalls = 0;
   const manager = {
     listTools() {
-      return [{serverName: 'docs', toolName: 'read', namespacedName: 'mcp__docs__read', approval: 'never', description: 'read docs', inputSchema: {type: 'object'}}];
+      return [{serverName: 'docs', toolName: 'read', namespacedName: 'mcp__docs__read', readOnly: true, description: 'read docs', inputSchema: {type: 'object'}}];
+    },
+    listReadonlyToolNames() {
+      return new Set(this.listTools().filter((tool) => tool.readOnly).map((tool) => tool.namespacedName));
     },
     getToolReference(name) { return name === 'mcp__docs__read' ? this.listTools()[0] : null; },
     async callTool() { mcpCalls += 1; return {content: [{type: 'text', text: 'mcp result'}]}; }
@@ -1233,7 +1236,10 @@ test('Worker reuses initialized MCP tools without owning the manager lifecycle',
   let approval;
   const manager = {
     listTools() {
-      return [{serverName: 'docs', toolName: 'write', namespacedName: 'mcp__docs__write', approval: 'always', description: 'write docs', inputSchema: {type: 'object'}}];
+      return [{serverName: 'docs', toolName: 'write', namespacedName: 'mcp__docs__write', description: 'write docs', inputSchema: {type: 'object'}}];
+    },
+    listReadonlyToolNames() {
+      return new Set(this.listTools().filter((tool) => tool.readOnly).map((tool) => tool.namespacedName));
     },
     getToolReference(name) {
       return name === 'mcp__docs__write' ? this.listTools()[0] : null;

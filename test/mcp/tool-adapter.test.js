@@ -13,7 +13,7 @@ test('createMcpToolRegistry converts MCP tools and proxies calls', async () => {
   const calls = [];
   const manager = {
     listTools() {
-      return [{serverName: 'docs', toolName: 'search', namespacedName: 'mcp__docs__search', approval: 'always', description: 'Search docs', inputSchema: {type: 'object'}}];
+      return [{serverName: 'docs', toolName: 'search', namespacedName: 'mcp__docs__search', description: 'Search docs', inputSchema: {type: 'object'}}];
     },
     async callTool(serverName, toolName, args) {
       calls.push({serverName, toolName, args});

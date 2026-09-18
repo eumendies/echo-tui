@@ -3,8 +3,8 @@ const assert = require('node:assert/strict');
 
 const {McpManager, createMcpToolName, redactSensitiveText} = require('../../src/mcp/manager');
 
-function createServer(name, approval = 'always') {
-  return {name, enabled: true, transport: 'stdio', command: 'node', timeoutMs: 1000, approval};
+function createServer(name) {
+  return {name, enabled: true, transport: 'stdio', command: 'node', timeoutMs: 1000};
 }
 
 test('McpManager bootstraps successful servers and degrades failed servers', async () => {
@@ -14,7 +14,7 @@ test('McpManager bootstraps successful servers and degrades failed servers', asy
       return {
         enabled: true,
         diagnostics: [{serverName: 'badConfig', message: 'invalid'}],
-        servers: [createServer('docs', 'never'), createServer('broken')]
+        servers: [createServer('docs'), createServer('broken')]
       };
     },
     async createClient(server) {
@@ -42,7 +42,7 @@ test('McpManager bootstraps successful servers and degrades failed servers', asy
     serverName: 'docs',
     toolName: 'search',
     namespacedName: 'mcp__docs__search',
-    approval: 'never',
+    readOnly: false,
     description: 'Search docs',
     inputSchema: {type: 'object'}
   }]);
@@ -57,6 +57,41 @@ test('McpManager bootstraps successful servers and degrades failed servers', asy
 test('MCP tool names are normalized for provider function names', () => {
   assert.equal(createMcpToolName('docs api', 'search.files'), 'mcp__docs_api__search_files');
   assert.equal(redactSensitiveText('token=abc apiKey: def Authorization: Bearer ghi'), 'token=<redacted> apiKey: <redacted> Authorization: Bearer <redacted>');
+});
+
+test('McpManager exposes the tool readOnly hint as the only MCP approval input', async () => {
+  const manager = new McpManager({
+    loadConfig() {
+      return {enabled: true, diagnostics: [], servers: [createServer('docs')]};
+    },
+    async createClient() {
+      return {
+        async listTools() {
+          return [
+            {name: 'read', description: 'Read docs', inputSchema: {type: 'object'}, readOnly: true},
+            {name: 'write', description: 'Write docs', inputSchema: {type: 'object'}, readOnly: false},
+            {name: 'unknown', description: 'No hint', inputSchema: {type: 'object'}}
+          ];
+        },
+        async callTool() {
+          return {content: []};
+        },
+        async close() {}
+      };
+    }
+  });
+
+  await manager.bootstrap();
+
+  // 只读 hint 缺失或为 false 时都按“非只读”归一。
+  assert.deepEqual(manager.listTools().map(({namespacedName, readOnly}) => ({namespacedName, readOnly})), [
+    {namespacedName: 'mcp__docs__read', readOnly: true},
+    {namespacedName: 'mcp__docs__write', readOnly: false},
+    {namespacedName: 'mcp__docs__unknown', readOnly: false}
+  ]);
+
+  // 审批边界只看该事实:集合仅包含声明只读的工具,由 run 启动时一次物化。
+  assert.deepEqual([...manager.listReadonlyToolNames()], ['mcp__docs__read']);
 });
 
 test('McpManager closes clients when listing tools fails', async () => {

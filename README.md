@@ -133,7 +133,7 @@ Inspect only authentication-related code. Cite file paths and return prioritized
 - `effort` 缺省或设为 `inherit` 时继承父 turn 的 effort，`default` 使用最终模型 profile 的默认值，也可固定为 `none`、`low`、`medium`、`high`、`xhigh` 或 `max`。未知、重复或类型不符的字段会使整个定义失效。
 - `capability: readonly` 只能从只读工具上限中选择能力，不能启用 MCP。严格白名单外的 Bash 在交互模式需要人工批准，在 headless 模式中即使使用 `--full-access` 也会拒绝。
 - `capability: general` 使用普通工具风险策略，并继承 `normal` / `plan` 和 headless 的 deny / `--full-access` 边界。`file_edit` 是能力别名，运行时会映射到当前配置选中的 `apply_patch` 或 `edit_file` 实现。
-- `mcp: true` 仅允许 general 定义使用当前父运行已经初始化的 MCP 工具；具体 MCP 风险和审批设置仍然生效。
+- `mcp: true` 仅允许 general 定义使用当前父运行已经初始化的 MCP 工具；MCP 工具的审批边界仍按 server 声明的只读注解决定。
 - `skills` 是三态 Skill allowlist：缺省不写时允许加载全部 enabled Skills；写成空列表明确禁止加载任何 Skill；写名称列表时只允许加载列出的 enabled Skills，disabled 或不存在的名称保留在配置中展示但不进入可加载目录。Skill 限制只收窄 `use_skill` 工具的可见范围，不改变工具、MCP、审批或委派边界，也不是文件路径保密边界——Bash 和文件读取工具仍可访问磁盘上的 Skill 文件。
 - 每次主 Agent 运行只加载一次目录并冻结快照；运行期间修改文件不会改变当前 schema 或已解析定义，下次运行才会生效。缺少用户或项目 agents 目录会被视为空目录。Skill 目录同样在 assistant turn 开始时冻结；各子运行共享同一不可变 Skill snapshot，但拥有独立的 scoped registry 与已加载正文，`/skills` 或 skills.json 的变更要到下一 turn 才生效。
 - 无效文件不会进入模型目录；启用 debug 后可通过 `subagent_catalog_diagnostic` 定位来源路径和有界错误信息，manifest 正文不会写入诊断。
@@ -146,12 +146,13 @@ Inspect only authentication-related code. Cite file paths and return prioritized
 ### MCP、Hooks 与主题
 
 - 使用 `/mcp` 启停已配置的 MCP Server。
+- Server 在 `tools/list` 中声明 `readOnlyHint: true` 的工具按只读放行，调用时不请求审批；该注解由 Server 提供、属于不可信提示，只应连接你信任的 MCP Server。
 - 使用 `/hooks` 在回答、工具调用或上下文压缩等事件发生时运行本地命令 (比如使用terminal-notifier在完成回答、需要审批时发送通知)。
 - 使用 `/config` 的“外观”页面切换主题；自定义主题保存在 `~/.echo/theme.json`。
 
 ## 工具与授权
 
-Echo TUI 可以读取和搜索文件、访问公开网页、执行 shell 命令、修改文件，并调用已配置的 MCP 工具。涉及文件修改、高风险命令或需要确认的 MCP 工具时，交互模式会先请求授权；`plan` 模式始终拒绝写操作。
+Echo TUI 可以读取和搜索文件、访问公开网页、执行 shell 命令、修改文件，并调用已配置的 MCP 工具。涉及文件修改、高风险命令或未声明只读的 MCP 工具时，交互模式会先请求授权（声明 `readOnlyHint: true` 的 MCP 工具免审批）；`plan` 模式始终拒绝写操作。
 
 工具审批策略独立于 interaction mode，配置在 `~/.echo/config.json` 的 `tools.approval`：
 
