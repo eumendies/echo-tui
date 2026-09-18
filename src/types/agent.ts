@@ -200,6 +200,7 @@ export type AgentTurnCallbacks = Pick<AgentCallbacks, 'onProviderRetry' | 'onRea
 export type AgentTurnOptions = {
   abortSignal?: AbortSignal;
   isCompaction?: boolean;
+  sessionId?: string; // 本次运行的会话稳定身份；ChatGPT Codex 用它生成会话级缓存键。
 };
 
 export type AgentTurnResult = {

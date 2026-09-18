@@ -38,3 +38,20 @@ test('createPromptCacheKey changes when stable prompt or tools change', () => {
   assert.notEqual(base, changedPrompt);
   assert.notEqual(base, changedTools);
 });
+
+test('createPromptCacheKey binds to the session identity when provided', () => {
+  const records = [
+    { role: 'system', text: 'stable instructions' },
+    { role: 'user', text: 'task' }
+  ];
+  const reboundRecords = [
+    { role: 'system', text: 'instructions changed by a memory update' },
+    { role: 'user', text: 'task' }
+  ];
+  const sessionKey = createPromptCacheKey(records, TEST_CONFIG, [], 'session-abc');
+
+  assert.equal(sessionKey, 'echo-tui-session-abc');
+  // 会话级 key 不随 system prompt 重算漂移，仍由 token 前缀决定是否命中。
+  assert.equal(createPromptCacheKey(reboundRecords, TEST_CONFIG, [], 'session-abc'), sessionKey);
+  assert.notEqual(createPromptCacheKey(records, TEST_CONFIG, [], 'session-xyz'), sessionKey);
+});

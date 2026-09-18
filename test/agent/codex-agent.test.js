@@ -327,6 +327,13 @@ test('createCodexAgent keeps the final request ID after two transient retries an
   assert.equal(compactionAttempts, 1);
 });
 
+test('createCodexRequest binds the prompt cache key to the runtime session identity', () => {
+  const records = [{role: 'user', text: 'hello'}];
+  const request = createCodexRequest(records, TEST_CONFIG, createEmptyToolRegistry(), {sessionId: 'session-abc'});
+
+  assert.equal(request.prompt_cache_key, 'echo-tui-session-abc');
+});
+
 test('createCodexRequest shapes payload for ChatGPT Codex backend', () => {
   const records = [
     {role: 'system', text: '你是助手'},

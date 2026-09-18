@@ -40,3 +40,10 @@ test('opencode go presets pin zen endpoints and declare the session affinity hea
   assert.equal(anthropic.sessionHeader, 'x-opencode-session');
   assert.deepEqual(anthropic.suggestedModels, ['minimax-m3', 'qwen3.8-max', 'qwen3.7-plus']);
 });
+
+test('openai codex preset declares the session affinity header used by ChatGPT cache routing', () => {
+  const preset = getProviderPreset('openai-codex-oauth');
+
+  assert.equal(preset.agentType, 'codex');
+  assert.equal(preset.sessionHeader, 'session-id');
+});

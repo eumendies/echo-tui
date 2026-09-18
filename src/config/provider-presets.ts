@@ -44,6 +44,7 @@ const DEFAULT_PROVIDER_PRESETS: ProviderPreset[] = [
     baseURLMode: 'fixed',
     baseURL: CODEX_OAUTH_BACKEND_BASE_URL,
     codexOAuth: true,
+    sessionHeader: 'session-id',
     suggestedModels: ['gpt-5.5', 'gpt-5.4']
   },
   {
