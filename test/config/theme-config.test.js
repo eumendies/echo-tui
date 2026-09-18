@@ -64,7 +64,8 @@ test('createTuiTheme merges valid render theme overrides and ignores invalid tok
     },
     markdown: {
       styles: {
-        link: {foreground: '#0a0b0c', bold: true}
+        link: {foreground: '#0a0b0c', bold: true},
+        math: {foreground: '#0b0c0d'}
       }
     },
     syntax: {
@@ -83,6 +84,7 @@ test('createTuiTheme merges valid render theme overrides and ignores invalid tok
   assert.deepEqual(theme.footer.colors.danger, DEFAULT_TUI_THEME.footer.colors.danger);
   assert.deepEqual(theme.footer.colors.muted, DEFAULT_TUI_THEME.footer.colors.muted);
   assert.deepEqual(theme.markdown.styles.link, {foreground: {kind: 'rgb', value: [10, 11, 12]}, bold: true});
+  assert.deepEqual(theme.markdown.styles.math, {foreground: {kind: 'rgb', value: [11, 12, 13]}});
   assert.deepEqual(theme.syntax.keyword, {foreground: {kind: 'rgb', value: [13, 14, 15]}, bold: true});
   assert.deepEqual(theme.syntax.string, DEFAULT_TUI_THEME.syntax.string);
   assert.equal(theme.footer.focusBar, '┃');
@@ -114,8 +116,17 @@ test('builtin themes are listed and code default stays aligned with bundled JSON
   assert.ok(bundledThemeConfigs.every((theme) => Object.hasOwn(theme.blocks.colors, 'subagentRail')));
   assert.ok(bundledThemeConfigs.every((theme) => JSON.stringify(theme.blocks.colors.subagentRail) !== JSON.stringify(theme.footer.colors.plan)));
   assert.ok(new Set(bundledThemeConfigs.map((theme) => JSON.stringify(theme.blocks.colors.subagentRail))).size >= 12);
+  assert.ok(bundledThemeConfigs.every((theme) => Object.hasOwn(theme.markdown.styles, 'math')));
+  assert.ok(bundledThemeConfigs.every((theme) => JSON.stringify(theme.markdown.styles.math) !== JSON.stringify(theme.markdown.styles.link)));
+  assert.ok(bundledThemeConfigs.every((theme) => JSON.stringify(theme.markdown.styles.math) !== JSON.stringify(theme.markdown.styles.inlineCode)));
   assert.equal(readBuiltinTheme('../default'), null);
   assert.equal(getBuiltinThemeConfigPath('../default'), null);
+});
+
+test('createTuiTheme keeps default math token when override is invalid', () => {
+  const theme = createTuiTheme({markdown: {styles: {math: {foreground: 'not-a-color'}}}});
+
+  assert.deepEqual(theme.markdown.styles.math, DEFAULT_TUI_THEME.markdown.styles.math);
 });
 
 test('listBuiltinThemes keeps default metadata when theme directory cannot be read', () => {

@@ -244,6 +244,13 @@
           170
         ]
       },
+      "math": {
+        "foreground": [
+          190,
+          165,
+          255
+        ]
+      },
       "quote": {
         "foreground": [
           0,

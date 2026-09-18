@@ -325,3 +325,85 @@ test('getCommittableMarkdownText keeps unstable tail, table candidates, and uncl
   assert.equal(getCommittableStreamingText('```md\n| A | B |\n| --- | --- |\n| 1 | 2 |\n```'), '');
   assert.match(getCommittableStreamingText('```md\n| A | B |\n| --- | --- |\n| 1 | 2 |\n```\n\nafter'), /```md/);
 });
+
+test('renderMarkdownLines converts inline math in paragraphs, lists, quotes, and table cells', () => {
+  const width = 80;
+  const lines = renderMarkdownLines(
+    ['段落 $\\alpha^2$ 结束', '- 列表 $\\beta_{10}$', '> 引用 $\\frac{a}{b}$', '| A | B |', '| --- | --- |', '| $\\gamma$ | $\\delta^2$ |'].join('\n'),
+    width,
+    '◆ '
+  );
+  const plain = lines.map((line) => stripAnsi(line)).join('\n');
+
+  assert.match(plain, /段落 α² 结束/);
+  assert.match(plain, /• 列表 β₁₀/);
+  assert.match(plain, /│ 引用 \(\(a\)\/\(b\)\)/);
+  assert.match(plain, /γ\s+│\s+δ²/);
+  assert.ok(!plain.includes('$'));
+
+  for (const line of lines) {
+    assert.ok(displayWidth(line) <= safeRenderWidth(width));
+  }
+});
+
+test('renderMarkdownLines keeps inline code spans and links protected from math conversion', () => {
+  const width = 80;
+  const codeLines = renderMarkdownLines('代码 `$\\alpha$` 保持', width, '◆ ').map((line) => stripAnsi(line)).join('\n');
+  assert.match(codeLines, /代码 \$\\alpha\$ 保持/);
+
+  const linkLines = renderMarkdownLines('[$\\alpha$](https://example.com) 与 $\\beta$', width, '◆ ').map((line) => stripAnsi(line)).join('\n');
+  assert.match(linkLines, /\$\\alpha\$ \(https:\/\/example\.com\) 与 β/);
+
+  // 数学候选与链接重叠时放弃转换，链接保持完整结构。
+  const overlapLines = renderMarkdownLines('$x [a$b](c)', width, '◆ ').map((line) => stripAnsi(line)).join('\n');
+  assert.match(overlapLines, /\$x a\$b \(c\)/);
+});
+
+test('renderMarkdownLines keeps currency, escaped dollars, and display math literal', () => {
+  const width = 80;
+  const plain = renderMarkdownLines(
+    ['Costs $5 and $10.', '\\$5.00 and $\\alpha$', '$$E = mc^2$$', '\\[ y = x \\]'].join('\n'),
+    width,
+    '◆ '
+  )
+    .map((line) => stripAnsi(line))
+    .join('\n');
+
+  assert.match(plain, /Costs \$5 and \$10\./);
+  assert.match(plain, /\\\$5\.00 and α/);
+  assert.match(plain, /\$\$E = mc\^2\$\$/);
+  assert.match(plain, /\\\[ y = x \\\]/);
+});
+
+test('renderMarkdownLines keeps converted math within narrow widths', () => {
+  const width = 16;
+  const lines = renderMarkdownLines('值 $\\alpha^2 + \\beta_{10}$ 完毕', width, '◆ ');
+  const plain = lines.map((line) => stripAnsi(line)).join('\n');
+
+  assert.match(plain, /α² \+ β₁₀/);
+  for (const line of lines) {
+    assert.ok(displayWidth(line) <= safeRenderWidth(width));
+  }
+});
+
+test('inline math stays literal while unclosed and converts after the closer arrives', () => {
+  const width = 80;
+  // 未闭合：保持字面，不产生转换。
+  const pendingUnclosed = renderMarkdownLines('公式 $\\alpha', width, '◆ ').map((line) => stripAnsi(line)).join('\n');
+  assert.match(pendingUnclosed, /公式 \$\\alpha/);
+
+  // 闭合后：重渲染出现转换。
+  const pendingClosed = renderMarkdownLines('公式 $\\alpha$', width, '◆ ').map((line) => stripAnsi(line)).join('\n');
+  assert.match(pendingClosed, /公式 α/);
+
+  // 提交边界：最后一块保持 pending，已提交前缀渲染稳定且与完整文本前缀一致。
+  assert.equal(getCommittableStreamingText('first\n$\\alpha$'), 'first');
+  assert.equal(getCommittableStreamingText('first\n$\\alpha$\nthird'), 'first\n$\\alpha$');
+
+  const committed = getCommittableStreamingText('first\n$\\alpha$\nthird');
+  const committedLines = renderMarkdownLines(committed, width, '◆ ').map((line) => stripAnsi(line));
+  const fullLines = renderMarkdownLines('first\n$\\alpha$\nthird', width, '◆ ').map((line) => stripAnsi(line));
+
+  assert.deepEqual(committedLines, fullLines.slice(0, committedLines.length));
+  assert.ok(committedLines.some((line) => line.includes('α')));
+});

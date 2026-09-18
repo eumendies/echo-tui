@@ -1,6 +1,7 @@
 import {DEFAULT_TUI_THEME, type TuiTheme} from '../../config/theme-config';
 import * as ansi from '../../terminal/ansi';
 import {markdownStyle} from '../colors';
+import {findInlineMath} from './inline-math';
 
 export type TextStyle = (text: string) => string;
 
@@ -71,12 +72,35 @@ export function mergeAdjacentSpans(spans: StyledSpan[]): StyledSpan[] {
  *
  */
 function findNextInline(text: string, from: number, theme: TuiTheme): InlineMatch | null {
-  const candidates = [findInlineCode(text, from, theme), findInlineLink(text, from, theme), findInlineStrikethrough(text, from), findInlineBold(text, from, theme), findInlineItalic(text, from, theme)].filter(
-    (candidate): candidate is InlineMatch => Boolean(candidate)
-  );
+  const code = findInlineCode(text, from, theme);
+  const link = findInlineLink(text, from, theme);
+  const mathMatch = findInlineMath(text, from);
+  // 转换结果携带 math token 样式；扫描器保持无 theme 依赖的纯函数边界。
+  const math = mathMatch ? {...mathMatch, style: (value: string) => markdownStyle(theme, 'math', value)} : null;
+  const candidates = [
+    code,
+    link,
+    findInlineStrikethrough(text, from),
+    findInlineBold(text, from, theme),
+    findInlineItalic(text, from, theme),
+    math
+  ].filter((candidate): candidate is InlineMatch => Boolean(candidate));
 
   candidates.sort((left, right) => left.start - right.start || left.end - right.end);
-  return candidates[0] ?? null;
+
+  const first = candidates[0];
+  if (!first) {
+    return null;
+  }
+
+  // 数学候选与 inline code / link span 重叠时放弃转换：code/link 是既有保护结构，
+  // 数学若把它们拦腰截断（如链接只剩半截），剩余文本会失去结构；此时退回下一个候选。
+  const mathEnd = math ? math.end : -1;
+  if (first === math && [code, link].some((span) => span !== null && span.start < mathEnd)) {
+    return candidates[1] ?? null;
+  }
+
+  return first;
 }
 
 function findInlineCode(text: string, from: number, theme: TuiTheme): InlineMatch | null {

@@ -90,6 +90,7 @@ type MarkdownThemeStyles = {
   italic: ThemeTextStyle;
   link: ThemeTextStyle;
   listMarker: ThemeTextStyle;
+  math: ThemeTextStyle; // 行内数学转换结果的专属样式。
   quote: ThemeTextStyle;
   rolePrefix: ThemeTextStyle;
   rule: ThemeTextStyle;
@@ -214,6 +215,7 @@ const DEFAULT_TUI_THEME: TuiTheme = {
       italic: {dim: true},
       link: {foreground: rgb(0, 170, 170)},
       listMarker: {foreground: rgb(0, 170, 170)},
+      math: {foreground: rgb(190, 165, 255)},
       quote: {foreground: rgb(0, 170, 170)},
       rolePrefix: {foreground: rgb(0, 170, 170)},
       rule: {foreground: rgb(85, 85, 85)},

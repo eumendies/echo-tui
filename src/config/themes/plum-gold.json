@@ -88,6 +88,9 @@
       "listMarker": {
         "foreground": "#f4d35e"
       },
+      "math": {
+        "foreground": "#d8b4fe"
+      },
       "quote": {
         "foreground": "#f4d35e"
       },

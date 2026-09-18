@@ -76,6 +76,9 @@
       "listMarker": {
         "foreground": "#2aa198"
       },
+      "math": {
+        "foreground": "#6c71c4"
+      },
       "quote": {
         "foreground": "#2aa198"
       },

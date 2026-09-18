@@ -179,7 +179,7 @@ slash runtime 通过三类稳定边界协调本地命令：
 | Anthropic agent | 单次 provider turn adapter。基于官方 Anthropic SDK 构造 Messages API stream request，把 system 合并到顶层，工具历史投影为 `tool_use` / `tool_result` content blocks，读取 text/thinking/tool 分片，并在 thinking `content_block_stop` 时发出 reasoning 完成事件，使用协议必需的内置 `max_tokens` | `src/agent/anthropic/agent.ts`、`src/agent/anthropic/transcript-converter.ts` |
 | fake agent | 测试注入和显式开发 fixture，从传入 transcript records 中取最新 user record 作为模拟响应来源，模拟 thinking delay 与逐字 streaming | `src/agent/fake/agent.ts` |
 | Markdown renderer | 把 assistant 原始 Markdown 文本按当前终端宽度投影为 ANSI styled lines；支持常见 LLM Markdown 子集，代码块直接高亮不画框，且不改变 transcript 原文 | `src/render/markdown.ts` |
-| Markdown inline parser | 解析普通段落、列表、引用和 table cell 共享的 inline code、bold、italic、link span | `src/render/markdown-inline.ts` |
+| Markdown inline parser | 解析普通段落、列表、引用和 table cell 共享的 inline code、bold、italic、link span，并对 `$...$` 与 `\(...\)` 行内数学做保守的 Unicode 近似转换（math token 样式，不支持子集整体回退原文） | `src/render/markdown-inline.ts`、`src/render/markdown/inline-math.ts` |
 | Markdown table renderer | 识别 GFM 风格 pipe table，计算列宽并渲染无外框 Unicode 内部分隔线表格；也处理 table cell inline spans、宽字符换行和极窄 fallback | `src/render/markdown-table.ts` |
 | syntax highlighter | render-only 的通用跨行高亮器，所有语言共用一套 lexical rules，识别字符串、注释、数字、关键字、函数名、变量、操作符和标点，输出 semantic span 供 wrapping 与 ANSI 应用 | `src/render/syntax-highlight.ts` |
 | render theme | 完整 TUI theme 数据模型与应用层。`theme-config.ts` 负责数据模型、默认常量、内置 JSON、读取、归一化和 base theme 保存；`colors.ts` 集中负责 color/style 到 ANSI 的应用 helper，配置层不反向依赖 render 层 | `src/config/theme-config.ts`、`src/render/colors.ts` |
@@ -402,6 +402,8 @@ Context offloading 的交互式回归由人工执行，至少覆盖：
 ## Markdown 渲染
 
 assistant 的 Markdown 支持位于 render 层，不改变 transcript、agent 或 persistence 的事实模型。`src/render/markdown.ts` 使用项目内轻量 parser 按行扫描文本，识别常见 LLM 输出子集：heading、paragraph、无序/有序列表、blockquote、horizontal rule、inline code、bold、italic、links、fenced code block 和 GFM 风格 pipe table。不支持完整 CommonMark、HTML table、rowspan/colspan、复杂 nested block table cell 或语法级完美高亮；无法识别的语法会安全降级为普通文本。
+
+行内数学由 `src/render/markdown/inline-math.ts` 在同一 inline 候选管线中处理：`$...$` 与 `\(...\)` 在受支持子集内（希腊字母、常见符号、上下标、`\frac`、`\sqrt`、accents、`\left/\right`、`\mathbb`、`\text` 透传等）转换为宽度安全的 Unicode 近似文本；任何超限、未同行闭合或无法完整解析的表达式整体回退原文，绝不输出半转换结果。货币（`$5`）、shell 变量（`$HOME`、`${...}`、`$(...)`）、转义 `\$`、inline code 与链接内部不参与转换；数学候选与 code/link span 重叠时放弃转换以保证既有结构完整。display 公式（`$$...$$`、`\[...\]`）不在子集内，保持原文。转换结果使用 render theme 的 `markdown.styles.math` token（默认紫罗兰，24 个内置主题逐一配色，可在 `theme.json` 覆盖），样式在 span 结束处闭合、不影响 display-width 换行；streaming 中未闭合的 `$` 保持字面，同一行闭合后在重渲染中出现转换。
 
 ```mermaid
 flowchart LR
