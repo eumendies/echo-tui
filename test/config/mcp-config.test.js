@@ -53,8 +53,7 @@ test('readMcpConfig parses stdio and http servers with defaults', () => {
             transport: 'http',
             url: 'https://example.invalid/mcp',
             headers: {Authorization: 'Bearer secret'},
-            timeoutMs: 5000,
-            approval: 'never'
+            timeoutMs: 5000
           }
         }
       }
@@ -73,8 +72,7 @@ test('readMcpConfig parses stdio and http servers with defaults', () => {
         args: ['-y', 'server'],
         env: {FOO: 'bar'},
         cwd: '/tmp/project',
-        timeoutMs: DEFAULT_MCP_TIMEOUT_MS,
-        approval: 'always'
+        timeoutMs: DEFAULT_MCP_TIMEOUT_MS
       },
       {
         name: 'docs',
@@ -82,8 +80,7 @@ test('readMcpConfig parses stdio and http servers with defaults', () => {
         transport: 'http',
         url: 'https://example.invalid/mcp',
         headers: {Authorization: 'Bearer secret'},
-        timeoutMs: 5000,
-        approval: 'never'
+        timeoutMs: 5000
       }
     ]
   });

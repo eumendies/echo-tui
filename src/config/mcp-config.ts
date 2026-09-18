@@ -1,4 +1,4 @@
-import type {McpApprovalMode, McpConfig, McpConfigDiagnostic, McpConfigDraft, McpEnabledStateDraft, McpServerConfig, McpServerConfigDraft} from '../types/mcp';
+import type {McpConfig, McpConfigDiagnostic, McpConfigDraft, McpEnabledStateDraft, McpServerConfig, McpServerConfigDraft} from '../types/mcp';
 import type {UserConfigSource} from './user-config';
 
 const DEFAULT_MCP_TIMEOUT_MS = 30_000;
@@ -122,14 +122,8 @@ function parseMcpServerConfig(serverName: string, rawServer: unknown): {ok: true
   }
 
   const enabled = readOptionalBoolean(rawServer.enabled, true);
-  const approval = readApproval(rawServer.approval);
-
-  if (!approval.ok) {
-    return {ok: false, message: approval.message};
-  }
-
   const timeoutMs = readOptionalIntegerInRange(rawServer.timeoutMs, DEFAULT_MCP_TIMEOUT_MS);
-  const common = {name: serverName, enabled, timeoutMs, approval: approval.value};
+  const common = {name: serverName, enabled, timeoutMs};
 
   if (rawServer.transport === 'stdio') {
     if (typeof rawServer.command !== 'string' || rawServer.command.trim() === '') {
@@ -188,16 +182,6 @@ function isPlainObject(value: unknown): value is ConfigSource {
 
 function readOptionalBoolean(value: unknown, fallback: boolean): boolean {
   return typeof value === 'boolean' ? value : fallback;
-}
-
-function readApproval(value: unknown): {ok: true; value: McpApprovalMode} | {ok: false; message: string} {
-  if (value === undefined || value === null || value === '') {
-    return {ok: true, value: 'always'};
-  }
-
-  return value === 'always' || value === 'never'
-    ? {ok: true, value}
-    : {ok: false, message: 'MCP server approval 必须是 always 或 never'};
 }
 
 function readOptionalIntegerInRange(value: unknown, fallback: number): number {

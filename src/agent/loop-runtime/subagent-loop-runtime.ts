@@ -1,5 +1,4 @@
 import {resolveContextWindow} from '../../config/llm-config';
-import {getMcpToolApproval} from '../../mcp/manager';
 import {createUsageCwdHash} from '../../persistence/usage-store';
 import {USE_SKILL_TOOL_NAME} from '../../tools/use-skill-tool-handler';
 import {createSkillCatalogPromptProjection} from '../../skills/skill-catalog-prompt';
@@ -55,6 +54,7 @@ type SubagentLoopRunState = {
   todoState: TodoState | undefined; // general 子 Agent 独立维护的待办状态；readonly 子 Agent 始终为空。
   toolDefinitions: ToolDefinition[]; // 真正发送给子 provider的工具 schema。
   sandboxNote: string | null; // bash 沙箱生效时的 transient 边界说明;null 表示本次子运行未包装沙箱。
+  readonlyMcpToolNames?: ReadonlySet<string>; // 子运行启动时固定的 MCP 只读工具名称集合；定义未声明 MCP 可见性时缺省。
   readonlyBashSandboxed: boolean; // 只读父运行且 bash 沙箱实际生效;true 时子 bash 豁免文本白名单与审批。
   planBashSandboxed: boolean; // plan 父运行(default 工具策略)且继承的沙箱收紧实际生效;true 时 general Worker bash 由内核边界兜底。
 };
@@ -84,7 +84,7 @@ function isToolExecutionAllowed(kind: string): boolean {
  * 执行子 Agent内部工具；定义策略决定Todo/提问、风险分类、审批和headless边界。
  * 父 run 为 readonly 时,只读子代理改用 fail-closed 分类:未知 Bash 直接拒绝,不进入人工审批。
  */
-async function executeSubagentToolCall(toolCall: ToolCall, input: SubagentLoopInput, state: SubagentLoopRunState, callbacks: SubagentLoopCallbacks, definition: SubagentDefinition, mcpManager?: McpManager): Promise<ToolExecutionResult> {
+async function executeSubagentToolCall(toolCall: ToolCall, input: SubagentLoopInput, state: SubagentLoopRunState, callbacks: SubagentLoopCallbacks, definition: SubagentDefinition): Promise<ToolExecutionResult> {
   throwIfAborted(input.abortSignal);
   const generalPurpose = definition.executionPolicy === 'general_purpose';
 
@@ -113,7 +113,7 @@ async function executeSubagentToolCall(toolCall: ToolCall, input: SubagentLoopIn
   }
 
   const assessment = generalPurpose
-    ? classifyToolCallRisk(toolCall, input.interactionMode, (toolName) => getMcpToolApproval(definition.includeMcpTools ? mcpManager : undefined, toolName), state.planBashSandboxed)
+    ? classifyToolCallRisk(toolCall, input.interactionMode, state.readonlyMcpToolNames, state.planBashSandboxed)
     : input.toolPolicy === 'readonly'
       ? classifyReadonlyToolCall(toolCall, undefined, state.readonlyBashSandboxed)
       : classifySubagentToolCall(toolCall, input.metadata);
@@ -207,6 +207,8 @@ function createSubagentLoopRuntime(cwd: string, inheritedContext: InheritedAgent
       const skillCatalogProjection = createSkillCatalogPromptProjection(scopedSkillRegistry.listCatalog(), contextWindow, inheritedContext.skillCatalogContextRatio);
       const sandboxResolutionOptions = input.sandboxModeOverride ? {modeOverride: input.sandboxModeOverride} : {};
       const bashSandboxEffective = isReadonlyBashSandboxEffective(config.tools.sandbox, input.executionMode, sandboxResolutionOptions);
+      // MCP 只读集合与本次 registry 同源:定义未声明 MCP 可见性时缺省,审批判定保持保守。
+      const readonlyMcpToolNames = definition.includeMcpTools && mcpManager ? mcpManager.listReadonlyToolNames() : undefined;
       state = {
         agent,
         contextWindow,
@@ -239,6 +241,7 @@ function createSubagentLoopRuntime(cwd: string, inheritedContext: InheritedAgent
         },
         todoState: undefined,
         toolDefinitions: registry.listDefinitions(),
+        ...(readonlyMcpToolNames ? {readonlyMcpToolNames} : {}),
         readonlyBashSandboxed: input.toolPolicy === 'readonly' && bashSandboxEffective,
         // Worker 继承的是父运行同一份收紧与 interaction mode,分层事实按同样的组合重算,保证与主 Agent 一致。
         planBashSandboxed: (input.toolPolicy ?? 'default') === 'default' && input.interactionMode === 'plan' && bashSandboxEffective,
@@ -379,7 +382,7 @@ function createSubagentLoopRuntime(cwd: string, inheritedContext: InheritedAgent
         recordRegion.push(createToolCallTranscriptRecord(toolCall));
         state.observation.toolStarted({scope: state.observationScope, call: toolCall});
 
-        const result = await executeSubagentToolCall(toolCall, input, state, callbacks, definition, mcpManager);
+        const result = await executeSubagentToolCall(toolCall, input, state, callbacks, definition);
         throwIfAborted(input.abortSignal);
         recordRegion.push(createToolResultTranscriptRecord(result));
         callbacks.onToolResult?.(result);
