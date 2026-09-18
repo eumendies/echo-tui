@@ -40,6 +40,7 @@ const TOOL_REJECTED_BY_USER_TEXT = 'Tool execution was rejected by the user.';
 type SubagentLoopRunState = {
   agent: ProviderAgent; // 已绑定子 Agent裁剪工具目录的 provider adapter。
   contextWindow: number; // 子运行压缩和上下文估算使用的模型窗口。
+  sessionId?: string; // 父会话稳定身份；子运行继承它以保持 provider 缓存亲和。
   executor: ToolExecutor; // 只解析子 registry中真实存在 handler的执行器。
   model: string; // 子运行固定的 provider模型名。
   observation: Observation; // 单一旁路观察边界。
@@ -198,6 +199,7 @@ function createSubagentLoopRuntime(cwd: string, inheritedContext: InheritedAgent
         executionMode: input.executionMode,
         ...(input.sandboxModeOverride ? {sandboxModeOverride: input.sandboxModeOverride} : {}),
         ...(definition.includeMcpTools && mcpManager ? {mcpManager} : {}),
+        ...(input.sessionId ? {sessionId: input.sessionId} : {}),
         skillRegistry: scopedSkillRegistry
       });
       const contextWindow = resolveContextWindow(config);
@@ -208,6 +210,7 @@ function createSubagentLoopRuntime(cwd: string, inheritedContext: InheritedAgent
       state = {
         agent,
         contextWindow,
+        ...(input.sessionId ? {sessionId: input.sessionId} : {}),
         executor: createToolExecutor(registry),
         model: config.model,
         observation,
@@ -346,7 +349,10 @@ function createSubagentLoopRuntime(cwd: string, inheritedContext: InheritedAgent
         } : {}),
         onToken: callbacks.onToken
       };
-      const {draft, providerRecords: turnProviderRecords, toolCalls, usage, usageInputTokens} = await state.agent.runTurn(providerRecords, providerTurnCallbacks, {abortSignal: input.abortSignal});
+      const {draft, providerRecords: turnProviderRecords, toolCalls, usage, usageInputTokens} = await state.agent.runTurn(providerRecords, providerTurnCallbacks, {
+        abortSignal: input.abortSignal,
+        ...(state.sessionId ? {sessionId: state.sessionId} : {})
+      });
       throwIfAborted(input.abortSignal);
 
       if (typeof usageInputTokens === 'number') {

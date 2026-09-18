@@ -1,18 +1,24 @@
 import {redactSensitiveText} from '../../agent/agent-errors';
 
 import type {PendingState, StatusLineModelState, WorkingState} from '../../types/render';
-import {createToolCallTranscriptRecord, createToolResultTranscriptRecord} from '../../tools/tool-transcript-record';
-import {createToolResultTruncationMarker} from '../../tools/tool-result-offloading';
+import {createInterruptedToolResultTranscriptRecord, createToolCallTranscriptRecord, createToolResultTranscriptRecord} from '../../tools/tool-transcript-record';
+import {createShellRecord, formatShellCommandLine} from '../../tools/shell-transcript-record';
 
 import type {ToolCall, ToolExecutionResult} from '../../types/tool';
-import type {ShellTranscriptRecord, TranscriptRecord, UserTranscriptMetadata} from '../../types/transcript';
+import type {TranscriptRecord, UserTranscriptMetadata} from '../../types/transcript';
 import type {BashCommandOutputEvent, BashCommandRunResult} from '../../tools/bash-command-runner';
 
 type TranscriptTurnBridge = {
   appendRecord: <Record extends TranscriptRecord>(record: Record) => Record;
+  appendRecords: (records: TranscriptRecord[]) => TranscriptRecord[];
 };
 
 type SpinnerKind = 'thinking' | 'working';
+
+type ShellOutputDraft = {
+  commandLine: string; // 运行期 echo 的完整命令行文本；与最终 shell record 首行同源。
+  output: string; // 已到达的运行期合并输出原始文本。
+};
 
 type AssistantTurnHandle = {
   id: number;
@@ -29,6 +35,7 @@ type InterruptAssistantTurnResult = {
   interrupted: boolean; // 当前 Esc 是否实际取消了一个有效 assistant turn。
   reasoningRecord?: Extract<TranscriptRecord, {role: 'reasoning_summary'}>; // 中断时由完整 reasoning 草稿落成的 partial summary。
   partialRecord?: Extract<TranscriptRecord, {role: 'assistant'}>; // 中断时由完整 assistant 草稿落成的 partial record。
+  interruptedToolRecords?: TranscriptRecord[]; // 中断时按 provider 原始顺序补齐的相邻 tool call/result 对。
   noticeRecord?: TranscriptRecord; // 在 partial records 之后追加的本地中断提示。
 };
 
@@ -45,7 +52,7 @@ class TurnContext {
   pendingKind: 'thinking' | 'reasoning_streaming' | 'streaming' | 'tool_calls' | 'shell_output' | null;
   streamingDraft: string;
   reasoningDraft: string;
-  shellOutputDraft: {command: string; output: string} | null;
+  shellOutputDraft: ShellOutputDraft | null;
   pendingToolCalls: ToolCall[];
   thinkingStartedAt: number | null;
   workingStartedAt: number | null;
@@ -177,7 +184,9 @@ class TurnContext {
 
     if (this.pendingKind === 'shell_output') {
       const draft = this.shellOutputDraft;
-      return draft ? {kind: 'shell_output', command: draft.command, output: draft.output} : null;
+      return draft
+        ? {kind: 'shell_output', commandLine: draft.commandLine, output: draft.output}
+        : null;
     }
 
     if (this.pendingToolCalls.length === 0) {
@@ -255,12 +264,16 @@ class TurnContext {
     this.clearWorking();
   }
 
-  /** 进入用户 shell 命令执行态，并用 working spinner 表示本地执行中。 */
-  beginShellCommand(command: string): void {
+  /**
+   * 进入用户 shell 命令执行态，并用 working spinner 表示本地执行中。
+   * 提交后立即进入 shell_output pending：首个投影即可展示命令行，而不是等第一个输出 chunk。
+   */
+  beginShellCommand(command: string, includeInContext: boolean): void {
     this.responding = true;
     this.clearPending();
     this.clearWorking();
-    this.shellOutputDraft = {command, output: ''};
+    this.shellOutputDraft = {commandLine: formatShellCommandLine(command, includeInContext), output: ''};
+    this.pendingKind = 'shell_output';
     this.enterSpinnerState('working');
   }
 
@@ -471,6 +484,7 @@ class TurnContext {
 
   /**
    * 中断当前 active assistant turn，并返回需要追加渲染的 partial 和本地提示记录。
+   * 已播报但未取得 result 的工具调用在这里成对补齐，避免模型已发起的调用从 transcript 中消失。
    */
   interruptActiveAssistantTurn(): InterruptAssistantTurnResult {
     const activeTurn = this.activeAssistantTurn;
@@ -484,6 +498,8 @@ class TurnContext {
 
     const reasoning = this.finalizeReasoning();
     const partial = this.finalizeAssistantSegment(this.streamingDraft);
+    // 必须在 clearPending 之前消费 pending 集合：它是本次中断唯一仍持有调用身份的来源。
+    const interruptedToolRecords = this.drainInterruptedToolCalls();
     const noticeRecord = this.cancelAssistantTurn();
     this.activeAssistantTurn = null;
 
@@ -491,61 +507,32 @@ class TurnContext {
       interrupted: true,
       ...(reasoning ? {reasoningRecord: reasoning} : {}),
       ...(partial ? {partialRecord: partial} : {}),
+      ...(interruptedToolRecords.length > 0 ? {interruptedToolRecords} : {}),
       noticeRecord
     };
   }
-}
 
-function createShellRecord(result: BashCommandRunResult, includeInContext: boolean): ShellTranscriptRecord {
-  const output = formatShellOutput(result);
+  /**
+   * 把中断时仍 pending 的工具调用按 provider 原始顺序成对落盘：相邻 call record 加合成失败 result。
+   * 一次性批量追加保证 journal 不会停在只有 tool_call 的中间状态，恢复后可直接参与 provider 转换。
+   */
+  private drainInterruptedToolCalls(): TranscriptRecord[] {
+    const pendingToolCalls = this.pendingToolCalls;
 
-  return {
-    role: 'shell',
-    text: formatShellRecordText(result, includeInContext, output),
-    command: result.command,
-    durationMs: result.durationMs,
-    ...(result.error ? {error: result.error} : {}),
-    exitCode: result.exitCode,
-    includeInContext,
-    output,
-    timedOut: result.timedOut,
-    truncated: result.truncated
-  };
-}
+    if (pendingToolCalls.length === 0) {
+      return [];
+    }
 
-function formatShellRecordText(result: BashCommandRunResult, includeInContext: boolean, output: string): string {
-  const lines = [`$ ${result.command}${includeInContext ? '' : ' [local]'}`];
+    this.pendingToolCalls = [];
+    const records: TranscriptRecord[] = [];
 
-  if (output.trim() !== '') {
-    lines.push('', output.replace(/\n$/, ''));
+    for (const call of pendingToolCalls) {
+      records.push(createToolCallTranscriptRecord(call), createInterruptedToolResultTranscriptRecord(call));
+    }
+
+    this.transcriptContext.appendRecords(records);
+    return records;
   }
-
-  if (result.error) {
-    lines.push('', result.error);
-  }
-
-  if (result.timedOut) {
-    lines.push('', `[timed out after ${result.durationMs}ms]`);
-  }
-
-  if (result.truncated && !result.offloadFilePath) {
-    lines.push('', '[output truncated]');
-  }
-
-  if (result.exitCode !== 0 || result.timedOut || output.trim() === '') {
-    lines.push('', `[exit ${result.exitCode === null ? 'null' : result.exitCode}]`);
-  }
-
-  return lines.join('\n');
-}
-
-function formatShellOutput(result: BashCommandRunResult): string {
-  if (!result.offloadFilePath) {
-    return result.output;
-  }
-
-  const marker = createToolResultTruncationMarker(result.offloadFilePath);
-  return result.output.trim() === '' ? marker : `${marker}\n\n${result.output}`;
 }
 
 export {

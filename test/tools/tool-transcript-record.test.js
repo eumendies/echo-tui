@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const {
+  createInterruptedToolResultTranscriptRecord,
   createToolCallTranscriptRecord,
   createToolResultTranscriptRecord
 } = require('../../src/tools/tool-transcript-record');
@@ -24,6 +25,21 @@ test('createToolCallTranscriptRecord formats bash commands and generic calls for
     toolName: 'web_search',
     argumentsText: '{"query":"Echo TUI"}'
   }).text, 'web_search({"query":"Echo TUI"})');
+});
+
+test('createInterruptedToolResultTranscriptRecord closes a pending call with a failed generic result', () => {
+  assert.deepEqual(createInterruptedToolResultTranscriptRecord({
+    callId: 'call_bash',
+    toolName: 'run_bash_command',
+    argumentsText: JSON.stringify({command: 'sleep 30'})
+  }), {
+    role: 'tool_result',
+    text: 'Tool execution was interrupted by the user before it returned a result.',
+    toolCallId: 'call_bash',
+    toolName: 'run_bash_command',
+    ok: false,
+    details: {kind: 'generic'}
+  });
 });
 
 test('createToolResultTranscriptRecord preserves attachments and web search metadata', () => {

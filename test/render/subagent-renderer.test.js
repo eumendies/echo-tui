@@ -2,7 +2,8 @@ const assert = require('node:assert/strict');
 const {test} = require('node:test');
 
 const {createTuiTheme} = require('../../src/config/theme-config');
-const {renderTranscriptLines} = require('../../src/render/app-renderer');
+const {renderTranscriptLines} = require('../../src/render/transcript-renderer');
+const { renderSubagentViewIndex } = require('../../src/render/subagent-renderer');
 const {displayWidth, safeRenderWidth, stripAnsi} = require('../../src/render/layout');
 const {renderSubagentPendingLines, renderSubagentRunAppendBlock, renderSubagentRunBlock} = require('../../src/render/subagent-renderer');
 const {renderToolCallPreviewLines, renderToolPairLines} = require('../../src/render/tool-message-renderer');
@@ -308,4 +309,36 @@ test('subagent rail safely degrades and reflows Chinese content at narrow widths
   assertSafe(wider, 24);
   assert.ok(narrow.some((line) => stripAnsi(line).startsWith('› ')));
   assert.deepEqual(records, before);
+});
+
+test('renderSubagentViewIndex lists all runs with totals and highlights the watched run', () => {
+  const entries = [
+    {runId: 'r1', agentName: 'explorer', task: '第一行\n第二行', statusText: '已结束 · 12.0s', active: false},
+    {runId: 'r2', agentName: 'explorer', task: '调查任务', statusText: 'thinking · 57.5s', active: true},
+    {runId: 'r3', agentName: 'worker', task: '另一任务', statusText: 'tool · grep · 3.0s', active: true}
+  ];
+
+  const lines = renderSubagentViewIndex(entries, 'r2', 80).map(stripAnsi);
+
+  assert.equal(lines.length, 4);
+  assert.match(lines[0], /◆ subagent 会话 · 运行中 2 · 共 3 个 · ↑\/↓ 切换/u);
+  assert.match(lines[1], /1\. explorer · 第一行 第二行 · 已结束 · 12\.0s/u);
+  assert.match(lines[2], /▸ 2\. explorer · 调查任务 · thinking · 57\.5s/u);
+  assert.match(lines[3], /3\. worker · 另一任务 · tool · grep · 3\.0s/u);
+  assert.ok(lines.every((line) => !line.includes('\n')));
+  assert.ok(lines.every((line) => displayWidth(line) <= safeRenderWidth(80)));
+});
+
+test('renderSubagentViewIndex folds long run lists around the watched run', () => {
+  const entries = Array.from({length: 12}, (_, index) => ({
+    runId: `r${index}`, agentName: 'explorer', task: `任务 ${index}`, statusText: '已结束', active: false
+  }));
+
+  const lines = renderSubagentViewIndex(entries, 'r5', 80).map(stripAnsi);
+
+  assert.match(lines[0], /共 12 个/u);
+  assert.ok(lines.length <= 9);
+  assert.ok(lines.some((line) => /▸ 6\. /u.test(line)));
+  assert.ok(lines.some((line) => /↑ 上方/u.test(line)));
+  assert.ok(lines.some((line) => /↓ 下方/u.test(line)));
 });

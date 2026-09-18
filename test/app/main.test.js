@@ -76,3 +76,29 @@ test('createApp suppresses timed footer redraws while a user question surface is
     fs.rmSync(home, {recursive: true, force: true});
   }
 });
+
+test('createApp persists an interrupted tool call as a paired result before the interrupt notice', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-main-interrupted-tool-'));
+
+  try {
+    const fixturePath = path.join(__dirname, 'fixtures/main-interrupted-tool-pair-scenario.js');
+    const output = childProcess.execFileSync(process.execPath, [fixturePath], {
+      cwd: path.resolve(__dirname, '../../..'),
+      encoding: 'utf8',
+      env: {...process.env, HOME: home},
+      timeout: 15_000
+    });
+    const result = JSON.parse(output);
+
+    assert.deepEqual(result, {
+      journalBatchRoles: ['user', 'tool_call,tool_result', 'local_notice'],
+      journalInterruptedResultText: 'Tool execution was interrupted by the user before it returned a result.',
+      noticeRenderedAfterPair: true,
+      pairBatchRoles: ['tool_call', 'tool_result'],
+      pendingAfterInterrupt: null,
+      renderedInterruptedResultOk: false
+    });
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});

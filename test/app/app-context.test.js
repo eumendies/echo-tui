@@ -954,15 +954,41 @@ test('TurnContext keeps only the latest assistant and reasoning drafts', () => {
 test('TurnContext accumulates shell output for the app activity clock', () => {
   const context = createContext();
 
-  context.turnContext.beginShellCommand('printf ab');
+  context.turnContext.beginShellCommand('printf ab', true);
+  assert.deepEqual(context.turnContext.getPending(), {kind: 'shell_output', commandLine: '$ printf ab', output: ''});
   context.turnContext.startSpinner('working');
   context.turnContext.appendShellOutputPending({stream: 'stdout', chunk: 'a'});
   context.turnContext.appendShellOutputPending({stream: 'stdout', chunk: 'b'});
 
   assert.equal(context.turnContext.hasTimedActivity(), true);
-  assert.deepEqual(context.createRenderState().pending, {kind: 'shell_output', command: 'printf ab', output: 'ab'});
+  assert.deepEqual(context.createRenderState().pending, {kind: 'shell_output', commandLine: '$ printf ab', output: 'ab'});
   context.turnContext.stopSpinner();
   assert.equal(context.turnContext.hasTimedActivity(), false);
+});
+
+test('TurnContext marks shell-local commands as local-only in pending state', () => {
+  const context = createContext();
+
+  context.setInteractionMode('shell-local');
+  context.turnContext.beginShellCommand('env', false);
+
+  assert.deepEqual(context.turnContext.getPending(), {kind: 'shell_output', commandLine: '$ env [local]', output: ''});
+
+  // pending 携带的 commandLine 就是运行期 echo 文本；必须与最终 record 首行逐字节一致。
+  const pending = context.turnContext.getPending();
+  assert.equal(pending.commandLine, '$ env [local]');
+
+  const record = context.turnContext.finishShellCommand({
+    command: 'env',
+    durationMs: 1,
+    exitCode: 0,
+    output: '',
+    stderr: '',
+    stdout: '',
+    timedOut: false,
+    truncated: false
+  }, false);
+  assert.equal(record.text.split('\n')[0], pending.commandLine);
 });
 
 test('AppContext keeps plan status line mode while waiting for first assistant token', () => {
@@ -1055,7 +1081,7 @@ test('AppContext status line shows Esc interrupt while a shell command is runnin
   const context = createContext();
 
   context.setInteractionMode('shell');
-  context.turnContext.beginShellCommand('npm test');
+  context.turnContext.beginShellCommand('npm test', true);
 
   assert.equal(context.createRenderState().statusLine.keyHint, 'Esc 中断');
 });
@@ -1094,7 +1120,7 @@ test('AppContext injects only effective model-visible mode transitions and ignor
   assert.deepEqual(enteringPlan.metadata?.modeTransition, {from: 'normal', to: 'plan'});
 
   context.setInteractionMode('shell');
-  context.turnContext.beginShellCommand('pwd');
+  context.turnContext.beginShellCommand('pwd', true);
   context.turnContext.finishShellCommand({
     command: 'pwd',
     durationMs: 1,
@@ -1116,7 +1142,7 @@ test('TurnContext persists shell offloading marker before the bounded terminal t
   const context = createContext();
   const offloadFilePath = '/tmp/echo-tool-results/full.txt';
 
-  context.turnContext.beginShellCommand('printf output');
+  context.turnContext.beginShellCommand('printf output', true);
   const record = context.turnContext.finishShellCommand({
     command: 'printf output',
     durationMs: 2,
@@ -2627,8 +2653,9 @@ test('AppContext interrupts active assistant turn while thinking', () => {
   assert.deepEqual(result.noticeRecord, { role: 'local_notice', text: '已中断模型回答' });
 });
 
-test('AppContext interrupts active assistant turn while tool call is pending without orphan tool record', () => {
-  const context = createContext();
+test('AppContext closes a pending tool call as a paired interrupted result when the turn is interrupted', () => {
+  const transcriptStore = createFakeTranscriptStore();
+  const context = createContext({transcriptStore});
   const toolCall = {
     callId: 'call-tool',
     toolName: 'grep',
@@ -2647,9 +2674,68 @@ test('AppContext interrupts active assistant turn while tool call is pending wit
   assert.equal(context.turnContext.getPending(), null);
   assert.equal(result.partialRecord, undefined);
   assert.deepEqual(result.noticeRecord, { role: 'local_notice', text: '已中断模型回答' });
+  assert.deepEqual(result.interruptedToolRecords, [
+    {
+      role: 'tool_call',
+      text: 'grep({"pattern":"hello"})',
+      toolCallId: 'call-tool',
+      toolName: 'grep',
+      argumentsText: '{"pattern":"hello"}'
+    },
+    {
+      role: 'tool_result',
+      text: 'Tool execution was interrupted by the user before it returned a result.',
+      toolCallId: 'call-tool',
+      toolName: 'grep',
+      ok: false,
+      details: {kind: 'generic'}
+    }
+  ]);
   assert.deepEqual(context.transcriptContext.records, [
     { role: 'user', text: 'use tool', metadata: {} },
+    ...result.interruptedToolRecords,
     { role: 'local_notice', text: '已中断模型回答' }
+  ]);
+  const toolOperation = transcriptStore.operations
+    .flatMap((operation) => (operation.op === 'batch' ? operation.operations : [operation]))
+    .find((operation) => operation.op === 'append_records' && operation.records.some((record) => record.role === 'tool_call'));
+  assert.deepEqual(toolOperation.records.map((record) => `${record.role}:${record.toolCallId}`), [
+    'tool_call:call-tool',
+    'tool_result:call-tool'
+  ]);
+});
+
+test('AppContext closes every pending tool call in provider order with one journal batch', () => {
+  const transcriptStore = createFakeTranscriptStore();
+  const context = createContext({transcriptStore});
+  const first = {callId: 'call-1', toolName: 'grep', argumentsText: '{"pattern":"one"}'};
+  const second = {callId: 'call-2', toolName: 'read_files', argumentsText: '{"paths":["a.ts"]}'};
+
+  context.beginUserTurn('inspect');
+  context.beginAssistantTurn();
+  context.turnContext.setToolCallPending(first);
+  context.turnContext.setToolCallPending(second);
+
+  const result = context.interruptActiveAssistantTurn();
+
+  assert.deepEqual(result.interruptedToolRecords.map((record) => `${record.role}:${record.toolCallId}`), [
+    'tool_call:call-1',
+    'tool_result:call-1',
+    'tool_call:call-2',
+    'tool_result:call-2'
+  ]);
+  assert.deepEqual(
+    result.interruptedToolRecords.filter((record) => record.role === 'tool_result').map((record) => record.ok),
+    [false, false]
+  );
+  const toolOperation = transcriptStore.operations
+    .flatMap((operation) => (operation.op === 'batch' ? operation.operations : [operation]))
+    .find((operation) => operation.op === 'append_records' && operation.records.some((record) => record.role === 'tool_call'));
+  assert.deepEqual(toolOperation.records.map((record) => `${record.role}:${record.toolCallId}`), [
+    'tool_call:call-1',
+    'tool_result:call-1',
+    'tool_call:call-2',
+    'tool_result:call-2'
   ]);
 });
 
@@ -2667,6 +2753,7 @@ test('AppContext interrupts active assistant turn while waiting for provider wit
   assert.equal(context.turnContext.getPending(), null);
   assert.equal(result.partialRecord, undefined);
   assert.deepEqual(result.noticeRecord, { role: 'local_notice', text: '已中断模型回答' });
+  assert.equal(result.interruptedToolRecords, undefined);
 });
 
 test('UserQuestionContext Esc closes surface without interrupting assistant turn, then second Esc can interrupt', async () => {

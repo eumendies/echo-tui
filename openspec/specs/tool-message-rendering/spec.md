@@ -787,7 +787,6 @@ bash 专属 renderer SHALL 只改变终端可见投影，不得改变 transcript
 - **THEN** 两处 SHALL 使用相同的 sentence case 工具身份和参数摘要结构
 - **THEN** 格式化 SHALL NOT 修改 `toolName`、`argumentsText`、tool result、provider continuation 或持久化事实
 
-
 ### Requirement: 多工具 pending footer 投影
 主 TUI 和 BTW SHALL 能同时保存并投影多个并行执行中的只读 pending tool call，而不是用后到调用覆盖先到调用。两个及以上 pending 调用 SHALL 使用单一 compact 活动块，包含共享的运行中工具数量标题，并按 provider 原始顺序为每个可见工具最多展示一个带工具名和关键目标摘要的列表行；系统 SHALL NOT 为多调用 pending 堆叠完整单工具卡片。单工具 pending 和完成后的历史投影 SHALL 保持既有样式。Footer SHALL 受现有高度与 safe render width 约束。
 
@@ -819,7 +818,7 @@ bash 专属 renderer SHALL 只改变终端可见投影，不得改变 transcript
 - **THEN** 这些 pending 状态 SHALL NOT 覆盖或写入主 turn 的 pending 状态
 
 ### Requirement: 并行工具完成后的成对历史投影
-一组连续只读调用全部完成后，系统 SHALL 按 provider 原始调用顺序将每个 call/result 作为相邻匹配记录提交，并 SHALL 继续使用现有 pair-aware renderer 显示成功、失败和专属工具结果。Footer pending 记录 SHALL 在对应稳定 pair 提交后移除，且 SHALL NOT 重复出现在历史区。
+一组连续只读调用全部完成后，系统 SHALL 按 provider 原始调用顺序将每个 call/result 作为相邻匹配记录提交，并 SHALL 继续使用现有 pair-aware renderer 显示成功、失败和专属工具结果。Footer pending 记录 SHALL 在对应稳定 pair 提交后移除，且 SHALL NOT 重复出现在历史区。中断发生在并行段未完成时，renderer SHALL 清空该 turn 的全部 pending previews，并由 app 状态层为每个未完成调用补写相邻 call/result pair；renderer SHALL NOT 自行构造或伪造工具结果。
 
 #### Scenario: 完成顺序不同仍按原序展示
 - **WHEN** 多个并行调用以不同于 provider 顺序的顺序完成
@@ -840,4 +839,6 @@ bash 专属 renderer SHALL 只改变终端可见投影，不得改变 transcript
 #### Scenario: 中断清空未完成 pending 调用
 - **WHEN** 当前 assistant turn 在并行只读调用全部完成前被中断
 - **THEN** renderer SHALL 清空该 turn 的全部 pending tool previews
-- **THEN** renderer SHALL NOT 为没有稳定 result 的调用伪造成功、失败或历史 pair
+- **THEN** app 状态层 SHALL 为每个未取得结果的调用补写相邻 call/result pair，renderer SHALL 按既有 pair-aware renderer 将合成失败结果投影为失败工具结果
+- **THEN** renderer SHALL NOT 为没有稳定 result 的调用自行伪造成功结果
+

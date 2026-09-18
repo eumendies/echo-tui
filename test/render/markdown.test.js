@@ -3,7 +3,8 @@ const assert = require('node:assert/strict');
 
 const { createTuiTheme } = require('../../src/config/theme-config');
 const { displayWidth, safeRenderWidth, stripAnsi } = require('../../src/render/layout');
-const { renderMarkdownLines } = require('../../src/render/markdown');
+const { getCommittableMarkdownText, renderMarkdownLines } = require('../../src/render/markdown');
+const { getCommittableStreamingText } = require('../../src/render/blocks/streaming-text');
 
 test('renderMarkdownLines projects headings, paragraphs, lists, quotes, and rules', () => {
   const lines = renderMarkdownLines(
@@ -312,4 +313,15 @@ test('renderMarkdownLines unwraps blockquoted markdown fenced tables without aff
   assert.ok(tableFence.some((line) => line.includes('│')));
   assert.ok(!tableFence.some((line) => line.includes('```')));
   assert.deepEqual(tsFence, ['◆ | A | B |', '  |---|---|']);
+});
+
+test('getCommittableMarkdownText keeps unstable tail, table candidates, and unclosed fences pending', () => {
+  assert.equal(getCommittableMarkdownText('first\n\nsecond'), 'first\n');
+  assert.equal(getCommittableStreamingText('| Name | Count |'), '');
+  assert.equal(getCommittableStreamingText('| Name | Count |\n| ---'), '');
+  assert.equal(getCommittableStreamingText('| Name | Count |\n| --- | --- |\n| a | b |\n'), '');
+  assert.match(getCommittableStreamingText('| Name | Count |\n| --- | --- |\n| a | b |\n\nafter'), /\| a \| b \|/);
+  assert.equal(getCommittableStreamingText('before\n\n```ts\nconst value = 1;'), 'before\n');
+  assert.equal(getCommittableStreamingText('```md\n| A | B |\n| --- | --- |\n| 1 | 2 |\n```'), '');
+  assert.match(getCommittableStreamingText('```md\n| A | B |\n| --- | --- |\n| 1 | 2 |\n```\n\nafter'), /```md/);
 });

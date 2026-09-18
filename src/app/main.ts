@@ -365,7 +365,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     const shellController = new AbortController();
     const includeInContext = appContext.getInteractionMode() === 'shell';
     activeShellController = shellController;
-    appContext.turnContext.beginShellCommand(command);
+    appContext.turnContext.beginShellCommand(command, includeInContext);
     appContext.turnContext.startSpinner('working');
     render();
 
@@ -419,6 +419,10 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
 
     if (result.partialRecord) {
       render(result.partialRecord, 'main');
+    }
+
+    if (result.interruptedToolRecords) {
+      renderRecords(result.interruptedToolRecords, 'main');
     }
 
     if (result.noticeRecord) {

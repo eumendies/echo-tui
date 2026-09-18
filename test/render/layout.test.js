@@ -102,6 +102,16 @@ test('tab display width follows the current terminal column and is rendered as s
   assert.deepEqual(wrapText('\tstack', 16, '▌ '), ['▌       stack']);
 });
 
+test('displayWidth fast-paths printable ASCII while keeping ANSI, tab, and newline semantics', () => {
+  assert.equal(displayWidth('plain ascii 123'), 15);
+  assert.equal(displayWidth(''), 0);
+  assert.equal(displayWidth(ansi.cyan('cyan')), 4);
+  assert.equal(displayWidth('a\tb'), 9);
+  assert.equal(displayWidth('line\nnext'), 8);
+  assert.equal(displayWidth('中文'), 4);
+  assert.equal(displayWidth('👨‍👩‍👧‍👦'), 2);
+});
+
 test('renderComposer returns wrapped lines and cursor coordinates', () => {
   const composer = createComposer('abcd');
 

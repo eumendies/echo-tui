@@ -5,7 +5,8 @@ import {
   EMOJI_BASE_RANGES,
   EMOJI_PRESENTATION_RANGES,
   WIDE_RANGES,
-  ZERO_WIDTH_RANGES
+  ZERO_WIDTH_RANGES,
+  isInRanges
 } from './width-data';
 
 import type { ComposerState } from '../types/composer';
@@ -95,10 +96,34 @@ export function tabWidthAt(column: number): number {
 }
 
 /**
+ * 判断文本是否只含可打印 ASCII。
+ *
+ * 这类文本没有宽字符、零宽字符、制表位与 ANSI 序列语义，每个字符恰占一列，
+ * 宽度等于长度，换行也等于按预算切片。控制字符一律排除：CR/LF 有列归零语义，
+ * ESC 会开启 ANSI 序列，制表符要按当前列展开。
+ */
+export function isPlainAsciiLine(text: string): boolean {
+  for (let index = 0; index < text.length; index += 1) {
+    const code = text.charCodeAt(index);
+
+    if (code < 0x20 || code > 0x7e) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+/**
  * 计算字符串在终端中的实际显示宽度，会先移除 ANSI 控制序列。
  *
  */
 export function displayWidth(text: string): number {
+  // 可打印 ASCII 行每字符一列，等于逐 cluster 求和的结果，跳过切分与逐字符判定。
+  if (isPlainAsciiLine(text)) {
+    return text.length;
+  }
+
   let width = 0;
   let column = 0;
 
@@ -146,30 +171,6 @@ export function collapseToSingleLine(text: string): string {
 
 // grapheme 切分是 input 编辑层与 render 宽度层共用口径，从 input/graphemes 再导出保持既有调用点不变。
 export {splitGraphemes};
-
-/**
- * 判断码点是否落在排序区间表内，二分查找。
- *
- */
-function isInRanges(codePoint: number, ranges: readonly (readonly [number, number])[]): boolean {
-  let low = 0;
-  let high = ranges.length - 1;
-
-  while (low <= high) {
-    const mid = (low + high) >>> 1;
-    const [start, end] = ranges[mid];
-
-    if (codePoint < start) {
-      high = mid - 1;
-    } else if (codePoint > end) {
-      low = mid + 1;
-    } else {
-      return true;
-    }
-  }
-
-  return false;
-}
 
 /**
  * 按码点求和 cluster 宽度：零宽 0 / 宽字符 2 / 其余 1（Ambiguous 一律按 1）。

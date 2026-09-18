@@ -83,15 +83,31 @@ flowchart LR
     ask_questions_tool -.UI request.-> user_question
     risk_classifier -.approval request.-> tool_approval
     app_renderer --> footer["src/render/footer.ts"]
-    app_renderer --> blocks["src/render/blocks.ts"]
-    app_renderer --> subagent_renderer["src/render/subagent-renderer.ts"]
+    app_renderer --> blocks_banner["src/render/blocks/banner-renderer.ts"]
+    app_renderer --> transcript_renderer["src/render/transcript-renderer.ts"]
+    app_renderer --> streaming_live["src/render/live/streaming-renderer.ts"]
+    app_renderer --> shell_live["src/render/live/shell-renderer.ts"]
+    transcript_renderer --> subagent_renderer["src/render/subagent-renderer.ts"]
+    transcript_renderer --> blocks_message["src/render/blocks/message-renderer.ts"]
+    streaming_live --> blocks_message
+    streaming_live --> blocks_streaming["src/render/blocks/streaming-text.ts"]
+    shell_live --> blocks_message
+    footer --> blocks_pending["src/render/blocks/pending-preview-renderer.ts"]
+    blocks_message --> blocks_symbol["src/render/blocks/symbol-message-renderer.ts"]
+    blocks_pending --> blocks_symbol
+    blocks_pending --> blocks_message
+    blocks_banner --> blocks_symbol
+    subagent_renderer --> blocks_symbol
     footer --> command_surfaces["src/render/footer/*"]
-    blocks --> markdown["src/render/markdown.ts"]
+    blocks_message --> markdown["src/render/markdown.ts"]
+    blocks_streaming --> markdown
+    blocks_pending --> markdown
     markdown --> syntax["src/render/syntax-highlight.ts"]
     markdown --> markdown_inline["src/render/markdown-inline.ts"]
     markdown --> markdown_table["src/render/markdown-table.ts"]
     footer --> colors["src/render/colors.ts"]
-    blocks --> colors
+    blocks_message --> colors
+    blocks_banner --> colors
     colors --> theme_config["src/config/theme-config.ts"]
     footer --> ansi["src/terminal/ansi.ts"]
     terminal_tty --> ansi
@@ -145,7 +161,7 @@ slash runtime 通过三类稳定边界协调本地命令：
 | headless 单轮 runner | `--once` 创建一个不启动 watcher 的 `UserConfigContext`，让 MCP、hooks 和 agent 共用同一 snapshot；不创建 raw mode、renderer、stdin listener、transcript session 或 session settings sidecar。默认拒绝审批工具，`--full-access` 仅放宽当前调用；成功只写最终纯文本，结束时关闭 Context、MCP/debug | `src/cli/one-shot.ts`、`src/config/user-config-context.ts`、`src/types/agent.ts` |
 | lifecycle hooks | 当前用户配置 snapshot 的 `hooks` 可配置本地旁路命令；结果不显示、不写 transcript、不回传模型。`/hooks` 保存后只替换 `hooks` 节点并显式 live reload dispatcher；外部 watcher 的 hooks revision 变化不会自动执行进程配置 | `src/hooks/*`、`src/types/hooks.ts` |
 | provider agent setup | 按调用方传入的已解析 `LlmConfig` 或配置 snapshot 选择 provider adapter 并装配 tool registry，不自行读取用户配置；Codex OAuth token 仍按独立凭据生命周期解析和刷新 | `src/agent/agent-setup.ts`、`src/agent/codex/agent.ts`、`src/config/codex-oauth.ts` |
-| tool message rendering | app 可见层把未完成 tool call 显示为 footer pending preview；需要用户参与的工具先进入 approval 或 user-question surface；tool result 到达后再追加具备必填 call id/name/status 和 discriminated `details.kind` 的 `tool_call` / `tool_result` records。顶层 renderer 负责路由和通用 fallback，子目录分别承载 bash、apply_patch、use_skill 及共享宽度/前缀/rail 行逻辑。Subagent renderer 按 runId 生成外层 rail，在扣除宽度后复用内部工具行级 renderer；完整委派任务不受普通工具显示行数预算截断，实际Agent标题、任务文本和最外层marker/rail统一使用专属`subagentRail`主题色，内部工具标题、状态、prefix、正文以及reasoning/assistant/阶段文本全部映射到`toolOutput`。每个稳定工作事件及transient活动前插入不断开的外层rail空行。实时call在footer中保持瞬时投影，result到达后成对写入历史区；稳定区与footer共用rail几何，活动草稿由统一timer刷新。恢复时缺少终态的run显示意外中断；外层pair保留Explorer/Worker专属成功文案，自定义合法名称显示通用completed/failed身份。rail、footer详情、审批和提问标题均通过共享名称校验，自定义名称保留目录原名，损坏或含控制字符身份回退为Subagent。带`parallelSize`标记的并行运行不进入主窗口rail投影，改由footer plural紧凑块与Ctrl+O会话窗口承担实时可见性。`use_skill` 成功结果只投影为简洁使用摘要，agent memory 脚本按普通 bash rail 展示，旧 memory tool records 按通用 fallback 展示 | `src/app/state/turn-context.ts`、`src/render/tool-message-renderer.ts`、`src/render/subagent-renderer.ts`、`src/render/tool-message-renderers/` |
+| tool message rendering | app 可见层把未完成 tool call 显示为 footer pending preview；需要用户参与的工具先进入 approval 或 user-question surface；tool result 到达后再追加具备必填 call id/name/status 和 discriminated `details.kind` 的 `tool_call` / `tool_result` records。Esc 中断时由状态层为已播报但未取得 result 的调用在同一 journal batch 内补写相邻 `tool_call` 与合成失败 `tool_result`，renderer 复用既有 pair-aware 投影显示失败状态，不自行伪造结果。顶层 renderer 负责路由和通用 fallback，子目录分别承载 bash、apply_patch、use_skill 及共享宽度/前缀/rail 行逻辑。Subagent renderer 按 runId 生成外层 rail，在扣除宽度后复用内部工具行级 renderer；完整委派任务不受普通工具显示行数预算截断，实际Agent标题、任务文本和最外层marker/rail统一使用专属`subagentRail`主题色，内部工具标题、状态、prefix、正文以及reasoning/assistant/阶段文本全部映射到`toolOutput`。每个稳定工作事件及transient活动前插入不断开的外层rail空行。实时call在footer中保持瞬时投影，result到达后成对写入历史区；稳定区与footer共用rail几何，活动草稿由统一timer刷新。恢复时缺少终态的run显示意外中断；外层pair保留Explorer/Worker专属成功文案，自定义合法名称显示通用completed/failed身份。rail、footer详情、审批和提问标题均通过共享名称校验，自定义名称保留目录原名，损坏或含控制字符身份回退为Subagent。带`parallelSize`标记的并行运行不进入主窗口rail投影，改由footer plural紧凑块与Ctrl+O会话窗口承担实时可见性。`use_skill` 成功结果只投影为简洁使用摘要，agent memory 脚本按普通 bash rail 展示，旧 memory tool records 按通用 fallback 展示 | `src/app/state/turn-context.ts`、`src/render/tool-message-renderer.ts`、`src/render/subagent-renderer.ts`、`src/render/tool-message-renderers/` |
 | glob tool | 默认本地文件发现工具。接收 `pattern` 和可选 `paths`，底层用 `spawn` 参数数组调用 `rg --files`，不经 shell 拼接；相对路径按 cwd 解析，绝对路径和 `..` 允许，NUL 和 `.git` 路径拒绝；结果含 hidden 文件但过滤 `.git`，超额时标记 `truncated` | `src/tools/glob-tool-handler.ts` |
 | grep tool | 默认本地文本搜索工具。接收 `pattern` 及可选 `paths` / `glob` / `literal` / `case_sensitive`；底层用 `spawn` 参数数组调用 `rg --json`，默认 fixed-string，`literal: false` 才用 regex；结果只返回 path、line、column 和命中行，超额时标记 `truncated` | `src/tools/grep-tool-handler.ts` |
 | read_files tool | 默认本地路径读取工具。接收 `files[]`，每项含 `path` 和可选 `offset` / `limit`。文本读取返回真实文件行号；目录读取只列稳定排序后的直接子项，不递归；图片作为 provider-neutral 附件返回，超过 5 MB 时按 `tools.readFiles.autoCompressImages` 使用 Sharp 在源文件、解码像素和迭代边界内缩小，处理后的附件才进入 transcript；PDF 只返回可提取文本，其他非文本资源返回 metadata 与 unsupported 错误。composer `@` mention 与 file picker 复用同一 reader | `src/tools/read-files/`、`src/app/utils.ts`、`src/app/state/file-picker-context.ts` |
@@ -272,7 +288,7 @@ flowchart TB
     user_turn --> redraw
 ```
 
-流程的关键约束是 transcript content records append-only。`TranscriptRecord` 是按 `role` 区分的封闭 union：user 的 mode、workflow 与 skill 信息收敛在 `metadata`；tool result 的通用身份和状态字段位于顶层，工具专属结果放入按 `kind` 区分的 `details`；子 Agent稳定过程使用带 run identity 和判别式 event 的 `subagent` role；provider-private reasoning/thinking 统一使用 `extension` role 和 extension kind，未知 extension 不进入 provider 上下文。应用只追加 user/assistant/error/local_notice/compaction_notice/reasoning_summary/shell/tool_call/tool_result/subagent/extension record，不修改已提交 record 内容；普通 user record commit 后立即保存 session，assistant 完成、本地 notice/error、reasoning summary、shell、tool result、subagent事件或 provider-private extension commit 后再次保存同一个 session。普通 agent 请求不在 `main.ts` 维护另一份 history，而是读取当前 `TranscriptRecord[]` 快照传入 agent。具体渲染路径由 `app-renderer` 统一选择：普通更新通过 `render` 按需提交流式稳定前缀并重绘 footer，transcript 新增时执行“clear footer → append block → redraw footer”，列宽变化或行数压缩则切到 destructive recovery。
+流程的关键约束是 transcript content records append-only。`TranscriptRecord` 是按 `role` 区分的封闭 union：user 的 mode、workflow 与 skill 信息收敛在 `metadata`；tool result 的通用身份和状态字段位于顶层，工具专属结果放入按 `kind` 区分的 `details`；子 Agent稳定过程使用带 run identity 和判别式 event 的 `subagent` role；provider-private reasoning/thinking 统一使用 `extension` role 和 extension kind，未知 extension 不进入 provider 上下文。应用只追加 user/assistant/error/local_notice/compaction_notice/reasoning_summary/shell/tool_call/tool_result/subagent/extension record，不修改已提交 record 内容；普通 user record commit 后立即保存 session，assistant 完成、本地 notice/error、reasoning summary、shell、tool result、subagent事件或 provider-private extension commit 后再次保存同一个 session。普通 agent 请求不在 `main.ts` 维护另一份 history，而是读取当前 `TranscriptRecord[]` 快照传入 agent。具体渲染路径由 `app-renderer` 统一选择：普通更新通过 `render` 按需提交流式稳定前缀与 shell 运行期已确定行并重绘 footer，transcript 新增时执行“clear footer → append block → redraw footer”，列宽变化或行数压缩则切到 destructive recovery。
 
 输入分发的优先级是：user question → tool approval → file picker → subagent 会话窗口 → active command session → conversation reference preparation → reference/MCP 本地 info surface → model tuning → 全局快捷键 → `@` 触发 file picker → slash suggestion → Tab 模式循环 → composer 编辑 → 历史浏览 / 换行 / Esc 中断 / 提交 / 退出。Ctrl+O 在无 command session 时打开 subagent 会话窗口；窗口活跃时 Esc/↑/↓/Ctrl+O 由窗口消费，Esc 只关闭窗口且不触达中断路径，Exit 仍走退出。`InputEventController` 使用 `createKeyParser()` 创建的 stateful parser 解析 stdin chunk：普通按键仍复用 `parseKeyChunk()` 的无状态解析，bracketed paste 则跨 chunk 缓存起止标记和 payload，把 CR/CRLF 归一为 LF 后作为单个 `TEXT` 事件交给 composer，避免粘贴中的换行被误判为提交。提交由 `ComposerSubmissionController` 统一消费；若未命中命令且处于 shell/shell-local 模式，则通过 main 的 shell action 执行，而不是发给模型。Esc 在普通输入层依次清理 pending message、conversation reference，再尝试中断 shell 和 assistant turn。
 
@@ -315,7 +331,7 @@ flowchart TB
     tool_result --> continuation["继续下一次 provider turn"]
     continuation --> provider_turn
     provider_turn --> interrupt{"用户按 Esc?"}
-    interrupt --> abort["abort 当前 turn, 隔离迟到回调, 提交 partial + 本地中断 notice"]
+    interrupt --> abort["abort 当前 turn, 隔离迟到回调, 补齐未完成 tool pair, 提交 partial + 本地中断 notice"]
     abort --> finalize
     stream -->|完成且无 tool call| complete["提交 assistant record, 释放 response lock"]
     complete --> finalize["finalizeChangeCheckpoint"]
@@ -325,7 +341,7 @@ flowchart TB
     persist --> redraw["重新渲染 footer / transcript"]
 ```
 
-response 期间不会启动第二次提交。每个普通 turn 开始时先创建 change checkpoint（记录 transcript 边界、compaction 状态和受控文件 snapshot），结束（完成、失败或中断）时 finalize 并持久化，供 `/undo` 和 `/diff` 使用。Esc 中断当前 assistant response：app abort 当前 turn、停止接受该 turn 的 stream/tool 回调、把完整当前 reasoning/assistant draft 落成 partial records，并追加本地中断 notice；已经焊入 terminal scrollback 的稳定前缀只作为这些 record 的 in-flight projection，不会重复输出。迟到回调被 turn token 隔离。thinking spinner 表示首字响应前的等待；首个 assistant token 到达后切换为 working spinner 并显示已耗时。
+response 期间不会启动第二次提交。每个普通 turn 开始时先创建 change checkpoint（记录 transcript 边界、compaction 状态和受控文件 snapshot），结束（完成、失败或中断）时 finalize 并持久化，供 `/undo` 和 `/diff` 使用。Esc 中断当前 assistant response：app abort 当前 turn、停止接受该 turn 的 stream/tool 回调、把完整当前 reasoning/assistant draft 落成 partial records；已播报但尚未取得 result 的 tool call 会在同一个 journal batch 内成对补齐（相邻 `tool_call` 加 `ok: false` 的合成 `tool_result`，文案说明该调用被用户中断且未返回结果），再追加本地中断 notice，避免模型已发起的调用从 transcript 中消失，同轮尚未播报的调用不补写；已经焊入 terminal scrollback 的稳定前缀只作为这些 record 的 in-flight projection，不会重复输出。迟到回调被 turn token 隔离。thinking spinner 表示首字响应前的等待；首个 assistant token 到达后切换为 working spinner 并显示已耗时。
 
 ### 内置 Subagent 边界
 
@@ -339,21 +355,25 @@ response 期间不会启动第二次提交。每个普通 turn 开始时先创�
 
 自动审批只存在于交互式 app callback。风险分类仍先处理 safe、approval-required 和 plan/readonly rejected；单回合 resolver 先查询 `ToolApprovalContext` 的 allow-all、按工具和按 bash command 会话授权，再选择 manual 或 auto 路径。Auto `yes` 只映射为当前调用的 `allow_once`，不写会话缓存。Reviewer 使用严格 profile 解析、固定且带明确允许/拒绝标准的 system prompt、最近十条 user/assistant/contextual shell/tool call/tool result 文本和当前调用；它不装配工具，不加载 MCP、skills、memory 或项目指令，并通过 `reasoningEffort: none` 让各 provider 省略 reasoning/thinking 配置及 Codex encrypted reasoning。响应和 provider-private records 不写主 transcript。Headless `--once` 继续由 runtime 的 deny/full-access policy 直接决策，不创建 reviewer。
 
-`runAssistantTurn`（`src/app/assistant-turn-runner.ts`）把 agent 回调翻译为 app 状态：提交边界先由 `AppContext` 比较当前 mode 与上一条模型可见 mode；发生 normal/plan 切换时，`AppContext` 把切换说明和用户请求写入 provider-facing `text`，同时用 `displayText` / `historyText` 保持 transcript 与 composer 只展示用户原文。该 transition 只写入切换后首条 user record，随 session、resume 和 compaction 持久化；同 mode 后续消息不重复注入。显式 slash skill 的固定模型成功解析后，runner 在 user record 后追加一条仅本地可见且可持久化的模型切换 `local_notice`；动态策略或陈旧 profile 回退不追加。随后 `onThinking` / `onToken` / `onReasoningUpdate` 驱动 spinner 与当前 pending 阶段。OpenAI Responses 在 `response.completed` 时发送唯一 reasoning complete；Chat/Anthropic 继续在各自协议完成边界发送 `complete`。正常 reasoning record 只由该 `complete` 回调创建，`onAssistantSegment`、`onToolCall` 和 `onComplete` 不再兜底完成 reasoning；只有失败或用户中断会把尚未完成的 reasoning 草稿保存为 partial record。app 组合根持有唯一约 100ms 的 activity timer，每个 tick 只刷新当前可见且仍在计时的 Main 或 BTW owner：assistant 正文使用 Markdown block 边界，reasoning 纯文本按当前 terminal width 提交最后一个仍可能增长的视觉行之前的内容，不等待 provider done。首个正文 token 到达时 runner 先推出当时已有的 reasoning 尾行并关闭其实时显示阶段，再开始正文 footer；之后迟到的 reasoning draft/complete 仍更新并提交完整 transcript 事实，但不再追加到正文之后。destructive replay 按完整最终 records 重建，因此恢复后可展示完整 reasoning。`onAssistantSegment` 把每次 provider run 当作独立 segment 落盘并重置正文显示进度，工具 continuation 的下一段从新进度开始。`onCompacted` 追加压缩提示，`onContextUsage` 更新 status line，`onToolCall` 暂存 pending preview，`onToolApprovalRequest` / `onUserQuestionRequest` 转交对应 context，`onToolResult` 成对追加 tool records，`onComplete` 提交最终 assistant record。交互式 tool approval lifecycle hooks 由 runner 在 `ToolApprovalContext.requestManual` 的真实 modal 边界派发，因此 session cache 和 auto yes 不产生审批 hook，auto no 只在回退人工 surface 后产生；headless deny/full-access 仍由 runtime 直接派发审批 hook。CLI 默认通过显式注入共享配置 Context 的 `createAgentLoopRuntime(...)` 编排真实 agent lifecycle：runtime 每轮消费调用方固定或 Context 当前 snapshot、初始化对应 provider agent、维护 continuation 记录，并把每次流式 turn 委托给 provider agent；interaction mode 继续驱动 plan 工具风险分类，runtime suffix 只同步当前 open todo。provider adapter 在 stream 完成时尽量回传输入、缓存命中输入、缓存创建输入和输出 token；runtime 用最近一次 context usage 回调继续服务 `/context` 和 status line，同时把可用 provider usage 作为非敏感事件追加到 usage store，写入失败只进 debug 事件，不污染 transcript 或中断 assistant turn。lifecycle hooks 由 `main.ts` 装配一次并注入 runner/runtime；它们只观察 assistant turn、tool call 和 compaction 事件，hook 输出和失败不进入 renderer、transcript、session 或 provider request。`/hooks` 保存通过 `CommandHost.hooks` 更新用户配置后调用 dispatcher reload，reload 只影响后续 emit，已入队或正在运行的 hook job 继续使用入队时捕获的 entry 与 payload；synthetic test 走独立执行入口，不触发真实 lifecycle event，捕获的 stdout/stderr 只投影到当前 footer surface。provider adapter 只在 provider 边界转换 transcript，因此本地 `error`、`local_notice`、`compaction_notice` 与可见 `reasoning_summary` record 可持久化、可恢复，但不会发送给模型。
+`runAssistantTurn`（`src/app/assistant-turn-runner.ts`）把 agent 回调翻译为 app 状态：提交边界先由 `AppContext` 比较当前 mode 与上一条模型可见 mode；发生 normal/plan 切换时，`AppContext` 把切换说明和用户请求写入 provider-facing `text`，同时用 `displayText` / `historyText` 保持 transcript 与 composer 只展示用户原文。该 transition 只写入切换后首条 user record，随 session、resume 和 compaction 持久化；同 mode 后续消息不重复注入。显式 slash skill 的固定模型成功解析后，runner 在 user record 后追加一条仅本地可见且可持久化的模型切换 `local_notice`；动态策略或陈旧 profile 回退不追加。随后 `onThinking` / `onToken` / `onReasoningUpdate` 驱动 spinner 与当前 pending 阶段。OpenAI Responses 在 `response.completed` 时发送唯一 reasoning complete；Chat/Anthropic 继续在各自协议完成边界发送 `complete`。正常 reasoning record 只由该 `complete` 回调创建，`onAssistantSegment`、`onToolCall` 和 `onComplete` 不再兜底完成 reasoning；只有失败或用户中断会把尚未完成的 reasoning 草稿保存为 partial record。app 组合根持有唯一约 100ms 的 activity timer，每个 tick 只刷新当前可见且仍在计时的 Main 或 BTW owner：assistant 正文使用 Markdown block 边界，reasoning 纯文本按当前 terminal width 提交最后一个仍可能增长的视觉行之前的内容，不等待 provider done。首个正文 token 到达时 runner 先推出当时已有的 reasoning 尾行并关闭其实时显示阶段，再开始正文 footer；之后迟到的 reasoning draft/complete 仍更新并提交完整 transcript 事实，但不再追加到正文之后。destructive replay 按完整最终 records 重建，因此恢复后可展示完整 reasoning。`onAssistantSegment` 把每次 provider run 当作独立 segment 落盘并重置正文显示进度，工具 continuation 的下一段从新进度开始。`onCompacted` 追加压缩提示，`onContextUsage` 更新 status line，`onToolCall` 暂存 pending preview，`onToolApprovalRequest` / `onUserQuestionRequest` 转交对应 context，`onToolResult` 成对追加 tool records，`onComplete` 提交最终 assistant record。中断收尾改由 `TurnContext.interruptActiveAssistantTurn` 消费 pending 调用成对补齐 interrupted result，`main.ts` 按 reasoning → partial → 补齐 pairs → notice 的顺序渲染。交互式 tool approval lifecycle hooks 由 runner 在 `ToolApprovalContext.requestManual` 的真实 modal 边界派发，因此 session cache 和 auto yes 不产生审批 hook，auto no 只在回退人工 surface 后产生；headless deny/full-access 仍由 runtime 直接派发审批 hook。CLI 默认通过显式注入共享配置 Context 的 `createAgentLoopRuntime(...)` 编排真实 agent lifecycle：runtime 每轮消费调用方固定或 Context 当前 snapshot、初始化对应 provider agent、维护 continuation 记录，并把每次流式 turn 委托给 provider agent；interaction mode 继续驱动 plan 工具风险分类，runtime suffix 只同步当前 open todo。provider adapter 在 stream 完成时尽量回传输入、缓存命中输入、缓存创建输入和输出 token；runtime 用最近一次 context usage 回调继续服务 `/context` 和 status line，同时把可用 provider usage 作为非敏感事件追加到 usage store，写入失败只进 debug 事件，不污染 transcript 或中断 assistant turn。lifecycle hooks 由 `main.ts` 装配一次并注入 runner/runtime；它们只观察 assistant turn、tool call 和 compaction 事件，hook 输出和失败不进入 renderer、transcript、session 或 provider request。`/hooks` 保存通过 `CommandHost.hooks` 更新用户配置后调用 dispatcher reload，reload 只影响后续 emit，已入队或正在运行的 hook job 继续使用入队时捕获的 entry 与 payload；synthetic test 走独立执行入口，不触发真实 lifecycle event，捕获的 stdout/stderr 只投影到当前 footer surface。provider adapter 只在 provider 边界转换 transcript，因此本地 `error`、`local_notice`、`compaction_notice` 与可见 `reasoning_summary` record 可持久化、可恢复，但不会发送给模型。
 
 ## shell 子流程
 
 shell 与 shell-local 模式下，Enter 不发给模型，而是把 composer 文本作为本地命令执行：
 
-- `beginShellCommand` 进入响应态并起 working spinner，`runBashCommand` 以非交互 `/bin/bash -lc` 执行命令
-- stdout/stderr 按到达顺序流式进入 pending preview；Esc 通过 AbortController 中断当前命令，SIGTERM 后有 SIGKILL 兜底
-- 命令结束后追加一条 `shell` transcript record；`shell` 模式使用 bounded capture 和 offloading，结果带 `includeInContext` 并进入后续 provider 上下文；`shell-local` 使用无界 capture，把完整输出写入本地 transcript/session 且不发送给 provider
+- `beginShellCommand` 进入响应态、立即进入 `shell_output` pending 并起 working spinner，`runBashCommand` 以非交互 `/bin/bash -lc` 执行命令
+- 提交后的首个投影把 `$ <command>`（shell-local 追加 ` [local]`）确定到终端历史区；运行期输出由与 thinking/working 共享的 activity tick 按稳定行边界（与 record 展示同口径的净化文本完整行）增量确定，footer pending preview 只保留尚未确定的尾部并保留原始 CR 的进度条语义
+- stdout/stderr 按到达顺序流式进入 pending 状态；Esc 通过 AbortController 中断当前命令，SIGTERM 后有 SIGKILL 兜底
+- 命令结束后追加一条 `shell` transcript record；renderer 只补写尚未确定的投影后缀，使分批投影拼接等于一次性渲染该 record block；ctx 输出超限触发 offloading 时已确定头部保留，completion 追加 marker + 尾部
+- `shell` 模式使用 bounded capture 和 offloading，结果带 `includeInContext` 并进入后续 provider 上下文；`shell-local` 使用无界 capture，把完整输出写入本地 transcript/session 且不发送给 provider
+- destructive recovery（列宽变化、BTW 往返）按当前宽度把 records 与 shell in-flight 投影（已 echo 命令行与已确定输出）一并重投影；非 main owner 期间不写入终端历史区
 - shell 模式下 `@` 文件选择器不触发；其余 footer 行为与普通模式一致
 
 Context offloading 的交互式回归由人工执行，至少覆盖：
 
 - `run_bash_command` 产生超限 stdout/stderr，确认结果显示 command/exit status、marker 和尾部，marker 路径可读取
 - shell 产生超限输出时确认最终 transcript 使用 marker + tail；shell-local 产生超过 64 KiB 的输出时确认完整保存在 transcript 且无 marker；两者 Esc 中断均正常收尾
+- shell 命令运行期间命令行立即进入历史区、输出逐 tick 落入历史区且 footer 只显示未确定尾部；列宽变化与 BTW 往返后不重复、不丢失
 - `web_fetch` 获取超限文本，确认显示 head + marker，网络 body 上限仍生效
 - `read_files` 读取提取文本超限的 PDF，确认保留 PDF metadata、head + marker，marker 路径可回读完整已格式化结果，PDF 大小与提取硬上限仍生效
 - MCP 工具返回超限 text/structured result，确认 call 配对、成功状态和 head + marker 保持正常
@@ -438,7 +458,7 @@ flowchart TB
 | app-owned region | 应用启动后自己绘制的可见区域，可按当前宽度重绘；列宽变化或行数压缩时整体重建 |
 | banner | 启动文本，不自带底部分割线 |
 | transcript records | user、assistant、本地 error/local_notice/compaction_notice、reasoning_summary、shell、tool_call/tool_result 和 provider-private extension 等已提交消息，只追加不改写 |
-| pending preview | assistant thinking/streaming 或 shell 输出进行中时显示，可重绘；正文保留未稳定 Markdown 尾部，reasoning 只保留最后一个仍可能增长的视觉行，极端高度不足时才折叠该尾行 |
+| pending preview | assistant thinking/streaming 或 shell 输出进行中时显示，可重绘；正文保留未稳定 Markdown 尾部，reasoning 只保留最后一个仍可能增长的视觉行，极端高度不足时才折叠该尾行；shell 运行期的命令行与完整行已进入 terminal scrollback，pending 只保留未确定尾部 |
 | working 行 | 首个 token 后固定渲染在 pending 下方、divider 上方，显示本轮已耗时，覆盖 streaming、工具执行、授权、用户问题和 continuation 等待 |
 | footer divider | composer 或 command surface 上方固定 1 行弱强调分割线 |
 | composer | 默认输入编辑区投影为顶满 terminal safe width 的 boxed composer，保留 `> ` 前缀；空输入时显示 placeholder，不进入 composer state |
@@ -456,7 +476,7 @@ flowchart TB
 | error transcript | `✕` | 本地失败反馈，可持久化和恢复，但 provider converter 不发送给模型 |
 | local notice / compaction notice | `◇` | 本地状态提示，例如 response 被中断或上下文已压缩；可持久化和恢复，但不发送给模型 |
 | reasoning summary transcript | `◇` | 正常流程只由 provider complete 落盘一次完整摘要，失败或中断可保存 partial；正文开始前的完整视觉行可先焊入 scrollback，首个正文 token 会关闭 reasoning 实时显示，迟到尾部只进入完整 record、不插入正文。`showReasoningSummary=false` 时 transient footer preview 可见但不焊入，record 持久化后也不重放 |
-| shell transcript | 无前缀 | shell/shell-local 模式的本地命令与输出，整体使用 shell 强调色；`shell` 模式带 `includeInContext` 会进入 provider 上下文 |
+| shell transcript | 无前缀 | shell/shell-local 模式的本地命令与输出，整体使用 shell 强调色；运行期命令行与稳定行先行进入 scrollback，完成时只补写剩余投影；`shell` 模式带 `includeInContext` 会进入 provider 上下文 |
 | tool transcript | `◆` / `⎿` | tool_call/tool_result 成对投影；bash、apply_patch 等按 `tool_result.details.kind` 专用显示，原始结果仍保存在 transcript |
 | command surface | 无 transcript 前缀 | 属于 footer 临时区域，不进入 transcript；是否显示光标由 surface kind 决定 |
 
@@ -526,7 +546,7 @@ renderer 只理解这些 surface kind，不理解具体命令、tool approval、
 | `src/app/state/app-context.ts` | `AppContext`、`createRenderState`、`getAgentSession`、`cycleInteractionMode`、`executeUndo`、`createDiffSourceResult` | 实例级组合根和跨 context 事务协调器；公开只读子 context，私有持有 interaction mode、context usage、MCP 状态和 mode transition 状态 |
 | `src/app/state/composer-context.ts` | `ComposerContext` | 持有 composer 草稿、输入历史和历史浏览态 |
 | `src/app/state/transcript-context.ts` | `TranscriptContext` | 持有 transcript records、compaction、todo、持久化 change history 和 session 指针；负责 journal 持久化/恢复、compaction 应用和 resume metadata |
-| `src/app/state/turn-context.ts` | `TurnContext` | 持有 responding lock、pending/working、spinner 状态和 user/assistant/shell/error turn 生命周期 |
+| `src/app/state/turn-context.ts` | `TurnContext` | 持有 responding lock、pending/working、spinner 状态和 user/assistant/shell/error turn 生命周期；shell record 构造由 `src/tools/shell-transcript-record.ts` 承载 |
 | `src/app/state/model-context.ts` | `ModelContext` | `/model`、`/effort` 的配置读取、归一化、原子写回与脱敏 |
 | `src/app/state/render-context.ts` | `RenderContext` | 持有 terminal、previous size 和当前 theme，结合 composer、turn、mode、model 与 context usage 输入派生 banner/footer render state |
 | `src/app/state/slash-suggestion-context.ts` | `SlashSuggestionContext` | 普通输入态 slash 提示的可见性、前缀过滤、循环选中和 Tab 补全 |
@@ -566,14 +586,24 @@ renderer 只理解这些 surface kind，不理解具体命令、tool approval、
 | `src/tools/tool-risk-classifier.ts` | `classifyToolCallRisk`、`classifyReadonlyToolCall`、`parseBashCommand` | 执行前策略分类：安全执行、请求审批或按 mode 直接拒绝，覆盖 apply_patch、高风险 bash 与 MCP approval；plan 与 readonly 分支接受 bash 沙箱生效标志，生效只读沙箱下 bash 交内核边界，未生效回退严格只读 allowlist |
 | `src/tools/apply-patch-tool-handler/` | `index.ts`、`tool-handler.ts`、`parser.ts`、`simulator.ts` | 单一公共入口；工具编排与写盘、patch 解析、内存模拟与 display-only diff metadata |
 | `src/tools/bash-command-runner.ts` | `runBashCommand` | 非交互 bash 执行核心，默认无固定 timeout，支持显式 timeout、abort 和输出截断；供 bash 工具与 shell 模式共用 |
+| `src/tools/shell-transcript-record.ts` | `createShellRecord`、`formatShellCommandLine` | shell record 构造与命令行文本：`$ <command>[ [local]]` 是 record 首行与运行期 echo 的唯一来源 |
 | `src/skills/skill-manager.ts` | `createSkillManager`、`listSkills`、`listCatalog`、`loadSkill`、`saveSkillStates` | 合并 skill discovery、启用状态与 model override，暴露一致 enabled catalog |
-| `src/render/app-renderer.ts` | `DefaultAppRenderer`、`createAppRenderer`、`renderTranscriptLines` | 有状态的应用级渲染门面，统一 footer 局部重绘、transcript append/group、流式显示进度和清屏重绘 |
+| `src/render/app-renderer.ts` | `DefaultAppRenderer`、`createAppRenderer`、`sanitizePendingDisplayText` | 应用级渲染门面：实现 `AppRenderer` 契约，并按固定顺序组合 transcript 投影、运行期投影与快照帧，统一 footer 局部重绘、记录追加和清屏重绘 |
+| `src/render/transcript-renderer.ts` | `renderTranscriptLines`、`renderTranscriptBlocks`、`createSubagentAppendRenderState`、`filterParallelSubagentRecords`、`filterPendingSubagentToolCallRecords`、`trackParallelSubagentRecords`、`rebuildSubagentAppendState` | 稳定 records → block：tool pair 聚合、subagent run 分组、role dispatch、record 展示净化与子 Agent 增量 append 状态 |
+| `src/render/live/streaming-renderer.ts` | `StreamingLiveRenderer` | assistant 正文/reasoning 运行期投影：稳定前缀增量确定、`finalizeRecord` 补写、footer 尾部注入与 destructive 快照重算 |
+| `src/render/live/shell-renderer.ts` | `ShellLiveRenderer`、`ShellLiveOutputState`、`scanShellLiveOutput`、`takeShellStableContent`、`renderShellCompletionContent` | shell 运行期投影：命令行 echo、稳定整行增量确定、completion 补写、offload 分歧处理与扫描状态 |
 | `src/render/footer.ts` | `DefaultFooterRenderer`、`createFooterRenderer`、`renderFooterLayout`、`calculateCommandSurfaceMaxLines` | 有状态地管理 footer 上一帧形状，并生成 pending/working/divider/composer/status line 或 command surface 布局 |
 | `src/render/footer/command-surfaces.ts` | `renderCommandSurface` | 按 surface kind 路由到各 footer surface renderer |
 | `src/render/footer/usage-surface.ts` | `renderUsageSurface`、`humanizeTokens` | `/usage` footer surface 的累计 header、日期窗口、堆叠柱状图和图例渲染 |
-| `src/render/blocks.ts` | `renderBanner`、`renderUserBlock`、`renderAssistantBlock`、`renderShellBlock`、`renderErrorBlock`、`renderCompactionNoticeBlock`、`renderLocalNoticeBlock`、`renderReasoningSummaryBlock`、`renderPendingAssistantLines` | 按当前宽度渲染 banner、transcript projection 和 pending preview 消息行 |
+| `src/render/blocks/banner-renderer.ts` | `renderBanner` | 启动 banner：大字标题、紧凑 box、BTW 变体与宽度收缩 |
+| `src/render/blocks/message-renderer.ts` | `renderUserBlock`、`renderConversationReferenceBlock`、`renderAssistantBlock`、`renderShellBlock(Lines)`、`renderErrorBlock`、`renderCompactionNoticeBlock`、`renderLocalNoticeBlock`、`renderReasoningSummaryBlock`、各 `*MessageLines`、`renderShellMessageLines` | 各 role 的消息行与 block 渲染；shell 行/block primitive 供运行期投影复用 |
+| `src/render/blocks/pending-preview-renderer.ts` | `renderPendingAssistantLines` 与各 pending 子渲染 | thinking、tool call、并行子 Agent、streaming、reasoning 与 shell 输出的有界预览 |
+| `src/render/blocks/streaming-text.ts` | `getCommittableStreamingText`、`getCommittableReasoningText`、`renderStreamingCommitLines` | streaming 稳定文本边界与 commit 行投影 |
+| `src/render/blocks/symbol-message-renderer.ts` | `renderSymbolMessage`、`renderMessageLine`、`padToDisplayWidth`、`wrapContentLine`、`clampToDisplayWidth` | 符号消息行布局 primitives：前缀缩进、换行、补宽与显示宽度截断 |
+| `src/render/subagent-renderer.ts` | `renderSubagentRunBlock`、`renderSubagentRunAppendBlock`、`renderSubagentPendingLines`、`renderSubagentViewIndex` | 子 Agent 过程 rail、footer 活动预览与会话窗口 run 索引 |
 | `src/render/colors.ts` | `colorText`、`colorBackground`、`styleText`、`resolveFooterTheme` | color/style 到 ANSI 的统一应用 helper |
 | `src/render/tool-message-renderer.ts`、`src/render/tool-message-renderers/` | 顶层路由、`apply-patch.ts`、`bash.ts`、`memory.ts`、`use-skill.ts`、`shared.ts` | 顶层公共入口和通用 fallback；子模块负责专属工具投影与共享换行 |
+| `src/input/graphemes.ts`、`src/render/layout.ts`、`src/render/width-data.ts` | `splitGraphemes`、`charWidth`、`displayWidth`、`isPlainAsciiLine`、`isInRanges` | 字符宽度口径单点：Unicode 数据表与区间查找集中在 `width-data.ts`，`splitGraphemes` 对不含 cluster 边界码点的文本按码点切分，其余回退 `Intl.Segmenter` |
 
 ## 光标和重绘细节
 
@@ -585,6 +615,8 @@ footer renderer 保存两类局部状态：
 普通重绘时，`app-renderer.render` 先把当前可提交的流式前缀追加到历史区，再委托 footer renderer 清理并重绘 footer 临时区域；没有新增前缀时自然退化为纯 footer redraw。transcript 发生事实新增时，`app-renderer` 统一执行“clear footer → append block → redraw footer”，保持历史输出 append-only；相邻且同 call id 的 tool_call/tool_result 会聚合为一个渲染块。
 
 当检测到 terminal columns 变化或 terminal rows 变小时，`app-renderer` 走 destructive recovery：重置滚动区域与样式，清可见屏幕，清 scrollback，回到左上角后再输出完整 app snapshot，并同步 footer 的局部形状。行数变小时旧 footer 可能已被挤入 scrollback，因此不能只依赖 footer 局部清理；仅 rows 变大时只同步尺寸，不主动清屏重放。这个策略让 transcript 内容记录保持 append-only，同时避免依赖输出物理行数估算。
+
+grapheme 切分与会话文本宽度判定走等价快路径，用来压低 destructive recovery、`/resume` 恢复和 resize 这类全量重绘的成本。`splitGraphemes` 只在文本不含 cluster 边界相关码点时按码点切分（保守白名单 + 零宽表守卫，未覆盖的脚本一律回退 `Intl.Segmenter`）；`displayWidth` 与消息块换行对纯可打印 ASCII 直接按长度或宽度预算处理，含 ANSI 序列、制表符、换行或非 ASCII 时回到逐 grapheme 路径。两条路径的切分结果逐元素一致，换行点与宽度结果不变：实测 32MB / 3372 条记录的会话在 120 列下全量投影耗时从 3.6s 降到 1.2s，投影输出 sha1 与优化前一致。
 
 slash runtime 与 modal 状态接入后，footer 的重绘规则是：
 
