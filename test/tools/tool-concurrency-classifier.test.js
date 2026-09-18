@@ -8,7 +8,7 @@ function createCall(toolName, argumentsText = '{}') {
 }
 
 test('classifyToolCallConcurrency only parallelizes explicit observation tools', () => {
-  for (const toolName of ['glob', 'grep', 'read_files', 'web_fetch', 'web_search', 'use_skill']) {
+  for (const toolName of ['glob', 'grep', 'read_files', 'web_fetch', 'web_search', 'use_skill', 'list_mcp_resources', 'read_mcp_resource']) {
     assert.equal(classifyToolCallConcurrency(createCall(toolName)), 'parallel_read');
   }
 

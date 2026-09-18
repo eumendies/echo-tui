@@ -1,13 +1,20 @@
 import {redactSensitiveText} from '../agent/agent-errors';
+import {capUtf8Text} from '../tools/tool-handler-utils';
 import {createSdkMcpClient} from './client';
 
-import type {CreateMcpClient, EchoMcpClient, McpCallToolResult, McpListedTool} from './client';
-import type {McpBootstrapDiagnostic, McpConfig, McpServerConfig, McpToolReference} from '../types/mcp';
+import type {CreateMcpClient, EchoMcpClient, McpCallToolResult, McpListedResource, McpListedResourceTemplate, McpListedTool, McpResourceReadResult} from './client';
+import type {McpBootstrapDiagnostic, McpConfig, McpResourceReference, McpResourceTemplateReference, McpServerConfig, McpToolReference} from '../types/mcp';
+
+const MAX_MCP_RESOURCES_PER_SERVER = 100;
+const MAX_MCP_RESOURCE_TEMPLATES_PER_SERVER = 50;
+const MAX_MCP_RESOURCE_TEXT_BYTES = 512;
 
 type InitializedMcpServer = {
   config: McpServerConfig;
   client: EchoMcpClient;
   tools: McpListedTool[];
+  resources: McpListedResource[]; // bootstrap 时物化的有界资源目录。
+  resourceTemplates: McpListedResourceTemplate[]; // bootstrap 时物化的有界模板目录。
 };
 
 type McpManagerDependencies = {
@@ -72,6 +79,7 @@ class McpManager {
     try {
       client = await this.createClient(server);
       const tools = await client.listTools();
+      const {resources, resourceTemplates} = await this.listServerResources(server.name, client);
       const uniqueTools = tools.filter((tool) => {
         const namespacedName = createMcpToolName(server.name, tool.name);
 
@@ -84,7 +92,7 @@ class McpManager {
         return true;
       });
 
-      this.servers.set(server.name, {config: server, client, tools: uniqueTools});
+      this.servers.set(server.name, {config: server, client, tools: uniqueTools, resources, resourceTemplates});
       client = undefined;
     } catch (error: unknown) {
       if (client) {
@@ -93,6 +101,33 @@ class McpManager {
 
       this.diagnostics.push({serverName: server.name, message: sanitizeMcpError(error)});
     }
+  }
+
+  /**
+   * 按 server 声明的 resources capability 拉取资源与模板目录；未声明时不做任何调用。
+   * 两个可选子能力分别容错:其一失败只降级为空目录并记录脱敏诊断,不丢弃另一个,也不影响工具能力。
+   */
+  private async listServerResources(serverName: string, client: EchoMcpClient): Promise<{resources: McpListedResource[]; resourceTemplates: McpListedResourceTemplate[]}> {
+    if (!client.supportsResources()) {
+      return {resources: [], resourceTemplates: []};
+    }
+
+    let resources: McpListedResource[] = [];
+    let resourceTemplates: McpListedResourceTemplate[] = [];
+
+    try {
+      resources = (await client.listResources(MAX_MCP_RESOURCES_PER_SERVER)).map(capListedResource);
+    } catch (error: unknown) {
+      this.diagnostics.push({serverName, message: sanitizeMcpError(error)});
+    }
+
+    try {
+      resourceTemplates = (await client.listResourceTemplates(MAX_MCP_RESOURCE_TEMPLATES_PER_SERVER)).map(capListedResourceTemplate);
+    } catch (error: unknown) {
+      this.diagnostics.push({serverName, message: sanitizeMcpError(error)});
+    }
+
+    return {resources, resourceTemplates};
   }
 
   listTools(): Array<McpToolReference & {description?: string; inputSchema: Record<string, unknown>}> {
@@ -108,6 +143,37 @@ class McpManager {
 
   getToolReference(namespacedName: string): McpToolReference | null {
     return this.listTools().find((tool) => tool.namespacedName === namespacedName) || null;
+  }
+
+  /** 返回当前缓存的资源目录；按 server 名为资源补齐定位信息。 */
+  listResources(): McpResourceReference[] {
+    return Array.from(this.servers.values()).flatMap((server) => server.resources.map((resource) => ({
+      serverName: server.config.name,
+      ...resource
+    })));
+  }
+
+  /** 返回当前已初始化 server 的稳定名称列表，供工具参数提示与错误信息使用。 */
+  listServerNames(): string[] {
+    return Array.from(this.servers.keys());
+  }
+
+  /** 返回当前缓存的 resource templates；模板只描述 uri 形态，不保证可直接读取。 */
+  listResourceTemplates(): McpResourceTemplateReference[] {
+    return Array.from(this.servers.values()).flatMap((server) => server.resourceTemplates.map((template) => ({
+      serverName: server.config.name,
+      ...template
+    })));
+  }
+
+  async readResource(serverName: string, uri: string): Promise<McpResourceReadResult> {
+    const server = this.servers.get(serverName);
+
+    if (!server) {
+      throw new Error(`MCP server unavailable: ${serverName}`);
+    }
+
+    return server.client.readResource(uri);
   }
 
   /**
@@ -155,6 +221,31 @@ function normalizeToolNamePart(value: string): string {
 function sanitizeMcpError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   return redactSensitiveText(message);
+}
+
+/** 资源名称、标题与描述只保留有界文本,避免 server 用超长字段撑爆工具输出。 */
+function capListedText(value: string | undefined): string | undefined {
+  return value === undefined ? undefined : capUtf8Text(value, MAX_MCP_RESOURCE_TEXT_BYTES).text;
+}
+
+function capListedResource(resource: McpListedResource): McpListedResource {
+  return {
+    uri: resource.uri,
+    name: capListedText(resource.name) || resource.name,
+    ...(resource.title ? {title: capListedText(resource.title)} : {}),
+    ...(resource.description ? {description: capListedText(resource.description)} : {}),
+    ...(resource.mimeType ? {mimeType: resource.mimeType} : {})
+  };
+}
+
+function capListedResourceTemplate(template: McpListedResourceTemplate): McpListedResourceTemplate {
+  return {
+    uriTemplate: template.uriTemplate,
+    name: capListedText(template.name) || template.name,
+    ...(template.title ? {title: capListedText(template.title)} : {}),
+    ...(template.description ? {description: capListedText(template.description)} : {}),
+    ...(template.mimeType ? {mimeType: template.mimeType} : {})
+  };
 }
 
 export {

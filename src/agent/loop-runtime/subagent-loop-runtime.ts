@@ -198,7 +198,8 @@ function createSubagentLoopRuntime(cwd: string, inheritedContext: InheritedAgent
         cwd,
         executionMode: input.executionMode,
         ...(input.sandboxModeOverride ? {sandboxModeOverride: input.sandboxModeOverride} : {}),
-        ...(definition.includeMcpTools && mcpManager ? {mcpManager} : {}),
+        // 资源读取与 MCP tools 分离:manager 决定资源工具是否可用,includeMcpTools 只控制 tools 合并。
+        ...(mcpManager ? {includeMcpTools: definition.includeMcpTools, mcpManager} : {}),
         ...(input.sessionId ? {sessionId: input.sessionId} : {}),
         skillRegistry: scopedSkillRegistry
       });

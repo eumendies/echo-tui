@@ -27,6 +27,9 @@ test('prepareAgent consumes the supplied runtime config and merges MCP tools', (
         description: 'Search docs',
         inputSchema: {type: 'object'}
       }];
+    },
+    listServerNames() {
+      return ['docs'];
     }
   };
 

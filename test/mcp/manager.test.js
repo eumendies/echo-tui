@@ -23,6 +23,9 @@ test('McpManager bootstraps successful servers and degrades failed servers', asy
       }
 
       return {
+        supportsResources() {
+          return false;
+        },
         async listTools() {
           return [{name: 'search', description: 'Search docs', inputSchema: {type: 'object'}}];
         },
@@ -66,6 +69,9 @@ test('McpManager exposes the tool readOnly hint as the only MCP approval input',
     },
     async createClient() {
       return {
+        supportsResources() {
+          return false;
+        },
         async listTools() {
           return [
             {name: 'read', description: 'Read docs', inputSchema: {type: 'object'}, readOnly: true},
@@ -102,6 +108,9 @@ test('McpManager closes clients when listing tools fails', async () => {
     },
     async createClient(server) {
       return {
+        supportsResources() {
+          return false;
+        },
         async listTools() {
           throw new Error('list failed');
         },
@@ -128,6 +137,9 @@ test('McpManager skips conflicting MCP tool names', async () => {
     },
     async createClient() {
       return {
+        supportsResources() {
+          return false;
+        },
         async listTools() {
           return [{name: 'search.files', description: 'Search', inputSchema: {type: 'object'}}];
         },
@@ -154,6 +166,9 @@ test('McpManager reload closes old clients and uses latest config diagnostics', 
     },
     async createClient(server) {
       return {
+        supportsResources() {
+          return false;
+        },
         async listTools() {
           return [{name: 'search', description: `${server.name} search`, inputSchema: {type: 'object'}}];
         },
@@ -189,6 +204,9 @@ test('McpManager reload clears all tools when MCP is globally disabled', async (
     },
     async createClient(server) {
       return {
+        supportsResources() {
+          return false;
+        },
         async listTools() {
           return [{name: 'search', inputSchema: {type: 'object'}}];
         },
@@ -209,4 +227,104 @@ test('McpManager reload clears all tools when MCP is globally disabled', async (
   assert.deepEqual(closed, ['docs']);
   assert.deepEqual(manager.listTools(), []);
   assert.deepEqual(manager.getDiagnostics(), []);
+});
+
+test('McpManager discovers resources only for servers that advertise the capability', async () => {
+  const longDescription = 'x'.repeat(1000);
+  const manager = new McpManager({
+    loadConfig() {
+      return {enabled: true, diagnostics: [], servers: [createServer('docs'), createServer('tools-only')]};
+    },
+    async createClient(server) {
+      const withResources = server.name === 'docs';
+
+      return {
+        supportsResources() {
+          return withResources;
+        },
+        async listTools() {
+          return [{name: 'search', description: 'Search', inputSchema: {type: 'object'}}];
+        },
+        async listResources(limit) {
+          if (!withResources) {
+            throw new Error('resources/list must not be called for a server without the capability');
+          }
+
+          return [
+            {uri: 'file:///a.md', name: 'a', title: 'A', description: longDescription},
+            {uri: 'file:///b.md', name: 'b'}
+          ].slice(0, limit);
+        },
+        async listResourceTemplates() {
+          return withResources ? [{uriTemplate: 'file:///{path}', name: 'file'}] : [];
+        },
+        async readResource(uri) {
+          return {contents: [{uri, mimeType: 'text/markdown', text: 'hello'}]};
+        },
+        async callTool() {
+          return {content: []};
+        },
+        async close() {}
+      };
+    }
+  });
+
+  await manager.bootstrap();
+
+  assert.deepEqual(manager.listServerNames(), ['docs', 'tools-only']);
+  assert.deepEqual(manager.listResources().map(({serverName, uri}) => ({serverName, uri})), [
+    {serverName: 'docs', uri: 'file:///a.md'},
+    {serverName: 'docs', uri: 'file:///b.md'}
+  ]);
+  // 描述按有界文本缓存，避免 server 用超长字段撑爆工具输出。
+  assert.equal(manager.listResources()[0].description.length, 512);
+  assert.deepEqual(manager.listResourceTemplates().map(({serverName, uriTemplate}) => ({serverName, uriTemplate})), [
+    {serverName: 'docs', uriTemplate: 'file:///{path}'}
+  ]);
+  assert.deepEqual(await manager.readResource('docs', 'file:///a.md'), {
+    contents: [{uri: 'file:///a.md', mimeType: 'text/markdown', text: 'hello'}]
+  });
+  await assert.rejects(() => manager.readResource('missing', 'file:///a.md'), /MCP server unavailable/);
+});
+
+test('McpManager degrades a failing resource endpoint without losing tools or templates', async () => {
+  const manager = new McpManager({
+    loadConfig() {
+      return {enabled: true, diagnostics: [], servers: [createServer('docs')]};
+    },
+    async createClient() {
+      return {
+        supportsResources() {
+          return true;
+        },
+        async listTools() {
+          return [{name: 'search', inputSchema: {type: 'object'}}];
+        },
+        async listResources() {
+          const error = new Error('Method not found');
+          error.code = -32601;
+          throw error;
+        },
+        async listResourceTemplates() {
+          return [{uriTemplate: 'file:///{path}', name: 'file'}];
+        },
+        async readResource() {
+          return {contents: []};
+        },
+        async callTool() {
+          return {content: []};
+        },
+        async close() {}
+      };
+    }
+  });
+
+  await manager.bootstrap();
+
+  // 资源列表失败只降级该目录:模板、工具能力与 server 状态保持可用，并留下脱敏诊断。
+  assert.deepEqual(manager.listResources(), []);
+  assert.deepEqual(manager.listResourceTemplates().map((template) => template.uriTemplate), ['file:///{path}']);
+  assert.deepEqual(manager.listTools().map((tool) => tool.namespacedName), ['mcp__docs__search']);
+  assert.equal(manager.listServerNames().includes('docs'), true);
+  assert.match(manager.getDiagnostics()[0].message, /Method not found/);
 });

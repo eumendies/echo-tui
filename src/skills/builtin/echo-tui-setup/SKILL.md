@@ -47,7 +47,7 @@ Configure MCP in `~/.echo/config.json` under `mcp`:
 - `mcp.enabled` controls MCP globally, and `mcp.servers` holds named server profiles.
 - `stdio` servers use `command`, optional `args`, optional `env`, optional `cwd`, and optional `timeoutMs`.
 - `http` servers use `url`, optional string `headers`, and optional `timeoutMs`.
-- There is no server-level approval setting: tools that declare `readOnlyHint: true` in `tools/list` run without approval, every other tool requires approval. Annotations are server-provided hints, so only connect MCP servers you trust.
+- There is no server-level approval setting in config: approval follows each tool's `readOnlyHint` annotation from `tools/list`, so prompt behavior cannot be tuned per server — connect only MCP servers you trust.
 
 ## Lifecycle hooks
 

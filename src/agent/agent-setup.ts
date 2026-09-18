@@ -19,6 +19,7 @@ type PrepareAgentOptions = {
   cwd?: string | (() => string); // 本地工具解析相对路径时使用的当前工作目录。
   executionMode?: AgentExecutionMode; // 本次运行执行模式;headless full-access 时 bash 工具强制关闭沙箱。
   sandboxModeOverride?: SandboxModeOverride; // 本次运行的沙箱收紧;只读 workflow 用它强制 bash 走 read-only 档。
+  includeMcpTools?: boolean; // 是否合并共享 manager 的 MCP tools；缺省 true，资源读取工具不受该开关影响。
   mcpManager?: McpManager; // 可选共享 MCP 连接目录，不由本函数管理生命周期。
   modelProfileId?: string; // 从 snapshot 解析本次 provider 时使用的模型 profile。
   reasoningEffortOverride?: ReasoningEffort; // 仅本次准备生效的推理强度覆盖。
@@ -84,11 +85,12 @@ function prepareAgent(options: PrepareAgentOptions): PreparedAgent {
   const baseRegistry = createDefaultToolRegistry(config, options.cwd, toolResultStore, {
     allowedToolNames: options.allowedToolNames,
     executionMode: options.executionMode,
+    ...(options.mcpManager ? {mcpManager: options.mcpManager} : {}),
     ...(options.sandboxModeOverride ? {sandboxModeOverride: options.sandboxModeOverride} : {}),
     ...(options.skillRegistry ? {skillRegistry: options.skillRegistry} : {}),
     subagentPort: options.subagentPort
   });
-  const registry = options.mcpManager
+  const registry = options.mcpManager && options.includeMcpTools !== false
     ? mergeToolRegistries(baseRegistry, createMcpToolRegistry(options.mcpManager, toolResultStore))
     : baseRegistry;
   const agent = createConfiguredAgent(config, registry);
