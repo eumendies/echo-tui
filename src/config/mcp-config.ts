@@ -1,4 +1,4 @@
-import type {McpConfig, McpConfigDiagnostic, McpConfigDraft, McpEnabledStateDraft, McpServerConfig, McpServerConfigDraft} from '../types/mcp';
+import type {McpConfig, McpConfigDiagnostic, McpConfigDraft, McpConfigEditDraft, McpConfigEditIssue, McpServerConfig, McpServerConfigDraft, McpSecretEntryDraft, McpServerEditDraft} from '../types/mcp';
 import type {UserConfigSource} from './user-config';
 
 const DEFAULT_MCP_TIMEOUT_MS = 30_000;
@@ -57,27 +57,195 @@ function createMcpConfigDraft(model: {enabled: boolean; servers: ParsedMcpServer
   return {enabled: model.enabled, servers};
 }
 
-/** 只更新 MCP 全局与现有 server 开关，不改写 transport、凭据或诊断字段。 */
-function applyMcpEnabledStateDraft(rootConfig: ConfigSource, draft: McpEnabledStateDraft): void {
-  const mcp = isPlainObject(rootConfig.mcp) ? {...rootConfig.mcp} : {};
-  const servers = isPlainObject(mcp.servers) ? {...mcp.servers} : {};
+/**
+ * 把配置投影成面板编辑草稿：可解析的 server 展开为字段草稿，不可解析的只保留诊断占位。
+ * 草稿刻意不携带凭据明文，只用 stored 标记该键当前是否有值。
+ */
+function createMcpConfigEditDraft(rootConfig: ConfigSource): McpConfigEditDraft {
+  const model = parseMcpConfigModel(rootConfig);
 
-  mcp.enabled = Boolean(draft.enabled);
+  return {
+    enabled: model.enabled,
+    servers: model.servers.map((entry): McpServerEditDraft => entry.result.ok
+      ? createServerEditDraft(entry.name, entry.result.server)
+      : {name: entry.name, originalName: entry.name, editable: false, enabled: readRawEnabled(entry.rawServer), transport: 'stdio', args: [], env: [], headers: [], timeoutMs: DEFAULT_MCP_TIMEOUT_MS})
+  };
+}
 
-  for (const serverState of draft.servers) {
-    if (typeof serverState.name !== 'string' || serverState.name.trim() === '') {
+/**
+ * 校验编辑草稿：只检查可编辑 server（不可解析节点不参与，避免误判用户手写配置）。
+ * 返回逐条问题；空数组表示可以写回。
+ */
+function validateMcpConfigEditDraft(draft: McpConfigEditDraft): McpConfigEditIssue[] {
+  const issues: McpConfigEditIssue[] = [];
+  const seenNames = new Set<string>();
+
+  for (const server of draft.servers) {
+    const name = server.name.trim();
+
+    if (name === '') {
+      issues.push({serverName: server.name, message: 'server 名不能为空'});
       continue;
     }
 
-    const currentServer = servers[serverState.name];
-
-    if (isPlainObject(currentServer)) {
-      servers[serverState.name] = {...currentServer, enabled: Boolean(serverState.enabled)};
+    if (seenNames.has(name)) {
+      issues.push({serverName: name, message: `server 名重复：${name}`});
+      continue;
     }
+
+    seenNames.add(name);
+
+    if (!server.editable) {
+      continue;
+    }
+
+    if (server.transport === 'stdio' && !server.command?.trim()) {
+      issues.push({serverName: name, message: 'stdio server 缺少 command'});
+    }
+
+    if (server.transport === 'http' && !server.url?.trim()) {
+      issues.push({serverName: name, message: 'http server 缺少 url'});
+    }
+
+    if (!Number.isInteger(server.timeoutMs) || server.timeoutMs < MIN_MCP_TIMEOUT_MS || server.timeoutMs > MAX_MCP_TIMEOUT_MS) {
+      issues.push({serverName: name, message: `timeoutMs 必须是 ${MIN_MCP_TIMEOUT_MS}–${MAX_MCP_TIMEOUT_MS} 之间的整数`});
+    }
+
+    issues.push(...validateSecretEntries(name, 'env', server.env));
+    issues.push(...validateSecretEntries(name, 'headers', server.headers));
   }
 
-  mcp.servers = servers;
+  return issues;
+}
+
+/**
+ * 字段级写回：以现有节点为基线只覆盖草稿携带的字段，保留未知字段与未改动凭据；
+ * 草稿中缺失的现有 server 视为删除，不可解析的节点原样保留。
+ */
+function applyMcpConfigEditDraft(rootConfig: ConfigSource, draft: McpConfigEditDraft): void {
+  const mcp = isPlainObject(rootConfig.mcp) ? {...rootConfig.mcp} : {};
+  const baselineServers = isPlainObject(mcp.servers) ? mcp.servers : {};
+  const nextServers: ConfigSource = {};
+
+  for (const server of draft.servers) {
+    const trimmedName = server.name.trim();
+    const baselineName = server.originalName || trimmedName;
+    const baseline = isPlainObject(baselineServers[baselineName]) ? baselineServers[baselineName] : {};
+
+    if (!server.editable) {
+      // 无法解析的节点不属于面板编辑范围:原样保留,避免把用户手写配置改写坏。
+      nextServers[baselineName] = baseline;
+      continue;
+    }
+
+    nextServers[trimmedName] = applyServerEditDraft(baseline, server);
+  }
+
+  mcp.enabled = Boolean(draft.enabled);
+  mcp.servers = nextServers;
   rootConfig.mcp = mcp;
+}
+
+function applyServerEditDraft(baseline: ConfigSource, draft: McpServerEditDraft): ConfigSource {
+  const next: ConfigSource = {...baseline};
+
+  next.enabled = draft.enabled;
+  next.transport = draft.transport;
+  next.timeoutMs = draft.timeoutMs;
+
+  // 只写当前 transport 暴露的字段:另一侧的键不在面板展示范围内,保留在配置里而不做隐式删除。
+  if (draft.transport === 'stdio') {
+    writeOptionalField(next, 'command', draft.command);
+    writeOptionalField(next, 'cwd', draft.cwd);
+    writeOptionalField(next, 'args', draft.args.length > 0 ? [...draft.args] : undefined);
+    writeOptionalField(next, 'env', applySecretEntries(baseline.env, draft.env));
+  } else {
+    writeOptionalField(next, 'url', draft.url);
+    writeOptionalField(next, 'headers', applySecretEntries(baseline.headers, draft.headers));
+  }
+
+  return next;
+}
+
+function writeOptionalField(target: ConfigSource, key: string, value: unknown): void {
+  if (value === undefined) {
+    delete target[key];
+    return;
+  }
+
+  target[key] = value;
+}
+
+/**
+ * 重建 env/headers：未改动条目按原始键名取回基线值（键被重命名时值跟随条目移动），
+ * 其它条目使用草稿值（空串表示显式清空）。
+ */
+function applySecretEntries(baselineRaw: unknown, entries: McpSecretEntryDraft[]): Record<string, string> | undefined {
+  const baseline = isPlainObject(baselineRaw) ? baselineRaw : {};
+  const next: Record<string, string> = {};
+
+  for (const entry of entries) {
+    const key = entry.key.trim();
+
+    if (key === '') {
+      continue;
+    }
+
+    if (entry.value !== undefined) {
+      next[key] = entry.value;
+      continue;
+    }
+
+    const keptValue = baseline[entry.originalKey ?? key];
+    next[key] = typeof keptValue === 'string' ? keptValue : '';
+  }
+
+  return Object.keys(next).length > 0 ? next : undefined;
+}
+
+function validateSecretEntries(serverName: string, field: 'env' | 'headers', entries: McpSecretEntryDraft[]): McpConfigEditIssue[] {
+  const issues: McpConfigEditIssue[] = [];
+  const seenKeys = new Set<string>();
+
+  for (const entry of entries) {
+    const key = entry.key.trim();
+
+    if (key === '') {
+      issues.push({serverName, message: `${field} 存在空键名`});
+      continue;
+    }
+
+    if (seenKeys.has(key)) {
+      issues.push({serverName, message: `${field} 键名重复：${key}`});
+    }
+
+    seenKeys.add(key);
+  }
+
+  return issues;
+}
+
+function createServerEditDraft(name: string, server: McpServerConfig): McpServerEditDraft {
+  return {
+    name,
+    originalName: name,
+    editable: true,
+    enabled: server.enabled,
+    transport: server.transport,
+    args: server.transport === 'stdio' ? [...(server.args || [])] : [],
+    env: server.transport === 'stdio' ? createSecretEntryDrafts(server.env) : [],
+    headers: server.transport === 'http' ? createSecretEntryDrafts(server.headers) : [],
+    timeoutMs: server.timeoutMs,
+    ...(server.transport === 'stdio' ? {command: server.command, ...(server.cwd ? {cwd: server.cwd} : {})} : {url: server.url})
+  };
+}
+
+function createSecretEntryDrafts(record: Record<string, string> | undefined): McpSecretEntryDraft[] {
+  return Object.entries(record || {}).map(([key, value]) => ({key, originalKey: key, stored: value !== ''}));
+}
+
+function readRawEnabled(rawServer: unknown): boolean {
+  return isPlainObject(rawServer) ? readOptionalBoolean(rawServer.enabled, true) : true;
 }
 
 function parseMcpConfigModel(root: ConfigSource): {enabled: boolean; servers: ParsedMcpServerEntry[]} {
@@ -236,8 +404,10 @@ function readOptionalStringRecord(value: unknown): {ok: true; value?: Record<str
 
 export {
   DEFAULT_MCP_TIMEOUT_MS,
-  applyMcpEnabledStateDraft,
+  applyMcpConfigEditDraft,
+  createMcpConfigEditDraft,
   createMcpConfig,
   createMcpConfigDraft,
-  parseMcpConfigModel
+  parseMcpConfigModel,
+  validateMcpConfigEditDraft
 };

@@ -13,7 +13,7 @@ import type {CustomSubagentCapability, SubagentEffortPolicy} from '../agent/suba
 import type {CustomSubagentManifest} from '../agent/subagent/manifest';
 import type {AgentDefinitionMutationResult, AgentManagementDiagnostic, AgentManagementItem, AgentManagementScope} from '../agent/subagent/management-store';
 import type {AgentsSettingsMutationResult, AgentsSettingsScopeReadResult, BuiltinSubagentName, BuiltinSubagentOverride} from '../agent/subagent/settings';
-import type {McpPromptArgument, McpPromptMessage} from './mcp';
+import type {McpConfigEditDraft, McpConfigEditIssue, McpPromptArgument, McpPromptMessage} from './mcp';
 
 export type CommandSurfaceOption = {
   label: string;
@@ -94,11 +94,51 @@ export type SkillsCommandActiveField = 'effort' | 'model';
 
 export type McpCommandSurface = {
   kind: 'mcp';
+  view: McpSurfaceView; // 当前面板视图，决定行语义与键位。
   title: string;
-  servers: CommandMcpServerInfo[];
+  rows: McpCommandRow[]; // handler 与渲染共享的行投影结果。
   selectedIndex: number;
-  emptyLines: string[];
+  facts?: CommandMcpServerFacts; // server 视图附带的运行事实快照。
+  emptyLines?: string[]; // 总览无 server 时的空状态说明。
+  feedback?: string; // 最近一次成功的提示（例如保存完成）。
+  error?: string; // 当前视图的错误提示。
+  dirty: boolean; // 草稿是否存在未保存改动。
   dismissHint: string;
+};
+
+export type McpSurfaceView = 'overview' | 'server' | 'entries' | 'entryDetail' | 'inventory' | 'discardConfirm' | 'deleteConfirm' | 'error';
+
+export type McpInventorySection = 'tools' | 'resources' | 'templates' | 'prompts';
+
+export type McpCommandRowTone = 'normal' | 'muted' | 'warning' | 'success';
+
+export type McpCommandRow = {
+  id: string; // 稳定行 id；handler 用它定位动作，渲染只做投影。
+  kind: 'global' | 'server' | 'field' | 'inventory' | 'entries' | 'action' | 'entry' | 'option';
+  label: string; // 行主文本。
+  value?: string; // 行右侧值（密钥已掩码）。
+  detail?: string; // 次级说明：普通行渲染为缩进备注，动作/清单行渲染为右侧提示。
+  tone?: McpCommandRowTone; // 行强调色语义。
+  disabled?: boolean; // 条目不可用（例如未初始化 server 的清单入口）。
+  dot?: 'on' | 'off'; // 行首开关圆点：on 为绿色实心，off 为暗色空心。
+  masked?: boolean; // 输入行是否为密钥值：缓冲按 • 掩码显示。
+  input?: {text: string; cursor: number; placeholder?: string}; // 内联编辑缓冲。
+};
+
+export type CommandMcpServerFacts = {
+  initialized: boolean; // server 是否初始化成功；false 时清单不可用。
+  capabilities: {tools: boolean; resources: boolean; prompts: boolean}; // server 声明的能力。
+  toolCount: number;
+  readOnlyToolCount: number;
+  resourceCount: number;
+  resourceTemplateCount: number;
+  promptCount: number;
+  diagnostics: string[]; // 该 server 的配置与运行诊断摘要。
+};
+
+export type CommandMcpInventoryItem = {
+  label: string; // 主展示文本（工具名、uri、命令名）。
+  detail?: string; // 次级信息（只读标记、mime、参数签名、描述）。
 };
 
 export type MemoryCommandSurfaceMode = 'list' | 'edit' | 'deleteConfirm';
@@ -669,6 +709,8 @@ export type CommandMcpServerInfo = {
   transport?: 'stdio' | 'http';
   diagnostic?: string;
   toolCount?: number;
+  resourceCount?: number;
+  promptCount?: number;
 };
 
 export type CommandMcpPromptInfo = {
@@ -699,6 +741,7 @@ export type CommandMcpSaveResult = {
   ok: boolean;
   diagnostics?: string[];
   error?: string;
+  issues?: McpConfigEditIssue[];
 };
 
 export type CommandHooksSaveResult =
@@ -812,7 +855,10 @@ export type CommandHostApp = {
   };
   mcp: {
     listServers(): CommandMcpServerInfo[];
-    saveServerStates(servers: CommandMcpServerInfo[]): Promise<CommandMcpSaveResult>;
+    readConfigDraft(): McpConfigEditDraft;
+    readServerFacts(name: string): CommandMcpServerFacts;
+    listInventory(name: string, section: McpInventorySection): CommandMcpInventoryItem[];
+    saveConfigDraft(draft: McpConfigEditDraft): Promise<CommandMcpSaveResult>;
     listPrompts(): CommandMcpPromptInfo[];
     listPromptCommands(): SlashCommandDescriptor[];
     getPromptMessages(serverName: string, promptName: string, args: Record<string, string>): Promise<CommandMcpPromptReadResult>;

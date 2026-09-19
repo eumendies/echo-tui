@@ -85,7 +85,7 @@ echo-tui --once --full-access "按要求修改文件并运行检查"
 | `/fork` | 从当前会话创建一个独立的对话分支 |
 | `/reference` | 把一个历史会话作为下一条消息的参考 |
 | `/diff` `/undo` | 查看文件改动、回退上一轮改动 |
-| `/mcp` `/hooks` `/skills` | 启停已配置的 MCP Server，管理 Hooks 和 Skills |
+| `/mcp` `/hooks` `/skills` | `/mcp` 启停、编辑 MCP Server 配置并浏览其 tools/resources/prompts，管理 Hooks 和 Skills |
 | `/agents` | 查看和管理内置、用户级与项目级 Subagent |
 | `/init` `/review` | 初始化项目指令、审查当前 Git 改动 |
 | `/<skill-name> [args]` | 调用已启用的 Skill |
@@ -145,7 +145,7 @@ Inspect only authentication-related code. Cite file paths and return prioritized
 
 ### MCP、Hooks 与主题
 
-- 使用 `/mcp` 启停已配置的 MCP Server。
+- 使用 `/mcp` 管理 MCP：总览里 Space 启停、Enter 进入某个 server 编辑配置（transport/url/command/args/cwd/env/headers/timeoutMs，密钥掩码且留空表示不改），也可只读浏览该 server 的 tools、resources（含 templates）与 prompts；改动只在「保存并重载」时写盘。
 - 配置并启用了至少一个 MCP Server 时，可通过 `list_mcp_resources` 与 `read_mcp_resource` 读取 server 声明 `resources` capability 的资源：读取是只读操作、不请求审批，在 plan 模式、BTW 与 `/review` 只读运行、子 Agent 和 headless `--once` 中都可用；二进制内容只返回 mimeType 与字节数占位符，超限文本沿用落盘预览。
 - Server 声明 `prompts` capability 时，其 prompt 会注册成斜杠命令 `/<server>:<prompt>`（`/` 补全可搜到）：参数按声明顺序用空格传入，也支持 `name=value`，缺必填参数会弹出输入面板；提交后 messages 按序拼成一条用户消息注入对话，正文带 `[user]` / `[assistant]` 角色标签，超长内容截断并追加 marker。
 - Server 在 `tools/list` 中声明 `readOnlyHint: true` 的工具按只读放行，调用时不请求审批；该注解由 Server 提供、属于不可信提示，只应连接你信任的 MCP Server。

@@ -45,14 +45,36 @@ export type McpConfigDraft = {
   servers: McpServerConfigDraft[];
 };
 
-export type McpServerEnabledState = {
-  name: string;
-  enabled: boolean;
+export type McpSecretEntryDraft = {
+  key: string; // env 或 headers 的键名。
+  originalKey?: string; // 配置中的原始键名；重命名后仍用它取回原值，避免改键即丢凭据。
+  value?: string; // 本次新输入的值；undefined 表示未改动（保存时保留原值），空字符串表示显式清空。
+  stored: boolean; // 配置中该键当前是否有值；只用于掩码展示，不携带明文。
 };
 
-export type McpEnabledStateDraft = {
+export type McpServerEditDraft = {
+  name: string; // 草稿中的 server 名（新增或重命名后的名称）。
+  originalName?: string; // 现有 server 的原名；缺省表示本次新增。
+  editable: boolean; // 配置能否解析；false 表示面板只展示诊断，保存时该节点原样保留。
   enabled: boolean;
-  servers: McpServerEnabledState[];
+  transport: 'stdio' | 'http';
+  url?: string; // http transport 使用。
+  command?: string; // stdio transport 使用。
+  args: string[]; // stdio 参数，顺序即语义。
+  cwd?: string; // stdio 可选工作目录。
+  env: McpSecretEntryDraft[]; // stdio 环境变量。
+  headers: McpSecretEntryDraft[]; // http 请求头。
+  timeoutMs: number;
+};
+
+export type McpConfigEditDraft = {
+  enabled: boolean; // mcp.enabled。
+  servers: McpServerEditDraft[]; // 面板当前完整列表；不在列表中的现有 server 视为删除。
+};
+
+export type McpConfigEditIssue = {
+  serverName: string; // 出问题的 server 草稿名；全局问题使用空字符串。
+  message: string; // 可直接展示的问题描述。
 };
 
 export type McpBootstrapDiagnostic = {
