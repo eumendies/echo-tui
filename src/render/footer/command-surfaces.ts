@@ -54,7 +54,7 @@ export function renderCommandSurface(commandSurface: CommandSurface, width: numb
   }
 
   if (commandSurface.kind === 'mcp') {
-    return constrainLayoutTail(renderMcpSurface(commandSurface, width, theme), options.maxLines);
+    return renderMcpSurface(commandSurface, width, theme, options.maxLines);
   }
 
   if (commandSurface.kind === 'memory') {

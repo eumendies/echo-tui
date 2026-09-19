@@ -13,7 +13,7 @@ import {
   resolveLlmConfigStrict
 } from './llm-config';
 import {LlmConfigEditorError, applyLlmConfigDraft, createLlmConfigDraft} from './llm-config-editor';
-import {applyMcpEnabledStateDraft, createMcpConfig, createMcpConfigDraft, parseMcpConfigModel} from './mcp-config';
+import {applyMcpConfigEditDraft, createMcpConfig, createMcpConfigDraft, createMcpConfigEditDraft, parseMcpConfigModel} from './mcp-config';
 import {applySandboxConfigDraft, createSandboxConfigDraft} from './sandbox-config-editor';
 import {getDefaultUserConfigPath, watchUserConfig} from './user-config';
 import {applyLifecycleHookConfigDraft, parseLifecycleHookConfig, parseLifecycleHookConfigDraft} from '../hooks/config';
@@ -24,7 +24,7 @@ import type {LlmModelConfigInfo, ParsedLlmConfiguration, ResolveLlmConfigOptions
 import type {LlmConfig, SandboxToolConfig, ToolRuntimeConfig} from '../types/agent';
 import type {LifecycleHookConfig, LifecycleHookConfigDraft} from '../types/hooks';
 import type {LlmConfigDraft, SandboxConfigDraft} from '../types/command';
-import type {McpConfig, McpConfigDraft, McpEnabledStateDraft} from '../types/mcp';
+import type {McpConfig, McpConfigDraft, McpConfigEditDraft} from '../types/mcp';
 import type {UserConfigWatcher} from './user-config';
 
 type UserConfigSourceState = 'valid' | 'missing' | 'invalid_json' | 'invalid_root' | 'read_error';
@@ -96,6 +96,7 @@ class UserConfigSnapshot {
   private llmDraftCache?: LlmConfigDraft;
   private llmParsedCache?: ParsedLlmConfiguration;
   private mcpDraftCache?: McpConfigDraft;
+  private mcpEditDraftCache?: McpConfigEditDraft;
   private mcpRuntimeCache?: McpConfig;
   private modelInfoCache?: LlmModelConfigInfo;
   private sandboxDraftCache?: SandboxConfigDraft;
@@ -166,6 +167,12 @@ class UserConfigSnapshot {
   getMcpConfigDraft(): McpConfigDraft {
     this.mcpDraftCache ||= freezeValue(createMcpConfigDraft(parseMcpConfigModel(this.getOptionalRoot())));
     return structuredClone(this.mcpDraftCache);
+  }
+
+  /** 返回 MCP 面板的编辑草稿；只携带"该键是否有值"的标记，不携带凭据明文。 */
+  getMcpConfigEditDraft(): McpConfigEditDraft {
+    this.mcpEditDraftCache ||= freezeValue(createMcpConfigEditDraft(this.getOptionalRoot()));
+    return structuredClone(this.mcpEditDraftCache);
   }
 
   /** 返回 bash 沙箱配置草稿；只有 valid/missing 可读，损坏文件继续抛出分类错误。 */
@@ -343,9 +350,14 @@ class UserConfigContext {
     }
   }
 
-  /** 保存 MCP 开关；与旧 writer 一致，目标配置文件必须已经存在且有效。 */
-  saveMcpEnabledStateDraft(draft: McpEnabledStateDraft): UserConfigRefreshResult {
-    return this.updateRoot((root) => applyMcpEnabledStateDraft(root, draft), {allowMissing: false});
+  /** 保存 MCP 编辑草稿：字段级合并写回，目标配置文件必须已经存在且有效。 */
+  saveMcpConfigEditDraft(draft: McpConfigEditDraft): UserConfigRefreshResult {
+    return this.updateRoot((root) => applyMcpConfigEditDraft(root, draft), {allowMissing: false});
+  }
+
+  /** 读取 MCP 面板的编辑草稿；不携带凭据明文。 */
+  readMcpConfigEditDraft(): McpConfigEditDraft {
+    return this.capture().getMcpConfigEditDraft();
   }
 
   /** 保存 bash 沙箱草稿并立即发布安装后的 snapshot。 */

@@ -483,12 +483,23 @@ test('CommandHost MCP save reloads once from the installed revision without anot
       }
     };
     const {host} = createHostHarness({mcpManager, userConfigContext: context});
-    const servers = host.mcp.listServers().map((server) => ({
-      ...server,
-      enabled: server.kind === 'server' ? false : server.enabled
-    }));
+    const result = await host.mcp.saveConfigDraft({
+      enabled: true,
+      servers: [{
+        name: 'docs',
+        originalName: 'docs',
+        editable: true,
+        enabled: false,
+        transport: 'http',
+        url: 'https://example.invalid/mcp',
+        args: [],
+        env: [],
+        headers: [],
+        timeoutMs: 30_000
+      }]
+    });
 
-    assert.deepEqual(await host.mcp.saveServerStates(servers), {ok: true, diagnostics: []});
+    assert.deepEqual(result, {ok: true, diagnostics: []});
     assert.equal(reads, 2);
     assert.equal(reloads, 1);
     assert.equal(context.capture().revision, 2);

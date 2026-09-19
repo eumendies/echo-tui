@@ -64,7 +64,7 @@ function createFakeHost(options = {}) {
     savedSandboxDrafts: [],
     savedHookDrafts: [],
     hookTests: [],
-    savedMcpServers: [],
+    savedMcpDrafts: [],
     savedSkills: [],
     sessionCloses: 0,
     sessionOpens: [],
@@ -257,8 +257,26 @@ function createFakeHost(options = {}) {
       listServers() {
         return (options.mcpServers || []).map((server) => ({ ...server }));
       },
-      saveServerStates(servers) {
-        calls.savedMcpServers.push(servers.map((server) => ({ ...server })));
+      readConfigDraft() {
+        return structuredClone(options.mcpDraft || {enabled: true, servers: []});
+      },
+      readServerFacts() {
+        return options.mcpFacts || {
+          initialized: true,
+          capabilities: {tools: true, resources: false, prompts: false},
+          toolCount: 0,
+          readOnlyToolCount: 0,
+          resourceCount: 0,
+          resourceTemplateCount: 0,
+          promptCount: 0,
+          diagnostics: []
+        };
+      },
+      listInventory() {
+        return [];
+      },
+      saveConfigDraft(draft) {
+        calls.savedMcpDrafts.push(structuredClone(draft));
         return Promise.resolve(options.saveMcpResult || {ok: true, diagnostics: []});
       }
     },
@@ -2139,76 +2157,189 @@ test('skillsCommandHandler opens empty skills surface', () => {
   assert.ok(session.surface.emptyLines.some((line) => line.includes('当前没有发现可用 skill')));
 });
 
-test('mcpCommandHandler opens MCP surface, toggles drafts, saves, and cancels', async () => {
+test('mcpCommandHandler opens the MCP panel, toggles drafts, edits fields, and saves through the port', async () => {
   const mcpCommandHandler = new McpCommandHandler();
+  const mcpDraft = {
+    enabled: true,
+    servers: [{
+      name: 'docs',
+      originalName: 'docs',
+      editable: true,
+      enabled: true,
+      transport: 'http',
+      url: 'https://example.invalid/mcp',
+      args: [],
+      env: [],
+      headers: [],
+      timeoutMs: 30_000
+    }]
+  };
   const mcpServers = [
     {kind: 'global', name: 'MCP global', enabled: true, valid: true, summary: 'enabled'},
-    {kind: 'server', name: 'docs', enabled: true, valid: true, transport: 'http', summary: 'https://example.invalid/mcp', toolCount: 2},
-    {kind: 'server', name: 'bad', enabled: false, valid: false, summary: 'missing command', diagnostic: 'missing command'}
+    {kind: 'server', name: 'docs', enabled: true, valid: true, transport: 'http', summary: 'https://example.invalid/mcp', toolCount: 2}
   ];
-  const {calls, host} = createFakeHost({mcpServers});
+  const {calls, host} = createFakeHost({mcpServers, mcpDraft});
 
   assert.equal(mcpCommandHandler.match('/mcp'), true);
   assert.equal(mcpCommandHandler.match('/mcp list'), false);
   assert.equal(resolveSlashCommand('/mcp', createDefaultHandlersForTest()).name, 'mcp');
 
   const session = startCommand(mcpCommandHandler, '/mcp', host);
-  assert.equal(session.commandName, 'mcp');
+
   assert.equal(session.surface.kind, 'mcp');
-  assert.equal(session.surface.title, 'MCP');
-  assert.deepEqual(session.surface.servers, mcpServers);
+  assert.equal(session.surface.view, 'overview');
+  assert.deepEqual(session.surface.rows.map((row) => row.id), ['global', 'server:0', 'addServer', 'save']);
+  assert.equal(session.surface.dirty, false);
 
+  // 切 enabled 与进入 server 视图都只改草稿。
   mcpCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_DOWN}, host);
-  assert.equal(calls.sessionUpdates[0].surface.selectedIndex, 1);
-
   mcpCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.TEXT, value: ' '}, host);
-  assert.equal(host.session.getActive().data.servers[1].enabled, false);
-  assert.equal(calls.savedMcpServers.length, 0);
+  assert.equal(host.session.getActive().data.draft.servers[0].enabled, false);
+  assert.equal(host.session.getActive().surface.dirty, true);
+  assert.equal(calls.savedMcpDrafts.length, 0);
 
-  const savePromise = mcpCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
-  assert.equal(calls.sessionCloses, 1);
-  assert.equal(host.session.getActive(), null);
-  await savePromise;
-  assert.deepEqual(calls.savedMcpServers[0].map((server) => [server.name, server.enabled]), [
-    ['MCP global', true],
-    ['docs', false],
-    ['bad', false]
-  ]);
+  mcpCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
+  assert.equal(host.session.getActive().surface.view, 'server');
 
-  const diagnostic = createFakeHost({mcpServers, saveMcpResult: {ok: true, diagnostics: ['bad: missing command']}});
-  const diagnosticSession = startCommand(mcpCommandHandler, '/mcp', diagnostic.host);
-  mcpCommandHandler.handleEvent(diagnosticSession, {type: INPUT_EVENTS.TEXT, value: ' '}, diagnostic.host);
-  const diagnosticSavePromise = mcpCommandHandler.handleEvent(diagnostic.host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, diagnostic.host);
-  assert.equal(diagnostic.host.session.getActive(), null);
-  await diagnosticSavePromise;
-  assert.equal(diagnostic.host.session.getActive().surface.kind, 'info');
-  assert.ok(diagnostic.host.session.getActive().surface.lines.some((line) => line.includes('bad: missing command')));
-  mcpCommandHandler.handleEvent(diagnostic.host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, diagnostic.host);
-  assert.equal(diagnostic.host.session.getActive(), null);
+  // 编辑 url:首次输入替换原值,提交后写回草稿。
+  const urlIndex = host.session.getActive().surface.rows.findIndex((row) => row.id === 'url');
+  for (let step = 0; step < urlIndex; step += 1) {
+    mcpCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
+  }
+  mcpCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
+  assert.equal(host.session.getActive().surface.rows[urlIndex].input.text, 'https://example.invalid/mcp');
+  mcpCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.TEXT, value: 'https://new.invalid/mcp'}, host);
+  mcpCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
+  assert.equal(host.session.getActive().data.draft.servers[0].url, 'https://new.invalid/mcp');
 
-  const unchanged = createFakeHost({mcpServers});
-  const unchangedSession = startCommand(mcpCommandHandler, '/mcp', unchanged.host);
-  mcpCommandHandler.handleEvent(unchangedSession, {type: INPUT_EVENTS.SUBMIT}, unchanged.host);
-  assert.equal(unchanged.host.session.getActive(), null);
-  assert.equal(unchanged.calls.savedMcpServers.length, 0);
+  // 从 server 视图走到保存行:保存后面板保持打开、脏标记清零并给出反馈。
+  const saveIndex = host.session.getActive().surface.rows.findIndex((row) => row.id === 'save');
+  for (let step = 0; step < saveIndex; step += 1) {
+    mcpCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
+  }
+  await mcpCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
 
-  const cancel = createFakeHost({mcpServers});
-  const cancelSession = startCommand(mcpCommandHandler, '/mcp', cancel.host);
-  mcpCommandHandler.handleEvent(cancelSession, {type: INPUT_EVENTS.TEXT, value: ' '}, cancel.host);
-  mcpCommandHandler.handleEvent(cancel.host.session.getActive(), {type: INPUT_EVENTS.ESCAPE}, cancel.host);
-  assert.equal(cancel.calls.sessionCloses, 1);
-  assert.equal(cancel.calls.savedMcpServers.length, 0);
+  assert.equal(calls.savedMcpDrafts.length, 1);
+  assert.equal(calls.savedMcpDrafts[0].servers[0].enabled, false);
+  assert.equal(calls.savedMcpDrafts[0].servers[0].url, 'https://new.invalid/mcp');
+  assert.match(host.session.getActive().surface.feedback, /已保存/);
+  assert.equal(host.session.getActive().surface.dirty, false);
+
+  // 草稿校验失败时不调用端口,并把问题投影到 error 视图。
+  const invalid = createFakeHost({mcpDraft: {enabled: true, servers: [{...mcpDraft.servers[0], url: undefined}]}});
+  const invalidSession = startCommand(mcpCommandHandler, '/mcp', invalid.host);
+  const invalidSaveIndex = invalidSession.surface.rows.findIndex((row) => row.id === 'save');
+  for (let step = 0; step < invalidSaveIndex; step += 1) {
+    mcpCommandHandler.handleEvent(invalid.host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, invalid.host);
+  }
+  await mcpCommandHandler.handleEvent(invalid.host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, invalid.host);
+
+  assert.equal(invalid.calls.savedMcpDrafts.length, 0);
+  assert.equal(invalid.host.session.getActive().surface.view, 'error');
+  assert.ok(invalid.host.session.getActive().surface.rows.some((row) => /缺少 url/.test(row.value || '')));
+
+  // 有未保存改动时 Esc 先进入丢弃确认,取消后回到原视图。
+  const dirty = createFakeHost({mcpServers, mcpDraft});
+  const dirtySession = startCommand(mcpCommandHandler, '/mcp', dirty.host);
+  mcpCommandHandler.handleEvent(dirtySession, {type: INPUT_EVENTS.TEXT, value: ' '}, dirty.host);
+  mcpCommandHandler.handleEvent(dirty.host.session.getActive(), {type: INPUT_EVENTS.ESCAPE}, dirty.host);
+  assert.equal(dirty.host.session.getActive().surface.view, 'discardConfirm');
+  mcpCommandHandler.handleEvent(dirty.host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, dirty.host);
+  mcpCommandHandler.handleEvent(dirty.host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, dirty.host);
+  assert.equal(dirty.host.session.getActive().surface.view, 'overview');
+  assert.equal(dirty.calls.savedMcpDrafts.length, 0);
+  assert.equal(dirty.calls.sessionCloses, 0);
 });
 
-test('mcpCommandHandler opens empty MCP surface', () => {
+test('mcpCommandHandler returns from the server view to the overview even when the draft is dirty', () => {
   const mcpCommandHandler = new McpCommandHandler();
-  const {host} = createFakeHost({mcpServers: []});
+  const mcpDraft = {
+    enabled: true,
+    servers: [{
+      name: 'docs',
+      originalName: 'docs',
+      editable: true,
+      enabled: true,
+      transport: 'http',
+      url: 'https://example.invalid/mcp',
+      args: [],
+      env: [],
+      headers: [],
+      timeoutMs: 30_000
+    }]
+  };
+  const mcpServers = [
+    {kind: 'global', name: 'MCP global', enabled: true, valid: true, summary: 'enabled'},
+    {kind: 'server', name: 'docs', enabled: true, valid: true, transport: 'http', summary: 'https://example.invalid/mcp'}
+  ];
+  const {calls, host} = createFakeHost({mcpDraft, mcpServers});
+
+  const session = startCommand(mcpCommandHandler, '/mcp', host);
+  mcpCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_DOWN}, host);
+  mcpCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
+  assert.equal(host.session.getActive().surface.view, 'server');
+
+  // 制造未保存改动后按 Esc:只回上一层,不弹丢弃确认。
+  // 编辑页首行是名称字段,先移到启用行再切换。
+  const enabledIndex = host.session.getActive().surface.rows.findIndex((row) => row.id === 'enabled');
+  for (let step = 0; step < enabledIndex; step += 1) {
+    mcpCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
+  }
+  mcpCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.TEXT, value: ' '}, host);
+  assert.equal(host.session.getActive().surface.dirty, true);
+  mcpCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.ESCAPE}, host);
+
+  assert.equal(host.session.getActive().surface.view, 'overview');
+  assert.equal(calls.sessionCloses, 0);
+});
+
+test('mcpCommandHandler creates a new server and edits its name in the detail view', () => {
+  const mcpCommandHandler = new McpCommandHandler();
+  const {calls, host} = createFakeHost({
+    mcpDraft: {enabled: true, servers: []},
+    mcpServers: [{kind: 'global', name: 'MCP global', enabled: true, valid: true, summary: 'enabled'}]
+  });
+
+  // 选中「新增 server」并回车:直接进入二级编辑页,不再在总览里内联输入名称。
+  const session = startCommand(mcpCommandHandler, '/mcp', host);
+  mcpCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_DOWN}, host);
+  mcpCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
+
+  const created = host.session.getActive();
+  assert.equal(created.surface.view, 'server');
+  assert.equal(created.data.draft.servers[0].name, 'new-server');
+  assert.equal(created.surface.rows[0].id, 'name');
+  assert.equal(calls.savedMcpDrafts.length, 0);
+
+  // 首行即名称字段:回车进入编辑,改名写回草稿。
+  mcpCommandHandler.handleEvent(created, {type: INPUT_EVENTS.SUBMIT}, host);
+  assert.equal(host.session.getActive().surface.rows[0].input.text, 'new-server');
+  mcpCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.TEXT, value: 'docs'}, host);
+  mcpCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
+  assert.equal(host.session.getActive().data.draft.servers[0].name, 'docs');
+
+  // 清空名称提交被拒绝,草稿保留原名。
+  mcpCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
+  for (let step = 0; step < 4; step += 1) {
+    mcpCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.BACKSPACE}, host);
+  }
+  mcpCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
+
+  assert.match(host.session.getActive().surface.error, /不能为空/);
+  assert.equal(host.session.getActive().data.draft.servers[0].name, 'docs');
+});
+
+test('mcpCommandHandler opens empty MCP panel with the add-server entry', () => {
+  const mcpCommandHandler = new McpCommandHandler();
+  const {host} = createFakeHost({mcpServers: [], mcpDraft: {enabled: true, servers: []}});
 
   const session = startCommand(mcpCommandHandler, '/mcp', host);
 
   assert.equal(session.surface.kind, 'mcp');
-  assert.deepEqual(session.surface.servers, []);
+  assert.equal(session.surface.view, 'overview');
+  assert.deepEqual(session.surface.rows.map((row) => row.id), ['global', 'addServer', 'save']);
   assert.ok(session.surface.emptyLines.some((line) => line.includes('当前没有配置 MCP server')));
+  assert.equal(session.surface.dirty, false);
 });
 
 test('hooksCommandHandler opens, edits, saves, and cancels draft state', () => {

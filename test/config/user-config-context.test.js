@@ -284,7 +284,7 @@ test('UserConfigContext validation, read, write, and rename failures never insta
 test('UserConfigContext MCP writer requires an existing config while hooks can create one', () => {
   const missingError = Object.assign(new Error('missing'), {code: 'ENOENT'});
   const mcp = createMemoryContext(missingError);
-  assert.throws(() => mcp.context.saveMcpEnabledStateDraft({enabled: true, servers: []}), /不存在/);
+  assert.throws(() => mcp.context.saveMcpConfigEditDraft({enabled: true, servers: []}), /不存在/);
   assert.equal(mcp.context.capture().revision, 1);
   mcp.context.close();
 

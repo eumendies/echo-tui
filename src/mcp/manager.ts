@@ -18,6 +18,7 @@ type InitializedMcpServer = {
   resources: McpListedResource[]; // bootstrap 时物化的有界资源目录。
   resourceTemplates: McpListedResourceTemplate[]; // bootstrap 时物化的有界模板目录。
   prompts: McpListedPrompt[]; // bootstrap 时物化的有界 prompt 目录；list changed 通知后原地刷新。
+  capabilities: {resources: boolean; prompts: boolean}; // bootstrap 时读到的声明能力，供面板展示。
 };
 
 type McpManagerDependencies = {
@@ -98,7 +99,15 @@ class McpManager {
         return true;
       });
 
-      this.servers.set(server.name, {config: server, client, tools: uniqueTools, resources, resourceTemplates, prompts});
+      this.servers.set(server.name, {
+        config: server,
+        client,
+        tools: uniqueTools,
+        resources,
+        resourceTemplates,
+        prompts,
+        capabilities: {resources: client.supportsResources(), prompts: client.supportsPrompts()}
+      });
       // 通知只触发该 server 的目录刷新,不重连进程也不中断进行中的运行。
       client.setPromptsListChangedHandler(() => {
         this.handlePromptsListChanged(server.name);
@@ -212,6 +221,15 @@ class McpManager {
   /** 返回当前已初始化 server 的稳定名称列表，供工具参数提示与错误信息使用。 */
   listServerNames(): string[] {
     return Array.from(this.servers.keys());
+  }
+
+  /** 返回单个 server 声明的能力；未初始化时返回 null。tools 在初始化成功即视为可用。 */
+  getServerCapabilities(name: string): {tools: boolean; resources: boolean; prompts: boolean} | null {
+    const server = this.servers.get(name);
+
+    return server
+      ? {tools: true, resources: server.capabilities.resources, prompts: server.capabilities.prompts}
+      : null;
   }
 
   /** 返回当前缓存的 resource templates；模板只描述 uri 形态，不保证可直接读取。 */

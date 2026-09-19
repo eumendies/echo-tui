@@ -490,7 +490,7 @@ flowchart TB
 | `select` | 通用单选命令，例如 `/model`、`/mode` | 将候选项 label 和说明压成单行渲染，展示选中态，隐藏光标 |
 | `resume` | `/resume` 历史恢复面板 | 左侧渲染最多 5 条 session 窗口，右侧渲染当前选中 session 的最近消息预览，隐藏光标 |
 | `skills` | `/skills` skill 管理面板 | 渲染 card、enabled 计数、on/off pill、行内模型策略、当前行 accent 和滚动提示；Left/Right 循环模型草稿，窄终端优先保留启停、名称和模型策略，隐藏光标 |
-| `mcp` | `/mcp` server 管理面板 | 渲染全局开关、各 server 启用状态、传输类型、工具数量和诊断，隐藏光标 |
+| `mcp` | `/mcp` 多视图配置面板 | 按 `view` 渲染总览、server 编辑、集合子视图（args/env/headers）、只读清单（tools/resources/templates/prompts）、丢弃与删除确认、校验错误；行投影由 handler 与渲染共用，密钥值掩码显示，隐藏光标 |
 | `memory` | `/memory` 记忆管理面板 | 渲染用户记忆和 agent catalog/item 的列表、编辑与删除确认状态；编辑态显示光标 |
 | `hooks` | `/hooks` 生命周期 hook 管理面板 | 渲染事件、hook 条目、详情、编辑和测试状态；编辑态显示光标 |
 | `agents` | `/agents` Subagent 管理面板 | 渲染来源 Tab、有效/覆盖/无效状态、详情、显式动作行、字段与工具表单、Skills 多选层（all/no/count、来源与不可用状态）、默认取消确认和反馈；name/description/instructions 编辑态显示真实光标 |
@@ -534,7 +534,8 @@ renderer 只理解这些 surface kind，不理解具体命令、tool approval、
 | `src/commands/undo-command-handler.ts` | `UndoCommandHandler`、`createUndoConfirmSurface` | `/undo` 读取摘要、确认回退、失败/不可用信息 |
 | `src/commands/fork-command-handler.ts` | `ForkCommandHandler`、`createForkSurface` | `/fork` 立即创建独立 session，并用 info surface 展示结果和文件系统边界 |
 | `src/commands/resume-command-handler.ts` | `ResumeCommandHandler`、`createResumeSurface` | `/resume` 最多 5 条窗口、消息预览、确认恢复 |
-| `src/commands/mcp-command-handler.ts` | `McpCommandHandler`、`createMcpSurface` | `/mcp` 列出 server、Space 切换、Enter 保存并重载 |
+| `src/commands/mcp-command-handler.ts` | `McpCommandHandler` | `/mcp` 面板状态机：视图切换、字段与集合编辑、密钥掩码与“未改动”语义、新增/删除 server、显式保存（校验 → 写回 → reload → 清 context usage）与丢弃确认 |
+| `src/commands/mcp/state.ts` | 行投影与草稿状态 | handler 与渲染共用的行投影（总览/server/entries/entryDetail/inventory/确认/错误）、fingerprint 脏检查与保存反馈 |
 | `src/commands/skills-command-handler.ts` | `SkillsCommandHandler`、`createSkillsSurface` | `/skills` skill 列表、Space 切换启停、Left/Right 循环模型策略、Enter 统一保存 |
 | `src/commands/agent-workflows/agent-workflow-command-handler.ts` | `AgentWorkflowCommandHandler`、`createBuiltInAgentWorkflowHandlers` | `/init`、`/review`：把工作流 prompt 作为普通用户消息提交 |
 | `src/commands/mcp-prompt-command-handler.ts` | `McpPromptCommandHandler` | `/<server>:<prompt> [args...]`：命中缓存的 prompt 目录后解析位置参数与 `key=value`，缺必填参数用 `choice` surface 逐项收集；取回 messages 后按序拼成单条用户消息（role 标签 + 非文本占位符 + 20,000 bytes 截断 marker），经 `host.assistant.submitUserMessage` 提交并写入 `metadata.mcpPrompt`。迟到取回结果只在本 handler 会话仍活跃时收尾 |

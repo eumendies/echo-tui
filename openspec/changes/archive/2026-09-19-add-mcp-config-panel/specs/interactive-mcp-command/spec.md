@@ -1,8 +1,5 @@
-# interactive-mcp-command Specification
+## MODIFIED Requirements
 
-## Purpose
-定义 `/mcp` slash command 的外部行为，包括 MCP 管理面板展示、键盘启停保存，以及第一版仅编辑 enabled 状态的边界。
-## Requirements
 ### Requirement: /mcp command 展示 MCP 管理面板
 系统 SHALL 提供 `/mcp` slash command，用 transient command surface 展示 MCP 全局开关与用户配置中的 MCP servers。面板 SHALL 以总览视图作为入口：除全局开关与每个 server 的 enabled 草稿状态外，SHALL 展示 transport、配置有效性诊断，以及已初始化 server 的 tools/resources/prompts 计数摘要；SHALL 提供进入单个 server 编辑视图的入口，以及在草稿存在未保存改动时的显式保存行。
 
@@ -58,3 +55,8 @@ MCP 面板 SHALL 支持 Up/Down 移动选择、Space 切换当前行 enabled 草
 - **THEN** 系统 SHALL NOT 写入 `~/.echo/config.json`
 - **THEN** 系统 SHALL 关闭 MCP command session 并清空 composer
 
+## REMOVED Requirements
+
+### Requirement: /mcp command 不编辑 server 细节
+**Reason**: 该 requirement 描述的是"第一版仅编辑 enabled"的边界，本次变更把 `/mcp` 升级为可编辑面板，边界被有意反转；其"保存时保留 server 未展示字段"的约束由 `mcp-config-panel` 的显式保存与字段级写回要求承接。
+**Migration**: 原先需要手工编辑 `~/.echo/config.json` 才能完成的 transport、url、command、args、cwd、env、headers、timeoutMs 与新增/删除 server 操作，改由 `/mcp` 面板完成；配置文件 schema 与字段语义不变，已有配置无需迁移，面板保存仍保留未知字段。
