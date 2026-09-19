@@ -84,3 +84,33 @@ export type McpResourceTemplateReference = {
   description?: string; // 可选人类可读描述，超长时按字符预算截断。
   mimeType?: string; // 可选内容类型。
 };
+
+export type McpPromptArgument = {
+  name: string; // prompt 声明的参数名。
+  description?: string; // 可选参数说明，超长时按字符预算截断。
+  required: boolean; // 是否必填；缺失按 false 归一，缺必填时命令会先收集。
+};
+
+export type McpPromptReference = {
+  serverName: string; // prompt 所属的 server 名。
+  promptName: string; // server 侧 prompt 名称，注册命令时与 server 名组合。
+  description?: string; // 可选描述，超长时按字符预算截断。
+  arguments: McpPromptArgument[]; // 按 server 声明顺序排列的参数。
+};
+
+export type McpPromptContentBlock =
+  | {kind: 'text'; text: string} // 文本内容，注入时直接拼接。
+  | {kind: 'image'; mimeType: string; sizeBytes: number} // 图片只保留类型与字节数，不内联 base64。
+  | {kind: 'audio'; mimeType: string; sizeBytes: number} // 音频同上。
+  | {kind: 'resource'; uri: string; mimeType?: string; text?: string} // 内嵌资源：文本保留，二进制只保留 uri。
+  | {kind: 'resource_link'; uri: string; name?: string}; // 资源引用只保留 uri 与可选名称。
+
+export type McpPromptMessage = {
+  role: 'user' | 'assistant'; // 消息角色，注入时作为来源标签。
+  content: McpPromptContentBlock; // 单条内容块。
+};
+
+export type McpPromptResult = {
+  description?: string; // 可选说明，来自 prompts/get 响应。
+  messages: McpPromptMessage[]; // 按 server 返回顺序排列，注入时保持顺序。
+};

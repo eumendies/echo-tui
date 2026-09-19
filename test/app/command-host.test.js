@@ -496,6 +496,53 @@ test('CommandHost MCP save reloads once from the installed revision without anot
   });
 });
 
+test('CommandHost MCP prompt facade exposes normalized commands and reads messages through the manager', async () => {
+  const mcpManager = {
+    getDiagnostics() { return []; },
+    listTools() { return []; },
+    listPrompts() {
+      return [{
+        serverName: 'docs api',
+        promptName: 'code review',
+        description: 'Review code',
+        arguments: [{name: 'code', required: true}]
+      }];
+    },
+    async getPrompt(serverName, promptName, args) {
+      return {messages: [{role: 'user', content: {kind: 'text', text: `${serverName}|${promptName}|${args.code}`}}]};
+    },
+    async reload() {}
+  };
+  const {host} = createHostHarness({mcpManager});
+
+  // 命令名把 server/prompt 里的空白归一为 `-`；描述符与目录共用同一份归一结果。
+  assert.deepEqual(host.mcp.listPromptCommands(), [{name: 'docs-api:code-review', description: 'Review code'}]);
+  assert.equal(host.mcp.listPrompts()[0].commandName, 'docs-api:code-review');
+
+  assert.deepEqual(await host.mcp.getPromptMessages('docs api', 'code review', {code: 'x'}), {
+    ok: true,
+    messages: [{role: 'user', content: {kind: 'text', text: 'docs api|code review|x'}}]
+  });
+
+  // 目录未命中返回 missing 且不调用 manager；调用失败返回经脱敏的失败结果。
+  assert.deepEqual(await host.mcp.getPromptMessages('docs api', 'missing', {}), {
+    ok: false,
+    reason: 'missing',
+    message: 'MCP prompt not found: docs api:missing'
+  });
+
+  mcpManager.listPrompts = () => [{serverName: 'docs', promptName: 'broken', arguments: []}];
+  mcpManager.getPrompt = async () => {
+    throw new Error('Authorization: Bearer secret-token');
+  };
+
+  const failed = await host.mcp.getPromptMessages('docs', 'broken', {});
+
+  assert.equal(failed.ok, false);
+  assert.equal(failed.reason, 'failed');
+  assert.match(failed.message, /<redacted>/u);
+});
+
 test('external hooks revision changes do not reload the dispatcher', () => {
   withTemporaryUserConfig(JSON.stringify({hooks: {assistant_turn_end: ['echo old']}}), ({configPath}) => {
     let notify;

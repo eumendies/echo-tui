@@ -1,10 +1,11 @@
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
 import {StreamableHTTPClientTransport} from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import {PromptListChangedNotificationSchema} from '@modelcontextprotocol/sdk/types.js';
 
-import type {McpServerConfig} from '../types/mcp';
+import type {McpPromptArgument, McpPromptContentBlock, McpPromptMessage, McpPromptResult, McpServerConfig} from '../types/mcp';
 
-const MAX_MCP_RESOURCE_PAGES = 10;
+const MAX_MCP_LIST_PAGES = 10;
 
 type McpListedTool = {
   name: string;
@@ -40,6 +41,12 @@ type McpResourceReadResult = {
   contents: McpResourceContent[]; // 按 server 返回顺序排列的内容项。
 };
 
+type McpListedPrompt = {
+  name: string; // server 侧 prompt 名称。
+  description?: string; // 可选说明。
+  arguments: McpPromptArgument[]; // 按声明顺序排列的参数。
+};
+
 type McpCallToolResult = {
   content?: unknown[];
   structuredContent?: Record<string, unknown>;
@@ -49,10 +56,14 @@ type McpCallToolResult = {
 
 type EchoMcpClient = {
   supportsResources: () => boolean;
+  supportsPrompts: () => boolean;
   listTools: () => Promise<McpListedTool[]>;
   listResources: (limit: number) => Promise<McpListedResource[]>;
   listResourceTemplates: (limit: number) => Promise<McpListedResourceTemplate[]>;
   readResource: (uri: string) => Promise<McpResourceReadResult>;
+  listPrompts: (limit: number) => Promise<McpListedPrompt[]>;
+  getPrompt: (promptName: string, args: Record<string, string>) => Promise<McpPromptResult>;
+  setPromptsListChangedHandler: (handler: () => void) => void;
   callTool: (toolName: string, args: Record<string, unknown>) => Promise<McpCallToolResult>;
   close: () => Promise<void>;
 };
@@ -63,6 +74,51 @@ type CreateMcpClient = (server: McpServerConfig) => Promise<EchoMcpClient>;
 function base64ByteLength(value: string): number {
   const padding = value.endsWith('==') ? 2 : value.endsWith('=') ? 1 : 0;
   return Math.max(0, Math.floor((value.length * 3) / 4) - padding);
+}
+
+/**
+ * 把 prompt message 的内容块窄投影到领域类型；未知类型保留为显式文本占位符,避免静默丢弃。
+ */
+function projectPromptContent(content: unknown): McpPromptContentBlock {
+  const block = (content || {}) as {
+    type?: unknown;
+    text?: unknown;
+    data?: unknown;
+    mimeType?: unknown;
+    uri?: unknown;
+    name?: unknown;
+    resource?: {uri?: unknown; mimeType?: unknown; text?: unknown};
+  };
+
+  switch (block.type) {
+    case 'text':
+      return {kind: 'text', text: typeof block.text === 'string' ? block.text : ''};
+    case 'image':
+    case 'audio':
+      return {
+        kind: block.type,
+        mimeType: typeof block.mimeType === 'string' ? block.mimeType : 'application/octet-stream',
+        sizeBytes: typeof block.data === 'string' ? base64ByteLength(block.data) : 0
+      };
+    case 'resource': {
+      const resource = block.resource || {};
+
+      return {
+        kind: 'resource',
+        uri: typeof resource.uri === 'string' ? resource.uri : '',
+        ...(typeof resource.mimeType === 'string' ? {mimeType: resource.mimeType} : {}),
+        ...(typeof resource.text === 'string' ? {text: resource.text} : {})
+      };
+    }
+    case 'resource_link':
+      return {
+        kind: 'resource_link',
+        uri: typeof block.uri === 'string' ? block.uri : '',
+        ...(typeof block.name === 'string' ? {name: block.name} : {})
+      };
+    default:
+      return {kind: 'text', text: `[unsupported content block: ${String(block.type || 'unknown')}]`};
+  }
 }
 
 async function createSdkMcpClient(server: McpServerConfig): Promise<EchoMcpClient> {
@@ -90,6 +146,9 @@ async function createSdkMcpClient(server: McpServerConfig): Promise<EchoMcpClien
     supportsResources() {
       return client.getServerCapabilities()?.resources !== undefined;
     },
+    supportsPrompts() {
+      return client.getServerCapabilities()?.prompts !== undefined;
+    },
     async listTools() {
       const result = await client.listTools(undefined, {timeout: server.timeoutMs, maxTotalTimeout: server.timeoutMs});
       return result.tools.map((tool) => ({
@@ -105,7 +164,7 @@ async function createSdkMcpClient(server: McpServerConfig): Promise<EchoMcpClien
       const resources: McpListedResource[] = [];
       let cursor: string | undefined;
 
-      for (let page = 0; page < MAX_MCP_RESOURCE_PAGES && resources.length < limit; page += 1) {
+      for (let page = 0; page < MAX_MCP_LIST_PAGES && resources.length < limit; page += 1) {
         const result = await client.listResources(cursor ? {cursor} : undefined, {timeout: server.timeoutMs, maxTotalTimeout: server.timeoutMs});
 
         for (const resource of result.resources) {
@@ -130,7 +189,7 @@ async function createSdkMcpClient(server: McpServerConfig): Promise<EchoMcpClien
       const templates: McpListedResourceTemplate[] = [];
       let cursor: string | undefined;
 
-      for (let page = 0; page < MAX_MCP_RESOURCE_PAGES && templates.length < limit; page += 1) {
+      for (let page = 0; page < MAX_MCP_LIST_PAGES && templates.length < limit; page += 1) {
         const result = await client.listResourceTemplates(cursor ? {cursor} : undefined, {timeout: server.timeoutMs, maxTotalTimeout: server.timeoutMs});
 
         for (const template of result.resourceTemplates) {
@@ -167,6 +226,47 @@ async function createSdkMcpClient(server: McpServerConfig): Promise<EchoMcpClien
         })
       };
     },
+    async listPrompts(limit) {
+      const prompts: McpListedPrompt[] = [];
+      let cursor: string | undefined;
+
+      for (let page = 0; page < MAX_MCP_LIST_PAGES && prompts.length < limit; page += 1) {
+        const result = await client.listPrompts(cursor ? {cursor} : undefined, {timeout: server.timeoutMs, maxTotalTimeout: server.timeoutMs});
+
+        for (const prompt of result.prompts) {
+          prompts.push({
+            name: prompt.name,
+            ...(prompt.description ? {description: prompt.description} : {}),
+            arguments: (prompt.arguments || []).map((argument) => ({
+              name: argument.name,
+              ...(argument.description ? {description: argument.description} : {}),
+              required: argument.required === true
+            }))
+          });
+        }
+
+        cursor = result.nextCursor;
+        if (!cursor) {
+          break;
+        }
+      }
+
+      return prompts.slice(0, limit);
+    },
+    async getPrompt(promptName, args) {
+      const result = await client.getPrompt({name: promptName, arguments: args}, {timeout: server.timeoutMs, maxTotalTimeout: server.timeoutMs});
+
+      return {
+        ...(result.description ? {description: result.description} : {}),
+        messages: result.messages.map((message): McpPromptMessage => ({
+          role: message.role === 'assistant' ? 'assistant' : 'user',
+          content: projectPromptContent(message.content)
+        }))
+      };
+    },
+    setPromptsListChangedHandler(handler) {
+      client.setNotificationHandler(PromptListChangedNotificationSchema, () => handler());
+    },
     callTool(toolName, args) {
       return client.callTool({name: toolName, arguments: args}, undefined, {timeout: server.timeoutMs, maxTotalTimeout: server.timeoutMs}) as Promise<McpCallToolResult>;
     },
@@ -184,6 +284,7 @@ export type {
   CreateMcpClient,
   EchoMcpClient,
   McpCallToolResult,
+  McpListedPrompt,
   McpListedResource,
   McpListedResourceTemplate,
   McpListedTool,

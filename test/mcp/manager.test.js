@@ -26,6 +26,10 @@ test('McpManager bootstraps successful servers and degrades failed servers', asy
         supportsResources() {
           return false;
         },
+        supportsPrompts() {
+          return false;
+        },
+        setPromptsListChangedHandler() {},
         async listTools() {
           return [{name: 'search', description: 'Search docs', inputSchema: {type: 'object'}}];
         },
@@ -72,6 +76,10 @@ test('McpManager exposes the tool readOnly hint as the only MCP approval input',
         supportsResources() {
           return false;
         },
+        supportsPrompts() {
+          return false;
+        },
+        setPromptsListChangedHandler() {},
         async listTools() {
           return [
             {name: 'read', description: 'Read docs', inputSchema: {type: 'object'}, readOnly: true},
@@ -111,6 +119,10 @@ test('McpManager closes clients when listing tools fails', async () => {
         supportsResources() {
           return false;
         },
+        supportsPrompts() {
+          return false;
+        },
+        setPromptsListChangedHandler() {},
         async listTools() {
           throw new Error('list failed');
         },
@@ -140,6 +152,10 @@ test('McpManager skips conflicting MCP tool names', async () => {
         supportsResources() {
           return false;
         },
+        supportsPrompts() {
+          return false;
+        },
+        setPromptsListChangedHandler() {},
         async listTools() {
           return [{name: 'search.files', description: 'Search', inputSchema: {type: 'object'}}];
         },
@@ -169,6 +185,10 @@ test('McpManager reload closes old clients and uses latest config diagnostics', 
         supportsResources() {
           return false;
         },
+        supportsPrompts() {
+          return false;
+        },
+        setPromptsListChangedHandler() {},
         async listTools() {
           return [{name: 'search', description: `${server.name} search`, inputSchema: {type: 'object'}}];
         },
@@ -207,6 +227,10 @@ test('McpManager reload clears all tools when MCP is globally disabled', async (
         supportsResources() {
           return false;
         },
+        supportsPrompts() {
+          return false;
+        },
+        setPromptsListChangedHandler() {},
         async listTools() {
           return [{name: 'search', inputSchema: {type: 'object'}}];
         },
@@ -242,6 +266,10 @@ test('McpManager discovers resources only for servers that advertise the capabil
         supportsResources() {
           return withResources;
         },
+        supportsPrompts() {
+          return false;
+        },
+        setPromptsListChangedHandler() {},
         async listTools() {
           return [{name: 'search', description: 'Search', inputSchema: {type: 'object'}}];
         },
@@ -297,6 +325,10 @@ test('McpManager degrades a failing resource endpoint without losing tools or te
         supportsResources() {
           return true;
         },
+        supportsPrompts() {
+          return false;
+        },
+        setPromptsListChangedHandler() {},
         async listTools() {
           return [{name: 'search', inputSchema: {type: 'object'}}];
         },
@@ -327,4 +359,131 @@ test('McpManager degrades a failing resource endpoint without losing tools or te
   assert.deepEqual(manager.listTools().map((tool) => tool.namespacedName), ['mcp__docs__search']);
   assert.equal(manager.listServerNames().includes('docs'), true);
   assert.match(manager.getDiagnostics()[0].message, /Method not found/);
+});
+
+test('McpManager discovers prompts only for servers that advertise the capability', async () => {
+  const manager = new McpManager({
+    loadConfig() {
+      return {enabled: true, diagnostics: [], servers: [createServer('docs'), createServer('tools-only')]};
+    },
+    async createClient(server) {
+      const withPrompts = server.name === 'docs';
+
+      return {
+        supportsResources() {
+          return false;
+        },
+        supportsPrompts() {
+          return withPrompts;
+        },
+        setPromptsListChangedHandler() {},
+        async listTools() {
+          return [{name: 'search', inputSchema: {type: 'object'}}];
+        },
+        async listPrompts(limit) {
+          if (!withPrompts) {
+            throw new Error('prompts/list must not be called for a server without the capability');
+          }
+
+          return [{
+            name: 'code_review',
+            description: 'Review code',
+            arguments: [{name: 'code', required: true}, {name: 'lang', description: 'Language', required: false}]
+          }].slice(0, limit);
+        },
+        async getPrompt(name, args) {
+          return {messages: [{role: 'user', content: {kind: 'text', text: `${name}:${args.code}`}}]};
+        },
+        async listResources() {
+          return [];
+        },
+        async listResourceTemplates() {
+          return [];
+        },
+        async callTool() {
+          return {content: []};
+        },
+        async close() {}
+      };
+    }
+  });
+
+  await manager.bootstrap();
+
+  assert.deepEqual(manager.listPrompts(), [{
+    serverName: 'docs',
+    promptName: 'code_review',
+    description: 'Review code',
+    arguments: [{name: 'code', required: true}, {name: 'lang', description: 'Language', required: false}]
+  }]);
+  assert.deepEqual(await manager.getPrompt('docs', 'code_review', {code: 'x'}), {
+    messages: [{role: 'user', content: {kind: 'text', text: 'code_review:x'}}]
+  });
+  await assert.rejects(() => manager.getPrompt('missing', 'code_review', {}), /MCP server unavailable/);
+});
+
+test('McpManager degrades a failing prompt endpoint and refreshes on list changed', async () => {
+  let listChangedHandler;
+  let listCalls = 0;
+  const manager = new McpManager({
+    loadConfig() {
+      return {enabled: true, diagnostics: [], servers: [createServer('docs')]};
+    },
+    async createClient() {
+      return {
+        supportsResources() {
+          return false;
+        },
+        supportsPrompts() {
+          return true;
+        },
+        setPromptsListChangedHandler(handler) {
+          listChangedHandler = handler;
+        },
+        async listTools() {
+          return [{name: 'search', inputSchema: {type: 'object'}}];
+        },
+        async listPrompts() {
+          listCalls += 1;
+
+          if (listCalls === 1) {
+            throw new Error('Method not found');
+          }
+
+          return [{name: 'review', arguments: []}];
+        },
+        async getPrompt() {
+          return {messages: []};
+        },
+        async listResources() {
+          return [];
+        },
+        async listResourceTemplates() {
+          return [];
+        },
+        async callTool() {
+          return {content: []};
+        },
+        async close() {}
+      };
+    }
+  });
+
+  await manager.bootstrap();
+
+  // 目录拉取失败只降级为空目录:工具能力与诊断保留,不重连也不中断。
+  assert.deepEqual(manager.listPrompts(), []);
+  assert.match(manager.getDiagnostics()[0].message, /Method not found/);
+  assert.deepEqual(manager.listTools().map((tool) => tool.namespacedName), ['mcp__docs__search']);
+
+  // list changed 通知只触发该 server 的目录刷新,不重连进程。
+  listChangedHandler();
+
+  // 刷新是异步的:等结果落缓存,而不是等调用计数(计数在 await 之前就自增)。
+  for (let attempt = 0; attempt < 50 && manager.listPrompts().length === 0; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+
+  assert.equal(listCalls, 2);
+  assert.deepEqual(manager.listPrompts().map((prompt) => prompt.promptName), ['review']);
 });
