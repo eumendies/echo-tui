@@ -16,15 +16,17 @@ type AssistantCommandPortOptions = {
   appContext: AssistantCommandContext;
   renderRecords: (records: TranscriptRecord[]) => void;
   render: () => void;
+  submitUserMessage: CommandHostApp['assistant']['submitUserMessage']; // 命令完成多步收集后复用 app 的提交路径。
 };
 
 /**
  * 创建手动 compaction 端口，协调 turn 生命周期、agent 请求和 transcript 更新。
  */
 function createAssistantCommandPort(options: AssistantCommandPortOptions): CommandHostApp['assistant'] {
-  const {appContext, renderRecords, render} = options;
+  const {appContext, renderRecords, render, submitUserMessage} = options;
 
   return {
+    submitUserMessage,
     beginManualCompaction(): boolean {
       if (appContext.turnContext.responding) {
         render();

@@ -35,6 +35,11 @@ export type UserTranscriptMetadata = {
     sourceKind: SkillSourceKind;
     sourcePath: string;
   };
+  mcpPrompt?: {
+    server: string; // 提供该 prompt 的 MCP server 名。
+    name: string; // server 侧 prompt 名称。
+    argumentsText?: string; // 用户在命令后传入的原始参数字符串。
+  };
   conversationReference?: ConversationReferenceMetadata; // 标识该用户消息附加了一段历史会话引用。
 };
 

@@ -30,6 +30,7 @@ type CommandHostOptions = {
   renderResizeRecovery: () => void;
   usageStore: UsageStore;
   userConfigContext: UserConfigContext;
+  submitUserMessage: CommandHostApp['assistant']['submitUserMessage']; // 由组合根绑定到真实提交控制器。
   btw: {
     open(initialQuestion?: string): void; // 打开 BTW 临时会话。
     handleEvent(event: InputEvent): Promise<void> | void; // 转发 BTW composer 输入。
@@ -83,7 +84,7 @@ function createCommandHost(options: CommandHostOptions): CommandHostApp {
     usage: statusPorts.usage,
     diff: historyPorts.diff,
     undo: historyPorts.undo,
-    assistant: createAssistantCommandPort({appContext, renderRecords, render}),
+    assistant: createAssistantCommandPort({appContext, renderRecords, render, submitUserMessage: options.submitUserMessage}),
     ui: {exit, render, renderResizeRecovery}
   };
 }

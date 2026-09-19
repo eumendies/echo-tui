@@ -2,12 +2,14 @@ import {redactSensitiveText} from '../agent/agent-errors';
 import {capUtf8Text} from '../tools/tool-handler-utils';
 import {createSdkMcpClient} from './client';
 
-import type {CreateMcpClient, EchoMcpClient, McpCallToolResult, McpListedResource, McpListedResourceTemplate, McpListedTool, McpResourceReadResult} from './client';
-import type {McpBootstrapDiagnostic, McpConfig, McpResourceReference, McpResourceTemplateReference, McpServerConfig, McpToolReference} from '../types/mcp';
+import type {CreateMcpClient, EchoMcpClient, McpCallToolResult, McpListedPrompt, McpListedResource, McpListedResourceTemplate, McpListedTool, McpResourceReadResult} from './client';
+import type {McpBootstrapDiagnostic, McpConfig, McpPromptReference, McpPromptResult, McpResourceReference, McpResourceTemplateReference, McpServerConfig, McpToolReference} from '../types/mcp';
 
 const MAX_MCP_RESOURCES_PER_SERVER = 100;
 const MAX_MCP_RESOURCE_TEMPLATES_PER_SERVER = 50;
-const MAX_MCP_RESOURCE_TEXT_BYTES = 512;
+const MAX_MCP_PROMPTS_PER_SERVER = 50;
+const MAX_MCP_PROMPT_ARGUMENTS_PER_PROMPT = 20;
+const MAX_MCP_LISTED_TEXT_BYTES = 512;
 
 type InitializedMcpServer = {
   config: McpServerConfig;
@@ -15,6 +17,7 @@ type InitializedMcpServer = {
   tools: McpListedTool[];
   resources: McpListedResource[]; // bootstrap 时物化的有界资源目录。
   resourceTemplates: McpListedResourceTemplate[]; // bootstrap 时物化的有界模板目录。
+  prompts: McpListedPrompt[]; // bootstrap 时物化的有界 prompt 目录；list changed 通知后原地刷新。
 };
 
 type McpManagerDependencies = {
@@ -28,6 +31,7 @@ class McpManager {
   private servers: Map<string, InitializedMcpServer>;
   private namespacedToolNames: Set<string>;
   private diagnostics: McpBootstrapDiagnostic[];
+  private promptsRefreshInFlight: Set<string>; // 正在进行 prompt 目录刷新的 server；避免通知风暴叠加请求。
   private bootstrapped: boolean;
 
   constructor(dependencies: McpManagerDependencies) {
@@ -39,6 +43,7 @@ class McpManager {
     this.servers = new Map();
     this.namespacedToolNames = new Set();
     this.diagnostics = [];
+    this.promptsRefreshInFlight = new Set();
     this.bootstrapped = false;
   }
 
@@ -80,6 +85,7 @@ class McpManager {
       client = await this.createClient(server);
       const tools = await client.listTools();
       const {resources, resourceTemplates} = await this.listServerResources(server.name, client);
+      const prompts = await this.listServerPrompts(server.name, client);
       const uniqueTools = tools.filter((tool) => {
         const namespacedName = createMcpToolName(server.name, tool.name);
 
@@ -92,7 +98,11 @@ class McpManager {
         return true;
       });
 
-      this.servers.set(server.name, {config: server, client, tools: uniqueTools, resources, resourceTemplates});
+      this.servers.set(server.name, {config: server, client, tools: uniqueTools, resources, resourceTemplates, prompts});
+      // 通知只触发该 server 的目录刷新,不重连进程也不中断进行中的运行。
+      client.setPromptsListChangedHandler(() => {
+        this.handlePromptsListChanged(server.name);
+      });
       client = undefined;
     } catch (error: unknown) {
       if (client) {
@@ -128,6 +138,52 @@ class McpManager {
     }
 
     return {resources, resourceTemplates};
+  }
+
+  /**
+   * 按 server 声明的 prompts capability 拉取 prompt 目录；未声明时不做任何调用。
+   * 可选端点失败只降级为空目录并记录脱敏诊断,不影响工具、资源与连接状态。
+   */
+  private async listServerPrompts(serverName: string, client: EchoMcpClient): Promise<McpListedPrompt[]> {
+    if (!client.supportsPrompts()) {
+      return [];
+    }
+
+    try {
+      return (await client.listPrompts(MAX_MCP_PROMPTS_PER_SERVER)).map(capListedPrompt);
+    } catch (error: unknown) {
+      this.diagnostics.push({serverName, message: sanitizeMcpError(error)});
+      return [];
+    }
+  }
+
+  /** list changed 通知后原地刷新目录；同一 server 同一时刻只允许一个刷新在飞。 */
+  private handlePromptsListChanged(serverName: string): void {
+    const server = this.servers.get(serverName);
+
+    if (!server || this.promptsRefreshInFlight.has(serverName)) {
+      return;
+    }
+
+    this.promptsRefreshInFlight.add(serverName);
+    void this.refreshServerPrompts(serverName).finally(() => {
+      this.promptsRefreshInFlight.delete(serverName);
+    });
+  }
+
+  private async refreshServerPrompts(serverName: string): Promise<void> {
+    const server = this.servers.get(serverName);
+
+    if (!server || !server.client.supportsPrompts()) {
+      return;
+    }
+
+    try {
+      server.prompts = (await server.client.listPrompts(MAX_MCP_PROMPTS_PER_SERVER)).map(capListedPrompt);
+    } catch (error: unknown) {
+      // 刷新失败保留旧目录,只追加脱敏诊断。
+      this.diagnostics.push({serverName, message: sanitizeMcpError(error)});
+    }
   }
 
   listTools(): Array<McpToolReference & {description?: string; inputSchema: Record<string, unknown>}> {
@@ -174,6 +230,26 @@ class McpManager {
     }
 
     return server.client.readResource(uri);
+  }
+
+  /** 返回当前缓存的 prompt 目录；命令注册与参数校验共用这一份事实。 */
+  listPrompts(): McpPromptReference[] {
+    return Array.from(this.servers.values()).flatMap((server) => server.prompts.map((prompt) => ({
+      serverName: server.config.name,
+      promptName: prompt.name,
+      ...(prompt.description ? {description: prompt.description} : {}),
+      arguments: prompt.arguments.map((argument) => ({...argument}))
+    })));
+  }
+
+  async getPrompt(serverName: string, promptName: string, args: Record<string, string>): Promise<McpPromptResult> {
+    const server = this.servers.get(serverName);
+
+    if (!server) {
+      throw new Error(`MCP server unavailable: ${serverName}`);
+    }
+
+    return server.client.getPrompt(promptName, args);
   }
 
   /**
@@ -225,7 +301,23 @@ function sanitizeMcpError(error: unknown): string {
 
 /** 资源名称、标题与描述只保留有界文本,避免 server 用超长字段撑爆工具输出。 */
 function capListedText(value: string | undefined): string | undefined {
-  return value === undefined ? undefined : capUtf8Text(value, MAX_MCP_RESOURCE_TEXT_BYTES).text;
+  return value === undefined ? undefined : capUtf8Text(value, MAX_MCP_LISTED_TEXT_BYTES).text;
+}
+
+function capListedPromptArgument(argument: {name: string; description?: string; required: boolean}): {name: string; description?: string; required: boolean} {
+  return {
+    name: capListedText(argument.name) || argument.name,
+    ...(argument.description ? {description: capListedText(argument.description)} : {}),
+    required: argument.required === true
+  };
+}
+
+function capListedPrompt(prompt: McpListedPrompt): McpListedPrompt {
+  return {
+    name: capListedText(prompt.name) || prompt.name,
+    ...(prompt.description ? {description: capListedText(prompt.description)} : {}),
+    arguments: prompt.arguments.slice(0, MAX_MCP_PROMPT_ARGUMENTS_PER_PROMPT).map(capListedPromptArgument)
+  };
 }
 
 function capListedResource(resource: McpListedResource): McpListedResource {

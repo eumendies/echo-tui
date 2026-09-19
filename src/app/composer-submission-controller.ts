@@ -30,6 +30,7 @@ type SubmissionCommandPort = {
 
 type SubmitDraftOptions = {
   conversationReference?: PendingConversationReference; // 本次提交捕获的历史会话引用。
+  commandResult?: Extract<CommandStartResult, {kind: 'submit_user_message'}>; // 命令 handler 已解析的提交结果，跳过 slash 再解析。
   onAssistantTurnStarted?: () => void; // user turn 占用 response lock 后释放提交预处理锁。
 };
 
@@ -64,6 +65,20 @@ class ComposerSubmissionController {
     this.submitShellCommand = options.submitShellCommand;
     this.showReferenceError = options.showReferenceError;
     this.render = options.render;
+  }
+
+  /**
+   * 命令 handler 完成多步收集后提交用户消息；跳过 slash 再解析，复用附件展开、引用与 turn 生命周期。
+   */
+  async submitCommandMessage(input: {text: string; displayText?: string; metadata?: UserTranscriptMetadata}): Promise<boolean> {
+    return this.submitDraft(input.text, {
+      commandResult: {
+        kind: 'submit_user_message',
+        text: input.text,
+        displayText: input.displayText,
+        metadata: input.metadata
+      }
+    });
   }
 
   /**
@@ -180,8 +195,8 @@ class ComposerSubmissionController {
     const userRequestText = userInput;
     let userText = userInput;
 
-    // 先尝试处理slash command，若命中则直接返回。
-    const commandResult = this.command.startFromText(userText);
+    // 命令 handler 已解析的提交结果直接沿用；否则先尝试处理 slash command。
+    const commandResult = options.commandResult ?? this.command.startFromText(userText);
 
     if (commandResult.kind === 'handled') {
       return true;

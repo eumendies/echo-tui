@@ -147,6 +147,7 @@ Inspect only authentication-related code. Cite file paths and return prioritized
 
 - 使用 `/mcp` 启停已配置的 MCP Server。
 - 配置并启用了至少一个 MCP Server 时，可通过 `list_mcp_resources` 与 `read_mcp_resource` 读取 server 声明 `resources` capability 的资源：读取是只读操作、不请求审批，在 plan 模式、BTW 与 `/review` 只读运行、子 Agent 和 headless `--once` 中都可用；二进制内容只返回 mimeType 与字节数占位符，超限文本沿用落盘预览。
+- Server 声明 `prompts` capability 时，其 prompt 会注册成斜杠命令 `/<server>:<prompt>`（`/` 补全可搜到）：参数按声明顺序用空格传入，也支持 `name=value`，缺必填参数会弹出输入面板；提交后 messages 按序拼成一条用户消息注入对话，正文带 `[user]` / `[assistant]` 角色标签，超长内容截断并追加 marker。
 - Server 在 `tools/list` 中声明 `readOnlyHint: true` 的工具按只读放行，调用时不请求审批；该注解由 Server 提供、属于不可信提示，只应连接你信任的 MCP Server。
 - 使用 `/hooks` 在回答、工具调用或上下文压缩等事件发生时运行本地命令 (比如使用terminal-notifier在完成回答、需要审批时发送通知)。
 - 使用 `/config` 的“外观”页面切换主题；自定义主题保存在 `~/.echo/theme.json`。

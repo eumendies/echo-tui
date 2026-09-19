@@ -257,6 +257,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     mcpManager,
     render,
     renderResizeRecovery,
+    submitUserMessage: (input) => submissionController.submitCommandMessage(input),
     usageStore,
     userConfigContext
   });
@@ -272,7 +273,8 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     rows: () => terminal.getSize().rows
   });
   const slashCommandHandlers = createDefaultSlashCommandHandlers(
-    () => userConfigContext.capture().getAppSettings().agentInstructionFileName
+    () => userConfigContext.capture().getAppSettings().agentInstructionFileName,
+    () => commandHost.mcp.listPrompts()
   );
   const commandRuntime = createCommandRuntime({
     resolveSlashCommand: (text: string) => resolveSlashCommand(text, slashCommandHandlers),
@@ -353,7 +355,11 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
   });
 
   appContext.configureSlashSuggestions(
-    () => [...createSlashCommandDescriptors(slashCommandHandlers), ...commandHost.skills.listEnabledSkillDescriptors()]
+    () => [
+      ...createSlashCommandDescriptors(slashCommandHandlers),
+      ...commandHost.skills.listEnabledSkillDescriptors(),
+      ...commandHost.mcp.listPromptCommands()
+    ]
       .filter((descriptor, index, descriptors) => descriptors.findIndex((item) => item.name === descriptor.name) === index),
     () => commandRuntime.hasActiveSession()
   );

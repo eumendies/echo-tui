@@ -1,4 +1,5 @@
 import {sanitizeMcpError} from '../../mcp/manager';
+import {createMcpPromptCommandName} from '../../mcp/prompt-command-name';
 
 import type {UserConfigContext} from '../../config/user-config-context';
 import type {McpManager} from '../../mcp/manager';
@@ -83,6 +84,35 @@ function createMcpCommandPort(options: McpCommandPortOptions): CommandHostApp['m
         appContext.turnContext.clearWorking();
         appContext.setMcpBootstrapStatus('ready');
         render();
+      }
+    },
+    listPrompts() {
+      return mcpManager.listPrompts().map((prompt) => ({
+        serverName: prompt.serverName,
+        promptName: prompt.promptName,
+        commandName: createMcpPromptCommandName(prompt.serverName, prompt.promptName),
+        ...(prompt.description ? {description: prompt.description} : {}),
+        arguments: prompt.arguments.map((argument) => ({...argument}))
+      }));
+    },
+    listPromptCommands() {
+      return mcpManager.listPrompts().map((prompt) => ({
+        name: createMcpPromptCommandName(prompt.serverName, prompt.promptName),
+        description: prompt.description || `MCP prompt ${prompt.promptName} from server ${prompt.serverName}`
+      }));
+    },
+    async getPromptMessages(serverName, promptName, args) {
+      const known = mcpManager.listPrompts().some((prompt) => prompt.serverName === serverName && prompt.promptName === promptName);
+
+      if (!known) {
+        return {ok: false, reason: 'missing' as const, message: `MCP prompt not found: ${serverName}:${promptName}`};
+      }
+
+      try {
+        const result = await mcpManager.getPrompt(serverName, promptName, args);
+        return {ok: true as const, messages: result.messages};
+      } catch (error: unknown) {
+        return {ok: false, reason: 'failed' as const, message: sanitizeMcpError(error)};
       }
     }
   };

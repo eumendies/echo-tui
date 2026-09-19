@@ -13,6 +13,7 @@ import type {CustomSubagentCapability, SubagentEffortPolicy} from '../agent/suba
 import type {CustomSubagentManifest} from '../agent/subagent/manifest';
 import type {AgentDefinitionMutationResult, AgentManagementDiagnostic, AgentManagementItem, AgentManagementScope} from '../agent/subagent/management-store';
 import type {AgentsSettingsMutationResult, AgentsSettingsScopeReadResult, BuiltinSubagentName, BuiltinSubagentOverride} from '../agent/subagent/settings';
+import type {McpPromptArgument, McpPromptMessage} from './mcp';
 
 export type CommandSurfaceOption = {
   label: string;
@@ -670,6 +671,30 @@ export type CommandMcpServerInfo = {
   toolCount?: number;
 };
 
+export type CommandMcpPromptInfo = {
+  serverName: string; // prompt 所属的 server 名。
+  promptName: string; // server 侧 prompt 名称。
+  commandName: string; // 归一后的命令名 `<server>:<prompt>`，供匹配与补全共用。
+  description?: string; // 可选描述，用于命令建议。
+  arguments: McpPromptArgument[]; // 按 server 声明顺序排列的参数，供解析与缺失收集。
+};
+
+export type CommandMcpPromptReadResult =
+  | {
+      ok: true; // 表示成功取回 prompt 消息。
+      messages: McpPromptMessage[]; // 按 server 返回顺序排列，注入时保持顺序。
+    }
+  | {
+      ok: false; // 表示目录中不存在该 prompt。
+      reason: 'missing';
+      message: string; // 可直接展示的未命中原因。
+    }
+  | {
+      ok: false; // 表示 prompts/get 调用失败。
+      reason: 'failed';
+      message: string; // 已经过脱敏的有界错误信息。
+    };
+
 export type CommandMcpSaveResult = {
   ok: boolean;
   diagnostics?: string[];
@@ -788,6 +813,9 @@ export type CommandHostApp = {
   mcp: {
     listServers(): CommandMcpServerInfo[];
     saveServerStates(servers: CommandMcpServerInfo[]): Promise<CommandMcpSaveResult>;
+    listPrompts(): CommandMcpPromptInfo[];
+    listPromptCommands(): SlashCommandDescriptor[];
+    getPromptMessages(serverName: string, promptName: string, args: Record<string, string>): Promise<CommandMcpPromptReadResult>;
   };
   memory: {
     list(): UserMemoryReadResult;
@@ -853,6 +881,7 @@ export type CommandHostApp = {
     compactContext(options: {force: true}): Promise<CommandCompactionResult>;
     finishManualCompaction(result: CommandCompactionResult): void;
     fail(error: unknown): void;
+    submitUserMessage(input: {text: string; displayText?: string; metadata?: UserTranscriptMetadata}): Promise<boolean>;
   };
   ui: {
     render(): void;
