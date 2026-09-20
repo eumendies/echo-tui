@@ -10,6 +10,7 @@ import type {ComposerState} from '../types/composer';
 import type {
   AgentsCommandDraft,
   AgentsCommandRow,
+  AgentsCommandSummary,
   AgentsCommandSurface,
   AgentsCommandTab,
   CommandAgentBuiltinPolicy,
@@ -74,12 +75,12 @@ type AgentsManageData = {
 };
 
 const AGENTS_TABS: AgentsCommandSurface['tabs'] = [
-  {id: 'overview', label: 'Overview'},
-  {id: 'project', label: 'Project'},
-  {id: 'user', label: 'User'},
-  {id: 'builtin', label: 'Built-in'}
+  {id: 'overview', label: '总览'},
+  {id: 'project', label: '项目'},
+  {id: 'user', label: '用户'},
+  {id: 'builtin', label: '内置'}
 ];
-const CUSTOM_FORM_ROW_IDS = ['name', 'description', 'capability', 'model', 'effort', 'tools', 'skills', 'mcp', 'instructions', 'save', 'cancel'] as const;
+const CUSTOM_FORM_ROW_IDS = ['name', 'description', 'model', 'effort', 'capability', 'tools', 'skills', 'mcp', 'instructions', 'save', 'cancel'] as const;
 const BUILTIN_FORM_ROW_IDS = ['policy', 'model', 'effort', 'skills', 'save', 'remove', 'cancel'] as const;
 const NEXT_TURN_FEEDBACK = '✓ 已保存，将在下一次 assistant turn 生效';
 
@@ -87,6 +88,7 @@ const NEXT_TURN_FEEDBACK = '✓ 已保存，将在下一次 assistant turn 生�
 function createAgentsSurface(data: AgentsManageData): AgentsCommandSurface {
   const rows = getRows(data);
   const selectedIndex = clampIndex(data.selectedIndex, rows.length);
+  const selectedRow = rows[selectedIndex];
   const editText = data.edit ? composer.getText(data.edit.composer) : data.instructionsComposer ? composer.getText(data.instructionsComposer) : undefined;
   const editCursor = data.edit?.composer.cursor ?? data.instructionsComposer?.cursor;
   return {
@@ -101,6 +103,8 @@ function createAgentsSurface(data: AgentsManageData): AgentsCommandSurface {
     mode: data.mode,
     rows,
     selectedIndex,
+    ...(data.mode === 'list' ? {stats: createListStats(rows)} : {}),
+    ...(data.mode === 'list' && selectedRow ? {summary: createListSummary(data, selectedRow)} : {}),
     tabs: AGENTS_TABS.map((tab) => ({...tab})),
     title: createTitle(data, editText)
   };
@@ -156,7 +160,7 @@ function createListRows(data: AgentsManageData): AgentsCommandRow[] {
     const draft = item.draft;
     return {
       ...(builtin || draft ? {capability: builtin?.capability || draft?.capability} : {}),
-      description: draft?.description || item.diagnostics[0]?.message || builtin?.description,
+      description: draft?.description || builtin?.description,
       ...(builtin || draft ? {effort: builtin?.effort || draft?.effort} : {}),
       id: `agent:${item.sourceKind}:${item.name}`,
       kind: 'agent',
@@ -170,7 +174,7 @@ function createListRows(data: AgentsManageData): AgentsCommandRow[] {
     };
   });
   if (source === 'project' || source === 'user') {
-    rows.push({description: `在 ${source} scope 创建规范化 Markdown 定义`, id: `create:${source}`, kind: 'action', label: '新建 Agent'});
+    rows.push({description: `在 ${source} scope 创建规范化 Markdown 定义`, id: `create:${source}`, kind: 'action', label: '新建 Agent', sourceKind: source});
   }
   if (source === 'overview') {
     for (const [index, diagnostic] of data.snapshot.diagnostics.entries()) {
@@ -184,6 +188,78 @@ function createListRows(data: AgentsManageData): AgentsCommandRow[] {
   return rows;
 }
 
+/** 统计当前范围的 Agent 与异常数量；动作行不计入任何计数。 */
+function createListStats(rows: AgentsCommandRow[]): NonNullable<AgentsCommandSurface['stats']> {
+  return {
+    agentCount: rows.filter((row) => row.kind === 'agent').length,
+    issueCount: rows.filter((row) => row.status === 'invalid' || row.status === 'reserved' || row.status === 'diagnostic').length
+  };
+}
+
+/** 为当前焦点创建稳定摘要；每次 surface 投影都重算，避免动作或诊断沿用上一 Agent 内容。 */
+function createListSummary(data: AgentsManageData, row: AgentsCommandRow): AgentsCommandSummary {
+  if (row.kind === 'agent') {
+    const item = findItemForAgentRow(data, row);
+    const sourcePath = item?.sourcePath;
+    // capability 缺失说明物理项没有可解析定义：此时不投影任何继承策略，只保留身份、路径与诊断。
+    const fields: AgentsCommandSummary['fields'] = [];
+    if (row.capability) {
+      fields.push(
+        {label: '模型', value: row.model || '继承父模型'},
+        {label: 'Effort', value: row.effort === 'inherit' || !row.effort ? '继承父 effort' : row.effort},
+        {label: '工具', value: `${row.toolCount ?? 0} 个`},
+        {label: 'Skills', value: row.skillSummary ?? '全部 enabled Skills'},
+        {label: 'MCP', value: row.mcp ? '启用' : '关闭'}
+      );
+    }
+    if (sourcePath) fields.push({label: '来源路径', value: sourcePath});
+    return {
+      ...(row.description ? {description: row.description} : {}),
+      diagnostics: item?.diagnostics.map((diagnostic) => diagnostic.message) || [],
+      fields,
+      ...(row.sourceKind ? {sourceKind: row.sourceKind} : {}),
+      ...(row.status ? {status: row.status} : {}),
+      title: row.label
+    };
+  }
+
+  if (row.kind === 'action') {
+    return {
+      ...(row.description ? {description: row.description} : {}),
+      diagnostics: [],
+      fields: [],
+      ...(row.sourceKind ? {sourceKind: row.sourceKind} : {}),
+      title: row.label
+    };
+  }
+
+  const diagnosticItem = findItemForDiagnosticRow(data, row);
+  const diagnostics = diagnosticItem
+    ? diagnosticItem.diagnostics.map((diagnostic) => diagnostic.message)
+    : row.description ? [row.description] : [];
+  return {
+    diagnostics,
+    fields: diagnosticItem?.sourcePath ? [{label: '来源路径', value: diagnosticItem.sourcePath}] : [],
+    ...(diagnosticItem?.sourceKind ? {sourceKind: diagnosticItem.sourceKind} : {}),
+    ...(row.status ? {status: row.status} : {}),
+    title: row.label
+  };
+}
+
+/** 按行携带的来源与名称定位快照项；列表行的 label 即物理项名称，不再从 id 字符串反解身份。 */
+function findItemForAgentRow(data: AgentsManageData, row: AgentsCommandRow): Readonly<AgentManagementItem> | undefined {
+  return data.snapshot.items.find((item) => item.sourceKind === row.sourceKind && item.name === row.label);
+}
+
+/** 诊断行 id 由 createListRows 生成为 overview:item-diagnostic:<sourceKind>:<name>；名称可含冒号，需整体还原。 */
+function findItemForDiagnosticRow(data: AgentsManageData, row: AgentsCommandRow): Readonly<AgentManagementItem> | undefined {
+  const prefix = 'overview:item-diagnostic:';
+  if (!row.id.startsWith(prefix)) return undefined;
+  const [sourceKind, ...nameParts] = row.id.slice(prefix.length).split(':');
+  const name = nameParts.join(':');
+  return data.snapshot.items.find((item) => item.sourceKind === sourceKind && item.name === name);
+}
+
 function createDetailRows(data: AgentsManageData): AgentsCommandRow[] {
   const item = getSelectedItem(data);
   if (!item) return [];
@@ -192,28 +268,28 @@ function createDetailRows(data: AgentsManageData): AgentsCommandRow[] {
     if (!builtin) return [];
     const name = builtin.name;
     return [
-      {id: 'builtin:description', kind: 'field', label: 'description', description: builtin.description, readonly: true},
-      {id: 'builtin:capability', kind: 'field', label: 'capability', description: builtin.capability, readonly: true},
-      {id: 'builtin:policy', kind: 'field', label: 'policy', description: formatBuiltinPolicy(data, name), readonly: true},
-      {id: 'builtin:model', kind: 'field', label: 'model', description: `${builtin.modelProfileId || '继承父模型'}${formatPolicyOrigin(builtin.policy, 'model')}`, readonly: true},
-      {id: 'builtin:effort', kind: 'field', label: 'effort', description: builtin.effort === 'inherit' ? 'inherit（继承父 effort）' : `${builtin.effort}${formatPolicyOrigin(builtin.policy, 'effort')}`, readonly: true},
-      {id: 'builtin:tools', kind: 'field', label: 'tools', description: `${builtin.localToolNames.length} 个（只读）`, readonly: true},
-      {id: 'builtin:skills', kind: 'field', label: 'skills', description: `${formatSkillSummary(builtin.skillNames, data.snapshot.skills)}${formatPolicyOrigin(builtin.policy, 'skills')}`, readonly: true},
-      {id: 'builtin:mcp', kind: 'field', label: 'MCP', description: builtin.includeMcpTools ? '启用（固定）' : '关闭（固定）', readonly: true},
-      {id: 'builtin:project', kind: 'action', label: '配置项目级策略', description: formatBuiltinScopeStatus(data, name, 'project')},
-      {id: 'builtin:user', kind: 'action', label: '配置用户级策略', description: formatBuiltinScopeStatus(data, name, 'user')}
+      {id: 'builtin:description', kind: 'field', label: 'description', description: builtin.description, readonly: true, section: 'identity'},
+      {id: 'builtin:policy', kind: 'field', label: 'policy', description: formatBuiltinPolicy(data, name), readonly: true, section: 'policy'},
+      {id: 'builtin:model', kind: 'field', label: 'model', description: `${builtin.modelProfileId || '继承父模型'}${formatPolicyOrigin(builtin.policy, 'model')}`, readonly: true, section: 'policy'},
+      {id: 'builtin:effort', kind: 'field', label: 'effort', description: builtin.effort === 'inherit' ? 'inherit（继承父 effort）' : `${builtin.effort}${formatPolicyOrigin(builtin.policy, 'effort')}`, readonly: true, section: 'policy'},
+      {id: 'builtin:capability', kind: 'field', label: 'capability', description: builtin.capability, readonly: true, section: 'capability'},
+      {id: 'builtin:tools', kind: 'field', label: 'tools', description: `${builtin.localToolNames.length} 个（只读）`, readonly: true, section: 'capability'},
+      {id: 'builtin:skills', kind: 'field', label: 'skills', description: `${formatSkillSummary(builtin.skillNames, data.snapshot.skills)}${formatPolicyOrigin(builtin.policy, 'skills')}`, readonly: true, section: 'capability'},
+      {id: 'builtin:mcp', kind: 'field', label: 'MCP', description: builtin.includeMcpTools ? '启用（固定）' : '关闭（固定）', readonly: true, section: 'capability'},
+      {id: 'builtin:project', kind: 'action', label: '配置项目级策略', description: formatBuiltinScopeStatus(data, name, 'project'), section: 'actions'},
+      {id: 'builtin:user', kind: 'action', label: '配置用户级策略', description: formatBuiltinScopeStatus(data, name, 'user'), section: 'actions'}
     ];
   }
   const rows: AgentsCommandRow[] = [
-    {id: 'custom:path', kind: 'field', label: 'source', description: item.sourcePath, readonly: true},
-    {id: 'custom:status', kind: 'field', label: 'status', description: item.status, readonly: true},
-    ...(item.draft ? [{id: 'custom:skills', kind: 'field' as const, label: 'skills', description: formatSkillSummary(item.draft.skillNames, data.snapshot.skills), readonly: true}] : []),
-    ...item.diagnostics.map((diagnostic, index) => ({id: `diagnostic:${index}`, kind: 'field' as const, label: diagnostic.code, description: diagnostic.message, readonly: true}))
+    {id: 'custom:path', kind: 'field', label: 'source', description: item.sourcePath, readonly: true, section: 'identity'},
+    {id: 'custom:status', kind: 'field', label: 'status', description: item.status, readonly: true, section: 'identity'},
+    ...item.diagnostics.map((diagnostic, index) => ({id: `diagnostic:${index}`, kind: 'field' as const, label: diagnostic.code, description: diagnostic.message, readonly: true, section: 'identity' as const, tone: 'warning' as const})),
+    ...(item.draft ? [{id: 'custom:skills', kind: 'field' as const, label: 'skills', description: formatSkillSummary(item.draft.skillNames, data.snapshot.skills), readonly: true, section: 'policy' as const}] : [])
   ];
   if (item.draft) {
-    rows.push({id: 'custom:edit', kind: 'action', label: '编辑配置'});
+    rows.push({id: 'custom:edit', kind: 'action', label: '编辑配置', section: 'actions'});
   }
-  rows.push({id: 'custom:delete', kind: 'action', label: '删除 Agent'});
+  rows.push({id: 'custom:delete', kind: 'action', label: '删除 Agent', section: 'actions', tone: 'danger'});
   return rows;
 }
 
@@ -223,17 +299,17 @@ function createCustomFormRows(data: AgentsManageData): AgentsCommandRow[] {
   const ceiling = new Set(getToolCeiling(draft.capability));
   const disallowed = draft.tools.filter((tool) => !ceiling.has(tool));
   return [
-    {id: 'name', kind: 'field', label: 'name', description: draft.name || '<必填>', readonly: form.kind === 'edit'},
-    {id: 'description', kind: 'field', label: 'description', description: draft.description || '<必填>'},
-    {id: 'capability', kind: 'field', label: 'capability', description: draft.capability},
-    {id: 'model', kind: 'field', label: 'model', description: draft.modelProfileId || '继承父模型'},
-    {id: 'effort', kind: 'field', label: 'effort', description: draft.effort},
-    {id: 'tools', kind: 'field', label: 'tools', description: disallowed.length > 0 ? `${draft.tools.length} 个；需移除 ${disallowed.join(', ')}` : `${draft.tools.length} 个`},
-    {id: 'skills', kind: 'field', label: 'skills', description: formatSkillSummary(draft.skillNames, data.snapshot.skills)},
-    {id: 'mcp', kind: 'field', label: 'MCP', description: draft.capability === 'readonly' ? '关闭（readonly）' : draft.mcp ? '启用' : '关闭'},
-    {id: 'instructions', kind: 'field', label: 'instructions', description: draft.instructions ? `${Array.from(draft.instructions).length} 字符` : '<必填>'},
-    {id: 'save', kind: 'action', label: form.kind === 'edit' ? '保存更改' : '创建 Agent'},
-    {id: 'cancel', kind: 'action', label: '取消'}
+    {id: 'name', kind: 'field', label: 'name', description: draft.name || '<必填>', readonly: form.kind === 'edit', section: 'identity'},
+    {id: 'description', kind: 'field', label: 'description', description: draft.description || '<必填>', section: 'identity'},
+    {id: 'model', kind: 'field', label: 'model', description: draft.modelProfileId || '继承父模型', section: 'policy'},
+    {id: 'effort', kind: 'field', label: 'effort', description: draft.effort, section: 'policy'},
+    {id: 'capability', kind: 'field', label: 'capability', description: draft.capability, section: 'capability'},
+    {id: 'tools', kind: 'field', label: 'tools', description: disallowed.length > 0 ? `${draft.tools.length} 个；需移除 ${disallowed.join(', ')}` : `${draft.tools.length} 个`, section: 'capability'},
+    {id: 'skills', kind: 'field', label: 'skills', description: formatSkillSummary(draft.skillNames, data.snapshot.skills), section: 'capability'},
+    {id: 'mcp', kind: 'field', label: 'MCP', description: draft.capability === 'readonly' ? '关闭（readonly）' : draft.mcp ? '启用' : '关闭', section: 'capability'},
+    {id: 'instructions', kind: 'field', label: 'instructions', description: draft.instructions ? `${Array.from(draft.instructions).length} 字符` : '<必填>', section: 'capability'},
+    {id: 'save', kind: 'action', label: form.kind === 'edit' ? '保存更改' : '创建 Agent', section: 'actions'},
+    {id: 'cancel', kind: 'action', label: '取消', section: 'actions'}
   ];
 }
 
@@ -241,13 +317,13 @@ function createBuiltinFormRows(data: AgentsManageData): AgentsCommandRow[] {
   const form = data.builtinForm!;
   const hasOverride = Boolean(getScopeOverride(data, form.scope, form.name));
   return [
-    {id: 'policy', kind: 'field', label: '生效策略', description: formatBuiltinPolicy(data, form.name, form.scope), readonly: true},
-    {id: 'model', kind: 'field', label: 'model', description: form.draft.modelProfileId || '继承父模型'},
-    {id: 'effort', kind: 'field', label: 'effort', description: form.draft.effort},
-    {id: 'skills', kind: 'field', label: 'skills', description: formatSkillSummary(form.draft.skillNames, data.snapshot.skills)},
-    {id: 'save', kind: 'action', label: '保存策略'},
-    {id: 'remove', kind: 'action', label: '移除 override', description: hasOverride ? '恢复低优先级或父策略' : '当前 scope 未配置'},
-    {id: 'cancel', kind: 'action', label: '取消'}
+    {id: 'policy', kind: 'field', label: '生效策略', description: formatBuiltinPolicy(data, form.name, form.scope), readonly: true, section: 'policy'},
+    {id: 'model', kind: 'field', label: 'model', description: form.draft.modelProfileId || '继承父模型', section: 'policy'},
+    {id: 'effort', kind: 'field', label: 'effort', description: form.draft.effort, section: 'policy'},
+    {id: 'skills', kind: 'field', label: 'skills', description: formatSkillSummary(form.draft.skillNames, data.snapshot.skills), section: 'capability'},
+    {id: 'save', kind: 'action', label: '保存策略', section: 'actions'},
+    {id: 'remove', kind: 'action', label: '移除 override', description: hasOverride ? '恢复低优先级或父策略' : '当前 scope 未配置', section: 'actions', tone: 'danger'},
+    {id: 'cancel', kind: 'action', label: '取消', section: 'actions'}
   ];
 }
 
@@ -378,7 +454,7 @@ function createConfirmRows(data: AgentsManageData): AgentsCommandRow[] {
       : '';
   return [
     {description: '默认安全选项', id: 'confirm:cancel', kind: 'confirm', label: '取消'},
-    {description: `${confirm.sourcePath}${lowerPriority}`, id: 'confirm:execute', kind: 'confirm', label: actionLabel}
+    {description: `${confirm.sourcePath}${lowerPriority}`, id: 'confirm:execute', kind: 'confirm', label: actionLabel, tone: 'danger'}
   ];
 }
 
@@ -477,12 +553,11 @@ export class AgentsCommandHandler implements CommandHandler<AgentsManageData> {
     const row = rows[clampIndex(data.selectedIndex, rows.length)];
     if (!row) return;
     if (row.id.startsWith('create:')) {
-      this.beginCustomForm(data, row.id.endsWith('project') ? 'project' : 'user', 'create', createEmptyDraft(), 'list', host);
+      this.beginCustomForm(data, row.sourceKind === 'project' ? 'project' : 'user', 'create', createEmptyDraft(), 'list', host);
       return;
     }
-    if (row.id.startsWith('agent:')) {
-      const [, sourceKind, ...nameParts] = row.id.split(':');
-      this.update(host, {...data, mode: 'detail', selected: {name: nameParts.join(':'), sourceKind: sourceKind as AgentsSelection['sourceKind']}, selectedIndex: 0, error: undefined, feedback: undefined});
+    if (row.kind === 'agent' && row.sourceKind) {
+      this.update(host, {...data, mode: 'detail', selected: {name: row.label, sourceKind: row.sourceKind}, selectedIndex: 0, error: undefined, feedback: undefined});
     }
   }
 
