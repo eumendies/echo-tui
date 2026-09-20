@@ -126,6 +126,7 @@ function createToolApprovalReviewer(dependencies: ToolApprovalReviewerDependenci
           dependencies.usageStore.appendEvent({
             cwdHash: createUsageCwdHash(cwd),
             providerType: config.agentType,
+            ...(config.providerId ? {providerId: config.providerId} : {}),
             model: config.model,
             interactionMode: input.interactionMode,
             contextWindow: config.contextWindow,

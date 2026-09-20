@@ -218,6 +218,7 @@ type AgentLoopRunState = {
   agent: ProviderAgent; // 已绑定本次工具目录的 provider adapter。
   agentInstructions: AgentInstruction[]; // 当前 cwd 适用的项目/用户指令链。
   providerType: LlmConfig['agentType']; // 当前 adapter 的 provider 协议类型。
+  providerId?: string; // 当前解析配置的非敏感 provider 标识；写 usage 时保留归因。
   model: string; // 当前运行固定的 provider 模型名。
   reasoningEffort?: LlmConfig['reasoningEffort']; // 当前运行固定的推理强度。
   interactionMode: InteractionMode; // 父提交时捕获的 normal/plan 等模式。
@@ -294,6 +295,7 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
       agentInstructions: loadAgentInstructions({cwd, fileName: agentInstructionFileName}),
       basePrompt,
       providerType: config.agentType,
+      ...(config.providerId ? {providerId: config.providerId} : {}),
       model: config.model,
       reasoningEffort: config.reasoningEffort,
       interactionMode,
@@ -461,6 +463,7 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
         usageStore.appendEvent({
           cwdHash,
           providerType: state.providerType,
+          ...(state.providerId ? {providerId: state.providerId} : {}),
           model: state.model,
           interactionMode,
           contextWindow: state.contextWindow,

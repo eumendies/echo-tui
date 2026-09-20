@@ -500,11 +500,11 @@ function parseModelProfiles(llmConfig: ConfigSource, providers: Map<string, LlmP
   return parsedModels;
 }
 
-function withOptionalHeaders(config: Pick<LlmConfig, 'agentType' | 'apiKey' | 'baseURL' | 'codexOAuth' | 'sessionHeader'>, headers?: Record<string, string>): Pick<LlmConfig, 'agentType' | 'apiKey' | 'baseURL' | 'codexOAuth' | 'sessionHeader' | 'headers'> {
+function withOptionalHeaders(config: Pick<LlmConfig, 'agentType' | 'apiKey' | 'baseURL' | 'codexOAuth' | 'providerId' | 'sessionHeader'>, headers?: Record<string, string>): Pick<LlmConfig, 'agentType' | 'apiKey' | 'baseURL' | 'codexOAuth' | 'providerId' | 'sessionHeader' | 'headers'> {
   return headers ? {...config, headers} : config;
 }
 
-function resolveSelectedProviderConfig(selectedProfile: LlmModelProfile, providers: Map<string, LlmProviderProfile>): Pick<LlmConfig, 'agentType' | 'apiKey' | 'baseURL' | 'codexOAuth' | 'sessionHeader' | 'headers'> {
+function resolveSelectedProviderConfig(selectedProfile: LlmModelProfile, providers: Map<string, LlmProviderProfile>): Pick<LlmConfig, 'agentType' | 'apiKey' | 'baseURL' | 'codexOAuth' | 'providerId' | 'sessionHeader' | 'headers'> {
   const provider = providers.get(selectedProfile.provider);
 
   if (!provider) {
@@ -514,6 +514,7 @@ function resolveSelectedProviderConfig(selectedProfile: LlmModelProfile, provide
   return withOptionalHeaders({
     agentType: provider.agentType,
     apiKey: provider.apiKey,
+    providerId: provider.id,
     baseURL: provider.baseURL,
     ...(provider.sessionHeader ? {sessionHeader: provider.sessionHeader} : {}),
     ...(provider.codexOAuth ? {codexOAuth: provider.codexOAuth} : {})

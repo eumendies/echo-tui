@@ -156,3 +156,122 @@ test('usage store normalizes missing fields and ignores empty events', () => {
     eventCount: 1
   }]);
 });
+
+test('usage store aggregates models by provider ID, falls back for legacy events, and supports day filtering', () => {
+  const rootDir = createTempDir();
+  const store = createStore(rootDir);
+
+  store.appendEvent({
+    timestamp: '2026-06-01T10:00:00.000Z',
+    cwdHash: 'cwd',
+    providerType: 'openai',
+    providerId: 'primary-openai',
+    model: 'shared-model',
+    inputTokens: 100,
+    cacheReadInputTokens: 40,
+    outputTokens: 20
+  });
+  store.appendEvent({
+    timestamp: '2026-06-02T10:00:00.000Z',
+    cwdHash: 'cwd',
+    providerType: 'openai',
+    providerId: 'primary-openai',
+    model: 'shared-model',
+    inputTokens: 20,
+    outputTokens: 10
+  });
+  store.appendEvent({
+    timestamp: '2026-06-02T12:00:00.000Z',
+    cwdHash: 'cwd',
+    providerType: 'openai',
+    providerId: 'backup-openai',
+    model: 'shared-model',
+    outputTokens: 50
+  });
+  store.appendEvent({
+    timestamp: '2026-06-02T13:00:00.000Z',
+    cwdHash: 'cwd',
+    providerType: 'anthropic',
+    model: 'legacy-model',
+    outputTokens: 5
+  });
+
+  assert.deepEqual(store.listModelUsage({cwdHash: 'cwd'}), [
+    {
+      providerType: 'openai',
+      providerId: 'primary-openai',
+      model: 'shared-model',
+      inputTokens: 120,
+      cacheReadInputTokens: 40,
+      cacheCreationInputTokens: 0,
+      uncachedInputTokens: 80,
+      outputTokens: 30,
+      totalTokens: 150,
+      hitRate: 40 / 120,
+      eventCount: 2,
+      share: 150 / 205
+    },
+    {
+      providerType: 'openai',
+      providerId: 'backup-openai',
+      model: 'shared-model',
+      inputTokens: 0,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      uncachedInputTokens: 0,
+      outputTokens: 50,
+      totalTokens: 50,
+      hitRate: 0,
+      eventCount: 1,
+      share: 50 / 205
+    },
+    {
+      providerType: 'anthropic',
+      providerId: 'anthropic',
+      model: 'legacy-model',
+      inputTokens: 0,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      uncachedInputTokens: 0,
+      outputTokens: 5,
+      totalTokens: 5,
+      hitRate: 0,
+      eventCount: 1,
+      share: 5 / 205
+    }
+  ]);
+  assert.deepEqual(store.listDailyUsage({providerId: 'primary-openai', model: 'shared-model'}), [
+    {
+      localDay: '2026-06-01',
+      inputTokens: 100,
+      cacheReadInputTokens: 40,
+      cacheCreationInputTokens: 0,
+      uncachedInputTokens: 60,
+      outputTokens: 20,
+      totalTokens: 120,
+      hitRate: 0.4,
+      eventCount: 1
+    },
+    {
+      localDay: '2026-06-02',
+      inputTokens: 20,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      uncachedInputTokens: 20,
+      outputTokens: 10,
+      totalTokens: 30,
+      hitRate: 0,
+      eventCount: 1
+    }
+  ]);
+  assert.deepEqual(store.listModelUsage({cwdHash: 'cwd', limitDays: 1}).map((entry) => ({
+    providerId: entry.providerId,
+    model: entry.model,
+    totalTokens: entry.totalTokens
+  })), [
+    {providerId: 'backup-openai', model: 'shared-model', totalTokens: 50},
+    {providerId: 'primary-openai', model: 'shared-model', totalTokens: 30},
+    {providerId: 'anthropic', model: 'legacy-model', totalTokens: 5}
+  ]);
+  assert.deepEqual(store.listModelUsage({fromDay: '2026-06-02', toDay: '2026-06-02'}).map((entry) => entry.providerId), ['backup-openai', 'primary-openai', 'anthropic']);
+});

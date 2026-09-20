@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import type {UsageDailyAggregate, UsageEvent, UsageEventInput, UsageQueryOptions, UsageStore} from '../types/usage';
+import type {UsageDailyAggregate, UsageEvent, UsageEventInput, UsageModelAggregate, UsageQueryOptions, UsageStore} from '../types/usage';
 
 const USAGE_SCHEMA_VERSION = 1;
 
@@ -20,7 +20,7 @@ type UsageStoreOptions = {
 };
 
 /**
- * 创建 token usage 账本；事件按本地日期分月追加到 JSONL，读取时聚合为每日用量。
+ * 创建 token usage 账本；事件按本地日期分月追加到 JSONL，读取时可聚合每日或单日模型用量。
  */
 function createUsageStore(options: UsageStoreOptions = {}): UsageStore {
   const fsImpl = options.fsImpl || fs;
@@ -53,11 +53,7 @@ function createUsageStore(options: UsageStoreOptions = {}): UsageStore {
   function listDailyUsage(query: UsageQueryOptions = {}): UsageDailyAggregate[] {
     const daily = new Map<string, UsageDailyAggregate>();
 
-    for (const event of readUsageEvents(rootDir, fsImpl)) {
-      if (!matchesQuery(event, query)) {
-        continue;
-      }
-
+    for (const event of queryUsageEvents(rootDir, fsImpl, query)) {
       const current = daily.get(event.localDay) || createEmptyDailyAggregate(event.localDay);
       current.eventCount += 1;
       current.inputTokens += event.inputTokens;
@@ -76,10 +72,41 @@ function createUsageStore(options: UsageStoreOptions = {}): UsageStore {
         hitRate: entry.inputTokens > 0 ? entry.cacheReadInputTokens / entry.inputTokens : 0
       }));
 
-    return typeof query.limitDays === 'number' && query.limitDays > 0 ? result.slice(-Math.floor(query.limitDays)) : result;
+    return result;
   }
 
-  return {appendEvent, listDailyUsage};
+  /**
+   * 读取账本并按 provider 类型和模型标识聚合；同名模型在不同 provider 中保持独立。
+   */
+  function listModelUsage(query: UsageQueryOptions = {}): UsageModelAggregate[] {
+    const models = new Map<string, UsageModelAggregate>();
+
+    for (const event of queryUsageEvents(rootDir, fsImpl, query)) {
+      const providerId = resolveEventProviderId(event);
+      const key = createModelKey(providerId, event.model);
+      const current = models.get(key) || createEmptyModelAggregate(event.providerType, providerId, event.model);
+      current.eventCount += 1;
+      current.inputTokens += event.inputTokens;
+      current.cacheReadInputTokens += event.cacheReadInputTokens;
+      current.cacheCreationInputTokens += event.cacheCreationInputTokens;
+      current.uncachedInputTokens += event.uncachedInputTokens;
+      current.outputTokens += event.outputTokens;
+      current.totalTokens += event.totalTokens;
+      models.set(key, current);
+    }
+
+    const totalTokens = Array.from(models.values()).reduce((total, entry) => total + entry.totalTokens, 0);
+
+    return Array.from(models.values())
+      .map((entry) => ({
+        ...entry,
+        hitRate: entry.inputTokens > 0 ? entry.cacheReadInputTokens / entry.inputTokens : 0,
+        share: totalTokens > 0 ? entry.totalTokens / totalTokens : 0
+      }))
+      .sort(compareModelUsage);
+  }
+
+  return {appendEvent, listDailyUsage, listModelUsage};
 }
 
 function createUsageEvent(input: UsageEventInput, timestamp: string, id: string): UsageEvent | null {
@@ -87,6 +114,7 @@ function createUsageEvent(input: UsageEventInput, timestamp: string, id: string)
   const cacheReadInputTokens = normalizeTokenCount(input.cacheReadInputTokens);
   const cacheCreationInputTokens = normalizeTokenCount(input.cacheCreationInputTokens);
   const outputTokens = normalizeTokenCount(input.outputTokens);
+  const providerId = normalizeProviderId(input.providerId);
 
   if (inputTokens === 0 && cacheReadInputTokens === 0 && cacheCreationInputTokens === 0 && outputTokens === 0) {
     return null;
@@ -102,6 +130,7 @@ function createUsageEvent(input: UsageEventInput, timestamp: string, id: string)
     localDay: formatLocalDay(new Date(timestamp)),
     cwdHash: String(input.cwdHash),
     providerType: input.providerType,
+    ...(providerId ? {providerId} : {}),
     model: String(input.model),
     ...(input.interactionMode ? {interactionMode: input.interactionMode} : {}),
     inputTokens: totalInputTokens,
@@ -123,6 +152,23 @@ function readUsageEvents(rootDir: string, fsImpl: NonNullable<UsageStoreOptions[
     .filter((fileName) => /^\d{4}-\d{2}\.jsonl$/.test(fileName))
     .sort()
     .flatMap((fileName) => readUsageEventFile(path.join(rootDir, fileName), fsImpl));
+}
+
+function queryUsageEvents(rootDir: string, fsImpl: NonNullable<UsageStoreOptions['fsImpl']>, query: UsageQueryOptions): UsageEvent[] {
+  const events = readUsageEvents(rootDir, fsImpl).filter((event) => matchesQuery(event, query));
+
+  const limitDays = typeof query.limitDays === 'number' && Number.isFinite(query.limitDays)
+    ? Math.floor(query.limitDays)
+    : 0;
+
+  if (limitDays <= 0) {
+    return events;
+  }
+
+  const days = Array.from(new Set(events.map((event) => event.localDay))).sort();
+  const firstIncludedDay = days[Math.max(0, days.length - limitDays)];
+
+  return firstIncludedDay ? events.filter((event) => event.localDay >= firstIncludedDay) : [];
 }
 
 function readUsageEventFile(filePath: string, fsImpl: NonNullable<UsageStoreOptions['fsImpl']>): UsageEvent[] {
@@ -168,6 +214,7 @@ function isUsageEventShape(value: unknown): value is UsageEvent {
     typeof event.model === 'string' &&
     typeof event.providerType === 'string' &&
     (event.interactionMode === undefined || typeof event.interactionMode === 'string') &&
+    (event.providerId === undefined || (typeof event.providerId === 'string' && event.providerId.trim() !== '')) &&
     isNonNegativeNumber(event.inputTokens) &&
     isNonNegativeNumber(event.cacheReadInputTokens) &&
     isNonNegativeNumber(event.cacheCreationInputTokens) &&
@@ -179,6 +226,18 @@ function isUsageEventShape(value: unknown): value is UsageEvent {
 
 function matchesQuery(event: UsageEvent, query: UsageQueryOptions): boolean {
   if (query.cwdHash && event.cwdHash !== query.cwdHash) {
+    return false;
+  }
+
+  if (query.providerType && event.providerType !== query.providerType) {
+    return false;
+  }
+
+  if (query.providerId && resolveEventProviderId(event) !== query.providerId) {
+    return false;
+  }
+
+  if (query.model && event.model !== query.model) {
     return false;
   }
 
@@ -201,6 +260,51 @@ function createEmptyDailyAggregate(localDay: string): UsageDailyAggregate {
     hitRate: 0,
     eventCount: 0
   };
+}
+
+function createEmptyModelAggregate(providerType: UsageEvent['providerType'], providerId: string, model: string): UsageModelAggregate {
+  return {
+    providerType,
+    providerId,
+    model,
+    inputTokens: 0,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: 0,
+    uncachedInputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    hitRate: 0,
+    eventCount: 0,
+    share: 0
+  };
+}
+
+function createModelKey(providerId: string, model: string): string {
+  return `${providerId}\u0000${model}`;
+}
+
+function compareModelUsage(left: UsageModelAggregate, right: UsageModelAggregate): number {
+  if (left.totalTokens !== right.totalTokens) {
+    return right.totalTokens - left.totalTokens;
+  }
+
+  if (left.providerId !== right.providerId) {
+    return left.providerId < right.providerId ? -1 : 1;
+  }
+
+  if (left.model === right.model) {
+    return 0;
+  }
+
+  return left.model < right.model ? -1 : 1;
+}
+
+function resolveEventProviderId(event: Pick<UsageEvent, 'providerId' | 'providerType'>): string {
+  return normalizeProviderId(event.providerId) || event.providerType;
+}
+
+function normalizeProviderId(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined;
 }
 
 function normalizeTokenCount(value: unknown): number {

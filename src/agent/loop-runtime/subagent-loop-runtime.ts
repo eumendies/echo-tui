@@ -46,6 +46,7 @@ type SubagentLoopRunState = {
   observationProvider: ProviderObservationConfig; // 从完整配置显式挑选的非敏感 provider 诊断事实。
   observationScope: AgentRunScope; // 当前子运行复用的语义 scope。
   providerType: LlmConfig['agentType']; // usage记录使用的 provider协议类型。
+  providerId?: string; // 当前解析配置的非敏感 provider 标识；写 usage 时保留归因。
   reasoningEffort?: LlmConfig['reasoningEffort']; // 子运行固定的推理强度。
   registry: ToolRegistry; // 子 provider schema与执行器共用的裁剪目录。
   skillCatalog: SkillCatalogEntry[]; // 子 scope 内一次投影后的有界 skill 目录。
@@ -231,6 +232,7 @@ function createSubagentLoopRuntime(cwd: string, inheritedContext: InheritedAgent
           subagent: input.metadata
         },
         providerType: config.agentType,
+        ...(config.providerId ? {providerId: config.providerId} : {}),
         reasoningEffort: config.reasoningEffort,
         registry,
         skillCatalog: skillCatalogProjection.catalog,
@@ -294,6 +296,7 @@ function createSubagentLoopRuntime(cwd: string, inheritedContext: InheritedAgent
         usageStore.appendEvent({
           cwdHash,
           providerType: state.providerType,
+          ...(state.providerId ? {providerId: state.providerId} : {}),
           model: state.model,
           contextWindow: state.contextWindow,
           inputTokens: usage?.inputTokens ?? usageInputTokens,

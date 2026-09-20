@@ -259,6 +259,7 @@ export type LlmConfig = {
   baseURL?: string;
   codexOAuth?: CodexOAuthRuntimeConfig;
   headers?: Record<string, string>;
+  providerId?: string; // 用户配置中 provider 目录的非敏感稳定标识；用于本地 usage 归因，不参与 provider 请求。
   sessionHeader?: string; // preset 声明的会话亲和 header 名；值由 agent 装配层按会话注入，不属于用户可编辑 headers。
   model: string;
   reasoningEffort?: ReasoningEffort;

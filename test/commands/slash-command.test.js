@@ -379,7 +379,14 @@ function createFakeHost(options = {}) {
       listDailyUsage(query) {
         calls.usageQueries = calls.usageQueries || [];
         calls.usageQueries.push(query || {});
-        return (options.dailyUsage || []).map((day) => ({ ...day }));
+        const dailyUsage = options.listDailyUsage ? options.listDailyUsage(query) : options.dailyUsage || [];
+        return dailyUsage.map((day) => ({ ...day }));
+      },
+      listModelUsage(query) {
+        calls.modelUsageQueries = calls.modelUsageQueries || [];
+        calls.modelUsageQueries.push(query || {});
+        const modelUsage = options.listModelUsage ? options.listModelUsage(query) : options.modelUsage || [];
+        return modelUsage.map((model) => ({ ...model }));
       },
       getViewport() {
         return options.usageViewport || {width: 100, maxLines: 22};
@@ -856,7 +863,7 @@ test('usageCommandHandler opens empty state without submitting transcript', () =
   assert.equal(empty.calls.sessionCloses, 1);
 });
 
-test('usageCommandHandler opens usage surface, navigates dates, and closes without transcript changes', () => {
+test('usageCommandHandler selects dates, keeps the selection visible, and closes without transcript changes', () => {
   const usageCommandHandler = new UsageCommandHandler();
   const dailyUsage = Array.from({length: 20}, (_value, index) => ({
     localDay: `2026-06-${String(index + 1).padStart(2, '0')}`,
@@ -874,43 +881,102 @@ test('usageCommandHandler opens usage surface, navigates dates, and closes witho
   let session = startCommand(usageCommandHandler, '/usage', selectable.host);
 
   assert.equal(session.surface.kind, 'usage');
+  assert.equal(session.surface.view, 'daily');
   assert.equal(session.surface.offset, 6);
+  assert.equal(session.surface.selectedIndex, 19);
   assert.equal(session.data.dailyUsage.length, 20);
   assert.deepEqual(selectable.calls.transcriptAppends, []);
 
   usageCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_UP}, selectable.host);
   session = selectable.host.session.getActive();
-  assert.equal(session.surface.offset, 5);
+  assert.equal(session.surface.selectedIndex, 18);
+  assert.equal(session.surface.offset, 6);
 
   usageCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_DOWN}, selectable.host);
   session = selectable.host.session.getActive();
-  assert.equal(session.surface.offset, 6);
-
-  usageCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_LEFT}, selectable.host);
-  session = selectable.host.session.getActive();
-  assert.equal(session.surface.offset, 5);
-
-  usageCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_RIGHT}, selectable.host);
-  session = selectable.host.session.getActive();
+  assert.equal(session.surface.selectedIndex, 19);
   assert.equal(session.surface.offset, 6);
 
   usageCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_HOME}, selectable.host);
   session = selectable.host.session.getActive();
+  assert.equal(session.surface.selectedIndex, 0);
   assert.equal(session.surface.offset, 0);
+
+  usageCommandHandler.handleEvent(session, {type: INPUT_EVENTS.PAGE_DOWN}, selectable.host);
+  session = selectable.host.session.getActive();
+  assert.equal(session.surface.selectedIndex, 14);
+  assert.equal(session.surface.offset, 1);
+
+  usageCommandHandler.handleEvent(session, {type: INPUT_EVENTS.PAGE_UP}, selectable.host);
+  session = selectable.host.session.getActive();
+  assert.equal(session.surface.selectedIndex, 0);
+  assert.equal(session.surface.offset, 0);
+
+  usageCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_END}, selectable.host);
+  session = selectable.host.session.getActive();
+  assert.equal(session.surface.selectedIndex, 19);
+  assert.equal(session.surface.offset, 6);
+
+  usageCommandHandler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: 'q'}, selectable.host);
+  assert.equal(selectable.calls.sessionCloses, 1);
+  assert.deepEqual(selectable.calls.transcriptAppends, []);
+});
+
+test('usageCommandHandler opens selected-day models and returns to the same date without transcript changes', () => {
+  const usageCommandHandler = new UsageCommandHandler();
+  const dailyUsage = [{
+    localDay: '2026-06-01',
+    inputTokens: 200,
+    cacheReadInputTokens: 80,
+    cacheCreationInputTokens: 0,
+    uncachedInputTokens: 120,
+    outputTokens: 50,
+    totalTokens: 250,
+    hitRate: 0.4,
+    eventCount: 2
+  }];
+  const modelUsage = Array.from({length: 20}, (_value, index) => ({
+    providerType: index % 2 === 0 ? 'openai' : 'anthropic',
+    providerId: index % 2 === 0 ? 'primary-openai' : 'backup-anthropic',
+    model: `model-${String(index + 1).padStart(2, '0')}`,
+    inputTokens: 100 - index,
+    cacheReadInputTokens: 20,
+    cacheCreationInputTokens: 0,
+    uncachedInputTokens: 80 - index,
+    outputTokens: 20,
+    totalTokens: 120 - index,
+    hitRate: 0.2,
+    eventCount: 1,
+    share: 0.05
+  }));
+  const selectable = createFakeHost({
+    dailyUsage,
+    modelUsage,
+    usageViewport: {width: 100, maxLines: 26}
+  });
+
+  let session = startCommand(usageCommandHandler, '/usage', selectable.host);
+  assert.equal(session.surface.view, 'daily');
+  assert.equal(session.surface.title, 'Token 用量 · 按日期');
+  assert.equal(session.surface.selectedIndex, 0);
+
+  usageCommandHandler.handleEvent(session, {type: INPUT_EVENTS.SUBMIT}, selectable.host);
+  session = selectable.host.session.getActive();
+  assert.equal(session.surface.view, 'dayModels');
+  assert.match(session.surface.title, /2026-06-01 · 各模型/);
+  assert.equal(session.surface.offset, 0);
+  assert.deepEqual(selectable.calls.modelUsageQueries, [{fromDay: '2026-06-01', toDay: '2026-06-01'}]);
 
   usageCommandHandler.handleEvent(session, {type: INPUT_EVENTS.PAGE_DOWN}, selectable.host);
   session = selectable.host.session.getActive();
   assert.equal(session.surface.offset, 6);
 
-  usageCommandHandler.handleEvent(session, {type: INPUT_EVENTS.PAGE_UP}, selectable.host);
+  usageCommandHandler.handleEvent(session, {type: INPUT_EVENTS.ESCAPE}, selectable.host);
   session = selectable.host.session.getActive();
-  assert.equal(session.surface.offset, 0);
+  assert.equal(session.surface.view, 'daily');
+  assert.equal(session.surface.selectedIndex, 0);
 
-  usageCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_END}, selectable.host);
-  session = selectable.host.session.getActive();
-  assert.equal(session.surface.offset, 6);
-
-  usageCommandHandler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: 'q'}, selectable.host);
+  usageCommandHandler.handleEvent(session, {type: INPUT_EVENTS.ESCAPE}, selectable.host);
   assert.equal(selectable.calls.sessionCloses, 1);
   assert.deepEqual(selectable.calls.transcriptAppends, []);
 });
@@ -932,13 +998,16 @@ test('usageCommandHandler starts at the latest day when the viewport shows fewer
   let session = startCommand(usageCommandHandler, '/usage', selectable.host);
 
   assert.equal(session.surface.offset, 2);
+  assert.equal(session.surface.selectedIndex, 11);
 
   usageCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_UP}, selectable.host);
   session = selectable.host.session.getActive();
-  assert.equal(session.surface.offset, 1);
+  assert.equal(session.surface.selectedIndex, 10);
+  assert.equal(session.surface.offset, 2);
 
   usageCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_DOWN}, selectable.host);
   session = selectable.host.session.getActive();
+  assert.equal(session.surface.selectedIndex, 11);
   assert.equal(session.surface.offset, 2);
 });
 
@@ -1694,7 +1763,7 @@ test('createSlashCommandDescriptors derives display metadata from handlers', () 
     { name: 'mode', description: '切换交互模式' },
     { name: 'status', description: '查看运行状态与账户用量', allowDuringAssistantTurn: true },
     { name: 'context', description: '查看 context 占用详情', allowDuringAssistantTurn: true },
-    { name: 'usage', description: '查看每日 token 用量', allowDuringAssistantTurn: true },
+    { name: 'usage', description: '查看每日 token 用量与当日模型明细', allowDuringAssistantTurn: true },
     { name: 'copy', description: '复制会话消息', allowDuringAssistantTurn: true },
     { name: 'clear', description: '清空当前会话' },
     { name: 'compact', description: '手动压缩当前会话上下文' },

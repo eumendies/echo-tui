@@ -152,6 +152,7 @@ function recordReferenceUsage(
     usageStore.appendEvent({
       cwdHash: createUsageCwdHash(appContext.getCurrentCwd()),
       providerType: config.agentType,
+      ...(config.providerId ? {providerId: config.providerId} : {}),
       model: config.model,
       interactionMode: appContext.getInteractionMode(),
       contextWindow: resolveContextWindow(config),

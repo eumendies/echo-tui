@@ -1216,7 +1216,7 @@ test('renderFooterLayout renders usage surface with totals, hidden days, and dai
   assert.ok(plainLines.some((line) => line.includes('◂1') && line.includes('▸')));
   assert.ok(plainLines.some((line) => line.includes('日期') && line.includes('输入') && line.includes('输出') && line.includes('缓存') && line.includes('命中') && line.includes('趋势')));
   assert.ok(plainLines.some((line) => line.includes('06/02') && line.includes('1.1K') && line.includes('550') && line.includes('250') && line.includes('23%')));
-  assert.ok(plainLines.some((line) => line.includes('↑/↓ 滚动') && line.includes('PgUp/PgDn 翻页') && line.includes('Home/End 跳转')));
+  assert.ok(plainLines.some((line) => line.includes('↑/↓ 选择') && line.includes('PgUp/PgDn 翻页') && line.includes('Home/End 跳转')));
   assert.ok(!plainLines.some((line) => line.includes('双轴') || line.includes('newest at bottom')));
   assert.ok(layout.lines.every((line) => displayWidth(line) <= safeRenderWidth(100)));
   assert.ok(layout.lines.some((line) => displayWidth(line) < 70));

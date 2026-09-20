@@ -4,7 +4,7 @@ import type { SandboxMode, SandboxModeOverride } from '../sandbox/types';
 import type {DiffFile, DiffSourceInfo, DiffSourceResult} from './diff';
 import type { CompactionState, PendingConversationReference, PreparedConversationReference, TranscriptForkResult, TranscriptRecord, TranscriptSessionSummary, TranscriptSessionPreview, UserTranscriptMetadata } from './transcript';
 import type {UndoExecuteResult, UndoSummary} from './change-history';
-import type {UsageDailyAggregate, UsageQueryOptions} from './usage';
+import type {UsageDailyAggregate, UsageModelAggregate, UsageQueryOptions} from './usage';
 import type {LifecycleHookConfigDraft, LifecycleHookDraftEntry, LifecycleHookEventName, LifecycleHookTestResult} from './hooks';
 import type {AgentMemoryCatalog, AgentMemoryCatalogListResult, AgentMemoryCatalogReadResult, AgentMemoryItem, AgentMemoryMutationResult, AgentMemoryScope, UserMemory, UserMemoryMutationResult, UserMemoryReadResult} from './memory';
 import type {SkillSourceKind} from './skill';
@@ -505,11 +505,14 @@ export type ContextUsageCommandSurface = {
 };
 
 export type UsageCommandSurface = {
-  dailyUsage: UsageDailyAggregate[];
-  dismissHint: string;
-  kind: 'usage';
-  offset: number;
-  title: string;
+  dailyUsage: UsageDailyAggregate[]; // 全部按日聚合数据；日期列表与当日明细共享其选中日期上下文。
+  dismissHint: string; // 当前视图对应的中文键位提示。
+  kind: 'usage'; // footer command surface 的稳定分派标识。
+  modelUsage: UsageModelAggregate[]; // 选中日期内 provider/模型组合的聚合；按日视图为空。
+  offset: number; // 当前视图可见窗口在完整日期或当日模型列表中的起始索引。
+  selectedIndex: number; // 当前选中日期在 dailyUsage 中的绝对索引；模型明细中仅保留该上下文。
+  title: string; // 当前视图显示的面板标题。
+  view: 'daily' | 'dayModels'; // 可选择的按日列表或选中日期的模型明细。
 };
 
 export type CommandStatusSnapshot = {
@@ -946,6 +949,7 @@ export type CommandHostApp = {
   };
   usage: {
     listDailyUsage(options?: UsageQueryOptions): UsageDailyAggregate[];
+    listModelUsage(options?: UsageQueryOptions): UsageModelAggregate[];
     getViewport(): {maxLines: number; width: number};
   };
   diff: {
