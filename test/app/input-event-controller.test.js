@@ -27,6 +27,10 @@ function createHarness(overrides = {}) {
       handleEvent: () => calls.push('picker-event'),
       open: (index) => calls.push(`picker-open:${index}`)
     },
+    autoUpdate: overrides.autoUpdate || {
+      hasActiveRequest: () => false,
+      handleEvent: () => calls.push('auto-update-event')
+    },
     subagentView: overrides.subagentView || {
       isActive: () => false,
       toggle: () => calls.push('subagent-view-toggle'),
@@ -83,6 +87,44 @@ test('InputEventController gives active modals and command sessions priority', a
   });
   await command.controller.handleChunk('\r');
   assert.deepEqual(command.calls, ['command-start', 'command-end']);
+});
+
+test('InputEventController keeps the auto update prompt below other modals and consumes its input', async () => {
+  let pickerActive = true;
+  const harness = createHarness({
+    filePicker: {
+      hasActiveRequest: () => pickerActive,
+      handleEvent() {
+        harness.calls.push('picker-event');
+        pickerActive = false;
+      },
+      open: () => harness.calls.push('picker-open')
+    },
+    autoUpdate: {
+      hasActiveRequest: () => true,
+      handleEvent: (event) => harness.calls.push(`auto-update:${event.type}`)
+    }
+  });
+
+  await harness.controller.handleEvent({type: INPUT_EVENTS.MOVE_DOWN});
+  assert.deepEqual(harness.calls, ['picker-event']);
+  await harness.controller.handleEvent({type: INPUT_EVENTS.MOVE_DOWN});
+  assert.deepEqual(harness.calls, ['picker-event', 'auto-update:move_down']);
+  await harness.controller.handleEvent({type: INPUT_EVENTS.TEXT, value: 'draft'});
+  assert.deepEqual(harness.calls, ['picker-event', 'auto-update:move_down', 'auto-update:text']);
+  assert.equal(composerOps.getText(harness.appContext.composerContext.composer), '');
+});
+
+test('InputEventController records the latest input timestamp for idle gating', async () => {
+  const harness = createHarness();
+  assert.equal(harness.controller.getLastInputAt(), 0);
+
+  await harness.controller.handleEvent({type: INPUT_EVENTS.MOVE_UP});
+  const afterEvent = harness.controller.getLastInputAt();
+  assert.ok(afterEvent > 0);
+
+  await harness.controller.handleChunk('\r');
+  assert.ok(harness.controller.getLastInputAt() >= afterEvent);
 });
 
 test('InputEventController lets a modal consume Esc before an active BTW command session', () => {

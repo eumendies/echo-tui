@@ -2,6 +2,7 @@ import {createAgentLoopRuntime} from '../agent/loop-runtime/agent-loop-runtime';
 import {createTranscriptStore} from '../persistence/transcript-store';
 import {createUsageStore} from '../persistence/usage-store';
 import {readTuiTheme} from '../config/theme-config';
+import {readPackageVersion} from '../config/package-version';
 import {UserConfigContext} from '../config/user-config-context';
 import {createDebugContext} from '../debug/debug-context';
 import {createLifecycleHookDispatcher} from '../hooks/dispatcher';
@@ -10,6 +11,10 @@ import {McpManager, sanitizeMcpError} from '../mcp/manager';
 import {createAppRenderer} from '../render/app-renderer';
 import {runBashCommand} from '../tools/bash-command-runner';
 import {createToolResultStore} from '../tools/tool-result-offloading';
+import {getText} from '../input/composer';
+import {checkForUpdate} from '../update/update-check';
+import {runUpdateAndRestart} from '../update/update-runner';
+import {getDefaultUpdateStatePath, readUpdateState, writeUpdateState} from '../update/update-state';
 import {setupTerminal} from '../terminal/tty';
 import {createDefaultSlashCommandHandlers, createSlashCommandDescriptors, resolveSlashCommand} from '../commands/resolve-slash-command';
 import {runAssistantTurn} from './assistant-turn-runner';
@@ -24,6 +29,7 @@ import {UserQuestionContext} from './state/user-question-context';
 import {BtwConversationController} from './btw-conversation-controller';
 import {SubagentViewController} from './subagent-view-controller';
 import {createToolApprovalReviewer} from './tool-approval/resolver';
+import {AutoUpdateController} from './auto-update-controller';
 
 import type {RunAgent} from '../types/agent';
 import type {AppController} from '../types/app';
@@ -33,14 +39,22 @@ import type {AssistantTurnScope, Observation} from '../observation/observation';
 import type {RenderState} from '../types/render';
 import type {TranscriptRecord} from '../types/transcript';
 import type {UsageStore} from '../types/usage';
+import type {UpdateCheckResult} from '../update/update-check';
 import type {AssistantTurnSubmission} from './composer-submission-controller';
 
 const ACTIVITY_REDRAW_INTERVAL_MS = 100;
+// 自动弹出的提示要求最近没有输入，避免与"刚按下 Enter / 正在打字"的用户竞争。
+const AUTO_UPDATE_INPUT_IDLE_MS = 1000;
+
+type UpdateAppDependencies = {
+  applyUpdate?: (latestVersion: string) => Promise<number>; // 前台更新与重启替换缝；缺省执行真实 npm 全局安装
+  checkUpdate?: () => Promise<UpdateCheckResult>; // 启动检查替换缝；缺省访问 npm registry
+};
 
 /**
  * 创建 app 编排控制器，串联真实 terminal、input、render 和 agent runtime。
  */
-function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleHookDispatcher, observation: Observation, usageStore: UsageStore, userConfigContext: UserConfigContext): AppController {
+function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleHookDispatcher, observation: Observation, usageStore: UsageStore, userConfigContext: UserConfigContext, updateDependencies: UpdateAppDependencies = {}): AppController {
   if (!userConfigContext) {
     throw new Error('createApp 必须注入共享的 UserConfigContext');
   }
@@ -102,9 +116,9 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
       : {...base, streamingOwner: 'main'};
   }
 
-  /** 用户问题、工具审批与文件选择按优先级取第一个激活的 modal 表面;激活时 footer 输入区为静态卡片。 */
+  /** 用户问题、工具审批、文件选择与更新提示按优先级取第一个激活的 modal 表面;激活时 footer 输入区为静态卡片。 */
   function getActiveModalSurface(): CommandSurface | null {
-    return userQuestion.getSurface() || toolApproval.getSurface() || filePicker.getSurface() || null;
+    return userQuestion.getSurface() || toolApproval.getSurface() || filePicker.getSurface() || autoUpdate.getSurface() || null;
   }
 
   /** 当前接管可见投影的 owner；view 优先于 btw，都不活跃时为 main。 */
@@ -116,13 +130,31 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
   }
 
   /**
-   * 停止 spinner、渲染最终 transcript，并在退出前恢复终端状态。
+   * 停止消费 stdin 与 resize 事件并暂停 stdin；更新流程收尾后终端要交给前台子进程，
+   * 父进程必须让出输入，也避免 resize 触发对 npm 输出或重启进程画面的破坏性重绘。
    */
-  function exit(): void {
+  function detachTerminalListeners(): void {
+    if (typeof input.off === 'function') {
+      input.off('data', inputController.handleChunk);
+    }
+
+    if (typeof output.off === 'function') {
+      output.off('resize', handleResize);
+    }
+
+    // terminal.cleanup 的 pause 只覆盖"启动前已暂停"的情况；这里显式停止 libuv 对 fd 0 的轮询。
+    input.pause();
+  }
+
+  /**
+   * 停止周期任务、关闭视图与资源并恢复终端状态；exit 与前台更新流程共用，不终止进程。
+   */
+  function shutdown(): void {
     observation.appExiting({cwd: appContext.getCurrentCwd(), interactionMode: appContext.getInteractionMode()});
     activeShellController?.abort();
     if (activityTimer) clearInterval(activityTimer);
     activityTimer = null;
+    detachTerminalListeners();
     subagentView.close();
     btwConversation.close();
     appContext.conversationReferenceContext.clear();
@@ -133,6 +165,13 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     terminal.cleanup();
     output.write('\n');
     observation.close();
+  }
+
+  /**
+   * 停止 spinner、渲染最终 transcript，并在退出前恢复终端状态。
+   */
+  function exit(): void {
+    shutdown();
     process.exit(0);
   }
 
@@ -151,6 +190,8 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
    * 避免等待输入期间整帧擦写静态卡片造成频闪。
    */
   function renderTimedActivity(): void {
+    // 更新提示复用同一 tick 尝试呈现；门控不满足时保持待命，不额外引入轮询 timer。
+    autoUpdate.tick();
     const owner = currentOwner();
     const hasTimedActivity = owner === 'view'
       ? subagentView.hasTimedActivity()
@@ -272,6 +313,18 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     onChange: () => render(),
     rows: () => terminal.getSize().rows
   });
+  const autoUpdate = new AutoUpdateController({
+    applyUpdate: updateDependencies.applyUpdate || ((latestVersion) => runUpdateAndRestart({latestVersion})),
+    canPresent: canPresentAutoUpdate,
+    checkUpdate: updateDependencies.checkUpdate || (() => checkForUpdate({
+      configEnabled: userConfigContext.capture().getAppSettings().checkUpdatesOnStartup,
+      currentVersion: readPackageVersion()
+    })),
+    exit: (code) => process.exit(code),
+    persistIgnoredVersion,
+    render: () => render(),
+    shutdown
+  });
   const slashCommandHandlers = createDefaultSlashCommandHandlers(
     () => userConfigContext.capture().getAppSettings().agentInstructionFileName,
     () => commandHost.mcp.listPrompts()
@@ -331,6 +384,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     userQuestion,
     toolApproval,
     filePicker,
+    autoUpdate,
     subagentView,
     command: commandRuntime,
     localSurface: {
@@ -442,6 +496,52 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
   }
 
   /**
+   * 空闲门控：任何会接管 footer、消费输入或打断用户的活动活跃时都不适合呈现更新提示；
+   * 条件不满足时等待下一个 activity tick 重试，不降级为 toast 或 transcript 记录。
+   */
+  function canPresentAutoUpdate(): boolean {
+    if (currentOwner() !== 'main' || getActiveModalSurface() || commandRuntime.hasActiveSession()) {
+      return false;
+    }
+
+    if (appContext.modelTuningContext.isActive() || referenceErrorSurface || mcpDiagnosticSurface) {
+      return false;
+    }
+
+    if (appContext.getMcpBootstrapStatus() !== 'ready') {
+      return false;
+    }
+
+    if (activeShellController || appContext.turnContext.responding) {
+      return false;
+    }
+
+    if (appContext.pendingMessageContext.getPending()) {
+      return false;
+    }
+
+    if (appContext.conversationReferenceContext.getPending() || appContext.conversationReferenceContext.isPreparing()) {
+      return false;
+    }
+
+    if (getText(appContext.composerContext.composer).trim() !== '') {
+      return false;
+    }
+
+    return Date.now() - inputController.getLastInputAt() >= AUTO_UPDATE_INPUT_IDLE_MS;
+  }
+
+  /** 记录忽略版本；写入失败降级为仅本次会话忽略，不打扰用户。 */
+  function persistIgnoredVersion(version: string): void {
+    try {
+      const statePath = getDefaultUpdateStatePath();
+      writeUpdateState({...readUpdateState(statePath), ignoredVersion: version}, statePath);
+    } catch {
+      // 状态文件不可写时只保留会话级忽略。
+    }
+  }
+
+  /**
    * 启动 app 并注册输入/resize 事件监听。
    */
   function start(): void {
@@ -486,6 +586,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     rememberTerminalSize();
     initialRenderComplete = true;
     activityTimer = setInterval(renderTimedActivity, ACTIVITY_REDRAW_INTERVAL_MS);
+    autoUpdate.start();
 
     if (mcpManager) {
       appContext.setMcpBootstrapStatus('initializing');

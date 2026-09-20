@@ -30,6 +30,11 @@ npm install -g @eumendies/echo-tui@latest
 echo-tui --version
 ```
 
+通过包管理器（如 `npm install -g`）安装的 echo-tui 会在启动时静默检查 npm registry 是否有新版本。发现新版本且你正处于空闲时，footer 会弹出「更新可用」提示：选择「立即更新」会退出 TUI、在前台运行 `npm install -g @eumendies/echo-tui@latest`（输出直通终端）并在完成后自动重启新版本；也可以选择「稍后提醒」（本次会话不再提示）或「忽略此版本」（出现更高版本时恢复提示）。检查每 24 小时最多联网一次，网络失败静默降级；源码运行（`npm start`）与 npx 运行不参与检查。
+
+- 可在 `/config` → 常规关闭「启动时检查更新」。
+- 检查缓存与忽略版本保存在 `~/.echo/update-state.json`；删除该文件会重置忽略状态。
+
 ## 单轮 CLI 对话
 
 `--once` 适合脚本或命令行管道。它只输出本次回答，不进入交互界面，也不会保存为可恢复会话：

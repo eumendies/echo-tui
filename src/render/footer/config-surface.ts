@@ -81,6 +81,7 @@ function renderGeneralView(state: GeneralConfigState, tabs: ConfigSurfaceTab[], 
     if (rowId === 'reasoningSummary') return {label: '显示推理摘要', value: state.draft.showReasoningSummary ? '开' : '关'};
     if (rowId === 'defaultInteractionMode') return {label: '默认启动模式', value: state.draft.defaultInteractionMode};
     if (rowId === 'autoCompressImages') return {label: '超限图片自动压缩', value: state.draft.autoCompressImages ? '开' : '关'};
+    if (rowId === 'checkUpdatesOnStartup') return {label: '启动时检查更新', value: state.draft.checkUpdatesOnStartup ? '开' : '关'};
     if (rowId === 'fileEditMode') return {label: '文件编辑工具', value: state.draft.fileEditMode};
     if (rowId === 'toolApprovalMode') return {label: '工具审批模式', value: state.draft.toolApprovalMode};
     if (rowId === 'toolApprovalModel') {

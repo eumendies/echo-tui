@@ -44,6 +44,7 @@ const GENERAL_CONFIG_BASE_ROW_IDS = [
   'reasoningSummary',
   'defaultInteractionMode',
   'autoCompressImages',
+  'checkUpdatesOnStartup',
   'fileEditMode',
   'toolApprovalMode',
   'instructionFile',
