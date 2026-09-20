@@ -32,6 +32,12 @@ type ApplyPatchToolHandlerOptions = {
   maxOutputBytes?: number; // 最终 provider-visible 摘要的 UTF-8 字节预算，仅供固定安全上限或测试覆盖。
 };
 
+type ApplyPatchFailureDetails = {
+  hint?: string; // 失败修复建议，独立成行放在原文回显之前
+  hunkLines?: string[]; // 匹配失败 hunk 的 pre-image 行，作为失败文本的最后一段回显
+  filesUntouched: boolean; // 写盘前失败时为 true，失败文本才会声明文件未被改动
+};
+
 /**
  * 为 apply_patch 调用生成轻量可见摘要；这里只扫 patch header，不做执行期语义校验。
  */
@@ -228,7 +234,15 @@ function createApplyPatchToolHandler(options: ApplyPatchToolHandlerOptions = {})
         ok: result.ok,
         text: result.ok
           ? formatSuccess(result.value.changedFiles, maxOutputBytes)
-          : formatFailure(result.reason, result.hint, maxOutputBytes),
+          : formatFailure(
+            result.reason,
+            {
+              hint: result.hint,
+              hunkLines: result.hunkLines,
+              filesUntouched: result.filesUntouched === true
+            },
+            maxOutputBytes
+          ),
         details: {kind: 'apply_patch', ...(display ? {display} : {})}
       };
     }
@@ -240,27 +254,27 @@ function createApplyPatchToolHandler(options: ApplyPatchToolHandlerOptions = {})
  */
 function applyPatch(patch: unknown, options: {cwd: string; limits: ApplyPatchLimits; changeRecorder?: ToolExecutionOptions['changeRecorder']}): ApplyPatchExecutionResult {
   if (typeof patch !== 'string') {
-    return {ok: false, reason: 'patch must be a string'};
+    return {ok: false, reason: 'patch must be a string', filesUntouched: true};
   }
 
   if (patch.trim() === '') {
-    return {ok: false, reason: 'patch must be non-empty'};
+    return {ok: false, reason: 'patch must be non-empty', filesUntouched: true};
   }
 
   if (Buffer.byteLength(patch, 'utf8') > options.limits.maxPatchBytes) {
-    return {ok: false, reason: `patch exceeds ${options.limits.maxPatchBytes} bytes`};
+    return {ok: false, reason: `patch exceeds ${options.limits.maxPatchBytes} bytes`, filesUntouched: true};
   }
 
   const parsed = parsePatchText(patch, options.limits);
 
   if (!parsed.ok) {
-    return parsed;
+    return {...parsed, filesUntouched: true};
   }
 
   const simulated = simulatePatch(parsed.value, options);
 
   if (!simulated.ok) {
-    return simulated;
+    return {...simulated, filesUntouched: true};
   }
 
   // 所有解析、校验和内存应用都成功后才进入写盘阶段；写成功的文件立即标记为可回退。
@@ -320,16 +334,36 @@ function formatSuccess(changedFiles: ChangedFile[], maxOutputBytes: number): str
   return capUtf8Text(lines.join('\n'), maxOutputBytes).text;
 }
 
-function formatFailure(reason: string, hint: string | undefined, maxOutputBytes: number): string {
-  const staticText = hint ? 'Patch failed.\nReason: \nHint: ' : 'Patch failed.\nReason: ';
-  const availableBytes = Math.max(0, maxOutputBytes - Buffer.byteLength(staticText, 'utf8'));
-  const reasonBudget = hint ? Math.floor(availableBytes / 2) : availableBytes;
-  const boundedReason = capFileEditResultField(reason, Math.min(FILE_EDIT_RESULT_MAX_FIELD_BYTES, reasonBudget));
-  const hintBudget = Math.max(0, availableBytes - Buffer.byteLength(boundedReason, 'utf8'));
+/**
+ * 组装 patch 失败文本：头部声明失败并区分文件是否被改动，随后依次是原因、修复提示和失败 hunk 原文；
+ * 原文回显固定放在最后，避免模型把它当成提示或原因的一部分。
+ */
+function formatFailure(reason: string, details: ApplyPatchFailureDetails, maxOutputBytes: number): string {
+  const header = details.filesUntouched ? 'Patch failed. No files were changed.' : 'Patch failed.';
+  const labels = [
+    header,
+    'Reason: ',
+    ...(details.hint !== undefined ? ['Hint: '] : []),
+    ...(details.hunkLines !== undefined ? ['Failed hunk lines:'] : [])
+  ];
+  const availableBytes = Math.max(0, maxOutputBytes - Buffer.byteLength(labels.join('\n'), 'utf8'));
+  const boundedReason = capFileEditResultField(reason, Math.min(FILE_EDIT_RESULT_MAX_FIELD_BYTES, availableBytes));
+  const remainingAfterReason = Math.max(0, availableBytes - Buffer.byteLength(boundedReason, 'utf8'));
+  const boundedHint = details.hint === undefined
+    ? undefined
+    : capFileEditResultField(details.hint, Math.min(FILE_EDIT_RESULT_MAX_FIELD_BYTES, remainingAfterReason));
+  const remainingAfterHint = Math.max(0, remainingAfterReason - Buffer.byteLength(boundedHint ?? '', 'utf8'));
+  const boundedHunkLines = details.hunkLines === undefined
+    ? undefined
+    : capFileEditResultField(
+      details.hunkLines.join('\n'),
+      Math.min(FILE_EDIT_RESULT_MAX_FIELD_BYTES, remainingAfterHint)
+    );
   const text = [
-    'Patch failed.',
+    header,
     `Reason: ${boundedReason}`,
-    ...(hint ? [`Hint: ${capFileEditResultField(hint, Math.min(FILE_EDIT_RESULT_MAX_FIELD_BYTES, hintBudget))}`] : [])
+    ...(boundedHint !== undefined ? [`Hint: ${boundedHint}`] : []),
+    ...(boundedHunkLines !== undefined ? ['Failed hunk lines:', boundedHunkLines] : [])
   ].join('\n');
   return capUtf8Text(text, maxOutputBytes).text;
 }

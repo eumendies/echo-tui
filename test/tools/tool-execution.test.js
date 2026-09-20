@@ -3943,6 +3943,7 @@ test('apply_patch rejects unsafe delete targets without writing other changes', 
   ].join('\n')));
   assert.equal(staleDelete.ok, false);
   assert.match(staleDelete.text, /matched 0 locations/);
+  assert.match(staleDelete.text, /hunk 1 of 1 matched 0 locations in changed\.txt\nHint: [^\n]+\nFailed hunk lines:\nexpected$/);
   assert.equal(readWorkspaceFile(cwd, 'changed.txt'), 'actual\n');
 
   const partialDelete = await executor.execute(createPatchCall([
@@ -4333,6 +4334,8 @@ test('apply_patch failure reasons identify the failing hunk', async () => {
 
   assert.equal(staleSecondHunk.ok, false);
   assert.match(staleSecondHunk.text, /hunk 2 of 2 matched 0 locations in seq\.txt/);
+  assert.match(staleSecondHunk.text, /^Patch failed\. No files were changed\.\nReason:/);
+  assert.match(staleSecondHunk.text, /hunk 2 of 2 matched 0 locations in seq\.txt\nHint: [^\n]+\nFailed hunk lines:\nbeta\ngamma$/);
   assert.equal(readWorkspaceFile(cwd, 'seq.txt'), 'alpha\nkeep\nomega\n');
 
   const staleSecondAnchor = await executor.execute(createPatchCall([
@@ -4347,6 +4350,7 @@ test('apply_patch failure reasons identify the failing hunk', async () => {
 
   assert.equal(staleSecondAnchor.ok, false);
   assert.match(staleSecondAnchor.text, /hunk 2 of 2 anchor line matched 0 locations in seq\.txt/);
+  assert.match(staleSecondAnchor.text, /hunk 2 of 2 anchor line matched 0 locations in seq\.txt\nHint: [^\n]+\nFailed hunk lines:\ngone$/);
   assert.equal(readWorkspaceFile(cwd, 'seq.txt'), 'alpha\nkeep\nomega\n');
 
   const ambiguousSecondHunk = await executor.execute(createPatchCall([
@@ -4364,6 +4368,7 @@ test('apply_patch failure reasons identify the failing hunk', async () => {
 
   assert.equal(ambiguousSecondHunk.ok, false);
   assert.match(ambiguousSecondHunk.text, /hunk 2 of 2 matched multiple locations in amb\.txt/);
+  assert.match(ambiguousSecondHunk.text, /hunk 2 of 2 matched multiple locations in amb\.txt\nHint: [^\n]+\nFailed hunk lines:\nkeep$/);
   assert.equal(readWorkspaceFile(cwd, 'amb.txt'), 'top\nalpha\nkeep\nbeta\nkeep\n');
 });
 
