@@ -8,6 +8,7 @@ import type {AppContext} from './state/app-context';
 import type {FilePickerContext} from './state/file-picker-context';
 import type {ToolApprovalContext} from './state/tool-approval-context';
 import type {UserQuestionContext} from './state/user-question-context';
+import type {AutoUpdateController} from './auto-update-controller';
 
 type InputCommandPort = {
   hasActiveSession(): boolean; // 当前是否由 command session 独占输入。
@@ -30,6 +31,7 @@ type InputEventControllerOptions = {
   userQuestion: Pick<UserQuestionContext, 'hasActiveRequest' | 'handleEvent'>; // 最高优先级的用户问题 modal。
   toolApproval: Pick<ToolApprovalContext, 'hasActiveRequest' | 'handleEvent' | 'toggleAllowAllForSession'>; // 工具审批 modal 与会话快捷键。
   filePicker: Pick<FilePickerContext, 'hasActiveRequest' | 'handleEvent' | 'open'>; // 文件选择 surface 与 @ 触发入口。
+  autoUpdate: Pick<AutoUpdateController, 'hasActiveRequest' | 'handleEvent'>; // 最低优先级 modal：启动更新提示。
   subagentView: SubagentViewPort; // subagent 会话窗口输入端口；优先级位于 modal 之后、command session 之前。
   command: InputCommandPort; // 活跃 slash command session 的输入端口。
   localSurface: LocalSurfacePort; // main 持有的 reference error 和 MCP diagnostic surface。
@@ -50,6 +52,7 @@ class InputEventController {
   private readonly userQuestion: Pick<UserQuestionContext, 'hasActiveRequest' | 'handleEvent'>;
   private readonly toolApproval: Pick<ToolApprovalContext, 'hasActiveRequest' | 'handleEvent' | 'toggleAllowAllForSession'>;
   private readonly filePicker: Pick<FilePickerContext, 'hasActiveRequest' | 'handleEvent' | 'open'>;
+  private readonly autoUpdate: Pick<AutoUpdateController, 'hasActiveRequest' | 'handleEvent'>;
   private readonly subagentView: SubagentViewPort;
   private readonly command: InputCommandPort;
   private readonly localSurface: LocalSurfacePort;
@@ -61,12 +64,14 @@ class InputEventController {
   private readonly exit: () => void;
   private readonly render: () => void;
   private readonly keyParser = createKeyParser();
+  private lastInputAt = 0;
 
   constructor(options: InputEventControllerOptions) {
     this.appContext = options.appContext;
     this.userQuestion = options.userQuestion;
     this.toolApproval = options.toolApproval;
     this.filePicker = options.filePicker;
+    this.autoUpdate = options.autoUpdate;
     this.subagentView = options.subagentView;
     this.command = options.command;
     this.localSurface = options.localSurface;
@@ -83,6 +88,7 @@ class InputEventController {
    * 解析一个 stdin chunk，并等待该 chunk 中所有异步 command/submit 处理完成。
    */
   readonly handleChunk = (chunk: string | Buffer): Promise<void> => {
+    this.lastInputAt = Date.now();
     const pendingWork: Array<Promise<void>> = [];
 
     for (const event of this.keyParser.parse(chunk)) {
@@ -100,6 +106,7 @@ class InputEventController {
    * 按既有 surface 和快捷键优先级处理单个语义输入事件。
    */
   readonly handleEvent = (event: InputEvent): Promise<void> | void => {
+    this.lastInputAt = Date.now();
     if (this.userQuestion.hasActiveRequest()) {
       this.userQuestion.handleEvent(event);
       return undefined;
@@ -112,6 +119,11 @@ class InputEventController {
 
     if (this.filePicker.hasActiveRequest()) {
       this.filePicker.handleEvent(event);
+      return undefined;
+    }
+
+    if (this.autoUpdate.hasActiveRequest()) {
+      this.autoUpdate.handleEvent(event);
       return undefined;
     }
 
@@ -252,6 +264,13 @@ class InputEventController {
         return undefined;
     }
   };
+
+  /**
+   * 返回最近一次输入事件的毫秒时间戳；0 表示本实例尚未收到输入。更新提示的空闲门控读取该值。
+   */
+  getLastInputAt(): number {
+    return this.lastInputAt;
+  }
 }
 
 export {

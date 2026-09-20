@@ -102,3 +102,56 @@ test('createApp persists an interrupted tool call as a paired result before the 
     fs.rmSync(home, {recursive: true, force: true});
   }
 });
+
+test('createApp defers the update request until the composer is empty and input is idle', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-main-update-gating-'));
+
+  try {
+    const fixturePath = path.join(__dirname, 'fixtures/main-auto-update-gating-scenario.js');
+    const output = childProcess.execFileSync(process.execPath, [fixturePath], {
+      cwd: path.resolve(__dirname, '../../..'),
+      encoding: 'utf8',
+      env: {...process.env, HOME: home},
+      timeout: 20_000
+    });
+    const result = JSON.parse(output);
+
+    assert.deepEqual(result, {
+      defaultFocus: 1,
+      visibleAfterLater: false,
+      visibleWhenIdle: true,
+      visibleWhileComposerFilled: false,
+      visibleWhileTyping: false
+    });
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+test('createApp restores the terminal before applying an update and exits with the update result', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-main-update-apply-'));
+
+  try {
+    const fixturePath = path.join(__dirname, 'fixtures/main-update-apply-scenario.js');
+    const output = childProcess.execFileSync(process.execPath, [fixturePath], {
+      cwd: path.resolve(__dirname, '../../..'),
+      encoding: 'utf8',
+      env: {...process.env, HOME: home},
+      timeout: 20_000
+    });
+    const result = JSON.parse(output);
+
+    assert.deepEqual(result.appliedUpdates, ['1.4.5']);
+    assert.deepEqual(result.exitCodes, [0]);
+    assert.equal(result.footerCleared, true);
+    assert.equal(result.terminalCleanedUp, true);
+    assert.match(result.autoUpdateOutput, /\n/);
+    assert.equal(result.stdinListenersAttachedAtStart, true);
+    assert.equal(result.resizeListenerAttachedAtStart, true);
+    assert.equal(result.stdinDataListenersAfterUpdate, result.stdinDataListenersBefore);
+    assert.equal(result.resizeListenersAfterUpdate, result.resizeListenersBefore);
+    assert.equal(result.stdinPausedAfterUpdate, true);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});

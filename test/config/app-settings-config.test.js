@@ -36,7 +36,8 @@ test('readAppSettings reads valid fields and falls back invalid fields independe
         instructions: {fileName: 'CLAUDE.md'},
         skills: {catalogContextRatio: 0.05},
         tools: {approval: {mode: 'auto', modelProfileId: 'reviewer'}, fileEdit: {mode: 'edit_file'}, readFiles: {autoCompressImages: false}},
-        ui: {defaultInteractionMode: 'plan', slashSuggestionMaxVisible: 12, showReasoningSummary: false}
+        ui: {defaultInteractionMode: 'plan', slashSuggestionMaxVisible: 12, showReasoningSummary: false},
+        updates: {checkOnStartup: false}
       });
     }
   });
@@ -46,7 +47,8 @@ test('readAppSettings reads valid fields and falls back invalid fields independe
         compaction: {thresholdRatio: Number.NaN},
         skills: {catalogContextRatio: 0.5},
         tools: {approval: {mode: 'unexpected'}},
-        ui: {defaultInteractionMode: 'invalid', slashSuggestionMaxVisible: 30, showReasoningSummary: false}
+        ui: {defaultInteractionMode: 'invalid', slashSuggestionMaxVisible: 30, showReasoningSummary: false},
+        updates: {checkOnStartup: 'yes'}
       });
     }
   });
@@ -54,6 +56,7 @@ test('readAppSettings reads valid fields and falls back invalid fields independe
   assert.deepEqual(valid, {
     agentInstructionFileName: 'CLAUDE.md',
     autoCompressImages: false,
+    checkUpdatesOnStartup: false,
     compactionThresholdRatio: 0.65,
     defaultInteractionMode: 'plan',
     fileEditMode: 'edit_file',
@@ -76,6 +79,7 @@ test('readAppSettings uses defaults for missing and malformed optional config', 
   assert.deepEqual(readAppSettings({readFile() { return JSON.stringify({compaction: {thresholdRatio: 0.95}, skills: {catalogContextRatio: 0.1}, ui: {slashSuggestionMaxVisible: 20}}); }}), {
     agentInstructionFileName: 'AGENTS.md',
     autoCompressImages: true,
+    checkUpdatesOnStartup: true,
     compactionThresholdRatio: 0.95,
     defaultInteractionMode: 'normal',
     fileEditMode: 'apply_patch',
@@ -99,6 +103,7 @@ test('saveAppSettingsDraft patches owned fields and writes atomically', () => {
   saveAppSettingsDraft({
     agentInstructionFileName: 'CLAUDE.md',
     autoCompressImages: false,
+    checkUpdatesOnStartup: false,
     compactionThresholdRatio: 0.7,
     defaultInteractionMode: 'plan',
     fileEditMode: 'edit_file',
@@ -122,7 +127,8 @@ test('saveAppSettingsDraft patches owned fields and writes atomically', () => {
         compaction: {keepCount: 20},
         instructions: {other: 'kept'},
         skills: {other: 'kept'},
-        ui: {other: 'kept'}
+        ui: {other: 'kept'},
+        updates: {other: 'kept'}
       });
     },
     writeFile(filePath, data) {
@@ -142,6 +148,7 @@ test('saveAppSettingsDraft patches owned fields and writes atomically', () => {
   assert.deepEqual(saved.instructions, {other: 'kept', fileName: 'CLAUDE.md'});
   assert.deepEqual(saved.skills, {other: 'kept', catalogContextRatio: 0.04});
   assert.deepEqual(saved.ui, {other: 'kept', defaultInteractionMode: 'plan', slashSuggestionMaxVisible: 5, showReasoningSummary: false});
+  assert.deepEqual(saved.updates, {other: 'kept', checkOnStartup: false});
   assert.equal(saved.llm.selectedModel, 'fast');
   assert.equal(saved.tools.bash.timeoutMs, 1000);
   assert.equal(saved.tools.fileEdit.mode, 'edit_file');
@@ -173,6 +180,7 @@ test('saveAppSettingsDraft creates missing config and rejects invalid drafts bef
     instructions: {fileName: 'AGENTS.md'},
     skills: {catalogContextRatio: 0.02},
     ui: {defaultInteractionMode: 'normal', slashSuggestionMaxVisible: 8, showReasoningSummary: true},
+    updates: {checkOnStartup: true},
     tools: {approval: {mode: 'manual'}, fileEdit: {mode: 'apply_patch'}, readFiles: {autoCompressImages: true}}
   });
   assert.deepEqual(validateAppSettingsDraft({...DEFAULT_APP_SETTINGS, compactionThresholdRatio: 0.49}), {ok: false, error: '自动压缩阈值必须在 50% 到 95% 之间'});
@@ -182,6 +190,7 @@ test('saveAppSettingsDraft creates missing config and rejects invalid drafts bef
   assert.deepEqual(validateAppSettingsDraft({...DEFAULT_APP_SETTINGS, agentInstructionFileName: 'OTHER.md'}), {ok: false, error: '项目指令文件必须是 AGENTS.md 或 CLAUDE.md'});
   assert.deepEqual(validateAppSettingsDraft({...DEFAULT_APP_SETTINGS, fileEditMode: 'other'}), {ok: false, error: '文件编辑工具必须是 apply_patch 或 edit_file'});
   assert.deepEqual(validateAppSettingsDraft({...DEFAULT_APP_SETTINGS, autoCompressImages: 'yes'}), {ok: false, error: '超限图片自动压缩设置必须是布尔值'});
+  assert.deepEqual(validateAppSettingsDraft({...DEFAULT_APP_SETTINGS, checkUpdatesOnStartup: 'yes'}), {ok: false, error: '启动更新检查设置必须是布尔值'});
   assert.deepEqual(validateAppSettingsDraft({...DEFAULT_APP_SETTINGS, toolApprovalMode: 'invalid'}), {ok: false, error: '工具审批模式必须是 manual 或 auto'});
   assert.throws(() => saveAppSettingsDraft({...DEFAULT_APP_SETTINGS, slashSuggestionMaxVisible: 0}, {
     writeFile() {
