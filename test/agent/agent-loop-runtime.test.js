@@ -2718,7 +2718,7 @@ test('createAgentLoopRuntime records provider usage events without changing cont
         contextUsages.push(usage);
       }
     });
-  });
+  }, {...TEST_CONFIG, providerId: 'primary'});
 
   assert.equal(result, 'done');
   assert.equal(contextUsages.length, 2);
@@ -2728,6 +2728,7 @@ test('createAgentLoopRuntime records provider usage events without changing cont
   assert.equal(events[0].cwdHash.length, 40);
   assert.deepEqual(events.map((event) => ({
     providerType: event.providerType,
+    providerId: event.providerId,
     model: event.model,
     interactionMode: event.interactionMode,
     inputTokens: event.inputTokens,
@@ -2738,6 +2739,7 @@ test('createAgentLoopRuntime records provider usage events without changing cont
   })), [
     {
       providerType: 'fake',
+      providerId: 'primary',
       model: 'fake',
       interactionMode: 'normal',
       inputTokens: 42,
@@ -2748,6 +2750,7 @@ test('createAgentLoopRuntime records provider usage events without changing cont
     },
     {
       providerType: 'fake',
+      providerId: 'primary',
       model: 'fake',
       interactionMode: 'normal',
       inputTokens: 50,

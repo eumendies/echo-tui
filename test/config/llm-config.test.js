@@ -20,10 +20,13 @@ function withContext(options, read) {
 }
 
 function readLlmConfig(options = {}) {
-  return withContext(options, (snapshot) => snapshot.resolveLlmConfig({
-    modelProfileId: options.modelProfileId,
-    reasoningEffortOverride: options.reasoningEffortOverride
-  }));
+  return withContext(options, (snapshot) => {
+    const {providerId: _providerId, ...config} = snapshot.resolveLlmConfig({
+      modelProfileId: options.modelProfileId,
+      reasoningEffortOverride: options.reasoningEffortOverride
+    });
+    return config;
+  });
 }
 
 function readLlmConfigForProfile(modelProfileId, options = {}) {
@@ -70,6 +73,21 @@ function readConfigError(error) {
 
 test('resolveContextWindow prefers explicit model configuration', () => {
   assert.equal(resolveContextWindow({ model: 'gpt-5', contextWindow: 64_000 }), 64_000);
+});
+
+test('readLlmConfig exposes the configured provider ID for local usage attribution', () => {
+  const config = withContext({
+    configPath: '/tmp/echo-config.json',
+    readFile: readConfigFrom(JSON.stringify({
+      llm: {
+        selectedModel: 'primary-model',
+        providers: {primary: {preset: OPENAI_PRESET, apiKey: 'test-api-key'}},
+        models: [{id: 'primary-model', provider: 'primary', model: 'gpt-test'}]
+      }
+    }))
+  }, (snapshot) => snapshot.resolveLlmConfig());
+
+  assert.equal(config.providerId, 'primary');
 });
 
 test('resolveContextWindow matches built-in model names exactly and case-insensitively', () => {

@@ -1,16 +1,13 @@
-# usage-command Specification
+## MODIFIED Requirements
 
-## Purpose
-定义 `/usage` slash command、token usage 持久化账本、每日用量聚合和 usage command surface 的外部行为。
-## Requirements
 ### Requirement: `/usage` command 展示每日 token 用量
-系统 SHALL 提供 `/usage` slash command，用于展示本地持久化的每日 token usage 聚合。该 command SHALL 是本地只读命令，不触发 agent 请求，不追加 transcript record。
+系统 SHALL 提供 `/usage` slash command，用于展示本地持久化的 token usage 聚合。该 command SHALL 是本地只读命令，不触发 agent 请求，不追加 transcript record；打开时 SHALL 默认显示全部记录的按日聚合，并允许用户选择一个日期后查看该日按配置 provider ID 和模型标识聚合的 token 用量。
 
 #### Scenario: 打开 usage surface
 - **WHEN** 用户提交 `/usage`
 - **AND** 本地存在 token usage 记录
 - **THEN** 系统 SHALL 打开 usage command surface
-- **AND** surface SHALL 显示按日聚合的 token 用量
+- **AND** surface SHALL 默认显示按日聚合的 token 用量和选中日期
 - **AND** 系统 SHALL NOT 将 `/usage` 作为 user message 提交给 agent
 
 #### Scenario: 无 usage 记录时提示空状态
@@ -24,51 +21,6 @@
 - **WHEN** 用户提交带额外参数的 `/usage` 输入
 - **THEN** 系统 SHALL NOT 将其匹配为 `/usage` command
 - **AND** slash command 解析 SHALL 保持与其他纯命令一致的精确匹配语义
-
-### Requirement: token usage 持久化账本
-系统 SHALL 在每次真实 provider request 返回可用 usage 后，把该 usage 作为 append-only 事件写入本地 usage 账本。账本 SHALL 只保存用量统计和非敏感运行上下文，不得保存 prompt、assistant 输出文本、工具参数、API key、headers 或 provider 请求体。
-
-#### Scenario: 记录 provider usage event
-- **WHEN** provider turn 成功返回 usage
-- **THEN** 系统 SHALL 追加一条 usage event
-- **AND** event SHALL 包含时间戳、本地日期、模型标识、provider 类型、interaction mode 和 token usage 字段
-- **AND** event SHALL NOT 包含 prompt、响应正文、工具参数或敏感凭据
-
-#### Scenario: provider 没有返回 usage 时不写账本
-- **WHEN** provider turn 完成但没有返回任何可用 usage token 字段
-- **THEN** 系统 SHALL NOT 追加 usage event
-- **AND** assistant turn SHALL 继续按原响应结果完成
-
-#### Scenario: usage 写入失败不影响响应
-- **WHEN** usage store 写入失败
-- **THEN** 系统 SHALL 隔离该失败
-- **AND** 系统 SHALL NOT 因 usage 写入失败中断 assistant turn
-- **AND** 系统 SHALL NOT 把写入失败作为 transcript error 追加到对话历史
-
-#### Scenario: 多次 provider continuation 分别记录
-- **WHEN** 一个 assistant turn 因工具调用产生多次 provider request
-- **AND** 多次 provider request 均返回 usage
-- **THEN** 系统 SHALL 为每次 provider request 分别追加 usage event
-- **AND** `/usage` 的每日聚合 SHALL 包含这些 event 的合计值
-
-### Requirement: 每日 usage 聚合分类
-系统 SHALL 按本地日期聚合 usage events，并 SHALL 至少输出输入 token、缓存命中输入 token、缓存创建输入 token、未命中输入 token、输出 token、总 token 和缓存命中率。
-
-#### Scenario: 聚合单日 usage
-- **WHEN** 同一天存在多条 usage events
-- **THEN** 系统 SHALL 将这些 events 的输入、缓存命中输入、缓存创建输入、未命中输入和输出 token 分别求和
-- **AND** 系统 SHALL 将总 token 计算为输入 token 与输出 token 之和
-
-#### Scenario: 计算未命中输入
-- **WHEN** usage event 包含输入 token 和缓存命中输入 token
-- **THEN** 系统 SHALL 将未命中输入 token 计算为输入 token 减去缓存命中输入 token 后不小于 0 的值
-- **AND** 缓存创建输入 token SHALL 保留为独立字段
-
-#### Scenario: 计算缓存命中率
-- **WHEN** 聚合日的输入 token 大于 0
-- **THEN** 系统 SHALL 将缓存命中率计算为缓存命中输入 token 除以输入 token
-- **WHEN** 聚合日的输入 token 等于 0
-- **THEN** 缓存命中率 SHALL 为 0
 
 ### Requirement: usage surface 支持日期选择、下钻和导航
 系统 SHALL 允许用户在 `/usage` 的按日视图中选择日期并移动可见日期窗口，进入当日模型明细后移动可见模型窗口；所有这些交互 SHALL 不修改 transcript records。
@@ -147,6 +99,8 @@
 - **THEN** surface SHALL 遵循 footer 的安全宽度和最大行数约束
 - **AND** surface SHALL NOT 因写满最后一列触发额外自动换行
 - **AND** surface MAY 减少可见日期数量、隐藏趋势列或裁剪次要标签以保持布局稳定
+
+## ADDED Requirements
 
 ### Requirement: usage event 记录配置 provider ID
 系统 SHALL 在可解析的 LLM provider 配置中取得非敏感 provider ID，并 SHALL 将它作为可选 `providerId` 字段写入新的 usage event。该字段 SHALL NOT 包含 API key、Base URL、headers 或其他凭据；缺少该字段的历史 event SHALL 保持可读和可聚合。

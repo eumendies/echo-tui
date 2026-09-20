@@ -105,6 +105,9 @@ function createStatusCommandPorts(options: StatusCommandPortOptions): Pick<Comma
       listDailyUsage(query) {
         return usageStore.listDailyUsage(query);
       },
+      listModelUsage(query) {
+        return usageStore.listModelUsage(query);
+      },
       getViewport() {
         return createCommandViewport(appContext);
       }
