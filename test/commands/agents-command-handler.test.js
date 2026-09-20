@@ -18,8 +18,8 @@ function createSnapshot() {
       {sourceKind: 'project', sourcePath: '/repo/.echo/agents.settings.json', status: 'missing'}
     ],
     builtins: [
-      {name: 'explorer', description: 'Explore safely.', capability: 'readonly', effort: 'inherit', includeMcpTools: false, localToolNames: ['read_files', 'grep']},
-      {name: 'worker', description: 'Work generally.', capability: 'general', effort: 'inherit', includeMcpTools: true, localToolNames: ['apply_patch', 'edit_file', 'read_files']}
+      {name: 'explorer', description: 'Explore safely.', capability: 'readonly', effort: 'inherit', includeMcpTools: false, localToolNames: ['read_files', 'grep'], policy: {fields: [], status: 'none'}},
+      {name: 'worker', description: 'Work generally.', capability: 'general', effort: 'inherit', includeMcpTools: true, localToolNames: ['apply_patch', 'edit_file', 'read_files'], policy: {fields: [], status: 'none'}}
     ],
     items: [
       {name: 'explorer', sourceKind: 'builtin', status: 'active', diagnostics: []},
@@ -161,6 +161,9 @@ test('/agents built-in safety fields are readonly and override removal requires 
   const handler = new AgentsCommandHandler();
   const snapshot = createSnapshot();
   snapshot.overrides[1] = {sourceKind: 'project', sourcePath: '/repo/.echo/agents.settings.json', status: 'valid', fingerprint: 'settings-fp', settings: {schemaVersion: 1, overrides: {explorer: {effort: 'high'}}}};
+  snapshot.builtins = snapshot.builtins.map((builtin) => builtin.name === 'explorer'
+    ? {...builtin, effort: 'high', policy: {fields: ['effort'], sourceKind: 'project', sourcePath: '/repo/.echo/agents.settings.json', status: 'applied'}}
+    : builtin);
   const {calls, host} = createHost({snapshot});
   handler.start('/agents', host);
   send(handler, host, {type: INPUT_EVENTS.SHIFT_TAB});
@@ -168,10 +171,14 @@ test('/agents built-in safety fields are readonly and override removal requires 
   assert.equal(host.session.getActive().surface.rows.find((row) => row.id === 'builtin:description').readonly, true);
   assert.equal(host.session.getActive().surface.rows.some((row) => row.label === '编辑配置'), false);
   assert.equal(host.session.getActive().surface.rows.some((row) => row.id.startsWith('builtin:copy:')), false);
-  down(handler, host, 7);
+  assert.equal(host.session.getActive().surface.rows.find((row) => row.id === 'builtin:policy').description, '项目级 override 生效 · /repo/.echo/agents.settings.json');
+  assert.equal(host.session.getActive().surface.rows.find((row) => row.id === 'builtin:effort').description, 'high（项目级策略）');
+  assert.equal(host.session.getActive().surface.rows.find((row) => row.id === 'builtin:project').description, '当前生效');
+  assert.equal(host.session.getActive().surface.rows.find((row) => row.id === 'builtin:user').description, '未配置');
+  down(handler, host, 8);
   send(handler, host, {type: INPUT_EVENTS.SUBMIT});
-  assert.deepEqual(host.session.getActive().surface.rows.map((row) => row.id), ['model', 'effort', 'skills', 'save', 'remove', 'cancel']);
-  down(handler, host, 4);
+  assert.deepEqual(host.session.getActive().surface.rows.map((row) => row.id), ['policy', 'model', 'effort', 'skills', 'save', 'remove', 'cancel']);
+  down(handler, host, 5);
   send(handler, host, {type: INPUT_EVENTS.SUBMIT});
   assert.equal(host.session.getActive().surface.selectedIndex, 0);
   send(handler, host, {type: INPUT_EVENTS.MOVE_DOWN});
@@ -260,9 +267,9 @@ test('/agents built-in policy form edits and persists the skills allowlist', () 
   handler.start('/agents', host);
   send(handler, host, {type: INPUT_EVENTS.SHIFT_TAB});
   send(handler, host, {type: INPUT_EVENTS.SUBMIT});
-  down(handler, host, 7);
+  down(handler, host, 8);
   send(handler, host, {type: INPUT_EVENTS.SUBMIT});
-  down(handler, host, 2);
+  down(handler, host, 3);
   send(handler, host, {type: INPUT_EVENTS.SUBMIT});
   assert.equal(host.session.getActive().surface.mode, 'skills');
   assert.deepEqual(host.session.getActive().surface.rows.map((row) => row.id), ['skills:all', 'skills:done']);
@@ -274,9 +281,9 @@ test('/agents built-in policy form edits and persists the skills allowlist', () 
   assert.deepEqual(calls.overrides[0].value.skillNames, []);
   // 保存成功后回到列表；重新打开并完成“关闭全部→恢复缺省”后保存，draft 不携带 skills 字段。
   send(handler, host, {type: INPUT_EVENTS.SUBMIT});
-  down(handler, host, 7);
+  down(handler, host, 8);
   send(handler, host, {type: INPUT_EVENTS.SUBMIT});
-  down(handler, host, 2);
+  down(handler, host, 3);
   send(handler, host, {type: INPUT_EVENTS.SUBMIT});
   send(handler, host, {type: INPUT_EVENTS.SUBMIT});
   send(handler, host, {type: INPUT_EVENTS.SUBMIT});
@@ -284,4 +291,86 @@ test('/agents built-in policy form edits and persists the skills allowlist', () 
   down(handler, host, 1);
   send(handler, host, {type: INPUT_EVENTS.SUBMIT});
   assert.equal(Object.hasOwn(calls.overrides[1].value, 'skillNames'), false);
+});
+
+test('/agents built-in detail and policy form explain which scope is currently effective', () => {
+  const rowsOf = (host) => host.session.getActive().surface.rows;
+
+  // 未配置 override：详情页明确显示完整继承父策略。
+  const noneHost = createHost();
+  const noneHandler = new AgentsCommandHandler();
+  noneHandler.start('/agents', noneHost.host);
+  send(noneHandler, noneHost.host, {type: INPUT_EVENTS.SHIFT_TAB});
+  send(noneHandler, noneHost.host, {type: INPUT_EVENTS.SUBMIT});
+  assert.equal(rowsOf(noneHost.host).find((row) => row.id === 'builtin:policy').description, '未配置 override；完整继承父策略');
+  assert.equal(rowsOf(noneHost.host).find((row) => row.id === 'builtin:model').description, '继承父模型');
+  assert.equal(rowsOf(noneHost.host).find((row) => row.id === 'builtin:effort').description, 'inherit（继承父 effort）');
+  assert.equal(rowsOf(noneHost.host).find((row) => row.id === 'builtin:project').description, '未配置');
+  assert.equal(rowsOf(noneHost.host).find((row) => row.id === 'builtin:user').description, '未配置');
+
+  // 项目级生效：标注来源、路径与字段来源，并说明用户级被整体覆盖。
+  const appliedSnapshot = createSnapshot();
+  appliedSnapshot.skills = [{enabled: true, name: 'review-skill', sourceKind: 'project'}];
+  appliedSnapshot.overrides[1] = {sourceKind: 'project', sourcePath: '/repo/.echo/agents.settings.json', status: 'valid', fingerprint: 'settings-fp', settings: {schemaVersion: 2, overrides: {explorer: {modelProfileId: 'fast', effort: 'high', skills: ['review-skill']}}}};
+  appliedSnapshot.overrides[0] = {sourceKind: 'user', sourcePath: '/home/.echo/agents.settings.json', status: 'valid', fingerprint: 'user-settings-fp', settings: {schemaVersion: 2, overrides: {explorer: {effort: 'low'}}}};
+  appliedSnapshot.builtins = appliedSnapshot.builtins.map((builtin) => builtin.name === 'explorer'
+    ? {...builtin, effort: 'high', modelProfileId: 'fast', policy: {fields: ['model', 'effort', 'skills'], sourceKind: 'project', sourcePath: '/repo/.echo/agents.settings.json', status: 'applied'}, skillNames: ['review-skill']}
+    : builtin);
+  const appliedHost = createHost({snapshot: appliedSnapshot});
+  const appliedHandler = new AgentsCommandHandler();
+  appliedHandler.start('/agents', appliedHost.host);
+  send(appliedHandler, appliedHost.host, {type: INPUT_EVENTS.SHIFT_TAB});
+  send(appliedHandler, appliedHost.host, {type: INPUT_EVENTS.SUBMIT});
+  assert.equal(rowsOf(appliedHost.host).find((row) => row.id === 'builtin:policy').description, '项目级 override 生效 · /repo/.echo/agents.settings.json');
+  assert.equal(rowsOf(appliedHost.host).find((row) => row.id === 'builtin:model').description, 'fast（项目级策略）');
+  assert.equal(rowsOf(appliedHost.host).find((row) => row.id === 'builtin:effort').description, 'high（项目级策略）');
+  assert.equal(rowsOf(appliedHost.host).find((row) => row.id === 'builtin:skills').description, '1 个（项目级策略）');
+  assert.equal(rowsOf(appliedHost.host).find((row) => row.id === 'builtin:project').description, '当前生效');
+  assert.equal(rowsOf(appliedHost.host).find((row) => row.id === 'builtin:user').description, '已配置，被项目级策略整体覆盖');
+
+  // 用户级表单在项目级生效时提示保存后不会生效；项目级表单提示本 scope 生效。
+  down(appliedHandler, appliedHost.host, 9);
+  send(appliedHandler, appliedHost.host, {type: INPUT_EVENTS.SUBMIT});
+  let form = appliedHost.host.session.getActive();
+  assert.equal(form.data.builtinForm.scope, 'user');
+  assert.equal(form.surface.rows[0].id, 'policy');
+  assert.equal(form.surface.rows[0].readonly, true);
+  assert.equal(form.surface.rows[0].description, '项目级 override 生效；本 scope 保存后不会生效');
+  send(appliedHandler, appliedHost.host, {type: INPUT_EVENTS.ESCAPE});
+  down(appliedHandler, appliedHost.host, 8);
+  send(appliedHandler, appliedHost.host, {type: INPUT_EVENTS.SUBMIT});
+  form = appliedHost.host.session.getActive();
+  assert.equal(form.data.builtinForm.scope, 'project');
+  assert.equal(form.surface.rows[0].description, '本 scope 生效 · /repo/.echo/agents.settings.json');
+
+  // 已声明但整体失效：不得显示为当前策略。
+  const ignoredSnapshot = createSnapshot();
+  ignoredSnapshot.overrides[1] = {sourceKind: 'project', sourcePath: '/repo/.echo/agents.settings.json', status: 'valid', fingerprint: 'settings-fp', settings: {schemaVersion: 2, overrides: {explorer: {modelProfileId: 'gone'}}}};
+  ignoredSnapshot.builtins = ignoredSnapshot.builtins.map((builtin) => builtin.name === 'explorer'
+    ? {...builtin, policy: {fields: [], missingModelProfileId: 'gone', sourceKind: 'project', sourcePath: '/repo/.echo/agents.settings.json', status: 'ignored'}}
+    : builtin);
+  const ignoredHost = createHost({snapshot: ignoredSnapshot});
+  const ignoredHandler = new AgentsCommandHandler();
+  ignoredHandler.start('/agents', ignoredHost.host);
+  send(ignoredHandler, ignoredHost.host, {type: INPUT_EVENTS.SHIFT_TAB});
+  send(ignoredHandler, ignoredHost.host, {type: INPUT_EVENTS.SUBMIT});
+  assert.equal(rowsOf(ignoredHost.host).find((row) => row.id === 'builtin:policy').description, '项目级 override 已声明但整体失效（缺少模型 profile "gone"），当前完整继承父策略');
+  assert.equal(rowsOf(ignoredHost.host).find((row) => row.id === 'builtin:model').description, '继承父模型');
+  assert.equal(rowsOf(ignoredHost.host).find((row) => row.id === 'builtin:project').description, '已声明但缺少模型 profile，未生效');
+  down(ignoredHandler, ignoredHost.host, 8);
+  send(ignoredHandler, ignoredHost.host, {type: INPUT_EVENTS.SUBMIT});
+  assert.equal(ignoredHost.host.session.getActive().surface.rows[0].description, '本 scope override 已声明但失效（缺少模型 profile "gone"）');
+
+  // 无效 settings 是 fail-closed：不显示为生效策略，且表单拒绝静默覆盖。
+  const blockedSnapshot = createSnapshot();
+  blockedSnapshot.overrides[1] = {sourceKind: 'project', sourcePath: '/repo/.echo/agents.settings.json', status: 'invalid', error: {code: 'invalid_settings_json', message: 'Agents settings must contain valid JSON.'}};
+  const blockedHost = createHost({snapshot: blockedSnapshot});
+  const blockedHandler = new AgentsCommandHandler();
+  blockedHandler.start('/agents', blockedHost.host);
+  send(blockedHandler, blockedHost.host, {type: INPUT_EVENTS.SHIFT_TAB});
+  send(blockedHandler, blockedHost.host, {type: INPUT_EVENTS.SUBMIT});
+  assert.equal(rowsOf(blockedHost.host).find((row) => row.id === 'builtin:policy').description, '项目级 settings 无效（Agents settings must contain valid JSON.），当前完整继承父策略');
+  down(blockedHandler, blockedHost.host, 8);
+  send(blockedHandler, blockedHost.host, {type: INPUT_EVENTS.SUBMIT});
+  assert.match(blockedHost.host.session.getActive().surface.error, /无法编辑无效 settings/);
 });

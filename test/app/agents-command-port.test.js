@@ -84,6 +84,10 @@ test('AgentsCommandPort reads, writes and removes built-in overrides with confli
   try {
     const port = createAgentsCommandPort({captureUserConfigSnapshot: createSnapshot, cwd: () => project, homedir: () => home});
     assert.deepEqual(port.list().overrides.map((source) => source.status), ['missing', 'missing']);
+    assert.deepEqual(port.list().builtins.map((builtin) => builtin.policy), [
+      {fields: [], status: 'none'},
+      {fields: [], status: 'none'}
+    ]);
     const written = port.writeBuiltinOverride('user', 'explorer', {modelProfileId: 'reviewer', effort: 'default'}, null);
     assert.equal(written.ok, true);
     let snapshot = port.list();
@@ -91,17 +95,67 @@ test('AgentsCommandPort reads, writes and removes built-in overrides with confli
     assert.deepEqual({model: explorer.modelProfileId, effort: explorer.effort}, {
       model: 'reviewer', effort: 'default'
     });
+    assert.deepEqual(explorer.policy, {
+      fields: ['model', 'effort'],
+      sourceKind: 'user',
+      sourcePath: path.join(home, '.echo', 'agents.settings.json'),
+      status: 'applied'
+    });
     const conflict = port.writeBuiltinOverride('user', 'worker', {effort: 'high'}, null);
     assert.equal(conflict.ok, false);
     assert.equal(conflict.kind, 'conflict');
     assert.equal(port.deleteBuiltinOverride('user', 'explorer', written.fingerprint).ok, true);
     snapshot = port.list();
     assert.equal(snapshot.builtins.find((builtin) => builtin.name === 'explorer').modelProfileId, undefined);
+    assert.deepEqual(snapshot.builtins.find((builtin) => builtin.name === 'explorer').policy, {fields: [], status: 'none'});
   } finally {
     fs.rmSync(root, {recursive: true, force: true});
   }
 });
 
+test('AgentsCommandPort projects which builtin policy source is effective', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-agents-port-policy-'));
+  const home = path.join(root, 'home');
+  const project = path.join(root, 'project');
+  fs.mkdirSync(path.join(home, '.echo'), {recursive: true});
+  fs.mkdirSync(path.join(project, '.git'), {recursive: true});
+  fs.mkdirSync(path.join(project, '.echo'), {recursive: true});
+  const userPath = path.join(home, '.echo', 'agents.settings.json');
+  const projectPath = path.join(project, '.echo', 'agents.settings.json');
+  fs.writeFileSync(userPath, JSON.stringify({schemaVersion: 2, overrides: {explorer: {effort: 'low'}}}), 'utf8');
+  try {
+    const port = createAgentsCommandPort({captureUserConfigSnapshot: createSnapshot, cwd: () => project, homedir: () => home});
+    let snapshot = port.list();
+    assert.deepEqual(snapshot.builtins.find((builtin) => builtin.name === 'explorer').policy, {
+      fields: ['effort'], sourceKind: 'user', sourcePath: userPath, status: 'applied'
+    });
+
+    // 项目级条目整体遮蔽用户级；缺省字段不回退用户级值。
+    fs.writeFileSync(projectPath, JSON.stringify({schemaVersion: 2, overrides: {explorer: {modelProfileId: 'reviewer'}}}), 'utf8');
+    snapshot = port.list();
+    const explorer = snapshot.builtins.find((builtin) => builtin.name === 'explorer');
+    assert.equal(explorer.effort, 'inherit');
+    assert.deepEqual(explorer.policy, {
+      fields: ['model'], sourceKind: 'project', sourcePath: projectPath, status: 'applied'
+    });
+
+    // 引用已不存在的模型 profile：整条 override 未生效，但保留失效引用供界面点名。
+    fs.writeFileSync(projectPath, JSON.stringify({schemaVersion: 2, overrides: {explorer: {modelProfileId: 'gone', effort: 'high'}}}), 'utf8');
+    snapshot = port.list();
+    assert.deepEqual(snapshot.builtins.find((builtin) => builtin.name === 'explorer').policy, {
+      fields: [], missingModelProfileId: 'gone', sourceKind: 'project', sourcePath: projectPath, status: 'ignored'
+    });
+    assert.equal(snapshot.builtins.find((builtin) => builtin.name === 'explorer').effort, 'inherit');
+    assert.deepEqual(snapshot.diagnostics.map((diagnostic) => diagnostic.code), ['builtin_model_profile_not_found']);
+
+    // 无效 settings 是 fail-closed：两个 scope 都不生效。
+    fs.writeFileSync(projectPath, '{not json', 'utf8');
+    snapshot = port.list();
+    assert.deepEqual(snapshot.builtins.find((builtin) => builtin.name === 'explorer').policy, {fields: [], status: 'none'});
+  } finally {
+    fs.rmSync(root, {recursive: true, force: true});
+  }
+});
 test('AgentsCommandPort exposes the current skill catalog and builtin skill policies', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-agents-port-skills-'));
   const home = path.join(root, 'home');

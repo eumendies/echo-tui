@@ -12,6 +12,7 @@ import type {
   AgentsCommandRow,
   AgentsCommandSurface,
   AgentsCommandTab,
+  CommandAgentBuiltinPolicy,
   CommandAgentSkillInfo,
   CommandAgentsSnapshot,
   CommandHandler,
@@ -79,7 +80,7 @@ const AGENTS_TABS: AgentsCommandSurface['tabs'] = [
   {id: 'builtin', label: 'Built-in'}
 ];
 const CUSTOM_FORM_ROW_IDS = ['name', 'description', 'capability', 'model', 'effort', 'tools', 'skills', 'mcp', 'instructions', 'save', 'cancel'] as const;
-const BUILTIN_FORM_ROW_IDS = ['model', 'effort', 'skills', 'save', 'remove', 'cancel'] as const;
+const BUILTIN_FORM_ROW_IDS = ['policy', 'model', 'effort', 'skills', 'save', 'remove', 'cancel'] as const;
 const NEXT_TURN_FEEDBACK = '✓ 已保存，将在下一次 assistant turn 生效';
 
 /** 把 controller 状态投影为与文件系统完全隔离的 Agents surface 快照。 */
@@ -189,16 +190,18 @@ function createDetailRows(data: AgentsManageData): AgentsCommandRow[] {
   if (item.sourceKind === 'builtin') {
     const builtin = data.snapshot.builtins.find((candidate) => candidate.name === item.name);
     if (!builtin) return [];
+    const name = builtin.name;
     return [
       {id: 'builtin:description', kind: 'field', label: 'description', description: builtin.description, readonly: true},
       {id: 'builtin:capability', kind: 'field', label: 'capability', description: builtin.capability, readonly: true},
-      {id: 'builtin:model', kind: 'field', label: 'model', description: builtin.modelProfileId || '继承父模型', readonly: true},
-      {id: 'builtin:effort', kind: 'field', label: 'effort', description: builtin.effort, readonly: true},
+      {id: 'builtin:policy', kind: 'field', label: 'policy', description: formatBuiltinPolicy(data, name), readonly: true},
+      {id: 'builtin:model', kind: 'field', label: 'model', description: `${builtin.modelProfileId || '继承父模型'}${formatPolicyOrigin(builtin.policy, 'model')}`, readonly: true},
+      {id: 'builtin:effort', kind: 'field', label: 'effort', description: builtin.effort === 'inherit' ? 'inherit（继承父 effort）' : `${builtin.effort}${formatPolicyOrigin(builtin.policy, 'effort')}`, readonly: true},
       {id: 'builtin:tools', kind: 'field', label: 'tools', description: `${builtin.localToolNames.length} 个（只读）`, readonly: true},
-      {id: 'builtin:skills', kind: 'field', label: 'skills', description: formatSkillSummary(builtin.skillNames, data.snapshot.skills), readonly: true},
+      {id: 'builtin:skills', kind: 'field', label: 'skills', description: `${formatSkillSummary(builtin.skillNames, data.snapshot.skills)}${formatPolicyOrigin(builtin.policy, 'skills')}`, readonly: true},
       {id: 'builtin:mcp', kind: 'field', label: 'MCP', description: builtin.includeMcpTools ? '启用（固定）' : '关闭（固定）', readonly: true},
-      {id: 'builtin:project', kind: 'action', label: '配置项目级策略'},
-      {id: 'builtin:user', kind: 'action', label: '配置用户级策略'}
+      {id: 'builtin:project', kind: 'action', label: '配置项目级策略', description: formatBuiltinScopeStatus(data, name, 'project')},
+      {id: 'builtin:user', kind: 'action', label: '配置用户级策略', description: formatBuiltinScopeStatus(data, name, 'user')}
     ];
   }
   const rows: AgentsCommandRow[] = [
@@ -236,9 +239,9 @@ function createCustomFormRows(data: AgentsManageData): AgentsCommandRow[] {
 
 function createBuiltinFormRows(data: AgentsManageData): AgentsCommandRow[] {
   const form = data.builtinForm!;
-  const source = data.snapshot.overrides.find((candidate) => candidate.sourceKind === form.scope);
-  const hasOverride = Boolean(source?.settings?.overrides[form.name]);
+  const hasOverride = Boolean(getScopeOverride(data, form.scope, form.name));
   return [
+    {id: 'policy', kind: 'field', label: '生效策略', description: formatBuiltinPolicy(data, form.name, form.scope), readonly: true},
     {id: 'model', kind: 'field', label: 'model', description: form.draft.modelProfileId || '继承父模型'},
     {id: 'effort', kind: 'field', label: 'effort', description: form.draft.effort},
     {id: 'skills', kind: 'field', label: 'skills', description: formatSkillSummary(form.draft.skillNames, data.snapshot.skills)},
@@ -279,6 +282,69 @@ function formatSkillSummary(skillNames: readonly string[] | undefined, skills: C
   const enabledNames = new Set(skills.filter((skill) => skill.enabled).map((skill) => skill.name));
   const staleCount = skillNames.filter((name) => !enabledNames.has(name)).length;
   return `${skillNames.length - staleCount} 个${staleCount > 0 ? `；${staleCount} 个不可用` : ''}`;
+}
+
+/** 读取指定 scope 的 sidecar 中该内置名称的 override；settings 无效或未配置时返回 undefined。 */
+function getScopeOverride(data: AgentsManageData, scope: AgentManagementScope, name: BuiltinSubagentName): Readonly<BuiltinSubagentOverride> | undefined {
+  return data.snapshot.overrides.find((candidate) => candidate.sourceKind === scope)?.settings?.overrides[name];
+}
+
+/** 读取内置 Agent 的生效策略投影；快照缺少该内置条目时返回 undefined。 */
+function getBuiltinPolicy(data: AgentsManageData, name: BuiltinSubagentName): Readonly<CommandAgentBuiltinPolicy> | undefined {
+  return data.snapshot.builtins.find((candidate) => candidate.name === name)?.policy;
+}
+
+/** 把 scope 映射为展示用策略名称；没有胜出来源时统一显示为未配置。 */
+function policyScopeLabel(source: {sourceKind?: 'project' | 'user'} | undefined): string {
+  return source?.sourceKind === 'project' ? '项目级' : source?.sourceKind === 'user' ? '用户级' : '未配置';
+}
+
+/** 标注被当前生效 override 覆盖的字段来源；字段仍继承父策略时返回空串。 */
+function formatPolicyOrigin(policy: Readonly<CommandAgentBuiltinPolicy> | undefined, field: 'model' | 'effort' | 'skills'): string {
+  return policy?.status === 'applied' && policy.fields.includes(field) ? `（${policyScopeLabel(policy)}策略）` : '';
+}
+
+/**
+ * 描述内置 Agent 当前生效的策略来源。
+ * 传入 editingScope 时改为回答“本 scope 保存后是否生效”，供策略表单首行使用。
+ */
+function formatBuiltinPolicy(data: AgentsManageData, name: BuiltinSubagentName, editingScope?: AgentManagementScope): string {
+  const policy = getBuiltinPolicy(data, name);
+  if (policy?.status === 'applied') {
+    if (editingScope === undefined) return `${policyScopeLabel(policy)} override 生效 · ${policy.sourcePath}`;
+    if (policy.sourceKind === editingScope) return `本 scope 生效 · ${policy.sourcePath}`;
+    // 只有项目级能整体覆盖用户级；用户级保存后在项目级策略移除前不会生效。
+    return editingScope === 'project'
+      ? `${policyScopeLabel(policy)} override 生效；保存后将整体覆盖它`
+      : `${policyScopeLabel(policy)} override 生效；本 scope 保存后不会生效`;
+  }
+  if (policy?.status === 'ignored') {
+    const reason = `缺少模型 profile "${policy.missingModelProfileId}"`;
+    return editingScope !== undefined && editingScope === policy.sourceKind
+      ? `本 scope override 已声明但失效（${reason}）`
+      : `${policyScopeLabel(policy)} override 已声明但整体失效（${reason}），当前完整继承父策略`;
+  }
+  const blocked = data.snapshot.overrides.find((source) => source.status === 'invalid');
+  if (blocked) {
+    const reason = `${policyScopeLabel(blocked)} settings 无效（${blocked.error?.message || '格式无效'}）`;
+    return editingScope === undefined ? `${reason}，当前完整继承父策略` : `${reason}；保存后不生效`;
+  }
+  return editingScope === undefined ? '未配置 override；完整继承父策略' : '未配置 override；保存后完整继承父策略';
+}
+
+/** 标注单个 scope 当前是否生效，供详情页的两个策略配置选项展示。 */
+function formatBuiltinScopeStatus(data: AgentsManageData, name: BuiltinSubagentName, scope: AgentManagementScope): string {
+  const policy = getBuiltinPolicy(data, name);
+  const declared = getScopeOverride(data, scope, name);
+  if (policy?.status === 'applied') {
+    if (policy.sourceKind === scope) return '当前生效';
+    // 只有本 scope 真的声明了条目才谈得上被覆盖；未配置就只报未配置。
+    return declared ? `已配置，被${policyScopeLabel(policy)}策略整体覆盖` : '未配置';
+  }
+  if (policy?.status === 'ignored' && policy.sourceKind === scope) {
+    return '已声明但缺少模型 profile，未生效';
+  }
+  return declared ? '已配置，当前未生效' : '未配置';
 }
 
 function createToolRows(draft: AgentsCommandDraft): AgentsCommandRow[] {
@@ -495,7 +561,7 @@ export class AgentsCommandHandler implements CommandHandler<AgentsManageData> {
       else this.update(host, {...data, error: formatMutationError(result)});
     } else if (rowId === 'remove') {
       const source = data.snapshot.overrides.find((candidate) => candidate.sourceKind === form.scope);
-      if (!source?.settings?.overrides[form.name] || !source.fingerprint) {
+      if (!getScopeOverride(data, form.scope, form.name) || !source?.fingerprint) {
         this.update(host, {...data, error: '当前 scope 没有可移除的 override。'});
         return;
       }
@@ -670,7 +736,7 @@ export class AgentsCommandHandler implements CommandHandler<AgentsManageData> {
       this.update(host, {...data, error: `无法编辑无效 settings：${source.error?.message || '格式无效'}`});
       return;
     }
-    const existing = source?.settings?.overrides[name];
+    const existing = getScopeOverride(data, scope, name);
     this.update(host, {...data, builtinForm: {draft: existing ? {...existing} : {effort: 'inherit'}, fieldIndex: 0, fingerprint: source?.fingerprint || null, name, scope}, customForm: undefined, mode: 'form', selectedIndex: 0, error: undefined, feedback: undefined});
   }
 
