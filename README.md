@@ -1,5 +1,7 @@
 # echo-tui
 
+![echo-tui](docs/example.gif)
+
 `@eumendies/echo-tui` 是一个运行在终端里的 AI 助手，支持流式回答、Markdown 与代码高亮、会话恢复、Skills、MCP 和本地工具调用。除了日常对话，还可以用它阅读项目、制定方案、修改代码或直接执行 shell 命令。
 
 ## 前置要求
