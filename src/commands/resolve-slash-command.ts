@@ -1,4 +1,5 @@
 import type { MatchableCommandHandler, SlashCommandDescriptor } from '../types/command';
+import type {CommandMcpPromptInfo} from '../types/command';
 import type {AgentInstructionFileName} from '../types/agent';
 import { createBuiltInAgentWorkflowHandlers } from './agent-workflows/agent-workflow-command-handler';
 import { ClearCommandHandler } from './clear-command-handler';
@@ -14,6 +15,7 @@ import { ForkCommandHandler } from './fork-command-handler';
 import { HelpCommandHandler } from './help-command-handler';
 import { HooksCommandHandler } from './hooks-command-handler';
 import { McpCommandHandler } from './mcp-command-handler';
+import { McpPromptCommandHandler } from './mcp-prompt-command-handler';
 import { MemoryCommandHandler } from './memory-command-handler';
 import { ModelCommandHandler } from './model-command-handler';
 import { ModeCommandHandler } from './mode-command-handler';
@@ -29,7 +31,7 @@ import { UsageCommandHandler } from './usage-command-handler';
  * 装配默认 slash command handlers；具体 app 能力由 CommandHost 在运行时提供。
  *
  */
-export function createDefaultSlashCommandHandlers(getAgentInstructionFileName?: () => AgentInstructionFileName): MatchableCommandHandler[] {
+export function createDefaultSlashCommandHandlers(getAgentInstructionFileName?: () => AgentInstructionFileName, listMcpPrompts?: () => CommandMcpPromptInfo[]): MatchableCommandHandler[] {
   return [
     new HelpCommandHandler(),
     new BtwCommandHandler(),
@@ -54,6 +56,8 @@ export function createDefaultSlashCommandHandlers(getAgentInstructionFileName?: 
     new HooksCommandHandler(),
     new SkillsCommandHandler(),
     ...createBuiltInAgentWorkflowHandlers(getAgentInstructionFileName),
+    // prompt 命令必须排在 direct skill invocation fallback 之前,否则会被万能匹配吞掉。
+    ...(listMcpPrompts ? [new McpPromptCommandHandler(listMcpPrompts)] : []),
     new SkillInvocationCommandHandler()
   ];
 }

@@ -192,8 +192,25 @@ test('apply_patch bounds success summaries, long paths, parser reasons, and file
   );
   assert.equal(longReason.ok, false);
   assert.ok(Buffer.byteLength(longReason.text, 'utf8') <= DEFAULT_TOOL_RESULT_MAX_OUTPUT_BYTES);
-  assert.match(longReason.text, /^Patch failed\.\nReason:/u);
+  assert.match(longReason.text, /^Patch failed\. No files were changed\.\nReason:/u);
   assert.doesNotMatch(longReason.text, /\uFFFD/u);
+
+  // hunk 匹配失败回显的期望行同样受预算约束。
+  fs.writeFileSync(path.join(cwd, 'stale.txt'), 'actual\n', 'utf8');
+  const staleBody = Array.from({length: 6_000}, (_, index) => `-missing ${index}`).join('\n');
+  const stalePatch = ['--- a/stale.txt', '+++ b/stale.txt', '@@ -1,6000 +1,0 @@', staleBody, ''].join('\n');
+  const staleEcho = createApplyPatchToolHandler({cwd}).execute(
+    {patch: stalePatch},
+    createCall('apply_patch', {patch: stalePatch})
+  );
+  assert.equal(staleEcho.ok, false);
+  assert.ok(Buffer.byteLength(staleEcho.text, 'utf8') <= DEFAULT_TOOL_RESULT_MAX_OUTPUT_BYTES);
+  assert.match(
+    staleEcho.text,
+    /^Patch failed\. No files were changed\.\nReason: hunk 1 of 1 matched 0 locations in stale\.txt\nHint: [^\n]+\nFailed hunk lines:\nmissing 0\n/u
+  );
+  assert.match(staleEcho.text, /truncated/u);
+  assert.doesNotMatch(staleEcho.text, /\uFFFD/u);
 
   const originalMkdirSync = fs.mkdirSync;
   fs.mkdirSync = (...args) => {
@@ -208,6 +225,9 @@ test('apply_patch bounds success summaries, long paths, parser reasons, and file
     );
     assert.equal(failed.ok, false);
     assert.ok(Buffer.byteLength(failed.text, 'utf8') <= DEFAULT_TOOL_RESULT_MAX_OUTPUT_BYTES);
+    // 写盘阶段异常时文件状态不确定，失败文本不得声明文件未被改动。
+    assert.match(failed.text, /^Patch failed\.\nReason:/u);
+    assert.doesNotMatch(failed.text, /No files were changed/u);
     assert.doesNotMatch(failed.text, /\uFFFD/u);
   } finally {
     fs.mkdirSync = originalMkdirSync;

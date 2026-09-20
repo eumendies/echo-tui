@@ -9,7 +9,7 @@
   "files": [
     "dist/bin",
     "dist/src",
-    "docs"
+    "docs/*.md"
   ],
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",

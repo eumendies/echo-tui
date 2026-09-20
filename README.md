@@ -1,5 +1,7 @@
 # echo-tui
 
+![echo-tui](docs/example.gif)
+
 `@eumendies/echo-tui` 是一个运行在终端里的 AI 助手，支持流式回答、Markdown 与代码高亮、会话恢复、Skills、MCP 和本地工具调用。除了日常对话，还可以用它阅读项目、制定方案、修改代码或直接执行 shell 命令。
 
 ## 前置要求
@@ -29,6 +31,11 @@ echo-tui
 npm install -g @eumendies/echo-tui@latest
 echo-tui --version
 ```
+
+通过包管理器（如 `npm install -g`）安装的 echo-tui 会在启动时静默检查 npm registry 是否有新版本。发现新版本且你正处于空闲时，footer 会弹出「更新可用」提示：选择「立即更新」会退出 TUI、在前台运行 `npm install -g @eumendies/echo-tui@latest`（输出直通终端）并在完成后自动重启新版本；也可以选择「稍后提醒」（本次会话不再提示）或「忽略此版本」（出现更高版本时恢复提示）。检查每 24 小时最多联网一次，网络失败静默降级；源码运行（`npm start`）与 npx 运行不参与检查。
+
+- 可在 `/config` → 常规关闭「启动时检查更新」。
+- 检查缓存与忽略版本保存在 `~/.echo/update-state.json`；删除该文件会重置忽略状态。
 
 ## 单轮 CLI 对话
 
@@ -85,7 +92,7 @@ echo-tui --once --full-access "按要求修改文件并运行检查"
 | `/fork` | 从当前会话创建一个独立的对话分支 |
 | `/reference` | 把一个历史会话作为下一条消息的参考 |
 | `/diff` `/undo` | 查看文件改动、回退上一轮改动 |
-| `/mcp` `/hooks` `/skills` | 启停已配置的 MCP Server，管理 Hooks 和 Skills |
+| `/mcp` `/hooks` `/skills` | `/mcp` 启停、编辑 MCP Server 配置并浏览其 tools/resources/prompts，管理 Hooks 和 Skills |
 | `/agents` | 查看和管理内置、用户级与项目级 Subagent |
 | `/init` `/review` | 初始化项目指令、审查当前 Git 改动 |
 | `/<skill-name> [args]` | 调用已启用的 Skill |
@@ -131,9 +138,9 @@ Inspect only authentication-related code. Cite file paths and return prioritized
 
 - `description`、`capability`、`tools` 必填；`model`、`effort`、`skills`、`mcp` 可选。`model` 引用 `/config` 中的模型 profile ID；引用失效时定义不会进入可委派目录，也不会静默回退。
 - `effort` 缺省或设为 `inherit` 时继承父 turn 的 effort，`default` 使用最终模型 profile 的默认值，也可固定为 `none`、`low`、`medium`、`high`、`xhigh` 或 `max`。未知、重复或类型不符的字段会使整个定义失效。
-- `capability: readonly` 只能从只读工具上限中选择能力，不能启用 MCP。严格白名单外的 Bash 在交互模式需要人工批准，在 headless 模式中即使使用 `--full-access` 也会拒绝。
+- `capability: readonly` 只能从只读工具上限中选择能力（上限包含 MCP 资源读取工具 `list_mcp_resources` 与 `read_mcp_resource`），不能启用 MCP tools。严格白名单外的 Bash 在交互模式需要人工批准，在 headless 模式中即使使用 `--full-access` 也会拒绝。
 - `capability: general` 使用普通工具风险策略，并继承 `normal` / `plan` 和 headless 的 deny / `--full-access` 边界。`file_edit` 是能力别名，运行时会映射到当前配置选中的 `apply_patch` 或 `edit_file` 实现。
-- `mcp: true` 仅允许 general 定义使用当前父运行已经初始化的 MCP 工具；具体 MCP 风险和审批设置仍然生效。
+- `mcp: true` 仅允许 general 定义使用当前父运行已经初始化的 MCP 工具；MCP 工具的审批边界仍按 server 声明的只读注解决定。
 - `skills` 是三态 Skill allowlist：缺省不写时允许加载全部 enabled Skills；写成空列表明确禁止加载任何 Skill；写名称列表时只允许加载列出的 enabled Skills，disabled 或不存在的名称保留在配置中展示但不进入可加载目录。Skill 限制只收窄 `use_skill` 工具的可见范围，不改变工具、MCP、审批或委派边界，也不是文件路径保密边界——Bash 和文件读取工具仍可访问磁盘上的 Skill 文件。
 - 每次主 Agent 运行只加载一次目录并冻结快照；运行期间修改文件不会改变当前 schema 或已解析定义，下次运行才会生效。缺少用户或项目 agents 目录会被视为空目录。Skill 目录同样在 assistant turn 开始时冻结；各子运行共享同一不可变 Skill snapshot，但拥有独立的 scoped registry 与已加载正文，`/skills` 或 skills.json 的变更要到下一 turn 才生效。
 - 无效文件不会进入模型目录；启用 debug 后可通过 `subagent_catalog_diagnostic` 定位来源路径和有界错误信息，manifest 正文不会写入诊断。
@@ -145,13 +152,16 @@ Inspect only authentication-related code. Cite file paths and return prioritized
 
 ### MCP、Hooks 与主题
 
-- 使用 `/mcp` 启停已配置的 MCP Server。
+- 使用 `/mcp` 管理 MCP：总览里 Space 启停、Enter 进入某个 server 编辑配置（transport/url/command/args/cwd/env/headers/timeoutMs，密钥掩码且留空表示不改），也可只读浏览该 server 的 tools、resources（含 templates）与 prompts；改动只在「保存并重载」时写盘。
+- 配置并启用了至少一个 MCP Server 时，可通过 `list_mcp_resources` 与 `read_mcp_resource` 读取 server 声明 `resources` capability 的资源：读取是只读操作、不请求审批，在 plan 模式、BTW 与 `/review` 只读运行、子 Agent 和 headless `--once` 中都可用；二进制内容只返回 mimeType 与字节数占位符，超限文本沿用落盘预览。
+- Server 声明 `prompts` capability 时，其 prompt 会注册成斜杠命令 `/<server>:<prompt>`（`/` 补全可搜到）：参数按声明顺序用空格传入，也支持 `name=value`，缺必填参数会弹出输入面板；提交后 messages 按序拼成一条用户消息注入对话，正文带 `[user]` / `[assistant]` 角色标签，超长内容截断并追加 marker。
+- Server 在 `tools/list` 中声明 `readOnlyHint: true` 的工具按只读放行，调用时不请求审批；该注解由 Server 提供、属于不可信提示，只应连接你信任的 MCP Server。
 - 使用 `/hooks` 在回答、工具调用或上下文压缩等事件发生时运行本地命令 (比如使用terminal-notifier在完成回答、需要审批时发送通知)。
 - 使用 `/config` 的“外观”页面切换主题；自定义主题保存在 `~/.echo/theme.json`。
 
 ## 工具与授权
 
-Echo TUI 可以读取和搜索文件、访问公开网页、执行 shell 命令、修改文件，并调用已配置的 MCP 工具。涉及文件修改、高风险命令或需要确认的 MCP 工具时，交互模式会先请求授权；`plan` 模式始终拒绝写操作。
+Echo TUI 可以读取和搜索文件、访问公开网页、执行 shell 命令、修改文件，并调用已配置的 MCP 工具。涉及文件修改、高风险命令或未声明只读的 MCP 工具时，交互模式会先请求授权（声明 `readOnlyHint: true` 的 MCP 工具免审批）；`plan` 模式始终拒绝写操作。
 
 工具审批策略独立于 interaction mode，配置在 `~/.echo/config.json` 的 `tools.approval`：
 

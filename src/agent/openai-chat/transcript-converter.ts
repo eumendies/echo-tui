@@ -81,7 +81,10 @@ function convertTranscriptToOpenAiChatMessages(records: TranscriptRecord[]): Ope
       continue;
     }
 
-    if (record.role !== 'tool_result') {
+    // tool_call 与 tool_result 同属一个工具组：图片消息若落在组内，会打断
+    // assistant tool_calls 与其后续 tool 消息的配对，provider 会直接拒绝请求。
+    // 因此组内一律不写出，等整组工具消息提交完再随下一条非工具组记录输出。
+    if (record.role !== 'tool_result' && record.role !== 'tool_call') {
       flushPendingImageMessages(messages, pendingImageMessages);
     }
 

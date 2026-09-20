@@ -2,7 +2,6 @@
 
 ## Purpose
 规定所有内置工具 handler 与 MCP adapter 在结果生成边界限制 provider-visible 文本，并按工具类别定义截断、分页、offload 与拒绝语义，使 compaction 只处理正常历史累积而非异常大原子记录。
-
 ## Requirements
 ### Requirement: 所有工具结果文本具有显式字节上限
 系统 SHALL 由每个内置工具 handler 和 MCP adapter 在结果生成边界限制 provider-visible 文本，并按 UTF-8 字节计算完整结果的上限。成功、失败、取消、超时和异常路径 SHALL 使用相同的最终预算口径，且本能力 SHALL NOT 依赖统一的 `boundToolResult` 后处理器或 compaction 才满足上限。
@@ -20,7 +19,7 @@
 - **THEN** 返回文本 SHALL 是合法 UTF-8，且其字节长度 SHALL 不超过预算
 
 ### Requirement: 默认文本预算按工具类别确定
-系统 SHALL 对除 MCP 外的内置工具采用 65,536 UTF-8 bytes 的默认最终文本硬上限，并对 MCP 工具保留 20,000 UTF-8 bytes 的默认最终文本硬上限。截断说明、状态 header、分隔符和 artifact marker SHALL 计入对应最终上限。
+系统 SHALL 对除 MCP 工具与 MCP 资源读取外的内置工具采用 65,536 UTF-8 bytes 的默认最终文本硬上限，并对 MCP 工具与 MCP 资源读取保留 20,000 UTF-8 bytes 的默认最终文本硬上限。截断说明、状态 header、分隔符和 artifact marker SHALL 计入对应最终上限。
 
 #### Scenario: 默认内置工具预算
 - **WHEN** 内置工具未通过测试用 handler 选项覆盖结果预算
@@ -29,6 +28,11 @@
 #### Scenario: MCP 默认预算
 - **WHEN** MCP 工具返回成功内容或失败信息
 - **THEN** 其完整 provider-visible 文本 SHALL 不超过 20,000 UTF-8 bytes
+
+#### Scenario: MCP 资源读取沿用 MCP 预算
+- **WHEN** `read_mcp_resource` 返回成功内容、失败信息或二进制占位符
+- **THEN** 其完整 provider-visible 文本 SHALL 不超过 20,000 UTF-8 bytes
+- **THEN** 截断时 SHALL 使用既有 head 预览与 artifact marker 语义
 
 ### Requirement: 条目型搜索同时执行条数和字节限制
 `grep` 和 `glob` SHALL 在收集 ripgrep 输出时同时执行既有条目上限和最终输出字节上限，并在达到任一上限后终止子进程。结果文本和专属 display metadata SHALL 只包含已纳入预算的条目。

@@ -169,6 +169,7 @@ test('config center renders general tabs, settings, and constrained width', () =
   const state = createInitialGeneralConfigState({
     agentInstructionFileName: 'CLAUDE.md',
     autoCompressImages: true,
+    checkUpdatesOnStartup: true,
     compactionThresholdRatio: 0.8,
     defaultInteractionMode: 'plan',
     fileEditMode: 'edit_file',
@@ -198,11 +199,11 @@ test('config center renders general tabs, settings, and constrained width', () =
   assert.match(text, /2%/);
   assert.match(text, /默认启动模式/);
   assert.match(text, /plan/);
-  assert.match(text, /项目指令文件/);
+  assert.match(text, /启动时检查更新\s+开/);
   assert.match(text, /文件编辑工具/);
   assert.match(text, /edit_file/);
   assert.match(text, /超限图片自动压缩/);
-  assert.match(text, /CLAUDE\.md/);
+  assert.match(text, /↓ 2 更多/);
   assert.ok(layout.lines.every((line) => displayWidth(line) <= 38));
 });
 
@@ -210,6 +211,7 @@ test('config center highlights active tab with foreground color only', () => {
   const state = createInitialGeneralConfigState({
     agentInstructionFileName: 'AGENTS.md',
     autoCompressImages: false,
+    checkUpdatesOnStartup: true,
     compactionThresholdRatio: 0.8,
     defaultInteractionMode: 'normal',
     fileEditMode: 'apply_patch',
@@ -239,6 +241,7 @@ test('config center only renders approval model for auto draft', () => {
   const settings = {
     agentInstructionFileName: 'AGENTS.md',
     autoCompressImages: true,
+    checkUpdatesOnStartup: true,
     compactionThresholdRatio: 0.8,
     defaultInteractionMode: 'normal',
     fileEditMode: 'apply_patch',
@@ -272,6 +275,7 @@ test('config center renders approval API model name and provider without the pro
   const state = createInitialGeneralConfigState({
     agentInstructionFileName: 'AGENTS.md',
     autoCompressImages: true,
+    checkUpdatesOnStartup: true,
     compactionThresholdRatio: 0.8,
     defaultInteractionMode: 'normal',
     fileEditMode: 'apply_patch',
@@ -299,6 +303,7 @@ test('config center separates a selected approval model from its label at constr
   const state = createInitialGeneralConfigState({
     agentInstructionFileName: 'AGENTS.md',
     autoCompressImages: true,
+    checkUpdatesOnStartup: true,
     compactionThresholdRatio: 0.8,
     defaultInteractionMode: 'normal',
     fileEditMode: 'apply_patch',

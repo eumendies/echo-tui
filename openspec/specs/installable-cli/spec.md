@@ -1,7 +1,7 @@
 # installable-cli Specification
 
 ## Purpose
-定义 `echo-tui` 本地可安装 CLI 命令、普通帮助/版本输出、本地安装文档边界，以及暂不发布 npm registry 的范围。
+定义 `echo-tui` 本地可安装 CLI 命令、普通帮助/版本输出、本地安装文档边界，以及通过 npm registry 分发与更新检测的范围。
 ## Requirements
 ### Requirement: 可安装的 echo-tui 命令
 系统 SHALL 提供名为 `echo-tui` 的 npm bin 命令，使用户在本地全局安装包后可以从任意当前工作目录启动 TUI。
@@ -46,19 +46,6 @@
 - **THEN** 系统 SHALL 输出未知命令错误和普通 CLI 帮助
 - **THEN** 系统 SHALL 以非零状态退出且 SHALL NOT 创建或修改 `~/.echo/config.json`
 
-### Requirement: 暂不发布 npm registry
-系统 SHALL 支持本地安装验证流程，但本变更 SHALL NOT 要求或执行 npm registry 发布。
-
-#### Scenario: 文档说明本地安装
-- **WHEN** 用户阅读安装说明
-- **THEN** 文档 SHALL 展示 `npm link` 或 `npm install -g .` 的本地安装流程
-- **THEN** 文档 SHALL NOT 声明当前包已经可以通过公共 npm registry 安装
-- **THEN** 文档 SHALL NOT 引导用户使用 `echo-tui init`
-
-#### Scenario: 发布流程不在本变更范围内
-- **WHEN** 开发者完成本变更
-- **THEN** 系统 SHALL NOT 要求配置 npm 账号、registry token、`npm publish` 自动化或公共包名发布策略
-
 ### Requirement: 启动前用户目录 fallback 初始化
 安装后的 `echo-tui` 命令 SHALL 在进入 TUI raw mode、启动普通聊天应用或启动单轮 agent runner 前执行用户目录 bootstrap fallback。该 fallback SHALL 与安装期初始化语义一致，并 SHALL NOT 改变 help、version 或 unknown command 行为。
 
@@ -95,3 +82,18 @@
 - **WHEN** 包管理器跳过安装 lifecycle script
 - **AND** 用户首次运行 `echo-tui`
 - **THEN** 启动前 fallback SHALL 创建缺失的默认用户文件
+
+### Requirement: 通过 npm registry 分发
+系统 SHALL 通过公共 npm registry 以 `@eumendies/echo-tui` 名称分发，使用户可用 `npm install -g @eumendies/echo-tui` 安装 `echo-tui` 命令；安装说明 MAY 展示公共安装方式并 SHALL NOT 引导用户使用 `echo-tui init`。包管理器安装的副本 SHALL 在启动时参与 `startup-auto-update` 能力定义的有节制更新检测；源码运行与 npx 缓存运行的副本 SHALL NOT 参与。
+
+#### Scenario: 文档说明公共安装方式
+- **WHEN** 用户阅读安装说明
+- **THEN** 文档 SHALL 展示 `npm install -g @eumendies/echo-tui` 的公共安装流程
+- **THEN** 文档 MAY 同时保留 `npm link` 或 `npm install -g .` 的本地安装流程
+- **THEN** 文档 SHALL NOT 引导用户使用 `echo-tui init`
+
+#### Scenario: 安装副本参与启动更新检测
+- **WHEN** 用户运行通过 npm registry 全局安装的 `echo-tui`
+- **THEN** 启动更新检测 SHALL 按 `startup-auto-update` 能力执行
+- **THEN** 从源码目录或 npx 缓存运行的副本 SHALL NOT 执行更新检测
+

@@ -12,8 +12,10 @@ import {createWebSearchToolHandler} from './web-search';
 import {createToolResultStore} from './tool-result-offloading';
 import {createEditFileToolHandler} from './edit-file-tool-handler';
 import {createRunSubagentToolHandler} from './run-subagent-tool-handler';
+import {createMcpResourceToolHandlers} from './mcp-resource-tools';
 import {resolveBashSandboxContext} from '../sandbox/provider';
 
+import type {McpManager} from '../mcp/manager';
 import type {AgentExecutionMode, LlmConfig, SubagentToolPort} from '../types/agent';
 import type {SandboxModeOverride} from '../sandbox/types';
 import type {SkillRegistry} from '../types/skill';
@@ -23,6 +25,7 @@ import type {ToolResultStore} from './tool-result-offloading';
 type DefaultToolRegistryOptions = {
   allowedToolNames?: ReadonlySet<string>; // 缺省暴露完整默认目录；存在时只创建明确允许的 handler。
   executionMode?: AgentExecutionMode; // 本次运行执行模式;headless full-access 强制关闭沙箱包装。
+  mcpManager?: McpManager; // 注入共享 MCP manager 时注册资源读取工具；缺省时不注册。
   sandboxModeOverride?: SandboxModeOverride; // 本次运行的沙箱收紧;非 off 配置收紧为 read-only。
   skillRegistry?: SkillRegistry; // 注入运行级 Skill 快照 scope；缺省时按旧行为重新创建 SkillManager。
   subagentPort?: SubagentToolPort; // 仅父 run 注入，缺省时不注册 run_subagent。
@@ -88,6 +91,10 @@ function createDefaultToolRegistry(config: LlmConfig, cwd: string | (() => strin
     }),
     createWebSearchToolHandler({
     }),
+    // 资源工具只在 MCP 真正在用（至少一个 server 初始化成功）时出现,未配置或全局关闭时保持仅内置工具行为。
+    ...(options.mcpManager && options.mcpManager.listServerNames().length > 0
+      ? createMcpResourceToolHandlers({manager: options.mcpManager, toolResultStore})
+      : []),
     ...(options.subagentPort ? [createRunSubagentToolHandler(options.subagentPort, toolResultStore)] : [])
   ];
   const registry = createToolRegistry(options.allowedToolNames

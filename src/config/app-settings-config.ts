@@ -4,6 +4,7 @@ import type {AgentInstructionFileName, FileEditToolMode} from '../types/agent';
 type AppSettings = {
   agentInstructionFileName: AgentInstructionFileName;
   autoCompressImages: boolean; // 控制本地图片超过最终附件上限时是否自动缩小。
+  checkUpdatesOnStartup: boolean; // 控制启动时是否检查 echo-tui 新版本，持久化为 updates.checkOnStartup。
   compactionThresholdRatio: number;
   defaultInteractionMode: DefaultInteractionMode;
   fileEditMode: FileEditToolMode;
@@ -31,6 +32,7 @@ type AppSettingsValidationResult =
 const DEFAULT_APP_SETTINGS: Readonly<AppSettings> = {
   agentInstructionFileName: 'AGENTS.md',
   autoCompressImages: true,
+  checkUpdatesOnStartup: true,
   compactionThresholdRatio: 0.8,
   defaultInteractionMode: 'normal',
   fileEditMode: 'apply_patch',
@@ -78,6 +80,10 @@ function validateAppSettingsDraft(draft: AppSettings, modelProfileIds?: Readonly
     return {ok: false, error: '超限图片自动压缩设置必须是布尔值'};
   }
 
+  if (typeof draft.checkUpdatesOnStartup !== 'boolean') {
+    return {ok: false, error: '启动更新检查设置必须是布尔值'};
+  }
+
   if (!Number.isInteger(draft.slashSuggestionMaxVisible)
     || draft.slashSuggestionMaxVisible < MIN_SLASH_SUGGESTION_MAX_VISIBLE
     || draft.slashSuggestionMaxVisible > MAX_SLASH_SUGGESTION_MAX_VISIBLE) {
@@ -119,6 +125,7 @@ function applyAppSettingsDraft(rootConfig: UserConfigSource, draft: AppSettings)
   const instructions = isPlainObject(rootConfig.instructions) ? {...rootConfig.instructions} : {};
   const skills = isPlainObject(rootConfig.skills) ? {...rootConfig.skills} : {};
   const ui = isPlainObject(rootConfig.ui) ? {...rootConfig.ui} : {};
+  const updates = isPlainObject(rootConfig.updates) ? {...rootConfig.updates} : {};
   const tools = isPlainObject(rootConfig.tools) ? {...rootConfig.tools} : {};
   const fileEdit = isPlainObject(tools.fileEdit) ? {...tools.fileEdit} : {};
   const readFiles = isPlainObject(tools.readFiles) ? {...tools.readFiles} : {};
@@ -130,6 +137,7 @@ function applyAppSettingsDraft(rootConfig: UserConfigSource, draft: AppSettings)
   ui.defaultInteractionMode = draft.defaultInteractionMode;
   ui.slashSuggestionMaxVisible = draft.slashSuggestionMaxVisible;
   ui.showReasoningSummary = draft.showReasoningSummary;
+  updates.checkOnStartup = draft.checkUpdatesOnStartup;
   fileEdit.mode = draft.fileEditMode;
   readFiles.autoCompressImages = draft.autoCompressImages;
   approval.mode = draft.toolApprovalMode;
@@ -143,6 +151,7 @@ function applyAppSettingsDraft(rootConfig: UserConfigSource, draft: AppSettings)
   rootConfig.instructions = instructions;
   rootConfig.skills = skills;
   rootConfig.ui = ui;
+  rootConfig.updates = updates;
   rootConfig.tools = tools;
 }
 
@@ -151,6 +160,7 @@ function normalizeAppSettings(rootConfig: UserConfigSource): AppSettings {
   const instructions = isPlainObject(rootConfig.instructions) ? rootConfig.instructions : {};
   const skills = isPlainObject(rootConfig.skills) ? rootConfig.skills : {};
   const ui = isPlainObject(rootConfig.ui) ? rootConfig.ui : {};
+  const updates = isPlainObject(rootConfig.updates) ? rootConfig.updates : {};
   const tools = isPlainObject(rootConfig.tools) ? rootConfig.tools : {};
   const fileEdit = isPlainObject(tools.fileEdit) ? tools.fileEdit : {};
   const readFiles = isPlainObject(tools.readFiles) ? tools.readFiles : {};
@@ -166,6 +176,9 @@ function normalizeAppSettings(rootConfig: UserConfigSource): AppSettings {
     autoCompressImages: typeof readFiles.autoCompressImages === 'boolean'
       ? readFiles.autoCompressImages
       : DEFAULT_APP_SETTINGS.autoCompressImages,
+    checkUpdatesOnStartup: typeof updates.checkOnStartup === 'boolean'
+      ? updates.checkOnStartup
+      : DEFAULT_APP_SETTINGS.checkUpdatesOnStartup,
     compactionThresholdRatio: isFiniteNumberInRange(thresholdRatio, MIN_COMPACTION_THRESHOLD_RATIO, MAX_COMPACTION_THRESHOLD_RATIO)
       ? thresholdRatio
       : DEFAULT_APP_SETTINGS.compactionThresholdRatio,

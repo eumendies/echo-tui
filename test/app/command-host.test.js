@@ -483,17 +483,75 @@ test('CommandHost MCP save reloads once from the installed revision without anot
       }
     };
     const {host} = createHostHarness({mcpManager, userConfigContext: context});
-    const servers = host.mcp.listServers().map((server) => ({
-      ...server,
-      enabled: server.kind === 'server' ? false : server.enabled
-    }));
+    const result = await host.mcp.saveConfigDraft({
+      enabled: true,
+      servers: [{
+        name: 'docs',
+        originalName: 'docs',
+        editable: true,
+        enabled: false,
+        transport: 'http',
+        url: 'https://example.invalid/mcp',
+        args: [],
+        env: [],
+        headers: [],
+        timeoutMs: 30_000
+      }]
+    });
 
-    assert.deepEqual(await host.mcp.saveServerStates(servers), {ok: true, diagnostics: []});
+    assert.deepEqual(result, {ok: true, diagnostics: []});
     assert.equal(reads, 2);
     assert.equal(reloads, 1);
     assert.equal(context.capture().revision, 2);
     context.close();
   });
+});
+
+test('CommandHost MCP prompt facade exposes normalized commands and reads messages through the manager', async () => {
+  const mcpManager = {
+    getDiagnostics() { return []; },
+    listTools() { return []; },
+    listPrompts() {
+      return [{
+        serverName: 'docs api',
+        promptName: 'code review',
+        description: 'Review code',
+        arguments: [{name: 'code', required: true}]
+      }];
+    },
+    async getPrompt(serverName, promptName, args) {
+      return {messages: [{role: 'user', content: {kind: 'text', text: `${serverName}|${promptName}|${args.code}`}}]};
+    },
+    async reload() {}
+  };
+  const {host} = createHostHarness({mcpManager});
+
+  // 命令名把 server/prompt 里的空白归一为 `-`；描述符与目录共用同一份归一结果。
+  assert.deepEqual(host.mcp.listPromptCommands(), [{name: 'docs-api:code-review', description: 'Review code'}]);
+  assert.equal(host.mcp.listPrompts()[0].commandName, 'docs-api:code-review');
+
+  assert.deepEqual(await host.mcp.getPromptMessages('docs api', 'code review', {code: 'x'}), {
+    ok: true,
+    messages: [{role: 'user', content: {kind: 'text', text: 'docs api|code review|x'}}]
+  });
+
+  // 目录未命中返回 missing 且不调用 manager；调用失败返回经脱敏的失败结果。
+  assert.deepEqual(await host.mcp.getPromptMessages('docs api', 'missing', {}), {
+    ok: false,
+    reason: 'missing',
+    message: 'MCP prompt not found: docs api:missing'
+  });
+
+  mcpManager.listPrompts = () => [{serverName: 'docs', promptName: 'broken', arguments: []}];
+  mcpManager.getPrompt = async () => {
+    throw new Error('Authorization: Bearer secret-token');
+  };
+
+  const failed = await host.mcp.getPromptMessages('docs', 'broken', {});
+
+  assert.equal(failed.ok, false);
+  assert.equal(failed.reason, 'failed');
+  assert.match(failed.message, /<redacted>/u);
 });
 
 test('external hooks revision changes do not reload the dispatcher', () => {
@@ -564,6 +622,7 @@ test('CommandHost config facade saves and refreshes skill catalog context ratio'
     const result = host.config.saveSettings({
       agentInstructionFileName: 'CLAUDE.md',
       autoCompressImages: false,
+      checkUpdatesOnStartup: false,
       compactionThresholdRatio: 0.8,
       defaultInteractionMode: 'plan',
       fileEditMode: 'edit_file',
@@ -579,6 +638,7 @@ test('CommandHost config facade saves and refreshes skill catalog context ratio'
     assert.equal(readConfig().ui.defaultInteractionMode, 'plan');
     assert.equal(readConfig().tools.fileEdit.mode, 'edit_file');
     assert.equal(readConfig().tools.readFiles.autoCompressImages, false);
+    assert.equal(readConfig().updates.checkOnStartup, false);
     assert.deepEqual(readConfig().unknown, {kept: true});
   });
 });

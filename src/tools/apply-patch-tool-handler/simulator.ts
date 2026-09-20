@@ -37,7 +37,16 @@ type ApplyPatchSuccess = {ok: true; value: {
   displayFiles: ApplyPatchDisplayFile[];
 }};
 
-type ApplyPatchFailure = {ok: false; reason: string; hint?: string; displayFiles?: ApplyPatchDisplayFile[]};
+type ApplyPatchFailure = {
+  ok: false;
+  reason: string;
+  hint?: string;
+  // 匹配失败的 hunk pre-image 行；有值时作为失败提示的最后一段原文回显
+  hunkLines?: string[];
+  // 仅在写盘前失败时为 true，可向模型声明文件未被改动；写盘阶段异常不设置该标记
+  filesUntouched?: boolean;
+  displayFiles?: ApplyPatchDisplayFile[];
+};
 
 type ApplyPatchExecutionResult = ApplyPatchSuccess | ApplyPatchFailure;
 
@@ -352,10 +361,15 @@ function readPatchTargetFile(
   return {ok: true, value: {content}};
 }
 
+// hunk 应用结果；失败时允许携带 pre-image 行，供失败提示末尾回显。
+type HunkApplicationResult =
+  | {ok: true; value: {lines: string[]; matchedHunks: Array<{hunk: PatchHunk; postStart: number}>}}
+  | ApplyPatchFailure;
+
 function applyIndependentUpdateHunks(
   operation: PatchOperation,
   startingLines: string[]
-): Result<{lines: string[]; matchedHunks: Array<{hunk: PatchHunk; postStart: number}>}> {
+): HunkApplicationResult {
   let currentLines = startingLines;
   const matchedHunks: Array<{hunk: PatchHunk; postStart: number}> = [];
 
@@ -377,7 +391,8 @@ function applyIndependentUpdateHunks(
       return {
         ok: false,
         reason: `${hunkRef} ${match.reason} in ${operation.filePath}`,
-        hint: 'Read the file again and include more surrounding context in the hunk.'
+        hint: 'Read the file again and include more surrounding context in the hunk.',
+        hunkLines: hunk.oldLines
       };
     }
 
@@ -403,7 +418,7 @@ function applyIndependentUpdateHunks(
 function applySequentialUpdateHunks(
   operation: PatchOperation,
   startingLines: string[]
-): Result<{lines: string[]; matchedHunks: Array<{hunk: PatchHunk; postStart: number}>}> {
+): HunkApplicationResult {
   let currentLines = startingLines;
   const matchedHunks: Array<{hunk: PatchHunk; postStart: number}> = [];
   let searchStart = 0;
@@ -418,7 +433,8 @@ function applySequentialUpdateHunks(
         return {
           ok: false,
           reason: `${hunkRef} anchor line ${anchor.reason} in ${operation.filePath}`,
-          hint: 'Read the file again and include more surrounding context in the hunk.'
+          hint: 'Read the file again and include more surrounding context in the hunk.',
+          hunkLines: [hunk.anchorLine]
         };
       }
 
@@ -444,7 +460,8 @@ function applySequentialUpdateHunks(
         return {
           ok: false,
           reason: `${hunkRef} ${contextMatch.reason} in ${operation.filePath}`,
-          hint: 'Read the file again and include more surrounding context in the hunk.'
+          hint: 'Read the file again and include more surrounding context in the hunk.',
+          hunkLines: hunk.oldLines
         };
       }
 
@@ -478,7 +495,8 @@ function applySequentialUpdateHunks(
       return {
         ok: false,
         reason: `${hunkRef} ${match.reason} in ${operation.filePath}`,
-        hint: 'Read the file again and include more surrounding context in the hunk.'
+        hint: 'Read the file again and include more surrounding context in the hunk.',
+        hunkLines: hunk.oldLines
       };
     }
 

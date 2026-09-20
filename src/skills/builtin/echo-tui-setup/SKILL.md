@@ -30,14 +30,12 @@ Configure MCP in `~/.echo/config.json` under `mcp`:
         "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/project"],
         "env": {},
         "cwd": "/path/to/project",
-        "approval": "always",
         "timeoutMs": 30000
       },
       "docs": {
         "transport": "http",
         "url": "https://example.com/mcp",
         "headers": {"Authorization": "Bearer <token>"},
-        "approval": "always",
         "timeoutMs": 30000
       }
     }
@@ -47,9 +45,9 @@ Configure MCP in `~/.echo/config.json` under `mcp`:
 
 - `transport` is `stdio` or `http`.
 - `mcp.enabled` controls MCP globally, and `mcp.servers` holds named server profiles.
-- `stdio` servers use `command`, optional `args`, optional `env`, optional `cwd`, optional `timeoutMs`, and optional `approval`.
-- `http` servers use `url`, optional string `headers`, optional `timeoutMs`, and optional `approval`.
-- `approval: "always"` asks before tool calls; `approval: "never"` trusts that server.
+- `stdio` servers use `command`, optional `args`, optional `env`, optional `cwd`, and optional `timeoutMs`.
+- `http` servers use `url`, optional string `headers`, and optional `timeoutMs`.
+- There is no server-level approval setting in config: approval follows each tool's `readOnlyHint` annotation from `tools/list`, so prompt behavior cannot be tuned per server — connect only MCP servers you trust.
 
 ## Lifecycle hooks
 

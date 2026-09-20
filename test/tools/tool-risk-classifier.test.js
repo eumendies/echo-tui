@@ -1,12 +1,12 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { READONLY_SUBAGENT_REJECTION, classifyReadonlyToolCall, classifySubagentToolCall, classifyToolCallRisk, parseBashCommand } = require('../../src/tools/tool-risk-classifier');
+const { READONLY_MCP_TOOL_REJECTION, READONLY_SUBAGENT_REJECTION, classifyReadonlyToolCall, classifySubagentToolCall, classifyToolCallRisk, parseBashCommand } = require('../../src/tools/tool-risk-classifier');
 
 test('readonly tool policy keeps explicit observations and rejects all other tools', () => {
   const call = (toolName, argumentsText = '{}') => ({callId: `call-${toolName}`, toolName, argumentsText});
 
-  for (const toolName of ['read_files', 'glob', 'grep', 'web_fetch', 'web_search', 'use_skill', 'create_todos', 'complete_todo']) {
+  for (const toolName of ['read_files', 'glob', 'grep', 'web_fetch', 'web_search', 'use_skill', 'create_todos', 'complete_todo', 'list_mcp_resources', 'read_mcp_resource']) {
     assert.deepEqual(classifyReadonlyToolCall(call(toolName)), {risk: 'safe'});
   }
   assert.deepEqual(classifyReadonlyToolCall(call('run_bash_command', '{"command":"git status --short"}')), {risk: 'safe'});
@@ -18,6 +18,39 @@ test('readonly tool policy keeps explicit observations and rejects all other too
   }
   assert.equal(classifyReadonlyToolCall(call('run_bash_command', '{"command":"npm test"}')).risk, 'rejected');
   assert.equal(classifyReadonlyToolCall(call('run_bash_command', 'not-json')).risk, 'rejected');
+});
+
+test('readonly tool policy admits MCP tools only when the server declares a read-only hint', () => {
+  const call = (toolName) => ({callId: `call-${toolName}`, toolName, argumentsText: '{}'});
+  const readOnlyMcpToolNames = new Set(['mcp__docs__read']);
+
+  assert.deepEqual(classifyReadonlyToolCall(call('mcp__docs__read'), undefined, false, readOnlyMcpToolNames), {risk: 'safe'});
+
+  // 集合缺省、为空或工具未命中时保持 fail-closed,并使用 MCP 专用拒绝文案。
+  for (const [toolName, names] of [['mcp__docs__write', readOnlyMcpToolNames], ['mcp__docs__read', undefined], ['mcp__docs__read', new Set()]]) {
+    const result = classifyReadonlyToolCall(call(toolName), undefined, false, names);
+    assert.equal(result.risk, 'rejected', toolName);
+    assert.equal(result.reason, 'readonly_policy', toolName);
+    assert.equal(result.message, READONLY_MCP_TOOL_REJECTION, toolName);
+  }
+});
+
+test('MCP resource reads stay safe observations across modes and boundaries', () => {
+  const metadata = {agentName: 'explorer', depth: 1, parentToolCallId: 'outer', runId: 'run-1'};
+
+  for (const toolName of ['list_mcp_resources', 'read_mcp_resource']) {
+    const call = {callId: `call-${toolName}`, toolName, argumentsText: '{}'};
+
+    // 纯观察工具:normal 与 plan 都直接放行,不落入 mcp__ 工具的 plan 拒绝分支。
+    assert.deepEqual(classifyToolCallRisk(call, 'normal'), {risk: 'safe'}, toolName);
+    assert.deepEqual(classifyToolCallRisk(call, 'plan'), {risk: 'safe'}, toolName);
+    // 只读运行与只读子代理同样放行;MCP tools 与写入工具的边界不受影响。
+    assert.deepEqual(classifyReadonlyToolCall(call), {risk: 'safe'}, toolName);
+    assert.deepEqual(classifySubagentToolCall(call, metadata), {risk: 'safe'}, toolName);
+  }
+
+  assert.equal(classifyToolCallRisk({callId: 'plan-mcp', toolName: 'mcp__docs__write', argumentsText: '{}'}, 'plan').risk, 'rejected');
+  assert.equal(classifyReadonlyToolCall({callId: 'ro-mcp', toolName: 'mcp__docs__write', argumentsText: '{}'}).risk, 'rejected');
 });
 
 test('readonly tool policy delegates only to injected readonly subagent names', () => {
@@ -239,24 +272,27 @@ test('tool risk classifier leaves invalid bash arguments to the executor path', 
   }), { risk: 'safe' });
 });
 
-test('tool risk classifier applies MCP approval policy', () => {
+test('tool risk classifier gates MCP tools by the read-only predicate', () => {
   const call = {
     callId: 'call_mcp',
     toolName: 'mcp__docs__search',
     argumentsText: JSON.stringify({query: 'mcp'})
   };
 
-  assert.deepEqual(classifyToolCallRisk(call, 'normal', () => 'never'), {risk: 'safe'});
+  assert.deepEqual(classifyToolCallRisk(call, 'normal', new Set(['mcp__docs__search'])), {risk: 'safe'});
 
-  assert.deepEqual(classifyToolCallRisk(call, 'normal', () => 'always'), {
-    risk: 'approval_required',
-    approval: {
-      preview: 'Server: docs\nTool: search\nArguments:\n{"query":"mcp"}',
-      previewTitle: 'mcp tool'
-    }
-  });
+  // 未命中只读集合(含集合缺省或为空)一律进入审批,并保留既有预览。
+  for (const readonlyMcpToolNames of [new Set(['mcp__other__tool']), new Set(), undefined]) {
+    assert.deepEqual(classifyToolCallRisk(call, 'normal', readonlyMcpToolNames), {
+      risk: 'approval_required',
+      approval: {
+        preview: 'Server: docs\nTool: search\nArguments:\n{"query":"mcp"}',
+        previewTitle: 'mcp tool'
+      }
+    });
+  }
 
-  assert.deepEqual(classifyToolCallRisk(call, 'plan', () => 'never'), {
+  assert.deepEqual(classifyToolCallRisk(call, 'plan', new Set(['mcp__docs__search'])), {
     risk: 'rejected',
     reason: 'plan_mode',
     message: 'MCP tools are not available in plan mode.'

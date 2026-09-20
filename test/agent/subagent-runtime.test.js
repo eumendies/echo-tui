@@ -125,10 +125,11 @@ async function withPatchedAgents(cwd, createAgent, callback) {
   agentSetupModule.prepareAgent = (options) => {
     const localRegistry = createDefaultToolRegistry(TEST_CONFIG, cwd, undefined, {
       allowedToolNames: options.allowedToolNames,
+      ...(options.mcpManager ? {mcpManager: options.mcpManager} : {}),
       ...(options.skillRegistry ? {skillRegistry: options.skillRegistry} : {}),
       subagentPort: options.subagentPort
     });
-    const registry = options.mcpManager
+    const registry = options.mcpManager && options.includeMcpTools !== false
       ? mergeToolRegistries(localRegistry, createMcpToolRegistry(options.mcpManager))
       : localRegistry;
     const kind = options.allowedToolNames ? 'subagent' : 'primary';
@@ -886,7 +887,13 @@ test('custom general file_edit exposes only the configured edit handler and enab
   let mcpCalls = 0;
   const manager = {
     listTools() {
-      return [{serverName: 'docs', toolName: 'read', namespacedName: 'mcp__docs__read', approval: 'never', description: 'read docs', inputSchema: {type: 'object'}}];
+      return [{serverName: 'docs', toolName: 'read', namespacedName: 'mcp__docs__read', readOnly: true, description: 'read docs', inputSchema: {type: 'object'}}];
+    },
+    listReadonlyToolNames() {
+      return new Set(this.listTools().filter((tool) => tool.readOnly).map((tool) => tool.namespacedName));
+    },
+    listServerNames() {
+      return ['docs'];
     },
     getToolReference(name) { return name === 'mcp__docs__read' ? this.listTools()[0] : null; },
     async callTool() { mcpCalls += 1; return {content: [{type: 'text', text: 'mcp result'}]}; }
@@ -1224,6 +1231,79 @@ test('Worker receives the full local registry, keeps Todo local, and rejects for
   ]);
 });
 
+test('explorer reads MCP resources without receiving mcp__ tools or approval prompts', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-explorer-resources-'));
+  const snapshot = createConfigSnapshot();
+  let parentTurn = 0;
+  let childTurn = 0;
+  let approvals = 0;
+  const resourceCalls = [];
+  const manager = {
+    listTools() {
+      return [{serverName: 'docs', toolName: 'search', namespacedName: 'mcp__docs__search', readOnly: false, description: 'Search docs', inputSchema: {type: 'object'}}];
+    },
+    listReadonlyToolNames() {
+      return new Set();
+    },
+    listResources() {
+      return [{serverName: 'docs', uri: 'file:///guide.md', name: 'guide'}];
+    },
+    listResourceTemplates() {
+      return [];
+    },
+    listServerNames() {
+      return ['docs'];
+    },
+    async readResource(serverName, uri) {
+      resourceCalls.push({serverName, uri});
+      return {contents: [{uri, text: 'explorer resource body'}]};
+    },
+    async callTool() {
+      throw new Error('MCP tools must stay unavailable to explorer');
+    }
+  };
+
+  try {
+    await withPatchedAgents(cwd, (kind, registry) => ({
+      async runTurn(records) {
+        if (kind === 'primary') {
+          parentTurn += 1;
+          return parentTurn === 1
+            ? {draft: '', toolCalls: [{callId: 'outer-resource', toolName: 'run_subagent', argumentsText: JSON.stringify({agent: 'explorer', task: 'read the shared guide'})}]}
+            : {draft: 'parent done', toolCalls: []};
+        }
+
+        childTurn += 1;
+        const names = registry.listDefinitions().map(({name}) => name);
+        assert.equal(names.includes('list_mcp_resources'), true);
+        assert.equal(names.includes('read_mcp_resource'), true);
+        assert.equal(names.some((name) => name.startsWith('mcp__')), false);
+
+        if (childTurn === 1) {
+          return {draft: '', toolCalls: [{callId: 'inner-resource', toolName: 'read_mcp_resource', argumentsText: JSON.stringify({server: 'docs', uri: 'file:///guide.md'})}]};
+        }
+
+        assert.match(records.find((record) => record.role === 'tool_result' && record.toolCallId === 'inner-resource').text, /explorer resource body/u);
+        return {draft: 'guide read', toolCalls: []};
+      }
+    }), async () => {
+      const runAgent = createTestAgentLoopRuntime(cwd, {capture: () => snapshot}, manager);
+      assert.equal(await runAgent({records: [{role: 'user', text: 'delegate'}], userConfigSnapshot: snapshot}, {
+        onToolApprovalRequest() {
+          approvals += 1;
+          return {kind: 'deny', message: 'unexpected approval'};
+        }
+      }), 'parent done');
+    });
+
+    // 资源读取是只读观察:explorer 不拿到 mcp__ 工具,也不产生任何审批请求。
+    assert.equal(approvals, 0);
+    assert.deepEqual(resourceCalls, [{serverName: 'docs', uri: 'file:///guide.md'}]);
+  } finally {
+    fs.rmSync(cwd, {recursive: true, force: true});
+  }
+});
+
 test('Worker reuses initialized MCP tools without owning the manager lifecycle', async () => {
   const snapshot = createConfigSnapshot();
   let parentTurn = 0;
@@ -1233,7 +1313,13 @@ test('Worker reuses initialized MCP tools without owning the manager lifecycle',
   let approval;
   const manager = {
     listTools() {
-      return [{serverName: 'docs', toolName: 'write', namespacedName: 'mcp__docs__write', approval: 'always', description: 'write docs', inputSchema: {type: 'object'}}];
+      return [{serverName: 'docs', toolName: 'write', namespacedName: 'mcp__docs__write', description: 'write docs', inputSchema: {type: 'object'}}];
+    },
+    listReadonlyToolNames() {
+      return new Set(this.listTools().filter((tool) => tool.readOnly).map((tool) => tool.namespacedName));
+    },
+    listServerNames() {
+      return ['docs'];
     },
     getToolReference(name) {
       return name === 'mcp__docs__write' ? this.listTools()[0] : null;

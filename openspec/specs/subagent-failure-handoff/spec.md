@@ -1,5 +1,8 @@
 # subagent-failure-handoff Specification
 
+## Purpose
+定义子 Agent 非取消失败时的部分工作交接行为：外层 `run_subagent` 失败结果与交接正文、稳定/不完整/状态不明事实的区分、交接正文的有界性与可判读性，以及不改动成功、取消与本地过程隔离的边界。
+
 ## Requirements
 ### Requirement: 非取消失败返回部分工作交接
 已启动的子 Agent因provider、配置或内部执行错误失败且父turn未取消时，系统 SHALL 生成 `ok: false` 的外层 `run_subagent` tool result，并 SHALL 在结果正文中提供基于当前子运行事实的 failure handoff。交接 SHALL包含安全归一化失败原因，并在存在可恢复进展时包含稳定输出、已完成工具工作或未完成assistant草稿。交接 SHALL由本地确定性逻辑生成，SHALL NOT为总结失败过程发起额外provider请求。

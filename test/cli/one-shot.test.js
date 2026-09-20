@@ -35,6 +35,12 @@ function createResources() {
       async bootstrap() {
         events.push('mcp.bootstrap');
       },
+      listReadonlyToolNames() {
+        return new Set();
+      },
+      listServerNames() {
+        return [];
+      },
       async close() {
         events.push('mcp.close');
       }

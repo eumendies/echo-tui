@@ -64,6 +64,8 @@ const app = createApp(
     close: async () => {},
     getDiagnostics: () => [],
     listTools: () => [],
+    listPrompts: () => [],
+    getPrompt: async () => ({messages: []}),
     reload: async () => {}
   },
   {
