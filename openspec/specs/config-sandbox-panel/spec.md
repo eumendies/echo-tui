@@ -1,3 +1,6 @@
+## Purpose
+定义 `/config` 配置中心「沙箱」Tab 的外部行为：面板布局、档位与网络开关草稿编辑、额外可写目录增删改、保存与即时生效，以及脏草稿保护。
+
 ## Requirements
 
 ### Requirement: 沙箱配置 Tab 与面板布局
