@@ -14,8 +14,8 @@ import {
 } from '../../agent/subagent/settings';
 
 import type {AgentUserConfigSnapshot} from '../../types/agent';
-import type {CommandAgentBuiltinInfo, CommandAgentSkillInfo, CommandHostApp} from '../../types/command';
-import type {AgentsSettingsScopeReadResult, BuiltinSubagentName} from '../../agent/subagent/settings';
+import type {CommandAgentBuiltinInfo, CommandAgentBuiltinPolicy, CommandAgentSkillInfo, CommandHostApp} from '../../types/command';
+import type {AgentsSettingsScopeReadResult, BuiltinSubagentName, SelectedBuiltinSubagentOverride} from '../../agent/subagent/settings';
 
 type AgentsCommandPortOptions = {
   captureUserConfigSnapshot: () => AgentUserConfigSnapshot; // 每次管理操作捕获当前用户配置 revision。
@@ -55,7 +55,7 @@ function createAgentsCommandPort(options: AgentsCommandPortOptions): CommandHost
     }));
   }
 
-  /** 按共享 fail-closed 选择规则投影内置定义，并同时报告失效模型引用。 */
+  /** 按共享 fail-closed 选择规则投影内置定义，并同时报告失效模型引用与生效来源状态。 */
   function createBuiltinProjection(
     overrides: readonly Readonly<AgentsSettingsScopeReadResult>[],
     modelProfileIds: ReadonlySet<string>
@@ -63,14 +63,16 @@ function createAgentsCommandPort(options: AgentsCommandPortOptions): CommandHost
     const diagnostics: Array<{code: string; message: string}> = [];
     const builtins = BUILTIN_SUBAGENT_DEFINITIONS.map((definition): CommandAgentBuiltinInfo => {
       const name = definition.name as BuiltinSubagentName;
-      let selected = selectBuiltinSubagentOverride(name, overrides);
-      if (selected?.override.modelProfileId && !modelProfileIds.has(selected.override.modelProfileId)) {
+      const declared = selectBuiltinSubagentOverride(name, overrides);
+      const declaredModelProfileId = declared?.override.modelProfileId;
+      const missingModelProfileId = declaredModelProfileId && !modelProfileIds.has(declaredModelProfileId) ? declaredModelProfileId : undefined;
+      if (missingModelProfileId) {
         diagnostics.push({
           code: 'builtin_model_profile_not_found',
-          message: `Built-in Agent ${name} references missing model profile "${selected.override.modelProfileId}" and will inherit the parent policy.`
+          message: `Built-in Agent ${name} references missing model profile "${missingModelProfileId}" and will inherit the parent policy.`
         });
-        selected = undefined;
       }
+      const selected = missingModelProfileId ? undefined : declared;
 
       return {
         capability: definition.executionPolicy === 'readonly_investigation' ? 'readonly' : 'general',
@@ -80,6 +82,7 @@ function createAgentsCommandPort(options: AgentsCommandPortOptions): CommandHost
         localToolNames: [...definition.localToolNames],
         ...(selected?.override.modelProfileId ? {modelProfileId: selected.override.modelProfileId} : {}),
         name,
+        policy: createBuiltinPolicy(declared, missingModelProfileId),
         ...(selected?.override.skillNames !== undefined ? {skillNames: [...selected.override.skillNames]} : {})
       };
     });
@@ -137,6 +140,26 @@ function createAgentsCommandPort(options: AgentsCommandPortOptions): CommandHost
       return deleteBuiltinSubagentOverride(scope, name, expectedFingerprint, context.storeOptions);
     }
   };
+}
+
+/** 把共享 fail-closed 选择结果投影为可解释的生效来源；整体失效时保留 scope 与失效引用。 */
+function createBuiltinPolicy(
+  declared: Readonly<SelectedBuiltinSubagentOverride> | undefined,
+  missingModelProfileId: string | undefined
+): CommandAgentBuiltinPolicy {
+  if (!declared) {
+    return {fields: [], status: 'none'};
+  }
+  const {override, sourceKind, sourcePath} = declared;
+  if (missingModelProfileId) {
+    return {fields: [], missingModelProfileId, sourceKind, sourcePath, status: 'ignored'};
+  }
+  // effort 为 inherit 时不构成来源覆盖，避免把等同父策略的字段标成 scope 策略。
+  const fields: Array<'model' | 'effort' | 'skills'> = [];
+  if (override.modelProfileId) fields.push('model');
+  if (override.effort !== 'inherit') fields.push('effort');
+  if (override.skillNames !== undefined) fields.push('skills');
+  return {fields, sourceKind, sourcePath, status: 'applied'};
 }
 
 export {createAgentsCommandPort};

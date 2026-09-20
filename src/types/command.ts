@@ -261,6 +261,14 @@ export type AgentsCommandSurface = {
   title: string; // 当前层级标题。
 };
 
+export type CommandAgentBuiltinPolicy = {
+  fields: readonly ('model' | 'effort' | 'skills')[]; // 胜出 override 实际覆盖的策略字段；未生效时为空序列。
+  missingModelProfileId?: string; // status 为 ignored 时使整条 override 失效的模型 profile 引用。
+  sourceKind?: 'project' | 'user'; // 胜出 override 的 scope；status 为 none 时缺省。
+  sourcePath?: string; // 胜出 scope 的 sidecar 绝对路径；status 为 none 时缺省。
+  status: 'applied' | 'ignored' | 'none'; // 生效、已声明但被整体丢弃、或没有任何 scope 声明该 override。
+};
+
 export type CommandAgentBuiltinInfo = {
   capability: CustomSubagentCapability; // 从固定 execution policy 投影的只读能力模板。
   description: string; // 内置定义的固定目录描述。
@@ -269,6 +277,7 @@ export type CommandAgentBuiltinInfo = {
   localToolNames: string[]; // 内置定义固定的本地工具白名单，只读展示。
   modelProfileId?: string; // 当前有效 override 的显式模型 profile。
   name: BuiltinSubagentName; // Explorer 或 Worker 的固定保留名称。
+  policy: CommandAgentBuiltinPolicy; // 当前生效策略的来源、覆盖字段与失效原因，供详情页与策略表单展示。
   skillNames?: string[]; // 当前有效 override 的 Skill allowlist；缺省表示全部 enabled Skills。
 };
 

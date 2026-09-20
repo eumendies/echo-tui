@@ -219,7 +219,7 @@ direct skill invocation 的模型策略通过独立 typed 字段沿 `CommandStar
 | `skills` | 为 `/skills` 和 direct skill invocation 提供 skill 列表、enabled descriptors、启停/model override 状态保存和注入文本创建 |
 | `mcp` | 为 `/mcp` 列出全局开关与各 server 状态（含传输类型、工具数量、诊断），保存 enabled 草稿并重载 MCP 工具集合 |
 | `memory` | 为 `/memory` 受控管理 user memory，以及当前 cwd 可访问的 global/project agent catalog 和 items；支持通过 facade 切换 user memory、agent catalog 和 agent item 的启停状态，handler 不直接访问文件系统或自行解析 project scope |
-| `agents` | 为 `/agents` 捕获当前模型目录并扫描 Built-in/User/Project 物理定义，提供严格校验、原子 CRUD、内置 model/effort/Skills override、Skills effective 状态与冲突结果；handler 不直接访问文件系统或活动 Subagent catalog |
+| `agents` | 为 `/agents` 捕获当前模型目录并扫描 Built-in/User/Project 物理定义，提供严格校验、原子 CRUD、内置 model/effort/Skills override、Skills effective 状态、内置 override 生效来源（用户级/项目级/父策略继承，含失效引用）与冲突结果；handler 不直接访问文件系统或活动 Subagent catalog |
 | `hooks` | 为 `/hooks` 读取 hooks 管理草稿、保存 root `hooks` 节点并 reload dispatcher、按 event 构造 synthetic payload、执行单条 hook synthetic test；handler 不直接读写用户配置、不持有 dispatcher 或 renderer/terminal 引用 |
 | `mode` | 读取与设置当前 interaction mode，并清空 context usage 后重绘 footer |
 | `theme` | 为配置中心“外观”Tab 列出并保存内置 theme，更新当前进程 theme 后完整重绘 |

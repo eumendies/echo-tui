@@ -281,3 +281,30 @@ test('renderAgentsSurface neutralizes terminal control characters from physical 
   assert.match(text, /unsafe.*owned.*name/u);
   assert.match(text, /invalid.*owned.*diagnostic/u);
 });
+
+test('renderAgentsSurface explains the effective built-in policy source inside 80 columns', () => {
+  const layout = renderAgentsSurface(createSurface({
+    activeTab: 'builtin',
+    mode: 'detail',
+    rows: [
+      {description: 'Inspect project files and return evidence.', id: 'builtin:description', kind: 'field', label: 'description', readonly: true},
+      {description: '项目级 override 生效 · /repo/.echo/agents.settings.json', id: 'builtin:policy', kind: 'field', label: 'policy', readonly: true},
+      {description: 'fast-model（项目级策略）', id: 'builtin:model', kind: 'field', label: 'model', readonly: true},
+      {description: 'high（项目级策略）', id: 'builtin:effort', kind: 'field', label: 'effort', readonly: true},
+      {description: '2 个（项目级策略）', id: 'builtin:skills', kind: 'field', label: 'skills', readonly: true},
+      {description: '当前生效', id: 'builtin:project', kind: 'action', label: '配置项目级策略'},
+      {description: '未配置', id: 'builtin:user', kind: 'action', label: '配置用户级策略'}
+    ],
+    selectedIndex: 1,
+    title: 'AGENTS · explorer'
+  }), 80, 10);
+  const text = layout.lines.map(stripAnsi).join('\n');
+
+  assert.match(text, /policy\s+项目级 override 生效 · \/repo\/\.echo\/agents\.settings\.json/u);
+  assert.match(text, /model\s+fast-model（项目级策略）/u);
+  assert.match(text, /effort\s+high（项目级策略）/u);
+  assert.match(text, /配置项目级策略\s+当前生效/u);
+  assert.match(text, /配置用户级策略\s+未配置/u);
+  assert.doesNotMatch(text, /…/u);
+  assert.ok(layout.lines.every((line) => displayWidth(line) <= 79));
+});
