@@ -210,6 +210,8 @@ export type HooksCommandSurface = {
 
 export type AgentsCommandTab = 'overview' | 'project' | 'user' | 'builtin';
 type AgentsCommandMode = 'list' | 'detail' | 'form' | 'tools' | 'skills' | 'instructions' | 'confirm';
+export type AgentsCommandSection = 'identity' | 'policy' | 'capability' | 'actions';
+export type AgentsCommandTone = 'warning' | 'danger';
 
 type AgentsCommandTabInfo = {
   id: AgentsCommandTab; // 顶层来源范围的稳定标识。
@@ -226,11 +228,32 @@ export type AgentsCommandRow = {
   mcp?: boolean; // Agent 列表行是否可见父运行 MCP 工具。
   model?: string; // Agent 列表行的显式模型 profile；缺省表示继承父模型。
   readonly?: boolean; // true 表示该字段仅展示且不得进入编辑状态。
+  section?: AgentsCommandSection; // 详情或表单中的语义分区；不参与焦点索引。
   selected?: boolean; // tools 多选时表示当前工具是否已纳入草稿。
   skillSummary?: string; // Agent 列表行的 Skill 策略摘要，区分全部、无与已配置数量。
   sourceKind?: 'builtin' | AgentManagementScope; // Agent 列表行的物理来源。
   status?: string; // Agent 的 active、shadowed、invalid 或 reserved 等状态摘要。
+  tone?: AgentsCommandTone; // 动作或诊断的视觉语气，不改变 Enter 行为。
   toolCount?: number; // Agent 列表行当前本地工具数量。
+};
+
+export type AgentsCommandSummaryField = {
+  label: string; // 摘要字段的短标签，与 value 拼成一行紧凑展示文本。
+  value: string; // 已由 handler 确定业务语义的可见值。
+};
+
+export type AgentsCommandSummary = {
+  description?: string; // Agent 定义描述或动作说明；诊断文本只出现在 diagnostics。
+  diagnostics: string[]; // 当前选中物理项的有界诊断；无诊断时为空数组。
+  fields: AgentsCommandSummaryField[]; // 按重要性排序的策略、权限与来源字段。
+  sourceKind?: 'builtin' | AgentManagementScope; // Agent 或 scope 动作对应的来源层级。
+  status?: string; // 当前选中 Agent 的 canonical 状态，renderer 负责本地化显示。
+  title: string; // 摘要标题，通常是 Agent 名称或动作名称。
+};
+
+export type AgentsCommandStats = {
+  agentCount: number; // 当前范围内可见的 Agent 物理项或 effective 项数量。
+  issueCount: number; // 当前范围内无效、保留或独立诊断的数量。
 };
 
 export type AgentsCommandDraft = {
@@ -257,6 +280,8 @@ export type AgentsCommandSurface = {
   mode: AgentsCommandMode; // 当前列表、详情、表单或嵌套 modal 层级。
   rows: AgentsCommandRow[]; // Agent 与动作混合的可聚焦行快照。
   selectedIndex: number; // 当前 rows 中已钳制的焦点索引。
+  stats?: AgentsCommandStats; // 列表模式当前范围的简短计数；其他模式缺省。
+  summary?: AgentsCommandSummary; // 列表模式当前选中项的结构化摘要；空范围缺省。
   tabs: AgentsCommandTabInfo[]; // 顶层固定 Tab 列表。
   title: string; // 当前层级标题。
 };

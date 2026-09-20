@@ -496,7 +496,7 @@ flowchart TB
 | `mcp` | `/mcp` 多视图配置面板 | 按 `view` 渲染总览、server 编辑、集合子视图（args/env/headers）、只读清单（tools/resources/templates/prompts）、丢弃与删除确认、校验错误；行投影由 handler 与渲染共用，密钥值掩码显示，隐藏光标 |
 | `memory` | `/memory` 记忆管理面板 | 渲染用户记忆和 agent catalog/item 的列表、编辑与删除确认状态；编辑态显示光标 |
 | `hooks` | `/hooks` 生命周期 hook 管理面板 | 渲染事件、hook 条目、详情、编辑和测试状态；编辑态显示光标 |
-| `agents` | `/agents` Subagent 管理面板 | 渲染来源 Tab、有效/覆盖/无效状态、详情、显式动作行、字段与工具表单、Skills 多选层（all/no/count、来源与不可用状态）、默认取消确认和反馈；name/description/instructions 编辑态显示真实光标 |
+| `agents` | `/agents` Subagent 管理面板 | 列表用中文来源 Tab、短状态与范围统计定位 Agent，并从 handler 提供的结构化摘要展示当前项策略、权限、描述或诊断；约 96 列起使用列表/摘要左右分栏，窄终端改为上下堆叠。详情与表单用不参与焦点索引的“身份 / 运行策略 / 能力与权限 / 操作”分区组织，保留 Tools、Skills、默认取消确认、反馈及 name/description/instructions 真实光标编辑 |
 | `scale` | 有序强度选择，例如 `/effort` | 用 rounded slider 轨道展示档位与当前 knob，隐藏光标 |
 | `choice` | 阻塞式单选交互，例如 tool approval 和 `ask_user_questions` | 渲染问题、选项、可选 inline input 和 dismiss hint；选中 inline input 时显示光标 |
 | `confirm` | 确认型命令，例如 `/clear`、`/compact`、`/undo` | 渲染标题、正文和确认/取消提示，Enter 确认操作高亮，隐藏光标 |
@@ -576,7 +576,7 @@ renderer 只理解这些 surface kind，不理解具体命令、tool approval、
 | `src/agent/loop-runtime/agent-loop-runtime.ts` | `createAgentLoopRuntime` | 主 `RunAgent` 实现：配置/完整工具加载、system prompt、tool continuation、Todo、审批、压缩、usage、委派 Port和主 callbacks |
 | `src/agent/loop-runtime/subagent-loop-runtime.ts` | `createSubagentLoopRuntime` | 定义绑定的Subagent runtime：隔离任务、独立registry/Todo/continuation、内置与自定义 catalog 选择的 readonly/general 工具策略、hook和专属callbacks |
 | `src/agent/subagent/catalog.ts`、`manifest.ts`、`name.ts`、`settings.ts` | `loadSubagentCatalog`、`parseCustomSubagentManifest`、`serializeCustomSubagentManifest`、名称 formatter | 合并内置、用户和项目定义，严格解析模型/effort/Skills allowlist与能力策略并冻结目录，加载含 `skills` 字段的内置 override sidecar，输出有界 debug 诊断，并为所有 App/render 身份提供控制字符安全回退 |
-| `src/app/command/agents-command-port.ts`、`src/commands/agents-command-handler.ts`、`src/render/footer/agents-surface.ts` | `createAgentsCommandPort`、`AgentsCommandHandler`、`renderAgentsSurface` | 组合 `/agents` 受控文件端口（含 Skills effective 视图）、Enter 驱动的分层 CRUD/确认/Skills 多选 controller 与响应终端宽高的专属 footer card |
+| `src/app/command/agents-command-port.ts`、`src/commands/agents-command-handler.ts`、`src/render/footer/agents-surface.ts` | `createAgentsCommandPort`、`AgentsCommandHandler`、`renderAgentsSurface` | 组合 `/agents` 受控文件端口（含 Skills effective 视图）、Enter 驱动的分层 CRUD/确认/Skills 多选 controller，以及 handler 生成的当前项摘要、范围统计和分区元数据；renderer 只负责宽屏主从/窄屏堆叠、窗口预算、状态语气与真实光标投影 |
 | `src/agent/loop-runtime/shared.ts` | `buildProviderRecords` 等纯函数 | 主/子 runtime共享的无角色 provider context、usage调试和结果事实投影；不提交 callback或 hook |
 | `src/agent/agent-setup.ts` | `createConfiguredAgent`、`prepareAgent` | 按 agentType 选择 provider adapter 并用配置和 registry 初始化；共享 manager 存在时同时注册 MCP 资源读取工具，`includeMcpTools` 只控制 MCP tools 的合并 |
 | `src/agent/context/system-prompt.ts` | `createBuiltInSystemPrompt`、`loadSystemPromptOverride`、`formatAgentInstructionsPrompt` | 完整读取项目级或用户级 `SYSTEM.md`，并组合基础文本与 cwd、所选项目指令文件、skill catalog、memory section |

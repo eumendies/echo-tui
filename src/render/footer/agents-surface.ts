@@ -1,17 +1,27 @@
 import * as ansi from '../../terminal/ansi';
 import {displayWidth, safeRenderWidth} from '../layout';
 import {activeBackground, renderFocusBar, resolveFooterTheme, tokenText, type FooterTheme} from '../colors';
+import {sectionTitle} from './config-panel-rows';
 import {clampPlainText, padVisibleText} from './text';
 import {clampIndex, createSelectedWindowRows, normalizeLineLimit} from './window';
 
-import type {AgentsCommandRow, AgentsCommandSurface} from '../../types/command';
+import type {AgentsCommandRow, AgentsCommandSection, AgentsCommandSummary, AgentsCommandSurface} from '../../types/command';
 import type {FooterLayout} from '../../types/render';
 
 const AGENTS_SURFACE_HORIZONTAL_MARGIN = 4;
 const AGENTS_DEFAULT_BODY_ROWS = 9;
+// 96 列终端扣除安全渲染宽度与卡片边距后正文为 87 列，低于该宽度改用上下堆叠布局。
+const AGENTS_WIDE_CONTENT_MIN_WIDTH = 87;
 const CONTENT_COLUMN_OFFSET = 2;
 const LEFT_COLUMN_MAX_RATIO = 0.45;
 const SPLIT_COLUMN_GAP = 2;
+
+const SECTION_LABELS: Record<AgentsCommandSection, string> = {
+  identity: '身份',
+  policy: '运行策略',
+  capability: '能力与权限',
+  actions: '操作'
+};
 
 type AgentsBodyLayout = {
   cursorColumn: number; // 真实终端光标相对整行左侧的可见列。
@@ -25,6 +35,16 @@ type EditorProjection = {
   text: string; // 围绕光标裁剪后的单行文本。
 };
 
+type StatusProjection = {
+  label: string; // 不依赖颜色即可识别的短状态文本。
+  marker: string; // 状态的冗余视觉符号。
+  token: 'success' | 'warning' | 'danger' | 'muted'; // 状态对应的主题语气。
+};
+
+type SummaryEntry =
+  | {kind: 'header'; metadata: string; title: string} // 摘要首行：标题与状态、来源元数据。
+  | {kind: 'text'; text: string; token: 'dim' | 'warning'}; // 摘要正文行；样式在纯文本裁剪之后应用。
+
 /**
  * 渲染 `/agents` 管理卡片；所有业务状态来自 command session，renderer 只负责窗口、样式和真实光标投影。
  */
@@ -36,23 +56,28 @@ export function renderAgentsSurface(
 ): FooterLayout {
   const boxWidth = calculateBoxWidth(width);
   const contentWidth = Math.max(1, boxWidth - 4);
-  const showTabs = surface.mode === 'list';
-  const messageCount = Number(Boolean(surface.error)) + Number(Boolean(surface.feedback));
-  const fixedRows = 3 + Number(showTabs) + messageCount;
   const lineLimit = normalizeLineLimit(maxLines, 1);
-  const minimumBodyRows = surface.mode === 'confirm' ? 2 : 1;
+  // 预算过小时优先保留正文：不渲染边框、标签页与提示，避免 chrome 挤掉全部内容。
+  const showChrome = !Number.isFinite(lineLimit) || lineLimit >= 5;
+  const showTabs = showChrome && surface.mode === 'list';
+  const messageCount = showChrome ? Number(Boolean(surface.error)) + Number(Boolean(surface.feedback)) : 0;
+  // 确认页必须同时显示取消与待确认动作；预算不足时让出 dismiss hint 行，而不是隐藏任一选项。
+  const dropHint = showChrome && surface.mode === 'confirm' && Number.isFinite(lineLimit) && lineLimit < messageCount + 5;
+  const fixedRows = showChrome ? 3 + Number(showTabs) + messageCount - Number(dropHint) : 0;
+  // 不渲染 chrome 的极低预算下只保证选中行可见；有边框时确认页至少保留两个选项。
+  const minimumBodyRows = surface.mode === 'confirm' && showChrome ? 2 : 1;
   const bodyBudget = Number.isFinite(lineLimit)
     ? Math.max(minimumBodyRows, lineLimit - fixedRows)
     : AGENTS_DEFAULT_BODY_ROWS;
   const body = renderBody(surface, contentWidth, bodyBudget, theme);
   const lines = [
-    renderTop(boxWidth, normalizeSingleLineText(surface.title), theme),
+    ...(showChrome ? [renderTop(boxWidth, normalizeSingleLineText(surface.title), theme, surface.mode === 'list' ? formatStats(surface) : '')] : []),
     ...(showTabs ? [renderTabs(surface, contentWidth, theme)] : []),
     ...body.rows,
-    ...(surface.error ? [renderMessage(normalizeSingleLineText(surface.error), 'danger', contentWidth, theme)] : []),
-    ...(surface.feedback ? [renderMessage(normalizeSingleLineText(surface.feedback), 'success', contentWidth, theme)] : []),
-    renderLine(ansi.dim(clampPlainText(normalizeSingleLineText(surface.dismissHint), contentWidth)), contentWidth, theme),
-    renderBottom(boxWidth, theme)
+    ...(showChrome && surface.error ? [renderMessage(normalizeSingleLineText(surface.error), 'danger', contentWidth, theme)] : []),
+    ...(showChrome && surface.feedback ? [renderMessage(normalizeSingleLineText(surface.feedback), 'success', contentWidth, theme)] : []),
+    ...(showChrome && !dropHint ? [renderLine(ansi.dim(clampPlainText(normalizeSingleLineText(surface.dismissHint), contentWidth)), contentWidth, theme)] : []),
+    ...(showChrome ? [renderBottom(boxWidth, theme)] : [])
   ];
 
   if (!body.showCursor) {
@@ -62,7 +87,7 @@ export function renderAgentsSurface(
   return {
     lines,
     cursorColumn: body.cursorColumn,
-    cursorRow: 1 + Number(showTabs) + body.cursorRow,
+    cursorRow: Number(showChrome) + Number(showTabs) + body.cursorRow,
     showCursor: true
   };
 }
@@ -86,12 +111,88 @@ function renderBody(surface: AgentsCommandSurface, contentWidth: number, bodyBud
     return withoutCursor([renderLine(ansi.dim('当前范围没有 Agent。'), contentWidth, theme)]);
   }
 
+  if (surface.mode === 'list') {
+    return renderListBody(surface, contentWidth, bodyBudget, theme);
+  }
+
+  return renderRowsBody(surface, editText, contentWidth, bodyBudget, theme);
+}
+
+/** 列表模式根据正文宽度选择左右主从或上下堆叠布局，两者消费同一份 rows 与 summary。 */
+function renderListBody(surface: AgentsCommandSurface, contentWidth: number, bodyBudget: number, theme: FooterTheme): AgentsBodyLayout {
+  return contentWidth >= AGENTS_WIDE_CONTENT_MIN_WIDTH
+    ? renderWideListBody(surface, contentWidth, bodyBudget, theme)
+    : renderStackedListBody(surface, contentWidth, bodyBudget, theme);
+}
+
+/** 宽屏把列表窗口与摘要按同一高度合并，避免摘要额外消耗 footer 行数。 */
+function renderWideListBody(surface: AgentsCommandSurface, contentWidth: number, bodyBudget: number, theme: FooterTheme): AgentsBodyLayout {
   const selectedIndex = clampIndex(surface.selectedIndex, surface.rows.length);
+  const divider = ansi.dim(' │ ');
+  const dividerWidth = displayWidth(divider);
+  const leftWidth = Math.min(42, Math.max(28, Math.floor((contentWidth - dividerWidth) * 0.38)));
+  const rightWidth = Math.max(1, contentWidth - leftWidth - dividerWidth);
+  const listRows = renderListWindowCells(surface.rows, selectedIndex, bodyBudget, leftWidth, theme);
+  const summaryRows = surface.summary ? renderSummaryCells(surface.summary, rightWidth, bodyBudget, theme) : [];
+  const rowCount = Math.min(Math.max(listRows.length, summaryRows.length), bodyBudget);
+  const rows: string[] = [];
+  for (let index = 0; index < rowCount; index += 1) {
+    rows.push(renderLine(
+      `${padVisibleText(listRows[index] || '', leftWidth)}${divider}${padVisibleText(summaryRows[index] || '', rightWidth)}`,
+      contentWidth,
+      theme
+    ));
+  }
+  return withoutCursor(rows);
+}
+
+/** 窄屏先保留选中列表行，再把核心摘要放在固定分隔线下。 */
+function renderStackedListBody(surface: AgentsCommandSurface, contentWidth: number, bodyBudget: number, theme: FooterTheme): AgentsBodyLayout {
+  const selectedIndex = clampIndex(surface.selectedIndex, surface.rows.length);
+  const summary = surface.summary;
+  if (bodyBudget <= 1 || !summary) {
+    return withoutCursor(renderListWindowCells(surface.rows, selectedIndex, bodyBudget, contentWidth, theme)
+      .map((row) => renderLine(row, contentWidth, theme)));
+  }
+
+  // 三段预算合计恒等于 bodyBudget：摘要最多 4 行，列表保留选中行，其余留给分隔标题。
+  const dividerRows = bodyBudget >= 3 ? 1 : 0;
+  const summaryBudget = Math.min(4, Math.max(1, Math.floor((bodyBudget - dividerRows) / 2)));
+  const listBudget = bodyBudget - dividerRows - summaryBudget;
+  const divider = dividerRows > 0 ? [renderSectionTitle('当前项', contentWidth, theme)] : [];
+  const summaryRows = renderSummaryCells(summary, contentWidth, summaryBudget, theme)
+    .map((row) => renderLine(row, contentWidth, theme));
+  const listRows = renderListWindowCells(surface.rows, selectedIndex, listBudget, contentWidth, theme)
+    .map((row) => renderLine(row, contentWidth, theme));
+  return withoutCursor([...listRows, ...divider, ...summaryRows]);
+}
+
+/** 详情和表单先按焦点选择窗口，再插入不参与 selectedIndex 的分区标题；超出预算时收缩条目窗口重试。 */
+function renderRowsBody(surface: AgentsCommandSurface, editText: string | undefined, contentWidth: number, bodyBudget: number, theme: FooterTheme): AgentsBodyLayout {
+  const selectedIndex = clampIndex(surface.selectedIndex, surface.rows.length);
+  for (let itemBudget = bodyBudget; itemBudget >= 1; itemBudget -= 1) {
+    const projected = projectRowsWindow(surface, selectedIndex, itemBudget, editText, contentWidth, theme, true);
+    if (projected.rows.length <= bodyBudget) return projected;
+  }
+  return projectRowsWindow(surface, selectedIndex, bodyBudget, editText, contentWidth, theme, false);
+}
+
+function projectRowsWindow(
+  surface: AgentsCommandSurface,
+  selectedIndex: number,
+  itemBudget: number,
+  editText: string | undefined,
+  contentWidth: number,
+  theme: FooterTheme,
+  showSections: boolean
+): AgentsBodyLayout {
+
   const rows: string[] = [];
   let cursorRow = 0;
   let cursorColumn = 0;
   let showCursor = false;
-  const visibleRows = createSelectedWindowRows(surface.rows, selectedIndex, Math.max(1, bodyBudget));
+  let previousSection: AgentsCommandSection | undefined;
+  const visibleRows = createSelectedWindowRows(surface.rows, selectedIndex, itemBudget);
 
   for (const windowRow of visibleRows) {
     if (windowRow.kind === 'more') {
@@ -100,15 +201,20 @@ function renderBody(surface: AgentsCommandSurface, contentWidth: number, bodyBud
     }
 
     const active = windowRow.index === selectedIndex;
-    if (active && editText !== undefined && surface.editField && windowRow.item.id === surface.editField) {
-      const editing = renderEditingField(normalizeRow(windowRow.item), editText, surface.editCursor || 0, contentWidth, theme);
+    const row = normalizeRow(windowRow.item);
+    if (showSections && row.section && row.section !== previousSection) {
+      rows.push(renderSectionTitle(SECTION_LABELS[row.section], contentWidth, theme));
+    }
+    previousSection = row.section;
+    if (active && editText !== undefined && surface.editField && row.id === surface.editField) {
+      const editing = renderEditingField(row, editText, surface.editCursor || 0, contentWidth, theme);
       cursorRow = rows.length;
       cursorColumn = editing.cursorColumn;
       showCursor = true;
       rows.push(editing.row);
       continue;
     }
-    rows.push(renderRow(normalizeRow(windowRow.item), active, contentWidth, theme));
+    rows.push(renderRow(row, active, contentWidth, theme));
   }
 
   return {rows, cursorColumn, cursorRow, showCursor};
@@ -125,16 +231,115 @@ function renderTabs(surface: AgentsCommandSurface, contentWidth: number, theme: 
   return renderLine(clampStyledParts(labels, '  ', contentWidth), contentWidth, theme);
 }
 
-function renderRow(row: AgentsCommandRow, active: boolean, contentWidth: number, theme: FooterTheme): string {
+/** 把当前范围统计压缩到顶栏右侧；空范围仍明确显示 0 Agent。 */
+function formatStats(surface: AgentsCommandSurface): string {
+  const stats = surface.stats;
+  if (!stats) return '';
+  return `${stats.agentCount} Agent${stats.issueCount > 0 ? ` · ${stats.issueCount} 异常` : ''}`;
+}
+
+/** 创建包含焦点的紧凑列表窗口；返回未加外框的固定宽度单元格。 */
+function renderListWindowCells(rows: AgentsCommandRow[], selectedIndex: number, budget: number, width: number, theme: FooterTheme): string[] {
+  return createSelectedWindowRows(rows, selectedIndex, budget).map((entry) => {
+    if (entry.kind === 'more') {
+      // 提示文案先在纯文本上裁剪再着色，保证极窄单元格内也不会超出声明宽度。
+      const hint = clampCellText(`  ${entry.direction === 'up' ? '↑' : '↓'} ${entry.count} 更多`, width);
+      return padVisibleText(ansi.dim(hint), width);
+    }
+    return renderListCell(normalizeRow(entry.item), entry.index === selectedIndex, width, theme);
+  });
+}
+
+/** 列表行仅承载身份、状态、来源和 capability，完整运行策略由选中项摘要展示。 */
+function renderListCell(row: AgentsCommandRow, active: boolean, width: number, theme: FooterTheme): string {
   if (row.kind === 'agent') {
-    return renderAgentRow(row, active, contentWidth, theme);
+    const status = resolveStatus(row.status);
+    const source = formatSource(row.sourceKind);
+    const capability = formatCapability(row.capability);
+    const detail = `${status.marker} ${status.label} · ${source}${capability ? ` · ${capability}` : ''}`;
+    return renderSelectableCell(row.label, detail, active, width, theme, status.token);
   }
   if (row.kind === 'action') {
-    return renderSelectable(row.label, row.description, active, contentWidth, theme, 'accent');
+    return renderSelectableCell(row.label, row.description || '按 Enter 执行', active, width, theme, row.tone === 'danger' ? 'danger' : 'accent');
+  }
+  const status = resolveStatus(row.status || 'diagnostic');
+  return renderSelectableCell(row.label, `${status.marker} ${status.label}`, active, width, theme, status.token);
+}
+
+/** 摘要按重要性生成有限行；内容先在纯文本上裁剪，再应用 dim、警告等样式。 */
+function renderSummaryCells(summary: AgentsCommandSummary, width: number, budget: number, theme: FooterTheme): string[] {
+  const status = summary.status ? resolveStatus(summary.status) : undefined;
+  const source = summary.sourceKind ? formatSource(summary.sourceKind) : '';
+  const metadata = [status ? `${status.marker} ${status.label}` : '', source].filter(Boolean).join(' · ');
+  const entries: SummaryEntry[] = [{kind: 'header', metadata, title: summary.title}];
+  for (let index = 0; index < summary.fields.length; index += 3) {
+    const fields = summary.fields.slice(index, index + 3);
+    entries.push({kind: 'text', text: normalizeSingleLineText(fields.map((field) => `${field.label} ${field.value}`).join(' · ')), token: 'dim'});
+  }
+  // 描述与字段行同为信息层：补“描述”标签并统一 dim，避免出现无标签的唯一亮色行。
+  if (summary.description) entries.push({kind: 'text', text: normalizeSingleLineText(`描述 ${summary.description}`), token: 'dim'});
+  for (const diagnostic of summary.diagnostics) {
+    entries.push({kind: 'text', text: normalizeSingleLineText(`! ${diagnostic}`), token: 'warning'});
+  }
+  const visible = entries.slice(0, budget);
+  if (entries.length > budget && budget > 1) {
+    visible[budget - 1] = {kind: 'text', text: `↓ ${entries.length - budget + 1} 更多；Enter 查看详情`, token: 'dim'};
+  }
+  return visible.map((entry) => padVisibleText(renderSummaryEntry(entry, width, theme), width));
+}
+
+/** 摘要行裁剪在着色之前完成，避免在 ANSI 序列中间截断，也避免超宽时静默丢失样式。 */
+function renderSummaryEntry(entry: SummaryEntry, width: number, theme: FooterTheme): string {
+  if (entry.kind === 'header') return renderSummaryHeader(entry.title, entry.metadata, width, theme);
+  const text = clampCellText(entry.text, width);
+  return entry.token === 'warning' ? tokenText(theme, 'warning', text) : ansi.dim(text);
+}
+
+function renderSummaryHeader(title: string, metadata: string, width: number, theme: FooterTheme): string {
+  const safeTitle = normalizeSingleLineText(title);
+  const safeMetadata = normalizeSingleLineText(metadata);
+  // 元数据列最多占 48%，且必须给标题留 1 列与 2 列列间隔，避免极窄右栏整行超宽。
+  const metadataWidth = Math.min(displayWidth(safeMetadata), Math.max(0, Math.floor(width * 0.48)), Math.max(0, width - 3));
+  const titleWidth = Math.max(1, width - metadataWidth - (metadataWidth > 0 ? 2 : 0));
+  const left = tokenText(theme, 'accentStrong', ansi.bold(clampCellText(safeTitle, titleWidth)));
+  const right = metadataWidth > 0 ? ansi.dim(clampCellText(safeMetadata, metadataWidth)) : '';
+  return `${padVisibleText(left, titleWidth)}${metadataWidth > 0 ? '  ' : ''}${right}`;
+}
+
+function resolveStatus(status: string | undefined): StatusProjection {
+  if (status === 'active') return {label: '生效', marker: '●', token: 'success'};
+  if (status === 'shadowed') return {label: '被覆盖', marker: '◐', token: 'warning'};
+  if (status === 'invalid') return {label: '无效', marker: '!', token: 'danger'};
+  if (status === 'reserved') return {label: '保留', marker: '!', token: 'warning'};
+  if (status === 'diagnostic') return {label: '诊断', marker: '!', token: 'warning'};
+  if (status === 'stale') return {label: '不可用', marker: '!', token: 'warning'};
+  const label = normalizeSingleLineText(status || '未知');
+  return {label, marker: '?', token: 'warning'};
+}
+
+function formatSource(sourceKind: AgentsCommandRow['sourceKind']): string {
+  return sourceKind === 'builtin' ? '内置' : sourceKind === 'project' ? '项目' : sourceKind === 'user' ? '用户' : '未知来源';
+}
+
+function formatCapability(capability: AgentsCommandRow['capability']): string {
+  return capability === 'readonly' ? '只读' : capability === 'general' ? '通用' : '';
+}
+
+/** 分区标题复用配置面板原语，保持管理面板之间一致的视觉层级。 */
+function renderSectionTitle(label: string, contentWidth: number, theme: FooterTheme): string {
+  return renderLine(sectionTitle(label, contentWidth, theme), contentWidth, theme);
+}
+
+function renderRow(row: AgentsCommandRow, active: boolean, contentWidth: number, theme: FooterTheme): string {
+  if (row.kind === 'agent') {
+    return renderLine(renderListCell(row, active, contentWidth, theme), contentWidth, theme);
+  }
+  if (row.kind === 'action') {
+    const token = row.tone === 'danger' ? 'danger' : row.tone === 'warning' ? 'warning' : 'accent';
+    return renderLine(renderSelectableCell(row.label, row.description, active, contentWidth, theme, token), contentWidth, theme);
   }
   if (row.kind === 'confirm') {
-    const destructive = row.id === 'confirm:execute';
-    return renderSelectable(row.label, row.description, active, contentWidth, theme, destructive ? 'danger' : 'accent');
+    return renderLine(renderSelectableCell(row.label, row.description, active, contentWidth, theme, row.tone === 'danger' ? 'danger' : 'accent'), contentWidth, theme);
   }
   if (row.kind === 'tool') {
     return renderToolRow(row, active, contentWidth, theme);
@@ -161,19 +366,7 @@ function renderToolRow(row: AgentsCommandRow, active: boolean, contentWidth: num
   const label = tokenText(theme, labelToken, active ? ansi.bold(visibleLabel) : visibleLabel);
   const detailText = detailWidth > 0 ? ansi.dim(clampCellText(detail, detailWidth)) : '';
   const body = `${padVisibleText(`${prefix}${marker}${separator}${label}`, labelWidth)}${padLeftVisibleText(detailText, detailWidth)}`;
-  return renderFocusableBody(body, active, contentWidth, theme);
-}
-
-/** Agent 身份固定在左侧，运行策略作为右侧摘要统一贴齐卡片右边。 */
-function renderAgentRow(row: AgentsCommandRow, active: boolean, contentWidth: number, theme: FooterTheme): string {
-  const source = (row.sourceKind || 'unknown').toUpperCase();
-  const status = row.status || 'unknown';
-  const policy = row.capability
-    ? `${row.capability} · ${row.model || 'parent model'} · ${row.effort || 'inherit'} · ${row.toolCount || 0} tools · ${row.skillSummary || 'all skills'} · MCP ${row.mcp ? 'on' : 'off'}`
-    : row.description || '定义无效';
-  const label = `${row.label}  ${source} · ${status}`;
-  const detail = row.capability && row.description ? `${policy} · ${row.description}` : policy;
-  return renderSelectable(label, detail, active, contentWidth, theme, row.status === 'invalid' || row.status === 'reserved' ? 'warning' : 'accent');
+  return renderLine(renderFocusableCell(body, active, contentWidth, theme), contentWidth, theme);
 }
 
 /** 字段值使用动态右列；短值贴右展示，长值只在右列预算内按 grapheme 截断。 */
@@ -185,10 +378,11 @@ function renderFieldRow(row: AgentsCommandRow, active: boolean, contentWidth: nu
   const labelWidth = Math.max(0, rowWidth - valueWidth);
   const gapWidth = calculateColumnGap(labelWidth, displayWidth(prefix), valueWidth);
   const labelText = clampCellText(row.label, Math.max(0, labelWidth - displayWidth(prefix) - gapWidth));
-  const label = tokenText(theme, active ? 'accentStrong' : row.readonly ? 'muted' : 'accent', active ? ansi.bold(labelText) : labelText);
+  const labelToken = active ? 'accentStrong' : row.tone === 'danger' ? 'danger' : row.tone === 'warning' ? 'warning' : row.readonly ? 'muted' : 'accent';
+  const label = tokenText(theme, labelToken, active ? ansi.bold(labelText) : labelText);
   const valueText = valueWidth > 0 ? ansi.dim(clampCellText(value, valueWidth)) : '';
   const body = `${padVisibleText(`${prefix}${label}`, labelWidth)}${padLeftVisibleText(valueText, valueWidth)}`;
-  return renderFocusableBody(body, active, contentWidth, theme);
+  return renderLine(renderFocusableCell(body, active, contentWidth, theme), contentWidth, theme);
 }
 
 /** 编辑态保持右列对齐，并额外为行尾光标保留一列，防止光标落到卡片边框上。 */
@@ -213,7 +407,10 @@ function renderInstructionsEditor(surface: AgentsCommandSurface, text: string, c
   const clusters = splitEditorText(text);
   const cursor = Math.min(Math.max(0, surface.editCursor || 0), clusters.length);
   const logical = createLogicalLines(clusters, cursor);
-  const visibleCount = Math.max(1, bodyBudget);
+  const fullVisibleCount = bodyBudget;
+  const provisionalStart = Math.min(Math.max(0, logical.cursorRow - fullVisibleCount + 1), Math.max(0, logical.lines.length - fullVisibleCount));
+  const showUpHint = provisionalStart > 0 && fullVisibleCount > 1;
+  const visibleCount = Math.max(1, fullVisibleCount - Number(showUpHint));
   const start = Math.min(Math.max(0, logical.cursorRow - visibleCount + 1), Math.max(0, logical.lines.length - visibleCount));
   const visible = logical.lines.slice(start, start + visibleCount);
   const rows = visible.map((line, index) => {
@@ -225,12 +422,10 @@ function renderInstructionsEditor(surface: AgentsCommandSurface, text: string, c
   });
   const activeLine = logical.lines[logical.cursorRow] || '';
   const activeProjection = projectSingleLineEditor(activeLine, logical.cursorColumn, contentWidth);
-  if (start > 0 && rows.length > 0) {
-    rows[0] = renderLine(ansi.dim(`↑ ${start} 行 `) + clampPlainText(visible[0] || '', Math.max(1, contentWidth - 6)), contentWidth, theme);
-  }
+  if (showUpHint) rows.unshift(renderLine(ansi.dim(`  ↑ ${start} 行`), contentWidth, theme));
   return {
     cursorColumn: CONTENT_COLUMN_OFFSET + activeProjection.cursorColumn,
-    cursorRow: logical.cursorRow - start,
+    cursorRow: Number(showUpHint) + logical.cursorRow - start,
     rows,
     showCursor: true
   };
@@ -254,9 +449,16 @@ function normalizeRow(row: AgentsCommandRow): AgentsCommandRow {
   };
 }
 
-/** 可聚焦选项采用左标签、右说明布局；两列分别裁剪，避免 ANSI 样式参与宽度计算。 */
-function renderSelectable(label: string, description: string | undefined, active: boolean, contentWidth: number, theme: FooterTheme, token: 'accent' | 'danger' | 'warning'): string {
-  const rowWidth = Math.max(1, contentWidth - (active ? 1 : 0));
+/** 返回未加外框的可聚焦单元格，供全宽行与宽屏左栏共享。 */
+function renderSelectableCell(
+  label: string,
+  description: string | undefined,
+  active: boolean,
+  width: number,
+  theme: FooterTheme,
+  token: 'accent' | 'danger' | 'warning' | 'success' | 'muted'
+): string {
+  const rowWidth = Math.max(1, width - (active ? 1 : 0));
   const prefix = active ? ' ' : '  ';
   const detail = description || '';
   const detailWidth = calculateRightColumnWidth(displayWidth(detail), displayWidth(label), rowWidth, displayWidth(prefix));
@@ -266,7 +468,7 @@ function renderSelectable(label: string, description: string | undefined, active
   const labelText = tokenText(theme, active ? 'accentStrong' : token, active ? ansi.bold(visibleLabel) : visibleLabel);
   const detailText = detailWidth > 0 ? ansi.dim(clampCellText(detail, detailWidth)) : '';
   const body = `${padVisibleText(`${prefix}${labelText}`, labelWidth)}${padLeftVisibleText(detailText, detailWidth)}`;
-  return renderFocusableBody(body, active, contentWidth, theme);
+  return renderFocusableCell(body, active, width, theme);
 }
 
 /**
@@ -292,12 +494,10 @@ function padLeftVisibleText(text: string, width: number): string {
   return `${' '.repeat(padding)}${text}`;
 }
 
-function renderFocusableBody(body: string, active: boolean, contentWidth: number, theme: FooterTheme): string {
-  if (!active) {
-    return renderLine(padVisibleText(body, contentWidth), contentWidth, theme);
-  }
-  const rowWidth = Math.max(1, contentWidth - 1);
-  return renderLine(`${renderFocusBar(theme)}${activeBackground(theme, padVisibleText(body, rowWidth))}`, contentWidth, theme);
+function renderFocusableCell(body: string, active: boolean, width: number, theme: FooterTheme): string {
+  if (!active) return padVisibleText(body, width);
+  const rowWidth = Math.max(1, width - 1);
+  return `${renderFocusBar(theme)}${activeBackground(theme, padVisibleText(body, rowWidth))}`;
 }
 
 /** 把单行编辑内容裁剪到光标附近，并保持 grapheme 与终端列宽边界。 */
@@ -389,11 +589,14 @@ function renderMessage(message: string, token: 'danger' | 'success', contentWidt
   return renderLine(tokenText(theme, token, clampPlainText(message, contentWidth)), contentWidth, theme);
 }
 
-function renderTop(width: number, title: string, theme: FooterTheme): string {
-  const titleText = clampPlainText(title, Math.max(1, width - 4));
+function renderTop(width: number, title: string, theme: FooterTheme, right = ''): string {
+  const suffixText = normalizeSingleLineText(right);
+  // 后缀只在标题至少还能保留 1 列时显示：tag 与两侧边框固定占用 5 列，否则整行会超出卡片宽度。
+  const suffix = suffixText && displayWidth(` ${suffixText} `) <= width - 5 ? ansi.dim(` ${suffixText} `) : '';
+  const titleText = clampPlainText(title, Math.max(1, width - 4 - displayWidth(suffix)));
   const tag = tokenText(theme, 'accentStrong', ansi.bold(` ${titleText} `));
-  const rail = tokenText(theme, 'accentDeep', '─'.repeat(Math.max(0, width - 2 - displayWidth(tag))));
-  return `${tokenText(theme, 'accentDeep', '╭')}${tag}${rail}${tokenText(theme, 'accentDeep', '╮')}`;
+  const rail = tokenText(theme, 'accentDeep', '─'.repeat(Math.max(0, width - 2 - displayWidth(tag) - displayWidth(suffix))));
+  return `${tokenText(theme, 'accentDeep', '╭')}${tag}${rail}${suffix}${tokenText(theme, 'accentDeep', '╮')}`;
 }
 
 function renderBottom(width: number, theme: FooterTheme): string {
