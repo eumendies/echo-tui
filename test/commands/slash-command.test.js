@@ -372,8 +372,13 @@ function createFakeHost(options = {}) {
           agentInstructions: [],
           userMemoryCount: 0,
           agentMemoryCatalogs: [],
+          compaction: null,
+          todoState: {items: [], updatedAt: ''},
           diagnostics: []
         });
+      },
+      getViewport() {
+        return options.statusViewport || {width: 80, maxLines: 16};
       },
       queryDeepseekBalance() {
         calls.deepseekBalanceQueries += 1;
@@ -584,6 +589,72 @@ test('createDefaultSlashCommandHandlers wires handlers in order', () => {
   assert.equal(handlers[24] instanceof SkillInvocationCommandHandler, true);
 });
 
+test('statusCommandHandler navigates session details and refreshes only the local snapshot', () => {
+  const handler = new StatusCommandHandler();
+  const snapshot = {
+    agentInstructionFileName: 'AGENTS.md',
+    cwd: '/tmp/project',
+    sessionId: 'session-1',
+    model: {agentType: 'fake', model: 'echo-fake-agent', provider: 'fake'},
+    sandbox: {mode: 'off', network: false, provider: null, available: false},
+    agentInstructions: [],
+    userMemoryCount: 0,
+    agentMemoryCatalogs: [],
+    compaction: {
+      summaryText: '# 当前进展\n\n- 第一条摘要\n- 第二条摘要\n- 第三条摘要\n- 第四条摘要',
+      activeStartIndex: 12,
+      createdAt: '2030-01-02T03:04:00.000Z'
+    },
+    todoState: {
+      updatedAt: '2030-01-02T03:05:00.000Z',
+      items: [
+        {id: 'todo-1', text: '完成第一项待办', status: 'completed'},
+        {id: 'todo-2', text: '完成第二项待办并保留足够长的文本以验证滚动位置', status: 'open'},
+        {id: 'todo-3', text: '完成第三项待办', status: 'open'}
+      ]
+    },
+    diagnostics: []
+  };
+  const harness = createFakeHost({statusSnapshot: snapshot, statusViewport: {width: 36, maxLines: 12}});
+  let session = startCommand(handler, '/status', harness.host);
+
+  assert.equal(session.surface.page, 'overview');
+  assert.equal(harness.calls.statusQueries, 1);
+  assert.equal(harness.calls.deepseekBalanceQueries, 1);
+  assert.equal(harness.calls.opencodeUsageQueries, 1);
+
+  handler.handleEvent(session, {type: INPUT_EVENTS.MOVE_RIGHT}, harness.host);
+  session = harness.host.session.getActive();
+  assert.equal(session.surface.page, 'compaction');
+
+  handler.handleEvent(session, {type: INPUT_EVENTS.MOVE_END}, harness.host);
+  session = harness.host.session.getActive();
+  assert.ok(session.surface.compactionScroll > 0);
+  const compactionScroll = session.surface.compactionScroll;
+
+  handler.handleEvent(session, {type: INPUT_EVENTS.MOVE_RIGHT}, harness.host);
+  session = harness.host.session.getActive();
+  assert.equal(session.surface.page, 'todos');
+  handler.handleEvent(session, {type: INPUT_EVENTS.MOVE_DOWN}, harness.host);
+  session = harness.host.session.getActive();
+  assert.ok(session.surface.todoScroll > 0);
+
+  snapshot.todoState.items.push({id: 'todo-4', text: '刷新后出现的待办', status: 'open'});
+  handler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: 'r'}, harness.host);
+  session = harness.host.session.getActive();
+  assert.equal(session.surface.page, 'todos');
+  assert.equal(session.surface.snapshot.todoState.items.length, 4);
+  assert.equal(harness.calls.statusQueries, 1);
+  assert.equal(harness.calls.deepseekBalanceQueries, 1);
+  assert.equal(harness.calls.opencodeUsageQueries, 1);
+  assert.deepEqual(harness.calls.transcriptAppends, []);
+
+  handler.handleEvent(session, {type: INPUT_EVENTS.MOVE_LEFT}, harness.host);
+  session = harness.host.session.getActive();
+  assert.equal(session.surface.page, 'compaction');
+  assert.equal(session.surface.compactionScroll, compactionScroll);
+});
+
 test('statusCommandHandler loads Codex usage and isolates late results', async () => {
   const handler = new StatusCommandHandler();
   let resolveUsage;
@@ -646,6 +717,47 @@ test('statusCommandHandler loads Codex usage and isolates late results', async (
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(lateHarness.calls.sessionUpdates.length, 0);
   assert.equal(lateHarness.calls.renders, 0);
+});
+
+test('statusCommandHandler keeps detail page and refreshed snapshot when an account result arrives late', async () => {
+  const handler = new StatusCommandHandler();
+  let resolveUsage;
+  const usagePromise = new Promise((resolve) => {
+    resolveUsage = resolve;
+  });
+  const snapshot = {
+    agentInstructionFileName: 'AGENTS.md',
+    cwd: '/tmp/project',
+    sessionId: 'session-1',
+    model: {agentType: 'codex', model: 'gpt-codex', provider: 'codex'},
+    sandbox: {mode: 'off', network: false, provider: null, available: false},
+    agentInstructions: [],
+    userMemoryCount: 0,
+    agentMemoryCatalogs: [],
+    compaction: {summaryText: '摘要', activeStartIndex: 1, createdAt: '2030-01-02T03:04:00.000Z'},
+    todoState: {items: [], updatedAt: ''},
+    diagnostics: []
+  };
+  const harness = createFakeHost({
+    statusSnapshot: snapshot,
+    queryStatusUsage: () => usagePromise,
+    queryDeepseekBalance: () => Promise.resolve({status: 'not_applicable'}),
+    queryOpencodeUsage: () => Promise.resolve({status: 'not_applicable'})
+  });
+  let session = startCommand(handler, '/status', harness.host);
+
+  handler.handleEvent(session, {type: INPUT_EVENTS.MOVE_RIGHT}, harness.host);
+  session = harness.host.session.getActive();
+  handler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: 'r'}, harness.host);
+  assert.equal(harness.calls.statusQueries, 1);
+
+  resolveUsage({status: 'available', primary: {usedPercent: 25, resetAt: 1_800_000_000_000}});
+  await new Promise((resolve) => setImmediate(resolve));
+  session = harness.host.session.getActive();
+  assert.equal(session.surface.page, 'compaction');
+  assert.equal(session.surface.snapshot.compaction.summaryText, '摘要');
+  assert.equal(session.surface.usage.status, 'available');
+  assert.equal(session.surface.usage.primary.usedPercent, 25);
 });
 
 test('statusCommandHandler resolves non-Codex usage and maps query rejection', async () => {
@@ -1780,7 +1892,7 @@ test('createSlashCommandDescriptors derives display metadata from handlers', () 
     { name: 'model', description: '切换模型' },
     { name: 'effort', description: '调整推理等级' },
     { name: 'mode', description: '切换交互模式' },
-    { name: 'status', description: '查看运行状态与账户用量', allowDuringAssistantTurn: true },
+    { name: 'status', description: '查看运行状态、账户用量与会话计划', allowDuringAssistantTurn: true },
     { name: 'context', description: '查看 context 占用详情', allowDuringAssistantTurn: true },
     { name: 'usage', description: '查看每日 token 用量与当日模型明细', allowDuringAssistantTurn: true },
     { name: 'copy', description: '复制会话消息', allowDuringAssistantTurn: true },

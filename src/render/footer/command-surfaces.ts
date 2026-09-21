@@ -94,7 +94,7 @@ export function renderCommandSurface(commandSurface: CommandSurface, width: numb
   }
 
   if (commandSurface.kind === 'status') {
-    return renderStatusSurface(commandSurface, width, options.maxLines, theme);
+    return renderStatusSurface(commandSurface, width, options.maxLines, theme, options.theme);
   }
 
   if (commandSurface.kind === 'copy') {

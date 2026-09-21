@@ -1,10 +1,12 @@
 import {INPUT_EVENTS} from '../input/event-types';
+import {calculateStatusNavigation} from '../render/footer/status-surface';
 
 import type {
   CommandHandler,
   CommandHost,
   CommandSession,
   CommandStatusSnapshot,
+  StatusCommandPage,
   StatusCommandDeepseekBalanceState,
   StatusCommandOpencodeUsageState,
   StatusCommandSurface,
@@ -13,28 +15,41 @@ import type {
 import type {InputEvent} from '../types/input';
 
 type StatusCommandData = {
-  requestId: number;
-  snapshot: CommandStatusSnapshot;
-  usage: StatusCommandUsageState;
-  deepseekBalance: StatusCommandDeepseekBalanceState;
-  opencodeUsage: StatusCommandOpencodeUsageState;
+  requestId: number; // 本次异步账户查询的隔离标识，过期结果不得覆盖当前 surface。
+  snapshot: CommandStatusSnapshot; // 打开或手动刷新时取得的本地运行与会话状态快照。
+  usage: StatusCommandUsageState; // Codex 用量的异步查询状态。
+  deepseekBalance: StatusCommandDeepseekBalanceState; // DeepSeek 余额的异步查询状态。
+  opencodeUsage: StatusCommandOpencodeUsageState; // OpenCode Go 用量的异步查询状态。
+  page: StatusCommandPage; // 当前打开的只读页面。
+  compactionScroll: number; // 压缩摘要正文的视觉行偏移。
+  todoScroll: number; // Todo 正文的视觉行偏移。
 };
 
-function createStatusSurface(snapshot: CommandStatusSnapshot, usage: StatusCommandUsageState, deepseekBalance: StatusCommandDeepseekBalanceState, opencodeUsage: StatusCommandOpencodeUsageState): StatusCommandSurface {
+const STATUS_PAGES: StatusCommandPage[] = ['overview', 'compaction', 'todos'];
+
+/**
+ * 把 status command session 的数据投影为 footer surface；账户异步状态和本地阅读位置保持在同一快照内。
+ */
+function createStatusSurface(data: StatusCommandData): StatusCommandSurface {
   return {
     kind: 'status',
     title: 'Status',
-    snapshot,
-    usage,
-    deepseekBalance,
-    opencodeUsage,
-    dismissHint: 'Esc / Enter / q 关闭'
+    snapshot: data.snapshot,
+    usage: data.usage,
+    deepseekBalance: data.deepseekBalance,
+    opencodeUsage: data.opencodeUsage,
+    page: data.page,
+    compactionScroll: data.compactionScroll,
+    todoScroll: data.todoScroll,
+    dismissHint: data.page === 'overview'
+      ? '←/→ 切页 · r 刷新 · Esc / Enter / q 关闭'
+      : '←/→ 切页 · ↑/↓ 滚动 · r 刷新 · Esc / Enter / q 关闭'
   };
 }
 
 export class StatusCommandHandler implements CommandHandler<StatusCommandData> {
   name = 'status';
-  description = '查看运行状态与账户用量';
+  description = '查看运行状态、账户用量与会话计划';
   allowDuringAssistantTurn = true;
   private nextRequestId = 0;
 
@@ -56,13 +71,16 @@ export class StatusCommandHandler implements CommandHandler<StatusCommandData> {
       snapshot,
       usage: {status: 'loading'},
       deepseekBalance: {status: 'loading'},
-      opencodeUsage: {status: 'loading'}
+      opencodeUsage: {status: 'loading'},
+      page: 'overview',
+      compactionScroll: 0,
+      todoScroll: 0
     };
 
     host.session.open({
       commandName: 'status',
       handler: this,
-      surface: createStatusSurface(snapshot, data.usage, data.deepseekBalance, data.opencodeUsage),
+      surface: createStatusSurface(data),
       data
     });
 
@@ -72,15 +90,67 @@ export class StatusCommandHandler implements CommandHandler<StatusCommandData> {
   }
 
   /**
-   * 只响应明确关闭键；其他按键不修改只读 status surface。
+   * 在只读 status surface 内处理页签、详情滚动和本地刷新；不会写入 transcript 或会话元数据。
    */
-  handleEvent(_session: CommandSession<StatusCommandData>, event: InputEvent, host: CommandHost): void {
+  handleEvent(session: CommandSession<StatusCommandData>, event: InputEvent, host: CommandHost): void {
     if (event.type === INPUT_EVENTS.EXIT) {
       return;
     }
 
     if (event.type === INPUT_EVENTS.ESCAPE || event.type === INPUT_EVENTS.SUBMIT || (event.type === INPUT_EVENTS.TEXT && event.value === 'q')) {
       host.session.close();
+      return;
+    }
+
+    const data = session.data;
+    if (!data) {
+      return;
+    }
+
+    if (event.type === INPUT_EVENTS.MOVE_LEFT || event.type === INPUT_EVENTS.MOVE_RIGHT) {
+      data.page = movePage(data.page, event.type === INPUT_EVENTS.MOVE_LEFT ? -1 : 1);
+      clampDetailScroll(data, host);
+      updateStatusSession(data, host);
+      return;
+    }
+
+    if (event.type === INPUT_EVENTS.TEXT && event.value === 'r') {
+      data.snapshot = host.status.createSnapshot();
+      clampDetailScroll(data, host);
+      updateStatusSession(data, host);
+      return;
+    }
+
+    if (data.page === 'overview') {
+      return;
+    }
+
+    const navigation = resolveNavigation(data, host);
+    const delta = event.type === INPUT_EVENTS.MOVE_UP
+      ? -1
+      : event.type === INPUT_EVENTS.MOVE_DOWN
+        ? 1
+        : event.type === INPUT_EVENTS.PAGE_UP
+          ? -navigation.windowSize
+          : event.type === INPUT_EVENTS.PAGE_DOWN
+            ? navigation.windowSize
+            : 0;
+
+    if (event.type === INPUT_EVENTS.MOVE_HOME) {
+      setDetailScroll(data, 0);
+      updateStatusSession(data, host);
+      return;
+    }
+
+    if (event.type === INPUT_EVENTS.MOVE_END) {
+      setDetailScroll(data, navigation.maxScroll);
+      updateStatusSession(data, host);
+      return;
+    }
+
+    if (delta !== 0) {
+      setDetailScroll(data, getDetailScroll(data) + delta, navigation.maxScroll);
+      updateStatusSession(data, host);
     }
   }
 
@@ -135,10 +205,64 @@ export class StatusCommandHandler implements CommandHandler<StatusCommandData> {
 
     host.session.update({
       data,
-      surface: createStatusSurface(data.snapshot, data.usage, data.deepseekBalance, data.opencodeUsage)
+      surface: createStatusSurface(data)
     });
     host.ui.render();
   }
+}
+
+/**
+ * 按固定顺序循环切换 status 页面，概览和两个详情页面不共享滚动位置。
+ */
+function movePage(page: StatusCommandPage, delta: number): StatusCommandPage {
+  const current = STATUS_PAGES.indexOf(page);
+  return STATUS_PAGES[(current + delta + STATUS_PAGES.length) % STATUS_PAGES.length];
+}
+
+/**
+ * 根据当前终端 footer 预算计算详情正文的可滚动行数，渲染与输入使用同一投影规则。
+ */
+function resolveNavigation(data: StatusCommandData, host: CommandHost): {maxScroll: number; windowSize: number} {
+  const viewport = host.status.getViewport();
+  return calculateStatusNavigation(createStatusSurface(data), viewport.width, viewport.maxLines);
+}
+
+/**
+ * 刷新快照或切换页面后收敛当前详情页偏移，避免正文变短时停留在不可见位置。
+ */
+function clampDetailScroll(data: StatusCommandData, host: CommandHost): void {
+  if (data.page === 'overview') {
+    return;
+  }
+
+  const navigation = resolveNavigation(data, host);
+  setDetailScroll(data, getDetailScroll(data), navigation.maxScroll);
+}
+
+/**
+ * 读取当前详情页的独立视觉行偏移；概览没有正文滚动状态。
+ */
+function getDetailScroll(data: StatusCommandData): number {
+  return data.page === 'compaction' ? data.compactionScroll : data.todoScroll;
+}
+
+/**
+ * 写入当前详情页的视觉行偏移并约束到内容边界，保留另一详情页的阅读位置。
+ */
+function setDetailScroll(data: StatusCommandData, value: number, maxScroll = Number.POSITIVE_INFINITY): void {
+  const normalized = Math.max(0, Math.min(maxScroll, Math.floor(Number.isFinite(value) ? value : 0)));
+  if (data.page === 'compaction') {
+    data.compactionScroll = normalized;
+  } else if (data.page === 'todos') {
+    data.todoScroll = normalized;
+  }
+}
+
+/**
+ * 将同步交互后的 data 重新投影为 surface；command runtime 负责在事件返回后统一重绘。
+ */
+function updateStatusSession(data: StatusCommandData, host: CommandHost): void {
+  host.session.update({data, surface: createStatusSurface(data)});
 }
 
 export {
