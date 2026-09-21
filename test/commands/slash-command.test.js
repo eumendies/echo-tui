@@ -79,8 +79,11 @@ function createFakeHost(options = {}) {
     resizeRecoveries: 0,
     referencePreparations: [],
     referencePreviewLoads: [],
-    resumePreviewLoads: []
+    resumePreviewLoads: [],
+    resumeSessionSummaryLists: 0,
+    deletedSessionIds: []
   };
+  const resumeSessions = (options.sessions || []).map((session) => ({...session, fingerprint: {...session.fingerprint}}));
   let activeSession = null;
   const host = {
     btw: {
@@ -102,9 +105,24 @@ function createFakeHost(options = {}) {
         calls.forkCalls += 1;
         return options.forkResult || {ok: false, reason: 'empty'};
       },
+      getCurrentSessionId() {
+        return options.currentSessionId || null;
+      },
       loadSession(sessionId) {
         calls.loadedSessionIds.push(sessionId);
         return true;
+      },
+      deleteSession(sessionId) {
+        calls.deletedSessionIds.push(sessionId);
+        if (options.deleteSession) {
+          return options.deleteSession(sessionId, resumeSessions);
+        }
+        const index = resumeSessions.findIndex((session) => session.sessionId === sessionId);
+        if (index < 0) {
+          return {ok: false, reason: 'missing'};
+        }
+        resumeSessions.splice(index, 1);
+        return {ok: true, sessionId};
       },
       append(record) {
         calls.transcriptAppends.push(record);
@@ -113,14 +131,15 @@ function createFakeHost(options = {}) {
         return (options.copyableRecords || []).map((record) => ({...record}));
       },
       listSessionSummaries() {
-        return (options.sessions || []).map((session) => ({ ...session }));
+        calls.resumeSessionSummaryLists += 1;
+        return resumeSessions.map((session) => ({...session, fingerprint: {...session.fingerprint}}));
       },
       loadSessionPreview(candidate) {
         calls.resumePreviewLoads.push(candidate.sessionId);
         if (options.loadSessionPreview) {
           return options.loadSessionPreview(candidate);
         }
-        const session = (options.sessions || []).find((item) => item.sessionId === candidate.sessionId);
+        const session = resumeSessions.find((item) => item.sessionId === candidate.sessionId);
         return Promise.resolve(session ? {
           sessionId: candidate.sessionId,
           previewRecords: [{role: 'assistant', text: `message ${session.messageCount}`}]
@@ -2749,6 +2768,133 @@ test('resumeCommandHandler opens empty state, selectable sessions, moves, confir
   const cancelSession = startCommand(resumeCommandHandler, '/resume', cancel.host);
   resumeCommandHandler.handleEvent(cancelSession, { type: INPUT_EVENTS.ESCAPE }, cancel.host);
   assert.equal(cancel.calls.sessionCloses, 1);
+});
+
+test('resumeCommandHandler deletes a selected historical session only after confirmation and refreshes storage candidates', async () => {
+  const handler = new ResumeCommandHandler();
+  const selectable = createFakeHost({sessions: createSessionSummarys(2)});
+  let session = startCommand(handler, '/resume', selectable.host);
+
+  handler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: 'd'}, selectable.host);
+  session = selectable.host.session.getActive();
+  assert.equal(session.surface.kind, 'confirm');
+  assert.match(session.surface.bodyLines.join('\n'), /conversation 2/);
+  assert.match(session.surface.bodyLines.join('\n'), /不可恢复/);
+  assert.deepEqual(selectable.calls.deletedSessionIds, []);
+
+  handler.handleEvent(session, {type: INPUT_EVENTS.ESCAPE}, selectable.host);
+  session = selectable.host.session.getActive();
+  assert.equal(session.surface.kind, 'resume');
+  assert.deepEqual(selectable.calls.deletedSessionIds, []);
+
+  handler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: 'd'}, selectable.host);
+  session = selectable.host.session.getActive();
+  handler.handleEvent(session, {type: INPUT_EVENTS.SUBMIT}, selectable.host);
+  session = selectable.host.session.getActive();
+
+  assert.deepEqual(selectable.calls.deletedSessionIds, ['session-2']);
+  assert.equal(selectable.calls.resumeSessionSummaryLists, 3);
+  assert.equal(session.surface.kind, 'resume');
+  assert.equal(session.surface.sessions.length, 1);
+  assert.equal(session.surface.focus, 'list');
+  assert.equal(session.data.selectedIndex, 0);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(session.data.sessions.map((item) => item.sessionId), ['session-1']);
+});
+
+test('resumeCommandHandler restores preview focus and scroll after cancelling deletion', async () => {
+  const handler = new ResumeCommandHandler();
+  const selectable = createFakeHost({
+    sessions: createSessionSummarys(1),
+    loadSessionPreview(candidate) {
+      return Promise.resolve({
+        sessionId: candidate.sessionId,
+        previewRecords: Array.from({length: 12}, (_value, index) => ({role: 'assistant', text: `preview ${index}`}))
+      });
+    }
+  });
+  let session = startCommand(handler, '/resume', selectable.host);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  handler.handleEvent(session, {type: INPUT_EVENTS.MOVE_RIGHT}, selectable.host);
+  session = selectable.host.session.getActive();
+  for (let step = 0; step < 3; step += 1) {
+    handler.handleEvent(session, {type: INPUT_EVENTS.MOVE_DOWN}, selectable.host);
+    session = selectable.host.session.getActive();
+  }
+  handler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: 'd'}, selectable.host);
+  handler.handleEvent(selectable.host.session.getActive(), {type: INPUT_EVENTS.ESCAPE}, selectable.host);
+
+  session = selectable.host.session.getActive();
+  assert.equal(session.surface.kind, 'resume');
+  assert.equal(session.data.focus, 'preview');
+  assert.equal(session.surface.focus, 'preview');
+  assert.equal(session.data.previewScroll, 3);
+  assert.equal(session.surface.previewScroll, 3);
+  assert.equal(session.surface.previewStatus, 'loading');
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(selectable.host.session.getActive().surface.previewStatus, 'ready');
+  assert.equal(selectable.host.session.getActive().surface.previewScroll, 3);
+});
+
+test('resumeCommandHandler protects the current session and handles empty or failed deletion states', () => {
+  const sessions = createSessionSummarys(1);
+  const protectedHost = createFakeHost({sessions, currentSessionId: sessions[0].sessionId});
+  const handler = new ResumeCommandHandler();
+  let session = startCommand(handler, '/resume', protectedHost.host);
+
+  handler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: 'd'}, protectedHost.host);
+  session = protectedHost.host.session.getActive();
+  assert.equal(session.surface.kind, 'resume');
+  assert.match(session.surface.notice, /不能删除/);
+  assert.deepEqual(protectedHost.calls.deletedSessionIds, []);
+
+  const emptyHost = createFakeHost({sessions: createSessionSummarys(1)});
+  const emptyHandler = new ResumeCommandHandler();
+  session = startCommand(emptyHandler, '/resume', emptyHost.host);
+  emptyHandler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: 'd'}, emptyHost.host);
+  emptyHandler.handleEvent(emptyHost.host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, emptyHost.host);
+  session = emptyHost.host.session.getActive();
+  assert.equal(session.surface.kind, 'info');
+  assert.match(session.surface.lines[0], /没有可恢复会话/);
+  assert.deepEqual(emptyHost.calls.resumePreviewLoads, []);
+
+  const failedHost = createFakeHost({
+    sessions: createSessionSummarys(1),
+    deleteSession() {
+      return {ok: false, reason: 'failed', error: '删除存储失败'};
+    }
+  });
+  const failedHandler = new ResumeCommandHandler();
+  session = startCommand(failedHandler, '/resume', failedHost.host);
+  failedHandler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: 'd'}, failedHost.host);
+  failedHandler.handleEvent(failedHost.host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, failedHost.host);
+  session = failedHost.host.session.getActive();
+  assert.equal(session.surface.kind, 'confirm');
+  assert.match(session.surface.bodyLines.join('\n'), /删除存储失败/);
+});
+
+test('resumeCommandHandler ignores a late preview after entering deletion confirmation', async () => {
+  let resolvePreview;
+  const selectable = createFakeHost({
+    sessions: createSessionSummarys(1),
+    loadSessionPreview() {
+      return new Promise((resolve) => {
+        resolvePreview = resolve;
+      });
+    }
+  });
+  const handler = new ResumeCommandHandler();
+  let session = startCommand(handler, '/resume', selectable.host);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  handler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: 'd'}, selectable.host);
+
+  resolvePreview({sessionId: 'session-1', previewRecords: [{role: 'assistant', text: 'late'}]});
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  session = selectable.host.session.getActive();
+  assert.equal(session.surface.kind, 'confirm');
+  assert.equal(selectable.calls.sessionUpdates.some((patch) => patch.surface?.kind === 'resume' && patch.surface.previewRecords?.[0]?.text === 'late'), false);
 });
 
 test('resumeCommandHandler switches focus and scrolls preview without moving session', async () => {

@@ -17,6 +17,9 @@ function createCandidate(index, fingerprint = {size: index, mtimeMs: index}) {
 
 function createContext(loads, text = (sessionId) => sessionId) {
   return new TranscriptContext({
+    deleteSession(_cwd, sessionId) {
+      return {ok: true, sessionId};
+    },
     async loadSessionPreview(_cwd, sessionId) {
       loads.push(sessionId);
       return {sessionId, previewRecords: [{role: 'assistant', text: text(sessionId)}]};
@@ -56,4 +59,16 @@ test('TranscriptContext returns cloned cached session previews', async () => {
   });
   assert.equal(await context.loadSessionPreview({...candidate, cwd: '/tmp/other'}), null);
   assert.deepEqual(loads, ['session-1']);
+});
+
+test('TranscriptContext evicts a deleted session preview from its shared cache', async () => {
+  const loads = [];
+  const context = createContext(loads);
+  const candidate = createCandidate(1);
+
+  await context.loadSessionPreview(candidate);
+  assert.deepEqual(context.deleteSession(candidate.sessionId), {ok: true, sessionId: candidate.sessionId});
+  await context.loadSessionPreview(candidate);
+
+  assert.deepEqual(loads, ['session-1', 'session-1']);
 });

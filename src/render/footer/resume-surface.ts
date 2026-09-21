@@ -39,7 +39,7 @@ export function renderResumeSurface(commandSurface: ResumeCommandSurface, width:
   const rightWidth = Math.max(1, splitWidth - leftWidth);
   const sessions = commandSurface.sessions;
   const selectedIndex = clampIndex(commandSurface.selectedIndex, sessions.length);
-  const bodyHeight = calculateBodyHeight(maxLines);
+  const bodyHeight = calculateBodyHeight(maxLines, Boolean(commandSurface.notice));
   const sessionRows = createSessionListRows(commandSurface, selectedIndex, bodyHeight);
   const previewStatus = commandSurface.previewStatus || 'ready';
   const previewHint = previewStatus === 'loading'
@@ -81,6 +81,10 @@ export function renderResumeSurface(commandSurface: ResumeCommandSurface, width:
       rightWidth,
       theme
     ));
+  }
+
+  if (commandSurface.notice) {
+    lines.push(renderFullLine(tokenText(theme, 'warning', clampPlainText(commandSurface.notice, boxWidth - 4)), boxWidth, theme));
   }
 
   lines.push(renderFullLine(ansi.dim(clampPlainText(commandSurface.dismissHint, boxWidth - 4)), boxWidth, theme));
@@ -126,14 +130,14 @@ function calculateLeftWidth(splitWidth: number): number {
 }
 
 /**
- * 计算双栏主体高度：footer 的 maxLines 行数预算扣除固定外壳 6 行；无预算时保持默认 8 行。
+ * 计算双栏主体高度：footer 的 maxLines 行数预算扣除固定外壳及可选提示；无预算时保持默认 8 行。
  */
-function calculateBodyHeight(maxLines: number | undefined): number {
+function calculateBodyHeight(maxLines: number | undefined, hasNotice: boolean): number {
   if (maxLines === undefined || !Number.isFinite(maxLines)) {
     return RESUME_BODY_HEIGHT;
   }
 
-  return Math.max(1, Math.floor(Number(maxLines)) - RESUME_FIXED_ROW_COUNT);
+  return Math.max(1, Math.floor(Number(maxLines)) - RESUME_FIXED_ROW_COUNT - (hasNotice ? 1 : 0));
 }
 
 /**

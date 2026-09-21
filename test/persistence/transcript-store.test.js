@@ -621,6 +621,96 @@ test('session index removes its temporary file when atomic rename fails', () => 
   );
 });
 
+test('transcript store deletes only a verified current-project journal and its index entry', () => {
+  const rootDir = createTempRoot();
+  const cwd = '/tmp/example/session-delete';
+  const otherCwd = '/tmp/example/session-delete-other';
+  const store = createTranscriptStore({rootDir});
+  const first = store.createSession(cwd, createAppendRecordsOperation([{role: 'user', text: 'keep'}]), '2026-07-01T00:00:00.000Z');
+  const second = store.createSession(cwd, createAppendRecordsOperation([{role: 'user', text: 'delete'}]), '2026-07-02T00:00:00.000Z');
+  store.listSessionSummaries(cwd);
+
+  assert.deepEqual(store.deleteSession(otherCwd, second.sessionId), {ok: false, reason: 'missing'});
+  assert.deepEqual(store.deleteSession(cwd, '../outside'), {ok: false, reason: 'missing'});
+  assert.deepEqual(store.deleteSession(cwd, second.sessionId), {ok: true, sessionId: second.sessionId});
+  assert.equal(fs.existsSync(store.getSessionFilePath(cwd, second.sessionId)), false);
+  assert.equal(store.loadSession(cwd, second.sessionId), null);
+  assert.deepEqual(store.listSessionSummaries(cwd).map((session) => session.sessionId), [first.sessionId]);
+  assert.deepEqual(JSON.parse(fs.readFileSync(store.getSessionIndexFilePath(cwd), 'utf8')).sessions.map((session) => session.sessionId), [first.sessionId]);
+});
+
+test('transcript store validates only session_start before deleting without replaying the full journal', () => {
+  const rootDir = createTempRoot();
+  const cwd = '/tmp/example/session-delete-header';
+  const store = createTranscriptStore({rootDir});
+  const reference = store.createSession(cwd, createAppendRecordsOperation([{role: 'user', text: 'delete'}]), '2026-07-01T00:00:00.000Z');
+  const guardedFs = Object.create(fs);
+  guardedFs.readFileSync = (filePath, encoding) => {
+    if (String(filePath).endsWith('.jsonl')) {
+      throw new Error('delete must not replay journal');
+    }
+    return fs.readFileSync(filePath, encoding);
+  };
+  const headerOnlyStore = createTranscriptStore({rootDir, fsImpl: guardedFs});
+
+  assert.deepEqual(headerOnlyStore.deleteSession(cwd, reference.sessionId), {ok: true, sessionId: reference.sessionId});
+  assert.equal(fs.existsSync(store.getSessionFilePath(cwd, reference.sessionId)), false);
+});
+
+test('transcript store leaves a journal in place when its session_start does not match the delete cwd', () => {
+  const rootDir = createTempRoot();
+  const cwd = '/tmp/example/session-delete-header-mismatch';
+  const store = createTranscriptStore({rootDir});
+  const reference = store.createSession(cwd, createAppendRecordsOperation([{role: 'user', text: 'keep'}]), '2026-07-01T00:00:00.000Z');
+  const filePath = store.getSessionFilePath(cwd, reference.sessionId);
+  const lines = fs.readFileSync(filePath, 'utf8').trimEnd().split('\n');
+  const start = JSON.parse(lines[0]);
+  start.cwd = '/tmp/example/other-project';
+  lines[0] = JSON.stringify(start);
+  fs.writeFileSync(filePath, `${lines.join('\n')}\n`, 'utf8');
+
+  assert.deepEqual(store.deleteSession(cwd, reference.sessionId), {ok: false, reason: 'missing'});
+  assert.equal(fs.existsSync(filePath), true);
+});
+
+test('transcript store treats journal removal as committed when index cleanup fails and later enumeration repairs it', () => {
+  const rootDir = createTempRoot();
+  const cwd = '/tmp/example/session-delete-index-failure';
+  const store = createTranscriptStore({rootDir});
+  const first = store.createSession(cwd, createAppendRecordsOperation([{role: 'user', text: 'keep'}]), '2026-07-01T00:00:00.000Z');
+  const second = store.createSession(cwd, createAppendRecordsOperation([{role: 'user', text: 'delete'}]), '2026-07-02T00:00:00.000Z');
+  store.listSessionSummaries(cwd);
+  const failingFs = Object.create(fs);
+  failingFs.renameSync = (oldPath, newPath) => {
+    if (String(newPath).endsWith('index.json')) {
+      throw new Error('index unavailable');
+    }
+    return fs.renameSync(oldPath, newPath);
+  };
+  const failingStore = createTranscriptStore({rootDir, fsImpl: failingFs});
+
+  assert.deepEqual(failingStore.deleteSession(cwd, second.sessionId), {ok: true, sessionId: second.sessionId});
+  assert.equal(fs.existsSync(store.getSessionFilePath(cwd, second.sessionId)), false);
+  assert.deepEqual(failingStore.listSessionSummaries(cwd).map((session) => session.sessionId), [first.sessionId]);
+
+  const reopened = createTranscriptStore({rootDir});
+  assert.deepEqual(reopened.listSessionSummaries(cwd).map((session) => session.sessionId), [first.sessionId]);
+  assert.deepEqual(JSON.parse(fs.readFileSync(reopened.getSessionIndexFilePath(cwd), 'utf8')).sessions.map((session) => session.sessionId), [first.sessionId]);
+});
+
+test('TranscriptContext rejects deletion of its current journal and keeps later appends writable', () => {
+  const rootDir = createTempRoot();
+  const cwd = '/tmp/example/session-delete-current';
+  const store = createTranscriptStore({rootDir});
+  const context = new TranscriptContext(store, () => cwd);
+  context.appendRecord({role: 'user', text: 'keep current'});
+  const sessionId = context.getCurrentSessionId();
+
+  assert.deepEqual(context.deleteSession(sessionId), {ok: false, reason: 'current'});
+  context.appendRecord({role: 'assistant', text: 'still writable'});
+  assert.deepEqual(store.loadSession(cwd, sessionId).session.records.map((record) => record.text), ['keep current', 'still writable']);
+});
+
 test('loadSessionPreview asynchronously replays final records without repairing the journal', async () => {
   const rootDir = createTempRoot();
   const cwd = '/tmp/example/resume-preview';

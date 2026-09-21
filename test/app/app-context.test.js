@@ -98,6 +98,9 @@ function createFakeSessionModelSettingsStore(initialSettings = []) {
       settings.set(input.sessionId, value);
       return structuredClone(value);
     },
+    remove(_cwd, sessionId) {
+      settings.delete(sessionId);
+    },
     settings
   };
 }
@@ -111,6 +114,9 @@ function createFailingSessionModelSettingsStore(message) {
       return {kind: 'missing'};
     },
     write() {
+      throw new Error(message);
+    },
+    remove() {
       throw new Error(message);
     }
   };
@@ -224,6 +230,17 @@ function createFakeTranscriptStore(initialSessions = []) {
     return loadSession(cwd, sessionId);
   }
 
+  function deleteSession(cwd, sessionId) {
+    const sessions = getSessions(cwd);
+    const index = sessions.findIndex((candidate) => candidate.reference.sessionId === sessionId);
+    if (index < 0) {
+      return {ok: false, reason: 'missing'};
+    }
+
+    sessions.splice(index, 1);
+    return {ok: true, sessionId};
+  }
+
   function getSessionFilePath(cwd, sessionId) {
     return `/tmp/${sessionId}.jsonl`;
   }
@@ -233,6 +250,7 @@ function createFakeTranscriptStore(initialSessions = []) {
     appendSession,
     getSessionFilePath,
     listSessionSummaries,
+    deleteSession,
     loadSession,
     loadSessionReadOnly,
     loadSessionPreview,
@@ -2315,6 +2333,60 @@ test('AppContext forks into a self-contained real journal', () => {
 
   fs.unlinkSync(transcriptStore.getSessionFilePath(cwd, sourceSessionId));
   assert.deepEqual(transcriptStore.loadSession(cwd, result.sessionId).session.records, childBeforeSourceRemoval.records);
+});
+
+test('AppContext deletes a historical session and its settings sidecar without changing the current session', () => {
+  const historicalSession = {
+    sessionId: 'history-session',
+    createdAt: '2026-05-18T00:00:00.000Z',
+    updatedAt: '2026-05-18T00:00:00.000Z',
+    records: [{role: 'user', text: 'historical'}]
+  };
+  const transcriptStore = createFakeTranscriptStore([historicalSession]);
+  const settingsStore = createFakeSessionModelSettingsStore([{
+    schemaVersion: 1,
+    sessionId: historicalSession.sessionId,
+    modelProfileId: 'fast',
+    updatedAt: '2026-05-18T00:00:00.000Z'
+  }]);
+  const context = createContext({sessionModelSettingsStore: settingsStore, transcriptStore});
+  context.beginUserTurn('current');
+  context.turnContext.finishAssistantTurn('reply');
+  const currentSessionId = context.transcriptContext.getCurrentSessionId();
+  const recordsBeforeDelete = context.transcriptContext.getRecords().map((record) => record.text);
+
+  assert.deepEqual(context.deleteTranscriptSession(historicalSession.sessionId), {ok: true, sessionId: historicalSession.sessionId});
+  assert.equal(settingsStore.settings.has(historicalSession.sessionId), false);
+  assert.equal(context.transcriptContext.getCurrentSessionId(), currentSessionId);
+  assert.deepEqual(context.transcriptContext.getRecords().map((record) => record.text), recordsBeforeDelete);
+  assert.equal(context.transcriptContext.listSessionSummaries().some((session) => session.sessionId === historicalSession.sessionId), false);
+});
+
+test('AppContext keeps a session deleted when its settings sidecar cleanup fails', () => {
+  const historicalSession = {
+    sessionId: 'history-session',
+    createdAt: '2026-05-18T00:00:00.000Z',
+    updatedAt: '2026-05-18T00:00:00.000Z',
+    records: [{role: 'user', text: 'historical'}]
+  };
+  const transcriptStore = createFakeTranscriptStore([historicalSession]);
+  const settingsStore = createFakeSessionModelSettingsStore([{
+    schemaVersion: 1,
+    sessionId: historicalSession.sessionId,
+    modelProfileId: 'fast',
+    updatedAt: '2026-05-18T00:00:00.000Z'
+  }]);
+  settingsStore.remove = () => {
+    throw new Error('sidecar unavailable');
+  };
+  const context = createContext({sessionModelSettingsStore: settingsStore, transcriptStore});
+  context.beginUserTurn('current');
+  const currentSessionId = context.transcriptContext.getCurrentSessionId();
+
+  assert.deepEqual(context.deleteTranscriptSession(historicalSession.sessionId), {ok: true, sessionId: historicalSession.sessionId});
+  assert.equal(settingsStore.settings.has(historicalSession.sessionId), true);
+  assert.equal(context.transcriptContext.getCurrentSessionId(), currentSessionId);
+  assert.equal(context.transcriptContext.listSessionSummaries().some((session) => session.sessionId === historicalSession.sessionId), false);
 });
 
 test('AppContext isolates session settings across clear and resume', () => {

@@ -22,6 +22,7 @@ import type {
   TranscriptSessionPreview,
   TranscriptSession,
   TranscriptSessionJournalReference,
+  TranscriptSessionDeleteResult,
   TranscriptStore
 } from '../../types/transcript';
 
@@ -216,6 +217,22 @@ class TranscriptContext {
   }
 
   /**
+   * 删除当前 cwd 中的历史 session，并保护仍由当前 transcript 持有写入 reference 的 journal。
+   */
+  deleteSession(sessionId: string): TranscriptSessionDeleteResult {
+    if (sessionId === this.currentSessionId) {
+      return {ok: false, reason: 'current'};
+    }
+
+    const result = this.transcriptStore.deleteSession(this.getCurrentCwd(), sessionId);
+    if (result.ok) {
+      this.evictSessionPreview(result.sessionId);
+    }
+
+    return result;
+  }
+
+  /**
    * 清空当前 transcript records，并把当前持久化 session 指针和压缩状态解绑。
    */
   clearRecords(): void {
@@ -341,6 +358,17 @@ class TranscriptContext {
       this.transcriptStore.updateSessionIndex(this.getCurrentCwd(), reference, records);
     } catch {
       // 下一次 /resume 会通过 journal 指纹重建缺失或过期条目。
+    }
+  }
+
+  /** 删除指定 session 的所有缓存版本，防止已移除 journal 的预览被后续 surface 复用。 */
+  private evictSessionPreview(sessionId: string): void {
+    const cachePrefix = `${this.getCurrentCwd()}:${sessionId}:`;
+
+    for (const cacheKey of this.sessionPreviewCache.keys()) {
+      if (cacheKey.startsWith(cachePrefix)) {
+        this.sessionPreviewCache.delete(cacheKey);
+      }
     }
   }
 

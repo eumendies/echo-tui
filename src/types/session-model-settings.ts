@@ -23,4 +23,5 @@ export type SessionModelSettingsStore = {
   getFilePath: (cwd: string, sessionId: string) => string; // 返回当前 cwd/session 对应 sidecar 的绝对路径。
   read: (cwd: string, sessionId: string) => SessionModelSettingsReadResult; // 容错读取当前 settings，不向恢复路径抛出解析错误。
   write: (cwd: string, input: SessionModelSettingsInput, updatedAt?: string) => SessionModelSettings; // 原子覆盖并返回规范化后的当前值。
+  remove: (cwd: string, sessionId: string) => void; // 尽力移除已删除 session 的 sidecar，调用方负责隔离清理失败。
 };
