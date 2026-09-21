@@ -2,7 +2,7 @@ import type { InputEvent } from './input';
 import type { AgentInstructionFileName, AgentToolPolicy, AgentType, ContextUsage, InteractionMode, ReasoningEffort } from './agent';
 import type { SandboxMode, SandboxModeOverride } from '../sandbox/types';
 import type {DiffFile, DiffSourceInfo, DiffSourceResult} from './diff';
-import type { CompactionState, PendingConversationReference, PreparedConversationReference, TranscriptForkResult, TranscriptRecord, TranscriptSessionDeleteResult, TranscriptSessionSummary, TranscriptSessionPreview, UserTranscriptMetadata } from './transcript';
+import type { CompactionState, PendingConversationReference, PreparedConversationReference, TodoState, TranscriptForkResult, TranscriptRecord, TranscriptSessionDeleteResult, TranscriptSessionSummary, TranscriptSessionPreview, UserTranscriptMetadata } from './transcript';
 import type {UndoExecuteResult, UndoSummary} from './change-history';
 import type {UsageDailyAggregate, UsageModelAggregate, UsageQueryOptions} from './usage';
 import type {LifecycleHookConfigDraft, LifecycleHookDraftEntry, LifecycleHookEventName, LifecycleHookTestResult} from './hooks';
@@ -537,7 +537,11 @@ export type CommandStatusSnapshot = {
   sandbox: CommandStatusSandboxState;
   sessionId: string | null;
   userMemoryCount: number;
+  compaction: CompactionState | null; // 打开或刷新 status 时复制的当前生效压缩摘要；无压缩时为 null。
+  todoState: TodoState; // 打开或刷新 status 时复制的当前会话结构化待办状态。
 };
+
+export type StatusCommandPage = 'overview' | 'compaction' | 'todos';
 
 export type CommandStatusSandboxState = {
   mode: SandboxMode; // 归一化后的生效档位;plan interaction mode 派生的只读收紧也反映在这里。
@@ -599,12 +603,15 @@ export type CommandOpencodeUsageResult =
 export type StatusCommandOpencodeUsageState = CommandOpencodeUsageResult | {status: 'loading'};
 
 export type StatusCommandSurface = {
+  compactionScroll: number; // 压缩摘要正文的视觉行偏移；渲染时再按实际行数钳制。
   deepseekBalance: StatusCommandDeepseekBalanceState;
   dismissHint: string;
   kind: 'status';
   opencodeUsage: StatusCommandOpencodeUsageState;
+  page: StatusCommandPage; // 当前显示的 status 页面，概览页保留运行信息和账户用量。
   snapshot: CommandStatusSnapshot;
   title: string;
+  todoScroll: number; // Todo 正文的视觉行偏移；渲染时再按实际行数钳制。
   usage: StatusCommandUsageState;
 };
 
@@ -946,6 +953,7 @@ export type CommandHostApp = {
   };
   status: {
     createSnapshot(): CommandStatusSnapshot;
+    getViewport(): {maxLines: number; width: number}; // 当前 footer 可供 status 详情正文使用的终端视口。
     queryDeepseekBalance(): Promise<CommandDeepseekBalanceResult>;
     queryCodexUsage(): Promise<CommandCodexUsageResult>;
     queryOpencodeUsage(): Promise<CommandOpencodeUsageResult>;

@@ -7,6 +7,7 @@ import {listEffectiveAgentMemoryCatalogs} from '../../memory/agent-memory-store'
 import {readUserMemories} from '../../memory/memory-store';
 import {resolveEffectiveSandbox} from '../../sandbox/provider';
 import {createCommandViewport} from './command-viewport';
+import {cloneTodoState} from '../state/transcript-context';
 
 import type {CodexUsage} from '../../config/codex-oauth';
 import type {DeepseekBalance} from '../../config/deepseek-balance';
@@ -14,6 +15,7 @@ import type {OpencodeUsage} from '../../config/opencode-usage';
 import type {CommandHostApp, CommandStatusSandboxState, CommandStatusSnapshot} from '../../types/command';
 import type {UserConfigContext} from '../../config/user-config-context';
 import type {InteractionMode, SandboxToolConfig} from '../../types/agent';
+import type {CompactionState} from '../../types/transcript';
 import type {UsageStore} from '../../types/usage';
 import type {AppContext} from '../state/app-context';
 
@@ -48,6 +50,9 @@ function createStatusCommandPorts(options: StatusCommandPortOptions): Pick<Comma
     status: {
       createSnapshot() {
         return createStatusSnapshot(appContext, userConfigContext);
+      },
+      getViewport() {
+        return createCommandViewport(appContext);
       },
       async queryDeepseekBalance() {
         const config = appContext.modelContext.createActiveLlmConfig();
@@ -155,8 +160,17 @@ function createStatusSnapshot(appContext: StatusCommandContext, userConfigContex
     agentMemoryCatalogs: agentMemoryResult.ok
       ? agentMemoryResult.catalogs.map((catalog) => ({name: catalog.name, scope: catalog.scope.kind}))
       : [],
+    compaction: cloneStatusCompaction(appContext.transcriptContext.compaction),
+    todoState: cloneTodoState(appContext.transcriptContext.todoState),
     diagnostics: diagnostics.map((diagnostic) => redactSensitiveText(diagnostic))
   };
+}
+
+/**
+ * 复制当前压缩状态供只读 command session 使用，避免刷新前后的 app 状态变更穿透到旧 surface。
+ */
+function cloneStatusCompaction(compaction: CompactionState | null | undefined): CompactionState | null {
+  return compaction ? {...compaction} : null;
 }
 
 /**
