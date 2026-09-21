@@ -217,6 +217,24 @@ test('createFooterRenderer writes each complete redraw as one frame and preserve
   assert.equal(output.writes.length, 5);
 });
 
+test('createFooterRenderer marks only same-height incremental footer redraws as position-stable', () => {
+  const output = {write() {}};
+  const renderer = createFooterRenderer(output);
+  const baseState = {
+    composer: createComposer('draft'),
+    commandSurface: null,
+    pending: null,
+    working: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    rows: 24,
+    width: 80
+  };
+
+  assert.equal(renderer.render(baseState).originStable, false);
+  assert.equal(renderer.render({...baseState, composer: createComposer('updated')}).originStable, true);
+  assert.equal(renderer.render({...baseState, pendingMessage: {preview: 'queued'}}).originStable, false);
+});
+
 test('createFooterRenderer safely transitions from response suggestions through a command surface and back to latest streaming', () => {
   const output = {
     writes: [],
@@ -672,6 +690,87 @@ test('renderFooterLayout applies custom theme to composer status and active sugg
   assert.ok(joined.includes('\x1b[38;2;1;2;3m'));
   assert.ok(joined.includes('\x1b[48;5;99m'));
   assert.ok(joined.includes('\x1b[38;2;30;31;32m'));
+});
+
+test('renderFooterLayout exposes hit regions only for visible slash, choice, and file-picker entries', () => {
+  const slash = renderFooterLayout({
+    composer: createComposer('/'),
+    commandSurface: null,
+    slashSuggestions: {selectedIndex: 1, options: [{label: '/help'}, {label: '/history'}]},
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    width: 80
+  });
+  assert.deepEqual(slash.hitRegions.map((region) => region.target), [
+    {kind: 'slash_suggestion', index: 0},
+    {kind: 'slash_suggestion', index: 1}
+  ]);
+
+  const choice = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: {
+      kind: 'choice',
+      title: '选择',
+      optionsTitle: '答案',
+      options: [{label: 'A'}, {label: 'Other', inlineInput: {text: '', placeholder: '输入', cursor: 0}}],
+      focusedIndex: 1,
+      dismissHint: 'Esc 取消'
+    },
+    pending: null,
+    width: 80
+  });
+  assert.deepEqual(choice.hitRegions.map((region) => region.target), [
+    {kind: 'choice_option', index: 0, inlineInput: false},
+    {kind: 'choice_option', index: 1, inlineInput: true}
+  ]);
+
+  const picker = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: {
+      kind: 'file_picker',
+      title: 'Paths',
+      currentDir: '/tmp',
+      dismissHint: 'Esc',
+      entries: [{kind: 'directory', name: 'src', path: 'src', selectable: true, selected: false}],
+      focus: 'list',
+      previewLines: [],
+      previewMode: 'text',
+      query: '',
+      selectedIndex: 0,
+      selectedPaths: []
+    },
+    pending: null,
+    width: 80
+  });
+  assert.deepEqual(picker.hitRegions.map((region) => region.target), [
+    {kind: 'file_picker_entry', index: 0}
+  ]);
+  assert.equal(picker.hitRegions[0].columnStart, 3);
+  assert.ok(picker.hitRegions[0].columnEnd < 40);
+});
+
+test('renderFooterLayout drops hit regions for choice options hidden by the footer height budget', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: {
+      kind: 'choice',
+      title: '选择',
+      optionsTitle: '答案',
+      options: Array.from({length: 8}, (_value, index) => ({label: `选项 ${index + 1}`})),
+      focusedIndex: 6,
+      dismissHint: 'Esc 取消'
+    },
+    pending: null,
+    rows: 8,
+    width: 34
+  });
+  const optionIndexes = layout.hitRegions
+    .filter((region) => region.target.kind === 'choice_option')
+    .map((region) => region.target.index);
+
+  assert.ok(optionIndexes.includes(6));
+  assert.ok(optionIndexes.length < 8);
+  assert.equal(layout.hitRegions.some((region) => region.rowEnd >= layout.lines.length), false);
 });
 
 test('renderFooterLayout renders provider context usage in status line', () => {

@@ -484,6 +484,34 @@ class AppContext {
   }
 
   /**
+   * 处理 slash 建议的鼠标命中；点击只完成命令文本，不复用 Enter 的提交语义。
+   */
+  handleSlashSuggestionPointer(index: number, activate: boolean): boolean {
+    const composerText = this.composerContext.getText();
+
+    if (!this.slashSuggestionContext.isVisible(composerText)) {
+      return false;
+    }
+
+    const focused = this.slashSuggestionContext.selectIndex(composerText, index);
+
+    if (!activate) {
+      return focused;
+    }
+
+    const completedText = this.slashSuggestionContext.completeSelection(composerText, {appendSpace: true});
+
+    if (!completedText) {
+      return focused;
+    }
+
+    this.composerContext.leaveHistoryBrowsing();
+    this.composerContext.setText(completedText);
+    this.slashSuggestionContext.resetSelection();
+    return true;
+  }
+
+  /**
    * 从持久化存储加载 session，并用其 transcript records 替换当前可见 transcript。
    */
   loadTranscriptSession(sessionId: string): TranscriptSession | null {

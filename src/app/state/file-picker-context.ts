@@ -184,6 +184,40 @@ class FilePickerContext {
     }
   }
 
+  /**
+   * 按当前过滤列表索引处理鼠标命中；鼠标不执行 mention 插入，只负责浏览目录和切换选择。
+   */
+  handlePointerEntry(index: number, activate: boolean): boolean {
+    if (!this.state || !Number.isInteger(index) || index < 0) {
+      return false;
+    }
+
+    const entries = this.getEntries();
+    const entry = entries[index];
+
+    if (!entry) {
+      return false;
+    }
+
+    const focusChanged = this.state.focus !== 'list' || this.state.index !== index || this.state.previewScroll !== 0 || this.state.notice !== undefined;
+    if (focusChanged) {
+      this.state = {...this.state, focus: 'list', index, notice: undefined, previewScroll: 0};
+      this.options.onChange();
+    }
+
+    if (!activate) {
+      return focusChanged;
+    }
+
+    if (entry.kind === 'directory') {
+      this.enterOrFocusPreview();
+      return true;
+    }
+
+    this.toggleCurrent();
+    return true;
+  }
+
   getSurface(): FilePickerCommandSurface | null {
     if (!this.state) {
       return null;
@@ -196,7 +230,7 @@ class FilePickerContext {
     return {
       kind: 'file_picker',
       currentDir: path.join(this.options.cwd(), this.state.currentDir),
-      dismissHint: '↑↓ 移动 · → 预览/进入目录 · ← 返回 · Space 选择 · Enter 插入 · Esc 取消',
+      dismissHint: '鼠标悬停/点击 · ↑↓ 移动 · → 预览/进入目录 · ← 返回 · Space 选择 · Enter 插入 · Esc 取消',
       entries: entries.map((entry) => ({
         ...entry,
         selected: this.state?.selectedPaths.includes(entry.path) ?? false

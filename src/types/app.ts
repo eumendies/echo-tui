@@ -2,6 +2,8 @@ import type {InputEvent} from './input';
 
 export type TerminalController = {
   getSize: () => {columns: number; rows: number};
+  setMouseTracking: (enabled: boolean) => void;
+  requestCursorPosition: () => boolean;
   cleanup: () => void;
 };
 

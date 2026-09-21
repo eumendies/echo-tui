@@ -99,6 +99,27 @@ export function disableBracketedPaste(): string {
 }
 
 /**
+ * 启用 xterm SGR 鼠标报告；1003 仅在交互列表显示时使用，避免普通输入收到高频移动事件。
+ */
+export function enableMouseTracking(): string {
+  return `${ESC}?1003h${ESC}?1006h`;
+}
+
+/**
+ * 恢复终端默认鼠标报告状态；与启用顺序无关，可在异常清理路径中重复调用。
+ */
+export function disableMouseTracking(): string {
+  return `${ESC}?1006l${ESC}?1003l`;
+}
+
+/**
+ * 请求终端报告当前光标位置；回复由输入解析器作为 CPR 事件消费，不会显示在屏幕上。
+ */
+export function requestCursorPosition(): string {
+  return `${ESC}6n`;
+}
+
+/**
  * 隐藏终端光标。
  *
  */

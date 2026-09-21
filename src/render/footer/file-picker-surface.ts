@@ -8,7 +8,7 @@ import {renderStyledLine} from '../markdown/styled-line';
 import {highlightCodeBlock} from '../markdown/syntax-highlight';
 
 import type {FilePickerCommandSurface, FilePickerSurfaceEntry} from '../../types/command';
-import type {FooterLayout} from '../../types/render';
+import type {FooterHitRegion, FooterLayout} from '../../types/render';
 
 const BODY_OUTER_DECORATION_WIDTH = 7;
 const BODY_INNER_DECORATION_WIDTH = 5;
@@ -57,12 +57,26 @@ function renderFilePickerSurface(
     renderLine(ansi.dim(clampPlainText(surface.notice || surface.dismissHint, innerWidth)), boxWidth, theme),
     renderBottom(boxWidth, theme)
   ];
+  const bodyStart = 3 + queryLineCount;
+  const hitRegions: FooterHitRegion[] = bodyRows.flatMap((row, visualIndex) => row.entry ? [{
+    owner: 'file_picker' as const,
+    target: {
+      kind: 'file_picker_entry' as const,
+      index: row.index
+    },
+    rowStart: bodyStart + visualIndex,
+    rowEnd: bodyStart + visualIndex,
+    // body 行左栏从外框和内侧空格后的第 3 列开始；preview 和中间分隔线不能命中 entry。
+    columnStart: 3,
+    columnEnd: 2 + leftWidth
+  }] : []);
 
   return {
     lines,
     cursorRow: lines.length - 1,
     cursorColumn: 0,
-    showCursor: false
+    showCursor: false,
+    hitRegions
   };
 }
 

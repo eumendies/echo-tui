@@ -177,11 +177,48 @@ export type RenderState = {
   width: number;
 };
 
+export type FooterMouseTarget =
+  | {
+      kind: 'slash_suggestion'; // 普通 composer 中当前可见 slash 建议项。
+      index: number; // 建议在完整匹配列表中的绝对索引。
+    }
+  | {
+      kind: 'choice_option'; // choice card 中当前可见的 option。
+      index: number; // option 在调用方完整 option 数组中的绝对索引。
+      inlineInput: boolean; // 是否为只聚焦、不直接确认的内联文本输入项。
+    }
+  | {
+      kind: 'choice_tab'; // choice card 顶部的多题导航 tab。
+      index: number; // tab 在调用方完整 tab 数组中的绝对索引。
+    }
+  | {
+      kind: 'file_picker_entry'; // file picker 左栏中当前可见的路径 entry。
+      index: number; // entry 在当前过滤后列表中的绝对索引。
+    };
+
+export type FooterHitRegion = {
+  owner: 'slash_suggestion' | 'choice' | 'file_picker'; // 生成该区域的 footer 交互 surface 类别。
+  target: FooterMouseTarget; // 命中后交给输入路由的无副作用语义目标。
+  rowStart: number; // 相对 footer 的 0-based 起始可见行，含端点。
+  rowEnd: number; // 相对 footer 的 0-based 结束可见行，含端点。
+  columnStart: number; // 相对终端行的 1-based 起始列，含端点。
+  columnEnd: number; // 相对终端行的 1-based 结束列，含端点。
+};
+
 export type FooterLayout = {
   lines: string[];
   cursorRow: number;
   cursorColumn: number;
   showCursor: boolean;
+  hitRegions?: FooterHitRegion[]; // 当前 frame 可鼠标命中的临时区域；不参与持久化。
+};
+
+export type FooterPointerSnapshot = {
+  version: number; // footer 实际写入终端后的单调递增 frame 版本。
+  cursorRow: number; // 当前终端光标相对 footer 的 0-based 行位置。
+  cursorColumn: number; // 当前终端光标相对 footer 的 0-based 列位置。
+  hitRegions: FooterHitRegion[]; // 与该 frame 版本绑定的全部可见命中区域。
+  originStable: boolean; // 本帧是否仅原位更新且 footer 顶部物理屏幕位置未变。
 };
 
 export type ComposerLayout = Omit<FooterLayout, 'showCursor'>;
@@ -201,16 +238,16 @@ export type RenderDestructiveOptions = RenderState & {
 };
 
 export type AppRenderer = {
-  renderRecords: (options: RenderRecordsOptions) => void;
-  render: (options: RenderState, finalizeRecord?: Extract<TranscriptRecord, {role: 'assistant' | 'reasoning_summary'}>) => void;
+  renderRecords: (options: RenderRecordsOptions) => FooterPointerSnapshot;
+  render: (options: RenderState, finalizeRecord?: Extract<TranscriptRecord, {role: 'assistant' | 'reasoning_summary'}>) => FooterPointerSnapshot;
   clearFooter: () => void;
-  renderDestructive: (options: RenderDestructiveOptions) => void;
-  renderInitial: (options: RenderInitialOptions) => void;
+  renderDestructive: (options: RenderDestructiveOptions) => FooterPointerSnapshot;
+  renderInitial: (options: RenderInitialOptions) => FooterPointerSnapshot;
 };
 
 export type FooterRenderer = {
-  append: (content: string, options: RenderState) => void;
+  append: (content: string, options: RenderState) => FooterPointerSnapshot;
   clear: () => void;
-  rememberLayout: (layout: FooterLayout) => void;
-  render: (options: RenderState) => void;
+  rememberLayout: (layout: FooterLayout) => FooterPointerSnapshot;
+  render: (options: RenderState) => FooterPointerSnapshot;
 };

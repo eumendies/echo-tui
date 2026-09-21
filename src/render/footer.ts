@@ -5,7 +5,7 @@ import { renderComposerSurface, renderSubagentViewSurface } from './footer/compo
 import { constrainLayoutTail } from './footer/window';
 import { DEFAULT_RENDER_PREFERENCES } from '../config/app-settings-config';
 import { DEFAULT_TUI_THEME } from '../config/theme-config';
-import type { FooterLayout, FooterRenderer, PendingState, RenderState, StatusLineState, WorkingState } from '../types/render';
+import type { FooterHitRegion, FooterLayout, FooterPointerSnapshot, FooterRenderer, PendingState, RenderState, StatusLineState, WorkingState } from '../types/render';
 
 const FOOTER_TOP_PADDING_LINES = 2;
 const DEFAULT_TERMINAL_ROWS = 24;
@@ -26,6 +26,7 @@ class DefaultFooterRenderer implements FooterRenderer {
   // 上一帧的最终行内容(经 constrainLayoutTail 之后)，供帧级增量重绘做行级 diff。
   private previousLines: string[] = [];
   private previousCursorColumn = 0;
+  private renderVersion = 0;
   // 终端光标当前可见性；用于最小化 hide/show 序列，避免每次重绘重置光标闪烁相位。
   private cursorVisible = true;
 
@@ -76,13 +77,12 @@ class DefaultFooterRenderer implements FooterRenderer {
    * 在一个终端帧中移除旧 footer、追加稳定内容并恢复新 footer。
    * content 必须以换行结束，使新 footer 从追加内容后的下一行开始；该内容后续不再重绘。
    */
-  append(content: string, options: RenderState): void {
+  append(content: string, options: RenderState): FooterPointerSnapshot {
     const layout = renderFooterLayout(options);
 
     // 无 transcript 追加且已有上一帧时走帧级增量重绘；首帧与追加路径保持整帧重绘。
     if (content === '' && this.previousLines.length > 0 && layout.lines.length > 0) {
-      this.appendIncrementally(layout);
-      return;
+      return this.appendIncrementally(layout);
     }
 
     let sequence = ansi.hideCursor();
@@ -98,7 +98,7 @@ class DefaultFooterRenderer implements FooterRenderer {
     }
 
     this.output.write(sequence);
-    this.rememberLayout(layout);
+    return this.rememberLayout(layout);
   }
 
   /**
@@ -106,7 +106,7 @@ class DefaultFooterRenderer implements FooterRenderer {
    * 帧高变化只处理增量行(尾部追加或清理底部多余行)。全部序列合并为一次 write；
    * hide cursor 仅在整帧语义(帧高变化或多行变化)时输出，单行覆写不重置光标闪烁相位。
    */
-  private appendIncrementally(layout: FooterLayout): void {
+  private appendIncrementally(layout: FooterLayout): FooterPointerSnapshot {
     const previousLines = this.previousLines;
     const previousHeight = previousLines.length;
     const nextLines = layout.lines;
@@ -125,7 +125,7 @@ class DefaultFooterRenderer implements FooterRenderer {
     if (!heightChanged && changedRows.length === 0) {
       // 帧内容完全一致：只按需移动光标(方向键移动、纯状态重定位)，不做任何行擦写。
       if (layout.cursorRow === this.previousCursorRow && layout.cursorColumn === this.previousCursorColumn && layout.showCursor === this.cursorVisible) {
-        return;
+        return this.rememberLayout(layout, true);
       }
 
       let move = '';
@@ -141,8 +141,7 @@ class DefaultFooterRenderer implements FooterRenderer {
       }
 
       this.output.write(move);
-      this.rememberLayout(layout);
-      return;
+      return this.rememberLayout(layout, true);
     }
 
     // 回到上一帧顶部，再逐行扫描：未变行仅光标下移，变化行原位覆写。
@@ -186,20 +185,28 @@ class DefaultFooterRenderer implements FooterRenderer {
     }
 
     this.output.write(sequence);
-    this.rememberLayout(layout);
+    return this.rememberLayout(layout, !heightChanged);
   }
 
   /** 渲染新的 footer 布局，并把光标放回 composer 的逻辑位置。 */
-  render(options: RenderState): void {
-    this.append('', options);
+  render(options: RenderState): FooterPointerSnapshot {
+    return this.append('', options);
   }
 
   /** 在其他路径完整绘制 footer 后，同步记录其形状供下一次局部清理使用。 */
-  rememberLayout(layout: FooterLayout): void {
+  rememberLayout(layout: FooterLayout, originStable = false): FooterPointerSnapshot {
     this.previousCursorRow = layout.cursorRow;
     this.previousLines = layout.lines.slice();
     this.previousCursorColumn = layout.cursorColumn;
     this.cursorVisible = layout.showCursor;
+    this.renderVersion += 1;
+    return {
+      version: this.renderVersion,
+      cursorRow: layout.cursorRow,
+      cursorColumn: layout.cursorColumn,
+      hitRegions: layout.hitRegions ? layout.hitRegions.map((region) => ({...region, target: {...region.target}})) : [],
+      originStable
+    };
   }
 }
 
@@ -230,14 +237,26 @@ export function renderFooterLayout({ composer, conversationReference, pendingMes
       : renderComposerSurface(composer, effectiveStatusLine, footerWidth, slashSuggestions ?? null, inputMaxLines, theme, renderPreferences.slashSuggestionMaxVisible, conversationReference, pendingMessage);
   const pendingMaxLines = Math.max(0, maxFooterLines - fixedLineCount - inputSurface.lines.length);
   const pendingLines = pending ? renderPendingAssistantLines(pending, footerWidth, pendingMaxLines, theme) : [];
+  const inputOffset = pendingLines.length + 1;
   const layout = {
     lines: [...pendingLines, transcriptComposerSpacerLine, ...inputSurface.lines],
     cursorRow: pendingLines.length + 1 + inputSurface.cursorRow,
     cursorColumn: inputSurface.cursorColumn,
-    showCursor: inputSurface.showCursor
+    showCursor: inputSurface.showCursor,
+    ...(inputSurface.hitRegions ? {hitRegions: offsetHitRegions(inputSurface.hitRegions, inputOffset)} : {})
   };
 
   return constrainLayoutTail(layout, maxFooterLines);
+}
+
+/** 把 input surface 的相对行命中区域平移到完整 footer 的坐标系。 */
+function offsetHitRegions(regions: FooterHitRegion[], rowOffset: number): FooterHitRegion[] {
+  return regions.map((region) => ({
+    ...region,
+    rowStart: region.rowStart + rowOffset,
+    rowEnd: region.rowEnd + rowOffset,
+    target: {...region.target}
+  }));
 }
 
 /**

@@ -222,6 +222,71 @@ class UserQuestionContext {
   }
 
   /**
+   * 按 choice option 的绝对索引处理鼠标命中；内联 Other 只聚焦，普通项复用既有确认或切换语义。
+   */
+  handlePointerOption(index: number, activate: boolean): boolean {
+    const request = this.activeRequest;
+
+    if (!request || !Number.isInteger(index) || index < 0) {
+      return false;
+    }
+
+    if (this.isSubmitTab(request)) {
+      if (activate && index === 0) {
+        this.submitAnswers();
+        return true;
+      }
+      return false;
+    }
+
+    const questionIndex = request.currentTabIndex;
+    const question = request.request.questions[questionIndex];
+    const optionCount = question.options.length + 1;
+
+    if (index >= optionCount) {
+      return false;
+    }
+
+    const draft = request.drafts[questionIndex];
+    const focusChanged = draft.focusedOptionIndex !== index;
+
+    if (focusChanged) {
+      this.updateDraft(questionIndex, {...draft, focusedOptionIndex: index});
+    }
+
+    if (!activate || index === question.options.length) {
+      return focusChanged;
+    }
+
+    if (question.multiSelect === true) {
+      const activeDraft = this.activeRequest?.drafts[questionIndex];
+      if (!activeDraft) return focusChanged;
+      const checked = activeDraft.checkedOptionIndexes.includes(index);
+      const checkedOptionIndexes = checked
+        ? activeDraft.checkedOptionIndexes.filter((item) => item !== index)
+        : [...activeDraft.checkedOptionIndexes, index].sort((left, right) => left - right);
+      this.updateDraft(questionIndex, {...activeDraft, checkedOptionIndexes});
+      return true;
+    }
+
+    this.confirmCurrentQuestion();
+    return true;
+  }
+
+  /** 将鼠标命中的多题 tab 设为当前题或提交页；tab 切换本身不提交答案。 */
+  handlePointerTab(index: number): boolean {
+    const request = this.activeRequest;
+
+    if (!request || !this.hasTabs(request) || !Number.isInteger(index) || index < 0 || index > request.request.questions.length || request.currentTabIndex === index) {
+      return false;
+    }
+
+    this.activeRequest = {...request, currentTabIndex: index, validationMessage: undefined};
+    this.onUpdate();
+    return true;
+  }
+
+  /**
    * 创建多题提交页，实时显示每题草稿并给出是否可提交的操作状态。
    */
   private createSubmitSurface(request: ActiveUserQuestionRequest): ChoiceCommandSurface {
@@ -281,8 +346,8 @@ class UserQuestionContext {
 
     const tabHint = this.hasTabs(request) ? '←/→ 切换问题 · ' : '';
     return multiSelect
-      ? `${tabHint}Space 选择/取消 · Enter 确认 · Up/Down 移动 · Esc 取消`
-      : `${tabHint}Enter 确认 · Up/Down 选择 · Esc 取消`;
+      ? `鼠标悬停/点击 · ${tabHint}Space 选择/取消 · Enter 确认 · Up/Down 移动 · Esc 取消`
+      : `鼠标悬停/点击 · ${tabHint}Enter 确认 · Up/Down 选择 · Esc 取消`;
   }
 
   /**

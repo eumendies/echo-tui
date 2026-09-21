@@ -91,6 +91,18 @@ class SlashSuggestionContext {
     this.selectedIndex = 0;
   }
 
+  /** 将建议焦点直接定位到可见鼠标命中的绝对索引；不匹配时保持既有焦点。 */
+  selectIndex(composerText: string, index: number): boolean {
+    const matches = this.getMatchingCommands(composerText);
+
+    if (!Number.isInteger(index) || index < 0 || index >= matches.length || this.selectedIndex === index) {
+      return false;
+    }
+
+    this.selectedIndex = index;
+    return true;
+  }
+
   private getMatchingCommands(composerText: string): SlashCommandDescriptor[] {
     if (!this.canShowSuggestions(composerText)) {
       return [];

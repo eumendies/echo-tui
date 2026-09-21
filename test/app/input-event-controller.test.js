@@ -89,6 +89,48 @@ test('InputEventController gives active modals and command sessions priority', a
   assert.deepEqual(command.calls, ['command-start', 'command-end']);
 });
 
+test('InputEventController consumes terminal pointer reports before modal or composer routing', () => {
+  const pointerEvents = [];
+  const appContext = createAppContext();
+  appContext.setMcpBootstrapStatus('ready');
+  const controller = new InputEventController({
+    appContext,
+    userQuestion: {hasActiveRequest: () => true, handleEvent: () => pointerEvents.push('question')},
+    toolApproval: {hasActiveRequest: () => false, handleEvent() {}, toggleAllowAllForSession() {}},
+    filePicker: {hasActiveRequest: () => false, handleEvent() {}, open() {}},
+    autoUpdate: {hasActiveRequest: () => false, handleEvent() {}},
+    subagentView: {isActive: () => false, toggle() {}, handleEvent: () => false},
+    command: {hasActiveSession: () => false, handleEvent() {}},
+    localSurface: {hasActive: () => false, dismiss() {}},
+    cancelReferencePreparation() {},
+    dispatchPendingMessage: async () => {},
+    submitComposer: async () => {},
+    interruptActiveShellCommand: () => false,
+    interruptActiveTurn: () => false,
+    exit() {},
+    render() {},
+    pointer: {handleEvent(event) { pointerEvents.push(event.type); return true; }}
+  });
+
+  controller.handleEvent({type: INPUT_EVENTS.MOUSE, phase: 'move', button: 'left', row: 1, column: 1, shift: false, alt: false, ctrl: false});
+  assert.deepEqual(pointerEvents, [INPUT_EVENTS.MOUSE]);
+});
+
+test('AppContext completes a hovered slash suggestion without submitting it', () => {
+  const appContext = createAppContext();
+  appContext.setMcpBootstrapStatus('ready');
+  appContext.configureSlashSuggestions([
+    {name: 'help', description: '帮助'},
+    {name: 'history', description: '历史'}
+  ], () => false);
+  appContext.composerContext.setText('/h');
+
+  assert.equal(appContext.handleSlashSuggestionPointer(1, false), true);
+  assert.equal(appContext.getSlashSuggestionState().selectedIndex, 1);
+  assert.equal(appContext.handleSlashSuggestionPointer(1, true), true);
+  assert.equal(composerOps.getText(appContext.composerContext.composer), '/history ');
+});
+
 test('InputEventController keeps the auto update prompt below other modals and consumes its input', async () => {
   let pickerActive = true;
   const harness = createHarness({

@@ -180,7 +180,7 @@ class ToolApprovalContext {
         } : {})
       })),
       focusedIndex: request.selectedIndex,
-      dismissHint: '↑/↓ move · enter confirm · esc cancel'
+      dismissHint: '鼠标悬停/点击 · ↑/↓ move · enter confirm · esc cancel'
     };
   }
 
@@ -217,6 +217,37 @@ class ToolApprovalContext {
       return true;
     }
 
+    return true;
+  }
+
+  /**
+   * 按 choice option 索引处理鼠标命中；feedback 仅获得输入焦点，普通 action 才可确认授权。
+   */
+  handlePointerOption(index: number, activate: boolean): boolean {
+    const request = this.activeRequest;
+
+    if (!request || !Number.isInteger(index) || index < 0) {
+      return false;
+    }
+
+    const options = this.createOptions(request.call);
+    const option = options[index];
+
+    if (!option) {
+      return false;
+    }
+
+    const focusChanged = request.selectedIndex !== index;
+    if (focusChanged) {
+      this.activeRequest = {...request, selectedIndex: index};
+      this.onUpdate();
+    }
+
+    if (!activate || option.id === 'feedback') {
+      return focusChanged;
+    }
+
+    this.resolveSelectedOption();
     return true;
   }
 

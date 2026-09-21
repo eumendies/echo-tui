@@ -124,6 +124,11 @@ export function constrainLayoutTail(layout: FooterLayout, maxLines: number | und
   return {
     ...layout,
     lines: layout.lines.slice(start),
-    cursorRow: clampCursorRow(layout.cursorRow - start, normalizedMaxLines)
+    cursorRow: clampCursorRow(layout.cursorRow - start, normalizedMaxLines),
+    ...(layout.hitRegions ? {
+      hitRegions: layout.hitRegions
+        .filter((region) => region.rowStart >= start && region.rowEnd < start + normalizedMaxLines)
+        .map((region) => ({...region, rowStart: region.rowStart - start, rowEnd: region.rowEnd - start}))
+    } : {})
   };
 }
