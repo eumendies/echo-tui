@@ -455,6 +455,7 @@ export {
   createTranscriptJournalEntry,
   createTranscriptJournalStart,
   createTruncateRecordsOperation,
+  parseTranscriptJournalStart,
   replayTranscriptJournal,
   serializeTranscriptJournalLine
 };

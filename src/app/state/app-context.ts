@@ -24,7 +24,7 @@ import type {CommandSurface, SlashCommandDescriptor} from '../../types/command';
 import type {InputEvent} from '../../types/input';
 import type {RenderState, SlashSuggestionState, StatusLineModelRenderState} from '../../types/render';
 import type {ToolExecutionResult} from '../../types/tool';
-import type {TranscriptForkResult, TranscriptRecord, TranscriptSession, TranscriptStore, UserTranscriptMetadata} from '../../types/transcript';
+import type {TranscriptForkResult, TranscriptRecord, TranscriptSession, TranscriptSessionDeleteResult, TranscriptStore, UserTranscriptMetadata} from '../../types/transcript';
 import type {SessionModelSettingsStore} from '../../types/session-model-settings';
 import type {UndoExecuteResult} from '../../types/change-history';
 import type {ToolApprovalContext} from './tool-approval-context';
@@ -104,6 +104,7 @@ class AppContext {
   private mcpBootstrapStatus: 'idle' | 'initializing' | 'ready';
   private modelConfigSnapshot: UserConfigSnapshot;
   private readonly userConfigContext: UserConfigContext;
+  private readonly sessionModelSettingsStore: SessionModelSettingsStore;
 
   constructor(
     terminal: TerminalController,
@@ -120,6 +121,7 @@ class AppContext {
     this.getCurrentCwdValue = cwd;
     this.getNodeVersionValue = nodeVersion;
     this.userConfigContext = userConfigContext;
+    this.sessionModelSettingsStore = sessionModelSettingsStore;
     this.modelConfigSnapshot = userConfigContext.capture();
     this.appSettingsSnapshot = this.modelConfigSnapshot;
     const initialAppSettings = this.appSettingsSnapshot.getAppSettings();
@@ -496,6 +498,24 @@ class AppContext {
     }
 
     return loadedSession;
+  }
+
+  /**
+   * 删除非当前的历史 transcript，并在 journal 提交后尽力回收对应 model settings sidecar。
+   */
+  deleteTranscriptSession(sessionId: string): TranscriptSessionDeleteResult {
+    const result = this.transcriptContext.deleteSession(sessionId);
+    if (!result.ok) {
+      return result;
+    }
+
+    try {
+      this.sessionModelSettingsStore.remove(this.getCurrentCwd(), result.sessionId);
+    } catch {
+      // Sidecar 仅用于恢复，清理失败不得改变已提交的 journal 删除结果。
+    }
+
+    return result;
   }
 
   /**

@@ -21,6 +21,7 @@ type SessionBrowserPreviewState = {
 
 type SessionBrowserData<TSession extends SessionBrowserSession = TranscriptSessionSummary> = {
   focus: 'list' | 'preview'; // 决定上下方向键操作候选列表还是右侧预览。
+  notice?: string; // 当前浏览器的临时用户提示，随下一次主动导航或业务动作清除。
   previewScroll: number; // 右侧预览相对首条渲染行的滚动偏移，仅保证非负，上界由渲染层钳制。
   selectedIndex: number; // 当前候选在完整 sessions 数组中的绝对索引。
   sessions: TSession[]; // 当前 cwd 下可供业务 handler 选择的会话摘要。
@@ -77,6 +78,7 @@ function normalizeSessionBrowserData<TSession extends SessionBrowserSession>(dat
 
   return {
     focus,
+    ...(typeof source.notice === 'string' && source.notice.trim() !== '' ? {notice: source.notice} : {}),
     previewScroll,
     selectedIndex,
     sessions,
@@ -106,6 +108,7 @@ function createSessionBrowserSurface<TSession extends SessionBrowserSession>(dat
     previewStatus: asyncPreview?.status || 'ready',
     previewRecords: asyncPreview?.records || [],
     ...(asyncPreview?.error ? {previewError: asyncPreview.error} : {}),
+    ...(normalized.notice ? {notice: normalized.notice} : {}),
     emptyPreviewHint: options.emptyPreviewHint,
     dismissHint: options.dismissHint
   };

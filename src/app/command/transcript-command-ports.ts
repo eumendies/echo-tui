@@ -5,6 +5,7 @@ import type {AppContext} from '../state/app-context';
 type TranscriptCommandContext = Pick<AppContext,
   'clearContextUsage' |
   'clearTranscriptRecords' |
+  'deleteTranscriptSession' |
   'forkTranscriptSession' |
   'loadTranscriptSession' |
   'transcriptContext'
@@ -31,6 +32,9 @@ function createTranscriptCommandPort(options: TranscriptCommandPortOptions): Com
     forkSession() {
       return appContext.forkTranscriptSession();
     },
+    getCurrentSessionId() {
+      return appContext.transcriptContext.getCurrentSessionId();
+    },
     loadSession(sessionId: string): boolean {
       const didLoad = Boolean(appContext.loadTranscriptSession(sessionId));
 
@@ -40,6 +44,9 @@ function createTranscriptCommandPort(options: TranscriptCommandPortOptions): Com
       }
 
       return didLoad;
+    },
+    deleteSession(sessionId: string) {
+      return appContext.deleteTranscriptSession(sessionId);
     },
     append(record: TranscriptRecord) {
       renderRecords([appContext.transcriptContext.appendRecord(record)]);

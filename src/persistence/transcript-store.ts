@@ -6,6 +6,7 @@ import path from 'node:path';
 import {
   createTranscriptJournalEntry,
   createTranscriptJournalStart,
+  parseTranscriptJournalStart,
   replayTranscriptJournal,
   serializeTranscriptJournalLine
 } from './transcript-journal';
@@ -20,12 +21,14 @@ import type {
   TranscriptSessionSummary,
   TranscriptSessionPreview,
   TranscriptSessionJournalReference,
+  TranscriptSessionDeleteResult,
   TranscriptStore
 } from '../types/transcript';
 
 const STORE_SCHEMA_VERSION = 1 as const;
 const SESSION_INDEX_SCHEMA_VERSION = 1 as const;
 const SESSION_PREVIEW_TEXT_LIMIT = 500;
+const SESSION_START_MAX_BYTES = 16 * 1024;
 
 type TranscriptStoreOptions = {
   rootDir?: string;
@@ -249,6 +252,42 @@ function createTranscriptStore(options: TranscriptStoreOptions = {}): Transcript
     return loaded?.session.sessionId === sessionId ? loaded : null;
   }
 
+  /**
+   * 删除当前项目中已验证的历史 journal；journal 是提交点，index 仅作为可重建缓存尽力同步。
+   */
+  function deleteSession(cwd: string, sessionId: string): TranscriptSessionDeleteResult {
+    const normalizedCwd = String(cwd);
+
+    if (!isSafeSessionId(sessionId)) {
+      return {ok: false, reason: 'missing'};
+    }
+
+    const filePath = getSessionFilePath(normalizedCwd, sessionId);
+    if (!hasMatchingSessionStart(filePath, normalizedCwd, sessionId)) {
+      return {ok: false, reason: 'missing'};
+    }
+
+    try {
+      fsImpl.rmSync(filePath);
+    } catch (error: unknown) {
+      if (isNodeErrorCode(error, 'ENOENT')) {
+        return {ok: false, reason: 'missing'};
+      }
+
+      return {ok: false, reason: 'failed', error: '无法删除会话'};
+    }
+
+    const persisted = readSessionIndex(normalizedCwd);
+    if (persisted) {
+      safelyWriteSessionIndex(
+        normalizedCwd,
+        persisted.sessions.filter((session) => session.sessionId !== sessionId)
+      );
+    }
+
+    return {ok: true, sessionId};
+  }
+
   function ensureProjectMetadata(projectDir: string, cwd: string): void {
     const metadataPath = path.join(projectDir, 'project.json');
 
@@ -275,6 +314,36 @@ function createTranscriptStore(options: TranscriptStoreOptions = {}): Transcript
       };
     } catch {
       return null;
+    }
+  }
+
+  /**
+   * 只读取 journal 首行验证删除目标身份，避免用户确认删除大历史会话时同步 replay 全部 records。
+   */
+  function hasMatchingSessionStart(filePath: string, cwd: string, sessionId: string): boolean {
+    let descriptor: number | undefined;
+
+    try {
+      descriptor = fsImpl.openSync(filePath, 'r');
+      const buffer = Buffer.alloc(SESSION_START_MAX_BYTES);
+      const bytesRead = fsImpl.readSync(descriptor, buffer, 0, buffer.length, 0);
+      const lineEnd = buffer.subarray(0, bytesRead).indexOf(0x0a);
+      if (lineEnd < 0) {
+        return false;
+      }
+
+      const start = parseTranscriptJournalStart(buffer.toString('utf8', 0, lineEnd));
+      return start?.sessionId === sessionId && start.cwd === cwd;
+    } catch {
+      return false;
+    } finally {
+      if (descriptor !== undefined) {
+        try {
+          fsImpl.closeSync(descriptor);
+        } catch {
+          // 关闭读取 descriptor 失败不得改变删除前的文件状态。
+        }
+      }
     }
   }
 
@@ -340,6 +409,7 @@ function createTranscriptStore(options: TranscriptStoreOptions = {}): Transcript
     getSessionIndexFilePath,
     getSessionFilePath,
     listSessionSummaries,
+    deleteSession,
     loadSession,
     loadSessionReadOnly,
     loadSessionPreview,
@@ -369,6 +439,17 @@ function cloneSessionSummary(session: TranscriptSessionSummary): TranscriptSessi
 
 function fingerprintMatches(session: TranscriptSessionSummary, stat: Pick<import('node:fs').Stats, 'mtimeMs' | 'size'>): boolean {
   return session.fingerprint.size === stat.size && session.fingerprint.mtimeMs === stat.mtimeMs;
+}
+
+/** 仅接受单个 session 文件名片段，阻止删除 API 通过 sessionId 逃逸出 sessions 目录。 */
+function isSafeSessionId(sessionId: string): boolean {
+  return typeof sessionId === 'string' && sessionId.length > 0 &&
+    sessionId !== '.' && sessionId !== '..' &&
+    !sessionId.includes('/') && !sessionId.includes('\\');
+}
+
+function isNodeErrorCode(error: unknown, code: string): boolean {
+  return Boolean(error && typeof error === 'object' && 'code' in error && (error as {code?: unknown}).code === code);
 }
 
 function isSessionIndex(value: unknown): value is TranscriptSessionIndex {

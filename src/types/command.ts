@@ -2,7 +2,7 @@ import type { InputEvent } from './input';
 import type { AgentInstructionFileName, AgentToolPolicy, AgentType, ContextUsage, InteractionMode, ReasoningEffort } from './agent';
 import type { SandboxMode, SandboxModeOverride } from '../sandbox/types';
 import type {DiffFile, DiffSourceInfo, DiffSourceResult} from './diff';
-import type { CompactionState, PendingConversationReference, PreparedConversationReference, TranscriptForkResult, TranscriptRecord, TranscriptSessionSummary, TranscriptSessionPreview, UserTranscriptMetadata } from './transcript';
+import type { CompactionState, PendingConversationReference, PreparedConversationReference, TranscriptForkResult, TranscriptRecord, TranscriptSessionDeleteResult, TranscriptSessionSummary, TranscriptSessionPreview, UserTranscriptMetadata } from './transcript';
 import type {UndoExecuteResult, UndoSummary} from './change-history';
 import type {UsageDailyAggregate, UsageModelAggregate, UsageQueryOptions} from './usage';
 import type {LifecycleHookConfigDraft, LifecycleHookDraftEntry, LifecycleHookEventName, LifecycleHookTestResult} from './hooks';
@@ -76,6 +76,7 @@ export type ResumeCommandSurface = {
   previewStatus: 'loading' | 'ready' | 'error'; // 当前右栏预览的异步生命周期状态。
   previewRecords: ResumeCommandSurfacePreviewRecord[]; // ready 状态下按渲染行折行显示的预览记录。
   previewError?: string; // 预览读取失败时展示的稳定错误文案。
+  notice?: string; // 当前浏览器状态的临时中文说明，例如当前会话删除保护提示。
   emptyPreviewHint: string; // 预览无记录时的占位文案。
   dismissHint: string; // 面板底部键位提示。
 };
@@ -852,7 +853,9 @@ export type CommandHostApp = {
   transcript: {
     clear(): void;
     forkSession(): TranscriptForkResult;
+    getCurrentSessionId(): string | null; // 当前 app 持有写入 reference 的 session；未首次持久化时为空。
     loadSession(sessionId: string): boolean;
+    deleteSession(sessionId: string): TranscriptSessionDeleteResult; // 请求删除当前 cwd 中的非当前历史 session。
     append(record: TranscriptRecord): void;
     listCopyableRecords(): CopyableMessageRecord[];
     listSessionSummaries(): TranscriptSessionSummary[];

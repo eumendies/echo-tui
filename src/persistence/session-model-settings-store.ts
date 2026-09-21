@@ -17,6 +17,7 @@ const SESSION_MODEL_SETTINGS_SCHEMA_VERSION = 1 as const;
 type SessionModelSettingsStoreOptions = {
   createTempPath?: (targetPath: string) => string; // 注入临时文件命名，测试可验证原子替换路径。
   mkdir?: (dirPath: string, options: {recursive: boolean}) => unknown; // 创建 sidecar 所在 session 目录。
+  remove?: (filePath: string, options: {force: boolean}) => unknown; // 删除 session 时清理 sidecar；调用方决定失败是否影响主操作。
   readFile?: (filePath: string, encoding: BufferEncoding) => string; // 读取 UTF-8 settings 内容。
   rename?: (oldPath: string, newPath: string) => unknown; // 将完整临时文件原子替换到目标路径。
   writeFile?: (filePath: string, data: string) => unknown; // 写入格式化后的完整 settings JSON。
@@ -28,6 +29,7 @@ type SessionModelSettingsStoreOptions = {
 function createSessionModelSettingsStore(transcriptStore: Pick<TranscriptStore, 'getSessionFilePath'>, options: SessionModelSettingsStoreOptions = {}): SessionModelSettingsStore {
   const createTempPath = options.createTempPath || ((targetPath: string) => `${targetPath}.tmp-${process.pid}-${Date.now()}`);
   const mkdir = options.mkdir || fs.mkdirSync;
+  const remove = options.remove || fs.rmSync;
   const readFile = options.readFile || fs.readFileSync;
   const rename = options.rename || fs.renameSync;
   const writeFile = options.writeFile || fs.writeFileSync;
@@ -77,7 +79,12 @@ function createSessionModelSettingsStore(transcriptStore: Pick<TranscriptStore, 
     return {...settings};
   }
 
-  return {getFilePath, read, write};
+  /** 删除已移除 journal 的可选 sidecar；缺失文件由 force 语义视为已清理。 */
+  function removeSettings(cwd: string, sessionId: string): void {
+    remove(getFilePath(cwd, sessionId), {force: true});
+  }
+
+  return {getFilePath, read, remove: removeSettings, write};
 }
 
 function isSessionModelSettings(value: unknown, expectedSessionId: string): value is SessionModelSettings {
