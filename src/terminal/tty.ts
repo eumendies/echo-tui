@@ -1,5 +1,5 @@
 import type { TerminalController } from '../types/app';
-import { disableBracketedPaste, enableBracketedPaste, reset, showCursor } from './ansi';
+import { disableBracketedPaste, disableMouseTracking, enableBracketedPaste, enableMouseTracking, requestCursorPosition, reset, showCursor } from './ansi';
 
 // stdout 在非 TTY 场景可能没有 columns/rows，给渲染层一个稳定 fallback。
 /**
@@ -25,6 +25,7 @@ export function setupTerminal(
   const wasRaw = Boolean(input.isRaw);
   const wasPaused = input.isPaused ? input.isPaused() : false;
   let cleaned = false;
+  let mouseTracking = false;
 
   if (input.isTTY && typeof input.setRawMode === 'function') {
     input.setRawMode(true);
@@ -52,7 +53,8 @@ export function setupTerminal(
     }
     cleaned = true;
 
-    output.write((output.isTTY ? disableBracketedPaste() : '') + showCursor() + reset());
+    output.write((output.isTTY ? `${disableMouseTracking()}${disableBracketedPaste()}` : '') + showCursor() + reset());
+    mouseTracking = false;
 
     if (input.isTTY && typeof input.setRawMode === 'function') {
       input.setRawMode(wasRaw);
@@ -82,6 +84,19 @@ export function setupTerminal(
 
   return {
     cleanup,
-    getSize: () => getSize(output)
+    getSize: () => getSize(output),
+    /** 仅在真实 TTY 中切换鼠标报告，重复请求不额外写 ANSI 序列。 */
+    setMouseTracking(enabled: boolean): void {
+      const next = Boolean(enabled) && input.isTTY && output.isTTY && !cleaned;
+      if (next === mouseTracking) return;
+      output.write(next ? enableMouseTracking() : disableMouseTracking());
+      mouseTracking = next;
+    },
+    /** 请求 CPR 前确认终端仍可交互；调用方以 false 作为安全降级信号。 */
+    requestCursorPosition(): boolean {
+      if (!input.isTTY || !output.isTTY || cleaned) return false;
+      output.write(requestCursorPosition());
+      return true;
+    }
   };
 }

@@ -5,7 +5,7 @@ import { activeBackground, renderFocusBar, resolveFooterTheme, tokenText, type F
 import { clampPlainText, formatSelectOptionText, padVisibleText } from './text';
 import { clampIndex, normalizeLineLimit } from './window';
 import type { ComposerState } from '../../types/composer';
-import type { FooterLayout, RenderState, SlashSuggestionState, StatusLineState } from '../../types/render';
+import type { FooterHitRegion, FooterLayout, RenderState, SlashSuggestionState, StatusLineState } from '../../types/render';
 
 const COMPOSER_PLACEHOLDER = '/ 命令 · @ 路径 · TAB mode · Ctrl+T 模型 · Shift+Tab 授权 · Ctrl+J 换行';
 const PLAN_COMPOSER_PLACEHOLDER = '计划问题 · @ 路径 · TAB 切换 mode · Ctrl+T 模型 · Ctrl+J 换行';
@@ -57,9 +57,10 @@ export function renderComposerSurface(
   const referenceLines = renderConversationReferenceLines(conversationReference, width, theme).slice(0, referenceBudget);
   const contentBudget = Math.max(1, normalizedMaxLines - 1 - referenceLines.length - pendingMessageLines.length);
   const suggestionItemBudget = slashSuggestions ? Math.min(slashSuggestions.options.length, slashSuggestionMaxVisible, Math.max(0, contentBudget - 3)) : 0;
-  const suggestionLines = slashSuggestions && suggestionItemBudget > 0
+  const suggestionSurface = slashSuggestions && suggestionItemBudget > 0
     ? renderSlashSuggestionLines(slashSuggestions, width, suggestionItemBudget, Math.max(0, contentBudget - 3), theme)
-    : [];
+    : {lines: [], hitRegions: []};
+  const suggestionLines = suggestionSurface.lines;
   const composerBudget = Math.min(COMPOSER_MAX_VISIBLE_LINES, Math.max(1, contentBudget - suggestionLines.length));
   const composerTheme = resolveComposerTheme(statusLine, theme);
   const composerLayout = renderBoxedComposer(
@@ -73,7 +74,15 @@ export function renderComposerSurface(
     lines: [...referenceLines, ...pendingMessageLines, ...composerLayout.lines, ...suggestionLines, statusLineText],
     cursorRow: referenceLines.length + pendingMessageLines.length + composerLayout.cursorRow,
     cursorColumn: composerLayout.cursorColumn,
-    showCursor: statusLine?.model.kind !== 'tuning'
+    showCursor: statusLine?.model.kind !== 'tuning',
+    ...(suggestionSurface.hitRegions.length > 0 ? {
+      hitRegions: suggestionSurface.hitRegions.map((region) => ({
+        ...region,
+        rowStart: region.rowStart + referenceLines.length + pendingMessageLines.length + composerLayout.lines.length,
+        rowEnd: region.rowEnd + referenceLines.length + pendingMessageLines.length + composerLayout.lines.length,
+        target: {...region.target}
+      }))
+    } : {})
   };
 }
 
@@ -530,10 +539,21 @@ function defaultBorder(text: string): string {
 /**
  * 渲染 composer 编辑态下的 slash 命令提示，不接管 composer 光标。
  */
-function renderSlashSuggestionLines(slashSuggestions: SlashSuggestionState, width: number, maxItems: number, maxRows: number, theme: FooterTheme): string[] {
+function renderSlashSuggestionLines(slashSuggestions: SlashSuggestionState, width: number, maxItems: number, maxRows: number, theme: FooterTheme): {lines: string[]; hitRegions: FooterHitRegion[]} {
   const rows = createSlashSuggestionRows(slashSuggestions.options, slashSuggestions.selectedIndex, maxItems, maxRows);
+  const hitRegions: FooterHitRegion[] = [];
+  const lines = rows.map((row, rowIndex) => {
+    if (row.kind === 'item') {
+      hitRegions.push({
+        owner: 'slash_suggestion',
+        target: {kind: 'slash_suggestion', index: row.index},
+        rowStart: rowIndex,
+        rowEnd: rowIndex,
+        columnStart: 1,
+        columnEnd: Math.max(1, safeRenderWidth(width))
+      });
+    }
 
-  return rows.map((row) => {
     if (row.kind === 'more') {
       return ansi.dim(clampPlainText(`${row.direction === 'up' ? '↑' : '↓'} ${row.count} 更多`, width));
     }
@@ -548,6 +568,8 @@ function renderSlashSuggestionLines(slashSuggestions: SlashSuggestionState, widt
     const text = tokenText(theme, 'accentStrong', ansi.bold(clampPlainText(optionText, Math.max(1, rowWidth - 1))));
     return `${renderFocusBar(theme)}${activeBackground(theme, padVisibleText(` ${text}`, rowWidth))}`;
   });
+
+  return {lines, hitRegions};
 }
 
 /**

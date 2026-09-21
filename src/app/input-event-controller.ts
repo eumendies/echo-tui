@@ -9,6 +9,7 @@ import type {FilePickerContext} from './state/file-picker-context';
 import type {ToolApprovalContext} from './state/tool-approval-context';
 import type {UserQuestionContext} from './state/user-question-context';
 import type {AutoUpdateController} from './auto-update-controller';
+import type {FooterPointerController} from './footer-pointer-controller';
 
 type InputCommandPort = {
   hasActiveSession(): boolean; // 当前是否由 command session 独占输入。
@@ -42,6 +43,7 @@ type InputEventControllerOptions = {
   interruptActiveTurn(): boolean; // 尝试中断当前 assistant turn。
   exit(): void; // 执行 app 退出与终端清理。
   render(): void; // 瞬时输入状态变化后刷新当前可见投影。
+  pointer?: Pick<FooterPointerController, 'handleEvent'>; // footer 鼠标命中与 CPR 的临时控制器。
 };
 
 /**
@@ -63,6 +65,7 @@ class InputEventController {
   private readonly interruptActiveTurn: () => boolean;
   private readonly exit: () => void;
   private readonly render: () => void;
+  private readonly pointer: Pick<FooterPointerController, 'handleEvent'> | null;
   private readonly keyParser = createKeyParser();
   private lastInputAt = 0;
 
@@ -82,6 +85,7 @@ class InputEventController {
     this.interruptActiveTurn = options.interruptActiveTurn;
     this.exit = options.exit;
     this.render = options.render;
+    this.pointer = options.pointer || null;
   }
 
   /**
@@ -107,6 +111,9 @@ class InputEventController {
    */
   readonly handleEvent = (event: InputEvent): Promise<void> | void => {
     this.lastInputAt = Date.now();
+    if (this.pointer?.handleEvent(event)) {
+      return undefined;
+    }
     if (this.userQuestion.hasActiveRequest()) {
       this.userQuestion.handleEvent(event);
       return undefined;

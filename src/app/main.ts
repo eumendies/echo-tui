@@ -30,13 +30,14 @@ import {BtwConversationController} from './btw-conversation-controller';
 import {SubagentViewController} from './subagent-view-controller';
 import {createToolApprovalReviewer} from './tool-approval/resolver';
 import {AutoUpdateController} from './auto-update-controller';
+import {FooterPointerController} from './footer-pointer-controller';
 
 import type {RunAgent} from '../types/agent';
 import type {AppController} from '../types/app';
 import type {CommandSurface} from '../types/command';
 import type {LifecycleHookDispatcher} from '../types/hooks';
 import type {AssistantTurnScope, Observation} from '../observation/observation';
-import type {RenderState} from '../types/render';
+import type {FooterPointerSnapshot, RenderState} from '../types/render';
 import type {TranscriptRecord} from '../types/transcript';
 import type {UsageStore} from '../types/usage';
 import type {UpdateCheckResult} from '../update/update-check';
@@ -76,6 +77,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
   let mcpDiagnosticSurface: CommandSurface | null = null;
   let referenceErrorSurface: CommandSurface | null = null;
   let activeTurnObservationScope: AssistantTurnScope | null = null;
+  let footerPointer: FooterPointerController | null = null;
   const btwConversation = new BtwConversationController({
     runAgent,
     getParentSession: () => appContext.getAgentSession(),
@@ -161,6 +163,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     userConfigContext.close();
     void mcpManager.close();
     appContext.turnContext.stopSpinner();
+    footerPointer?.dispose();
     renderer.clearFooter();
     terminal.cleanup();
     output.write('\n');
@@ -181,8 +184,18 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     owner?: 'main' | 'btw'
   ): void {
     const visibleOwner = currentOwner();
-    renderer.render(createRenderState(), owner === undefined || owner === visibleOwner ? finalizeRecord : undefined);
+    const renderState = createRenderState();
+    const snapshot = renderer.render(renderState, owner === undefined || owner === visibleOwner ? finalizeRecord : undefined);
+    updateFooterPointer(snapshot);
     rememberTerminalSize();
+  }
+
+  /** 将已经实际写入终端的 footer frame 同步给鼠标控制器，并按当前交互 surface 启停报告模式。 */
+  function updateFooterPointer(snapshot: FooterPointerSnapshot | undefined): void {
+    if (!snapshot) {
+      return;
+    }
+    footerPointer?.update(snapshot);
   }
 
   /**
@@ -234,7 +247,9 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
       return;
     }
 
-    renderer.renderRecords({records, ...createRenderState()});
+    const renderState = createRenderState();
+    const snapshot = renderer.renderRecords({records, ...renderState});
+    updateFooterPointer(snapshot);
     rememberTerminalSize();
   }
 
@@ -247,7 +262,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     const renderState = createRenderState();
     // 窗口/BTW/主会话三态重绘；窗口投影当前 run 的稳定记录，流式 draft 由 footer pending 呈现。
     // 窗口的 banner 与主会话形态相同，只有 BTW 需要 variant 覆盖。
-    renderer.renderDestructive({
+    const snapshot = renderer.renderDestructive({
       bannerContext: owner === 'btw'
         ? {...appContext.renderContext.createBannerContext(), variant: 'btw', parentActivity: btwConversation.getParentActivity()}
         : appContext.renderContext.createBannerContext(),
@@ -255,6 +270,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
       skipParallelSubagentFilter: owner === 'view',
       ...renderState
     });
+    updateFooterPointer(snapshot);
     rememberTerminalSize();
   }
 
@@ -379,6 +395,17 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     },
     render
   });
+  // 测试和嵌入方可注入较小的旧 TerminalController；缺少协议能力时保持纯键盘路径。
+  if (typeof terminal.setMouseTracking === 'function' && typeof terminal.requestCursorPosition === 'function') {
+    footerPointer = new FooterPointerController({
+      appContext,
+      filePicker,
+      render,
+      terminal,
+      toolApproval,
+      userQuestion
+    });
+  }
   const inputController = new InputEventController({
     appContext,
     userQuestion,
@@ -405,7 +432,8 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     interruptActiveShellCommand,
     interruptActiveTurn,
     exit,
-    render
+    render,
+    ...(footerPointer ? {pointer: footerPointer} : {})
   });
 
   appContext.configureSlashSuggestions(
@@ -579,10 +607,12 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
       scope: {cwd: appContext.getCurrentCwd(), nodeVersion: appContext.getNodeVersion(), pid: process.pid},
       terminalSize: terminal.getSize()
     });
-    renderer.renderInitial({
+    const renderState = createRenderState();
+    const snapshot = renderer.renderInitial({
       bannerContext: appContext.renderContext.createBannerContext(),
-      ...createRenderState()
+      ...renderState
     });
+    updateFooterPointer(snapshot);
     rememberTerminalSize();
     initialRenderComplete = true;
     activityTimer = setInterval(renderTimedActivity, ACTIVITY_REDRAW_INTERVAL_MS);

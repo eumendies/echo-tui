@@ -5,7 +5,7 @@ import { activeBackground, codeBackground, renderFocusBar, resolveFooterTheme, t
 import { clampPlainText, padVisibleText } from './text';
 import { clampCursorRow, clampIndex, normalizeLineLimit } from './window';
 import type { ChoiceCommandSurface, ChoiceCommandSurfaceTab } from '../../types/command';
-import type { FooterLayout } from '../../types/render';
+import type { FooterHitRegion, FooterLayout, FooterMouseTarget } from '../../types/render';
 
 const CHOICE_CARD_MIN_WIDTH = 48;
 const CHOICE_CARD_MAX_WIDTH = 88;
@@ -32,6 +32,7 @@ type ChoiceOptionRenderUnit = {
   cursorColumn?: number;
   cursorRow?: number;
   lines: string[];
+  target: FooterMouseTarget;
 };
 
 /**
@@ -93,10 +94,10 @@ export function renderChoiceSurface(commandSurface: ChoiceCommandSurface, width:
   });
 
   if (fullLayout.lines.length <= maxLines) {
-    return fullLayout;
+    return attachChoiceTabHitRegions(fullLayout, surface.tabs, tabLines, innerWidth);
   }
 
-  return createConstrainedChoiceCardLayout({
+  return attachChoiceTabHitRegions(createConstrainedChoiceCardLayout({
     bottomLine,
     dismissLine,
     maxLines,
@@ -107,7 +108,7 @@ export function renderChoiceSurface(commandSurface: ChoiceCommandSurface, width:
     tabLines,
     topLine,
     theme
-  });
+  }), surface.tabs, tabLines, innerWidth);
 }
 
 /**
@@ -124,6 +125,7 @@ function createChoiceCardLayout(options: {
   topLine: string;
 }): FooterLayout {
   const lines: string[] = [options.topLine];
+  const hitRegions: FooterHitRegion[] = [];
   let cursorRow = 0;
   let cursorColumn = 0;
   let showCursor = false;
@@ -148,6 +150,14 @@ function createChoiceCardLayout(options: {
     }
 
     lines.push(...unit.lines);
+    hitRegions.push({
+      owner: 'choice',
+      target: {...unit.target},
+      rowStart: unitStart,
+      rowEnd: unitStart + unit.lines.length - 1,
+      columnStart: 1,
+      columnEnd: Math.max(1, displayWidth(options.topLine))
+    });
   }
 
   lines.push(renderChoiceCardBoxLine('', displayWidth(options.topLine) - 2, options.theme));
@@ -158,7 +168,8 @@ function createChoiceCardLayout(options: {
     lines,
     cursorColumn: showCursor ? cursorColumn : 0,
     cursorRow: showCursor ? cursorRow : lines.length - 1,
-    showCursor
+    showCursor,
+    hitRegions
   };
 }
 
@@ -196,6 +207,7 @@ function createConstrainedChoiceCardLayout(options: {
   const usedOptionLines = visibleOptionUnits.reduce((sum, unit) => sum + unit.lines.length, 0);
   let remainingLines = Math.max(0, bodyLines - usedOptionLines);
   const lines: string[] = [options.topLine];
+  const hitRegions: FooterHitRegion[] = [];
   let cursorRow = 0;
   let cursorColumn = 0;
   let showCursor = false;
@@ -222,6 +234,14 @@ function createConstrainedChoiceCardLayout(options: {
     }
 
     lines.push(...unit.lines);
+    hitRegions.push({
+      owner: 'choice',
+      target: {...unit.target},
+      rowStart: unitStart,
+      rowEnd: unitStart + unit.lines.length - 1,
+      columnStart: 1,
+      columnEnd: Math.max(1, displayWidth(options.topLine))
+    });
   }
 
   lines.push(options.dismissLine);
@@ -233,7 +253,8 @@ function createConstrainedChoiceCardLayout(options: {
     lines: visibleLines,
     cursorColumn,
     cursorRow: clampCursorRow(cursorRow, visibleLines.length),
-    showCursor
+    showCursor,
+    hitRegions: hitRegions.filter((region) => region.rowEnd < visibleLines.length)
   };
 }
 
@@ -334,7 +355,10 @@ function renderChoiceCardOptionUnit(option: NonNullable<ChoiceCommandSurface['op
   const marker = selected ? '●' : '○';
   const optionLine = formatChoiceCardOptionLine(option, marker, Math.max(1, contentWidth - 3));
   const renderedOption = renderChoiceCardOptionLine(optionLine, focused, contentWidth, theme);
-  const unit: ChoiceOptionRenderUnit = {lines: [renderChoiceCardBoxLine(renderedOption, innerWidth, theme)]};
+  const unit: ChoiceOptionRenderUnit = {
+    lines: [renderChoiceCardBoxLine(renderedOption, innerWidth, theme)],
+    target: {kind: 'choice_option', index, inlineInput: Boolean(option.inlineInput)}
+  };
 
   if (focused && option.inlineInput) {
     unit.cursorRow = 0;
@@ -371,6 +395,40 @@ function renderChoiceCardTabs(tabs: ChoiceCommandSurfaceTab[] | undefined, activ
   const rendered = parts.join(' ');
 
   return [renderChoiceCardBoxLine(rendered, innerWidth, theme)];
+}
+
+/** 为仍在最终 layout 中可见的多题 tab 登记精确列范围；普通 choice 没有 tab 时不产生区域。 */
+function attachChoiceTabHitRegions(layout: FooterLayout, tabs: ChoiceCommandSurfaceTab[] | undefined, tabLines: string[], innerWidth: number): FooterLayout {
+  if (!tabs || tabs.length === 0 || tabLines.length === 0) {
+    return layout;
+  }
+
+  const row = layout.lines.findIndex((line) => line === tabLines[0]);
+
+  if (row < 0) {
+    return layout;
+  }
+
+  const contentWidth = Math.max(1, innerWidth - 2);
+  const tabWidth = Math.max(3, Math.floor((contentWidth - Math.max(0, tabs.length - 1)) / tabs.length));
+  const labelWidth = Math.max(1, tabWidth - 4);
+  let offset = 0;
+  const tabRegions: FooterHitRegion[] = tabs.map((tab, index) => {
+    const marker = getChoiceTabMarker(tab.status);
+    const plain = `[${marker ? `${marker} ` : ''}${clampPlainText(tab.label, labelWidth)}]`;
+    const columnStart = 3 + offset;
+    offset += displayWidth(plain) + 1;
+    return {
+      owner: 'choice',
+      target: {kind: 'choice_tab', index},
+      rowStart: row,
+      rowEnd: row,
+      columnStart,
+      columnEnd: columnStart + Math.max(0, displayWidth(plain) - 1)
+    };
+  });
+
+  return {...layout, hitRegions: [...tabRegions, ...(layout.hitRegions || [])]};
 }
 
 /**

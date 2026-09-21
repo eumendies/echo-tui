@@ -202,3 +202,22 @@ test('FilePickerContext consumes Esc by closing the picker surface', () => {
   assert.equal(composerOps.getText(composer), '@');
   assert.equal(updates, 2);
 });
+
+test('FilePickerContext mouse entry handling focuses entries, enters directories, and never inserts mentions directly', () => {
+  const cwd = createProject();
+  const composer = composerOps.createComposer('@');
+  const picker = new FilePickerContext(composer, {cwd: () => cwd, onChange: () => {}});
+
+  picker.open(0);
+  assert.equal(picker.handlePointerEntry(1, false), true);
+  assert.equal(picker.getSurface().entries[picker.getSurface().selectedIndex].name, 'README.md');
+  assert.equal(composerOps.getText(composer), '@');
+
+  picker.handlePointerEntry(1, true);
+  assert.deepEqual(picker.getSurface().selectedPaths, ['README.md']);
+  assert.equal(composerOps.getText(composer), '@');
+
+  picker.handlePointerEntry(0, true);
+  assert.equal(picker.getSurface().currentDir, path.join(cwd, 'app'));
+  assert.equal(composerOps.getText(composer), '@');
+});

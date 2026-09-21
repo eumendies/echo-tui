@@ -22,5 +22,7 @@ export const INPUT_EVENTS = {
   INSERT_NEWLINE: 'insert_newline',
   ESCAPE: 'escape',
   EXIT: 'exit',
+  MOUSE: 'mouse',
+  CURSOR_POSITION: 'cursor_position',
   UNKNOWN: 'unknown'
 } as const;

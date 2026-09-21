@@ -152,7 +152,7 @@ function resolveStatusLineKeyHint(mode: StatusLineMode, canInterruptAssistantTur
   }
 
   if (mode === 'command') {
-    return 'Tab 补全 · Enter 执行 · ↑/↓ 选择';
+    return 'Tab/鼠标补全 · Enter 执行 · ↑/↓ 选择';
   }
 
   if (canInterruptAssistantTurn || hasWorkingState && (mode === 'shell' || mode === 'shell-local')) {
