@@ -369,6 +369,46 @@ test('convertTranscriptToOpenAiChatMessages keeps tool results adjacent when a t
   );
 });
 
+test('convertTranscriptToOpenAiChatMessages keeps image messages after reasoning records inside a tool group', () => {
+  assert.deepEqual(
+    convertTranscriptToOpenAiChatMessages([
+      { role: 'assistant', text: 'I will look.' },
+      { role: 'tool_call', text: '', toolCallId: 'call_img', toolName: 'read_files', argumentsText: '{"files":[{"path":"a.png"}]}' },
+      {
+        role: 'tool_result',
+        text: 'image_attached: true',
+        toolCallId: 'call_img',
+        toolName: 'read_files',
+        ok: true,
+        attachments: [{ kind: 'image', mediaType: 'image/png', dataBase64: 'aW1n', path: 'a.png', sizeBytes: 3 }]
+      },
+      { role: 'reasoning_summary', text: 'The diagram shows a hub-spoke layout.' },
+      createOpenAiChatReasoningTranscriptRecord('One more check before reporting.'),
+      { role: 'tool_call', text: '', toolCallId: 'call_bash', toolName: 'run_bash_command', argumentsText: '{"command":"pwd"}' },
+      { role: 'tool_result', text: 'exit_code: 0', toolCallId: 'call_bash', toolName: 'run_bash_command', ok: true }
+    ]),
+    [
+      {
+        role: 'assistant',
+        content: 'I will look.',
+        tool_calls: [
+          { id: 'call_img', type: 'function', function: { name: 'read_files', arguments: '{"files":[{"path":"a.png"}]}' } },
+          { id: 'call_bash', type: 'function', function: { name: 'run_bash_command', arguments: '{"command":"pwd"}' } }
+        ]
+      },
+      { role: 'tool', tool_call_id: 'call_img', content: 'image_attached: true' },
+      { role: 'tool', tool_call_id: 'call_bash', content: 'exit_code: 0' },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'Images attached from tool result read_files (call_img).' },
+          { type: 'image_url', image_url: { url: 'data:image/png;base64,aW1n' } }
+        ]
+      }
+    ]
+  );
+});
+
 test('convertTranscriptToOpenAiChatMessages maps image attachments from user records', () => {
   assert.deepEqual(
     convertTranscriptToOpenAiChatMessages([
