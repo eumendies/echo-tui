@@ -100,6 +100,27 @@ test('createApp gates UI mouse interaction by the saved setting and applies chan
   }
 });
 
+test('createApp destructively recovers when terminal rows expand to realign footer mouse calibration', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-main-resize-expansion-'));
+
+  try {
+    const fixturePath = path.join(__dirname, 'fixtures/main-resize-expansion-scenario.js');
+    const output = childProcess.execFileSync(process.execPath, [fixturePath], {
+      cwd: path.resolve(__dirname, '../../..'),
+      encoding: 'utf8',
+      env: {...process.env, HOME: home},
+      timeout: 15_000
+    });
+    const result = JSON.parse(output);
+
+    assert.equal(result.destructiveAfter, result.destructiveBefore + 1);
+    assert.equal(result.requestsAfterResize, result.requestsBeforeResize);
+    assert.equal(result.requestsAfterStaleReply, result.requestsBeforeResize + 1);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
 test('createApp persists an interrupted tool call as a paired result before the interrupt notice', () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-main-interrupted-tool-'));
 
