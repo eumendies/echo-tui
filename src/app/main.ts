@@ -285,12 +285,12 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
   }
 
   /**
-   * 根据终端尺寸变化决定是否需要清屏重绘；行数压缩时旧 footer 可能已经进入终端历史区。
+   * 根据终端尺寸变化决定是否需要清屏重绘；行数变化会改变 footer 与可视屏幕的坐标关系，旧 CPR 校准不可复用。
    */
   function handleResize(): void {
     const terminalSize = terminal.getSize();
 
-    if (terminalSize.columns !== appContext.renderContext.previousColumns || terminalSize.rows < appContext.renderContext.previousRows) {
+    if (terminalSize.columns !== appContext.renderContext.previousColumns || terminalSize.rows !== appContext.renderContext.previousRows) {
       renderResizeRecovery();
       return;
     }
