@@ -123,6 +123,29 @@ function createSubagentToolPort(options: SubagentToolPortOptions): SubagentToolP
   };
 }
 
+type SubagentSchemaPortOptions = {
+  configSnapshot?: AgentUserConfigSnapshot; // 与主 run 同源的配置 revision，用于严格校验非敏感模型引用。
+  cwd?: string; // 项目级定义发现边界；显式传入以与主 run 的目录发现一致。
+};
+
+/**
+ * 创建只提供目录 schema 的委派端口：复用运行端口同一 catalog 加载口径，
+ * 但不提供执行能力，供不执行工具的一次性请求（手动 `/compact` 摘要）对齐 `run_subagent` 工具定义。
+ */
+function createSubagentSchemaPort(options: SubagentSchemaPortOptions = {}): SubagentToolPort {
+  const catalog = loadSubagentCatalog({configSnapshot: options.configSnapshot, cwd: options.cwd});
+
+  return {
+    listDefinitions() {
+      return catalog.listDescriptors();
+    },
+    async run(agentName) {
+      // schema-only 端口不承载执行：调用方只投影工具定义，正常路径不会到达这里。
+      return {ok: false, text: `Subagent execution is unavailable in this request: ${formatSubagentDisplayName(agentName)}`};
+    }
+  };
+}
+
 /** 把子 loop 的稳定协议事件和瞬时活动翻译到父 run，不向子层暴露 app 状态对象。 */
 function createChildCallbacks(
   options: SubagentToolPortOptions,
@@ -222,4 +245,4 @@ function publishActivity(
   });
 }
 
-export {createSubagentToolPort};
+export {createSubagentSchemaPort, createSubagentToolPort};

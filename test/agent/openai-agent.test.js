@@ -334,19 +334,49 @@ test('createRequest sends reasoning summary with optional effort', () => {
   );
 });
 
-test('createRequest omits tools and reasoning for compaction requests', () => {
+test('createRequest carries tools but keeps compaction reasoning', () => {
   const records = [{ role: 'user', text: 'summarize' }];
   const config = { ...TEST_CONFIG, reasoningEffort: 'high', reasoningSummary: 'detailed' };
-  const request = createRequest(records, config, createToolRegistry(), {isCompaction: true});
+  const toolRegistry = createToolRegistry();
+  const request = createRequest(records, config, toolRegistry, {isCompaction: true, includeToolDefinitions: true});
 
   assert.deepEqual(request, {
     input: [{ role: 'user', content: 'summarize' }],
     model: 'test-model',
-    prompt_cache_key: createPromptCacheKey(records, config),
-    stream: true
+    // 键材料与请求体都包含工具目录：压缩请求与普通请求共享同一前缀缓存。
+    prompt_cache_key: createPromptCacheKey(records, config, toolRegistry.listDefinitions()),
+    reasoning: { effort: 'high' },
+    stream: true,
+    tools: [
+      {
+        type: 'function',
+        name: 'run_bash_command',
+        description: 'Run bash',
+        parameters: { type: 'object', additionalProperties: false },
+        strict: true
+      }
+    ]
   });
+  // 工具调用控制参数维持剥离。
+  assert.equal('parallel_tool_calls' in request, false);
+  // 仅供展示的 reasoning summary 不在压缩请求中携带。
+  assert.equal('summary' in request.reasoning, false);
+});
+
+test('createRequest keeps explicit none effort for compaction requests', () => {
+  const records = [{ role: 'user', text: 'summarize' }];
+  const config = { ...TEST_CONFIG, reasoningEffort: 'none', reasoningSummary: 'auto' };
+  const request = createRequest(records, config, createToolRegistry(), {isCompaction: true, includeToolDefinitions: true});
+
+  assert.deepEqual(request.reasoning, {effort: 'none'});
+  assert.equal(Array.isArray(request.tools), true);
+});
+
+test('createRequest keeps summary requests without the tool flag tool-free', () => {
+  const request = createRequest([{ role: 'user', text: 'summarize' }], TEST_CONFIG, createToolRegistry(), {isCompaction: true});
+
+  // 引用总结等一次性摘要请求不开启 includeToolDefinitions，保持不携带工具定义。
   assert.equal('tools' in request, false);
-  assert.equal('reasoning' in request, false);
 });
 
 test('createDefaultToolRegistry enables the developed tools by default', () => {

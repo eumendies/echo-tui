@@ -24,7 +24,7 @@ type CodexCreateRequest = {
   reasoning?: {effort?: NonNullable<LlmConfig['reasoningEffort']>};
   stream: true;
   store: false;
-  text: {verbosity: 'low'};
+  text?: {verbosity: 'low'};
   tool_choice?: 'auto';
   tools?: OpenAiFunctionTool[];
 };
@@ -63,35 +63,47 @@ function assertCodexResponseClient(value: unknown): asserts value is CodexRespon
 }
 
 /**
- * 创建 ChatGPT Codex 后端接受的 Responses 请求形态；压缩用途不暴露工具或 reasoning 配置。
+ * 创建 ChatGPT Codex 后端接受的 Responses 请求形态：摘要请求按 `includeToolDefinitions` 决定是否携带普通 turn 同源的工具定义
+ * （压缩摘要携带以对齐前缀缓存），但始终剥离展示用 encrypted reasoning 回传、低 verbosity 与工具调用控制参数；
+ * reasoning effort 与普通 turn 同规则携带（含显式 none 的禁用语义）。
  * 请求带运行时会话身份时，缓存键绑定会话，与 session-id 亲和 header 保持一致。
  */
 function createCodexRequest(records: TranscriptRecord[], config: LlmConfig, registry?: ToolRegistry, options: AgentTurnOptions = {}): CodexCreateRequest {
-  const toolDefinitions = !options.isCompaction && registry && !registry.isEmpty() ? registry.listDefinitions() : [];
+  const toolDefinitions = registry && !registry.isEmpty() ? registry.listDefinitions() : [];
   const input = convertTranscriptToOpenAiInput(records).filter((item) => !('role' in item) || item.role !== 'system');
   const instructions = records.find((record) => record.role === 'system')?.text.trim();
   // 未配置 effort 时后端默认思考，仍需 include reasoning 以便回传；显式 none 时禁用思考且不 include。
-  const reasoningEnabled = !options.isCompaction && config.reasoningEffort !== 'none';
+  // 摘要请求不需要供后续请求回传的 encrypted reasoning。
+  const includeEncryptedReasoning = !options.isCompaction && config.reasoningEffort !== 'none';
   const request: CodexCreateRequest = {
     input,
     model: config.model,
+    // 键材料始终包含工具目录：摘要请求据此路由到普通请求已建立的缓存分片。
     prompt_cache_key: createPromptCacheKey(records, config, toolDefinitions, options.sessionId),
     stream: true,
     store: false,
     instructions: instructions || 'You are a helpful assistant.',
-    text: {verbosity: 'low'},
-    ...(reasoningEnabled ? {include: ['reasoning.encrypted_content']} : {})
+    // 普通 turn 固定低详细度；摘要请求省略该字段，用模型默认详细度完整承载模板小节。
+    ...(options.isCompaction ? {} : {text: {verbosity: 'low'} as const}),
+    ...(includeEncryptedReasoning ? {include: ['reasoning.encrypted_content']} : {})
   };
 
   // 显式 none 也必须发送：缺省时思考模型按模型默认 effort 思考，省略参数无法表达禁用。
-  if (!options.isCompaction && config.reasoningEffort) {
+  if (config.reasoningEffort) {
     request.reasoning = {effort: config.reasoningEffort};
   }
 
-  if (toolDefinitions.length > 0) {
+  // 压缩摘要携带同源工具目录以对齐前缀缓存；引用总结等一次性摘要请求缺省保持剥离。
+  const includeToolDefinitions = !options.isCompaction || options.includeToolDefinitions === true;
+
+  if (includeToolDefinitions && toolDefinitions.length > 0) {
     request.tools = convertToolDefinitionsToOpenAiTools(toolDefinitions, {strict: undefined});
-    request.tool_choice = 'auto';
-    request.parallel_tool_calls = true;
+
+    // 工具调用控制参数仍只在普通 turn 发送：摘要请求不需要触发工具调用。
+    if (!options.isCompaction) {
+      request.tool_choice = 'auto';
+      request.parallel_tool_calls = true;
+    }
   }
 
   return request;

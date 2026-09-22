@@ -84,7 +84,15 @@ function createCommandHost(options: CommandHostOptions): CommandHostApp {
     usage: statusPorts.usage,
     diff: historyPorts.diff,
     undo: historyPorts.undo,
-    assistant: createAssistantCommandPort({appContext, renderRecords, render, submitUserMessage: options.submitUserMessage}),
+    assistant: createAssistantCommandPort({
+      appContext,
+      mcpManager,
+      renderRecords,
+      render,
+      submitUserMessage: options.submitUserMessage,
+      usageStore,
+      userConfigContext
+    }),
     ui: {exit, render, renderResizeRecovery}
   };
 }

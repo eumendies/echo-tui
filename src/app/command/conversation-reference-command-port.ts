@@ -2,10 +2,9 @@ import {prepareAgent} from '../../agent/agent-setup';
 import {createPendingConversationReference, prepareConversationReference} from '../../agent/context/conversation-reference';
 import {redactSensitiveText} from '../../agent/agent-errors';
 import {resolveContextWindow} from '../../config/llm-config';
-import {createUsageCwdHash} from '../../persistence/usage-store';
+import {recordStandaloneProviderUsage} from './standalone-provider-usage';
 import {isAbortError} from '../../types/agent';
 
-import type {AgentTurnResult, LlmConfig} from '../../types/agent';
 import type {CommandHostApp} from '../../types/command';
 import type {UserConfigContext} from '../../config/user-config-context';
 import type {UsageStore} from '../../types/usage';
@@ -110,7 +109,7 @@ function createConversationReferenceCommandPort(options: ConversationReferenceCo
           contextWindow: resolveContextWindow(prepared.config),
           pending,
           onProviderUsage(result) {
-            recordReferenceUsage(usageStore, appContext, prepared.config, result);
+            recordStandaloneProviderUsage({appContext, config: prepared.config, result, usageStore});
           }
         });
         const completed = appContext.conversationReferenceContext.completePreparation(controller);
@@ -137,33 +136,6 @@ function createConversationReferenceCommandPort(options: ConversationReferenceCo
       }
     }
   };
-}
-
-/**
- * 把独立总结请求写入本地 usage 账本；记账失败不反向影响已完成的模型请求。
- */
-function recordReferenceUsage(
-  usageStore: UsageStore,
-  appContext: AppContext,
-  config: LlmConfig,
-  result: Pick<AgentTurnResult, 'usage' | 'usageInputTokens'>
-): void {
-  try {
-    usageStore.appendEvent({
-      cwdHash: createUsageCwdHash(appContext.getCurrentCwd()),
-      providerType: config.agentType,
-      ...(config.providerId ? {providerId: config.providerId} : {}),
-      model: config.model,
-      interactionMode: appContext.getInteractionMode(),
-      contextWindow: resolveContextWindow(config),
-      inputTokens: result.usage?.inputTokens ?? result.usageInputTokens,
-      cacheCreationInputTokens: result.usage?.cacheCreationInputTokens,
-      cacheReadInputTokens: result.usage?.cacheReadInputTokens,
-      outputTokens: result.usage?.outputTokens
-    });
-  } catch {
-    // usage 持久化失败不能阻断已经完成的引用总结。
-  }
 }
 
 export {createConversationReferenceCommandPort};

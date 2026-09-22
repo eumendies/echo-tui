@@ -105,11 +105,13 @@ function createClient(config: LlmConfig, AnthropicClient: new (options: {apiKey:
 }
 
 /**
- * 根据当前 transcript 快照创建 Anthropic Messages API 请求；压缩用途不暴露工具或 reasoning 配置。
+ * 根据当前 transcript 快照创建 Anthropic Messages API 请求；摘要请求按 `includeToolDefinitions` 决定是否携带工具定义
+ * （压缩摘要携带以对齐前缀缓存；Anthropic 请求没有工具调用控制参数）；
+ * reasoning effort 与普通 turn 同规则携带（显式 none 仍表示禁用思考）。
  */
 function createAnthropicRequest(records: TranscriptRecord[], config: LlmConfig, registry?: ToolRegistry, options: AgentTurnOptions = {}): AnthropicCreateRequest {
   const projection = convertTranscriptToAnthropicMessages(records);
-  const effort = options.isCompaction || config.reasoningEffort === 'none' ? undefined : config.reasoningEffort;
+  const effort = config.reasoningEffort === 'none' ? undefined : config.reasoningEffort;
   const request: AnthropicCreateRequest = {
     cache_control: {type: 'ephemeral'},
     max_tokens: ANTHROPIC_DEFAULT_MAX_TOKENS,
@@ -124,7 +126,10 @@ function createAnthropicRequest(records: TranscriptRecord[], config: LlmConfig, 
     request.output_config = {effort};
   }
 
-  if (!options.isCompaction && registry && !registry.isEmpty()) {
+  // 压缩摘要携带同源工具目录以对齐前缀缓存；引用总结等一次性摘要请求缺省保持剥离。
+  const includeToolDefinitions = !options.isCompaction || options.includeToolDefinitions === true;
+
+  if (includeToolDefinitions && registry && !registry.isEmpty()) {
     request.tools = convertToolDefinitionsToAnthropicTools(registry.listDefinitions());
   }
 

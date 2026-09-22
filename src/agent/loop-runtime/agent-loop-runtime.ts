@@ -1,4 +1,3 @@
-import {resolveContextWindow} from '../../config/llm-config';
 import {DEFAULT_APP_SETTINGS} from '../../config/app-settings-config';
 import {
   ASK_USER_QUESTIONS_TOOL_NAME
@@ -9,19 +8,17 @@ import {classifyToolCallConcurrency} from '../../tools/tool-concurrency-classifi
 import {RUN_SUBAGENT_TOOL_NAME} from '../../tools/run-subagent-tool-handler';
 import {createToolCallTranscriptRecord, createToolResultTranscriptRecord} from '../../tools/tool-transcript-record';
 import {executeTodoToolCall, isTodoToolName} from '../../tools/todo-tool-handler';
-import {createSkillCatalogPromptProjection} from '../../skills/skill-catalog-prompt';
 import {createSkillManager} from '../../skills/skill-manager';
 import {captureSkillSnapshot} from '../../skills/skill-snapshot';
 import {throwIfAborted} from '../../types/agent';
 import {normalizeError} from '../agent-errors';
-import {loadAgentInstructions} from '../agent-instructions';
 import {calibrateContextUsageSegments, estimateContextUsageSegments} from '../context/context-usage-breakdown';
 import {resolveMemoryPrompt} from '../context/memory-prompt';
-import {loadSystemPromptOverride} from '../context/system-prompt';
+import {buildProviderRequestPrefix, resolveProviderPromptMaterials} from '../context/provider-request-prefix';
 import {prepareAgent} from '../agent-setup';
 import {createCompactionNoticeRecord, runCompaction} from '../context/context-compaction';
 import {createUsageCwdHash} from '../../persistence/usage-store';
-import {createSandboxRuntimeNote, isReadonlyBashSandboxEffective} from '../../sandbox/provider';
+import {isReadonlyBashSandboxEffective} from '../../sandbox/provider';
 import {createSubagentToolPort} from '../subagent/runtime';
 import {createSubagentLoopRuntime} from './subagent-loop-runtime';
 import type {SandboxModeOverride} from '../../sandbox/types';
@@ -283,17 +280,24 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
       ...(subagentPort ? {subagentPort} : {}),
       ...(sessionId ? {sessionId} : {})
     });
-    const contextWindow = resolveContextWindow(config);
-    const skillCatalogProjection = createSkillCatalogPromptProjection(registry.listSkillCatalog?.() || [], contextWindow, skillCatalogContextRatio);
-    const basePrompt = loadSystemPromptOverride({cwd})?.content;
+    // 请求前导材料与手动压缩路径共用同一解析口径，保证压缩请求的前导与普通请求逐字一致。
+    const materials = resolveProviderPromptMaterials({
+      agentInstructionFileName,
+      config,
+      cwd,
+      executionMode,
+      ...(sandboxModeOverride ? {sandboxModeOverride} : {}),
+      registry,
+      skillCatalogContextRatio
+    });
     // 执行链路、transient 注记与只读 bash 边界共用同一份沙箱解析输入。
     const sandboxResolutionOptions = sandboxModeOverride ? {modeOverride: sandboxModeOverride} : {};
     const bashSandboxEffective = isReadonlyBashSandboxEffective(config.tools.sandbox, executionMode, sandboxResolutionOptions);
 
     return {
       agent,
-      agentInstructions: loadAgentInstructions({cwd, fileName: agentInstructionFileName}),
-      basePrompt,
+      agentInstructions: materials.agentInstructions,
+      basePrompt: materials.basePrompt,
       providerType: config.agentType,
       ...(config.providerId ? {providerId: config.providerId} : {}),
       model: config.model,
@@ -303,15 +307,11 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
       registry,
       ...(readonlySubagentNames ? {readonlySubagentNames} : {}),
       ...(readonlyMcpToolNames ? {readonlyMcpToolNames} : {}),
-      contextWindow,
+      contextWindow: materials.contextWindow,
       compactionThresholdRatio,
-      skillCatalog: skillCatalogProjection.catalog,
-      skillCatalogTokens: skillCatalogProjection.estimatedTokens,
-      skillCatalogProjection: {
-        budgetTokens: skillCatalogProjection.budgetTokens,
-        mode: skillCatalogProjection.mode,
-        originalTokens: skillCatalogProjection.originalTokens
-      },
+      skillCatalog: materials.skillCatalog,
+      skillCatalogTokens: materials.skillCatalogTokens,
+      skillCatalogProjection: materials.skillCatalogProjection,
       skillSnapshot,
       todoState: undefined,
       toolDefinitions: registry.listDefinitions(),
@@ -333,7 +333,7 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
       readonlyBashSandboxed: toolPolicy === 'readonly' && bashSandboxEffective,
       // 收紧派生只发生在 default 工具策略的 plan 运行,因此该分层事实也只在同样的组合下成立。
       planBashSandboxed: toolPolicy === 'default' && interactionMode === 'plan' && bashSandboxEffective,
-      sandboxNote: createSandboxRuntimeNote(config.tools.sandbox, executionMode, sandboxResolutionOptions),
+      sandboxNote: materials.sandboxNote ?? null,
     };
   }
 
@@ -412,8 +412,10 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
 
     /**
      * 发请求前检查：调用共享压缩核心，压缩发生时回填运行态并通知 app。
+     * 摘要请求复用本次运行冻结的材料与当前记忆投影构造前导，并携带会话身份以复用缓存路由。
+     * 摘要供应商请求一旦发生，其 usage 与普通 turn 同款记入观测与 usage 账本。
      */
-    async function maybeCompact(): Promise<void> {
+    async function maybeCompact(memoryPrompt: MemoryPromptResolution): Promise<void> {
       throwIfAborted(abortSignal);
       const result = await runCompaction({
         records: recordRegion,
@@ -423,9 +425,25 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
         thresholdRatio: state.compactionThresholdRatio,
         force: false,
         agent: state.agent,
+        promptPrefix: buildProviderRequestPrefix({
+          agentInstructions: state.agentInstructions,
+          basePrompt: state.basePrompt,
+          compaction: compactionState,
+          cwd,
+          memoryPrompts: memoryPrompt.sections,
+          sandboxNote: state.sandboxNote ?? undefined,
+          sessionJournalPath: session.sessionJournalPath,
+          skillCatalog: state.skillCatalog
+        }),
+        ...(state.sessionId ? {sessionId: state.sessionId} : {}),
         abortSignal
       });
       throwIfAborted(abortSignal);
+
+      if (hasRecordableProviderUsage(result.usage, result.usageInputTokens)) {
+        state.observation.providerUsage({scope: state.observationScope, usage: result.usage, usageInputTokens: result.usageInputTokens});
+      }
+      recordProviderUsage(result.usage, result.usageInputTokens);
 
       if (!result.didCompact || !result.compaction) {
         return;
@@ -483,13 +501,15 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
      * ----------------------------
      */
     while (true) {
-      await maybeCompact();
+      // 记忆投影先于压缩解析：同一次迭代里的压缩请求与普通请求必须共用同一份前导材料。
+      const memoryPrompt = resolveMemoryPrompt(cwd, state.contextWindow);
+      currentMemoryPrompt = memoryPrompt;
+
+      await maybeCompact(memoryPrompt);
       throwIfAborted(abortSignal);
 
       const activeStartIndex = compactionState ? compactionState.activeStartIndex : 0;
       const activeRecords = recordRegion.slice(activeStartIndex);
-      const memoryPrompt = resolveMemoryPrompt(cwd, state.contextWindow);
-      currentMemoryPrompt = memoryPrompt;
       const providerRecords = buildProviderRecords({
         activeRecords,
         agentInstructions: state.agentInstructions,

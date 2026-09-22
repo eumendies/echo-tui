@@ -534,21 +534,48 @@ test('createChatRequest sends reasoning_effort when configured', () => {
   );
 });
 
-test('createChatRequest omits tools and reasoning for compaction requests', () => {
+test('createChatRequest carries tools but keeps compaction reasoning', () => {
   const records = [{ role: 'user', text: 'summarize' }];
   const config = { ...TEST_CONFIG, reasoningEffort: 'xhigh' };
-  const request = createChatRequest(records, config, createToolRegistry(), {isCompaction: true});
+  const toolRegistry = createToolRegistry();
+  const request = createChatRequest(records, config, toolRegistry, {isCompaction: true, includeToolDefinitions: true});
 
   assert.deepEqual(request, {
     messages: [{ role: 'user', content: 'summarize' }],
     model: 'test-chat-model',
-    prompt_cache_key: createPromptCacheKey(records, config),
+    // 键材料与请求体都包含工具目录：压缩请求与普通请求共享同一前缀缓存。
+    prompt_cache_key: createPromptCacheKey(records, config, toolRegistry.listDefinitions()),
+    reasoning_effort: 'xhigh',
     stream: true,
-    stream_options: {include_usage: true}
+    stream_options: {include_usage: true},
+    tools: [
+      {
+        type: 'function',
+        function: {
+          name: 'run_bash_command',
+          description: 'Run bash',
+          parameters: { type: 'object' }
+        }
+      }
+    ]
   });
-  assert.equal('tools' in request, false);
+  // 工具调用控制参数维持剥离。
   assert.equal('parallel_tool_calls' in request, false);
-  assert.equal('reasoning_effort' in request, false);
+});
+
+test('createChatRequest keeps explicit none effort for compaction requests', () => {
+  const records = [{ role: 'user', text: 'summarize' }];
+  const request = createChatRequest(records, { ...TEST_CONFIG, reasoningEffort: 'none' }, createToolRegistry(), {isCompaction: true, includeToolDefinitions: true});
+
+  assert.equal(request.reasoning_effort, 'none');
+  assert.equal(Array.isArray(request.tools), true);
+});
+
+test('createChatRequest keeps summary requests without the tool flag tool-free', () => {
+  const request = createChatRequest([{ role: 'user', text: 'summarize' }], TEST_CONFIG, createToolRegistry(), {isCompaction: true});
+
+  // 引用总结等一次性摘要请求不开启 includeToolDefinitions，保持不携带工具定义。
+  assert.equal('tools' in request, false);
 });
 
 test('createOpenAiChatAgent streams text chunks and returns prompt usage', async () => {
@@ -933,6 +960,7 @@ test('Chat agent can generate compaction summaries without provider usage', asyn
   });
   const summary = await generateCompactionSummary({
     agent,
+    prefixRecords: [{ role: 'system', text: TEST_SYSTEM_PROMPT }],
     compactedRecords: [
       { role: 'user', text: '请检查项目' },
       { role: 'assistant', text: '好的' }
@@ -940,7 +968,7 @@ test('Chat agent can generate compaction summaries without provider usage', asyn
     previousSummary: ''
   });
 
-  assert.equal(summary, '## 背景与目标\n- 已检查项目。');
+  assert.equal(summary.summaryText, '## 背景与目标\n- 已检查项目。');
   assert.equal(requests[0].messages[0].role, 'system');
   assert.equal(requests[0].messages[1].role, 'user');
 });

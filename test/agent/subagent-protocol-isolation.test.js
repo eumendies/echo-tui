@@ -49,18 +49,22 @@ test('subagent process is excluded from token estimates, conversation references
     /PRIVATE-SUBAGENT-PROCESS|PRIVATE-INNER-ID/
   );
 
-  let summaryInput = '';
-  await generateCompactionSummary({
+  let summaryInput = [];
+  const summary = await generateCompactionSummary({
     agent: {
       async runTurn(input) {
-        summaryInput = input[1].text;
+        summaryInput = input;
         return {draft: 'summary', toolCalls: []};
       }
     },
+    prefixRecords: [],
     compactedRecords: records,
     previousSummary: ''
   });
-  assert.match(summaryInput, /visible user/);
-  assert.match(summaryInput, /visible answer/);
-  assert.doesNotMatch(summaryInput, /PRIVATE-SUBAGENT-PROCESS|PRIVATE-INNER-ID/);
+  const summaryText = summaryInput.map((record) => record.text).join('\n');
+
+  assert.equal(summary.summaryText, 'summary');
+  assert.match(summaryText, /visible user/);
+  assert.match(summaryText, /visible answer/);
+  assert.doesNotMatch(summaryText, /PRIVATE-SUBAGENT-PROCESS|PRIVATE-INNER-ID/);
 });

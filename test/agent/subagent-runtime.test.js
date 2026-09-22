@@ -7,7 +7,7 @@ const path = require('node:path');
 const agentSetupModule = require('../../src/agent/agent-setup');
 const sandboxProviderModule = require('../../src/sandbox/provider');
 const {createAgentLoopRuntime} = require('../../src/agent/loop-runtime/agent-loop-runtime');
-const {createSubagentToolPort} = require('../../src/agent/subagent/runtime');
+const {createSubagentSchemaPort, createSubagentToolPort} = require('../../src/agent/subagent/runtime');
 const {createObservation} = require('../../src/observation/observation-projector');
 const {disabledObservation} = require('../../src/observation/observation');
 const {UserConfigContext} = require('../../src/config/user-config-context');
@@ -1648,6 +1648,41 @@ test('subagent port publishes the resolved model facts in the start record and h
   // 子 loop 复用预解析配置，窗口展示与实际请求使用同一份结果
   assert.equal(childInputs[0].resolvedLlmConfig.model, 'parent-model');
   assert.equal(childInputs[0].resolvedLlmConfig.reasoningEffort, 'low');
+});
+
+test('schema-only subagent port projects the same run_subagent definition as the execution port', async () => {
+  const snapshot = createConfigSnapshot();
+  const cwd = '/tmp/echo-subagent-schema-port';
+  const runtimePort = createSubagentToolPort({
+    callbacks: {},
+    configSnapshot: snapshot,
+    createRuntime() {
+      throw new Error('schema-only comparison must not start a subagent');
+    },
+    cwd,
+    executionMode: {kind: 'interactive'},
+    interactionMode: 'normal',
+    getInheritedContext() { return {}; },
+    observation: disabledObservation,
+    publishRecords() {}
+  });
+  const schemaPort = createSubagentSchemaPort({configSnapshot: snapshot, cwd});
+
+  // 同一 cwd 与 snapshot 下，schema-only 端口的目录投影与运行端口逐条一致。
+  assert.deepEqual(schemaPort.listDefinitions(), runtimePort.listDefinitions());
+  assert.deepEqual(
+    createDefaultToolRegistry(TEST_CONFIG, cwd, undefined, {subagentPort: schemaPort}).getHandler('run_subagent').definition,
+    createDefaultToolRegistry(TEST_CONFIG, cwd, undefined, {subagentPort: runtimePort}).getHandler('run_subagent').definition
+  );
+
+  // schema-only 端口不承载执行；调用方（手动压缩）只投影定义，这里只锁定失败形态。
+  const result = await schemaPort.run('explorer', 'inspect', {
+    callId: 'schema-only-probe',
+    toolName: 'run_subagent',
+    argumentsText: '{"agent":"explorer","task":"inspect"}'
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.text, /unavailable/u);
 });
 
 test('readonly run delegates only to readonly subagents and lets the child inherit the sandbox override', async () => {

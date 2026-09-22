@@ -539,17 +539,48 @@ test('createAnthropicRequest forwards reasoning effort to adaptive thinking conf
   assert.equal('output_config' in noneRequest, false);
 });
 
-test('createAnthropicRequest omits tools and reasoning for compaction requests', () => {
+test('createAnthropicRequest carries tools but keeps compaction reasoning', () => {
   const request = createAnthropicRequest(
     [{ role: 'user', text: 'summarize' }],
     { ...TEST_CONFIG, reasoningEffort: 'high' },
     createToolRegistry(),
+    {isCompaction: true, includeToolDefinitions: true}
+  );
+
+  assert.deepEqual(request.tools, [
+    {
+      name: 'run_bash_command',
+      description: 'Run bash',
+      input_schema: { type: 'object' }
+    }
+  ]);
+  assert.deepEqual(request.thinking, { type: 'adaptive', display: 'summarized' });
+  assert.deepEqual(request.output_config, { effort: 'high' });
+});
+
+test('createAnthropicRequest keeps explicit none effort disabled for compaction requests', () => {
+  const request = createAnthropicRequest(
+    [{ role: 'user', text: 'summarize' }],
+    { ...TEST_CONFIG, reasoningEffort: 'none' },
+    createToolRegistry(),
+    {isCompaction: true, includeToolDefinitions: true}
+  );
+
+  assert.equal(Array.isArray(request.tools), true);
+  assert.equal('thinking' in request, false);
+  assert.equal('output_config' in request, false);
+});
+
+test('createAnthropicRequest keeps summary requests without the tool flag tool-free', () => {
+  const request = createAnthropicRequest(
+    [{ role: 'user', text: 'summarize' }],
+    TEST_CONFIG,
+    createToolRegistry(),
     {isCompaction: true}
   );
 
+  // 引用总结等一次性摘要请求不开启 includeToolDefinitions，保持不携带工具定义。
   assert.equal('tools' in request, false);
-  assert.equal('thinking' in request, false);
-  assert.equal('output_config' in request, false);
 });
 
 test('createAnthropicAgent configures SDK client and passes abort signal', async () => {
@@ -937,6 +968,7 @@ test('Anthropic agent can generate compaction summaries without provider usage',
   });
   const summary = await generateCompactionSummary({
     agent,
+    prefixRecords: [{ role: 'system', text: TEST_SYSTEM_PROMPT }],
     compactedRecords: [
       { role: 'user', text: '请检查项目' },
       { role: 'assistant', text: '好的' }
@@ -944,7 +976,7 @@ test('Anthropic agent can generate compaction summaries without provider usage',
     previousSummary: ''
   });
 
-  assert.equal(summary, '## 背景与目标\n- 已检查项目。');
+  assert.equal(summary.summaryText, '## 背景与目标\n- 已检查项目。');
   assert.equal(typeof requests[0].system, 'string');
   assert.equal(requests[0].messages[0].role, 'user');
 });
