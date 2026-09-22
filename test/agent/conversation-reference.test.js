@@ -83,6 +83,8 @@ test('short references stay full while long references use a tool-free compactio
   assert.equal(longAgent.calls.length, 1);
   assert.deepEqual(longAgent.calls[0].callbacks, {});
   assert.equal(longAgent.calls[0].options.isCompaction, true);
+  // 引用总结不开启工具定义携带，保持无工具摘要请求。
+  assert.equal('includeToolDefinitions' in longAgent.calls[0].options, false);
   assert.equal(longAgent.calls[0].records[1].text, `[user]\n${'中'.repeat(4_000)}`);
   assert.doesNotMatch(longAgent.calls[0].records[1].text, /已省略/);
 });

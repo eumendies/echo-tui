@@ -2,9 +2,7 @@
 
 ## Purpose
 定义 `echo_tui` 上下文压缩能力的外部行为，包括上下文窗口大小解析、上下文长度估算、压缩阈值判定、压缩边界计算、结构化摘要生成、压缩状态存储和压缩后的请求投影，使长会话在接近模型上下文窗口上限时能够通过滚动摘要保持可持续对话。
-
 ## Requirements
-
 ### Requirement: 上下文窗口大小解析
 系统 SHALL 为当前生效模型解析一个上下文窗口 token 上限，用于压缩阈值判定。解析 SHALL 按以下优先级回退：用户在模型 profile 中显式配置的 `contextWindow`、内置常见模型映射表按模型名匹配出的窗口、系统默认值。系统 SHALL NOT 因无法识别模型而中断请求。
 
@@ -66,7 +64,7 @@
 - **THEN** 系统 SHALL 继续执行既有边界计算和摘要生成规则
 
 ### Requirement: 压缩边界计算
-系统 SHALL 按「保留最近 K 条记录」计算压缩边界，K 为可配置条数并具备默认值。初始边界 SHALL 为 `records.length - K`。系统 SHALL 把边界向前吸附到一个干净的 turn 起点，使活跃区间不以孤立 `tool_result` 开头、不切断任何 `tool_call`/`tool_result` 配对。
+系统 SHALL 按「保留最近 K 条记录」计算压缩边界，K 为可配置条数并具备默认值。初始边界 SHALL 为 `records.length - K`。系统 SHALL 把边界向前吸附到一个干净的 turn 起点，使活跃区间不以孤立 `tool_result` 开头、不切断任何 `tool_call`/`tool_result` 配对，也不使被压缩区间以孤立 `extension`（provider reasoning 回传）记录结尾；`extension` 记录与其后续记录 SHALL 保持同侧，吸附规则 SHALL 迭代到稳定。
 
 #### Scenario: 保留最近 K 条
 - **WHEN** 触发压缩且记录总数大于 K
@@ -76,6 +74,12 @@
 - **WHEN** 初始压缩边界落在某个 `tool_call`/`tool_result` 配对中间或使活跃区间以孤立 `tool_result` 开头
 - **THEN** 系统 SHALL 把边界向前移动到最近的 `user` 或 `assistant` turn 起点
 - **THEN** 压缩后的活跃区间 SHALL NOT 以孤立 `tool_result` 开头
+
+#### Scenario: 边界吸附保持 extension 与其后续记录同侧
+- **WHEN** 初始边界使被压缩区间以 `extension` 记录结尾、其后续记录会落入活跃区间
+- **THEN** 系统 SHALL 把边界继续向前吸附，直到被压缩区间不以 `extension` 记录结尾
+- **THEN** 该 `extension` 记录与其后续记录 SHALL 同处活跃区间
+- **THEN** 摘要请求输入 SHALL NOT 包含与其后续记录分离的 `extension` 记录
 
 #### Scenario: 压缩边界继续保护 use_skill 工具配对
 - **WHEN** 压缩边界落在 `use_skill` 的 tool_call/tool_result 配对中间
@@ -88,23 +92,59 @@
 - **THEN** 系统 SHALL 按现有流程发送请求
 
 ### Requirement: 结构化摘要生成
-系统 SHALL 复用当前生效的 LLM 发起一次专门的摘要请求，把压缩边界之前的历史压缩为结构化摘要文本。摘要请求 SHALL NOT 暴露任何已注册工具定义，且 SHALL NOT 携带普通 agent turn 配置的 reasoning 参数。摘要 SHALL 指示模型保留关键决策、涉及的文件路径、待办事项和重要工具结果结论。当已存在上一版摘要时，系统 SHALL 把旧摘要连同新增被压缩记录一起作为摘要输入，产出单条滚动更新的摘要，而不是堆叠多条摘要。
+系统 SHALL 复用当前生效的 LLM 发起一次专门的摘要请求，把压缩边界之前的历史压缩为结构化摘要文本。摘要请求输入 SHALL 由「与同一会话普通请求同源构造的请求前导」「被压缩记录的原生 provider 转换投影」「末尾一条携带摘要指令的 user 消息」组成：请求前导 SHALL 复用普通请求的前导构造（内置 system prompt，以及存在压缩状态时位置与普通请求一致的摘要消息），材料口径一致时 SHALL 与普通请求逐字一致，使压缩请求与普通请求共享最长 token 前缀；被压缩记录 SHALL 按各 provider adapter 的既有 transcript 转换规则投影（保留 user、assistant、tool、shell、extension 等原始形态与配对关系），SHALL NOT 拍平为 `[role] text` 形式的纯文本，SHALL NOT 额外过滤 `extension`（provider reasoning 回传）记录；摘要指令 SHALL 作为输入中的最后一条 user 消息贴近生成点。摘要请求 SHALL 复用同一会话普通请求的缓存路由身份：会话身份可用时 SHALL 透传会话身份；使用显式 prompt cache key 的 provider SHALL 保持键材料口径与普通请求一致（含工具目录材料），SHALL NOT 因压缩语义改变键材料。摘要请求 SHALL 携带与普通请求同源的工具定义（同一 registry 与转换口径），使工具定义段与请求前导共同构成与普通请求的最长共享 token 前缀；摘要请求 SHALL NOT 携带工具调用控制参数（`tool_choice`、`parallel_tool_calls` 维持不发送），使摘要请求不触发工具调用。摘要 SHALL 指示模型保留关键决策、涉及的文件路径、待办事项和重要工具结果结论。当会话配置了 reasoning effort 时，摘要请求 SHALL 按与普通 turn 相同的规则携带该 effort 配置（含显式 `none` 的禁用语义），且 SHALL NOT 携带仅供展示的 reasoning summary 配置或 reasoning 加密回传请求。摘要请求 SHALL NOT 固定低输出详细度（verbosity）；普通 turn 的详细度行为 SHALL 保持不变。摘要请求 SHALL 把其 provider usage（含缓存命中输入 token）透出给调用方用于 usage 记账，SHALL NOT 因压缩语义丢弃 usage。系统 SHALL NOT 对摘要输出做小节模板校验：非空输出即采纳，中文小节标题或其他非模板措辞同样被接受。当已存在上一版摘要时，系统 SHALL 保持该摘要在请求前导中的原位，摘要指令 SHALL 引用该既有摘要并要求把新增被压缩记录合并为单条滚动更新摘要，且 SHALL NOT 重复嵌入旧摘要正文。
 
 #### Scenario: 首次压缩生成摘要
 - **WHEN** session 尚无压缩摘要且触发压缩
 - **THEN** 系统 SHALL 用边界之前的历史记录发起一次摘要请求
+- **THEN** 摘要请求前导 SHALL 以与普通请求同源构造的内置 system prompt 开头
 - **THEN** 系统 SHALL 把返回的结构化文本作为 session 的压缩摘要
 
 #### Scenario: 再次压缩滚动更新摘要
 - **WHEN** session 已存在压缩摘要且再次触发压缩
-- **THEN** 系统 SHALL 把旧摘要与新增被压缩记录一起作为摘要输入
+- **THEN** 摘要请求前导 SHALL 在 system 记录之后原位携带既有摘要消息
+- **THEN** 摘要指令 SHALL 要求把新增被压缩记录合并进既有摘要并产出单条更新摘要
+- **THEN** 摘要指令 SHALL NOT 重复嵌入既有摘要正文
 - **THEN** 系统 SHALL 用新返回文本替换旧摘要，保持单条摘要
 
-#### Scenario: 摘要请求不继承普通 turn 能力
-- **WHEN** 当前 agent 注册了本地或 MCP 工具，或当前模型配置了 reasoning 参数
-- **THEN** 摘要 provider 请求 SHALL NOT 包含工具定义或工具调用控制参数
-- **THEN** 摘要 provider 请求 SHALL NOT 包含普通 agent turn 配置的 reasoning 参数
+#### Scenario: 摘要请求复用普通请求前导与原生投影
+- **WHEN** 触发压缩并发起摘要请求
+- **THEN** 摘要请求输入 SHALL 复用与同一会话普通请求相同的前导构造来源
+- **THEN** 会话材料口径一致时，摘要请求输入的前导 SHALL 与普通请求逐字一致
+- **THEN** 摘要请求输入 SHALL 包含被压缩记录的原生 provider 转换投影，而不是拍平的 `[role] text` 文本
+- **THEN** 摘要请求输入的最后一条 SHALL 是携带摘要指令（含模板要求）的 user 消息
+
+#### Scenario: extension 记录随原生投影进入摘要输入
+- **WHEN** 被压缩区间包含 `extension` 记录
+- **THEN** 摘要请求输入 SHALL 按普通请求同款转换规则投影该 `extension` 记录，SHALL NOT 额外过滤
+- **THEN** 摘要请求 SHALL 继续包含被压缩区间内其他可发送记录
+
+#### Scenario: 摘要请求复用普通请求缓存身份
+- **WHEN** 触发压缩
+- **THEN** 摘要请求 SHALL 复用与同一会话普通请求相同的 prompt cache key 身份
+- **THEN** 会话身份可用时，摘要请求 SHALL 透传与普通请求相同的会话身份
+- **THEN** prompt cache key 材料口径 SHALL 与普通请求一致（含工具目录材料），SHALL NOT 因压缩语义改变
+- **THEN** 摘要请求 SHALL 携带与普通请求同源的工具定义，使工具定义段与请求前导共同构成共享 token 前缀
+- **THEN** 普通请求自身的缓存身份与键材料 SHALL 保持不变
+
+#### Scenario: 中文标题等非模板措辞同样被采纳
+- **WHEN** 摘要生成返回非空文本，且其小节标题使用中文或其他非模板措辞
+- **THEN** 系统 SHALL 采纳该文本作为 session 的压缩摘要
+- **THEN** 系统 SHALL NOT 因小节标题语言或措辞与模板不一致而拒绝输出或判定压缩失败
+
+#### Scenario: 摘要请求携带工具定义与会话 reasoning
+- **WHEN** 当前 agent 注册了本地或 MCP 工具，且当前模型配置了 reasoning effort（含显式 `none`）
+- **THEN** 摘要 provider 请求 SHALL 包含与普通请求同源的工具定义
+- **THEN** 手动 `/compact` 路径 SHALL 使用与主会话相同的工具目录装配口径（含按运行条件注册的委派工具），SHALL NOT 因独立装配而缺失工具定义
+- **THEN** 摘要 provider 请求 SHALL NOT 包含工具调用控制参数
+- **THEN** 摘要 provider 请求 SHALL 按与普通 turn 相同的规则携带该 reasoning effort（`none` 保持显式禁用语义）
+- **THEN** 摘要 provider 请求 SHALL NOT 包含仅供展示的 reasoning summary 配置或 reasoning 加密回传请求
 - **THEN** 后续普通 agent turn SHALL 继续按原配置发送工具定义和 reasoning 参数
+
+#### Scenario: codex 摘要请求不固定低 verbosity
+- **WHEN** 使用 codex adapter 生成摘要，且普通 turn 发送固定 `low` verbosity
+- **THEN** 摘要请求 SHALL NOT 携带 `verbosity: low`
+- **THEN** 后续普通 turn SHALL 继续按既有行为发送固定 verbosity
 
 ### Requirement: 压缩状态存储
 系统 SHALL 把压缩状态作为 session 级元数据持久化，包含摘要文本、活跃区间起点索引和创建时间。完整 `records[]` SHALL 保持全量 append-only，不因压缩而删除任何记录。活跃区间起点索引 `activeStartIndex` SHALL 以条数表示，使 `records[activeStartIndex:]` 唯一确定活跃区间。自动压缩追加可见提示记录时，runtime record region 与持久化 transcript SHALL 保持相同的记录坐标系，使同一 agent run 内后续压缩返回的索引仍直接对应持久化 `records[]`。
@@ -162,7 +202,7 @@
 - **THEN** 后续 provider input SHALL 不再包含该旧 tool_result 原文，除非它仍在活跃区间内
 
 ### Requirement: 可复用压缩操作
-系统 SHALL 提供一个可复用的异步压缩操作 `runCompaction`，封装「估算（可选）→ 阈值判定（可选）→ 边界计算 → 摘要生成」的完整编排，供自动触发与手动触发共享。该操作 SHALL 为纯函数式：仅依据入参计算并返回结果，SHALL NOT 直接修改外部状态或触发回调。返回结果 SHALL 包含是否发生压缩、原因，以及压缩发生时的新压缩状态。
+系统 SHALL 提供一个可复用的异步压缩操作 `runCompaction`，封装「估算（可选）→ 阈值判定（可选）→ 边界计算 → 摘要生成」的完整编排，供自动触发与手动触发共享。该操作 SHALL 为纯函数式：仅依据入参计算并返回结果，SHALL NOT 直接修改外部状态或触发回调。返回结果 SHALL 包含是否发生压缩、原因，以及压缩发生时的新压缩状态。只要发生过摘要 provider 请求，返回结果 SHALL 同时携带该次请求的 usage 与 usageInputTokens（含摘要为空未被采纳的路径）；未发起摘要请求的路径 SHALL NOT 携带 usage 字段。
 
 #### Scenario: 压缩成功返回新状态
 - **WHEN** 调用 `runCompaction` 且边界计算得到有效活跃区间起点
@@ -178,6 +218,12 @@
 - **WHEN** 调用 `runCompaction` 但边界吸附后无法得到比当前活跃区间起点更靠前的有效边界
 - **THEN** 该操作 SHALL 返回「未压缩」结果并标明原因为无有效边界
 - **THEN** 该操作 SHALL NOT 发起摘要请求
+
+#### Scenario: 摘要请求 usage 随结果返回
+- **WHEN** `runCompaction` 完成了至少一次摘要 provider 请求
+- **THEN** 返回结果 SHALL 携带该次请求的 usage 与 usageInputTokens
+- **THEN** 摘要文本为空未被采纳时，usage SHALL 仍随结果返回
+- **THEN** 调用方 SHALL 能将该 usage 写入 usage 账本
 
 ### Requirement: 强制触发压缩
 系统 SHALL 支持以强制模式调用压缩操作：强制模式 SHALL 跳过上下文长度阈值判定，直接进入边界计算与摘要生成。强制模式 SHALL 仍执行压缩边界吸附，确保不切断 tool_call/tool_result 配对、活跃区间不以孤立 tool_result 开头。
@@ -233,3 +279,4 @@
 - **THEN** journal 中的 `set_compaction` 操作与 `CompactionState` 结构 SHALL 保持不变
 - **THEN** 源路径 SHALL 只出现在 provider-facing 摘要消息中
 - **THEN** 可见的 `compaction_notice` 记录 SHALL 保持既有文本，不包含源路径
+

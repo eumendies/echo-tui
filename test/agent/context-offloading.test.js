@@ -49,8 +49,16 @@ test('token estimation and compaction consume only bounded transcript preview te
   };
 
   assert.equal(estimateRecordsTokens(records) < 100, true);
-  await generateCompactionSummary({agent, compactedRecords: records, previousSummary: ''});
-  assert.match(agent.calls[0][1].text, /tool result truncated: \/tmp\/tool-result\.txt/);
-  assert.match(agent.calls[0][1].text, /tail output/);
-  assert.doesNotMatch(agent.calls[0][1].text, /FULL_ARTIFACT_ONLY/);
+  const summary = await generateCompactionSummary({
+    agent,
+    prefixRecords: [{role: 'system', text: 'built-in prefix'}],
+    compactedRecords: records,
+    previousSummary: ''
+  });
+  const toolResultRecord = agent.calls[0].find((record) => record.role === 'tool_result');
+
+  assert.equal(summary.summaryText, 'summary');
+  assert.match(toolResultRecord.text, /tool result truncated: \/tmp\/tool-result\.txt/);
+  assert.match(toolResultRecord.text, /tail output/);
+  assert.doesNotMatch(JSON.stringify(agent.calls[0]), /FULL_ARTIFACT_ONLY/);
 });

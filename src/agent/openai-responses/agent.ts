@@ -74,28 +74,39 @@ function createClient(config: LlmConfig, OpenAIClient: new (options: {apiKey: st
 }
 
 /**
- * 根据当前 transcript 快照创建 Responses API 请求；压缩用途不暴露工具或 reasoning 配置。
+ * 根据当前 transcript 快照创建 Responses API 请求；摘要请求按 `includeToolDefinitions` 决定是否携带工具定义
+ * （压缩摘要携带以对齐前缀缓存），始终剥离仅供展示的 reasoning summary 与工具调用控制参数；
+ * reasoning effort 与普通 turn 同规则携带（含显式 none 的禁用语义）。
  */
 function createRequest(records: TranscriptRecord[], config: LlmConfig, registry?: ToolRegistry, options: AgentTurnOptions = {}): ResponseCreateRequest {
-  const toolDefinitions = !options.isCompaction && registry && !registry.isEmpty() ? registry.listDefinitions() : [];
+  const toolDefinitions = registry && !registry.isEmpty() ? registry.listDefinitions() : [];
   const request: ResponseCreateRequest = {
     input: convertTranscriptToOpenAiInput(records),
     model: config.model,
+    // 键材料始终包含工具目录：摘要请求据此路由到普通请求已建立的缓存分片。
     prompt_cache_key: createPromptCacheKey(records, config, toolDefinitions),
     stream: true
   };
+  const reasoningSummary = options.isCompaction ? undefined : config.reasoningSummary;
 
   // 显式 none 也必须发送：思考模型缺省按模型默认 effort（如 medium）思考，省略参数无法表达禁用。
-  if (!options.isCompaction && (config.reasoningEffort || config.reasoningSummary)) {
+  if (config.reasoningEffort || reasoningSummary) {
     request.reasoning = {
       ...(config.reasoningEffort ? {effort: config.reasoningEffort} : {}),
-      ...(config.reasoningSummary ? {summary: config.reasoningSummary} : {})
+      ...(reasoningSummary ? {summary: reasoningSummary} : {})
     };
   }
 
-  if (toolDefinitions.length > 0) {
+  // 压缩摘要携带同源工具目录以对齐前缀缓存；引用总结等一次性摘要请求缺省保持剥离。
+  const includeToolDefinitions = !options.isCompaction || options.includeToolDefinitions === true;
+
+  if (includeToolDefinitions && toolDefinitions.length > 0) {
     request.tools = convertToolDefinitionsToOpenAiTools(toolDefinitions);
-    request.parallel_tool_calls = true;
+
+    // 工具调用控制参数仍只在普通 turn 发送：摘要请求不需要触发工具调用。
+    if (!options.isCompaction) {
+      request.parallel_tool_calls = true;
+    }
   }
 
   return request;

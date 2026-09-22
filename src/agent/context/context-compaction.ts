@@ -3,7 +3,7 @@ import {estimateTextTokens} from './token-estimator';
 import {shouldIncludeRecordInProviderContext} from '../transcript-converter-common';
 import {throwIfAborted} from '../../types/agent';
 
-import type {AgentTurnResult, ProviderAgent} from '../../types/agent';
+import type {AgentTurnResult, ProviderAgent, ProviderUsage} from '../../types/agent';
 import type {CompactionState, TranscriptRecord} from '../../types/transcript';
 
 type TokenUsageAnchor = {
@@ -15,6 +15,14 @@ type RunCompactionResult = {
   didCompact: boolean;
   reason: 'compacted' | 'below_threshold' | 'no_boundary';
   compaction?: CompactionState;
+  usage?: ProviderUsage; // 摘要 provider turn 的 usage;未发起摘要请求时缺省。
+  usageInputTokens?: number; // 摘要 provider turn 的输入 token 真值;未发起摘要请求时缺省。
+};
+
+type CompactionSummaryResult = {
+  summaryText: string; // 已 trim 的摘要文本;空字符串表示模型未产出可用摘要。
+  usage?: ProviderUsage; // 摘要 provider turn 的 usage。
+  usageInputTokens?: number; // 摘要 provider turn 的输入 token 真值。
 };
 
 /**
@@ -63,7 +71,8 @@ function exceedsCompactionThreshold(estimatedTokens: number, contextWindow: numb
 
 /**
  * 计算压缩边界：按 provider-facing records 保留最近 K 条并映射回物理索引，再向前吸附到干净 turn 起点，
- * 确保活跃区间不以孤立 tool_result 开头、不切断 tool_call/tool_result 配对。
+ * 确保活跃区间不以孤立 tool_result 开头、不切断 tool_call/tool_result 配对，
+ * 且被压缩区间不以孤立 extension（provider reasoning 回传）记录结尾。
  * 返回 0 表示无法产生有效压缩边界（记录不足或吸附后无可压缩区间）。
  */
 function computeCompactionBoundary(records: TranscriptRecord[], keepCount = COMPACTION_RECENT_KEEP_COUNT): number {
@@ -83,14 +92,19 @@ function computeCompactionBoundary(records: TranscriptRecord[], keepCount = COMP
 
   let boundary = initial;
 
-  // 边界落在 tool_result 上意味着会切断它前面的 tool_call，向前移动到该配对之前。
-  while (boundary > 0 && records[boundary].role === 'tool_result') {
-    boundary -= 1;
-  }
+  // 三条吸附规则都只向前移动一步：边界落在 tool_result 上会切断它前面的 tool_call；
+  // 被压缩区间以 tool_call 结尾会把它与其后的 tool_result 切开；以 extension 结尾会把 reasoning 回传与其后续记录切开。
+  // 迭代到不再变化，保证与既有 tool 配对保护共同收敛到稳定边界。
+  while (boundary > 0) {
+    const currentRecord = records[boundary];
+    const previousRecord = records[boundary - 1];
 
-  // 此时若 boundary 指向 tool_call，则它与其后的 tool_result 应整体落入活跃区间，继续前移。
-  while (boundary > 0 && records[boundary - 1] && records[boundary - 1].role === 'tool_call') {
-    boundary -= 1;
+    if (currentRecord?.role === 'tool_result' || previousRecord?.role === 'tool_call' || previousRecord?.role === 'extension') {
+      boundary -= 1;
+      continue;
+    }
+
+    break;
   }
 
   return boundary;
@@ -98,10 +112,11 @@ function computeCompactionBoundary(records: TranscriptRecord[], keepCount = COMP
 
 /**
  * 构造结构化摘要请求 prompt：要求模型按固定小节模板输出，最大程度保留后续对话所需信息。
+ * 摘要指令位于请求末尾，因此引用的是「上方的历史与既有摘要」；存在旧摘要时只要求滚动合并，不重复嵌入其正文。
  */
 function createSummaryInstruction(previousSummary: string): string {
   const base = [
-    'You are a conversation history compressor. Compress the history below into a structured summary to be used as background context for later requests.',
+    'You are a conversation history compressor. Compress the earlier messages of this conversation into a structured summary to be used as background context for later requests.',
     'Output strictly using the following fixed sections; every section heading must be kept; write "None" when a section has no content:',
     '## Background and Goals',
     '## Key Decisions and Conclusions',
@@ -118,42 +133,45 @@ function createSummaryInstruction(previousSummary: string): string {
   return [
     base,
     '',
-    'An existing previous summary (merge the new history on top of it and output a single updated complete summary using the same section template):',
-    previousSummary
+    'The conversation above already opens with an existing summary of the earlier messages. Merge the newly compacted messages into it and output a single updated complete summary using the same section template; do not repeat the existing summary text.'
   ].join('\n');
 }
 
 /**
- * 把被压缩记录投影为摘要请求可读的纯文本片段。
- */
-function renderRecordsForSummary(records: TranscriptRecord[]): string {
-  return records
-    .filter(shouldIncludeRecordInProviderContext)
-    .map((record) => `[${record.role}] ${record.text}`)
-    .join('\n');
-}
-
-/**
  * 复用 provider agent 发起一次摘要请求，产出单条滚动更新摘要；忽略其工具调用。
- * 摘要是纯文本压缩任务，不需要内置助手 system prompt，仅用摘要指令一条 system。
+ * 输入形态与普通请求对齐：共享前导 → 被压缩记录原生 provider 投影 → 尾部摘要指令 user 消息，
+ * 让压缩请求与普通请求共享最长 token 前缀，并把指令放在贴近生成点的位置；extension 记录随原生投影进入，不额外过滤。
+ * 摘要请求同时按 `includeToolDefinitions` 携带与普通 turn 同源的工具定义，使工具定义段也进入共享前缀。
  */
 async function generateCompactionSummary(options: {
   agent: ProviderAgent;
+  prefixRecords: TranscriptRecord[]; // 与同一会话普通请求同源构造的请求前导记录。
   compactedRecords: TranscriptRecord[];
   previousSummary: string;
+  sessionId?: string; // 会话稳定身份;透传给 provider 以复用同一缓存路由。
   abortSignal?: AbortSignal;
-}): Promise<string> {
-  const {agent, compactedRecords, previousSummary, abortSignal} = options;
+}): Promise<CompactionSummaryResult> {
+  const {agent, prefixRecords, compactedRecords, previousSummary, sessionId, abortSignal} = options;
   const summaryRecords: TranscriptRecord[] = [
-    {role: 'system', text: createSummaryInstruction(previousSummary)},
-    {role: 'user', text: renderRecordsForSummary(compactedRecords)}
+    ...prefixRecords,
+    ...compactedRecords.filter(shouldIncludeRecordInProviderContext),
+    {role: 'user', text: createSummaryInstruction(previousSummary)}
   ];
 
   throwIfAborted(abortSignal);
-  const result: AgentTurnResult = await agent.runTurn(summaryRecords, {}, {abortSignal, isCompaction: true});
+  const result: AgentTurnResult = await agent.runTurn(summaryRecords, {}, {
+    abortSignal,
+    isCompaction: true,
+    includeToolDefinitions: true,
+    ...(sessionId ? {sessionId} : {})
+  });
   throwIfAborted(abortSignal);
 
-  return result.draft.trim();
+  return {
+    summaryText: result.draft.trim(),
+    ...(result.usage ? {usage: result.usage} : {}),
+    ...(typeof result.usageInputTokens === 'number' ? {usageInputTokens: result.usageInputTokens} : {})
+  };
 }
 
 /**
@@ -170,6 +188,7 @@ function createCompactionNoticeRecord(compaction: CompactionState): TranscriptRe
  * 可复用的压缩编排核心：估算（非 force）→ 阈值判定（非 force）→ 边界吸附 → 摘要生成。
  * 纯函数式：仅依据入参计算并返回结果，不修改外部状态、不触发回调。
  * force=true 时跳过阈值判定直接压缩，但仍执行边界吸附以保护工具配对。
+ * 只要发起过摘要 provider 请求，usage 与 usageInputTokens 就随结果返回（含摘要为空未被采纳的路径）。
  */
 async function runCompaction(options: {
   records: TranscriptRecord[];
@@ -179,9 +198,11 @@ async function runCompaction(options: {
   thresholdRatio?: number;
   force?: boolean;
   agent: ProviderAgent;
+  promptPrefix: TranscriptRecord[]; // 与同一会话普通请求同源构造的请求前导记录;摘要请求的 token 0 前缀。
+  sessionId?: string; // 会话稳定身份;透传给摘要请求以复用同一缓存路由。
   abortSignal?: AbortSignal;
 }): Promise<RunCompactionResult> {
-  const {records, compaction, anchor, contextWindow, thresholdRatio = COMPACTION_THRESHOLD_RATIO, force = false, agent, abortSignal} = options;
+  const {records, compaction, anchor, contextWindow, thresholdRatio = COMPACTION_THRESHOLD_RATIO, force = false, agent, promptPrefix, sessionId, abortSignal} = options;
   const activeStartIndex = compaction ? compaction.activeStartIndex : 0;
 
   throwIfAborted(abortSignal);
@@ -206,27 +227,35 @@ async function runCompaction(options: {
   }
 
   const newlyCompacted = records.slice(activeStartIndex, boundary);
-  const summaryText = await generateCompactionSummary({
+  const summary = await generateCompactionSummary({
     agent,
+    prefixRecords: promptPrefix,
     abortSignal,
+    ...(sessionId ? {sessionId} : {}),
     compactedRecords: newlyCompacted,
     previousSummary: compaction ? compaction.summaryText : ''
   });
 
   throwIfAborted(abortSignal);
 
-  if (summaryText === '') {
-    return {didCompact: false, reason: 'no_boundary'};
+  const summaryUsage = {
+    ...(summary.usage ? {usage: summary.usage} : {}),
+    ...(typeof summary.usageInputTokens === 'number' ? {usageInputTokens: summary.usageInputTokens} : {})
+  };
+
+  if (summary.summaryText === '') {
+    return {didCompact: false, reason: 'no_boundary', ...summaryUsage};
   }
 
   return {
     didCompact: true,
     reason: 'compacted',
     compaction: {
-      summaryText,
+      summaryText: summary.summaryText,
       activeStartIndex: boundary,
       createdAt: new Date().toISOString()
-    }
+    },
+    ...summaryUsage
   };
 }
 

@@ -367,7 +367,7 @@
 - **THEN** 请求参数 SHALL NOT 包含 `reasoning`、private reasoning item 或 `max_output_tokens`
 
 ### Requirement: OpenAI Chat compatible reasoning effort 请求
-系统 SHALL 在 `openai-chat` provider 边界内支持 model profile 的 `reasoning.effort`。当 effort 非 `none` 时，adapter SHALL 在 Chat Completions compatible request 中以 `reasoning_effort` 字段直传 Echo TUI 的 effort 值；请求 SHALL NOT 使用 OpenAI Responses-only 的 `reasoning` 对象。
+系统 SHALL 在 `openai-chat` provider 边界内支持 model profile 的 `reasoning.effort`。当配置了 `reasoning.effort`（含显式 `none`）时，adapter SHALL 在 Chat Completions compatible request 中以 `reasoning_effort` 字段直传 Echo TUI 的 effort 值；显式 `none` 必须发送，SHALL NOT 以省略参数表达禁用。未配置 `reasoning.effort` 时，请求 SHALL NOT 包含 `reasoning_effort`，由兼容服务端决定默认推理行为。请求 SHALL NOT 使用 OpenAI Responses-only 的 `reasoning` 对象。
 
 #### Scenario: Chat profile 保留 reasoning effort
 - **WHEN** 当前生效模型 profile 引用的 provider preset 解析为 `agentType: "openai-chat"`，且模型 profile 配置了合法的 `reasoning.effort`
@@ -379,8 +379,13 @@
 - **THEN** 请求参数 SHALL 包含顶层 `reasoning_effort`
 - **THEN** `reasoning_effort` 的值 SHALL 与 Echo TUI 配置的 effort 值一致，不做本地映射
 
-#### Scenario: none effort 不发送 reasoning effort
-- **WHEN** `openai-chat` adapter 构造请求，且当前配置未设置 `reasoningEffort` 或值为 `none`
+#### Scenario: none effort 显式发送禁用值
+- **WHEN** `openai-chat` adapter 构造请求，且当前配置值为 `none`
+- **THEN** 请求参数 SHALL 包含 `reasoning_effort: none`
+- **THEN** 系统 SHALL NOT 通过省略 `reasoning_effort` 表达禁用
+
+#### Scenario: 未配置 reasoning effort 时不发送
+- **WHEN** `openai-chat` adapter 构造请求，且当前配置未设置 `reasoning.effort`
 - **THEN** 请求参数 SHALL NOT 包含 `reasoning_effort`
 - **THEN** 系统 SHALL 让兼容服务端决定默认推理行为
 
@@ -1572,7 +1577,6 @@ provider、agent loop runtime 与 app SHALL 共用同一个结构化 reasoning �
 - **THEN** agent loop runtime SHALL NOT 触发 app reasoning pending 更新
 - **THEN** assistant 正文 streaming、tool call、completion 和失败路径 SHALL 保持既有行为
 
-
 ### Requirement: Provider 多工具调用响应
 支持工具调用的 provider adapter SHALL 能在单次 provider turn 中收集并返回多个完整 tool call，并 SHALL 保留 provider 给出的调用顺序、call id、tool name 和 arguments。协议支持并行 tool call 请求开关时，普通带工具请求 SHALL 启用该能力；不暴露工具的 compaction 请求 SHALL 继续不发送工具或并行工具参数。
 
@@ -1608,3 +1612,4 @@ Provider transcript converter SHALL 将同一 agent loop 批次产生的每个 t
 - **WHEN** 同一批次同时包含成功和失败 tool result
 - **THEN** converter SHALL 保留所有有效结果
 - **THEN** provider SHALL 能区分每个调用的结果文本和失败语义
+

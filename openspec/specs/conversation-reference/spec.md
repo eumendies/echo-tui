@@ -1,10 +1,7 @@
 ## Purpose
 
 定义从历史会话选择完整对话引用、生成引用投影，并在当前 composer 请求中持久化使用的完整生命周期行为。
-
 ## Requirements
-
-
 ### Requirement: 用户显式选择整个历史会话
 系统 SHALL 提供 `/reference` 命令，让用户从当前 cwd 下可恢复的历史 session 中显式选择一个会话作为当前 composer 的对话引用。选择粒度 SHALL 是完整会话，系统 SHALL NOT 要求或允许用户在该流程中逐条选择消息。当前持久化 session SHALL NOT 作为可引用候选。
 
@@ -94,10 +91,13 @@
 - **THEN** 摘要 SHALL 覆盖会话背景与目标、关键决定、重要事实、文件与符号、未决事项和会话脉络
 - **THEN** 系统 SHALL NOT 修改源 session 的 compaction 状态或 journal
 
-#### Scenario: 引用总结不继承普通 turn 工具和 reasoning
+#### Scenario: 引用总结不继承工具但携带会话 reasoning
 - **WHEN** 当前 agent 注册了工具或配置了普通 reasoning 参数且系统生成引用总结
 - **THEN** 摘要 provider 请求 SHALL NOT 包含工具定义或工具调用控制参数
-- **THEN** 摘要 provider 请求 SHALL NOT 携带普通 assistant turn 的 reasoning 参数
+- **THEN** 引用总结 SHALL 与压缩摘要请求相互独立：压缩摘要携带工具定义的行为 SHALL NOT 使引用总结一并携带
+- **THEN** 摘要 provider 请求 SHALL 按与普通 turn 相同的规则携带当前会话配置的 reasoning effort（含显式 `none` 的禁用语义）
+- **THEN** 摘要 provider 请求 SHALL NOT 携带仅供展示的 reasoning summary 配置或 reasoning 加密回传请求
+- **THEN** 使用 codex adapter 时，引用总结请求 SHALL NOT 携带固定 `low` verbosity
 
 #### Scenario: 素材超过总结输入上限时头尾截断降级
 - **WHEN** 引用材料的预估 token 数超过总结输入上限且用户提交当前请求
@@ -178,3 +178,4 @@
 - **WHEN** 用户执行 `/clear` 或通过 `/resume` 成功加载其他 session
 - **THEN** 系统 SHALL 清理任何 pending 对话引用
 - **THEN** 清理 SHALL NOT 删除已持久化 user records 中的历史引用 metadata 或正文
+

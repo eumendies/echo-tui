@@ -201,6 +201,7 @@ export type AgentTurnOptions = {
   abortSignal?: AbortSignal;
   isCompaction?: boolean;
   sessionId?: string; // 本次运行的会话稳定身份；ChatGPT Codex 用它生成会话级缓存键。
+  includeToolDefinitions?: boolean; // 摘要请求是否携带与普通 turn 同源的工具定义；压缩摘要为对齐前缀缓存而置位，引用总结缺省保持剥离。
 };
 
 export type AgentTurnResult = {

@@ -394,23 +394,49 @@ test('createCodexRequest sends explicit none effort without encrypted reasoning'
   assert.equal('include' in request, false);
 });
 
-test('createCodexRequest omits tools and reasoning for compaction requests', () => {
+test('createCodexRequest carries tools but strips verbose shape for compaction requests', () => {
   const records = [{role: 'system', text: 'compress'}, {role: 'user', text: 'summarize'}];
   const config = {...TEST_CONFIG, reasoningEffort: 'high'};
-  const request = createCodexRequest(records, config, createToolRegistry(), {isCompaction: true});
+  const toolRegistry = createToolRegistry();
+  const request = createCodexRequest(records, config, toolRegistry, {isCompaction: true, includeToolDefinitions: true});
 
   assert.deepEqual(request, {
     input: [{role: 'user', content: 'summarize'}],
     model: 'test-model',
-    prompt_cache_key: createPromptCacheKey(records, config),
+    // 键材料与请求体都包含工具目录：压缩请求与普通请求共享同一前缀缓存。
+    prompt_cache_key: createPromptCacheKey(records, config, toolRegistry.listDefinitions()),
+    reasoning: {effort: 'high'},
     stream: true,
     store: false,
     instructions: 'compress',
-    text: {verbosity: 'low'}
+    tools: [
+      {
+        type: 'function',
+        name: 'run_bash_command',
+        description: 'Run bash',
+        parameters: {type: 'object', additionalProperties: false}
+      }
+    ]
   });
+  // 摘要请求仍省略 verbosity、encrypted reasoning 回传与工具调用控制参数。
+  assert.equal('text' in request, false);
   assert.equal('include' in request, false);
-  assert.equal('reasoning' in request, false);
-  assert.equal('tools' in request, false);
   assert.equal('tool_choice' in request, false);
   assert.equal('parallel_tool_calls' in request, false);
+});
+
+test('createCodexRequest keeps summary requests without the tool flag tool-free', () => {
+  const records = [{role: 'system', text: 'compress'}, {role: 'user', text: 'summarize'}];
+  const request = createCodexRequest(records, TEST_CONFIG, createToolRegistry(), {isCompaction: true});
+
+  // 引用总结等一次性摘要请求不开启 includeToolDefinitions，保持不携带工具定义。
+  assert.equal('tools' in request, false);
+});
+
+test('createCodexRequest binds compaction requests to the runtime session identity', () => {
+  const records = [{role: 'system', text: 'compress'}, {role: 'user', text: 'summarize'}];
+  const request = createCodexRequest(records, TEST_CONFIG, createToolRegistry(), {isCompaction: true, sessionId: 'session-abc'});
+
+  assert.equal(request.prompt_cache_key, 'echo-tui-session-abc');
+  assert.equal('text' in request, false);
 });
