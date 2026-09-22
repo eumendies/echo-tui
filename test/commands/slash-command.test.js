@@ -210,6 +210,7 @@ function createFakeHost(options = {}) {
           compactionThresholdRatio: 0.8,
           defaultInteractionMode: 'normal',
           fileEditMode: 'apply_patch',
+          mouseInteractionEnabled: false,
           skillCatalogContextRatio: 0.02,
           showReasoningSummary: true,
           slashSuggestionMaxVisible: 8,
@@ -1441,6 +1442,11 @@ test('configCommandHandler opens general tab, saves independently, and lazily op
     configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
   }
   configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_RIGHT}, host);
+  assert.equal(host.session.getActive().surface.state.draft.mouseInteractionEnabled, true);
+  configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
+  assert.equal(host.session.getActive().surface.state.draft.mouseInteractionEnabled, false);
+  configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
+  configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_RIGHT}, host);
   assert.equal(host.session.getActive().surface.state.draft.defaultInteractionMode, 'plan');
   assert.equal(calls.savedSettingsDrafts.length, 0);
   configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
@@ -1471,6 +1477,7 @@ test('configCommandHandler opens general tab, saves independently, and lazily op
   assert.equal(calls.savedSettingsDrafts[0].defaultInteractionMode, 'plan');
   assert.equal(calls.savedSettingsDrafts[0].autoCompressImages, false);
   assert.equal(calls.savedSettingsDrafts[0].checkUpdatesOnStartup, true);
+  assert.equal(calls.savedSettingsDrafts[0].mouseInteractionEnabled, false);
   assert.equal(calls.savedSettingsDrafts[0].fileEditMode, 'edit_file');
   assert.equal(calls.savedSettingsDrafts[0].agentInstructionFileName, 'CLAUDE.md');
   assert.match(host.session.getActive().surface.state.feedback, /已保存/);
@@ -1563,7 +1570,8 @@ test('configCommandHandler isolates tab read errors and keeps save errors inline
     }
   });
   const session = startCommand(configCommandHandler, '/config', saveError.host);
-  for (let index = 0; index < 10; index += 1) {
+  while (saveError.host.session.getActive().data.general.state.selectedIndex
+    < getGeneralConfigRowIds(saveError.host.session.getActive().data.general.state).indexOf('save')) {
     configCommandHandler.handleEvent(saveError.host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, saveError.host);
   }
   configCommandHandler.handleEvent(saveError.host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, saveError.host);

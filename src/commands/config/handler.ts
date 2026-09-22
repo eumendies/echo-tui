@@ -146,6 +146,8 @@ class ConfigCommandHandler implements CommandHandler<ConfigCommandData> {
       const selectedRow = getGeneralConfigRowIds(nextState)[nextState.selectedIndex];
       if (selectedRow === 'reasoningSummary') {
         nextState.draft.showReasoningSummary = !nextState.draft.showReasoningSummary;
+      } else if (selectedRow === 'mouseInteraction') {
+        nextState.draft.mouseInteractionEnabled = !nextState.draft.mouseInteractionEnabled;
       } else if (selectedRow === 'autoCompressImages') {
         nextState.draft.autoCompressImages = !nextState.draft.autoCompressImages;
       } else if (selectedRow === 'checkUpdatesOnStartup') {
@@ -453,6 +455,8 @@ function adjustGeneralValue(state: GeneralConfigState, direction: number): Gener
     state.draft.slashSuggestionMaxVisible = clamp(state.draft.slashSuggestionMaxVisible + direction, 1, 20);
   } else if (selectedRow === 'reasoningSummary') {
     state.draft.showReasoningSummary = !state.draft.showReasoningSummary;
+  } else if (selectedRow === 'mouseInteraction') {
+    state.draft.mouseInteractionEnabled = !state.draft.mouseInteractionEnabled;
   } else if (selectedRow === 'defaultInteractionMode') {
     state.draft.defaultInteractionMode = state.draft.defaultInteractionMode === 'normal' ? 'plan' : 'normal';
   } else if (selectedRow === 'autoCompressImages') {

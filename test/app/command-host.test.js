@@ -626,6 +626,7 @@ test('CommandHost config facade saves and refreshes skill catalog context ratio'
       compactionThresholdRatio: 0.8,
       defaultInteractionMode: 'plan',
       fileEditMode: 'edit_file',
+      mouseInteractionEnabled: false,
       skillCatalogContextRatio: 0.03,
       slashSuggestionMaxVisible: 8,
       showReasoningSummary: true,
@@ -636,6 +637,7 @@ test('CommandHost config facade saves and refreshes skill catalog context ratio'
     assert.equal(calls.settingsRefreshes, 1);
     assert.equal(readConfig().skills.catalogContextRatio, 0.03);
     assert.equal(readConfig().ui.defaultInteractionMode, 'plan');
+    assert.equal(readConfig().ui.mouseInteractionEnabled, false);
     assert.equal(readConfig().tools.fileEdit.mode, 'edit_file');
     assert.equal(readConfig().tools.readFiles.autoCompressImages, false);
     assert.equal(readConfig().updates.checkOnStartup, false);

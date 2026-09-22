@@ -79,6 +79,7 @@ function renderGeneralView(state: GeneralConfigState, tabs: ConfigSurfaceTab[], 
     if (rowId === 'skillCatalogRatio') return {label: '技能列表上下文占比上限', value: `${Math.round(state.draft.skillCatalogContextRatio * 100)}%`};
     if (rowId === 'slashSuggestionLimit') return {label: 'Slash 建议最多显示', value: `${state.draft.slashSuggestionMaxVisible} 条`};
     if (rowId === 'reasoningSummary') return {label: '显示推理摘要', value: state.draft.showReasoningSummary ? '开' : '关'};
+    if (rowId === 'mouseInteraction') return {label: 'UI 鼠标交互', value: state.draft.mouseInteractionEnabled ? '开' : '关'};
     if (rowId === 'defaultInteractionMode') return {label: '默认启动模式', value: state.draft.defaultInteractionMode};
     if (rowId === 'autoCompressImages') return {label: '超限图片自动压缩', value: state.draft.autoCompressImages ? '开' : '关'};
     if (rowId === 'checkUpdatesOnStartup') return {label: '启动时检查更新', value: state.draft.checkUpdatesOnStartup ? '开' : '关'};

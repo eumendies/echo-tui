@@ -38,6 +38,7 @@ type AppSettingsApplyResult = {
   reasoningVisibilityChanged: boolean;
   skillCatalogContextRatioChanged: boolean;
   slashSuggestionLimitChanged: boolean;
+  mouseInteractionChanged: boolean; // 终端鼠标协议与可执行 hit region 是否需要重新投影。
   toolApprovalChanged: boolean; // 审批模式或 reviewer profile 是否变化，不代表需要 transcript 重绘。
 };
 
@@ -188,6 +189,11 @@ class AppContext {
    */
   getAutoCompressImages(): boolean {
     return this.userConfigContext.capture().getAppSettings().autoCompressImages;
+  }
+
+  /** 返回当前实例缓存的 UI 鼠标交互开关；main render 据此决定是否暴露可执行 hit region。 */
+  isMouseInteractionEnabled(): boolean {
+    return this.appSettingsSnapshot.getAppSettings().mouseInteractionEnabled;
   }
 
   /**
@@ -408,6 +414,7 @@ class AppContext {
     const reasoningVisibilityChanged = next.showReasoningSummary !== previous.showReasoningSummary;
     const skillCatalogContextRatioChanged = next.skillCatalogContextRatio !== previous.skillCatalogContextRatio;
     const slashSuggestionLimitChanged = next.slashSuggestionMaxVisible !== previous.slashSuggestionMaxVisible;
+    const mouseInteractionChanged = next.mouseInteractionEnabled !== previous.mouseInteractionEnabled;
     const toolApprovalChanged = next.toolApprovalMode !== previous.toolApprovalMode
       || next.toolApprovalModelProfileId !== previous.toolApprovalModelProfileId;
 
@@ -415,7 +422,7 @@ class AppContext {
     if (agentInstructionFileChanged || fileEditModeChanged || skillCatalogContextRatioChanged) {
       this.clearContextUsage();
     }
-    return {agentInstructionFileChanged, fileEditModeChanged, reasoningVisibilityChanged, skillCatalogContextRatioChanged, slashSuggestionLimitChanged, toolApprovalChanged};
+    return {agentInstructionFileChanged, fileEditModeChanged, reasoningVisibilityChanged, skillCatalogContextRatioChanged, slashSuggestionLimitChanged, mouseInteractionChanged, toolApprovalChanged};
   }
 
   /**
