@@ -30,6 +30,7 @@ import {BtwConversationController} from './btw-conversation-controller';
 import {SubagentViewController} from './subagent-view-controller';
 import {createToolApprovalReviewer} from './tool-approval/resolver';
 import {AutoUpdateController} from './auto-update-controller';
+import {ActiveInputResolver, createActiveInputRouting} from './active-input-resolver';
 import {FooterPointerController} from './footer-pointer-controller';
 
 import type {RunAgent} from '../types/agent';
@@ -78,6 +79,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
   let referenceErrorSurface: CommandSurface | null = null;
   let activeTurnObservationScope: AssistantTurnScope | null = null;
   let footerPointer: FooterPointerController | null = null;
+  let activeInputResolver: ActiveInputResolver;
   const btwConversation = new BtwConversationController({
     runAgent,
     getParentSession: () => appContext.getAgentSession(),
@@ -103,24 +105,20 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
    * 组合 AppContext 与 command runtime 的瞬时状态，交给 renderer 统一投影。
    */
   function createRenderState(): RenderState {
-    // 渲染投影优先展示 modal 和本地诊断 surface；输入消费顺序由 input controller 独立维护。
-    const highPrioritySurface = getActiveModalSurface();
-    // 当前 owner 接管 footer 输入区时，主会话专属 surface 必须让位，避免显示与输入所有者错位。
     const owner = currentOwner();
-    const modalSurface = highPrioritySurface || (owner === 'main' ? referenceErrorSurface || mcpDiagnosticSurface : null);
-    const commandSurface = modalSurface || (owner === 'main' ? commandRuntime.getSurface() : null);
-    const base = appContext.createRenderState({commandSurface, toolApproval});
+    // 输入与 footer surface 从同一仲裁结果派生；owner 仍只决定主/BTW/view 的可见投影边界。
+    const commandSurface = activeInputResolver.getSurface(owner);
+    const base = appContext.createRenderState({
+      commandSurface,
+      footerInteractionId: activeInputResolver.getPointerConsumer()?.id || null,
+      toolApproval
+    });
     if (owner === 'view') {
       return subagentView.createRenderState({...base, streamingOwner: 'view'});
     }
     return owner === 'btw'
       ? btwConversation.createRenderState({...base, streamingOwner: 'btw'})
       : {...base, streamingOwner: 'main'};
-  }
-
-  /** 用户问题、工具审批、文件选择与更新提示按优先级取第一个激活的 modal 表面;激活时 footer 输入区为静态卡片。 */
-  function getActiveModalSurface(): CommandSurface | null {
-    return userQuestion.getSurface() || toolApproval.getSurface() || filePicker.getSurface() || autoUpdate.getSurface() || null;
   }
 
   /** 当前接管可见投影的 owner；view 优先于 btw，都不活跃时为 main。 */
@@ -216,7 +214,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     }
 
     // 用户问题/工具审批/文件选择挂起时 spinner 状态行并不展示,周期重绘没有可见变化,只会整帧擦写高多行卡片造成频闪;按键路径仍会即时 render()。
-    if (getActiveModalSurface()) {
+    if (activeInputResolver.getActiveModalSurface()) {
       return;
     }
 
@@ -395,44 +393,44 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     },
     render
   });
-  // 测试和嵌入方可注入较小的旧 TerminalController；缺少协议能力时保持纯键盘路径。
-  if (typeof terminal.setMouseTracking === 'function' && typeof terminal.requestCursorPosition === 'function') {
-    footerPointer = new FooterPointerController({
-      appContext,
-      filePicker,
-      render,
-      terminal,
-      toolApproval,
-      userQuestion
-    });
-  }
-  const inputController = new InputEventController({
+  activeInputResolver = createActiveInputRouting({
     appContext,
-    userQuestion,
-    toolApproval,
-    filePicker,
     autoUpdate,
-    subagentView,
+    cancelReferencePreparation: () => commandHost.reference.cancelPreparation(),
     command: commandRuntime,
+    dispatchPendingMessage: () => submissionController.dispatchPendingMessage(),
+    exit,
+    filePicker,
     localSurface: {
-      hasActive: () => Boolean(referenceErrorSurface || mcpDiagnosticSurface),
       dismiss(): void {
         if (referenceErrorSurface) {
           referenceErrorSurface = null;
         } else {
           mcpDiagnosticSurface = null;
         }
-      }
+      },
+      getSurface: () => referenceErrorSurface || mcpDiagnosticSurface
     },
-    cancelReferencePreparation: () => {
-      commandHost.reference.cancelPreparation();
-    },
-    dispatchPendingMessage: () => submissionController.dispatchPendingMessage(),
+    render,
+    subagentView,
+    toolApproval,
+    userQuestion
+  });
+  footerPointer = new FooterPointerController({
+    getActivePointerConsumer: () => activeInputResolver.getPointerConsumer(),
+    terminal,
+  });
+  const inputController = new InputEventController({
+    appContext,
+    resolver: activeInputResolver,
+    openFilePicker: (triggerStart) => filePicker.open(triggerStart),
+    openSubagentView: () => subagentView.toggle(),
     submitComposer: () => submissionController.submitComposer(),
     interruptActiveShellCommand,
     interruptActiveTurn,
     exit,
     render,
+    toggleAllowAllForSession: () => toolApproval.toggleAllowAllForSession(),
     ...(footerPointer ? {pointer: footerPointer} : {})
   });
 
@@ -528,11 +526,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
    * 条件不满足时等待下一个 activity tick 重试，不降级为 toast 或 transcript 记录。
    */
   function canPresentAutoUpdate(): boolean {
-    if (currentOwner() !== 'main' || getActiveModalSurface() || commandRuntime.hasActiveSession()) {
-      return false;
-    }
-
-    if (appContext.modelTuningContext.isActive() || referenceErrorSurface || mcpDiagnosticSurface) {
+    if (currentOwner() !== 'main' || activeInputResolver.hasActiveExcept('auto-update')) {
       return false;
     }
 

@@ -1,24 +1,13 @@
 import {INPUT_EVENTS} from '../input/event-types';
 
-import type {AppContext} from './state/app-context';
-import type {FilePickerContext} from './state/file-picker-context';
-import type {ToolApprovalContext} from './state/tool-approval-context';
-import type {UserQuestionContext} from './state/user-question-context';
+import type {PointerInputConsumer} from './active-input-resolver';
 import type {TerminalController} from '../types/app';
 import type {InputEvent} from '../types/input';
 import type {FooterHitRegion, FooterPointerSnapshot} from '../types/render';
 
-type PointerQuestionPort = Pick<UserQuestionContext, 'hasActiveRequest' | 'handlePointerOption' | 'handlePointerTab'>;
-type PointerApprovalPort = Pick<ToolApprovalContext, 'hasActiveRequest' | 'handlePointerOption'>;
-type PointerFilePickerPort = Pick<FilePickerContext, 'hasActiveRequest' | 'handlePointerEntry'>;
-
 type FooterPointerControllerOptions = {
-  appContext: Pick<AppContext, 'handleSlashSuggestionPointer'>; // 主 composer slash suggestion 的鼠标语义入口。
-  filePicker: PointerFilePickerPort; // 文件选择器的当前 entry 鼠标语义入口。
-  render: () => void; // slash 补全不自带 onChange 时使用的 footer 重绘入口。
+  getActivePointerConsumer(): PointerInputConsumer | null; // 返回当前有效且显式支持鼠标语义的输入消费者。
   terminal: TerminalController; // TTY 鼠标模式与 CPR 查询的唯一能力边界。
-  toolApproval: PointerApprovalPort; // 工具审批 choice 的优先级输入入口。
-  userQuestion: PointerQuestionPort; // 用户问题 choice 的最高优先级输入入口。
 };
 
 type PointerCalibration = {
@@ -29,15 +18,11 @@ type PointerCalibration = {
 const CURSOR_POSITION_TIMEOUT_MS = 300;
 
 /**
- * 管理 footer 的鼠标命中与 CPR 坐标校准；只保存本次 render 的临时投影，不接触 transcript 或持久化状态。
+ * 管理 footer 的鼠标命中与 CPR 坐标校准；只保存当前 frame 临时投影，并把业务 target 转交给活跃 pointer consumer。
  */
 class FooterPointerController {
-  private readonly appContext: Pick<AppContext, 'handleSlashSuggestionPointer'>;
-  private readonly filePicker: PointerFilePickerPort;
-  private readonly render: () => void;
+  private readonly getActivePointerConsumer: () => PointerInputConsumer | null;
   private readonly terminal: TerminalController;
-  private readonly toolApproval: PointerApprovalPort;
-  private readonly userQuestion: PointerQuestionPort;
   private interactive = false;
   private snapshot: FooterPointerSnapshot | null = null;
   private calibration: PointerCalibration | null = null;
@@ -46,16 +31,12 @@ class FooterPointerController {
   private lastHoverKey: string | null = null;
 
   constructor(options: FooterPointerControllerOptions) {
-    this.appContext = options.appContext;
-    this.filePicker = options.filePicker;
-    this.render = options.render;
+    this.getActivePointerConsumer = options.getActivePointerConsumer;
     this.terminal = options.terminal;
-    this.toolApproval = options.toolApproval;
-    this.userQuestion = options.userQuestion;
   }
 
   /**
-   * 接收 footer 已成功写入终端后的 frame 快照；只在第一阶段实际接收鼠标语义的 surface 启用报告。
+   * 接收 footer 已成功写入终端后的 frame 快照；仅当前 pointer consumer 有匹配区域时启用鼠标报告。
    */
   update(snapshot: FooterPointerSnapshot): void {
     const interactive = this.isInteractiveSnapshot(snapshot);
@@ -190,35 +171,15 @@ class FooterPointerController {
     }, CURSOR_POSITION_TIMEOUT_MS);
   }
 
-  /** 按当前最高优先级 context 将结构化 target 转换为领域语义，绝不通用模拟 Enter。 */
+  /** 将已校准命中的 target 交给仍然匹配 interactionId 的当前 consumer，不解释业务 choice 或文件语义。 */
   private route(region: FooterHitRegion, activate: boolean): void {
-    if (region.target.kind === 'slash_suggestion') {
-      if (region.owner === 'slash_suggestion' && this.appContext.handleSlashSuggestionPointer(region.target.index, activate)) {
-        this.render();
-      }
+    const consumer = this.getActivePointerConsumer();
+
+    if (!consumer || !region.interactionId || region.interactionId !== consumer.id) {
       return;
     }
 
-    if (region.target.kind === 'choice_option') {
-      if (region.owner !== 'choice') return;
-      if (this.userQuestion.hasActiveRequest()) {
-        this.userQuestion.handlePointerOption(region.target.index, activate && !region.target.inlineInput);
-        return;
-      }
-      if (this.toolApproval.hasActiveRequest()) {
-        this.toolApproval.handlePointerOption(region.target.index, activate && !region.target.inlineInput);
-      }
-      return;
-    }
-
-    if (region.target.kind === 'choice_tab' && region.owner === 'choice' && this.userQuestion.hasActiveRequest()) {
-      this.userQuestion.handlePointerTab(region.target.index);
-      return;
-    }
-
-    if (region.target.kind === 'file_picker_entry' && region.owner === 'file_picker' && this.filePicker.hasActiveRequest()) {
-      this.filePicker.handlePointerEntry(region.target.index, activate);
-    }
+    consumer.handlePointer(region.target, activate);
   }
 
   /** 清空当前 frame、校准与 hover 状态；在途 CPR 保留至回复或超时，避免和后续请求串线。 */
@@ -240,11 +201,10 @@ class FooterPointerController {
     this.clearCalibrationTimeout();
   }
 
-  /** 判断当前 hit map 是否属于已接入的四类鼠标 surface，排除通用 choice 的其他调用方。 */
+  /** 判断当前 hit map 是否属于当前 resolver 返回的 pointer consumer。 */
   private isInteractiveSnapshot(snapshot: FooterPointerSnapshot): boolean {
-    return snapshot.hitRegions.some((region) => region.owner === 'slash_suggestion'
-      || region.owner === 'choice' && (this.userQuestion.hasActiveRequest() || this.toolApproval.hasActiveRequest())
-      || region.owner === 'file_picker' && this.filePicker.hasActiveRequest());
+    const consumer = this.getActivePointerConsumer();
+    return Boolean(consumer && snapshot.hitRegions.some((region) => region.interactionId === consumer.id));
   }
 
   private clearCalibrationTimeout(): void {
@@ -257,7 +217,7 @@ class FooterPointerController {
 
 function createRegionKey(region: FooterHitRegion): string {
   const target = region.target;
-  return `${region.owner}:${target.kind}:${target.index}`;
+  return `${region.interactionId || ''}:${region.owner}:${target.kind}:${target.index}`;
 }
 
 export {

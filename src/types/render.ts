@@ -162,6 +162,7 @@ export type PendingMessageRenderState = {
 
 export type RenderState = {
   composer: ComposerState;
+  footerInteractionId?: string | null; // 当前 footer 可鼠标交互消费者的稳定身份；省略时所有命中区域仅作布局投影。
   streamingOwner?: string; // 区分主会话与各个 BTW 会话独立的流式显示进度。
   conversationReference?: ConversationReferenceRenderState | null; // composer 上方展示的瞬时历史会话引用卡片。
   pendingMessage?: PendingMessageRenderState | null; // composer 上方展示的单条 transient 待发送消息。
@@ -197,6 +198,7 @@ export type FooterMouseTarget =
     };
 
 export type FooterHitRegion = {
+  interactionId?: string; // 生成本区域的 pointer consumer 身份；缺省区域不得被终端鼠标路由执行。
   owner: 'slash_suggestion' | 'choice' | 'file_picker'; // 生成该区域的 footer 交互 surface 类别。
   target: FooterMouseTarget; // 命中后交给输入路由的无副作用语义目标。
   rowStart: number; // 相对 footer 的 0-based 起始可见行，含端点。
