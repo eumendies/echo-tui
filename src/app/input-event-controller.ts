@@ -4,40 +4,16 @@ import {createKeyParser} from '../input/key-parser';
 import {isShellInteractionMode} from '../types/agent';
 
 import type {InputEvent} from '../types/input';
+import {ActiveInputResolver} from './active-input-resolver';
 import type {AppContext} from './state/app-context';
-import type {FilePickerContext} from './state/file-picker-context';
-import type {ToolApprovalContext} from './state/tool-approval-context';
-import type {UserQuestionContext} from './state/user-question-context';
-import type {AutoUpdateController} from './auto-update-controller';
 import type {FooterPointerController} from './footer-pointer-controller';
 
-type InputCommandPort = {
-  hasActiveSession(): boolean; // 当前是否由 command session 独占输入。
-  handleEvent(event: InputEvent): Promise<void> | undefined; // 把事件交给活跃 command session。
-};
-
-type LocalSurfacePort = {
-  hasActive(): boolean; // 是否存在由 main 持有的 reference/MCP info surface。
-  dismiss(): void; // 按 main 定义的优先级关闭当前本地 surface。
-};
-
-type SubagentViewPort = {
-  isActive(): boolean; // subagent 会话窗口是否接管输入。
-  toggle(): void; // Ctrl+O 打开/关闭窗口。
-  handleEvent(event: InputEvent): boolean; // 窗口内按键消费；返回 false 放行（仅 EXIT）。
-};
-
 type InputEventControllerOptions = {
-  appContext: AppContext; // 提供 composer、turn、mode、pending 和 suggestion 语义状态。
-  userQuestion: Pick<UserQuestionContext, 'hasActiveRequest' | 'handleEvent'>; // 最高优先级的用户问题 modal。
-  toolApproval: Pick<ToolApprovalContext, 'hasActiveRequest' | 'handleEvent' | 'toggleAllowAllForSession'>; // 工具审批 modal 与会话快捷键。
-  filePicker: Pick<FilePickerContext, 'hasActiveRequest' | 'handleEvent' | 'open'>; // 文件选择 surface 与 @ 触发入口。
-  autoUpdate: Pick<AutoUpdateController, 'hasActiveRequest' | 'handleEvent'>; // 最低优先级 modal：启动更新提示。
-  subagentView: SubagentViewPort; // subagent 会话窗口输入端口；优先级位于 modal 之后、command session 之前。
-  command: InputCommandPort; // 活跃 slash command session 的输入端口。
-  localSurface: LocalSurfacePort; // main 持有的 reference error 和 MCP diagnostic surface。
-  cancelReferencePreparation(): void; // 取消发送前运行中的会话引用总结。
-  dispatchPendingMessage(): Promise<void>; // command session 关闭后重试尚未 claim 的 queued command。
+  appContext: AppContext; // 提供普通 composer fallback 所需的状态与语义方法。
+  resolver: ActiveInputResolver; // 按唯一注册顺序解析当前非协议输入消费者。
+  openFilePicker(triggerStart: number): void; // 普通 composer 输入 @ 后打开文件选择器。
+  openSubagentView(): void; // Ctrl+O 在没有 active surface 时尝试打开子 Agent窗口。
+  toggleAllowAllForSession(): void; // 普通输入态 Shift+Tab 的工具授权快捷键。
   submitComposer(): Promise<void>; // 提交或排队 live composer。
   interruptActiveShellCommand(): boolean; // 尝试中断当前 shell mode 进程。
   interruptActiveTurn(): boolean; // 尝试中断当前 assistant turn。
@@ -47,19 +23,14 @@ type InputEventControllerOptions = {
 };
 
 /**
- * 持有跨 chunk key parser，并按固定优先级把输入事件路由到 modal、surface、composer 和生命周期动作。
+ * 持有跨 chunk key parser，并将协议事件、active consumer 与普通 composer fallback 保持在同一输入协调边界。
  */
 class InputEventController {
   private readonly appContext: AppContext;
-  private readonly userQuestion: Pick<UserQuestionContext, 'hasActiveRequest' | 'handleEvent'>;
-  private readonly toolApproval: Pick<ToolApprovalContext, 'hasActiveRequest' | 'handleEvent' | 'toggleAllowAllForSession'>;
-  private readonly filePicker: Pick<FilePickerContext, 'hasActiveRequest' | 'handleEvent' | 'open'>;
-  private readonly autoUpdate: Pick<AutoUpdateController, 'hasActiveRequest' | 'handleEvent'>;
-  private readonly subagentView: SubagentViewPort;
-  private readonly command: InputCommandPort;
-  private readonly localSurface: LocalSurfacePort;
-  private readonly cancelReferencePreparation: () => void;
-  private readonly dispatchPendingMessage: () => Promise<void>;
+  private readonly resolver: ActiveInputResolver;
+  private readonly openFilePicker: (triggerStart: number) => void;
+  private readonly openSubagentView: () => void;
+  private readonly toggleAllowAllForSession: () => void;
   private readonly submitComposer: () => Promise<void>;
   private readonly interruptActiveShellCommand: () => boolean;
   private readonly interruptActiveTurn: () => boolean;
@@ -71,15 +42,10 @@ class InputEventController {
 
   constructor(options: InputEventControllerOptions) {
     this.appContext = options.appContext;
-    this.userQuestion = options.userQuestion;
-    this.toolApproval = options.toolApproval;
-    this.filePicker = options.filePicker;
-    this.autoUpdate = options.autoUpdate;
-    this.subagentView = options.subagentView;
-    this.command = options.command;
-    this.localSurface = options.localSurface;
-    this.cancelReferencePreparation = options.cancelReferencePreparation;
-    this.dispatchPendingMessage = options.dispatchPendingMessage;
+    this.resolver = options.resolver;
+    this.openFilePicker = options.openFilePicker;
+    this.openSubagentView = options.openSubagentView;
+    this.toggleAllowAllForSession = options.toggleAllowAllForSession;
     this.submitComposer = options.submitComposer;
     this.interruptActiveShellCommand = options.interruptActiveShellCommand;
     this.interruptActiveTurn = options.interruptActiveTurn;
@@ -107,85 +73,39 @@ class InputEventController {
   };
 
   /**
-   * 按既有 surface 和快捷键优先级处理单个语义输入事件。
+   * 优先消费终端协议事件，再把语义事件交给 resolver 的当前消费者；只有明确放行时才进入 composer fallback。
    */
   readonly handleEvent = (event: InputEvent): Promise<void> | void => {
     this.lastInputAt = Date.now();
     if (this.pointer?.handleEvent(event)) {
       return undefined;
     }
-    if (this.userQuestion.hasActiveRequest()) {
-      this.userQuestion.handleEvent(event);
-      return undefined;
+
+    const consumer = this.resolver.resolve();
+
+    if (!consumer) {
+      return this.handleComposerFallback(event);
     }
 
-    if (this.toolApproval.hasActiveRequest()) {
-      this.toolApproval.handleEvent(event);
-      return undefined;
-    }
+    const result = consumer.handleEvent(event);
 
-    if (this.filePicker.hasActiveRequest()) {
-      this.filePicker.handleEvent(event);
-      return undefined;
-    }
-
-    if (this.autoUpdate.hasActiveRequest()) {
-      this.autoUpdate.handleEvent(event);
-      return undefined;
-    }
-
-    if (this.subagentView.isActive()) {
-      // 窗口内 Esc/↑/↓/Ctrl+O 由窗口消费且不触达 turn 中断；EXIT 返回 false 继续走退出路径。
-      if (this.subagentView.handleEvent(event)) {
-        return undefined;
-      }
-    } else if (event.type === INPUT_EVENTS.OPEN_SUBAGENT_VIEW && !this.command.hasActiveSession()) {
-      // Ctrl+O 打开 subagent 会话窗口；command session（含 BTW）活跃时保持互斥。
-      this.subagentView.toggle();
-      return undefined;
-    }
-
-    if (this.command.hasActiveSession()) {
-      const result = this.command.handleEvent(event);
-      const dispatchAfterClose = (): void => {
-        // queued command 等当前 surface 关闭后，才能回到正常 command runtime 路由。
-        if (!this.command.hasActiveSession()) {
-          void this.dispatchPendingMessage();
+    if (isPromiseLike(result)) {
+      return result.then((handled) => {
+        if (handled === false) {
+          return this.handleComposerFallback(event);
         }
-      };
-
-      if (result) {
-        return result.then(dispatchAfterClose);
-      }
-
-      dispatchAfterClose();
-      return undefined;
+      });
     }
 
-    if (this.appContext.conversationReferenceContext.isPreparing()) {
-      if (event.type === INPUT_EVENTS.ESCAPE) {
-        this.cancelReferencePreparation();
-      } else if (event.type === INPUT_EVENTS.EXIT) {
-        this.exit();
-      }
-      return undefined;
-    }
+    return result === false ? this.handleComposerFallback(event) : undefined;
+  };
 
-    if (this.localSurface.hasActive()) {
-      if (event.type === INPUT_EVENTS.EXIT) {
-        this.exit();
-        return undefined;
-      }
-
-      if (event.type === INPUT_EVENTS.ESCAPE || event.type === INPUT_EVENTS.SUBMIT) {
-        this.localSurface.dismiss();
-        this.render();
-      }
-      return undefined;
-    }
-
-    if (this.appContext.handleModelTuningEvent(event)) {
-      this.render();
+  /**
+   * 处理没有 active surface 消费的主 composer 事件；此处保留历史、模式、@、Esc 与提交的既有顺序。
+   */
+  private handleComposerFallback(event: InputEvent): Promise<void> | void {
+    if (event.type === INPUT_EVENTS.OPEN_SUBAGENT_VIEW) {
+      this.openSubagentView();
       return undefined;
     }
 
@@ -196,19 +116,14 @@ class InputEventController {
     }
 
     if (event.type === INPUT_EVENTS.SHIFT_TAB) {
-      this.toolApproval.toggleAllowAllForSession();
+      this.toggleAllowAllForSession();
       return undefined;
     }
 
     if (event.type === INPUT_EVENTS.TEXT && event.value === '@' && !isShellInteractionMode(this.appContext.getInteractionMode())) {
       this.appContext.composerContext.leaveHistoryBrowsing();
       composerOps.insertText(this.appContext.composerContext.composer, '@');
-      this.filePicker.open(this.appContext.composerContext.composer.cursor - 1);
-      return undefined;
-    }
-
-    if (this.appContext.getMcpBootstrapStatus() !== 'initializing' && this.appContext.handleSlashSuggestionEvent(event)) {
-      this.render();
+      this.openFilePicker(this.appContext.composerContext.composer.cursor - 1);
       return undefined;
     }
 
@@ -258,9 +173,7 @@ class InputEventController {
         if (this.interruptActiveShellCommand()) {
           return undefined;
         }
-        if (this.interruptActiveTurn()) {
-          return undefined;
-        }
+        this.interruptActiveTurn();
         return undefined;
       case INPUT_EVENTS.SUBMIT:
         return this.submitComposer();
@@ -270,7 +183,7 @@ class InputEventController {
       default:
         return undefined;
     }
-  };
+  }
 
   /**
    * 返回最近一次输入事件的毫秒时间戳；0 表示本实例尚未收到输入。更新提示的空闲门控读取该值。
@@ -280,13 +193,14 @@ class InputEventController {
   }
 }
 
+function isPromiseLike(value: unknown): value is Promise<boolean | void> {
+  return Boolean(value && typeof value === 'object' && 'then' in value && typeof value.then === 'function');
+}
+
 export {
   InputEventController
 };
 
 export type {
-  InputCommandPort,
-  InputEventControllerOptions,
-  LocalSurfacePort,
-  SubagentViewPort
+  InputEventControllerOptions
 };

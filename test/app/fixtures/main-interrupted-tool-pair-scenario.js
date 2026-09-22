@@ -9,7 +9,9 @@ terminalModule.setupTerminal = () => ({
   cleanup() {},
   getSize() {
     return {columns: 80, rows: 24};
-  }
+  },
+  setMouseTracking() {},
+  requestCursorPosition() { return false; }
 });
 
 // 只记录 renderRecords 的批次边界：一次调用里的 records 代表一个稳定投影批次。

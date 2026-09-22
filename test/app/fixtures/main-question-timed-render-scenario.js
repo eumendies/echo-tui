@@ -6,7 +6,9 @@ terminalModule.setupTerminal = () => ({
   cleanup() {},
   getSize() {
     return {columns: 80, rows: 24};
-  }
+  },
+  setMouseTracking() {},
+  requestCursorPosition() { return false; }
 });
 
 const renders = [];
@@ -22,9 +24,15 @@ const renderer = {
     renders.push(capture(options));
   },
   clearFooter() {},
-  render: (options) => renders.push(capture(options)),
-  renderDestructive: (options) => renders.push(capture(options)),
-  renderInitial: (options) => renders.push(capture(options))
+  render(options) {
+    renders.push(capture(options));
+  },
+  renderDestructive(options) {
+    renders.push(capture(options));
+  },
+  renderInitial(options) {
+    renders.push(capture(options));
+  }
 };
 const rendererModule = require(path.join(root, 'dist/src/render/app-renderer'));
 rendererModule.createAppRenderer = () => renderer;

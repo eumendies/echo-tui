@@ -219,7 +219,7 @@ export function createFooterRenderer(output: NodeJS.WriteStream = process.stdout
  * 根据当前状态生成 footer 的逐行布局和光标坐标。
  *
  */
-export function renderFooterLayout({ composer, conversationReference, pendingMessage, commandSurface, slashSuggestions, pending, working, viewIndexLines, theme = DEFAULT_TUI_THEME, renderPreferences = DEFAULT_RENDER_PREFERENCES, statusLine, rows, width }: RenderState): FooterLayout {
+export function renderFooterLayout({ composer, conversationReference, pendingMessage, commandSurface, footerInteractionId, slashSuggestions, pending, working, viewIndexLines, theme = DEFAULT_TUI_THEME, renderPreferences = DEFAULT_RENDER_PREFERENCES, statusLine, rows, width }: RenderState): FooterLayout {
   const footerWidth = width || 80;
   const maxFooterLines = calculateFooterMaxLines(rows);
   const transcriptComposerSpacerLine = TRANSCRIPT_COMPOSER_SPACER_LINE;
@@ -238,12 +238,16 @@ export function renderFooterLayout({ composer, conversationReference, pendingMes
   const pendingMaxLines = Math.max(0, maxFooterLines - fixedLineCount - inputSurface.lines.length);
   const pendingLines = pending ? renderPendingAssistantLines(pending, footerWidth, pendingMaxLines, theme) : [];
   const inputOffset = pendingLines.length + 1;
+  // 只有组合根已确认当前 surface 的 pointer consumer 时才暴露可执行 hit map，避免通用 choice 布局猜测业务所有者。
+  const hitRegions = footerInteractionId && inputSurface.hitRegions
+    ? inputSurface.hitRegions.map((region) => ({...region, interactionId: footerInteractionId, target: {...region.target}}))
+    : undefined;
   const layout = {
     lines: [...pendingLines, transcriptComposerSpacerLine, ...inputSurface.lines],
     cursorRow: pendingLines.length + 1 + inputSurface.cursorRow,
     cursorColumn: inputSurface.cursorColumn,
     showCursor: inputSurface.showCursor,
-    ...(inputSurface.hitRegions ? {hitRegions: offsetHitRegions(inputSurface.hitRegions, inputOffset)} : {})
+    ...(hitRegions ? {hitRegions: offsetHitRegions(hitRegions, inputOffset)} : {})
   };
 
   return constrainLayoutTail(layout, maxFooterLines);

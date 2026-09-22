@@ -696,6 +696,7 @@ test('renderFooterLayout exposes hit regions only for visible slash, choice, and
   const slash = renderFooterLayout({
     composer: createComposer('/'),
     commandSurface: null,
+    footerInteractionId: 'slash-suggestion',
     slashSuggestions: {selectedIndex: 1, options: [{label: '/help'}, {label: '/history'}]},
     pending: null,
     statusLine: DEFAULT_STATUS_LINE,
@@ -705,9 +706,11 @@ test('renderFooterLayout exposes hit regions only for visible slash, choice, and
     {kind: 'slash_suggestion', index: 0},
     {kind: 'slash_suggestion', index: 1}
   ]);
+  assert.deepEqual(slash.hitRegions.map((region) => region.interactionId), ['slash-suggestion', 'slash-suggestion']);
 
   const choice = renderFooterLayout({
     composer: createComposer(''),
+    footerInteractionId: 'user-question',
     commandSurface: {
       kind: 'choice',
       title: '选择',
@@ -723,9 +726,11 @@ test('renderFooterLayout exposes hit regions only for visible slash, choice, and
     {kind: 'choice_option', index: 0, inlineInput: false},
     {kind: 'choice_option', index: 1, inlineInput: true}
   ]);
+  assert.deepEqual(choice.hitRegions.map((region) => region.interactionId), ['user-question', 'user-question']);
 
   const picker = renderFooterLayout({
     composer: createComposer(''),
+    footerInteractionId: 'file-picker',
     commandSurface: {
       kind: 'file_picker',
       title: 'Paths',
@@ -745,6 +750,7 @@ test('renderFooterLayout exposes hit regions only for visible slash, choice, and
   assert.deepEqual(picker.hitRegions.map((region) => region.target), [
     {kind: 'file_picker_entry', index: 0}
   ]);
+  assert.equal(picker.hitRegions[0].interactionId, 'file-picker');
   assert.equal(picker.hitRegions[0].columnStart, 3);
   assert.ok(picker.hitRegions[0].columnEnd < 40);
 });
@@ -752,6 +758,7 @@ test('renderFooterLayout exposes hit regions only for visible slash, choice, and
 test('renderFooterLayout drops hit regions for choice options hidden by the footer height budget', () => {
   const layout = renderFooterLayout({
     composer: createComposer(''),
+    footerInteractionId: 'user-question',
     commandSurface: {
       kind: 'choice',
       title: '选择',

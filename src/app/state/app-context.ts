@@ -262,7 +262,7 @@ class AppContext {
   /**
    * 组合渲染层需要的瞬时状态，避免 main.ts 反复散落访问实例字段。
    */
-  createRenderState(options: {commandSurface?: CommandSurface | null; toolApproval?: Pick<ToolApprovalContext, 'isAllowAllForSession'> | null} = {}): RenderState {
+  createRenderState(options: {commandSurface?: CommandSurface | null; footerInteractionId?: RenderState['footerInteractionId']; toolApproval?: Pick<ToolApprovalContext, 'isAllowAllForSession'> | null} = {}): RenderState {
     const appSettings = this.userConfigContext.capture().getAppSettings();
     const commandSurface = options.commandSurface ?? null;
     const modelTuningSnapshot = commandSurface ? null : this.modelTuningContext.getRenderState();
@@ -283,6 +283,7 @@ class AppContext {
       commandSurface,
       conversationReference: this.conversationReferenceContext.getRenderState(),
       contextUsage: this.contextUsage,
+      footerInteractionId: options.footerInteractionId,
       model,
       pendingMessage: this.pendingMessageContext.getRenderState(),
       renderPreferences: {
