@@ -55,6 +55,7 @@ function createConfigRootFromAppSettings(settings) {
     },
     ui: {
       defaultInteractionMode: settings.defaultInteractionMode,
+      mouseInteractionEnabled: settings.mouseInteractionEnabled,
       showReasoningSummary: settings.showReasoningSummary,
       slashSuggestionMaxVisible: settings.slashSuggestionMaxVisible
     }
@@ -816,6 +817,7 @@ test('AppContext snapshots app settings into render state and agent sessions', (
       compactionThresholdRatio: 0.65,
       defaultInteractionMode: 'plan',
       fileEditMode: 'apply_patch',
+      mouseInteractionEnabled: true,
       skillCatalogContextRatio: 0.04,
       showReasoningSummary: false,
       slashSuggestionMaxVisible: 3,
@@ -832,6 +834,7 @@ test('AppContext snapshots app settings into render state and agent sessions', (
   assert.equal(context.getAgentSession().skillCatalogContextRatio, 0.04);
   assert.equal(context.getInteractionMode(), 'plan');
   assert.equal(context.getAutoCompressImages(), false);
+  assert.equal(context.isMouseInteractionEnabled(), true);
   assert.deepEqual(context.getToolApprovalSettings(), {mode: 'auto', modelProfileId: 'reviewer'});
 });
 
@@ -852,7 +855,7 @@ test('AppContext refreshes external app settings and classifies redraw impact', 
       instructions: {fileName: 'CLAUDE.md'},
       skills: {catalogContextRatio: 0.07},
       tools: {readFiles: {autoCompressImages: false}},
-      ui: {defaultInteractionMode: 'plan', showReasoningSummary: false, slashSuggestionMaxVisible: 4}
+      ui: {defaultInteractionMode: 'plan', mouseInteractionEnabled: true, showReasoningSummary: false, slashSuggestionMaxVisible: 4}
     }));
     const result = context.applyAppSettingsSnapshot(userConfigContext.refresh().snapshot);
 
@@ -862,12 +865,14 @@ test('AppContext refreshes external app settings and classifies redraw impact', 
       reasoningVisibilityChanged: true,
       skillCatalogContextRatioChanged: true,
       slashSuggestionLimitChanged: true,
+      mouseInteractionChanged: true,
       toolApprovalChanged: false
     });
     assert.equal(context.getAgentSession().compactionThresholdRatio, 0.65);
     assert.equal(context.getAgentSession().skillCatalogContextRatio, 0.07);
     assert.equal(context.getInteractionMode(), 'normal');
     assert.equal(context.getAutoCompressImages(), false);
+    assert.equal(context.isMouseInteractionEnabled(), true);
     assert.equal(context.getContextUsage(), null);
     assert.deepEqual(context.createRenderState().renderPreferences, {
       showReasoningSummary: false,
@@ -902,6 +907,7 @@ test('AppContext refreshes image compression without clearing context usage or r
       reasoningVisibilityChanged: false,
       skillCatalogContextRatioChanged: false,
       slashSuggestionLimitChanged: false,
+      mouseInteractionChanged: false,
       toolApprovalChanged: false
     });
     assert.equal(context.getAutoCompressImages(), false);

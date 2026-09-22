@@ -4,17 +4,24 @@
 TBD - created by archiving change add-mouse-list-interactions. Update Purpose after archive.
 ## Requirements
 ### Requirement: 鼠标能力按交互列表生命周期启停
-系统 SHALL 仅在 stdin 与 stdout 均为 TTY、且当前可见 footer 为第一阶段支持鼠标的交互列表时启用终端鼠标报告。系统 SHALL 使用支持移动、按下和释放坐标的 SGR 扩展报告格式，并 SHALL 在列表关闭、owner 切换、应用退出、信号清理或终端初始化失败时禁用此前启用的鼠标模式。系统 SHALL NOT 在 headless `--once` 或非 TTY 路径启用该模式。
+系统 SHALL 仅在 `ui.mouseInteractionEnabled` 为 `true`、stdin 与 stdout 均为 TTY、且当前可见 footer 为第一阶段支持鼠标的交互列表时启用终端鼠标报告。系统 SHALL 使用支持移动、按下和释放坐标的 SGR 扩展报告格式，并 SHALL 在设置关闭、列表关闭、owner 切换、应用退出、信号清理或终端初始化失败时禁用此前启用的鼠标模式。系统 SHALL NOT 在 headless `--once`、非 TTY 路径或用户关闭 UI 鼠标交互时启用该模式。
 
-#### Scenario: 打开支持的交互列表时启用鼠标报告
-- **WHEN** slash suggestion、用户问题 choice、工具审批 choice 或 file picker 成为当前可见且接收输入的 surface
+#### Scenario: 开启 UI 鼠标交互后打开支持的交互列表
+- **WHEN** `ui.mouseInteractionEnabled` 为 true
+- **AND** slash suggestion、用户问题 choice、工具审批 choice 或 file picker 成为当前可见且接收输入的 surface
 - **AND** stdin 与 stdout 均为 TTY
 - **THEN** 系统 SHALL 启用 SGR 鼠标报告以接收移动、左键按下和左键释放坐标
 - **THEN** 系统 SHALL 保持既有 raw mode 与 bracketed paste 行为
 
+#### Scenario: 关闭 UI 鼠标交互时保持终端原生滚动路径
+- **WHEN** `ui.mouseInteractionEnabled` 为 false
+- **AND** 当前可见 footer 是支持鼠标的交互列表
+- **THEN** 系统 SHALL NOT 输出鼠标模式 ANSI 序列或请求用于鼠标命中的 CPR
+- **THEN** 系统 SHALL 保持键盘交互，并将终端原生鼠标与 scrollback 行为留给宿主终端
+
 #### Scenario: 关闭或替换列表时恢复鼠标模式
-- **WHEN** 当前支持鼠标的列表关闭、被更高优先级 surface 替换或应用退出
-- **THEN** 系统 SHALL 禁用其先前启用的鼠标报告模式
+- **WHEN** 已启用鼠标的当前支持列表关闭、被更高优先级 surface 替换或应用退出
+- **THEN** 系统 SHALL 禁用其先前启用的鼠标报告
 - **THEN** 后续普通 composer 输入 SHALL NOT 因该列表残留终端鼠标模式而接收鼠标报告
 
 #### Scenario: 非交互终端保持既有行为
@@ -42,20 +49,26 @@ TBD - created by archiving change add-mouse-list-interactions. Update Purpose af
 - **THEN** 系统 SHALL NOT 将该报告作为鼠标点击、普通文本或业务输入分发
 
 ### Requirement: 当前 footer 布局提供版本化鼠标命中区域
-系统 SHALL 由 footer renderer 为当前可见且可鼠标操作的列表项生成临时命中区域。每个区域 SHALL 绑定当前 render version、布局 surface owner、当前 pointer consumer 的稳定交互身份、相对 footer 的可见行列范围及结构化语义 target。高度裁剪、窗口化、`more` 提示、不可选行和被替换的 footer SHALL NOT 暴露可执行命中区域。命中区域、交互身份、屏幕定位信息与 hover 状态 SHALL NOT 写入 transcript、会话持久化或 provider request。
+系统 SHALL 仅在 `ui.mouseInteractionEnabled` 为 true 时，由 footer renderer 为当前可见且可鼠标操作的列表项生成临时命中区域。每个区域 SHALL 绑定当前 render version、布局 surface owner、当前 pointer consumer 的稳定交互身份、相对 footer 的可见行列范围及结构化语义 target。高度裁剪、窗口化、`more` 提示、不可选行、用户关闭 UI 鼠标交互或被替换的 footer SHALL NOT 暴露可执行命中区域。命中区域、交互身份、屏幕定位信息与 hover 状态 SHALL NOT 写入 transcript、会话持久化或 provider request。
 
 #### Scenario: 仅可见 option 可命中
-- **WHEN** 一个支持鼠标的列表因 footer 高度预算而窗口化
+- **WHEN** 已开启 UI 鼠标交互的支持鼠标列表因 footer 高度预算而窗口化
 - **THEN** hit map SHALL 只包含当前实际渲染的可选项
 - **THEN** 被裁剪的 option 与 `more` 提示行 SHALL NOT 可通过鼠标直接选择或确认
 
+#### Scenario: 关闭设置不生成可执行命中区域
+- **WHEN** `ui.mouseInteractionEnabled` 为 false
+- **AND** 当前 footer 的布局 surface 本身提供候选 hit region
+- **THEN** 最终 footer layout SHALL 不包含带 interaction identity 的可执行 hit region
+- **THEN** pointer controller SHALL 不得因该 layout 启用鼠标报告或执行 hover、点击动作
+
 #### Scenario: 新 render 使旧命中区域失效
-- **WHEN** footer 因输入、surface owner 切换、resize recovery 或清理而完成新 render
+- **WHEN** footer 因输入、UI 鼠标交互设置变化、surface owner 切换、resize recovery 或清理而完成新 render
 - **THEN** 系统 SHALL 使上一 render version 的 hit map 失效
 - **THEN** 迟到的鼠标事件 SHALL NOT 作用于旧 layout 的目标
 
 #### Scenario: 通用 choice 布局保留消费者身份
-- **WHEN** 不同业务消费者使用同一个 choice footer 布局
+- **WHEN** 已开启 UI 鼠标交互且不同业务消费者使用同一个 choice footer 布局
 - **THEN** renderer SHALL 为当前可见 option 生成带当前消费者交互身份的 hit region
 - **THEN** pointer 路由 SHALL 不通过猜测 `choice` 的业务来源来决定处理者
 

@@ -45,6 +45,7 @@ class FooterPointerController {
 
     if (!interactive) {
       this.clearCurrentFrame();
+      this.cancelPendingCalibration();
       return;
     }
 
@@ -182,7 +183,7 @@ class FooterPointerController {
     consumer.handlePointer(region.target, activate);
   }
 
-  /** 清空当前 frame、校准与 hover 状态；在途 CPR 保留至回复或超时，避免和后续请求串线。 */
+  /** 清空当前 frame、校准与 hover 状态；调用方在关闭交互时同时取消在途 CPR。 */
   private clearCurrentFrame(): void {
     this.snapshot = null;
     this.calibration = null;

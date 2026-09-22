@@ -693,6 +693,16 @@ test('renderFooterLayout applies custom theme to composer status and active sugg
 });
 
 test('renderFooterLayout exposes hit regions only for visible slash, choice, and file-picker entries', () => {
+  const disabled = renderFooterLayout({
+    composer: createComposer('/'),
+    commandSurface: null,
+    slashSuggestions: {selectedIndex: 0, options: [{label: '/help'}]},
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    width: 80
+  });
+  assert.equal(disabled.hitRegions, undefined);
+
   const slash = renderFooterLayout({
     composer: createComposer('/'),
     commandSurface: null,

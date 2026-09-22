@@ -77,6 +77,29 @@ test('createApp suppresses timed footer redraws while a user question surface is
   }
 });
 
+test('createApp gates UI mouse interaction by the saved setting and applies changes immediately', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-main-ui-mouse-'));
+
+  try {
+    const fixturePath = path.join(__dirname, 'fixtures/main-ui-mouse-interaction-scenario.js');
+    const output = childProcess.execFileSync(process.execPath, [fixturePath], {
+      cwd: path.resolve(__dirname, '../../..'),
+      encoding: 'utf8',
+      env: {...process.env, HOME: home},
+      timeout: 15_000
+    });
+    const result = JSON.parse(output);
+
+    assert.equal(result.disabledEnabled, false);
+    assert.equal(result.disabledRequests, 0);
+    assert.equal(result.enabledInteractionId, 'user-question');
+    assert.equal(result.enabledRequests > 0, true);
+    assert.equal(result.disabledAfterEnable, true);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
 test('createApp persists an interrupted tool call as a paired result before the interrupt notice', () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-main-interrupted-tool-'));
 

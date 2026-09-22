@@ -108,9 +108,12 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     const owner = currentOwner();
     // 输入与 footer surface 从同一仲裁结果派生；owner 仍只决定主/BTW/view 的可见投影边界。
     const commandSurface = activeInputResolver.getSurface(owner);
+    const pointerConsumer = appContext.isMouseInteractionEnabled()
+      ? activeInputResolver.getPointerConsumer()
+      : null;
     const base = appContext.createRenderState({
       commandSurface,
-      footerInteractionId: activeInputResolver.getPointerConsumer()?.id || null,
+      footerInteractionId: pointerConsumer?.id || null,
       toolApproval
     });
     if (owner === 'view') {
@@ -587,7 +590,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
         }
         if (settingsRefresh?.reasoningVisibilityChanged) {
           renderResizeRecovery();
-        } else if (modelChanged || settingsRefresh?.slashSuggestionLimitChanged) {
+        } else if (modelChanged || settingsRefresh?.slashSuggestionLimitChanged || settingsRefresh?.mouseInteractionChanged) {
           render();
         }
       });

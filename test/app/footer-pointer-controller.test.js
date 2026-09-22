@@ -115,3 +115,24 @@ test('FooterPointerController rejects stale consumer identities and keeps unsupp
 
   assert.deepEqual(calls, ['cpr']);
 });
+
+test('FooterPointerController disables tracking and cancels calibration when the current hit map disappears', () => {
+  const calls = [];
+  const terminal = {
+    mouse: [],
+    setMouseTracking(enabled) { this.mouse.push(enabled); },
+    requestCursorPosition() { calls.push('cpr'); return true; }
+  };
+  const activeConsumer = {
+    current: {id: 'slash', handlePointer() { calls.push('slash'); }}
+  };
+  const controller = createController(activeConsumer, terminal, calls);
+
+  controller.update(slashSnapshot(1));
+  controller.update({version: 2, cursorRow: 0, cursorColumn: 0, originStable: false, hitRegions: []});
+  controller.handleEvent({type: INPUT_EVENTS.CURSOR_POSITION, row: 12, column: 1});
+  controller.handleEvent(mouse('down', 10, 4));
+
+  assert.deepEqual(terminal.mouse, [true, false]);
+  assert.deepEqual(calls, ['cpr']);
+});
