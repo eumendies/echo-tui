@@ -30,10 +30,7 @@ function renderCopySurface(
   const safeWidth = Math.max(1, safeRenderWidth(width));
   const boxWidth = calculateBoxWidth(safeWidth);
   const innerWidth = contentWidth(boxWidth);
-  const bodyHeight = calculateBodyHeight(maxLines);
-  const splitWidth = Math.max(2, boxWidth - BODY_OUTER_DECORATION_WIDTH);
-  const leftWidth = calculateListWidth(surface.messages, splitWidth);
-  const rightWidth = Math.max(1, splitWidth - leftWidth);
+  const {bodyHeight, leftWidth, rightWidth} = createCopyPanelMetrics(surface.messages, safeWidth, maxLines);
   const rows = createSelectedWindowRows(surface.messages, surface.selectedIndex, bodyHeight);
   const previewRows = createPreviewRows(surface.messages[surface.selectedIndex]?.text || '', bodyHeight, rightWidth, surface.previewScroll);
   const focus = surface.focus === 'preview' ? 'preview' : 'list';
@@ -71,8 +68,20 @@ function renderCopySurface(
     cursorRow: lines.length - 1,
     cursorColumn: 0,
     showCursor: false,
-    hitRegions
+    hitRegions,
+    // 点击仅命中消息，滚轮仅覆盖右侧预览主体（含空白行）。
+    wheelRegions: [
+      {owner: 'copy' as const, pane: 'secondary' as const, rowStart: bodyStart, rowEnd: bodyStart + bodyHeight - 1, columnStart: leftColumnStart + leftWidth + 3, columnEnd: leftColumnStart + leftWidth + 2 + rightWidth}
+    ].filter((region) => region.columnEnd <= safeWidth)
   };
+}
+
+/**
+ * 按 renderer 的实际宽高约束计算消息预览最大滚动位置，供滚轮 handler 提前钳制。
+ */
+function calculateCopyPreviewMaxScroll(surface: CopyCommandSurface, width: number, maxLines = Number.POSITIVE_INFINITY): number {
+  const {bodyHeight, rightWidth} = createCopyPanelMetrics(surface.messages, Math.max(1, safeRenderWidth(width)), maxLines);
+  return Math.max(0, projectPreviewRows(surface.messages[surface.selectedIndex]?.text || '', rightWidth).length - bodyHeight);
 }
 
 function calculateBoxWidth(safeWidth: number): number {
@@ -94,6 +103,38 @@ function calculateListWidth(messages: CopySurfaceMessage[], splitWidth: number):
   return Math.min(Math.max(MIN_LIST_WIDTH, contentWidth), proportionalWidth, Math.max(1, splitWidth - MIN_PREVIEW_WIDTH));
 }
 
+type CopyPanelMetrics = {
+  bodyHeight: number; // 双栏主体可用行数，已扣除面板外壳固定行。
+  leftWidth: number; // 左栏消息列表列宽。
+  rightWidth: number; // 右栏消息预览列宽。
+};
+
+/**
+ * 汇总 /copy 双栏布局派生值；渲染与滚轮滚动上限共用同一套列宽和行预算。
+ */
+function createCopyPanelMetrics(messages: CopySurfaceMessage[], safeWidth: number, maxLines: number): CopyPanelMetrics {
+  const splitWidth = Math.max(2, calculateBoxWidth(safeWidth) - BODY_OUTER_DECORATION_WIDTH);
+  const leftWidth = calculateListWidth(messages, splitWidth);
+  return {
+    bodyHeight: calculateBodyHeight(maxLines),
+    leftWidth,
+    rightWidth: Math.max(1, splitWidth - leftWidth)
+  };
+}
+
+/**
+ * 将消息文本按右栏宽度投影为换行后的物理行；预览窗口与滚动上限共用同一投影。
+ */
+function projectPreviewRows(text: string, width: number): string[] {
+  return text.split('\n').flatMap((line) => renderStyledLine({
+    prefix: '',
+    contentPrefix: '',
+    continuationPrefix: '',
+    spans: [{text: line || ' '}],
+    width: width + 1
+  }).map((row) => fitCell(row, width)));
+}
+
 function renderSummaryLine(surface: CopyCommandSurface, width: number, theme: FooterTheme): string {
   const selected = surface.selectedIds.length === 0 ? ansi.dim('○ 未选择') : tokenText(theme, 'accent', `● 已选择 ${surface.selectedIds.length}`);
   const total = ansi.dim(`${surface.messages.length} 条可复制消息`);
@@ -102,13 +143,7 @@ function renderSummaryLine(surface: CopyCommandSurface, width: number, theme: Fo
 }
 
 function createPreviewRows(text: string, height: number, width: number, scroll: number | undefined): string[] {
-  const rows = text.split('\n').flatMap((line) => renderStyledLine({
-    prefix: '',
-    contentPrefix: '',
-    continuationPrefix: '',
-    spans: [{text: line || ' '}],
-    width: width + 1
-  }).map((row) => fitCell(row, width)));
+  const rows = projectPreviewRows(text, width);
 
   const maxScroll = Math.max(0, rows.length - height);
   const start = Math.min(Math.max(0, Number.isInteger(scroll) ? Number(scroll) : 0), maxScroll);
@@ -204,4 +239,4 @@ function contentWidth(boxWidth: number): number {
   return Math.max(0, boxWidth - 4);
 }
 
-export {renderCopySurface};
+export {calculateCopyPreviewMaxScroll, renderCopySurface};

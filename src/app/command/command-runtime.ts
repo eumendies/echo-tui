@@ -9,8 +9,8 @@ import type {
   CommandSessionPatch,
   CommandSurface
 } from '../../types/command';
-import type {InputEvent} from '../../types/input';
-import type {FooterMouseTarget} from '../../types/render';
+import type {InputEvent, MouseWheelDirection} from '../../types/input';
+import type {FooterMouseTarget, FooterWheelPane} from '../../types/render';
 
 /**
  * 创建 slash command runtime，集中管理命令会话、surface 快照和会话内事件分发。
@@ -146,6 +146,11 @@ function createCommandRuntime(dependencies: CommandRuntimeDependencies) {
     return Boolean(activeCommandSession?.handler.handlePointer);
   }
 
+  /** 判断当前会话是否声明滚轮能力；不因点击能力而放开滚轮分发。 */
+  function hasWheelHandler(): boolean {
+    return Boolean(activeCommandSession?.handler.handleWheel);
+  }
+
   /**
    * 将当前 frame 的语义命中转交给 active handler；命令业务和 target 合法性仍由 handler 决定。
    */
@@ -160,6 +165,17 @@ function createCommandRuntime(dependencies: CommandRuntimeDependencies) {
     return renderAfterHandler(session.handler.handlePointer(session, target, activate, host));
   }
 
+  /** 将已校准的栏位和方向交给活跃 handler，并按实际 session 变更决定重绘。 */
+  function handleWheel(pane: FooterWheelPane, direction: MouseWheelDirection): Promise<void> | undefined {
+    const session = activeCommandSession;
+    if (!session?.handler.handleWheel) {
+      return undefined;
+    }
+
+    didMutateSession = false;
+    return renderAfterHandler(session.handler.handleWheel(session, pane, direction, host));
+  }
+
   function getSurface(): CommandSurface | null {
     return activeCommandSession ? structuredClone(activeCommandSession.surface) : null;
   }
@@ -168,8 +184,10 @@ function createCommandRuntime(dependencies: CommandRuntimeDependencies) {
     getSurface,
     handleEvent,
     handlePointer,
+    handleWheel,
     hasActiveSession,
     hasPointerHandler,
+    hasWheelHandler,
     startFromText
   };
 }

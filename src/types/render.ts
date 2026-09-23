@@ -223,12 +223,25 @@ export type FooterHitRegion = {
   columnEnd: number; // 相对终端行的 1-based 结束列，含端点。
 };
 
+export type FooterWheelPane = 'secondary';
+
+export type FooterWheelRegion = {
+  interactionId?: string; // 当前可执行滚轮消费者的唯一身份；缺省时不执行。
+  owner: FooterHitRegion['owner']; // 生成滚轮区域的可见 footer surface 类别。
+  pane: FooterWheelPane; // 滚轮命中后由消费者解释的右侧预览/详情主体语义。
+  rowStart: number; // 相对 footer 的 0-based 可见起始行，含端点。
+  rowEnd: number; // 相对 footer 的 0-based 可见结束行，含端点。
+  columnStart: number; // 相对终端的 1-based 可见起始列，含端点。
+  columnEnd: number; // 相对终端的 1-based 可见结束列，含端点。
+};
+
 export type FooterLayout = {
   lines: string[];
   cursorRow: number;
   cursorColumn: number;
   showCursor: boolean;
   hitRegions?: FooterHitRegion[]; // 当前 frame 可鼠标命中的临时区域；不参与持久化。
+  wheelRegions?: FooterWheelRegion[]; // 当前 frame 可滚轮导航的主体区域，独立于点击区域。
 };
 
 export type FooterPointerSnapshot = {
@@ -236,6 +249,7 @@ export type FooterPointerSnapshot = {
   cursorRow: number; // 当前终端光标相对 footer 的 0-based 行位置。
   cursorColumn: number; // 当前终端光标相对 footer 的 0-based 列位置。
   hitRegions: FooterHitRegion[]; // 与该 frame 版本绑定的全部可见命中区域。
+  wheelRegions: FooterWheelRegion[]; // 与该 frame 版本绑定的全部可见滚轮区域。
   originStable: boolean; // 本帧是否仅原位更新且 footer 顶部物理屏幕位置未变。
 };
 

@@ -1,4 +1,5 @@
 import {INPUT_EVENTS} from '../input/event-types';
+import {calculateResumePreviewMaxScroll} from '../render/footer/resume-surface';
 import {
   createLoadingSessionPreviewState,
   createSessionBrowserSurface,
@@ -9,8 +10,8 @@ import {
 import {SessionBrowserPreviewController} from './session/session-browser-preview-controller';
 
 import type {CommandHandler, CommandHost, CommandSession, ConfirmCommandSurface, InfoCommandSurface, ResumeCommandSurface} from '../types/command';
-import type {InputEvent} from '../types/input';
-import type {FooterMouseTarget} from '../types/render';
+import type {InputEvent, MouseWheelDirection} from '../types/input';
+import type {FooterMouseTarget, FooterWheelPane} from '../types/render';
 import type {TranscriptSessionDeleteResult, TranscriptSessionSummary} from '../types/transcript';
 import type {SessionBrowserData} from './session/session-browser';
 
@@ -206,6 +207,7 @@ export class ResumeCommandHandler implements CommandHandler<ResumeData> {
     }
   }
 
+  /** 鼠标命中会话时回到列表焦点；hover 更新预览，点击沿用立即恢复语义。 */
   handlePointer(session: CommandSession<ResumeData>, target: FooterMouseTarget, activate: boolean, host: CommandHost): void {
     if (target.kind !== 'command_resume_session' || session.surface.kind !== 'resume') {
       return;
@@ -213,7 +215,7 @@ export class ResumeCommandHandler implements CommandHandler<ResumeData> {
 
     const current = normalizeResumeData(session.data);
     const selected = Number.isInteger(target.index) ? current.sessions[target.index] : undefined;
-    if (!selected || current.deleteTarget || current.focus !== 'list') {
+    if (!selected || current.deleteTarget) {
       return;
     }
 
@@ -221,11 +223,12 @@ export class ResumeCommandHandler implements CommandHandler<ResumeData> {
     const selectionChanged = current.selectedIndex !== target.index;
     const next = normalizeResumeData({
       ...withoutNotice,
+      focus: 'list',
       previewScroll: 0,
       selectedIndex: target.index,
       ...(selectionChanged ? {previewState: createLoadingSessionPreviewState(selected.sessionId)} : {})
     });
-    if (selectionChanged || current.notice || current.previewScroll !== 0) {
+    if (current.focus !== 'list' || selectionChanged || current.notice || current.previewScroll !== 0) {
       host.session.update({data: next, surface: createResumeSurfaceFromData(next)});
       if (selectionChanged) {
         this.schedulePreview(next, host, 120);
@@ -235,6 +238,27 @@ export class ResumeCommandHandler implements CommandHandler<ResumeData> {
     if (activate) {
       this.previewController.invalidate();
       confirmResumeData(next, host);
+    }
+  }
+
+  /** 仅右侧预览接受滚轮；无需预先聚焦，边界不改变会话或预览请求。 */
+  handleWheel(session: CommandSession<ResumeData>, _pane: FooterWheelPane, direction: MouseWheelDirection, host: CommandHost): void {
+    if (session.surface.kind !== 'resume' || !session.data) {
+      return;
+    }
+    const current = normalizeResumeData(session.data);
+    if (current.deleteTarget || current.sessions.length === 0) {
+      return;
+    }
+    const step = direction === 'up' ? -1 : 1;
+    const {width, maxLines} = host.status.getViewport();
+    // 键盘历史路径可能留下超出视口的偏移；按可见边界静默，不重绘也不改焦点。
+    const maxScroll = calculateResumePreviewMaxScroll(createResumeSurfaceFromData(current), width, maxLines);
+    const visibleScroll = Math.min(current.previewScroll, maxScroll);
+    const previewScroll = Math.min(Math.max(0, visibleScroll + step), maxScroll);
+    if (previewScroll !== visibleScroll) {
+      const next = {...current, focus: 'preview' as const, previewScroll};
+      host.session.update({data: next, surface: createResumeSurfaceFromData(next)});
     }
   }
 

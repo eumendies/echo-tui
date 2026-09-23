@@ -35,12 +35,9 @@ const WIDE_BOX_HORIZONTAL_MARGIN = 4;
 export function renderResumeSurface(commandSurface: ResumeCommandSurface, width: number, maxLines: number | undefined = Number.POSITIVE_INFINITY, theme: FooterTheme = resolveFooterTheme(undefined)): FooterLayout {
   const safeWidth = safeRenderWidth(width);
   const boxWidth = calculateBoxWidth(safeWidth);
-  const splitWidth = Math.max(2, boxWidth - 7);
-  const leftWidth = calculateLeftWidth(splitWidth);
-  const rightWidth = Math.max(1, splitWidth - leftWidth);
+  const {bodyHeight, leftWidth, rightWidth} = createResumePanelMetrics(commandSurface, safeWidth, maxLines);
   const sessions = commandSurface.sessions;
   const selectedIndex = clampIndex(commandSurface.selectedIndex, sessions.length);
-  const bodyHeight = calculateBodyHeight(maxLines, Boolean(commandSurface.notice));
   const sessionRows = createSessionListRows(commandSurface, selectedIndex, bodyHeight);
   const previewStatus = commandSurface.previewStatus || 'ready';
   const previewHint = previewStatus === 'loading'
@@ -96,21 +93,25 @@ export function renderResumeSurface(commandSurface: ResumeCommandSurface, width:
   lines.push(renderFullLine(ansi.dim(clampPlainText(commandSurface.dismissHint, boxWidth - 4)), boxWidth, theme));
   lines.push(renderBoxBottom(boxWidth, theme));
   const leftColumnStart = displayWidth(leftPrefix) + 1;
-  const hitRegions: FooterHitRegion[] = commandSurface.focus === 'list' ? sessionRows.flatMap((row, visualIndex) => row.kind === 'session' ? [{
+  const hitRegions: FooterHitRegion[] = sessionRows.flatMap((row, visualIndex) => row.kind === 'session' ? [{
     owner: 'resume' as const,
     target: {kind: 'command_resume_session' as const, index: row.index},
     rowStart: bodyStart + visualIndex,
     rowEnd: bodyStart + visualIndex,
     columnStart: leftColumnStart,
     columnEnd: leftColumnStart + leftWidth - 1
-  }] : []) : [];
+  }] : []);
 
   return {
     lines,
     cursorRow: lines.length - 1,
     cursorColumn: 0,
     showCursor: false,
-    hitRegions
+    hitRegions,
+    // 预览即使未聚焦也保留右侧滚轮区域；左侧会话仅沿用原有点击区域。
+    wheelRegions: [
+      {owner: 'resume' as const, pane: 'secondary' as const, rowStart: bodyStart, rowEnd: bodyStart + bodyHeight - 1, columnStart: leftColumnStart + leftWidth + 3, columnEnd: leftColumnStart + leftWidth + 2 + rightWidth}
+    ].filter((region) => region.columnEnd <= safeWidth)
   };
 }
 
@@ -154,6 +155,34 @@ function calculateBodyHeight(maxLines: number | undefined, hasNotice: boolean): 
   }
 
   return Math.max(1, Math.floor(Number(maxLines)) - RESUME_FIXED_ROW_COUNT - (hasNotice ? 1 : 0));
+}
+
+type ResumePanelMetrics = {
+  bodyHeight: number; // 预览/列表主体可用行数，已扣除面板外壳和可选提示行。
+  leftWidth: number; // 左栏会话列表列宽。
+  rightWidth: number; // 右栏预览列宽。
+};
+
+/**
+ * 汇总 /resume 双栏布局派生值；渲染与滚轮滚动上限共用同一套列宽和行预算。
+ */
+function createResumePanelMetrics(commandSurface: ResumeCommandSurface, safeWidth: number, maxLines: number | undefined): ResumePanelMetrics {
+  const splitWidth = Math.max(2, calculateBoxWidth(safeWidth) - 7);
+  const leftWidth = calculateLeftWidth(splitWidth);
+  return {
+    bodyHeight: calculateBodyHeight(maxLines, Boolean(commandSurface.notice)),
+    leftWidth,
+    rightWidth: Math.max(1, splitWidth - leftWidth)
+  };
+}
+
+/**
+ * 按 renderer 的实际宽高约束计算预览最大滚动位置，供滚轮 handler 提前钳制。
+ */
+export function calculateResumePreviewMaxScroll(commandSurface: ResumeCommandSurface, width: number, maxLines: number | undefined = Number.POSITIVE_INFINITY): number {
+  const {bodyHeight, rightWidth} = createResumePanelMetrics(commandSurface, safeRenderWidth(width), maxLines);
+  const records = (commandSurface.previewStatus || 'ready') === 'ready' ? commandSurface.previewRecords : [];
+  return Math.max(0, projectPreviewRows(records, rightWidth, resolveFooterTheme(undefined)).length - bodyHeight);
 }
 
 /**
@@ -215,13 +244,20 @@ function renderSessionListRow(row: SessionListRow | undefined, width: number, th
 }
 
 /**
+ * 把 preview records 投影为可见单行摘要并过滤空行；窗口裁剪与滚动上限共用同一投影。
+ */
+function projectPreviewRows(records: ResumeCommandSurfacePreviewRecord[], width: number, theme: FooterTheme): string[] {
+  return records
+    .map((record) => renderPreviewRecord(record, width, theme))
+    .filter((line) => displayWidth(line) > 0);
+}
+
+/**
  * 把 preview records 投影为单行摘要，再按 scroll 裁剪到右栏窗口内。
  */
 function createPreviewRows(records: ResumeCommandSurfacePreviewRecord[], emptyPreviewHint: string, options: PreviewRowsOptions, theme: FooterTheme): string[] {
   const {height, scroll, width} = options;
-  const rows = records
-    .map((record) => renderPreviewRecord(record, width, theme))
-    .filter((line) => displayWidth(line) > 0);
+  const rows = projectPreviewRows(records, width, theme);
 
   if (rows.length === 0) {
     return [ansi.dim(clampPlainText(emptyPreviewHint, width))];

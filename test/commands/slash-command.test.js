@@ -2975,6 +2975,174 @@ test('pointer-enabled command handlers preserve their command-specific selection
   assert.equal(new EffortCommandHandler().handlePointer, undefined);
 });
 
+test('select command handlers keep hover but do not declare wheel navigation', () => {
+  for (const handler of [new ModelCommandHandler(), new ModeCommandHandler(), new EffortCommandHandler()]) {
+    assert.equal(handler.handleWheel, undefined);
+  }
+  assert.equal(typeof new ModelCommandHandler().handlePointer, 'function');
+  assert.equal(typeof new ModeCommandHandler().handlePointer, 'function');
+});
+
+test('copy wheel scrolls only wrapped right preview from list focus without toggling messages', () => {
+  const copy = createFakeHost({
+    statusViewport: {width: 80, maxLines: 9},
+    copyableRecords: [
+      {id: 'short', role: 'user', text: 'short'},
+      {id: 'long', role: 'assistant', text: Array.from({length: 12}, (_v, i) => `row${i}`).join('\n')},
+      {id: 'last', role: 'user', text: 'last'}
+    ]
+  });
+  const handler = new CopyCommandHandler();
+  let session = startCommand(handler, '/copy', copy.host);
+  const selectedIds = session.data.selectedIds;
+  const initialIndex = session.data.selectedIndex;
+  assert.equal(session.data.focus, 'list');
+  assert.equal(copy.calls.sessionUpdates.length, 0);
+  handler.handleWheel(session, 'secondary', 'down', copy.host);
+  session = copy.host.session.getActive();
+  assert.equal(session.data.previewScroll, 1);
+  assert.equal(session.data.focus, 'preview');
+  for (let i = 0; i < 30; i += 1) handler.handleWheel(copy.host.session.getActive(), 'secondary', 'down', copy.host);
+  session = copy.host.session.getActive();
+  assert.equal(session.data.previewScroll, 9);
+  const updates = copy.calls.sessionUpdates.length;
+  handler.handleWheel(session, 'secondary', 'down', copy.host);
+  session = copy.host.session.getActive();
+  assert.equal(copy.calls.sessionUpdates.length, updates);
+  assert.equal(session.data.focus, 'preview');
+  assert.equal(session.data.selectedIndex, initialIndex);
+  assert.equal(session.data.previewScroll, 9);
+  assert.deepEqual(session.data.selectedIds, selectedIds);
+  assert.deepEqual(copy.calls.clipboardWrites, []);
+  handler.handleWheel(session, 'secondary', 'down', copy.host);
+  assert.equal(copy.calls.sessionUpdates.length, updates);
+
+  // 键盘历史路径可能留下超出视口的偏移；滚轮在可见边界仍须静默。
+  copy.host.session.update({data: {...session.data, previewScroll: 99}, surface: {...session.surface, previewScroll: 99}});
+  session = copy.host.session.getActive();
+  const overscrollUpdates = copy.calls.sessionUpdates.length;
+  handler.handleWheel(session, 'secondary', 'down', copy.host);
+  assert.equal(copy.calls.sessionUpdates.length, overscrollUpdates);
+});
+
+test('copy wheel counts wrapped preview rows rather than source newline count', () => {
+  const copy = createFakeHost({statusViewport: {width: 50, maxLines: 9}, copyableRecords: [
+    {id: 'wrapped', role: 'assistant', text: 'w'.repeat(130)}
+  ]});
+  const handler = new CopyCommandHandler();
+  let session = startCommand(handler, '/copy', copy.host);
+  handler.handleWheel(session, 'secondary', 'down', copy.host);
+  session = copy.host.session.getActive();
+  assert.equal(session.data.previewScroll, 1);
+  assert.equal(copy.calls.sessionUpdates.length, 1);
+});
+
+test('resume wheel scrolls preview from list focus, ignores left list and does not reload it', async () => {
+  const sessions = createSessionSummarys(3);
+  const resume = createFakeHost({sessions, statusViewport: {width: 80, maxLines: 10}, loadSessionPreview(candidate) {
+    return Promise.resolve({sessionId: candidate.sessionId, previewRecords: Array.from({length: 9}, (_v, i) => ({role: 'assistant', text: `row ${i}`}))});
+  }});
+  const handler = new ResumeCommandHandler();
+  let session = startCommand(handler, '/resume', resume.host);
+  assert.equal(resume.calls.sessionUpdates.length, 0);
+  handler.handleWheel(session, 'secondary', 'down', resume.host);
+  assert.equal(resume.calls.sessionUpdates.length, 0);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  session = resume.host.session.getActive();
+  for (let i = 0; i < 8; i += 1) handler.handleWheel(resume.host.session.getActive(), 'secondary', 'down', resume.host);
+  session = resume.host.session.getActive();
+  assert.equal(session.data.focus, 'preview');
+  assert.equal(session.data.previewScroll, 5);
+  const updates = resume.calls.sessionUpdates.length;
+  handler.handleWheel(session, 'secondary', 'down', resume.host);
+  assert.equal(resume.calls.sessionUpdates.length, updates);
+  session = resume.host.session.getActive();
+  assert.equal(session.data.focus, 'preview');
+  assert.equal(session.data.selectedIndex, 0);
+  assert.equal(session.data.previewScroll, 5);
+  assert.equal(session.surface.previewStatus, 'ready');
+  assert.deepEqual(resume.calls.loadedSessionIds, []);
+  assert.equal(resume.calls.sessionUpdates.length, updates);
+  assert.deepEqual(resume.calls.resumePreviewLoads, [sessions[0].sessionId]);
+  handler.handleEvent(resume.host.session.getActive(), {type: INPUT_EVENTS.ESCAPE}, resume.host);
+});
+
+test('resume hover returns from scrolled preview to list and click still resumes the hit session', async () => {
+  const sessions = createSessionSummarys(2);
+  const resume = createFakeHost({sessions, statusViewport: {width: 80, maxLines: 10}, loadSessionPreview(candidate) {
+    return Promise.resolve({sessionId: candidate.sessionId, previewRecords: Array.from({length: 9}, (_v, i) => ({role: 'assistant', text: `row ${i}`}))});
+  }});
+  const handler = new ResumeCommandHandler();
+  startCommand(handler, '/resume', resume.host);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  handler.handleWheel(resume.host.session.getActive(), 'secondary', 'down', resume.host);
+  let session = resume.host.session.getActive();
+  assert.equal(session.data.focus, 'preview');
+  assert.equal(session.data.previewScroll, 1);
+  const previewLoads = resume.calls.resumePreviewLoads.length;
+  handler.handlePointer(session, {kind: 'command_resume_session', index: 0}, false, resume.host);
+  session = resume.host.session.getActive();
+  assert.equal(session.data.focus, 'list');
+  assert.equal(session.data.previewScroll, 0);
+  assert.equal(resume.calls.resumePreviewLoads.length, previewLoads);
+  assert.deepEqual(resume.calls.loadedSessionIds, []);
+
+  handler.handleWheel(session, 'secondary', 'down', resume.host);
+  session = resume.host.session.getActive();
+  handler.handlePointer(session, {kind: 'command_resume_session', index: 1}, true, resume.host);
+  assert.deepEqual(resume.calls.loadedSessionIds, [sessions[1].sessionId]);
+  assert.equal(resume.host.session.getActive(), null);
+});
+
+test('diff wheel uses current file detail scroll limit and leaves boundary focus unchanged', () => {
+  const diff = createFakeHost({diffViewport: {width: 100, maxLines: 9}, diffSource: {
+    status: 'ready', source: {kind: 'history', label: 'history'}, notices: [], files: [
+      {path: 'short.ts', kind: 'modified', added: 1, removed: 0, hunks: []},
+      {path: 'long.ts', kind: 'modified', added: 25, removed: 0, hunks: [{oldStart: 0, newStart: 1, lines: Array.from({length: 25}, (_v, i) => ({kind: 'added', text: `line ${i}`, oldLine: null, newLine: i + 1}))}]}
+    ]
+  }});
+  const handler = new DiffCommandHandler();
+  let session = startCommand(handler, '/diff', diff.host);
+  handler.handleWheel(session, 'secondary', 'down', diff.host);
+  assert.equal(diff.calls.sessionUpdates.length, 0);
+  session = diff.host.session.getActive();
+  assert.equal(session.data.selectedIndex, 0);
+  const updates = diff.calls.sessionUpdates.length;
+  handler.handlePointer(session, {kind: 'command_diff_file', index: 1}, false, diff.host);
+  session = diff.host.session.getActive();
+  assert.equal(session.data.selectedIndex, 1);
+  const afterHover = diff.calls.sessionUpdates.length;
+  assert.equal(diff.calls.sessionUpdates.length, afterHover);
+  handler.handleWheel(session, 'secondary', 'down', diff.host);
+  session = diff.host.session.getActive();
+  assert.equal(session.data.focus, 'detail');
+  assert.equal(session.data.detailScroll, 1);
+  assert.equal(session.data.selectedIndex, 1);
+  assert.equal(diff.calls.sessionCloses, 0);
+});
+
+test('diff wheel uses visible scroll after viewport shrink and never redraws at a visible boundary', () => {
+  const diff = createFakeHost({diffViewport: {width: 80, maxLines: 12}, diffSource: {
+    status: 'ready', source: {kind: 'history', label: 'history'}, notices: [], files: [
+      {path: 'long.ts', kind: 'modified', added: 25, removed: 0, hunks: [{oldStart: 0, newStart: 1, lines: Array.from({length: 25}, (_v, i) => ({kind: 'added', text: `line ${i}`, oldLine: null, newLine: i + 1}))}]}
+    ]
+  }});
+  const handler = new DiffCommandHandler();
+  let session = startCommand(handler, '/diff', diff.host);
+  diff.host.session.update({data: {...session.data, detailScroll: 999}, surface: {...session.surface, detailScroll: 999}});
+  session = diff.host.session.getActive();
+  const updates = diff.calls.sessionUpdates.length;
+  handler.handleWheel(session, 'secondary', 'down', diff.host);
+  assert.equal(diff.calls.sessionUpdates.length, updates);
+  assert.equal(diff.host.session.getActive().data.focus, 'list');
+  handler.handleWheel(session, 'secondary', 'up', diff.host);
+  session = diff.host.session.getActive();
+  assert.equal(diff.calls.sessionUpdates.length, updates + 1);
+  assert.equal(session.data.focus, 'detail');
+  assert.ok(session.data.detailScroll < 999);
+});
+
 test('resumeCommandHandler deletes a selected historical session only after confirmation and refreshes storage candidates', async () => {
   const handler = new ResumeCommandHandler();
   const selectable = createFakeHost({sessions: createSessionSummarys(2)});

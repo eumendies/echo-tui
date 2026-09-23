@@ -326,6 +326,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
   });
   const userQuestion = new UserQuestionContext(() => render());
   const filePicker = new FilePickerContext(appContext.composerContext.composer, {
+    columns: () => terminal.getSize().columns,
     cwd: () => appContext.getCurrentCwd(),
     onChange: () => render(),
     rows: () => terminal.getSize().rows

@@ -127,6 +127,41 @@ test('createApp gates command pointer sessions, recovers calibration after resiz
   }
 });
 
+test('createApp routes raw SGR wheel reports only to the right /copy preview', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-main-copy-wheel-'));
+
+  try {
+    const fixturePath = path.join(__dirname, 'fixtures/main-command-pointer-scenario.js');
+    const result = JSON.parse(childProcess.execFileSync(process.execPath, [fixturePath], {
+      cwd: path.resolve(__dirname, '../../..'),
+      encoding: 'utf8',
+      env: {...process.env, HOME: home},
+      timeout: 15_000
+    }));
+    const wheel = result.copyWheel;
+
+    assert.deepEqual(wheel.initialCopy, {focus: 'list', selectedIndex: 0, previewScroll: 0});
+    assert.ok(wheel.requestsBeforeCopyCpr > result.requestsAfterStaleCpr);
+    assert.equal(wheel.beforeCprScroll, 0);
+    assert.equal(wheel.requestsAfterCopyCpr, wheel.requestsBeforeCopyCpr + 1);
+    assert.equal(wheel.afterStaleCopyCprScroll, 0);
+    assert.equal(wheel.rightScroll, 1);
+    assert.equal(wheel.rightFocus, 'preview');
+    assert.equal(wheel.selectedAfterListWheel, 0);
+    assert.equal(wheel.focusAfterListWheel, 'preview');
+    assert.equal(wheel.scrollAfterListWheel, wheel.rightScroll);
+    assert.equal(wheel.afterFreshWheel > wheel.afterStaleWheel, true);
+    assert.equal(wheel.selectedIdsAfterWheel.length, 1);
+    assert.equal(wheel.ownerIgnored, true);
+    assert.equal(wheel.disabledScrollAfter, wheel.disabledScrollBefore);
+    assert.equal(wheel.reenabledScroll, wheel.disabledScrollAfter + 1);
+    assert.equal(wheel.requestsAfterCopyStaleCpr, wheel.requestsBeforeCopyResize + 1);
+    assert.equal(wheel.afterStaleWheel, wheel.beforeFreshCprScroll);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
 test('createApp destructively recovers when terminal rows expand to realign footer mouse calibration', () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-main-resize-expansion-'));
 

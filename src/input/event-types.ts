@@ -23,6 +23,7 @@ export const INPUT_EVENTS = {
   ESCAPE: 'escape',
   EXIT: 'exit',
   MOUSE: 'mouse',
+  MOUSE_WHEEL: 'mouse_wheel',
   CURSOR_POSITION: 'cursor_position',
   UNKNOWN: 'unknown'
 } as const;

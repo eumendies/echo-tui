@@ -64,7 +64,7 @@ test('scale surfaces remain keyboard-only without hit regions', () => {
   assert.deepEqual(layout.hitRegions || [], []);
 });
 
-test('resume hit regions cover only visible list rows while list focus is active', () => {
+test('resume hit regions cover only visible list rows regardless of focus', () => {
   const surface = {
     kind: 'resume',
     focus: 'list',
@@ -85,7 +85,7 @@ test('resume hit regions cover only visible list rows while list focus is active
   assert.equal(layout.hitRegions.some((region) => region.target.index === 8), true);
 
   const previewLayout = renderResumeSurface({...surface, focus: 'preview'}, 80, 12);
-  assert.deepEqual(previewLayout.hitRegions, []);
+  assert.deepEqual(previewLayout.hitRegions, layout.hitRegions);
 });
 
 test('copy and diff hit regions stay in the visible left list column', () => {

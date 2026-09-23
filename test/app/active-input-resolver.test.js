@@ -73,6 +73,34 @@ test('ActiveInputResolver keeps a pointer-capable consumer disabled until its cu
   assert.deepEqual(calls, ['command_diff_file:false']);
 });
 
+test('ActiveInputResolver exposes wheel-only consumers independently of click opt-in and falls back for nonwheel consumers', () => {
+  const calls = [];
+  let wheelEnabled = false;
+  let pointerEnabled = false;
+  let modal = true;
+  const resolver = new ActiveInputResolver([
+    {id: 'modal', isActive: () => modal, handleEvent: () => true},
+    {
+      id: 'preview', isActive: () => true, handleEvent: () => true,
+      canHandlePointer: () => pointerEnabled,
+      canHandleWheel: () => wheelEnabled,
+      handlePointer() { calls.push('click'); },
+      handleWheel(pane, direction) { calls.push(`${pane}:${direction}`); }
+    }
+  ]);
+  assert.equal(resolver.getPointerConsumer(), null);
+  modal = false;
+  assert.equal(resolver.getPointerConsumer(), null);
+  wheelEnabled = true;
+  assert.equal(resolver.getPointerConsumer().id, 'preview');
+  resolver.getPointerConsumer().handleWheel('secondary', 'up');
+  wheelEnabled = false;
+  pointerEnabled = true;
+  assert.equal(resolver.getPointerConsumer().id, 'preview');
+  assert.deepEqual(calls, ['secondary:up']);
+  assert.equal(new ActiveInputResolver([{id: 'keyboard', isActive: () => true, handleEvent: () => true}]).getPointerConsumer(), null);
+});
+
 test('createActiveInputRouting keeps modal priority and exposes modal pointer semantics', () => {
   const calls = [];
   const routing = createActiveInputRouting({

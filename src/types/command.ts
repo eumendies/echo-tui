@@ -14,7 +14,8 @@ import type {CustomSubagentManifest} from '../agent/subagent/manifest';
 import type {AgentDefinitionMutationResult, AgentManagementDiagnostic, AgentManagementItem, AgentManagementScope} from '../agent/subagent/management-store';
 import type {AgentsSettingsMutationResult, AgentsSettingsScopeReadResult, BuiltinSubagentName, BuiltinSubagentOverride} from '../agent/subagent/settings';
 import type {McpConfigEditDraft, McpConfigEditIssue, McpPromptArgument, McpPromptMessage} from './mcp';
-import type {FooterMouseTarget} from './render';
+import type {FooterMouseTarget, FooterWheelPane} from './render';
+import type {MouseWheelDirection} from './input';
 
 export type CommandSurfaceOption = {
   label: string;
@@ -661,6 +662,7 @@ export type FilePickerCommandSurface = {
   focus: 'list' | 'preview';
   notice?: string;
   previewLines: string[];
+  previewScroll: number; // 文本预览正文在换行后物理行中的滚动偏移，标题保持固定。
   previewMode?: 'code' | 'text';
   query: string;
   selectedIndex: number;
@@ -1005,6 +1007,7 @@ export type CommandHandler<TData extends object = Record<string, unknown>> = {
   start(text: string, host: CommandHost): void | CommandStartResult;
   handleEvent?(session: CommandSession<TData>, event: InputEvent, host: CommandHost): void | Promise<void>;
   handlePointer?(session: CommandSession<TData>, target: FooterMouseTarget, activate: boolean, host: CommandHost): void | Promise<void>; // 已完成 footer frame 与 consumer 校验的语义命中；handler 负责验证 target 是否适用于当前 session。
+  handleWheel?(session: CommandSession<TData>, pane: FooterWheelPane, direction: MouseWheelDirection, host: CommandHost): void | Promise<void>; // 仅接收已校验的滚轮栏位与方向；handler 不应将滚轮作为点击或确认。
 };
 
 export type CommandStartResult =
