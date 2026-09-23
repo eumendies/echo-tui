@@ -1,5 +1,5 @@
 import { INPUT_EVENTS } from './event-types';
-import type { ControlInputEventType, InputEvent, MouseInputEvent } from '../types/input';
+import type { ControlInputEventType, InputEvent, MouseInputEvent, MouseWheelInputEvent } from '../types/input';
 
 type SequenceMatch = {
   sequence: string;
@@ -254,8 +254,8 @@ function parseTerminalReportAt(text: string, index: number): {endIndex: number; 
   return null;
 }
 
-/** 将完整 SGR 报告转成受限的鼠标事件；滚轮和扩展按键保留为 other，路由层会忽略。 */
-function createMouseEvent(match: RegExpExecArray): MouseInputEvent | null {
+/** 将合法无修饰符垂直滚轮单独解析，防止轮事件进入点击/hover 路径。 */
+function createMouseEvent(match: RegExpExecArray): MouseInputEvent | MouseWheelInputEvent | null {
   const code = Number(match[1]);
   const column = Number(match[2]);
   const row = Number(match[3]);
@@ -265,16 +265,14 @@ function createMouseEvent(match: RegExpExecArray): MouseInputEvent | null {
     return null;
   }
 
+  if (code & 64) {
+    return final === 'M' && (code === 64 || code === 65)
+      ? {type: INPUT_EVENTS.MOUSE_WHEEL, direction: code === 64 ? 'up' : 'down', column, row}
+      : null;
+  }
+
   const buttonCode = code & 3;
-  const button = code & 64
-    ? 'other'
-    : buttonCode === 0
-      ? 'left'
-      : buttonCode === 1
-        ? 'middle'
-        : buttonCode === 2
-          ? 'right'
-          : 'other';
+  const button = buttonCode === 0 ? 'left' : buttonCode === 1 ? 'middle' : buttonCode === 2 ? 'right' : 'other';
   return {
     type: INPUT_EVENTS.MOUSE,
     phase: final === 'm' ? 'up' : code & 32 ? 'move' : 'down',

@@ -66,7 +66,11 @@ function renderDiffSurface(surface: DiffCommandSurface, width: number, maxLines 
     cursorRow: lines.length - 1,
     cursorColumn: 0,
     showCursor: false,
-    hitRegions
+    hitRegions,
+    // 窄屏无左栏时，详情从主体首列开始；左侧列表始终不接收滚轮。
+    wheelRegions: [
+      {owner: 'diff' as const, pane: 'secondary' as const, rowStart: bodyStart, rowEnd: bodyStart + metrics.bodyHeight - 1, columnStart: leftColumnStart + (metrics.listWidth > 0 ? metrics.listWidth + 3 : 0), columnEnd: leftColumnStart + (metrics.listWidth > 0 ? metrics.listWidth + 3 : 0) + metrics.detailWidth - 1}
+    ].filter((region) => region.columnEnd <= safeRenderWidth(width))
   };
 }
 

@@ -7,6 +7,8 @@ const path = require('node:path');
 const { FilePickerContext } = require('../../src/app/state/file-picker-context');
 const composerOps = require('../../src/input/composer');
 const { INPUT_EVENTS } = require('../../src/input/event-types');
+const {renderFilePickerSurface} = require('../../src/render/footer/file-picker-surface');
+const {stripAnsi} = require('../../src/render/layout');
 
 function createProject() {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-file-picker-'));
@@ -19,7 +21,7 @@ function createProject() {
 test('FilePickerContext uses Enter to insert directories without entering them', () => {
   const cwd = createProject();
   const composer = composerOps.createComposer('@');
-  const picker = new FilePickerContext(composer, {cwd: () => cwd, onChange: () => {}});
+  const picker = new FilePickerContext(composer, {columns: () => 80, cwd: () => cwd, onChange: () => {}});
 
   picker.open(0);
   assert.equal(picker.getSurface().currentDir, cwd);
@@ -35,7 +37,7 @@ test('FilePickerContext uses Enter to insert directories without entering them',
 test('FilePickerContext uses Right to enter directories and updates absolute cwd', () => {
   const cwd = createProject();
   const composer = composerOps.createComposer('@');
-  const picker = new FilePickerContext(composer, {cwd: () => cwd, onChange: () => {}});
+  const picker = new FilePickerContext(composer, {columns: () => 80, cwd: () => cwd, onChange: () => {}});
 
   picker.open(0);
   picker.handleEvent({type: INPUT_EVENTS.MOVE_RIGHT});
@@ -49,7 +51,7 @@ test('FilePickerContext uses Right to enter directories and updates absolute cwd
 test('FilePickerContext previews text without padded line numbers', () => {
   const cwd = createProject();
   const composer = composerOps.createComposer('@');
-  const picker = new FilePickerContext(composer, {cwd: () => cwd, onChange: () => {}});
+  const picker = new FilePickerContext(composer, {columns: () => 80, cwd: () => cwd, onChange: () => {}});
 
   picker.open(0);
   picker.handleEvent({type: INPUT_EVENTS.MOVE_DOWN});
@@ -64,25 +66,27 @@ test('FilePickerContext reaches the last preview line without accumulating overf
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-file-picker-preview-'));
   fs.writeFileSync(path.join(cwd, 'long.txt'), Array.from({length: 20}, (_, index) => `line ${index + 1}`).join('\n'));
   const composer = composerOps.createComposer('@');
-  const picker = new FilePickerContext(composer, {cwd: () => cwd, onChange: () => {}});
+  const picker = new FilePickerContext(composer, {columns: () => 80, cwd: () => cwd, onChange: () => {}});
 
   picker.open(0);
   picker.handleEvent({type: INPUT_EVENTS.MOVE_RIGHT});
   for (let index = 0; index < 20; index += 1) {
     picker.handleEvent({type: INPUT_EVENTS.MOVE_DOWN});
   }
-  assert.equal(picker.getSurface().previewLines[2], '20 line 20');
+  // 键盘与滚轮共用物理行上界：最后一行可见即止，多按不再累积偏移。
+  assert.equal(picker.getSurface().previewScroll, 8);
+  assert.ok(renderFilePickerSurface(picker.getSurface(), 80, 21).lines.some((line) => stripAnsi(line).includes('20 line 20')));
 
   picker.handleEvent({type: INPUT_EVENTS.MOVE_UP});
 
-  assert.equal(picker.getSurface().previewLines[2], '19 line 19');
+  assert.equal(picker.getSurface().previewScroll, 7);
 });
 
 test('FilePickerContext expands text preview window from terminal height', () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-file-picker-preview-height-'));
   fs.writeFileSync(path.join(cwd, 'long.txt'), Array.from({length: 40}, (_value, index) => `line ${index + 1}`).join('\n'));
   const composer = composerOps.createComposer('@');
-  const picker = new FilePickerContext(composer, {cwd: () => cwd, onChange: () => {}, rows: () => 40});
+  const picker = new FilePickerContext(composer, {columns: () => 80, cwd: () => cwd, onChange: () => {}, rows: () => 40});
 
   picker.open(0);
 
@@ -94,7 +98,7 @@ test('FilePickerContext expands text preview window from terminal height', () =>
 test('FilePickerContext inserts trailing space after file mention', () => {
   const cwd = createProject();
   const composer = composerOps.createComposer('@');
-  const picker = new FilePickerContext(composer, {cwd: () => cwd, onChange: () => {}});
+  const picker = new FilePickerContext(composer, {columns: () => 80, cwd: () => cwd, onChange: () => {}});
 
   picker.open(0);
   picker.handleEvent({type: INPUT_EVENTS.MOVE_DOWN});
@@ -106,7 +110,7 @@ test('FilePickerContext inserts trailing space after file mention', () => {
 test('FilePickerContext supports selecting directories with files', () => {
   const cwd = createProject();
   const composer = composerOps.createComposer('@');
-  const picker = new FilePickerContext(composer, {cwd: () => cwd, onChange: () => {}});
+  const picker = new FilePickerContext(composer, {columns: () => 80, cwd: () => cwd, onChange: () => {}});
 
   picker.open(0);
   picker.handleEvent({type: INPUT_EVENTS.TEXT, value: ' '});
@@ -122,7 +126,7 @@ test('FilePickerContext lazy loads direct children without recursive descendants
   fs.mkdirSync(path.join(cwd, 'app', 'nested'));
   fs.writeFileSync(path.join(cwd, 'app', 'nested', 'deep.ts'), 'export const deep = true;\n');
   const composer = composerOps.createComposer('@');
-  const picker = new FilePickerContext(composer, {cwd: () => cwd, onChange: () => {}});
+  const picker = new FilePickerContext(composer, {columns: () => 80, cwd: () => cwd, onChange: () => {}});
 
   picker.open(0);
   let surface = picker.getSurface();
@@ -142,7 +146,7 @@ test('FilePickerContext lazy loads direct children without recursive descendants
 test('FilePickerContext filters the loaded directory without scanning descendants', () => {
   const cwd = createProject();
   const composer = composerOps.createComposer('@');
-  const picker = new FilePickerContext(composer, {cwd: () => cwd, onChange: () => {}});
+  const picker = new FilePickerContext(composer, {columns: () => 80, cwd: () => cwd, onChange: () => {}});
 
   picker.open(0);
   picker.handleEvent({type: INPUT_EVENTS.TEXT, value: 'm'});
@@ -158,13 +162,13 @@ test('FilePickerContext filters the loaded directory without scanning descendant
 test('FilePickerContext shows notice for empty and missing directories', () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-file-picker-empty-'));
   const composer = composerOps.createComposer('@');
-  const picker = new FilePickerContext(composer, {cwd: () => cwd, onChange: () => {}});
+  const picker = new FilePickerContext(composer, {columns: () => 80, cwd: () => cwd, onChange: () => {}});
 
   picker.open(0);
   assert.deepEqual(picker.getSurface().entries, []);
   assert.match(picker.getSurface().notice, /没有可显示路径/);
 
-  const missingPicker = new FilePickerContext(composerOps.createComposer('@'), {cwd: () => path.join(cwd, 'missing'), onChange: () => {}});
+  const missingPicker = new FilePickerContext(composerOps.createComposer('@'), {columns: () => 80, cwd: () => path.join(cwd, 'missing'), onChange: () => {}});
   missingPicker.open(0);
   assert.deepEqual(missingPicker.getSurface().entries, []);
   assert.match(missingPicker.getSurface().notice, /读取目录失败/);
@@ -178,7 +182,7 @@ test('FilePickerContext opens large parent directories without full-tree scannin
   }
   fs.writeFileSync(path.join(cwd, 'root.txt'), 'root');
   const composer = composerOps.createComposer('@');
-  const picker = new FilePickerContext(composer, {cwd: () => cwd, onChange: () => {}});
+  const picker = new FilePickerContext(composer, {columns: () => 80, cwd: () => cwd, onChange: () => {}});
 
   picker.open(0);
   const surface = picker.getSurface();
@@ -190,7 +194,7 @@ test('FilePickerContext consumes Esc by closing the picker surface', () => {
   const cwd = createProject();
   const composer = composerOps.createComposer('@');
   let updates = 0;
-  const picker = new FilePickerContext(composer, {cwd: () => cwd, onChange: () => { updates += 1; }});
+  const picker = new FilePickerContext(composer, {columns: () => 80, cwd: () => cwd, onChange: () => { updates += 1; }});
 
   picker.open(0);
   assert.equal(picker.hasActiveRequest(), true);
@@ -206,7 +210,7 @@ test('FilePickerContext consumes Esc by closing the picker surface', () => {
 test('FilePickerContext mouse entry handling focuses entries, enters directories, and never inserts mentions directly', () => {
   const cwd = createProject();
   const composer = composerOps.createComposer('@');
-  const picker = new FilePickerContext(composer, {cwd: () => cwd, onChange: () => {}});
+  const picker = new FilePickerContext(composer, {columns: () => 80, cwd: () => cwd, onChange: () => {}});
 
   picker.open(0);
   assert.equal(picker.handlePointerEntry(1, false), true);
@@ -220,4 +224,111 @@ test('FilePickerContext mouse entry handling focuses entries, enters directories
   picker.handlePointerEntry(0, true);
   assert.equal(picker.getSurface().currentDir, path.join(cwd, 'app'));
   assert.equal(composerOps.getText(composer), '@');
+});
+
+test('FilePickerContext ignores unavailable previews without changing selection or composer', () => {
+  const cwd = createProject();
+  const composer = composerOps.createComposer('@');
+  let updates = 0;
+  const picker = new FilePickerContext(composer, {columns: () => 80, cwd: () => cwd, onChange: () => { updates += 1; }});
+  picker.open(0);
+  const opened = updates;
+
+  assert.equal(picker.handleWheel('secondary', 'down'), false);
+  assert.equal(updates, opened);
+  assert.equal(picker.getSurface().selectedIndex, 0);
+  assert.equal(picker.getSurface().focus, 'list');
+  assert.equal(updates, opened);
+  assert.equal(picker.getSurface().currentDir, cwd);
+  assert.deepEqual(picker.getSurface().selectedPaths, []);
+  assert.equal(composerOps.getText(composer), '@');
+  picker.close();
+  assert.equal(picker.handleWheel('secondary', 'up'), false);
+  assert.equal(updates, opened + 1);
+});
+
+test('FilePickerContext wheel scrolls only the visible text preview range and preserves list selection', () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-file-picker-wheel-preview-'));
+  fs.writeFileSync(path.join(cwd, 'long.txt'), Array.from({length: 14}, (_, index) => `line ${index + 1}`).join('\n'));
+  const composer = composerOps.createComposer('@');
+  let updates = 0;
+  const picker = new FilePickerContext(composer, {columns: () => 80, cwd: () => cwd, onChange: () => { updates += 1; }, rows: () => 18});
+  picker.open(0);
+  const opened = updates;
+
+  assert.equal(picker.handleWheel('secondary', 'up'), false);
+  assert.equal(updates, opened);
+  for (let index = 0; index < 8; index += 1) {
+    assert.equal(picker.handleWheel('secondary', 'down'), true);
+  }
+  assert.equal(picker.getSurface().previewScroll, 8);
+  assert.equal(picker.getSurface().focus, 'preview');
+  assert.equal(picker.handleWheel('secondary', 'down'), false);
+  assert.equal(updates, opened + 8);
+  assert.equal(picker.getSurface().selectedIndex, 0);
+  assert.deepEqual(picker.getSurface().selectedPaths, []);
+  assert.equal(picker.handleWheel('secondary', 'up'), true);
+  assert.equal(picker.getSurface().previewScroll, 7);
+  assert.equal(composerOps.getText(composer), '@');
+});
+
+test('FilePickerContext wheel reaches file tail after wrapped rows and scrolls within one long line', () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-file-picker-wrap-wheel-'));
+  fs.writeFileSync(path.join(cwd, 'long.txt'), [
+    ...Array.from({length: 8}, (_, index) => `line ${index + 1}`),
+    'W'.repeat(350),
+    ...Array.from({length: 4}, (_, index) => `line ${index + 10}`),
+    'END_LINE_14'
+  ].join('\n'));
+  const picker = new FilePickerContext(composerOps.createComposer('@'), {cwd: () => cwd, onChange: () => {}, rows: () => 18, columns: () => 80});
+  picker.open(0);
+  const rightPane = () => renderFilePickerSurface(picker.getSurface(), 80, 15).lines.map((line) => stripAnsi(line).split('│')[2] || '').join('\n');
+  assert.equal(rightPane().includes('END_LINE_14'), false);
+
+  let steps = 0;
+  while (picker.handleWheel('secondary', 'down')) steps += 1;
+  assert.ok(steps > 8);
+  assert.equal(picker.getSurface().previewScroll, steps);
+  assert.equal(rightPane().includes('END_LINE_14'), true);
+  assert.equal(picker.handleWheel('secondary', 'down'), false);
+
+  fs.writeFileSync(path.join(cwd, 'single.txt'), 'Z'.repeat(600));
+  picker.close();
+  picker.open(0);
+  picker.handlePointerEntry(picker.getSurface().entries.findIndex((entry) => entry.name === 'single.txt'), false);
+  assert.equal(picker.handleWheel('secondary', 'down'), true);
+  assert.equal(picker.getSurface().previewScroll, 1);
+});
+
+test('FilePickerContext recalculates wrapped preview bounds after terminal resize', () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-file-picker-wrap-resize-'));
+  fs.writeFileSync(path.join(cwd, 'long.txt'), 'X'.repeat(180));
+  let columns = 80;
+  let updates = 0;
+  const picker = new FilePickerContext(composerOps.createComposer('@'), {
+    columns: () => columns, cwd: () => cwd, onChange: () => { updates += 1; }, rows: () => 18
+  });
+  picker.open(0);
+  assert.equal(picker.handleWheel('secondary', 'down'), false);
+  assert.equal(picker.getSurface().focus, 'list');
+  columns = 30;
+  assert.equal(picker.handleWheel('secondary', 'down'), true);
+  assert.equal(picker.getSurface().previewScroll, 1);
+  assert.equal(picker.getSurface().focus, 'preview');
+  assert.equal(updates, 2);
+});
+
+test('FilePickerContext wheel leaves empty and short previews untouched', () => {
+  const cwd = createProject();
+  let updates = 0;
+  const picker = new FilePickerContext(composerOps.createComposer('@'), {columns: () => 80, cwd: () => cwd, onChange: () => { updates += 1; }});
+  picker.open(0);
+  const before = updates;
+  assert.equal(picker.handleWheel('secondary', 'down'), false);
+  assert.equal(updates, before);
+  picker.handleEvent({type: INPUT_EVENTS.TEXT, value: 'missing'});
+  const filtered = updates;
+  assert.deepEqual(picker.getSurface().entries, []);
+  assert.equal(picker.handleWheel('secondary', 'down'), false);
+  assert.equal(updates, filtered);
 });

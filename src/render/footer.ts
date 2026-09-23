@@ -5,7 +5,7 @@ import { renderComposerSurface, renderSubagentViewSurface } from './footer/compo
 import { constrainLayoutTail } from './footer/window';
 import { DEFAULT_RENDER_PREFERENCES } from '../config/app-settings-config';
 import { DEFAULT_TUI_THEME } from '../config/theme-config';
-import type { FooterHitRegion, FooterLayout, FooterPointerSnapshot, FooterRenderer, PendingState, RenderState, StatusLineState, WorkingState } from '../types/render';
+import type { FooterHitRegion, FooterLayout, FooterPointerSnapshot, FooterRenderer, FooterWheelRegion, PendingState, RenderState, StatusLineState, WorkingState } from '../types/render';
 
 const FOOTER_TOP_PADDING_LINES = 2;
 const DEFAULT_TERMINAL_ROWS = 24;
@@ -205,6 +205,7 @@ class DefaultFooterRenderer implements FooterRenderer {
       cursorRow: layout.cursorRow,
       cursorColumn: layout.cursorColumn,
       hitRegions: layout.hitRegions ? layout.hitRegions.map((region) => ({...region, target: {...region.target}})) : [],
+      wheelRegions: layout.wheelRegions ? layout.wheelRegions.map((region) => ({...region})) : [],
       originStable
     };
   }
@@ -242,12 +243,16 @@ export function renderFooterLayout({ composer, conversationReference, pendingMes
   const hitRegions = footerInteractionId && inputSurface.hitRegions
     ? inputSurface.hitRegions.map((region) => ({...region, interactionId: footerInteractionId, target: {...region.target}}))
     : undefined;
+  const wheelRegions = footerInteractionId && inputSurface.wheelRegions
+    ? inputSurface.wheelRegions.map((region) => ({...region, interactionId: footerInteractionId}))
+    : undefined;
   const layout = {
     lines: [...pendingLines, transcriptComposerSpacerLine, ...inputSurface.lines],
     cursorRow: pendingLines.length + 1 + inputSurface.cursorRow,
     cursorColumn: inputSurface.cursorColumn,
     showCursor: inputSurface.showCursor,
-    ...(hitRegions ? {hitRegions: offsetHitRegions(hitRegions, inputOffset)} : {})
+    ...(hitRegions ? {hitRegions: offsetHitRegions(hitRegions, inputOffset)} : {}),
+    ...(wheelRegions ? {wheelRegions: offsetWheelRegions(wheelRegions, inputOffset)} : {})
   };
 
   return constrainLayoutTail(layout, maxFooterLines);
@@ -261,6 +266,11 @@ function offsetHitRegions(regions: FooterHitRegion[], rowOffset: number): Footer
     rowEnd: region.rowEnd + rowOffset,
     target: {...region.target}
   }));
+}
+
+/** 将滚轮主体区域平移到组合 footer 的行坐标；保持与点击 map 分离。 */
+function offsetWheelRegions(regions: FooterWheelRegion[], rowOffset: number): FooterWheelRegion[] {
+  return regions.map((region) => ({...region, rowStart: region.rowStart + rowOffset, rowEnd: region.rowEnd + rowOffset}));
 }
 
 /**

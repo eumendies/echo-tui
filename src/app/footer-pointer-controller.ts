@@ -3,7 +3,7 @@ import {INPUT_EVENTS} from '../input/event-types';
 import type {PointerInputConsumer} from './active-input-resolver';
 import type {TerminalController} from '../types/app';
 import type {InputEvent} from '../types/input';
-import type {FooterHitRegion, FooterPointerSnapshot} from '../types/render';
+import type {FooterHitRegion, FooterPointerSnapshot, FooterWheelRegion} from '../types/render';
 
 type FooterPointerControllerOptions = {
   getActivePointerConsumer(): PointerInputConsumer | null; // 返回当前有效且显式支持鼠标语义的输入消费者。
@@ -78,6 +78,17 @@ class FooterPointerController {
   handleEvent(event: InputEvent): boolean {
     if (event.type === INPUT_EVENTS.CURSOR_POSITION) {
       this.acceptCursorPosition(event.row, event.column);
+      return true;
+    }
+
+    if (event.type === INPUT_EVENTS.MOUSE_WHEEL) {
+      if (!this.snapshot || !this.calibration || this.calibration.version !== this.snapshot.version) return true;
+      const row = event.row - this.calibration.rowOrigin;
+      const region = this.snapshot.wheelRegions.find((candidate) => row >= candidate.rowStart
+        && row <= candidate.rowEnd
+        && event.column >= candidate.columnStart
+        && event.column <= candidate.columnEnd);
+      if (region) this.routeWheel(region, event.direction);
       return true;
     }
 
@@ -176,11 +187,22 @@ class FooterPointerController {
   private route(region: FooterHitRegion, activate: boolean): void {
     const consumer = this.getActivePointerConsumer();
 
-    if (!consumer || !region.interactionId || region.interactionId !== consumer.id) {
+    if (!consumer?.handlePointer || !region.interactionId || region.interactionId !== consumer.id) {
       return;
     }
 
     const result = consumer.handlePointer(region.target, activate);
+    if (result && typeof result === 'object' && 'then' in result && typeof result.then === 'function') {
+      void result.catch(() => {});
+    }
+  }
+
+  /** 仅转发当前身份的右栏滚轮；离开列表后重置 hover，返回原会话时仍可重新聚焦。 */
+  private routeWheel(region: FooterWheelRegion, direction: 'up' | 'down'): void {
+    const consumer = this.getActivePointerConsumer();
+    if (!consumer?.handleWheel || !region.interactionId || region.interactionId !== consumer.id) return;
+    this.lastHoverKey = null;
+    const result = consumer.handleWheel(region.pane, direction);
     if (result && typeof result === 'object' && 'then' in result && typeof result.then === 'function') {
       void result.catch(() => {});
     }
@@ -208,7 +230,8 @@ class FooterPointerController {
   /** 判断当前 hit map 是否属于当前 resolver 返回的 pointer consumer。 */
   private isInteractiveSnapshot(snapshot: FooterPointerSnapshot): boolean {
     const consumer = this.getActivePointerConsumer();
-    return Boolean(consumer && snapshot.hitRegions.some((region) => region.interactionId === consumer.id));
+    return Boolean(consumer && ((consumer.handlePointer && snapshot.hitRegions.some((region) => region.interactionId === consumer.id))
+      || (consumer.handleWheel && snapshot.wheelRegions.some((region) => region.interactionId === consumer.id))));
   }
 
   private clearCalibrationTimeout(): void {

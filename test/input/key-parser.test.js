@@ -159,6 +159,32 @@ test('createKeyParser parses split SGR mouse reports without leaking bytes into 
   }]);
 });
 
+test('createKeyParser buffers split vertical wheel reports and preserves consecutive directions and nearby text', () => {
+  const parser = createKeyParser();
+  assert.deepEqual(parser.parse('a\x1b[<64;12'), [{type: INPUT_EVENTS.TEXT, value: 'a'}]);
+  assert.deepEqual(parser.parse(';8M\x1b[<65;12;8M\x1b[<64;3;4'), [
+    {type: INPUT_EVENTS.MOUSE_WHEEL, direction: 'up', column: 12, row: 8},
+    {type: INPUT_EVENTS.MOUSE_WHEEL, direction: 'down', column: 12, row: 8}
+  ]);
+  assert.deepEqual(parser.parse('M\r'), [
+    {type: INPUT_EVENTS.MOUSE_WHEEL, direction: 'up', column: 3, row: 4},
+    {type: INPUT_EVENTS.SUBMIT}
+  ]);
+});
+
+test('parseKeyChunk discards modified, horizontal, released and invalid wheel reports without leaking text or mouse clicks', () => {
+  const invalid = [
+    68, 72, 80, 96, 97, 66, 67, 255, 256
+  ].map((code) => `\x1b[<${code};5;6M`).join('');
+  assert.deepEqual(parseKeyChunk(`\x1b[<64;5;6m${invalid}\x1b[<64;0;6M\x1b[<65;5;0M\x1b[<65;99999;6M!`), [
+    {type: INPUT_EVENTS.TEXT, value: '!'}
+  ]);
+  assert.deepEqual(parseKeyChunk('\x1b[<0;5;6M\x1b[<65;5;6M'), [
+    {type: INPUT_EVENTS.MOUSE, phase: 'down', button: 'left', column: 5, row: 6, shift: false, alt: false, ctrl: false},
+    {type: INPUT_EVENTS.MOUSE_WHEEL, direction: 'down', column: 5, row: 6}
+  ]);
+});
+
 test('createKeyParser consumes cursor position replies and malformed mouse CSI without creating text', () => {
   const parser = createKeyParser();
 

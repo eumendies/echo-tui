@@ -1,8 +1,8 @@
 import {INPUT_EVENTS} from '../input/event-types';
 
 import type {CommandSurface} from '../types/command';
-import type {InputEvent} from '../types/input';
-import type {FooterMouseTarget} from '../types/render';
+import type {InputEvent, MouseWheelDirection} from '../types/input';
+import type {FooterMouseTarget, FooterWheelPane} from '../types/render';
 import type {AutoUpdateController} from './auto-update-controller';
 import type {FilePickerContext} from './state/file-picker-context';
 import type {AppContext} from './state/app-context';
@@ -22,10 +22,13 @@ type InputConsumer = {
   isModal?: boolean; // 标识全局 modal 层，供更新提示门控和静态 footer 重绘判断。
   canHandlePointer?(): boolean; // 返回当前 surface 是否实际支持 pointer，false 时不得因候选 region 启用鼠标协议。
   handlePointer?(target: FooterMouseTarget, activate: boolean): InputConsumerResult; // 处理已校准命中的鼠标语义 target；省略表示只支持键盘。
+  canHandleWheel?(): boolean; // 当前 surface 是否明确支持滚轮；与点击能力独立。
+  handleWheel?(pane: FooterWheelPane, direction: MouseWheelDirection): InputConsumerResult; // 处理已校准的栏位与方向。
 };
 
 type PointerInputConsumer = InputConsumer & {
-  handlePointer(target: FooterMouseTarget, activate: boolean): InputConsumerResult; // 已验证 identity 的 hover 或左键激活语义入口。
+  handlePointer?(target: FooterMouseTarget, activate: boolean): InputConsumerResult; // 已验证 identity 的 hover 或左键激活语义入口。
+  handleWheel?(pane: FooterWheelPane, direction: MouseWheelDirection): InputConsumerResult; // 已验证 identity 的滚轮入口。
 };
 
 type CommandInputPort = {
@@ -34,6 +37,8 @@ type CommandInputPort = {
   handlePointer(target: FooterMouseTarget, activate: boolean): Promise<void> | undefined; // 转发已校准的 command 语义命中。
   hasActiveSession(): boolean; // 标识 command session 是否正在独占输入。
   hasPointerHandler(): boolean; // 仅当当前 handler 显式支持时才允许投影 executable identity。
+  handleWheel(pane: FooterWheelPane, direction: MouseWheelDirection): Promise<void> | undefined; // 将滚轮交给 handler。
+  hasWheelHandler(): boolean; // 当前 handler 是否显式支持滚轮。
 };
 
 type LocalInputSurfacePort = {
@@ -48,7 +53,7 @@ type ActiveInputRoutingOptions = {
   command: CommandInputPort; // 活跃 slash command session 的输入与 surface 端口。
   dispatchPendingMessage(): Promise<void>; // command session 关闭后重新尝试 queued message。
   exit(): void; // 保留 reference/local surface 对 Exit 的全局退出语义。
-  filePicker: Pick<FilePickerContext, 'getSurface' | 'handleEvent' | 'handlePointerEntry' | 'hasActiveRequest'>; // composer @ 文件选择 surface。
+  filePicker: Pick<FilePickerContext, 'getSurface' | 'handleEvent' | 'handlePointerEntry' | 'handleWheel' | 'hasActiveRequest'>; // composer @ 文件选择 surface。
   localSurface: LocalInputSurfacePort; // main 持有的 reference error 与 MCP diagnostic surface。
   render(): void; // 需要主动重绘的 model/slash/local 语义入口。
   subagentView: Pick<SubagentViewController, 'handleEvent' | 'isActive'>; // 只读子 Agent窗口输入端口。
@@ -91,10 +96,13 @@ class ActiveInputResolver {
     return this.consumers.some((consumer) => consumer.id !== excludedId && consumer.isActive());
   }
 
-  /** 仅在当前有效消费者显式支持 pointer 语义时返回它，防止布局类别推断业务处理者。 */
+  /** 仅暴露当前消费者已声明的点击/滚轮能力，避免一种区域替另一种能力开启路由。 */
   getPointerConsumer(): PointerInputConsumer | null {
     const consumer = this.resolve();
-    return consumer?.handlePointer && consumer.canHandlePointer?.() !== false ? consumer as PointerInputConsumer : null;
+    if (!consumer) return null;
+    const handlePointer = consumer.canHandlePointer?.() !== false ? consumer.handlePointer : undefined;
+    const handleWheel = consumer.canHandleWheel?.() !== false ? consumer.handleWheel : undefined;
+    return handlePointer || handleWheel ? {...consumer, handlePointer, handleWheel} : null;
   }
 }
 
@@ -141,7 +149,8 @@ function createActiveInputRouting(options: ActiveInputRoutingOptions): ActiveInp
         return target.kind === 'file_picker_entry'
           ? options.filePicker.handlePointerEntry(target.index, activate)
           : false;
-      }
+      },
+      handleWheel: (pane, direction) => options.filePicker.handleWheel(pane, direction)
     },
     {
       id: 'auto-update',
@@ -179,7 +188,9 @@ function createActiveInputRouting(options: ActiveInputRoutingOptions): ActiveInp
       },
       getSurface: (owner) => owner === 'main' ? options.command.getSurface() : null,
       canHandlePointer: () => options.command.hasPointerHandler(),
-      handlePointer: (target, activate) => options.command.handlePointer(target, activate)
+      handlePointer: (target, activate) => options.command.handlePointer(target, activate),
+      canHandleWheel: () => options.command.hasWheelHandler(),
+      handleWheel: (pane, direction) => options.command.handleWheel(pane, direction)
     },
     {
       id: 'reference-preparation',

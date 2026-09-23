@@ -748,7 +748,7 @@ test('renderFooterLayout exposes hit regions only for visible slash, choice, and
       dismissHint: 'Esc',
       entries: [{kind: 'directory', name: 'src', path: 'src', selectable: true, selected: false}],
       focus: 'list',
-      previewLines: [],
+      previewScroll: 0, previewLines: [],
       previewMode: 'text',
       query: '',
       selectedIndex: 0,
@@ -763,6 +763,36 @@ test('renderFooterLayout exposes hit regions only for visible slash, choice, and
   assert.equal(picker.hitRegions[0].interactionId, 'file-picker');
   assert.equal(picker.hitRegions[0].columnStart, 3);
   assert.ok(picker.hitRegions[0].columnEnd < 40);
+});
+
+test('renderFooterLayout binds right wheel rows to the current identity and snapshots them independently', () => {
+  const state = {
+    composer: createComposer(''), commandSurface: {
+      kind: 'copy', title: '/copy', focus: 'list', selectedIndex: 0,
+      messages: [{id: 'first', role: 'user', text: 'hello', selected: false}], selectedIds: [], dismissHint: 'Esc'
+    },
+    pending: {kind: 'streaming', text: 'first\nsecond'},
+    statusLine: DEFAULT_STATUS_LINE, width: 70, rows: 24
+  };
+  const disabled = renderFooterLayout(state);
+  const enabled = renderFooterLayout({...state, footerInteractionId: 'command-session'});
+  const noPending = renderFooterLayout({...state, pending: null, footerInteractionId: 'command-session'});
+
+  assert.equal(disabled.wheelRegions, undefined);
+  assert.equal(enabled.wheelRegions.length, 1);
+  assert.deepEqual(enabled.wheelRegions.map(({interactionId, owner, pane}) => ({interactionId, owner, pane})), [
+    {interactionId: 'command-session', owner: 'copy', pane: 'secondary'}
+  ]);
+  assert.equal(enabled.wheelRegions[0].rowStart, noPending.wheelRegions[0].rowStart);
+  assert.equal(enabled.hitRegions[0].rowStart, noPending.hitRegions[0].rowStart);
+  assert.ok(enabled.hitRegions[0].columnEnd < enabled.wheelRegions[0].columnStart);
+  assert.ok(enabled.wheelRegions[0].rowEnd < enabled.lines.length - 1);
+
+  const renderer = createFooterRenderer({write() {}});
+  const snapshot = renderer.render({...state, footerInteractionId: 'command-session'});
+  assert.deepEqual(snapshot.wheelRegions, enabled.wheelRegions);
+  snapshot.wheelRegions[0].rowStart = -1;
+  assert.deepEqual(renderer.render({...state, footerInteractionId: 'command-session'}).wheelRegions, enabled.wheelRegions);
 });
 
 test('renderFooterLayout drops hit regions for choice options hidden by the footer height budget', () => {
@@ -2359,7 +2389,7 @@ test('renderFooterLayout renders compact file picker without overflowing termina
         {kind: 'text', name: 'main.ts', path: 'src/app/main.ts', selectable: true, selected: true},
         {kind: 'unsupported', name: 'archive.zip', path: 'archive.zip', selectable: false, selected: false}
       ],
-      previewLines: ['main.ts', 'text · scroll with preview focus', '1 import app from ./app'],
+      previewScroll: 0, previewLines: ['main.ts', 'text · scroll with preview focus', '1 import app from ./app'],
       dismissHint: '↑↓ move · tab preview · space mark · enter insert · esc'
     },
     pending: null,
@@ -2398,7 +2428,7 @@ test('renderFooterLayout uses one color for file picker frame lines', () => {
       entries: [
         {kind: 'image', name: 'shot.png', path: 'shot.png', selectable: true, selected: false}
       ],
-      previewLines: ['shot.png', '图片无法在终端内预览', '将作为图片输入发送给模型'],
+      previewScroll: 0, previewLines: ['shot.png', '图片无法在终端内预览', '将作为图片输入发送给模型'],
       dismissHint: '↑↓ move · ←/→ focus · esc'
     },
     pending: null,
@@ -2429,7 +2459,7 @@ test('renderFooterLayout renders file picker empty notice without overflowing', 
       selectedPaths: [],
       entries: [],
       notice: '当前目录没有可显示文件',
-      previewLines: ['无可预览内容'],
+      previewScroll: 0, previewLines: ['无可预览内容'],
       dismissHint: '↑↓ 移动 · Esc 取消'
     },
     pending: null,
@@ -2457,7 +2487,7 @@ test('renderFooterLayout wraps long file picker preview lines', () => {
       entries: [
         {kind: 'text', name: 'long.ts', path: 'long.ts', selectable: true, selected: false}
       ],
-      previewLines: [
+      previewScroll: 0, previewLines: [
         'long.ts',
         'text · 1 lines',
         '1 const message = alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu;'
@@ -2492,7 +2522,7 @@ test('renderFooterLayout highlights file picker code preview', () => {
       entries: [
         {kind: 'text', name: 'main.ts', path: 'main.ts', selectable: true, selected: false}
       ],
-      previewLines: [
+      previewScroll: 0, previewLines: [
         'main.ts',
         'text · 2 lines',
         '1 const value = call("x", 42);',
@@ -2529,7 +2559,7 @@ test('renderFooterLayout sizes file picker from terminal width and height budget
       selectable: true,
       selected: false
     })),
-    previewLines: ['long.ts', 'text · 1 lines', '1 const value = 1;'],
+    previewScroll: 0, previewLines: ['long.ts', 'text · 1 lines', '1 const value = 1;'],
     dismissHint: '↑↓ move · ←/→ focus · esc'
   });
   const compact = renderFooterLayout({
@@ -2572,7 +2602,7 @@ test('renderFooterLayout shrinks file picker list column to item content', () =>
         {kind: 'text', name: 'a.ts', path: 'a.ts', selectable: true, selected: false},
         {kind: 'text', name: 'b.ts', path: 'b.ts', selectable: true, selected: false}
       ],
-      previewLines: ['a.ts', 'text · 1 lines', '1 const value = 1;'],
+      previewScroll: 0, previewLines: ['a.ts', 'text · 1 lines', '1 const value = 1;'],
       dismissHint: '↑↓ move · ←/→ focus · esc'
     },
     pending: null,
@@ -2605,7 +2635,7 @@ test('renderFooterLayout highlights preview focus row without prefix bar', () =>
         {kind: 'text', name: 'more.ts', path: 'more.ts', selectable: true, selected: false},
         {kind: 'text', name: 'target.ts', path: 'target.ts', selectable: true, selected: false}
       ],
-      previewLines: ['target.ts', 'text · 1 lines', '1 const value = 1;'],
+      previewScroll: 0, previewLines: ['target.ts', 'text · 1 lines', '1 const value = 1;'],
       dismissHint: '↑↓ move · ←/→ focus · esc'
     },
     pending: null,
@@ -2638,7 +2668,7 @@ test('renderFooterLayout keeps preview highlight on content for first file', () 
         {kind: 'text', name: 'first.ts', path: 'first.ts', selectable: true, selected: false},
         {kind: 'text', name: 'second.ts', path: 'second.ts', selectable: true, selected: false}
       ],
-      previewLines: ['first.ts', 'text · 1 lines', '1 const value = 1;'],
+      previewScroll: 0, previewLines: ['first.ts', 'text · 1 lines', '1 const value = 1;'],
       dismissHint: '↑↓ move · ←/→ focus · esc'
     },
     pending: null,
@@ -2669,7 +2699,7 @@ test('renderFooterLayout keeps focused file list marker aligned', () => {
         {kind: 'text', name: 'first.ts', path: 'first.ts', selectable: true, selected: false},
         {kind: 'text', name: 'second.ts', path: 'second.ts', selectable: true, selected: false}
       ],
-      previewLines: ['first.ts', 'text · 1 lines', '1 const value = 1;'],
+      previewScroll: 0, previewLines: ['first.ts', 'text · 1 lines', '1 const value = 1;'],
       dismissHint: '↑↓ move · ←/→ focus · esc'
     },
     pending: null,

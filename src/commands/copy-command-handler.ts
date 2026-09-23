@@ -1,4 +1,5 @@
 import {INPUT_EVENTS} from '../input/event-types';
+import {calculateCopyPreviewMaxScroll} from '../render/footer/copy-surface';
 
 import type {
   CommandHandler,
@@ -8,8 +9,8 @@ import type {
   CopyCommandSurface,
   InfoCommandSurface
 } from '../types/command';
-import type {InputEvent} from '../types/input';
-import type {FooterMouseTarget} from '../types/render';
+import type {InputEvent, MouseWheelDirection} from '../types/input';
+import type {FooterMouseTarget, FooterWheelPane} from '../types/render';
 
 type CopyCommandData = {
   focus: 'list' | 'preview';
@@ -295,6 +296,23 @@ export class CopyCommandHandler implements CommandHandler<CopyCommandData> {
   handlePointer(session: CommandSession<CopyCommandData>, target: FooterMouseTarget, activate: boolean, host: CommandHost): void {
     if (target.kind === 'command_copy_message' && session.surface.kind === 'copy') {
       selectCopyMessage(session, target.index, activate, host);
+    }
+  }
+
+  /** 仅滚动当前消息的右侧预览，不改变消息选择或剪贴板状态。 */
+  handleWheel(session: CommandSession<CopyCommandData>, _pane: FooterWheelPane, direction: MouseWheelDirection, host: CommandHost): void {
+    const data = session.data;
+    if (session.surface.kind !== 'copy' || !data || data.messages.length === 0) {
+      return;
+    }
+    const step = direction === 'up' ? -1 : 1;
+    const {width, maxLines} = host.status.getViewport();
+    // 键盘历史路径可能留下超出视口的偏移；按可见边界静默，避免滚轮拉回并抢焦点。
+    const maxScroll = calculateCopyPreviewMaxScroll(session.surface, width, maxLines);
+    const visibleScroll = Math.min(data.previewScroll, maxScroll);
+    const previewScroll = Math.min(Math.max(0, visibleScroll + step), maxScroll);
+    if (previewScroll !== visibleScroll) {
+      updateCopySession({...data, focus: 'preview', notice: undefined, previewScroll}, host);
     }
   }
 }
