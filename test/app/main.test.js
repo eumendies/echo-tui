@@ -261,3 +261,31 @@ test('createApp restores the terminal before applying an update and exits with t
     fs.rmSync(home, {recursive: true, force: true});
   }
 });
+
+for (const outcome of ['resolve', 'reject']) {
+  test(`createApp ignores late ${outcome} MCP bootstrap and config callbacks after shutdown`, () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-main-shutdown-'));
+
+    try {
+      const fixturePath = path.join(__dirname, 'fixtures/main-shutdown-lifecycle-scenario.js');
+      const output = childProcess.execFileSync(process.execPath, [fixturePath, outcome], {
+        cwd: path.resolve(__dirname, '../../..'),
+        encoding: 'utf8',
+        env: {...process.env, HOME: home},
+        timeout: 15_000
+      });
+      const result = JSON.parse(output);
+
+      assert.equal(result.appExits, 1);
+      assert.equal(result.configCloses, 1);
+      assert.equal(result.mcpCloses, 2);
+      assert.equal(result.observationCloses, 1);
+      assert.equal(result.rendersAfterLateCallbacks, result.rendersAfterExit);
+      assert.equal(result.terminalCleanups, 1);
+      assert.equal(result.unsubscribes, 1);
+      assert.equal(result.watchErrors, 0);
+    } finally {
+      fs.rmSync(home, {recursive: true, force: true});
+    }
+  });
+}
