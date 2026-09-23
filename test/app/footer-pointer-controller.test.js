@@ -136,3 +136,23 @@ test('FooterPointerController disables tracking and cancels calibration when the
   assert.deepEqual(terminal.mouse, [true, false]);
   assert.deepEqual(calls, ['cpr']);
 });
+
+test('FooterPointerController routes a command semantic target without interpreting its command surface', () => {
+  const calls = [];
+  const activeConsumer = {
+    current: {id: 'command-session', handlePointer(target, activate) { calls.push({target, activate}); }}
+  };
+  const controller = createController(activeConsumer, null, calls);
+  controller.update({
+    version: 1,
+    cursorRow: 0,
+    cursorColumn: 0,
+    originStable: false,
+    hitRegions: [{interactionId: 'command-session', owner: 'diff', target: {kind: 'command_diff_file', index: 4}, rowStart: 0, rowEnd: 0, columnStart: 1, columnEnd: 20}]
+  });
+
+  controller.handleEvent({type: INPUT_EVENTS.CURSOR_POSITION, row: 12, column: 1});
+  controller.handleEvent(mouse('down', 12, 4));
+
+  assert.deepEqual(calls, ['cpr', {target: {kind: 'command_diff_file', index: 4}, activate: true}]);
+});

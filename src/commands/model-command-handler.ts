@@ -9,6 +9,7 @@ import type {
   SelectCommandSurface
 } from '../types/command';
 import type { InputEvent } from '../types/input';
+import type {FooterMouseTarget} from '../types/render';
 
 export const MODEL_CONFIG_PATH_HINT = '~/.echo/config.json';
 
@@ -88,16 +89,37 @@ function moveModelSelection(session: CommandSession<ModelCommandInfo>, direction
   });
 }
 
+function selectModelIndex(session: CommandSession<ModelCommandInfo>, index: number, host: CommandHost): ModelCommandInfo | null {
+  const data = session.data;
+  const selectedModel = Number.isInteger(index) ? data?.models[index] : undefined;
+
+  if (!data || !selectedModel) {
+    return null;
+  }
+
+  const nextData = {...data, selectedIndex: index};
+  if (index !== data.selectedIndex) {
+    host.session.update({
+      surface: createModelSelectSurface(nextData),
+      data: nextData
+    });
+  }
+
+  return nextData;
+}
+
 function confirmModelSelection(
   session: CommandSession<ModelCommandInfo>,
   host: CommandHost
 ): void {
   const data = session.data;
 
-  if (!data) {
-    return;
+  if (data) {
+    confirmModelData(data, host);
   }
+}
 
+function confirmModelData(data: ModelCommandInfo, host: CommandHost): void {
   const selectedModel = data.models[data.selectedIndex];
 
   if (!selectedModel) {
@@ -168,6 +190,17 @@ export class ModelCommandHandler implements CommandHandler<ModelCommandInfo> {
 
     if (event.type === INPUT_EVENTS.ESCAPE) {
       host.session.close();
+    }
+  }
+
+  handlePointer(session: CommandSession<ModelCommandInfo>, target: FooterMouseTarget, activate: boolean, host: CommandHost): void {
+    if (target.kind !== 'command_select_option' || session.surface.kind !== 'select') {
+      return;
+    }
+
+    const data = selectModelIndex(session, target.index, host);
+    if (data && activate) {
+      confirmModelData(data, host);
     }
   }
 }

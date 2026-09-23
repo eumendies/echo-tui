@@ -20,17 +20,20 @@ type InputConsumer = {
   handleEvent(event: InputEvent): InputConsumerResult; // 处理键盘语义事件；仅 false 表示继续交给低优先级 fallback。
   getSurface?(owner: FooterRenderOwner): CommandSurface | null; // 按当前可见 owner 返回可投影的 footer surface；无 surface 时省略。
   isModal?: boolean; // 标识全局 modal 层，供更新提示门控和静态 footer 重绘判断。
-  handlePointer?(target: FooterMouseTarget, activate: boolean): boolean | void; // 处理已校准命中的鼠标语义 target；省略表示只支持键盘。
+  canHandlePointer?(): boolean; // 返回当前 surface 是否实际支持 pointer，false 时不得因候选 region 启用鼠标协议。
+  handlePointer?(target: FooterMouseTarget, activate: boolean): InputConsumerResult; // 处理已校准命中的鼠标语义 target；省略表示只支持键盘。
 };
 
 type PointerInputConsumer = InputConsumer & {
-  handlePointer(target: FooterMouseTarget, activate: boolean): boolean | void; // 已验证 identity 的 hover 或左键激活语义入口。
+  handlePointer(target: FooterMouseTarget, activate: boolean): InputConsumerResult; // 已验证 identity 的 hover 或左键激活语义入口。
 };
 
 type CommandInputPort = {
   getSurface(): CommandSurface | null; // 返回当前 command session 的瞬时 footer surface。
   handleEvent(event: InputEvent): Promise<void> | undefined; // 将输入交给活跃 command session。
+  handlePointer(target: FooterMouseTarget, activate: boolean): Promise<void> | undefined; // 转发已校准的 command 语义命中。
   hasActiveSession(): boolean; // 标识 command session 是否正在独占输入。
+  hasPointerHandler(): boolean; // 仅当当前 handler 显式支持时才允许投影 executable identity。
 };
 
 type LocalInputSurfacePort = {
@@ -91,7 +94,7 @@ class ActiveInputResolver {
   /** 仅在当前有效消费者显式支持 pointer 语义时返回它，防止布局类别推断业务处理者。 */
   getPointerConsumer(): PointerInputConsumer | null {
     const consumer = this.resolve();
-    return consumer?.handlePointer ? consumer as PointerInputConsumer : null;
+    return consumer?.handlePointer && consumer.canHandlePointer?.() !== false ? consumer as PointerInputConsumer : null;
   }
 }
 
@@ -174,7 +177,9 @@ function createActiveInputRouting(options: ActiveInputRoutingOptions): ActiveInp
         dispatchAfterClose();
         return true;
       },
-      getSurface: (owner) => owner === 'main' ? options.command.getSurface() : null
+      getSurface: (owner) => owner === 'main' ? options.command.getSurface() : null,
+      canHandlePointer: () => options.command.hasPointerHandler(),
+      handlePointer: (target, activate) => options.command.handlePointer(target, activate)
     },
     {
       id: 'reference-preparation',

@@ -9,6 +9,7 @@ import type {
   InfoCommandSurface
 } from '../types/command';
 import type {InputEvent} from '../types/input';
+import type {FooterMouseTarget} from '../types/render';
 
 type CopyCommandData = {
   focus: 'list' | 'preview';
@@ -113,6 +114,37 @@ function scrollPreview(session: CommandSession<CopyCommandData>, direction: numb
   }
 
   updateCopySession({...data, notice: undefined, previewScroll}, host);
+}
+
+function selectCopyMessage(session: CommandSession<CopyCommandData>, index: number, activate: boolean, host: CommandHost): void {
+  const data = session.data;
+  const message = Number.isInteger(index) ? data?.messages[index] : undefined;
+
+  if (!data || !message) {
+    return;
+  }
+
+  const selectedIds = activate
+    ? data.selectedIds.includes(message.id)
+      ? data.selectedIds.filter((id) => id !== message.id)
+      : [...data.selectedIds, message.id]
+    : data.selectedIds;
+  const nextData = {
+    ...data,
+    focus: 'list' as const,
+    notice: undefined,
+    previewScroll: 0,
+    selectedIndex: index,
+    selectedIds
+  };
+
+  if (nextData.focus !== data.focus
+    || nextData.previewScroll !== data.previewScroll
+    || nextData.selectedIndex !== data.selectedIndex
+    || nextData.notice !== data.notice
+    || nextData.selectedIds !== data.selectedIds) {
+    updateCopySession(nextData, host);
+  }
 }
 
 function formatCopyText(messages: CopyableMessageRecord[], selectedIds: string[]): string {
@@ -257,6 +289,12 @@ export class CopyCommandHandler implements CommandHandler<CopyCommandData> {
 
     if (event.type === INPUT_EVENTS.ESCAPE) {
       host.session.close();
+    }
+  }
+
+  handlePointer(session: CommandSession<CopyCommandData>, target: FooterMouseTarget, activate: boolean, host: CommandHost): void {
+    if (target.kind === 'command_copy_message' && session.surface.kind === 'copy') {
+      selectCopyMessage(session, target.index, activate, host);
     }
   }
 }

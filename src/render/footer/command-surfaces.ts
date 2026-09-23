@@ -24,7 +24,7 @@ import type {
   InfoCommandSurface,
   SelectCommandSurface
 } from '../../types/command';
-import type { FooterLayout } from '../../types/render';
+import type { FooterHitRegion, FooterLayout } from '../../types/render';
 
 type CommandSurfaceRenderOptions = {
   maxLines?: number;
@@ -142,6 +142,7 @@ function renderInfoSurface(commandSurface: InfoCommandSurface, width: number, ma
 function renderSelectSurface(commandSurface: SelectCommandSurface, width: number, maxLines: number | undefined, theme: FooterTheme): FooterLayout {
   const titleLines = wrapText(commandSurface.title, width).map((line) => ansi.bold(tokenText(theme, 'accentStrong', line)));
   const optionLines: string[] = [];
+  const hitRegions: FooterHitRegion[] = [];
   const options = commandSurface.options;
   const selectedIndex = commandSurface.selectedIndex;
   const optionBudget = calculateBodyBudget(maxLines, titleLines.length, 1);
@@ -158,6 +159,16 @@ function renderSelectSurface(commandSurface: SelectCommandSurface, width: number
     const option = row.item;
     const originalIndex = row.index;
     const optionText = formatSelectOptionText(option.label, option.description);
+    const rowIndex = titleLines.length + optionLines.length;
+
+    hitRegions.push({
+      owner: 'command_select',
+      target: {kind: 'command_select_option', index: originalIndex},
+      rowStart: rowIndex,
+      rowEnd: rowIndex,
+      columnStart: 1,
+      columnEnd: Math.max(1, width)
+    });
 
     if (originalIndex === selectedIndex) {
       optionLines.push(renderFocusedPlainOption(optionText, width, theme));
@@ -173,7 +184,8 @@ function renderSelectSurface(commandSurface: SelectCommandSurface, width: number
     lines,
     cursorRow: lines.length - 1,
     cursorColumn: 0,
-    showCursor: false
+    showCursor: false,
+    hitRegions
   };
 }
 

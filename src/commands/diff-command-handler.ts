@@ -4,6 +4,7 @@ import {calculateDiffDetailMaxScroll} from '../render/footer/diff-surface';
 import type {CommandHandler, CommandHost, CommandSession, DiffCommandSurface, InfoCommandSurface} from '../types/command';
 import type {DiffFile, DiffSourceInfo, DiffSourceResult} from '../types/diff';
 import type {InputEvent} from '../types/input';
+import type {FooterMouseTarget} from '../types/render';
 
 type DiffCommandData = {
   detailScroll: number;
@@ -84,6 +85,18 @@ function updateDiffSession(session: CommandSession<DiffCommandData>, host: Comma
   });
 }
 
+function selectDiffFile(session: CommandSession<DiffCommandData>, index: number, host: CommandHost): void {
+  const data = normalizeDiffData(session.data);
+
+  if (!Number.isInteger(index) || !data.files[index]) {
+    return;
+  }
+
+  if (data.focus !== 'list' || data.selectedIndex !== index || data.detailScroll !== 0) {
+    updateDiffSession(session, host, {focus: 'list', selectedIndex: index, detailScroll: 0});
+  }
+}
+
 function resolveNextDetailScroll(data: DiffCommandData, host: CommandHost, direction: number): number {
   const viewport = host.diff.getViewport();
   const maxScroll = calculateDiffDetailMaxScroll(createDiffSurface(data), viewport.width, viewport.maxLines);
@@ -156,6 +169,12 @@ class DiffCommandHandler implements CommandHandler<DiffCommandData> {
 
     const detailScroll = resolveNextDetailScroll(data, host, direction);
     updateDiffSession(session, host, {detailScroll});
+  }
+
+  handlePointer(session: CommandSession<DiffCommandData>, target: FooterMouseTarget, _activate: boolean, host: CommandHost): void {
+    if (target.kind === 'command_diff_file' && session.surface.kind === 'diff') {
+      selectDiffFile(session, target.index, host);
+    }
   }
 }
 

@@ -349,6 +349,54 @@ test('createCommandRuntime rerenders after async command handlers settle', async
   assert.equal(harness.runtime.getSurface().title, '/async done');
 });
 
+test('createCommandRuntime exposes only declared pointer handlers and rerenders after async pointer work', async () => {
+  let resolveWork;
+  const plainHandler = {
+    name: 'plain',
+    start(_text, host) {
+      host.session.open({commandName: 'plain', handler: plainHandler, surface: createInfoSurface('/plain'), data: null});
+    },
+    handleEvent(_session, event, host) {
+      if (event.type === INPUT_EVENTS.ESCAPE) {
+        host.session.close();
+      }
+    }
+  };
+  const pointerHandler = {
+    name: 'pointer',
+    start(_text, host) {
+      host.session.open({commandName: 'pointer', handler: pointerHandler, surface: createConfirmSurface('/pointer'), data: {step: 'ready'}});
+    },
+    async handlePointer(_session, target, activate, host) {
+      assert.deepEqual(target, {kind: 'command_select_option', index: 1});
+      assert.equal(activate, true);
+      host.session.update({surface: createConfirmSurface('/pointer loading'), data: {step: 'loading'}});
+      await new Promise((resolve) => {
+        resolveWork = resolve;
+      });
+      host.session.update({surface: createConfirmSurface('/pointer done'), data: {step: 'done'}});
+    }
+  };
+  const harness = createRuntimeHarness({
+    resolveSlashCommand(text) {
+      return text === '/plain' ? plainHandler : pointerHandler;
+    }
+  });
+
+  harness.runtime.startFromText('/plain');
+  assert.equal(harness.runtime.hasPointerHandler(), false);
+  assert.equal(harness.runtime.handlePointer({kind: 'command_select_option', index: 0}, false), undefined);
+  harness.runtime.handleEvent({type: INPUT_EVENTS.ESCAPE});
+
+  harness.runtime.startFromText('/pointer');
+  assert.equal(harness.runtime.hasPointerHandler(), true);
+  const pending = harness.runtime.handlePointer({kind: 'command_select_option', index: 1}, true);
+  assert.equal(harness.runtime.getSurface().title, '/pointer loading');
+  resolveWork();
+  await pending;
+  assert.equal(harness.runtime.getSurface().title, '/pointer done');
+});
+
 test('createCommandRuntime exits from an active command session', () => {
   const localHandler = {
     name: 'local',

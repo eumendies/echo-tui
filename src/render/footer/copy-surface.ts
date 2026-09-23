@@ -7,7 +7,7 @@ import {createSelectedWindowRows, normalizeLineLimit} from './window';
 import {renderStyledLine} from '../markdown/styled-line';
 
 import type {CopyCommandSurface, CopySurfaceMessage} from '../../types/command';
-import type {FooterLayout} from '../../types/render';
+import type {FooterHitRegion, FooterLayout} from '../../types/render';
 
 const BODY_OUTER_DECORATION_WIDTH = 7;
 const BODY_INNER_DECORATION_WIDTH = 5;
@@ -45,21 +45,33 @@ function renderCopySurface(
     bodyRows.push({entry: null, index: -1, more: ''});
   }
 
+  const leftPrefix = `${frame('│', theme)} `;
   const lines = [
     renderTop(boxWidth, surface.title, theme),
     renderLine(renderSummaryLine(surface, innerWidth, theme), boxWidth, theme),
-    renderDivider(leftWidth, rightWidth, theme),
-    ...bodyRows.slice(0, bodyHeight).map((row, visualIndex) => renderBodyLine(surface, row.entry, row.index, row.more, previewRows[visualIndex] || '', leftWidth, rightWidth, focus, visualIndex === 0, theme)),
-    renderDivider(leftWidth, rightWidth, theme),
-    renderLine(ansi.dim(clampPlainText(surface.notice || surface.dismissHint, innerWidth)), boxWidth, theme),
-    renderBottom(boxWidth, theme)
+    renderDivider(leftWidth, rightWidth, theme)
   ];
+  const bodyStart = lines.length;
+  lines.push(...bodyRows.slice(0, bodyHeight).map((row, visualIndex) => renderBodyLine(surface, row.entry, row.index, row.more, previewRows[visualIndex] || '', leftWidth, rightWidth, focus, visualIndex === 0, theme, leftPrefix)));
+  lines.push(renderDivider(leftWidth, rightWidth, theme));
+  lines.push(renderLine(ansi.dim(clampPlainText(surface.notice || surface.dismissHint, innerWidth)), boxWidth, theme));
+  lines.push(renderBottom(boxWidth, theme));
+  const leftColumnStart = displayWidth(leftPrefix) + 1;
+  const hitRegions: FooterHitRegion[] = bodyRows.flatMap((row, visualIndex) => row.entry ? [{
+    owner: 'copy' as const,
+    target: {kind: 'command_copy_message' as const, index: row.index},
+    rowStart: bodyStart + visualIndex,
+    rowEnd: bodyStart + visualIndex,
+    columnStart: leftColumnStart,
+    columnEnd: leftColumnStart + leftWidth - 1
+  }] : []);
 
   return {
     lines,
     cursorRow: lines.length - 1,
     cursorColumn: 0,
-    showCursor: false
+    showCursor: false,
+    hitRegions
   };
 }
 
@@ -117,7 +129,8 @@ function createPreviewRows(text: string, height: number, width: number, scroll: 
   return visibleRows.slice(0, height);
 }
 
-function renderBodyLine(surface: CopyCommandSurface, entry: CopySurfaceMessage | null, index: number, more: string, preview: string, leftWidth: number, rightWidth: number, focus: 'list' | 'preview', previewActive: boolean, theme: FooterTheme): string {
+/** 绘制双栏主体，左栏前缀与命中列范围共用同一份布局值。 */
+function renderBodyLine(surface: CopyCommandSurface, entry: CopySurfaceMessage | null, index: number, more: string, preview: string, leftWidth: number, rightWidth: number, focus: 'list' | 'preview', previewActive: boolean, theme: FooterTheme, leftPrefix: string): string {
   const active = index === surface.selectedIndex && entry !== null;
   const left = more ? ansi.dim(more) : entry ? renderEntry(entry, active, Math.max(1, leftWidth - 4), theme) : '';
   const focusedLeft = active && focus === 'list'
@@ -127,7 +140,7 @@ function renderBodyLine(surface: CopyCommandSurface, entry: CopySurfaceMessage |
     ? activeBackground(theme, fitCell(preview, rightWidth))
     : fitCell(preview, rightWidth);
 
-  return `${frame('│', theme)} ${focusedLeft} ${frame('│', theme)} ${right} ${frame('│', theme)}`;
+  return `${leftPrefix}${focusedLeft} ${frame('│', theme)} ${right} ${frame('│', theme)}`;
 }
 
 function renderEntry(entry: CopySurfaceMessage, active: boolean, labelWidth: number, theme: FooterTheme): string {

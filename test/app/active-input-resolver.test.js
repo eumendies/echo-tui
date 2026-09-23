@@ -56,6 +56,23 @@ test('ActiveInputResolver exposes pass-through consumer results and matching poi
   assert.equal(resolver.hasActiveExcept('slash'), false);
 });
 
+test('ActiveInputResolver keeps a pointer-capable consumer disabled until its current surface opts in', () => {
+  let enabled = false;
+  const calls = [];
+  const resolver = new ActiveInputResolver([{
+    id: 'command-session',
+    isActive: () => true,
+    handleEvent: () => true,
+    canHandlePointer: () => enabled,
+    handlePointer(target, activate) { calls.push(`${target.kind}:${activate}`); }
+  }]);
+
+  assert.equal(resolver.getPointerConsumer(), null);
+  enabled = true;
+  resolver.getPointerConsumer().handlePointer({kind: 'command_diff_file', index: 3}, false);
+  assert.deepEqual(calls, ['command_diff_file:false']);
+});
+
 test('createActiveInputRouting keeps modal priority and exposes modal pointer semantics', () => {
   const calls = [];
   const routing = createActiveInputRouting({
