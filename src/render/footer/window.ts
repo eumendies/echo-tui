@@ -124,6 +124,21 @@ export function constrainLayoutTail(layout: FooterLayout, maxLines: number | und
   return {
     ...layout,
     lines: layout.lines.slice(start),
-    cursorRow: clampCursorRow(layout.cursorRow - start, normalizedMaxLines)
+    cursorRow: clampCursorRow(layout.cursorRow - start, normalizedMaxLines),
+    ...(layout.hitRegions ? {
+      hitRegions: layout.hitRegions
+        .filter((region) => region.rowStart >= start && region.rowEnd < start + normalizedMaxLines)
+        .map((region) => ({...region, rowStart: region.rowStart - start, rowEnd: region.rowEnd - start}))
+    } : {}),
+    ...(layout.wheelRegions ? {
+      // 滚轮区域可跨多行；尾部裁剪后只保留与可见行的交集。
+      wheelRegions: layout.wheelRegions
+        .filter((region) => region.rowEnd >= start && region.rowStart < start + normalizedMaxLines)
+        .map((region) => ({
+          ...region,
+          rowStart: Math.max(region.rowStart, start) - start,
+          rowEnd: Math.min(region.rowEnd, start + normalizedMaxLines - 1) - start
+        }))
+    } : {})
   };
 }

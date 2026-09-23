@@ -38,7 +38,7 @@ test('createInterruptedToolResultTranscriptRecord closes a pending call with a f
     toolCallId: 'call_bash',
     toolName: 'run_bash_command',
     ok: false,
-    details: {kind: 'generic'}
+    details: {kind: 'generic', interrupted: true}
   });
 });
 

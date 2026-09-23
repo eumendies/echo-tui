@@ -349,6 +349,103 @@ test('createCommandRuntime rerenders after async command handlers settle', async
   assert.equal(harness.runtime.getSurface().title, '/async done');
 });
 
+test('createCommandRuntime exposes only declared pointer handlers and rerenders after async pointer work', async () => {
+  let resolveWork;
+  const plainHandler = {
+    name: 'plain',
+    start(_text, host) {
+      host.session.open({commandName: 'plain', handler: plainHandler, surface: createInfoSurface('/plain'), data: null});
+    },
+    handleEvent(_session, event, host) {
+      if (event.type === INPUT_EVENTS.ESCAPE) {
+        host.session.close();
+      }
+    }
+  };
+  const pointerHandler = {
+    name: 'pointer',
+    start(_text, host) {
+      host.session.open({commandName: 'pointer', handler: pointerHandler, surface: createConfirmSurface('/pointer'), data: {step: 'ready'}});
+    },
+    async handlePointer(_session, target, activate, host) {
+      assert.deepEqual(target, {kind: 'command_select_option', index: 1});
+      assert.equal(activate, true);
+      host.session.update({surface: createConfirmSurface('/pointer loading'), data: {step: 'loading'}});
+      await new Promise((resolve) => {
+        resolveWork = resolve;
+      });
+      host.session.update({surface: createConfirmSurface('/pointer done'), data: {step: 'done'}});
+    }
+  };
+  const harness = createRuntimeHarness({
+    resolveSlashCommand(text) {
+      return text === '/plain' ? plainHandler : pointerHandler;
+    }
+  });
+
+  harness.runtime.startFromText('/plain');
+  assert.equal(harness.runtime.hasPointerHandler(), false);
+  assert.equal(harness.runtime.handlePointer({kind: 'command_select_option', index: 0}, false), undefined);
+  harness.runtime.handleEvent({type: INPUT_EVENTS.ESCAPE});
+
+  harness.runtime.startFromText('/pointer');
+  assert.equal(harness.runtime.hasPointerHandler(), true);
+  const pending = harness.runtime.handlePointer({kind: 'command_select_option', index: 1}, true);
+  assert.equal(harness.runtime.getSurface().title, '/pointer loading');
+  resolveWork();
+  await pending;
+  assert.equal(harness.runtime.getSurface().title, '/pointer done');
+});
+
+test('createCommandRuntime dispatches wheel independently of pointer and only redraws changed sessions', async () => {
+  let resolveWork;
+  const pointerOnly = {
+    start(_text, host) {
+      host.session.open({commandName: 'pointer-only', handler: pointerOnly, surface: createInfoSurface('pointer'), data: null});
+    },
+    handlePointer() {}
+  };
+  const wheelOnly = {
+    start(_text, host) {
+      host.session.open({commandName: 'wheel-only', handler: wheelOnly, surface: createInfoSurface('wheel'), data: {index: 0}});
+    },
+    async handleWheel(session, pane, direction, host) {
+      assert.equal(pane, 'secondary');
+      assert.equal(direction, 'down');
+      if (session.data.index !== 0) return;
+      host.session.update({data: {index: 1}, surface: createInfoSurface('loading')});
+      await new Promise((resolve) => { resolveWork = resolve; });
+      host.session.update({data: {index: 2}, surface: createInfoSurface('done')});
+    },
+    handleEvent(_session, event, host) {
+      if (event.type === INPUT_EVENTS.ESCAPE) host.session.close();
+    }
+  };
+  const harness = createRuntimeHarness({resolveSlashCommand: (text) => text === '/pointer' ? pointerOnly : wheelOnly});
+  assert.equal(harness.runtime.hasWheelHandler(), false);
+  assert.equal(harness.runtime.handleWheel('secondary', 'up'), undefined);
+  harness.runtime.startFromText('/pointer');
+  assert.equal(harness.runtime.hasPointerHandler(), true);
+  assert.equal(harness.runtime.hasWheelHandler(), false);
+  assert.equal(harness.runtime.handleWheel('secondary', 'down'), undefined);
+  assert.equal(harness.calls.renders, 1);
+  // 独立 runtime 的 wheel-only handler 不应自动获得点击能力。
+  const alternate = createRuntimeHarness({resolveSlashCommand: () => wheelOnly});
+  alternate.runtime.startFromText('/wheel');
+  assert.equal(alternate.runtime.hasPointerHandler(), false);
+  assert.equal(alternate.runtime.hasWheelHandler(), true);
+  const pending = alternate.runtime.handleWheel('secondary', 'down');
+  assert.equal(alternate.calls.renders, 2);
+  assert.equal(alternate.runtime.getSurface().title, 'loading');
+  resolveWork();
+  await pending;
+  assert.equal(alternate.calls.renders, 3);
+  alternate.runtime.handleWheel('secondary', 'down');
+  assert.equal(alternate.calls.renders, 3);
+  alternate.runtime.handleEvent({type: INPUT_EVENTS.ESCAPE});
+  assert.equal(alternate.runtime.hasWheelHandler(), false);
+});
+
 test('createCommandRuntime exits from an active command session', () => {
   const localHandler = {
     name: 'local',

@@ -7,7 +7,7 @@ import {createSelectedWindowRows, normalizeLineLimit} from './window';
 import {renderStyledLine} from '../markdown/styled-line';
 
 import type {CopyCommandSurface, CopySurfaceMessage} from '../../types/command';
-import type {FooterLayout} from '../../types/render';
+import type {FooterHitRegion, FooterLayout} from '../../types/render';
 
 const BODY_OUTER_DECORATION_WIDTH = 7;
 const BODY_INNER_DECORATION_WIDTH = 5;
@@ -30,10 +30,7 @@ function renderCopySurface(
   const safeWidth = Math.max(1, safeRenderWidth(width));
   const boxWidth = calculateBoxWidth(safeWidth);
   const innerWidth = contentWidth(boxWidth);
-  const bodyHeight = calculateBodyHeight(maxLines);
-  const splitWidth = Math.max(2, boxWidth - BODY_OUTER_DECORATION_WIDTH);
-  const leftWidth = calculateListWidth(surface.messages, splitWidth);
-  const rightWidth = Math.max(1, splitWidth - leftWidth);
+  const {bodyHeight, leftWidth, rightWidth} = createCopyPanelMetrics(surface.messages, safeWidth, maxLines);
   const rows = createSelectedWindowRows(surface.messages, surface.selectedIndex, bodyHeight);
   const previewRows = createPreviewRows(surface.messages[surface.selectedIndex]?.text || '', bodyHeight, rightWidth, surface.previewScroll);
   const focus = surface.focus === 'preview' ? 'preview' : 'list';
@@ -45,22 +42,46 @@ function renderCopySurface(
     bodyRows.push({entry: null, index: -1, more: ''});
   }
 
+  const leftPrefix = `${frame('│', theme)} `;
   const lines = [
     renderTop(boxWidth, surface.title, theme),
     renderLine(renderSummaryLine(surface, innerWidth, theme), boxWidth, theme),
-    renderDivider(leftWidth, rightWidth, theme),
-    ...bodyRows.slice(0, bodyHeight).map((row, visualIndex) => renderBodyLine(surface, row.entry, row.index, row.more, previewRows[visualIndex] || '', leftWidth, rightWidth, focus, visualIndex === 0, theme)),
-    renderDivider(leftWidth, rightWidth, theme),
-    renderLine(ansi.dim(clampPlainText(surface.notice || surface.dismissHint, innerWidth)), boxWidth, theme),
-    renderBottom(boxWidth, theme)
+    renderDivider(leftWidth, rightWidth, theme)
   ];
+  const bodyStart = lines.length;
+  lines.push(...bodyRows.slice(0, bodyHeight).map((row, visualIndex) => renderBodyLine(surface, row.entry, row.index, row.more, previewRows[visualIndex] || '', leftWidth, rightWidth, focus, visualIndex === 0, theme, leftPrefix)));
+  lines.push(renderDivider(leftWidth, rightWidth, theme));
+  lines.push(renderLine(ansi.dim(clampPlainText(surface.notice || surface.dismissHint, innerWidth)), boxWidth, theme));
+  lines.push(renderBottom(boxWidth, theme));
+  const leftColumnStart = displayWidth(leftPrefix) + 1;
+  const hitRegions: FooterHitRegion[] = bodyRows.flatMap((row, visualIndex) => row.entry ? [{
+    owner: 'copy' as const,
+    target: {kind: 'command_copy_message' as const, index: row.index},
+    rowStart: bodyStart + visualIndex,
+    rowEnd: bodyStart + visualIndex,
+    columnStart: leftColumnStart,
+    columnEnd: leftColumnStart + leftWidth - 1
+  }] : []);
 
   return {
     lines,
     cursorRow: lines.length - 1,
     cursorColumn: 0,
-    showCursor: false
+    showCursor: false,
+    hitRegions,
+    // 点击仅命中消息，滚轮仅覆盖右侧预览主体（含空白行）。
+    wheelRegions: [
+      {owner: 'copy' as const, pane: 'secondary' as const, rowStart: bodyStart, rowEnd: bodyStart + bodyHeight - 1, columnStart: leftColumnStart + leftWidth + 3, columnEnd: leftColumnStart + leftWidth + 2 + rightWidth}
+    ].filter((region) => region.columnEnd <= safeWidth)
   };
+}
+
+/**
+ * 按 renderer 的实际宽高约束计算消息预览最大滚动位置，供滚轮 handler 提前钳制。
+ */
+function calculateCopyPreviewMaxScroll(surface: CopyCommandSurface, width: number, maxLines = Number.POSITIVE_INFINITY): number {
+  const {bodyHeight, rightWidth} = createCopyPanelMetrics(surface.messages, Math.max(1, safeRenderWidth(width)), maxLines);
+  return Math.max(0, projectPreviewRows(surface.messages[surface.selectedIndex]?.text || '', rightWidth).length - bodyHeight);
 }
 
 function calculateBoxWidth(safeWidth: number): number {
@@ -82,6 +103,38 @@ function calculateListWidth(messages: CopySurfaceMessage[], splitWidth: number):
   return Math.min(Math.max(MIN_LIST_WIDTH, contentWidth), proportionalWidth, Math.max(1, splitWidth - MIN_PREVIEW_WIDTH));
 }
 
+type CopyPanelMetrics = {
+  bodyHeight: number; // 双栏主体可用行数，已扣除面板外壳固定行。
+  leftWidth: number; // 左栏消息列表列宽。
+  rightWidth: number; // 右栏消息预览列宽。
+};
+
+/**
+ * 汇总 /copy 双栏布局派生值；渲染与滚轮滚动上限共用同一套列宽和行预算。
+ */
+function createCopyPanelMetrics(messages: CopySurfaceMessage[], safeWidth: number, maxLines: number): CopyPanelMetrics {
+  const splitWidth = Math.max(2, calculateBoxWidth(safeWidth) - BODY_OUTER_DECORATION_WIDTH);
+  const leftWidth = calculateListWidth(messages, splitWidth);
+  return {
+    bodyHeight: calculateBodyHeight(maxLines),
+    leftWidth,
+    rightWidth: Math.max(1, splitWidth - leftWidth)
+  };
+}
+
+/**
+ * 将消息文本按右栏宽度投影为换行后的物理行；预览窗口与滚动上限共用同一投影。
+ */
+function projectPreviewRows(text: string, width: number): string[] {
+  return text.split('\n').flatMap((line) => renderStyledLine({
+    prefix: '',
+    contentPrefix: '',
+    continuationPrefix: '',
+    spans: [{text: line || ' '}],
+    width: width + 1
+  }).map((row) => fitCell(row, width)));
+}
+
 function renderSummaryLine(surface: CopyCommandSurface, width: number, theme: FooterTheme): string {
   const selected = surface.selectedIds.length === 0 ? ansi.dim('○ 未选择') : tokenText(theme, 'accent', `● 已选择 ${surface.selectedIds.length}`);
   const total = ansi.dim(`${surface.messages.length} 条可复制消息`);
@@ -90,13 +143,7 @@ function renderSummaryLine(surface: CopyCommandSurface, width: number, theme: Fo
 }
 
 function createPreviewRows(text: string, height: number, width: number, scroll: number | undefined): string[] {
-  const rows = text.split('\n').flatMap((line) => renderStyledLine({
-    prefix: '',
-    contentPrefix: '',
-    continuationPrefix: '',
-    spans: [{text: line || ' '}],
-    width: width + 1
-  }).map((row) => fitCell(row, width)));
+  const rows = projectPreviewRows(text, width);
 
   const maxScroll = Math.max(0, rows.length - height);
   const start = Math.min(Math.max(0, Number.isInteger(scroll) ? Number(scroll) : 0), maxScroll);
@@ -117,7 +164,8 @@ function createPreviewRows(text: string, height: number, width: number, scroll: 
   return visibleRows.slice(0, height);
 }
 
-function renderBodyLine(surface: CopyCommandSurface, entry: CopySurfaceMessage | null, index: number, more: string, preview: string, leftWidth: number, rightWidth: number, focus: 'list' | 'preview', previewActive: boolean, theme: FooterTheme): string {
+/** 绘制双栏主体，左栏前缀与命中列范围共用同一份布局值。 */
+function renderBodyLine(surface: CopyCommandSurface, entry: CopySurfaceMessage | null, index: number, more: string, preview: string, leftWidth: number, rightWidth: number, focus: 'list' | 'preview', previewActive: boolean, theme: FooterTheme, leftPrefix: string): string {
   const active = index === surface.selectedIndex && entry !== null;
   const left = more ? ansi.dim(more) : entry ? renderEntry(entry, active, Math.max(1, leftWidth - 4), theme) : '';
   const focusedLeft = active && focus === 'list'
@@ -127,7 +175,7 @@ function renderBodyLine(surface: CopyCommandSurface, entry: CopySurfaceMessage |
     ? activeBackground(theme, fitCell(preview, rightWidth))
     : fitCell(preview, rightWidth);
 
-  return `${frame('│', theme)} ${focusedLeft} ${frame('│', theme)} ${right} ${frame('│', theme)}`;
+  return `${leftPrefix}${focusedLeft} ${frame('│', theme)} ${right} ${frame('│', theme)}`;
 }
 
 function renderEntry(entry: CopySurfaceMessage, active: boolean, labelWidth: number, theme: FooterTheme): string {
@@ -191,4 +239,4 @@ function contentWidth(boxWidth: number): number {
   return Math.max(0, boxWidth - 4);
 }
 
-export {renderCopySurface};
+export {calculateCopyPreviewMaxScroll, renderCopySurface};

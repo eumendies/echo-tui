@@ -219,54 +219,29 @@ function parseJsonObject(text: string): Record<string, unknown> | null {
   }
 }
 
-/** 从受支持 patch header 提取完整有序文件操作，不解析或模拟 hunk。 */
+/** 只扫描 Begin Patch 文件指令供审批摘要使用；不解析 hunk，也不执行文件操作。 */
 function extractPatchOperations(patch: string): PatchOperation[] {
   const operations: PatchOperation[] = [];
   const seen = new Set<string>();
   const lines = patch.replace(/\r\n?/g, '\n').split('\n');
+  if (lines.find((line) => line.trim() !== '')?.trimStart() !== '*** Begin Patch') return operations;
+
   const add = (kind: PatchOperation['kind'], rawPath: string) => {
-    const path = normalizePatchPath(rawPath);
+    const path = rawPath.trim();
     const key = `${kind}:${path}`;
-    if (!path || path === '/dev/null' || seen.has(key)) return;
+    if (!path || seen.has(key)) return;
     seen.add(key);
     operations.push({kind, path});
   };
 
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index].trimStart();
+  for (const rawLine of lines) {
+    const line = rawLine.trimStart();
     const begin = /^\*\*\* (Add|Update|Delete) File:\s*(.+)$/.exec(line);
     if (begin) {
-      add(begin[1].toLowerCase() as PatchOperation['kind'], begin[2].trim());
-      continue;
+      add(begin[1].toLowerCase() as PatchOperation['kind'], begin[2]);
     }
-    const move = /^\*\*\* Move to:\s*(.+)$/.exec(line);
-    if (move && operations.length > 0 && operations[operations.length - 1].kind === 'update') {
-      const previous = operations.pop()!;
-      seen.delete(`${previous.kind}:${previous.path}`);
-      add('update', move[1].trim());
-      continue;
-    }
-    if (!line.startsWith('--- ') || index + 1 >= lines.length) continue;
-    const next = lines[index + 1].trimStart();
-    if (!next.startsWith('+++ ')) continue;
-    const oldPath = parsePatchHeaderPath(line.slice(4));
-    const newPath = parsePatchHeaderPath(next.slice(4));
-    if (oldPath === '/dev/null') add('add', newPath);
-    else if (newPath === '/dev/null') add('delete', oldPath);
-    else add('update', newPath);
-    index += 1;
   }
   return operations;
-}
-
-/** 去除统一 diff 文件 header 中路径后的可选时间戳。 */
-function parsePatchHeaderPath(rawPath: string): string {
-  return rawPath.trim().split('\t')[0];
-}
-
-/** 去除统一 diff 的 a/、b/ 展示前缀，保留其余路径事实。 */
-function normalizePatchPath(path: string): string {
-  return path.startsWith('a/') || path.startsWith('b/') ? path.slice(2) : path;
 }
 
 /**

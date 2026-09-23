@@ -90,6 +90,14 @@ test('/agents navigates scopes, exposes mixed action rows, and ignores hidden mu
   let surface = host.session.getActive().surface;
   assert.equal(surface.kind, 'agents');
   assert.equal(surface.activeTab, 'overview');
+  assert.deepEqual(surface.tabs.map((tab) => tab.label), ['总览', '项目', '用户', '内置']);
+  assert.deepEqual(surface.stats, {agentCount: 3, issueCount: 1});
+  assert.equal(surface.summary.title, 'explorer');
+  assert.deepEqual(surface.summary.fields.slice(0, 3), [
+    {label: '模型', value: '继承父模型'},
+    {label: 'Effort', value: '继承父 effort'},
+    {label: '工具', value: '2 个'}
+  ]);
   assert.deepEqual(surface.rows.filter((row) => row.kind === 'agent').map((row) => row.label), ['explorer', 'worker', 'reviewer']);
   assert.equal(surface.rows.find((row) => row.label.includes('broken')).kind, 'field');
   for (const value of ['a', 'd', 'e']) send(handler, host, {type: INPUT_EVENTS.TEXT, value});
@@ -99,10 +107,30 @@ test('/agents navigates scopes, exposes mixed action rows, and ignores hidden mu
   assert.equal(surface.activeTab, 'project');
   assert.equal(surface.rows.at(-1).label, '新建 Agent');
   down(handler, host, 2);
+  surface = host.session.getActive().surface;
+  assert.equal(surface.summary.title, '新建 Agent');
+  assert.equal(surface.summary.sourceKind, 'project');
+  assert.deepEqual(surface.summary.fields, []);
   send(handler, host, {type: INPUT_EVENTS.SUBMIT});
   surface = host.session.getActive().surface;
   assert.equal(surface.mode, 'form');
-  assert.deepEqual(surface.rows.map((row) => row.id), ['name', 'description', 'capability', 'model', 'effort', 'tools', 'skills', 'mcp', 'instructions', 'save', 'cancel']);
+  assert.deepEqual(surface.rows.map((row) => row.id), ['name', 'description', 'model', 'effort', 'capability', 'tools', 'skills', 'mcp', 'instructions', 'save', 'cancel']);
+  assert.deepEqual(surface.rows.map((row) => row.section), ['identity', 'identity', 'policy', 'policy', 'capability', 'capability', 'capability', 'capability', 'capability', 'actions', 'actions']);
+});
+
+test('/agents summarizes an invalid physical item without duplicating diagnostics or inventing inherited policy', () => {
+  const handler = new AgentsCommandHandler();
+  const {host} = createHost();
+  handler.start('/agents', host);
+  down(handler, host, 3);
+  const surface = host.session.getActive().surface;
+
+  // 无效项没有可解析定义：摘要只保留名称、状态、来源路径与诊断，不显示继承自父级的模型策略。
+  assert.equal(surface.summary.title, 'broken · missing_body');
+  assert.equal(surface.summary.description, undefined);
+  assert.deepEqual(surface.summary.diagnostics, ['Body is missing.']);
+  assert.deepEqual(surface.summary.fields, [{label: '来源路径', value: '/repo/.echo/agents/broken.md'}]);
+  assert.equal(surface.summary.status, 'invalid');
 });
 
 test('/agents create uses instructions composer and default-cancel confirmation while preserving draft', () => {
@@ -169,6 +197,10 @@ test('/agents built-in safety fields are readonly and override removal requires 
   send(handler, host, {type: INPUT_EVENTS.SHIFT_TAB});
   send(handler, host, {type: INPUT_EVENTS.SUBMIT});
   assert.equal(host.session.getActive().surface.rows.find((row) => row.id === 'builtin:description').readonly, true);
+  assert.equal(host.session.getActive().surface.rows.find((row) => row.id === 'builtin:description').section, 'identity');
+  assert.equal(host.session.getActive().surface.rows.find((row) => row.id === 'builtin:model').section, 'policy');
+  assert.equal(host.session.getActive().surface.rows.find((row) => row.id === 'builtin:tools').section, 'capability');
+  assert.equal(host.session.getActive().surface.rows.find((row) => row.id === 'builtin:project').section, 'actions');
   assert.equal(host.session.getActive().surface.rows.some((row) => row.label === '编辑配置'), false);
   assert.equal(host.session.getActive().surface.rows.some((row) => row.id.startsWith('builtin:copy:')), false);
   assert.equal(host.session.getActive().surface.rows.find((row) => row.id === 'builtin:policy').description, '项目级 override 生效 · /repo/.echo/agents.settings.json');
@@ -178,6 +210,7 @@ test('/agents built-in safety fields are readonly and override removal requires 
   down(handler, host, 8);
   send(handler, host, {type: INPUT_EVENTS.SUBMIT});
   assert.deepEqual(host.session.getActive().surface.rows.map((row) => row.id), ['policy', 'model', 'effort', 'skills', 'save', 'remove', 'cancel']);
+  assert.equal(host.session.getActive().surface.rows.find((row) => row.id === 'remove').tone, 'danger');
   down(handler, host, 5);
   send(handler, host, {type: INPUT_EVENTS.SUBMIT});
   assert.equal(host.session.getActive().surface.selectedIndex, 0);

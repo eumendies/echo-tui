@@ -173,6 +173,7 @@ test('config center renders general tabs, settings, and constrained width', () =
     compactionThresholdRatio: 0.8,
     defaultInteractionMode: 'plan',
     fileEditMode: 'edit_file',
+    mouseInteractionEnabled: false,
     skillCatalogContextRatio: 0.02,
     showReasoningSummary: true,
     slashSuggestionMaxVisible: 8,
@@ -197,13 +198,14 @@ test('config center renders general tabs, settings, and constrained width', () =
   assert.match(text, /80%/);
   assert.match(text, /技能列表上下文占比上限/);
   assert.match(text, /2%/);
+  assert.match(text, /UI 鼠标交互\s+关/);
   assert.match(text, /默认启动模式/);
   assert.match(text, /plan/);
   assert.match(text, /启动时检查更新\s+开/);
   assert.match(text, /文件编辑工具/);
   assert.match(text, /edit_file/);
   assert.match(text, /超限图片自动压缩/);
-  assert.match(text, /↓ 2 更多/);
+  assert.match(text, /↓ 3 更多/);
   assert.ok(layout.lines.every((line) => displayWidth(line) <= 38));
 });
 
@@ -215,6 +217,7 @@ test('config center highlights active tab with foreground color only', () => {
     compactionThresholdRatio: 0.8,
     defaultInteractionMode: 'normal',
     fileEditMode: 'apply_patch',
+    mouseInteractionEnabled: false,
     skillCatalogContextRatio: 0.02,
     showReasoningSummary: true,
     slashSuggestionMaxVisible: 8,
@@ -245,6 +248,7 @@ test('config center only renders approval model for auto draft', () => {
     compactionThresholdRatio: 0.8,
     defaultInteractionMode: 'normal',
     fileEditMode: 'apply_patch',
+    mouseInteractionEnabled: true,
     skillCatalogContextRatio: 0.02,
     showReasoningSummary: true,
     slashSuggestionMaxVisible: 8,
@@ -279,6 +283,7 @@ test('config center renders approval API model name and provider without the pro
     compactionThresholdRatio: 0.8,
     defaultInteractionMode: 'normal',
     fileEditMode: 'apply_patch',
+    mouseInteractionEnabled: true,
     skillCatalogContextRatio: 0.02,
     showReasoningSummary: true,
     slashSuggestionMaxVisible: 8,
@@ -307,6 +312,7 @@ test('config center separates a selected approval model from its label at constr
     compactionThresholdRatio: 0.8,
     defaultInteractionMode: 'normal',
     fileEditMode: 'apply_patch',
+    mouseInteractionEnabled: true,
     skillCatalogContextRatio: 0.02,
     showReasoningSummary: true,
     slashSuggestionMaxVisible: 8,

@@ -261,9 +261,7 @@ function simulateUpdateFile(
   content: string
 ): Result<{content: string; displayFile: ApplyPatchDisplayFile}> {
   const split = splitFileContent(content);
-  const applied = operation.matchMode === 'sequential'
-    ? applySequentialUpdateHunks(operation, split.lines)
-    : applyIndependentUpdateHunks(operation, split.lines);
+  const applied = applySequentialUpdateHunks(operation, split.lines);
 
   if (!applied.ok) {
     return applied;
@@ -287,33 +285,6 @@ function simulateDeleteFile(
   content: string
 ): Result<{displayFile: ApplyPatchDisplayFile}> {
   const split = splitFileContent(content);
-
-  if (operation.hunks.length > 0) {
-    if (operation.hunks.some((hunk) => hunk.newLines.length > 0)) {
-      return {
-        ok: false,
-        reason: `delete hunk for ${operation.filePath} must only contain removed lines`,
-        hint: 'Read the file again and include every current file line as a removed line.'
-      };
-    }
-
-    const applied = operation.matchMode === 'sequential'
-      ? applySequentialUpdateHunks(operation, split.lines)
-      : applyIndependentUpdateHunks(operation, split.lines);
-
-    if (!applied.ok) {
-      return applied;
-    }
-
-    if (applied.value.lines.length > 0) {
-      return {
-        ok: false,
-        reason: `delete patch for ${operation.filePath} does not remove the entire file`,
-        hint: 'Include every current file line as a removed line in the delete hunk.'
-      };
-    }
-  }
-
   const originalLines = split.lines;
 
   return {
@@ -365,55 +336,6 @@ function readPatchTargetFile(
 type HunkApplicationResult =
   | {ok: true; value: {lines: string[]; matchedHunks: Array<{hunk: PatchHunk; postStart: number}>}}
   | ApplyPatchFailure;
-
-function applyIndependentUpdateHunks(
-  operation: PatchOperation,
-  startingLines: string[]
-): HunkApplicationResult {
-  let currentLines = startingLines;
-  const matchedHunks: Array<{hunk: PatchHunk; postStart: number}> = [];
-
-  for (const [hunkIndex, hunk] of operation.hunks.entries()) {
-    const hunkRef = formatHunkRef(hunkIndex, operation.hunks.length);
-
-    // 空 oldLines 没有定位锚点；插入也必须带上下文，避免猜测插入位置。
-    if (hunk.oldLines.length === 0) {
-      return {
-        ok: false,
-        reason: `${hunkRef} for ${operation.filePath} has no context or removed lines`,
-        hint: 'Read the file again and include context around the insertion.'
-      };
-    }
-
-    const match = findUniqueMatch(currentLines, hunk.oldLines);
-
-    if (!match.ok) {
-      return {
-        ok: false,
-        reason: `${hunkRef} ${match.reason} in ${operation.filePath}`,
-        hint: 'Read the file again and include more surrounding context in the hunk.',
-        hunkLines: hunk.oldLines
-      };
-    }
-
-    const delta = hunk.newLines.length - hunk.oldLines.length;
-
-    for (const matched of matchedHunks) {
-      if (match.value < matched.postStart) {
-        matched.postStart += delta;
-      }
-    }
-
-    matchedHunks.push({hunk, postStart: match.value});
-    currentLines = [
-      ...currentLines.slice(0, match.value),
-      ...hunk.newLines,
-      ...currentLines.slice(match.value + hunk.oldLines.length)
-    ];
-  }
-
-  return {ok: true, value: {lines: currentLines, matchedHunks}};
-}
 
 function applySequentialUpdateHunks(
   operation: PatchOperation,
@@ -567,34 +489,6 @@ function createResolvedDisplayLines(
   }
 
   return lines;
-}
-
-function findUniqueMatch(lines: string[], target: string[], startIndex = 0): Result<number> {
-  const matches: number[] = [];
-
-  // 不做模糊匹配：0 次匹配说明上下文过期，多次匹配说明上下文不够唯一。
-  for (let index = startIndex; index <= lines.length - target.length; index += 1) {
-    let matched = true;
-
-    for (let offset = 0; offset < target.length; offset += 1) {
-      if (lines[index + offset] !== target[offset]) {
-        matched = false;
-        break;
-      }
-    }
-
-    if (matched) {
-      matches.push(index);
-    }
-
-    if (matches.length > 1) {
-      return {ok: false, reason: 'matched multiple locations'};
-    }
-  }
-
-  return matches.length === 0
-    ? {ok: false, reason: 'matched 0 locations'}
-    : {ok: true, value: matches[0]};
 }
 
 function findFirstMatch(lines: string[], target: string[], startIndex: number): Result<number> {

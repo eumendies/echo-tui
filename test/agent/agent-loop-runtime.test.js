@@ -2560,7 +2560,7 @@ test('createAgentLoopRuntime keeps persisted indexes aligned across two compacti
   const agent = {
     async runTurn(records, _callbacks, options = {}) {
       if (options.isCompaction) {
-        summaryInputs.push(records[1].text);
+        summaryInputs.push(records.map((record) => record.text).join('\n'));
         return {draft: `summary-${summaryInputs.length}`, toolCalls: []};
       }
 
@@ -2609,6 +2609,62 @@ test('createAgentLoopRuntime keeps persisted indexes aligned across two compacti
   assert.equal(persistedRecords[compactions[1].activeStartIndex].toolCallId, 'call-15');
   assert.doesNotMatch(summaryInputs[1], /missing_tool\(\{"index":15\}\)/);
   assert.equal(normalRequests[1].some((record) => record.role === 'tool_call' && record.toolCallId === 'call-15'), true);
+});
+
+test('createAgentLoopRuntime reuses the normal request prefix for compaction and records summary usage', async () => {
+  const debug = createDebugRecorder();
+  const summaryRequests = [];
+  const normalRequests = [];
+  const usageEvents = [];
+  const agent = {
+    async runTurn(records, _callbacks, options = {}) {
+      if (options.isCompaction) {
+        summaryRequests.push({options, records});
+        return {
+          draft: 'summary',
+          toolCalls: [],
+          usage: {cacheReadInputTokens: 7, inputTokens: 9, outputTokens: 3},
+          usageInputTokens: 9
+        };
+      }
+
+      normalRequests.push(records);
+      return {draft: 'done', toolCalls: []};
+    }
+  };
+  const records = Array.from({length: 30}, (_, index) => ({
+    role: index % 2 === 0 ? 'user' : 'assistant',
+    text: `message ${index} `.repeat(10)
+  }));
+  const usageStore = {
+    appendEvent(event) {
+      usageEvents.push(event);
+      return event;
+    },
+    listDailyUsage: () => [],
+    listModelUsage: () => []
+  };
+
+  const result = await withPatchedAgentRuntime(agent, () => {
+    const runAgent = createAgentLoopRuntime(TEST_CWD, undefined, undefined, debug.context, usageStore);
+    return runAgent({records, sessionId: 'session-run'});
+  }, {...TEST_CONFIG, contextWindow: 20});
+
+  assert.equal(result, 'done');
+  assert.equal(summaryRequests.length, 1);
+  assert.equal(normalRequests.length, 1);
+  // 压缩请求透传运行时会话身份，并从 token 0 起复用普通请求前导。
+  assert.equal(summaryRequests[0].options.sessionId, 'session-run');
+  assert.equal(summaryRequests[0].options.includeToolDefinitions, true);
+  assert.deepEqual(summaryRequests[0].records.slice(0, 1), normalRequests[0].slice(0, 1));
+  assert.equal(summaryRequests[0].records[0].role, 'system');
+  // 摘要指令是输入中的最后一条记录，且携带固定模板要求。
+  const instruction = summaryRequests[0].records[summaryRequests[0].records.length - 1];
+  assert.equal(instruction.role, 'user');
+  assert.equal(instruction.text.includes('## Background and Goals'), true);
+  // 摘要 provider turn 的 usage 同时进入观测与 usage 账本。
+  assert.equal(debug.events.some((event) => event.event === 'provider_usage' && event.payload.usage?.inputTokens === 9), true);
+  assert.equal(usageEvents.some((event) => event.inputTokens === 9 && event.cacheReadInputTokens === 7), true);
 });
 
 test('createAgentLoopRuntime emits debug provider and tool summaries without changing provider records', async () => {
@@ -2718,7 +2774,7 @@ test('createAgentLoopRuntime records provider usage events without changing cont
         contextUsages.push(usage);
       }
     });
-  });
+  }, {...TEST_CONFIG, providerId: 'primary'});
 
   assert.equal(result, 'done');
   assert.equal(contextUsages.length, 2);
@@ -2728,6 +2784,7 @@ test('createAgentLoopRuntime records provider usage events without changing cont
   assert.equal(events[0].cwdHash.length, 40);
   assert.deepEqual(events.map((event) => ({
     providerType: event.providerType,
+    providerId: event.providerId,
     model: event.model,
     interactionMode: event.interactionMode,
     inputTokens: event.inputTokens,
@@ -2738,6 +2795,7 @@ test('createAgentLoopRuntime records provider usage events without changing cont
   })), [
     {
       providerType: 'fake',
+      providerId: 'primary',
       model: 'fake',
       interactionMode: 'normal',
       inputTokens: 42,
@@ -2748,6 +2806,7 @@ test('createAgentLoopRuntime records provider usage events without changing cont
     },
     {
       providerType: 'fake',
+      providerId: 'primary',
       model: 'fake',
       interactionMode: 'normal',
       inputTokens: 50,

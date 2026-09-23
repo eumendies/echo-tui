@@ -2,9 +2,9 @@ import type { InputEvent } from './input';
 import type { AgentInstructionFileName, AgentToolPolicy, AgentType, ContextUsage, InteractionMode, ReasoningEffort } from './agent';
 import type { SandboxMode, SandboxModeOverride } from '../sandbox/types';
 import type {DiffFile, DiffSourceInfo, DiffSourceResult} from './diff';
-import type { CompactionState, PendingConversationReference, PreparedConversationReference, TranscriptForkResult, TranscriptRecord, TranscriptSessionSummary, TranscriptSessionPreview, UserTranscriptMetadata } from './transcript';
+import type { CompactionState, PendingConversationReference, PreparedConversationReference, TodoState, TranscriptForkResult, TranscriptRecord, TranscriptSessionDeleteResult, TranscriptSessionSummary, TranscriptSessionPreview, UserTranscriptMetadata } from './transcript';
 import type {UndoExecuteResult, UndoSummary} from './change-history';
-import type {UsageDailyAggregate, UsageQueryOptions} from './usage';
+import type {UsageDailyAggregate, UsageModelAggregate, UsageQueryOptions} from './usage';
 import type {LifecycleHookConfigDraft, LifecycleHookDraftEntry, LifecycleHookEventName, LifecycleHookTestResult} from './hooks';
 import type {AgentMemoryCatalog, AgentMemoryCatalogListResult, AgentMemoryCatalogReadResult, AgentMemoryItem, AgentMemoryMutationResult, AgentMemoryScope, UserMemory, UserMemoryMutationResult, UserMemoryReadResult} from './memory';
 import type {SkillSourceKind} from './skill';
@@ -14,6 +14,8 @@ import type {CustomSubagentManifest} from '../agent/subagent/manifest';
 import type {AgentDefinitionMutationResult, AgentManagementDiagnostic, AgentManagementItem, AgentManagementScope} from '../agent/subagent/management-store';
 import type {AgentsSettingsMutationResult, AgentsSettingsScopeReadResult, BuiltinSubagentName, BuiltinSubagentOverride} from '../agent/subagent/settings';
 import type {McpConfigEditDraft, McpConfigEditIssue, McpPromptArgument, McpPromptMessage} from './mcp';
+import type {FooterMouseTarget, FooterWheelPane} from './render';
+import type {MouseWheelDirection} from './input';
 
 export type CommandSurfaceOption = {
   label: string;
@@ -76,6 +78,7 @@ export type ResumeCommandSurface = {
   previewStatus: 'loading' | 'ready' | 'error'; // 当前右栏预览的异步生命周期状态。
   previewRecords: ResumeCommandSurfacePreviewRecord[]; // ready 状态下按渲染行折行显示的预览记录。
   previewError?: string; // 预览读取失败时展示的稳定错误文案。
+  notice?: string; // 当前浏览器状态的临时中文说明，例如当前会话删除保护提示。
   emptyPreviewHint: string; // 预览无记录时的占位文案。
   dismissHint: string; // 面板底部键位提示。
 };
@@ -210,6 +213,8 @@ export type HooksCommandSurface = {
 
 export type AgentsCommandTab = 'overview' | 'project' | 'user' | 'builtin';
 type AgentsCommandMode = 'list' | 'detail' | 'form' | 'tools' | 'skills' | 'instructions' | 'confirm';
+export type AgentsCommandSection = 'identity' | 'policy' | 'capability' | 'actions';
+export type AgentsCommandTone = 'warning' | 'danger';
 
 type AgentsCommandTabInfo = {
   id: AgentsCommandTab; // 顶层来源范围的稳定标识。
@@ -226,11 +231,32 @@ export type AgentsCommandRow = {
   mcp?: boolean; // Agent 列表行是否可见父运行 MCP 工具。
   model?: string; // Agent 列表行的显式模型 profile；缺省表示继承父模型。
   readonly?: boolean; // true 表示该字段仅展示且不得进入编辑状态。
+  section?: AgentsCommandSection; // 详情或表单中的语义分区；不参与焦点索引。
   selected?: boolean; // tools 多选时表示当前工具是否已纳入草稿。
   skillSummary?: string; // Agent 列表行的 Skill 策略摘要，区分全部、无与已配置数量。
   sourceKind?: 'builtin' | AgentManagementScope; // Agent 列表行的物理来源。
   status?: string; // Agent 的 active、shadowed、invalid 或 reserved 等状态摘要。
+  tone?: AgentsCommandTone; // 动作或诊断的视觉语气，不改变 Enter 行为。
   toolCount?: number; // Agent 列表行当前本地工具数量。
+};
+
+export type AgentsCommandSummaryField = {
+  label: string; // 摘要字段的短标签，与 value 拼成一行紧凑展示文本。
+  value: string; // 已由 handler 确定业务语义的可见值。
+};
+
+export type AgentsCommandSummary = {
+  description?: string; // Agent 定义描述或动作说明；诊断文本只出现在 diagnostics。
+  diagnostics: string[]; // 当前选中物理项的有界诊断；无诊断时为空数组。
+  fields: AgentsCommandSummaryField[]; // 按重要性排序的策略、权限与来源字段。
+  sourceKind?: 'builtin' | AgentManagementScope; // Agent 或 scope 动作对应的来源层级。
+  status?: string; // 当前选中 Agent 的 canonical 状态，renderer 负责本地化显示。
+  title: string; // 摘要标题，通常是 Agent 名称或动作名称。
+};
+
+export type AgentsCommandStats = {
+  agentCount: number; // 当前范围内可见的 Agent 物理项或 effective 项数量。
+  issueCount: number; // 当前范围内无效、保留或独立诊断的数量。
 };
 
 export type AgentsCommandDraft = {
@@ -257,6 +283,8 @@ export type AgentsCommandSurface = {
   mode: AgentsCommandMode; // 当前列表、详情、表单或嵌套 modal 层级。
   rows: AgentsCommandRow[]; // Agent 与动作混合的可聚焦行快照。
   selectedIndex: number; // 当前 rows 中已钳制的焦点索引。
+  stats?: AgentsCommandStats; // 列表模式当前范围的简短计数；其他模式缺省。
+  summary?: AgentsCommandSummary; // 列表模式当前选中项的结构化摘要；空范围缺省。
   tabs: AgentsCommandTabInfo[]; // 顶层固定 Tab 列表。
   title: string; // 当前层级标题。
 };
@@ -480,11 +508,14 @@ export type ContextUsageCommandSurface = {
 };
 
 export type UsageCommandSurface = {
-  dailyUsage: UsageDailyAggregate[];
-  dismissHint: string;
-  kind: 'usage';
-  offset: number;
-  title: string;
+  dailyUsage: UsageDailyAggregate[]; // 全部按日聚合数据；日期列表与当日明细共享其选中日期上下文。
+  dismissHint: string; // 当前视图对应的中文键位提示。
+  kind: 'usage'; // footer command surface 的稳定分派标识。
+  modelUsage: UsageModelAggregate[]; // 选中日期内 provider/模型组合的聚合；按日视图为空。
+  offset: number; // 当前视图可见窗口在完整日期或当日模型列表中的起始索引。
+  selectedIndex: number; // 当前选中日期在 dailyUsage 中的绝对索引；模型明细中仅保留该上下文。
+  title: string; // 当前视图显示的面板标题。
+  view: 'daily' | 'dayModels'; // 可选择的按日列表或选中日期的模型明细。
 };
 
 export type CommandStatusSnapshot = {
@@ -508,7 +539,11 @@ export type CommandStatusSnapshot = {
   sandbox: CommandStatusSandboxState;
   sessionId: string | null;
   userMemoryCount: number;
+  compaction: CompactionState | null; // 打开或刷新 status 时复制的当前生效压缩摘要；无压缩时为 null。
+  todoState: TodoState; // 打开或刷新 status 时复制的当前会话结构化待办状态。
 };
+
+export type StatusCommandPage = 'overview' | 'compaction' | 'todos';
 
 export type CommandStatusSandboxState = {
   mode: SandboxMode; // 归一化后的生效档位;plan interaction mode 派生的只读收紧也反映在这里。
@@ -570,12 +605,15 @@ export type CommandOpencodeUsageResult =
 export type StatusCommandOpencodeUsageState = CommandOpencodeUsageResult | {status: 'loading'};
 
 export type StatusCommandSurface = {
+  compactionScroll: number; // 压缩摘要正文的视觉行偏移；渲染时再按实际行数钳制。
   deepseekBalance: StatusCommandDeepseekBalanceState;
   dismissHint: string;
   kind: 'status';
   opencodeUsage: StatusCommandOpencodeUsageState;
+  page: StatusCommandPage; // 当前显示的 status 页面，概览页保留运行信息和账户用量。
   snapshot: CommandStatusSnapshot;
   title: string;
+  todoScroll: number; // Todo 正文的视觉行偏移；渲染时再按实际行数钳制。
   usage: StatusCommandUsageState;
 };
 
@@ -624,6 +662,7 @@ export type FilePickerCommandSurface = {
   focus: 'list' | 'preview';
   notice?: string;
   previewLines: string[];
+  previewScroll: number; // 文本预览正文在换行后物理行中的滚动偏移，标题保持固定。
   previewMode?: 'code' | 'text';
   query: string;
   selectedIndex: number;
@@ -824,7 +863,9 @@ export type CommandHostApp = {
   transcript: {
     clear(): void;
     forkSession(): TranscriptForkResult;
+    getCurrentSessionId(): string | null; // 当前 app 持有写入 reference 的 session；未首次持久化时为空。
     loadSession(sessionId: string): boolean;
+    deleteSession(sessionId: string): TranscriptSessionDeleteResult; // 请求删除当前 cwd 中的非当前历史 session。
     append(record: TranscriptRecord): void;
     listCopyableRecords(): CopyableMessageRecord[];
     listSessionSummaries(): TranscriptSessionSummary[];
@@ -915,12 +956,14 @@ export type CommandHostApp = {
   };
   status: {
     createSnapshot(): CommandStatusSnapshot;
+    getViewport(): {maxLines: number; width: number}; // 当前 footer 可供 status 详情正文使用的终端视口。
     queryDeepseekBalance(): Promise<CommandDeepseekBalanceResult>;
     queryCodexUsage(): Promise<CommandCodexUsageResult>;
     queryOpencodeUsage(): Promise<CommandOpencodeUsageResult>;
   };
   usage: {
     listDailyUsage(options?: UsageQueryOptions): UsageDailyAggregate[];
+    listModelUsage(options?: UsageQueryOptions): UsageModelAggregate[];
     getViewport(): {maxLines: number; width: number};
   };
   diff: {
@@ -963,6 +1006,8 @@ export type CommandHandler<TData extends object = Record<string, unknown>> = {
   match?(text: string): boolean;
   start(text: string, host: CommandHost): void | CommandStartResult;
   handleEvent?(session: CommandSession<TData>, event: InputEvent, host: CommandHost): void | Promise<void>;
+  handlePointer?(session: CommandSession<TData>, target: FooterMouseTarget, activate: boolean, host: CommandHost): void | Promise<void>; // 已完成 footer frame 与 consumer 校验的语义命中；handler 负责验证 target 是否适用于当前 session。
+  handleWheel?(session: CommandSession<TData>, pane: FooterWheelPane, direction: MouseWheelDirection, host: CommandHost): void | Promise<void>; // 仅接收已校验的滚轮栏位与方向；handler 不应将滚轮作为点击或确认。
 };
 
 export type CommandStartResult =

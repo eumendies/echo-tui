@@ -8,6 +8,7 @@ type AppSettings = {
   compactionThresholdRatio: number;
   defaultInteractionMode: DefaultInteractionMode;
   fileEditMode: FileEditToolMode;
+  mouseInteractionEnabled: boolean; // 控制 TUI 是否启用终端鼠标报告、hover 与点击交互。
   skillCatalogContextRatio: number;
   showReasoningSummary: boolean;
   slashSuggestionMaxVisible: number;
@@ -36,6 +37,7 @@ const DEFAULT_APP_SETTINGS: Readonly<AppSettings> = {
   compactionThresholdRatio: 0.8,
   defaultInteractionMode: 'normal',
   fileEditMode: 'apply_patch',
+  mouseInteractionEnabled: false,
   skillCatalogContextRatio: 0.02,
   showReasoningSummary: true,
   slashSuggestionMaxVisible: 8,
@@ -82,6 +84,10 @@ function validateAppSettingsDraft(draft: AppSettings, modelProfileIds?: Readonly
 
   if (typeof draft.checkUpdatesOnStartup !== 'boolean') {
     return {ok: false, error: '启动更新检查设置必须是布尔值'};
+  }
+
+  if (typeof draft.mouseInteractionEnabled !== 'boolean') {
+    return {ok: false, error: 'UI 鼠标交互设置必须是布尔值'};
   }
 
   if (!Number.isInteger(draft.slashSuggestionMaxVisible)
@@ -135,6 +141,7 @@ function applyAppSettingsDraft(rootConfig: UserConfigSource, draft: AppSettings)
   instructions.fileName = draft.agentInstructionFileName;
   skills.catalogContextRatio = draft.skillCatalogContextRatio;
   ui.defaultInteractionMode = draft.defaultInteractionMode;
+  ui.mouseInteractionEnabled = draft.mouseInteractionEnabled;
   ui.slashSuggestionMaxVisible = draft.slashSuggestionMaxVisible;
   ui.showReasoningSummary = draft.showReasoningSummary;
   updates.checkOnStartup = draft.checkUpdatesOnStartup;
@@ -186,6 +193,9 @@ function normalizeAppSettings(rootConfig: UserConfigSource): AppSettings {
       ? ui.defaultInteractionMode
       : DEFAULT_APP_SETTINGS.defaultInteractionMode,
     fileEditMode: fileEdit.mode === 'edit_file' ? 'edit_file' : DEFAULT_APP_SETTINGS.fileEditMode,
+    mouseInteractionEnabled: typeof ui.mouseInteractionEnabled === 'boolean'
+      ? ui.mouseInteractionEnabled
+      : DEFAULT_APP_SETTINGS.mouseInteractionEnabled,
     skillCatalogContextRatio: isFiniteNumberInRange(skillCatalogRatio, MIN_SKILL_CATALOG_CONTEXT_RATIO, MAX_SKILL_CATALOG_CONTEXT_RATIO)
       ? skillCatalogRatio
       : DEFAULT_APP_SETTINGS.skillCatalogContextRatio,

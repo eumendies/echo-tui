@@ -13,7 +13,8 @@ import type {
   RenderDestructiveOptions,
   RenderInitialOptions,
   PendingState,
-  RenderState
+  RenderState,
+  FooterPointerSnapshot
 } from '../types/render';
 
 /**
@@ -89,9 +90,9 @@ class DefaultAppRenderer implements AppRenderer {
   }
 
   /** 启动时先追加 banner，再绘制 footer。 */
-  renderInitial({bannerContext, ...options}: RenderInitialOptions): void {
+  renderInitial({bannerContext, ...options}: RenderInitialOptions): FooterPointerSnapshot {
     this.output.write(renderBanner(bannerContext, options.theme));
-    this.footer.render(this.prepareRenderState(options));
+    return this.footer.render(this.prepareRenderState(options));
   }
 
   /** 移除当前 footer，供退出或其他需要清空临时区域的场景使用。 */
@@ -103,24 +104,23 @@ class DefaultAppRenderer implements AppRenderer {
    * 追加本轮新增的稳定内容、按需完成 assistant/reasoning 流式记录，并重绘 footer。
    * finalizeRecord 是已经写入会话事实的权威文本；对应通道由 record role 决定。
    */
-  render(options: RenderState, finalizeRecord?: Extract<TranscriptRecord, {role: 'assistant' | 'reasoning_summary'}>): void {
+  render(options: RenderState, finalizeRecord?: Extract<TranscriptRecord, {role: 'assistant' | 'reasoning_summary'}>): FooterPointerSnapshot {
     options = options.pending ? {...options, pending: sanitizePendingDisplayText(options.pending)} : options;
     // 流式通道与 shell 通道互斥；两者的确定与 footer 重绘合并为同一次 append。
     const content = this.streamingLive.commitDeltas(options, finalizeRecord) + this.shellLive.commitDeltas(options);
 
-    this.footer.append(content, this.prepareRenderState(options));
+    return this.footer.append(content, this.prepareRenderState(options));
   }
 
   /** transcript 成组新增时一次性追加所有可见块并重绘 footer。 */
-  renderRecords({records, ...rawState}: RenderRecordsOptions): void {
+  renderRecords({records, ...rawState}: RenderRecordsOptions): FooterPointerSnapshot {
     const options = rawState.pending ? {...rawState, pending: sanitizePendingDisplayText(rawState.pending)} : rawState;
     const shellCompletionContent = this.shellLive.takeCompletion(records, options);
 
     // shell record completion 只补写尚未确定的后缀投影；已确定前缀与命令行不重复写入。
     if (shellCompletionContent !== null) {
       this.shellLive.reset();
-      this.footer.append(shellCompletionContent, this.prepareRenderState(options));
-      return;
+      return this.footer.append(shellCompletionContent, this.prepareRenderState(options));
     }
 
     if (records.some((record) => record.role === 'shell' || record.role === 'error')) {
@@ -132,11 +132,11 @@ class DefaultAppRenderer implements AppRenderer {
     trackParallelSubagentRecords(this.subagentAppendState, records);
     const visibleRecords = filterParallelSubagentRecords(records, this.subagentAppendState.parallelRunIds);
     const blocks = renderTranscriptBlocks(visibleRecords, options.width, options.theme, options.renderPreferences, false, this.subagentAppendState);
-    this.footer.append(blocks.join(''), this.prepareRenderState(options));
+    return this.footer.append(blocks.join(''), this.prepareRenderState(options));
   }
 
   /** 清屏后按当前宽度重画完整界面，并重新计算尚未生成正式记录的流式内容。 */
-  renderDestructive({bannerContext, records, ...rawState}: RenderDestructiveOptions): void {
+  renderDestructive({bannerContext, records, ...rawState}: RenderDestructiveOptions): FooterPointerSnapshot {
     const options = rawState.pending ? {...rawState, pending: sanitizePendingDisplayText(rawState.pending)} : rawState;
     const activeSubagentRunId = options.pending?.kind === 'subagent' ? options.pending.runId : undefined;
     // 隐藏期间积累的稳定投影先推进确定游标，再随完整快照一起重投影。
@@ -169,7 +169,7 @@ class DefaultAppRenderer implements AppRenderer {
     if (footerLayout.showCursor) sequence += ansi.showCursor();
 
     this.output.write(sequence);
-    this.footer.rememberLayout(footerLayout);
+    return this.footer.rememberLayout(footerLayout);
   }
 }
 

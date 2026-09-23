@@ -81,7 +81,21 @@ function completeCommandSurfaceFixture(surface) {
     case 'usage':
       return {title: 'Token 用量', offset: 0, dismissHint: 'Esc 关闭', ...surface};
     case 'status':
-      return {title: 'Status', dismissHint: 'Esc 关闭', deepseekBalance: {status: 'not_applicable'}, opencodeUsage: {status: 'not_applicable'}, ...surface};
+      return {
+        title: 'Status',
+        dismissHint: 'Esc 关闭',
+        page: 'overview',
+        compactionScroll: 0,
+        todoScroll: 0,
+        deepseekBalance: {status: 'not_applicable'},
+        opencodeUsage: {status: 'not_applicable'},
+        ...surface,
+        snapshot: surface.snapshot && {
+          compaction: null,
+          todoState: {items: [], updatedAt: ''},
+          ...surface.snapshot
+        }
+      };
     case 'copy':
       return {title: '/copy', focus: 'list', previewScroll: 0, dismissHint: 'Esc 关闭', ...surface};
     case 'file_picker':
@@ -201,6 +215,24 @@ test('createFooterRenderer writes each complete redraw as one frame and preserve
 
   renderer.clear();
   assert.equal(output.writes.length, 5);
+});
+
+test('createFooterRenderer marks only same-height incremental footer redraws as position-stable', () => {
+  const output = {write() {}};
+  const renderer = createFooterRenderer(output);
+  const baseState = {
+    composer: createComposer('draft'),
+    commandSurface: null,
+    pending: null,
+    working: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    rows: 24,
+    width: 80
+  };
+
+  assert.equal(renderer.render(baseState).originStable, false);
+  assert.equal(renderer.render({...baseState, composer: createComposer('updated')}).originStable, true);
+  assert.equal(renderer.render({...baseState, pendingMessage: {preview: 'queued'}}).originStable, false);
 });
 
 test('createFooterRenderer safely transitions from response suggestions through a command surface and back to latest streaming', () => {
@@ -660,6 +692,134 @@ test('renderFooterLayout applies custom theme to composer status and active sugg
   assert.ok(joined.includes('\x1b[38;2;30;31;32m'));
 });
 
+test('renderFooterLayout exposes hit regions only for visible slash, choice, and file-picker entries', () => {
+  const disabled = renderFooterLayout({
+    composer: createComposer('/'),
+    commandSurface: null,
+    slashSuggestions: {selectedIndex: 0, options: [{label: '/help'}]},
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    width: 80
+  });
+  assert.equal(disabled.hitRegions, undefined);
+
+  const slash = renderFooterLayout({
+    composer: createComposer('/'),
+    commandSurface: null,
+    footerInteractionId: 'slash-suggestion',
+    slashSuggestions: {selectedIndex: 1, options: [{label: '/help'}, {label: '/history'}]},
+    pending: null,
+    statusLine: DEFAULT_STATUS_LINE,
+    width: 80
+  });
+  assert.deepEqual(slash.hitRegions.map((region) => region.target), [
+    {kind: 'slash_suggestion', index: 0},
+    {kind: 'slash_suggestion', index: 1}
+  ]);
+  assert.deepEqual(slash.hitRegions.map((region) => region.interactionId), ['slash-suggestion', 'slash-suggestion']);
+
+  const choice = renderFooterLayout({
+    composer: createComposer(''),
+    footerInteractionId: 'user-question',
+    commandSurface: {
+      kind: 'choice',
+      title: '选择',
+      optionsTitle: '答案',
+      options: [{label: 'A'}, {label: 'Other', inlineInput: {text: '', placeholder: '输入', cursor: 0}}],
+      focusedIndex: 1,
+      dismissHint: 'Esc 取消'
+    },
+    pending: null,
+    width: 80
+  });
+  assert.deepEqual(choice.hitRegions.map((region) => region.target), [
+    {kind: 'choice_option', index: 0, inlineInput: false},
+    {kind: 'choice_option', index: 1, inlineInput: true}
+  ]);
+  assert.deepEqual(choice.hitRegions.map((region) => region.interactionId), ['user-question', 'user-question']);
+
+  const picker = renderFooterLayout({
+    composer: createComposer(''),
+    footerInteractionId: 'file-picker',
+    commandSurface: {
+      kind: 'file_picker',
+      title: 'Paths',
+      currentDir: '/tmp',
+      dismissHint: 'Esc',
+      entries: [{kind: 'directory', name: 'src', path: 'src', selectable: true, selected: false}],
+      focus: 'list',
+      previewScroll: 0, previewLines: [],
+      previewMode: 'text',
+      query: '',
+      selectedIndex: 0,
+      selectedPaths: []
+    },
+    pending: null,
+    width: 80
+  });
+  assert.deepEqual(picker.hitRegions.map((region) => region.target), [
+    {kind: 'file_picker_entry', index: 0}
+  ]);
+  assert.equal(picker.hitRegions[0].interactionId, 'file-picker');
+  assert.equal(picker.hitRegions[0].columnStart, 3);
+  assert.ok(picker.hitRegions[0].columnEnd < 40);
+});
+
+test('renderFooterLayout binds right wheel rows to the current identity and snapshots them independently', () => {
+  const state = {
+    composer: createComposer(''), commandSurface: {
+      kind: 'copy', title: '/copy', focus: 'list', selectedIndex: 0,
+      messages: [{id: 'first', role: 'user', text: 'hello', selected: false}], selectedIds: [], dismissHint: 'Esc'
+    },
+    pending: {kind: 'streaming', text: 'first\nsecond'},
+    statusLine: DEFAULT_STATUS_LINE, width: 70, rows: 24
+  };
+  const disabled = renderFooterLayout(state);
+  const enabled = renderFooterLayout({...state, footerInteractionId: 'command-session'});
+  const noPending = renderFooterLayout({...state, pending: null, footerInteractionId: 'command-session'});
+
+  assert.equal(disabled.wheelRegions, undefined);
+  assert.equal(enabled.wheelRegions.length, 1);
+  assert.deepEqual(enabled.wheelRegions.map(({interactionId, owner, pane}) => ({interactionId, owner, pane})), [
+    {interactionId: 'command-session', owner: 'copy', pane: 'secondary'}
+  ]);
+  assert.equal(enabled.wheelRegions[0].rowStart, noPending.wheelRegions[0].rowStart);
+  assert.equal(enabled.hitRegions[0].rowStart, noPending.hitRegions[0].rowStart);
+  assert.ok(enabled.hitRegions[0].columnEnd < enabled.wheelRegions[0].columnStart);
+  assert.ok(enabled.wheelRegions[0].rowEnd < enabled.lines.length - 1);
+
+  const renderer = createFooterRenderer({write() {}});
+  const snapshot = renderer.render({...state, footerInteractionId: 'command-session'});
+  assert.deepEqual(snapshot.wheelRegions, enabled.wheelRegions);
+  snapshot.wheelRegions[0].rowStart = -1;
+  assert.deepEqual(renderer.render({...state, footerInteractionId: 'command-session'}).wheelRegions, enabled.wheelRegions);
+});
+
+test('renderFooterLayout drops hit regions for choice options hidden by the footer height budget', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer(''),
+    footerInteractionId: 'user-question',
+    commandSurface: {
+      kind: 'choice',
+      title: '选择',
+      optionsTitle: '答案',
+      options: Array.from({length: 8}, (_value, index) => ({label: `选项 ${index + 1}`})),
+      focusedIndex: 6,
+      dismissHint: 'Esc 取消'
+    },
+    pending: null,
+    rows: 8,
+    width: 34
+  });
+  const optionIndexes = layout.hitRegions
+    .filter((region) => region.target.kind === 'choice_option')
+    .map((region) => region.target.index);
+
+  assert.ok(optionIndexes.includes(6));
+  assert.ok(optionIndexes.length < 8);
+  assert.equal(layout.hitRegions.some((region) => region.rowEnd >= layout.lines.length), false);
+});
+
 test('renderFooterLayout renders provider context usage in status line', () => {
   const layout = renderFooterLayout({
     composer: createComposer('hello'),
@@ -987,6 +1147,153 @@ test('renderStatusSurface handles loading, unavailable, not-applicable, and empt
   assert.doesNotMatch(notApplicablePlain, /DeepSeek 账户余额/);
 });
 
+test('renderStatusSurface aligns overview key/value rows by visible label width and safely narrows them', () => {
+  const snapshot = {
+    agentInstructionFileName: 'AGENTS.md',
+    cwd: '/tmp/aligned-project',
+    sessionId: 'session-aligned',
+    model: {agentType: 'codex', model: 'gpt-aligned', provider: 'provider-aligned'},
+    sandbox: {mode: 'workspace-write', network: true, provider: 'macos-seatbelt', available: true},
+    agentInstructions: [{sourceKind: 'project', label: 'AGENTS.md', filePath: '/tmp/aligned-project/AGENTS.md'}],
+    userMemoryCount: 2,
+    agentMemoryCatalogs: [{scope: 'project', name: 'runtime'}],
+    compaction: null,
+    todoState: {updatedAt: '', items: [{id: 'todo-1', text: '待办', status: 'open'}]},
+    diagnostics: []
+  };
+  const surface = {kind: 'status', snapshot, usage: {status: 'not_applicable'}};
+  const wide = renderStatusSurface(surface, 90, 30, CUSTOM_THEME.footer);
+  const wideRows = wide.lines.map((line) => stripAnsi(line));
+  const values = [
+    '/tmp/aligned-project',
+    'gpt-aligned',
+    'provider-aligned (codex)',
+    'session-aligned',
+    'AGENTS.md · project:AGENTS.md',
+    'user:2 · catalogs:project:runtime',
+    'workspace-write · 网络开 · macos-seatbelt',
+    '未生成',
+    '1 项待办 · 0 项完成'
+  ];
+  const valueColumns = values.map((value) => {
+    const row = wideRows.find((line) => line.includes(value));
+    assert.ok(row, `missing overview value: ${value}`);
+    return displayWidth(row.slice(0, row.indexOf(value)));
+  });
+
+  assert.equal(new Set(valueColumns).size, 1);
+
+  const narrow = renderStatusSurface(surface, 23, 30, CUSTOM_THEME.footer);
+  const narrowRows = narrow.lines.map((line) => stripAnsi(line));
+  assert.ok(narrow.lines.every((line) => displayWidth(line) <= safeRenderWidth(23)));
+  assert.ok(narrowRows.some((line) => line.includes('← [概览] →')));
+  assert.ok(narrowRows.some((line) => line.includes('Inst…')));
+  assert.ok(narrowRows.every((line) => !line.includes('\n')));
+});
+
+test('renderStatusSurface renders scrollable compaction and Todo detail pages within terminal bounds', () => {
+  const snapshot = {
+    agentInstructionFileName: 'AGENTS.md',
+    cwd: '/tmp/project',
+    sessionId: 'session-1',
+    model: {agentType: 'fake', model: 'echo-fake-agent', provider: 'fake'},
+    sandbox: {mode: 'off', network: false, provider: null, available: false},
+    agentInstructions: [],
+    userMemoryCount: 0,
+    agentMemoryCatalogs: [],
+    compaction: {
+      createdAt: '2030-01-02T03:04:00.000Z',
+      activeStartIndex: 9,
+      summaryText: '# 当前进展\n\n- 保留第一条摘要\n- 保留第二条摘要\n- 末尾摘要标记'
+    },
+    todoState: {
+      updatedAt: '2030-01-02T03:05:00.000Z',
+      items: [
+        {id: 'todo-1', text: '已完成任务', status: 'completed'},
+        {id: 'todo-2', text: '待办任务需要在窄终端中换行显示，以验证悬挂缩进不会写满末列。', status: 'open'},
+        {id: 'todo-3', text: '末尾 Todo 标记', status: 'open'}
+      ]
+    },
+    diagnostics: []
+  };
+  const shared = {kind: 'status', snapshot, usage: {status: 'not_applicable'}};
+  const compaction = renderStatusSurface({...shared, page: 'compaction', compactionScroll: 0, todoScroll: 0}, 44, 12, CUSTOM_THEME.footer);
+  const compactionPlain = compaction.lines.map((line) => stripAnsi(line)).join('\n');
+
+  assert.match(compactionPlain, /\[压缩摘要\]/);
+  assert.match(compactionPlain, /已压缩前 9 条记录/);
+  assert.match(compactionPlain, /当前进展/);
+  assert.match(compactionPlain, /\/ 5 行/);
+  assert.ok(compaction.lines.length <= 12);
+  assert.ok(compaction.lines.every((line) => displayWidth(line) <= safeRenderWidth(44)));
+
+  const compactionEnd = renderStatusSurface({...shared, page: 'compaction', compactionScroll: 999, todoScroll: 0}, 44, 12, CUSTOM_THEME.footer);
+  assert.match(compactionEnd.lines.map((line) => stripAnsi(line)).join('\n'), /末尾摘要标记/);
+
+  const todos = renderStatusSurface({...shared, page: 'todos', compactionScroll: 0, todoScroll: 0}, 44, 12, CUSTOM_THEME.footer);
+  const todosPlain = todos.lines.map((line) => stripAnsi(line)).join('\n');
+  assert.match(todosPlain, /\[Todo 2\/3\]/);
+  assert.match(todosPlain, /2 项待办 · 1 项完成 · 共 3 项/);
+  assert.match(todosPlain, /● 已完成/);
+  assert.match(todosPlain, /○ 待办/);
+  assert.ok(todos.lines.every((line) => displayWidth(line) <= safeRenderWidth(44)));
+
+  const todosEnd = renderStatusSurface({...shared, page: 'todos', compactionScroll: 0, todoScroll: 999}, 44, 12, CUSTOM_THEME.footer);
+  assert.match(todosEnd.lines.map((line) => stripAnsi(line)).join('\n'), /末尾 Todo 标记/);
+
+  const empty = renderStatusSurface({...shared, page: 'todos', todoScroll: 0, snapshot: {...snapshot, compaction: null, todoState: {items: [], updatedAt: ''}}}, 44, 12, CUSTOM_THEME.footer);
+  assert.match(empty.lines.map((line) => stripAnsi(line)).join('\n'), /当前会话暂无待办/);
+});
+
+test('renderStatusSurface keeps compact detail frames and Todo source lines within terminal bounds', () => {
+  const snapshot = {
+    agentInstructionFileName: 'AGENTS.md',
+    cwd: '/tmp/project',
+    sessionId: 'session-1',
+    model: null,
+    sandbox: {mode: 'off', network: false, provider: null, available: false},
+    agentInstructions: [],
+    userMemoryCount: 0,
+    agentMemoryCatalogs: [],
+    compaction: {
+      createdAt: '2030-01-02T03:04:00.000Z',
+      activeStartIndex: 9,
+      summaryText: '# 当前进展\n\n- 第一条摘要\n- 第二条摘要'
+    },
+    todoState: {
+      updatedAt: '2030-01-02T03:05:00.000Z',
+      items: [{id: 'todo-1', text: '第一行\n第二行', status: 'open'}]
+    },
+    diagnostics: []
+  };
+  const shared = {
+    kind: 'status',
+    snapshot,
+    usage: {status: 'not_applicable'},
+    dismissHint: '←/→ 切页 · ↑/↓ 滚动 · Esc 关闭'
+  };
+  const narrowTodos = renderStatusSurface({...shared, page: 'todos', compactionScroll: 0, todoScroll: 0}, 16, 20, CUSTOM_THEME.footer);
+  const narrowTodoPlain = narrowTodos.lines.map((line) => stripAnsi(line)).join('\n');
+
+  assert.match(narrowTodoPlain, /← \[Todo\] →/);
+  assert.match(narrowTodoPlain, /○/);
+  assert.match(narrowTodoPlain, /第一行/);
+  assert.match(narrowTodoPlain, /第二行/);
+  assert.ok(narrowTodos.lines.every((line) => !line.includes('\n')));
+  assert.ok(narrowTodos.lines.every((line) => displayWidth(line) <= safeRenderWidth(16)));
+
+  const lowCompaction = renderStatusSurface({...shared, page: 'compaction', compactionScroll: 0, todoScroll: 0}, 44, 9, CUSTOM_THEME.footer);
+  const lowCompactionPlain = lowCompaction.lines.map((line) => stripAnsi(line)).join('\n');
+
+  assert.equal(lowCompaction.lines.length, 9);
+  assert.match(lowCompactionPlain, /Status/);
+  assert.match(lowCompactionPlain, /\[压缩摘要\]/);
+  assert.match(lowCompactionPlain, /摘要 · 2030-01-02 03:04 · 边界前 9 条/);
+  assert.match(lowCompactionPlain, /当前进展/);
+  assert.match(lowCompactionPlain, /←\/→ 切页/);
+  assert.ok(lowCompaction.lines.every((line) => displayWidth(line) <= safeRenderWidth(44)));
+});
+
 test('renderStatusSurface preserves both quota labels, bars, and percentages in narrow terminal', () => {
   const layout = renderStatusSurface({
     kind: 'status',
@@ -1216,7 +1523,7 @@ test('renderFooterLayout renders usage surface with totals, hidden days, and dai
   assert.ok(plainLines.some((line) => line.includes('◂1') && line.includes('▸')));
   assert.ok(plainLines.some((line) => line.includes('日期') && line.includes('输入') && line.includes('输出') && line.includes('缓存') && line.includes('命中') && line.includes('趋势')));
   assert.ok(plainLines.some((line) => line.includes('06/02') && line.includes('1.1K') && line.includes('550') && line.includes('250') && line.includes('23%')));
-  assert.ok(plainLines.some((line) => line.includes('↑/↓ 滚动') && line.includes('PgUp/PgDn 翻页') && line.includes('Home/End 跳转')));
+  assert.ok(plainLines.some((line) => line.includes('↑/↓ 选择') && line.includes('PgUp/PgDn 翻页') && line.includes('Home/End 跳转')));
   assert.ok(!plainLines.some((line) => line.includes('双轴') || line.includes('newest at bottom')));
   assert.ok(layout.lines.every((line) => displayWidth(line) <= safeRenderWidth(100)));
   assert.ok(layout.lines.some((line) => displayWidth(line) < 70));
@@ -2082,7 +2389,7 @@ test('renderFooterLayout renders compact file picker without overflowing termina
         {kind: 'text', name: 'main.ts', path: 'src/app/main.ts', selectable: true, selected: true},
         {kind: 'unsupported', name: 'archive.zip', path: 'archive.zip', selectable: false, selected: false}
       ],
-      previewLines: ['main.ts', 'text · scroll with preview focus', '1 import app from ./app'],
+      previewScroll: 0, previewLines: ['main.ts', 'text · scroll with preview focus', '1 import app from ./app'],
       dismissHint: '↑↓ move · tab preview · space mark · enter insert · esc'
     },
     pending: null,
@@ -2121,7 +2428,7 @@ test('renderFooterLayout uses one color for file picker frame lines', () => {
       entries: [
         {kind: 'image', name: 'shot.png', path: 'shot.png', selectable: true, selected: false}
       ],
-      previewLines: ['shot.png', '图片无法在终端内预览', '将作为图片输入发送给模型'],
+      previewScroll: 0, previewLines: ['shot.png', '图片无法在终端内预览', '将作为图片输入发送给模型'],
       dismissHint: '↑↓ move · ←/→ focus · esc'
     },
     pending: null,
@@ -2152,7 +2459,7 @@ test('renderFooterLayout renders file picker empty notice without overflowing', 
       selectedPaths: [],
       entries: [],
       notice: '当前目录没有可显示文件',
-      previewLines: ['无可预览内容'],
+      previewScroll: 0, previewLines: ['无可预览内容'],
       dismissHint: '↑↓ 移动 · Esc 取消'
     },
     pending: null,
@@ -2180,7 +2487,7 @@ test('renderFooterLayout wraps long file picker preview lines', () => {
       entries: [
         {kind: 'text', name: 'long.ts', path: 'long.ts', selectable: true, selected: false}
       ],
-      previewLines: [
+      previewScroll: 0, previewLines: [
         'long.ts',
         'text · 1 lines',
         '1 const message = alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu;'
@@ -2215,7 +2522,7 @@ test('renderFooterLayout highlights file picker code preview', () => {
       entries: [
         {kind: 'text', name: 'main.ts', path: 'main.ts', selectable: true, selected: false}
       ],
-      previewLines: [
+      previewScroll: 0, previewLines: [
         'main.ts',
         'text · 2 lines',
         '1 const value = call("x", 42);',
@@ -2252,7 +2559,7 @@ test('renderFooterLayout sizes file picker from terminal width and height budget
       selectable: true,
       selected: false
     })),
-    previewLines: ['long.ts', 'text · 1 lines', '1 const value = 1;'],
+    previewScroll: 0, previewLines: ['long.ts', 'text · 1 lines', '1 const value = 1;'],
     dismissHint: '↑↓ move · ←/→ focus · esc'
   });
   const compact = renderFooterLayout({
@@ -2295,7 +2602,7 @@ test('renderFooterLayout shrinks file picker list column to item content', () =>
         {kind: 'text', name: 'a.ts', path: 'a.ts', selectable: true, selected: false},
         {kind: 'text', name: 'b.ts', path: 'b.ts', selectable: true, selected: false}
       ],
-      previewLines: ['a.ts', 'text · 1 lines', '1 const value = 1;'],
+      previewScroll: 0, previewLines: ['a.ts', 'text · 1 lines', '1 const value = 1;'],
       dismissHint: '↑↓ move · ←/→ focus · esc'
     },
     pending: null,
@@ -2328,7 +2635,7 @@ test('renderFooterLayout highlights preview focus row without prefix bar', () =>
         {kind: 'text', name: 'more.ts', path: 'more.ts', selectable: true, selected: false},
         {kind: 'text', name: 'target.ts', path: 'target.ts', selectable: true, selected: false}
       ],
-      previewLines: ['target.ts', 'text · 1 lines', '1 const value = 1;'],
+      previewScroll: 0, previewLines: ['target.ts', 'text · 1 lines', '1 const value = 1;'],
       dismissHint: '↑↓ move · ←/→ focus · esc'
     },
     pending: null,
@@ -2361,7 +2668,7 @@ test('renderFooterLayout keeps preview highlight on content for first file', () 
         {kind: 'text', name: 'first.ts', path: 'first.ts', selectable: true, selected: false},
         {kind: 'text', name: 'second.ts', path: 'second.ts', selectable: true, selected: false}
       ],
-      previewLines: ['first.ts', 'text · 1 lines', '1 const value = 1;'],
+      previewScroll: 0, previewLines: ['first.ts', 'text · 1 lines', '1 const value = 1;'],
       dismissHint: '↑↓ move · ←/→ focus · esc'
     },
     pending: null,
@@ -2392,7 +2699,7 @@ test('renderFooterLayout keeps focused file list marker aligned', () => {
         {kind: 'text', name: 'first.ts', path: 'first.ts', selectable: true, selected: false},
         {kind: 'text', name: 'second.ts', path: 'second.ts', selectable: true, selected: false}
       ],
-      previewLines: ['first.ts', 'text · 1 lines', '1 const value = 1;'],
+      previewScroll: 0, previewLines: ['first.ts', 'text · 1 lines', '1 const value = 1;'],
       dismissHint: '↑↓ move · ←/→ focus · esc'
     },
     pending: null,

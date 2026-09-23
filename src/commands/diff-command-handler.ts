@@ -3,7 +3,8 @@ import {calculateDiffDetailMaxScroll} from '../render/footer/diff-surface';
 
 import type {CommandHandler, CommandHost, CommandSession, DiffCommandSurface, InfoCommandSurface} from '../types/command';
 import type {DiffFile, DiffSourceInfo, DiffSourceResult} from '../types/diff';
-import type {InputEvent} from '../types/input';
+import type {InputEvent, MouseWheelDirection} from '../types/input';
+import type {FooterMouseTarget, FooterWheelPane} from '../types/render';
 
 type DiffCommandData = {
   detailScroll: number;
@@ -84,10 +85,23 @@ function updateDiffSession(session: CommandSession<DiffCommandData>, host: Comma
   });
 }
 
-function resolveNextDetailScroll(data: DiffCommandData, host: CommandHost, direction: number): number {
+function selectDiffFile(session: CommandSession<DiffCommandData>, index: number, host: CommandHost): void {
+  const data = normalizeDiffData(session.data);
+
+  if (!Number.isInteger(index) || !data.files[index]) {
+    return;
+  }
+
+  if (data.focus !== 'list' || data.selectedIndex !== index || data.detailScroll !== 0) {
+    updateDiffSession(session, host, {focus: 'list', selectedIndex: index, detailScroll: 0});
+  }
+}
+
+function resolveNextDetailScroll(data: DiffCommandData, host: CommandHost, direction: number): {current: number; next: number} {
   const viewport = host.diff.getViewport();
   const maxScroll = calculateDiffDetailMaxScroll(createDiffSurface(data), viewport.width, viewport.maxLines);
-  return Math.min(Math.max(0, data.detailScroll + direction), maxScroll);
+  const current = Math.min(data.detailScroll, maxScroll);
+  return {current, next: Math.min(Math.max(0, current + direction), maxScroll)};
 }
 
 class DiffCommandHandler implements CommandHandler<DiffCommandData> {
@@ -154,8 +168,27 @@ class DiffCommandHandler implements CommandHandler<DiffCommandData> {
       return;
     }
 
-    const detailScroll = resolveNextDetailScroll(data, host, direction);
+    const {next: detailScroll} = resolveNextDetailScroll(data, host, direction);
     updateDiffSession(session, host, {detailScroll});
+  }
+
+  handlePointer(session: CommandSession<DiffCommandData>, target: FooterMouseTarget, _activate: boolean, host: CommandHost): void {
+    if (target.kind === 'command_diff_file' && session.surface.kind === 'diff') {
+      selectDiffFile(session, target.index, host);
+    }
+  }
+
+  /** 仅右栏滚动当前文件详情；缩屏后的过期偏移和可见边界不抢焦点。 */
+  handleWheel(session: CommandSession<DiffCommandData>, _pane: FooterWheelPane, direction: MouseWheelDirection, host: CommandHost): void {
+    if (session.surface.kind !== 'diff' || !session.data || session.data.files.length === 0) {
+      return;
+    }
+    const data = normalizeDiffData(session.data);
+    const step = direction === 'up' ? -1 : 1;
+    const {current, next: detailScroll} = resolveNextDetailScroll(data, host, step);
+    if (detailScroll !== current) {
+      updateDiffSession(session, host, {focus: 'detail', detailScroll});
+    }
   }
 }
 

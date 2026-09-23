@@ -77,6 +77,112 @@ test('createApp suppresses timed footer redraws while a user question surface is
   }
 });
 
+test('createApp gates UI mouse interaction by the saved setting and applies changes immediately', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-main-ui-mouse-'));
+
+  try {
+    const fixturePath = path.join(__dirname, 'fixtures/main-ui-mouse-interaction-scenario.js');
+    const output = childProcess.execFileSync(process.execPath, [fixturePath], {
+      cwd: path.resolve(__dirname, '../../..'),
+      encoding: 'utf8',
+      env: {...process.env, HOME: home},
+      timeout: 15_000
+    });
+    const result = JSON.parse(output);
+
+    assert.equal(result.disabledEnabled, false);
+    assert.equal(result.disabledRequests, 0);
+    assert.equal(result.enabledInteractionId, 'user-question');
+    assert.equal(result.enabledRequests > 0, true);
+    assert.equal(result.disabledAfterEnable, true);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+test('createApp gates command pointer sessions, recovers calibration after resize, and disables tracking on close', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-main-command-pointer-'));
+
+  try {
+    const fixturePath = path.join(__dirname, 'fixtures/main-command-pointer-scenario.js');
+    const output = childProcess.execFileSync(process.execPath, [fixturePath], {
+      cwd: path.resolve(__dirname, '../../..'),
+      encoding: 'utf8',
+      env: {...process.env, HOME: home},
+      timeout: 15_000
+    });
+    const result = JSON.parse(output);
+
+    assert.equal(result.disabledInteractionId, null);
+    assert.equal(result.disabledCprRequests, 0);
+    assert.equal(result.requestsBeforeHover > 0, true);
+    assert.equal(result.requestsBeforeResize > result.requestsBeforeHover, true);
+    assert.equal(result.destructiveFrames > 0, true);
+    assert.equal(result.requestsAfterStaleCpr > result.requestsBeforeResize, true);
+    assert.equal(result.trackingAfterClose, true);
+    assert.equal(result.requestsBeforeClosedMouse, result.requestsAfterStaleCpr);
+    assert.equal(result.effortInteractionId, null);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+test('createApp routes raw SGR wheel reports only to the right /copy preview', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-main-copy-wheel-'));
+
+  try {
+    const fixturePath = path.join(__dirname, 'fixtures/main-command-pointer-scenario.js');
+    const result = JSON.parse(childProcess.execFileSync(process.execPath, [fixturePath], {
+      cwd: path.resolve(__dirname, '../../..'),
+      encoding: 'utf8',
+      env: {...process.env, HOME: home},
+      timeout: 15_000
+    }));
+    const wheel = result.copyWheel;
+
+    assert.deepEqual(wheel.initialCopy, {focus: 'list', selectedIndex: 0, previewScroll: 0});
+    assert.ok(wheel.requestsBeforeCopyCpr > result.requestsAfterStaleCpr);
+    assert.equal(wheel.beforeCprScroll, 0);
+    assert.equal(wheel.requestsAfterCopyCpr, wheel.requestsBeforeCopyCpr + 1);
+    assert.equal(wheel.afterStaleCopyCprScroll, 0);
+    assert.equal(wheel.rightScroll, 1);
+    assert.equal(wheel.rightFocus, 'preview');
+    assert.equal(wheel.selectedAfterListWheel, 0);
+    assert.equal(wheel.focusAfterListWheel, 'preview');
+    assert.equal(wheel.scrollAfterListWheel, wheel.rightScroll);
+    assert.equal(wheel.afterFreshWheel > wheel.afterStaleWheel, true);
+    assert.equal(wheel.selectedIdsAfterWheel.length, 1);
+    assert.equal(wheel.ownerIgnored, true);
+    assert.equal(wheel.disabledScrollAfter, wheel.disabledScrollBefore);
+    assert.equal(wheel.reenabledScroll, wheel.disabledScrollAfter + 1);
+    assert.equal(wheel.requestsAfterCopyStaleCpr, wheel.requestsBeforeCopyResize + 1);
+    assert.equal(wheel.afterStaleWheel, wheel.beforeFreshCprScroll);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+test('createApp destructively recovers when terminal rows expand to realign footer mouse calibration', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-main-resize-expansion-'));
+
+  try {
+    const fixturePath = path.join(__dirname, 'fixtures/main-resize-expansion-scenario.js');
+    const output = childProcess.execFileSync(process.execPath, [fixturePath], {
+      cwd: path.resolve(__dirname, '../../..'),
+      encoding: 'utf8',
+      env: {...process.env, HOME: home},
+      timeout: 15_000
+    });
+    const result = JSON.parse(output);
+
+    assert.equal(result.destructiveAfter, result.destructiveBefore + 1);
+    assert.equal(result.requestsAfterResize, result.requestsBeforeResize);
+    assert.equal(result.requestsAfterStaleReply, result.requestsBeforeResize + 1);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
 test('createApp persists an interrupted tool call as a paired result before the interrupt notice', () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-main-interrupted-tool-'));
 
@@ -155,3 +261,31 @@ test('createApp restores the terminal before applying an update and exits with t
     fs.rmSync(home, {recursive: true, force: true});
   }
 });
+
+for (const outcome of ['resolve', 'reject']) {
+  test(`createApp ignores late ${outcome} MCP bootstrap and config callbacks after shutdown`, () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-main-shutdown-'));
+
+    try {
+      const fixturePath = path.join(__dirname, 'fixtures/main-shutdown-lifecycle-scenario.js');
+      const output = childProcess.execFileSync(process.execPath, [fixturePath, outcome], {
+        cwd: path.resolve(__dirname, '../../..'),
+        encoding: 'utf8',
+        env: {...process.env, HOME: home},
+        timeout: 15_000
+      });
+      const result = JSON.parse(output);
+
+      assert.equal(result.appExits, 1);
+      assert.equal(result.configCloses, 1);
+      assert.equal(result.mcpCloses, 2);
+      assert.equal(result.observationCloses, 1);
+      assert.equal(result.rendersAfterLateCallbacks, result.rendersAfterExit);
+      assert.equal(result.terminalCleanups, 1);
+      assert.equal(result.unsubscribes, 1);
+      assert.equal(result.watchErrors, 0);
+    } finally {
+      fs.rmSync(home, {recursive: true, force: true});
+    }
+  });
+}

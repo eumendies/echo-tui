@@ -7,6 +7,7 @@ import type {
   SelectCommandSurface
 } from '../types/command';
 import type {InputEvent} from '../types/input';
+import type {FooterMouseTarget} from '../types/render';
 import type {InteractionMode} from '../types/agent';
 
 type ModeCommandData = {
@@ -99,9 +100,35 @@ function moveModeSelection(session: CommandSession<ModeCommandData>, direction: 
   });
 }
 
+function selectModeIndex(session: CommandSession<ModeCommandData>, index: number, host: CommandHost): ModeCommandData | null {
+  const data = session.data;
+  const selectedMode = Number.isInteger(index) ? data?.modes[index] : undefined;
+
+  if (!data || !selectedMode) {
+    return null;
+  }
+
+  const nextData = {...data, selectedIndex: index};
+  if (index !== data.selectedIndex) {
+    host.session.update({
+      surface: createModeSelectSurface(nextData),
+      data: nextData
+    });
+  }
+
+  return nextData;
+}
+
 function confirmModeSelection(session: CommandSession<ModeCommandData>, host: CommandHost): void {
   const data = session.data;
-  const selectedMode = data?.modes[data.selectedIndex]?.mode;
+
+  if (data) {
+    confirmModeData(data, host);
+  }
+}
+
+function confirmModeData(data: ModeCommandData, host: CommandHost): void {
+  const selectedMode = data.modes[data.selectedIndex]?.mode;
 
   if (!selectedMode) {
     return;
@@ -173,6 +200,17 @@ export class ModeCommandHandler implements CommandHandler<ModeCommandData> {
 
     if (event.type === INPUT_EVENTS.ESCAPE) {
       host.session.close();
+    }
+  }
+
+  handlePointer(session: CommandSession<ModeCommandData>, target: FooterMouseTarget, activate: boolean, host: CommandHost): void {
+    if (target.kind !== 'command_select_option' || session.surface.kind !== 'select') {
+      return;
+    }
+
+    const data = selectModeIndex(session, target.index, host);
+    if (data && activate) {
+      confirmModeData(data, host);
     }
   }
 }

@@ -188,39 +188,24 @@
 - **AND** `apply_patch` SHALL 继续按既有 approval 策略处理
 
 ### Requirement: apply_patch text editing tool
-系统 SHALL 提供本地工具 `apply_patch`，用于应用受支持的 patch 文本来新增、更新或删除 UTF-8 文本文件。该工具 SHALL 接收 JSON object 参数 `{ "patch": string }`，并 SHALL 返回可回传模型的结构化 tool execution result。单个 patch 中解析到同一绝对路径的多个文件操作 SHALL 按其声明顺序在同一虚拟文件状态上执行。
+系统 SHALL 提供本地工具 `apply_patch`，仅接收 `*** Begin Patch` / `*** End Patch` 包裹的 Add/Update/Delete File patch 文本来新增、更新或删除 UTF-8 文本文件。该工具 SHALL 接收 JSON object 参数 `{ "patch": string }`，并 SHALL 返回可回传模型的结构化 tool execution result。单个 patch 中解析到同一绝对路径的多个文件操作 SHALL 按其声明顺序在同一虚拟文件状态上执行。
 
 #### Scenario: 默认注册 apply_patch 工具定义
 - **WHEN** 系统创建默认 tool registry
 - **THEN** registry SHALL 包含名为 `apply_patch` 的 tool definition
 - **THEN** 该 definition SHALL 要求 `patch` 字段为 string
-- **THEN** 该 definition SHALL 声明工具应用 patch 到文本文件
+- **THEN** 该 definition SHALL 声明只支持 `*** Begin Patch` 格式的 Add/Update/Delete File，不得宣传 unified diff 输入
 
-#### Scenario: 应用更新已有文件的 unified diff
-- **WHEN** `apply_patch` 收到针对当前虚拟状态中已有文本文件的有效 unified diff
-- **THEN** handler SHALL 根据 hunk 的 context lines 和 removed lines 在当前文件中寻找精确唯一匹配
-- **THEN** handler SHALL 应用匹配 hunk 并写回更新后的文件内容
-- **THEN** result SHALL 标记 `ok: true` 并包含 changed files summary
+#### Scenario: 拒绝独立 unified diff 输入
+- **WHEN** `apply_patch` 收到去除允许的前导空行及公共缩进后仍未以 `*** Begin Patch` 起始的 patch，包括 `diff --git`、`---` / `+++` 文件头、带 `@@` 的 unified diff 或其他普通文本
+- **THEN** handler SHALL 返回 `ok: false`，并提示只支持 `*** Begin Patch` 格式
+- **THEN** handler SHALL NOT 将 unified diff 的文件头或 hunk 解释为文件操作
+- **THEN** handler SHALL NOT 写入、创建或删除任何文件
 
-#### Scenario: 应用省略文件头的更新 patch
-- **WHEN** `apply_patch` 收到 `diff --git a/<path> b/<path>` 后直接跟随 `@@` hunk 的 update patch
-- **THEN** handler SHALL 从同路径 `diff --git` header 推断目标文件
-- **THEN** handler SHALL 按普通 update hunk 的精确唯一匹配规则应用 patch
-- **THEN** 如果 `diff --git` 的 old path 和 new path 不同，handler SHALL 拒绝该 patch 作为不支持的 rename/move
-
-#### Scenario: 应用新增文件的 unified diff
-- **WHEN** `apply_patch` 收到 `--- /dev/null` 到 `+++ b/<path>` 的有效新增文件 patch
-- **THEN** handler SHALL 在目标路径的当前虚拟状态不存在时创建该文本文件
-- **THEN** handler SHALL 在必要时创建父目录
-- **THEN** 如果目标路径的当前虚拟状态已存在，handler SHALL 返回 `ok: false` 且不得覆盖该文件
-
-#### Scenario: 应用删除文件的 unified diff
-- **WHEN** `apply_patch` 收到 `--- a/<path>` 到 `+++ /dev/null` 的有效删除文件 patch
-- **THEN** handler SHALL 将该 patch 解析为删除目标文件的操作
-- **THEN** handler SHALL 接受常见 `deleted file mode` metadata 作为删除文件语义的一部分
-- **THEN** handler SHALL 使用删除 hunk 校验当前虚拟文件内容与 patch 表达的删除内容匹配
-- **THEN** handler SHALL 删除该虚拟文件
-- **THEN** result SHALL 标记 `ok: true` 并包含 changed files summary
+#### Scenario: Begin Patch 不接受混入的 unified diff 文件段
+- **WHEN** `*** Begin Patch` 与 `*** End Patch` 之间在文件指令位置混入 `diff --git`、`---` / `+++` 文件头或 `deleted file mode` 元数据，而不是将这些字符作为更新块中的文件内容
+- **THEN** handler SHALL 返回 `ok: false`
+- **THEN** handler SHALL NOT 写入、创建或删除任何文件
 
 #### Scenario: 应用 Begin Patch 新增文件
 - **WHEN** `apply_patch` 收到 `*** Begin Patch` / `*** Add File: <path>` / `*** End Patch` 格式的有效新增文件 patch
@@ -243,6 +228,11 @@
 - **THEN** handler SHALL 在每个匹配或替换后推进搜索游标，使后续 chunk 从已处理区域之后继续定位
 - **THEN** handler SHALL 将 Begin Patch hunk body 每行第一列解析为操作符，并将第二列开始的内容作为文件文本保留，包括以 `+`、`-`、`@@` 或 `***` 开头的内容
 - **THEN** handler SHALL 复用相同 all-or-nothing 写入语义
+
+#### Scenario: Begin Patch 数字 hunk 头仍作为更新块
+- **WHEN** 合法的 `*** Begin Patch` 输入中，`*** Update File` 的更新块头采用 `@@ -<old> +<new> @@` 形式
+- **THEN** handler SHALL 按 Begin Patch 顺序定位规则应用该更新块
+- **THEN** handler SHALL NOT 将该块头识别为独立 unified diff 输入
 
 #### Scenario: Begin Patch context-only chunk 作为后续定位锚点
 - **WHEN** `apply_patch` 收到 Begin Patch update，且其中一个 `@@` chunk 只包含 context lines
@@ -309,19 +299,11 @@
 - **THEN** handler SHALL 返回 `ok: false`
 - **THEN** handler SHALL 不写入、创建或删除任何文件
 
-#### Scenario: hunk 匹配失败或歧义时拒绝应用
-- **WHEN** unified diff update hunk 在目标文件中匹配 0 次或匹配多次
-- **THEN** handler SHALL 返回 `ok: false`
-- **THEN** result 文本 SHALL 提示重新读取文件或增加上下文
-- **THEN** handler SHALL 不写入任何文件
+#### Scenario: Begin Patch 更新块匹配失败时拒绝应用
 - **WHEN** Begin Patch update chunk 在当前搜索游标之后匹配 0 次
 - **THEN** handler SHALL 返回 `ok: false`
 - **THEN** result 文本 SHALL 提示重新读取文件或增加上下文
 - **THEN** handler SHALL 不写入任何文件
-- **WHEN** unified diff delete hunk 不能确认当前文件内容正被删除为空内容
-- **THEN** handler SHALL 返回 `ok: false`
-- **THEN** result 文本 SHALL 提示重新读取文件或增加上下文
-- **THEN** handler SHALL 不写入、创建或删除任何文件
 
 #### Scenario: 删除目标必须是可追踪文本文件
 - **WHEN** `apply_patch` 首次从磁盘读取删除操作的目标文件，且该文件不存在、是目录、是 symlink、不是普通文件、包含 NUL 字节或超过单文件安全上限
@@ -329,14 +311,13 @@
 - **THEN** result 文本 SHALL 包含简洁失败原因
 - **THEN** handler SHALL 不写入、创建或删除任何文件
 
-#### Scenario: 拒绝第一版不支持的 patch 类型
-- **WHEN** patch 表达重命名/移动文件、mode/chmod change、binary patch 或 symlink patch
-- **THEN** handler SHALL 返回 `ok: false`
-- **THEN** result 文本 SHALL 明确说明该 patch 类型不受支持
+#### Scenario: 拒绝不支持的 Begin Patch 指令
+- **WHEN** Begin Patch 包含重命名、移动或其他未支持的文件操作指令
+- **THEN** handler SHALL 返回 `ok: false` 并说明该指令不受支持
 - **THEN** handler SHALL 不写入、创建或删除任何文件
 
 #### Scenario: patch 输入无效时返回工具失败结果
-- **WHEN** `apply_patch` 收到空 patch、非 unified diff 文本、缺少目标路径或格式无法解析的 hunk
+- **WHEN** `apply_patch` 收到空 patch、缺少目标路径、缺少 `*** End Patch` 或格式无法解析的 Begin Patch 更新块
 - **THEN** handler SHALL 返回 `ok: false`
 - **THEN** result 文本 SHALL 包含简洁失败原因
 

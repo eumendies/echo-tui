@@ -162,6 +162,7 @@ export type PendingMessageRenderState = {
 
 export type RenderState = {
   composer: ComposerState;
+  footerInteractionId?: string | null; // 当前 footer 可鼠标交互消费者的稳定身份；省略时所有命中区域仅作布局投影。
   streamingOwner?: string; // 区分主会话与各个 BTW 会话独立的流式显示进度。
   conversationReference?: ConversationReferenceRenderState | null; // composer 上方展示的瞬时历史会话引用卡片。
   pendingMessage?: PendingMessageRenderState | null; // composer 上方展示的单条 transient 待发送消息。
@@ -177,11 +178,79 @@ export type RenderState = {
   width: number;
 };
 
+export type FooterMouseTarget =
+  | {
+      kind: 'slash_suggestion'; // 普通 composer 中当前可见 slash 建议项。
+      index: number; // 建议在完整匹配列表中的绝对索引。
+    }
+  | {
+      kind: 'choice_option'; // choice card 中当前可见的 option。
+      index: number; // option 在调用方完整 option 数组中的绝对索引。
+      inlineInput: boolean; // 是否为只聚焦、不直接确认的内联文本输入项。
+    }
+  | {
+      kind: 'choice_tab'; // choice card 顶部的多题导航 tab。
+      index: number; // tab 在调用方完整 tab 数组中的绝对索引。
+    }
+  | {
+      kind: 'file_picker_entry'; // file picker 左栏中当前可见的路径 entry。
+      index: number; // entry 在当前过滤后列表中的绝对索引。
+    }
+  | {
+      kind: 'command_select_option'; // command select surface 中当前可见的 option。
+      index: number; // option 在 command handler 完整候选集合中的绝对索引。
+    }
+  | {
+      kind: 'command_resume_session'; // /resume 左栏中当前可见的会话。
+      index: number; // 会话在当前 command session 完整候选集合中的绝对索引。
+    }
+  | {
+      kind: 'command_copy_message'; // /copy 左栏中当前可见的可复制消息。
+      index: number; // 消息在当前 command session 完整候选集合中的绝对索引。
+    }
+  | {
+      kind: 'command_diff_file'; // /diff 左栏中当前可见的文件。
+      index: number; // 文件在当前 command session 完整候选集合中的绝对索引。
+    };
+
+export type FooterHitRegion = {
+  interactionId?: string; // 生成本区域的 pointer consumer 身份；缺省区域不得被终端鼠标路由执行。
+  owner: 'slash_suggestion' | 'choice' | 'file_picker' | 'command_select' | 'resume' | 'copy' | 'diff'; // 生成该区域的 footer 交互 surface 类别。
+  target: FooterMouseTarget; // 命中后交给输入路由的无副作用语义目标。
+  rowStart: number; // 相对 footer 的 0-based 起始可见行，含端点。
+  rowEnd: number; // 相对 footer 的 0-based 结束可见行，含端点。
+  columnStart: number; // 相对终端行的 1-based 起始列，含端点。
+  columnEnd: number; // 相对终端行的 1-based 结束列，含端点。
+};
+
+export type FooterWheelPane = 'secondary';
+
+export type FooterWheelRegion = {
+  interactionId?: string; // 当前可执行滚轮消费者的唯一身份；缺省时不执行。
+  owner: FooterHitRegion['owner']; // 生成滚轮区域的可见 footer surface 类别。
+  pane: FooterWheelPane; // 滚轮命中后由消费者解释的右侧预览/详情主体语义。
+  rowStart: number; // 相对 footer 的 0-based 可见起始行，含端点。
+  rowEnd: number; // 相对 footer 的 0-based 可见结束行，含端点。
+  columnStart: number; // 相对终端的 1-based 可见起始列，含端点。
+  columnEnd: number; // 相对终端的 1-based 可见结束列，含端点。
+};
+
 export type FooterLayout = {
   lines: string[];
   cursorRow: number;
   cursorColumn: number;
   showCursor: boolean;
+  hitRegions?: FooterHitRegion[]; // 当前 frame 可鼠标命中的临时区域；不参与持久化。
+  wheelRegions?: FooterWheelRegion[]; // 当前 frame 可滚轮导航的主体区域，独立于点击区域。
+};
+
+export type FooterPointerSnapshot = {
+  version: number; // footer 实际写入终端后的单调递增 frame 版本。
+  cursorRow: number; // 当前终端光标相对 footer 的 0-based 行位置。
+  cursorColumn: number; // 当前终端光标相对 footer 的 0-based 列位置。
+  hitRegions: FooterHitRegion[]; // 与该 frame 版本绑定的全部可见命中区域。
+  wheelRegions: FooterWheelRegion[]; // 与该 frame 版本绑定的全部可见滚轮区域。
+  originStable: boolean; // 本帧是否仅原位更新且 footer 顶部物理屏幕位置未变。
 };
 
 export type ComposerLayout = Omit<FooterLayout, 'showCursor'>;
@@ -201,16 +270,16 @@ export type RenderDestructiveOptions = RenderState & {
 };
 
 export type AppRenderer = {
-  renderRecords: (options: RenderRecordsOptions) => void;
-  render: (options: RenderState, finalizeRecord?: Extract<TranscriptRecord, {role: 'assistant' | 'reasoning_summary'}>) => void;
+  renderRecords: (options: RenderRecordsOptions) => FooterPointerSnapshot;
+  render: (options: RenderState, finalizeRecord?: Extract<TranscriptRecord, {role: 'assistant' | 'reasoning_summary'}>) => FooterPointerSnapshot;
   clearFooter: () => void;
-  renderDestructive: (options: RenderDestructiveOptions) => void;
-  renderInitial: (options: RenderInitialOptions) => void;
+  renderDestructive: (options: RenderDestructiveOptions) => FooterPointerSnapshot;
+  renderInitial: (options: RenderInitialOptions) => FooterPointerSnapshot;
 };
 
 export type FooterRenderer = {
-  append: (content: string, options: RenderState) => void;
+  append: (content: string, options: RenderState) => FooterPointerSnapshot;
   clear: () => void;
-  rememberLayout: (layout: FooterLayout) => void;
-  render: (options: RenderState) => void;
+  rememberLayout: (layout: FooterLayout) => FooterPointerSnapshot;
+  render: (options: RenderState) => FooterPointerSnapshot;
 };

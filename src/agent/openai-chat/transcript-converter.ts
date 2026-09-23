@@ -64,6 +64,10 @@ type ToolCallProjection =
   | {kind: 'invalid'; feedback: string; id: string};
 
 const FILTERED_ROLES = new Set(['error', 'compaction_notice', 'local_notice', 'reasoning_summary']);
+// 只有这些 role 会开启新的 provider 消息。工具组内部记录（tool_call / tool_result）以及只承载
+// reasoning 的 extension 记录都不产生消息，因此也不能把缓冲中的图片消息提前写出——否则它会落在
+// 同一条 assistant 消息的 tool_calls 与其 tool 消息之间，provider 会直接拒绝整个请求。
+const MESSAGE_STARTING_ROLES = new Set<TranscriptRecord['role']>(['system', 'user', 'assistant', 'shell']);
 
 /**
  * 把本地 transcript 投影为 Chat Completions messages，并把平铺工具记录重组成 Chat 工具历史。
@@ -81,10 +85,7 @@ function convertTranscriptToOpenAiChatMessages(records: TranscriptRecord[]): Ope
       continue;
     }
 
-    // tool_call 与 tool_result 同属一个工具组：图片消息若落在组内，会打断
-    // assistant tool_calls 与其后续 tool 消息的配对，provider 会直接拒绝请求。
-    // 因此组内一律不写出，等整组工具消息提交完再随下一条非工具组记录输出。
-    if (record.role !== 'tool_result' && record.role !== 'tool_call') {
+    if (MESSAGE_STARTING_ROLES.has(record.role)) {
       flushPendingImageMessages(messages, pendingImageMessages);
     }
 

@@ -201,6 +201,7 @@ export type AgentTurnOptions = {
   abortSignal?: AbortSignal;
   isCompaction?: boolean;
   sessionId?: string; // 本次运行的会话稳定身份；ChatGPT Codex 用它生成会话级缓存键。
+  includeToolDefinitions?: boolean; // 摘要请求是否携带与普通 turn 同源的工具定义；压缩摘要为对齐前缀缓存而置位，引用总结缺省保持剥离。
 };
 
 export type AgentTurnResult = {
@@ -259,6 +260,7 @@ export type LlmConfig = {
   baseURL?: string;
   codexOAuth?: CodexOAuthRuntimeConfig;
   headers?: Record<string, string>;
+  providerId?: string; // 用户配置中 provider 目录的非敏感稳定标识；用于本地 usage 归因，不参与 provider 请求。
   sessionHeader?: string; // preset 声明的会话亲和 header 名；值由 agent 装配层按会话注入，不属于用户可编辑 headers。
   model: string;
   reasoningEffort?: ReasoningEffort;

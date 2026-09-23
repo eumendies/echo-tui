@@ -99,7 +99,7 @@ type ToolResultTranscriptRecordBase = TranscriptRecordBase & {
 };
 
 export type ToolResultTranscriptDetails =
-  | {kind: 'generic'}
+  | {kind: 'generic'; interrupted?: boolean} // interrupted 仅标识 Esc 为未返回的工具调用补出的失败结果，不代表工具自身失败。
   | {
       kind: 'bash';
       exitCode?: number | null;
@@ -387,6 +387,17 @@ export type TranscriptForkResult =
       error?: string; // 可直接展示给用户的脱敏失败说明。
     };
 
+export type TranscriptSessionDeleteResult =
+  | {
+      ok: true; // 表示目标 journal 已从当前项目分区移除。
+      sessionId: string; // 已删除的稳定 session 身份，供调用方刷新列表和 sidecar。
+    }
+  | {
+      ok: false; // 表示没有完成删除，任何成功路径之外均不得视为目标已移除。
+      reason: 'current' | 'failed' | 'missing'; // 区分当前会话保护、I/O 失败和目标已不存在或不属于当前 cwd。
+      error?: string; // 仅 I/O 失败时携带的脱敏用户可见原因。
+    };
+
 export type TranscriptProjectMetadata = {
   schemaVersion: number;
   cwd: string;
@@ -405,5 +416,6 @@ export type TranscriptStore = {
   loadSession: (cwd: string, sessionId: string) => LoadedTranscriptSession | null;
   loadSessionReadOnly: (cwd: string, sessionId: string) => LoadedTranscriptSession | null; // 重放 journal 但绝不修复或改写源文件。
   loadSessionPreview: (cwd: string, sessionId: string) => Promise<TranscriptSessionPreview | null>;
+  deleteSession: (cwd: string, sessionId: string) => TranscriptSessionDeleteResult; // 删除当前 cwd 中已验证的历史 journal，并尽力同步 index。
   updateSessionIndex: (cwd: string, reference: TranscriptSessionJournalReference, records: TranscriptRecord[]) => void;
 };

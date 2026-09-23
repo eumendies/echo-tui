@@ -80,7 +80,7 @@ class RenderContext {
   /**
    * 组合渲染层需要的瞬时状态，避免 main.ts 反复散落访问实例字段。
    */
-  createRenderState(options: {allowAllTools?: boolean; commandSurface?: CommandSurface | null; contextUsage?: ContextUsageState | null; conversationReference?: RenderState['conversationReference']; model?: StatusLineModelRenderState; pendingMessage?: RenderState['pendingMessage']; renderPreferences?: RenderPreferences; slashSuggestions?: SlashSuggestionState | null} = {}): RenderState {
+  createRenderState(options: {allowAllTools?: boolean; commandSurface?: CommandSurface | null; contextUsage?: ContextUsageState | null; conversationReference?: RenderState['conversationReference']; footerInteractionId?: RenderState['footerInteractionId']; model?: StatusLineModelRenderState; pendingMessage?: RenderState['pendingMessage']; renderPreferences?: RenderPreferences; slashSuggestions?: SlashSuggestionState | null} = {}): RenderState {
     const terminalSize = this.terminal.getSize();
     const commandSurface = options.commandSurface ?? null;
     const slashSuggestions = options.slashSuggestions ?? null;
@@ -91,6 +91,7 @@ class RenderContext {
     return {
       composer: this.composerContext.composer,
       conversationReference: options.conversationReference ?? null,
+      footerInteractionId: options.footerInteractionId,
       pendingMessage,
       commandSurface,
       slashSuggestions,
@@ -152,7 +153,7 @@ function resolveStatusLineKeyHint(mode: StatusLineMode, canInterruptAssistantTur
   }
 
   if (mode === 'command') {
-    return 'Tab 补全 · Enter 执行 · ↑/↓ 选择';
+    return 'Tab/鼠标补全 · Enter 执行 · ↑/↓ 选择';
   }
 
   if (canInterruptAssistantTurn || hasWorkingState && (mode === 'shell' || mode === 'shell-local')) {

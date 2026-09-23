@@ -147,6 +147,16 @@ test('tool approval action projections bound bash, patch, edit, MCP, and generic
   const unresolved = projectToolApprovalAction({callId: 'p', toolName: 'apply_patch', argumentsText: JSON.stringify({patch: 'x'.repeat(9_000)})}, undefined, '/repo');
   assert.deepEqual(unresolved, {kind: 'manual_only', reason: 'unresolved_patch_targets'});
 
+  const oldDiff = ['diff --git a/old.txt b/old.txt', '--- a/old.txt', '+++ /dev/null', '@@ -1 +0,0 @@', '-old', 'x'.repeat(9_000)].join('\n');
+  const oldDiffAction = projectToolApprovalAction({callId: 'p', toolName: 'apply_patch', argumentsText: JSON.stringify({patch: oldDiff})}, undefined, '/repo');
+  assert.deepEqual(oldDiffAction, {kind: 'manual_only', reason: 'unresolved_patch_targets'});
+
+  const literalPath = ['*** Begin Patch', '*** Delete File: a/old.txt', '*** Update File: b/new.txt', '@@', '-old', '+new', `+${'x'.repeat(9_000)}`, '*** End Patch'].join('\n');
+  const literalAction = projectToolApprovalAction({callId: 'p', toolName: 'apply_patch', argumentsText: JSON.stringify({patch: literalPath})}, undefined, '/repo');
+  assert.equal(literalAction.kind, 'summarized');
+  assert.match(literalAction.text, /- delete: a\/old\.txt/);
+  assert.match(literalAction.text, /- update: b\/new\.txt/);
+
   const edit = projectToolApprovalAction({callId: 'e', toolName: 'edit_file', argumentsText: JSON.stringify({path: 'src/a.ts', old_string: 'a'.repeat(5_000), new_string: 'b'.repeat(5_000), replace_all: true})}, undefined, '/repo');
   assert.equal(edit.kind, 'summarized');
   assert.match(edit.text, /path: src\/a\.ts[\s\S]*replace_all: true[\s\S]*old_string_characters: 5000/);

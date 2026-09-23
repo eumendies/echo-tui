@@ -32,6 +32,11 @@ test('provider tool converters expose only the selected file edit schema', () =>
       const names = tools.map((tool) => tool.name || tool.function?.name);
       assert.equal(names.includes(expected), true);
       assert.equal(names.includes(omitted), false);
+      if (mode === 'apply_patch') {
+        const patchSchema = JSON.stringify(tools.find((tool) => (tool.name || tool.function?.name) === 'apply_patch'));
+        assert.match(patchSchema, /\*\*\* Begin Patch/);
+        assert.doesNotMatch(patchSchema, /unified diff/i);
+      }
     }
   }
 });

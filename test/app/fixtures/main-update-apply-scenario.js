@@ -9,7 +9,9 @@ terminalModule.setupTerminal = () => ({
   },
   getSize() {
     return {columns: 80, rows: 24};
-  }
+  },
+  setMouseTracking() {},
+  requestCursorPosition() { return false; }
 });
 
 const snapshots = [];

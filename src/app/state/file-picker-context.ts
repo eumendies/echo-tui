@@ -6,10 +6,13 @@ import {INPUT_EVENTS} from '../../input/event-types';
 import {formatFileMention} from '../../input/file-mentions';
 import {splitGraphemes} from '../../input/graphemes';
 import {capUtf8Text} from '../../tools/tool-handler-utils';
+import {calculateCommandSurfaceMaxLines} from '../../render/footer';
+import {calculateFilePickerPreviewMaxScroll} from '../../render/footer/file-picker-surface';
 
 import type {ComposerState} from '../../types/composer';
 import type {FilePickerCommandSurface, FilePickerSurfaceEntry} from '../../types/command';
-import type {InputEvent} from '../../types/input';
+import type {InputEvent, MouseWheelDirection} from '../../types/input';
+import type {FooterWheelPane} from '../../types/render';
 
 type FilePickerEntryKind = FilePickerSurfaceEntry['kind'];
 type FilePickerFocus = FilePickerCommandSurface['focus'];
@@ -22,8 +25,8 @@ type FilePickerEntry = {
 };
 
 type TextPreviewData =
-  | {kind: 'text'; lines: string[]; maxScroll: number; meta: string; name: string}
-  | {kind: 'message'; lines: string[]; maxScroll: 0};
+  | {kind: 'text'; lines: string[]; meta: string; name: string}
+  | {kind: 'message'; lines: string[]};
 
 type FilePickerState = {
   currentDir: string;
@@ -39,6 +42,7 @@ type FilePickerState = {
 };
 
 type FilePickerContextOptions = {
+  columns: () => number; // 当前终端列数，预览行宽需与实际 footer 一致。
   cwd: () => string;
   onChange: () => void;
   rows?: () => number;
@@ -46,11 +50,6 @@ type FilePickerContextOptions = {
 
 const TEXT_PREVIEW_BYTES = 64 * 1024;
 const TEXT_PREVIEW_LINES = 500;
-const DEFAULT_TERMINAL_ROWS = 24;
-const FOOTER_TOP_PADDING_LINES = 2;
-const TRANSCRIPT_COMPOSER_SPACER_LINE_COUNT = 1;
-const FILE_PICKER_FIXED_LINES = 6;
-const TEXT_PREVIEW_HEADER_LINES = 3;
 const CODE_PREVIEW_EXTENSIONS = new Set([
   '.bash',
   '.c',
@@ -184,6 +183,59 @@ class FilePickerContext {
     }
   }
 
+  /**
+   * 按当前过滤列表索引处理鼠标命中；鼠标不执行 mention 插入，只负责浏览目录和切换选择。
+   */
+  handlePointerEntry(index: number, activate: boolean): boolean {
+    if (!this.state || !Number.isInteger(index) || index < 0) {
+      return false;
+    }
+
+    const entries = this.getEntries();
+    const entry = entries[index];
+
+    if (!entry) {
+      return false;
+    }
+
+    const focusChanged = this.state.focus !== 'list' || this.state.index !== index || this.state.previewScroll !== 0 || this.state.notice !== undefined;
+    if (focusChanged) {
+      this.state = {...this.state, focus: 'list', index, notice: undefined, previewScroll: 0};
+      this.options.onChange();
+    }
+
+    if (!activate) {
+      return focusChanged;
+    }
+
+    if (entry.kind === 'directory') {
+      this.enterOrFocusPreview();
+      return true;
+    }
+
+    this.toggleCurrent();
+    return true;
+  }
+
+  /** 只响应右侧文本预览滚轮；左侧条目由 hover/点击和键盘定位。 */
+  handleWheel(_pane: FooterWheelPane, direction: MouseWheelDirection): boolean {
+    if (!this.state) {
+      return false;
+    }
+
+    const step = direction === 'up' ? -1 : 1;
+    // 历史偏移可能超出当前窗口；按可见边界静默，不拉回也不抢焦点。
+    const visibleScroll = this.clampPreview(this.state.previewScroll);
+    const previewScroll = this.clampPreview(visibleScroll + step);
+    if (previewScroll === visibleScroll) {
+      return false;
+    }
+    this.state = {...this.state, focus: 'preview', previewScroll, notice: undefined};
+    this.options.onChange();
+    return true;
+  }
+
+  /** 输出完整的有界文本预览及物理行偏移，由 renderer 按当前列宽裁剪可见窗口。 */
   getSurface(): FilePickerCommandSurface | null {
     if (!this.state) {
       return null;
@@ -196,7 +248,7 @@ class FilePickerContext {
     return {
       kind: 'file_picker',
       currentDir: path.join(this.options.cwd(), this.state.currentDir),
-      dismissHint: '↑↓ 移动 · → 预览/进入目录 · ← 返回 · Space 选择 · Enter 插入 · Esc 取消',
+      dismissHint: '鼠标悬停/点击 · ↑↓ 移动 · → 预览/进入目录 · ← 返回 · Space 选择 · Enter 插入 · Esc 取消',
       entries: entries.map((entry) => ({
         ...entry,
         selected: this.state?.selectedPaths.includes(entry.path) ?? false
@@ -204,6 +256,7 @@ class FilePickerContext {
       focus: this.state.focus,
       notice: this.state.notice,
       previewLines: this.createPreview(current),
+      previewScroll: this.state.previewScroll,
       previewMode: current?.kind === 'text' && isCodeLikePreviewPath(current.path) ? 'code' : 'text',
       query: this.state.query,
       selectedIndex,
@@ -264,13 +317,27 @@ class FilePickerContext {
     this.options.onChange();
   }
 
+  /** 按当前终端宽高和换行后的物理行钳制预览偏移；键盘与滚轮共用。 */
+  private clampPreview(offset: number): number {
+    if (!this.state) {
+      return 0;
+    }
+
+    const surface = this.getSurface();
+    if (!surface || this.currentEntry()?.kind !== 'text') {
+      return 0;
+    }
+    const maxScroll = calculateFilePickerPreviewMaxScroll(surface, this.options.columns(), calculateCommandSurfaceMaxLines(this.options.rows?.()));
+    return Math.min(Math.max(0, offset), maxScroll);
+  }
+
   private move(direction: number): void {
     if (!this.state) {
       return;
     }
 
     if (this.state.focus === 'preview') {
-      const nextScroll = clampPreviewScroll(this.options.cwd(), this.currentEntry(), this.state.previewScroll + direction, this.textPreviewCache);
+      const nextScroll = this.clampPreview(this.state.previewScroll + direction);
 
       if (nextScroll !== this.state.previewScroll || this.state.notice) {
         this.state = {...this.state, previewScroll: nextScroll, notice: undefined};
@@ -427,11 +494,7 @@ class FilePickerContext {
       return [entry.name, '无法预览。', '当前仅支持选择文本、PDF 和受支持图片文件。'];
     }
 
-    return renderTextPreview(
-      getTextPreviewData(this.textPreviewCache, path.join(this.options.cwd(), entry.path)),
-      this.state.previewScroll,
-      calculateTextPreviewWindowLines(this.options.rows?.(), this.state.query)
-    );
+    return renderTextPreview(getTextPreviewData(this.textPreviewCache, path.join(this.options.cwd(), entry.path)));
   }
 }
 
@@ -536,49 +599,25 @@ function readTextPreviewData(absolutePath: string): TextPreviewData {
     const buffer = fs.readFileSync(absolutePath).subarray(0, TEXT_PREVIEW_BYTES + 1);
 
     if (buffer.includes(0)) {
-      return {kind: 'message', lines: [path.basename(absolutePath), '无法预览。', '当前仅支持选择文本、PDF 和受支持图片文件。'], maxScroll: 0};
+      return {kind: 'message', lines: [path.basename(absolutePath), '无法预览。', '当前仅支持选择文本、PDF 和受支持图片文件。']};
     }
 
     const capped = capUtf8Text(buffer.toString('utf8'), TEXT_PREVIEW_BYTES);
     const lines = capped.text.split(/\r?\n/u).slice(0, TEXT_PREVIEW_LINES);
     const meta = `text · ${lines.length}${capped.truncated ? '+' : ''} lines`;
-    return {kind: 'text', lines, maxScroll: maxTextPreviewScroll(lines.length), meta, name: path.basename(absolutePath)};
+    return {kind: 'text', lines, meta, name: path.basename(absolutePath)};
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : '读取失败';
-    return {kind: 'message', lines: [path.basename(absolutePath), `读取失败：${message}`], maxScroll: 0};
+    return {kind: 'message', lines: [path.basename(absolutePath), `读取失败：${message}`]};
   }
 }
 
-function renderTextPreview(preview: TextPreviewData, offset: number, windowLines: number): string[] {
+function renderTextPreview(preview: TextPreviewData): string[] {
   if (preview.kind === 'message') {
     return preview.lines;
   }
 
-  const normalizedOffset = Math.min(Math.max(0, offset), preview.maxScroll);
-  const window = preview.lines.slice(normalizedOffset, normalizedOffset + windowLines);
-  return [preview.name, preview.meta, ...window.map((line, index) => `${normalizedOffset + index + 1} ${line}`)];
-}
-
-/**
- * 用当前终端高度反推 preview 文本窗口；公式和 footer/file-picker 的固定行预算保持一致。
- */
-function calculateTextPreviewWindowLines(rows: number | undefined, query: string): number {
-  const terminalRows = Number.isFinite(rows) ? Math.floor(Number(rows)) : DEFAULT_TERMINAL_ROWS;
-  const commandSurfaceLines = Math.max(1, terminalRows - FOOTER_TOP_PADDING_LINES - TRANSCRIPT_COMPOSER_SPACER_LINE_COUNT);
-  const bodyHeight = Math.max(1, commandSurfaceLines - FILE_PICKER_FIXED_LINES - (query ? 1 : 0));
-  return Math.max(1, bodyHeight - TEXT_PREVIEW_HEADER_LINES);
-}
-
-function clampPreviewScroll(cwd: string, entry: FilePickerEntry | null, offset: number, cache: Map<string, TextPreviewData>): number {
-  if (!entry || entry.kind !== 'text') {
-    return 0;
-  }
-
-  return Math.min(Math.max(0, offset), getTextPreviewData(cache, path.join(cwd, entry.path)).maxScroll);
-}
-
-function maxTextPreviewScroll(lineCount: number): number {
-  return Math.max(0, lineCount - 1);
+  return [preview.name, preview.meta, ...preview.lines.map((line, index) => `${index + 1} ${line}`)];
 }
 
 function isCodeLikePreviewPath(filePath: string): boolean {

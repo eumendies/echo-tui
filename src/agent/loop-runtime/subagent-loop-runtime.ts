@@ -1,7 +1,5 @@
-import {resolveContextWindow} from '../../config/llm-config';
 import {createUsageCwdHash} from '../../persistence/usage-store';
 import {USE_SKILL_TOOL_NAME} from '../../tools/use-skill-tool-handler';
-import {createSkillCatalogPromptProjection} from '../../skills/skill-catalog-prompt';
 import {createScopedSkillRegistry} from '../../skills/skill-snapshot';
 import {
   ASK_USER_QUESTIONS_TOOL_NAME
@@ -11,9 +9,10 @@ import {classifyReadonlyToolCall, classifySubagentToolCall, classifyToolCallRisk
 import {createToolCallTranscriptRecord, createToolResultTranscriptRecord} from '../../tools/tool-transcript-record';
 import {executeTodoToolCall, isTodoToolName} from '../../tools/todo-tool-handler';
 import {throwIfAborted} from '../../types/agent';
-import {createSandboxRuntimeNote, isReadonlyBashSandboxEffective} from '../../sandbox/provider';
+import {isReadonlyBashSandboxEffective} from '../../sandbox/provider';
 import {prepareAgent} from '../agent-setup';
 import {normalizeError} from '../agent-errors';
+import {buildProviderRequestPrefix, resolveRuntimeMaterials} from '../context/provider-request-prefix';
 import {createCompactionNoticeRecord, runCompaction} from '../context/context-compaction';
 import {
   buildProviderRecords,
@@ -46,6 +45,7 @@ type SubagentLoopRunState = {
   observationProvider: ProviderObservationConfig; // 从完整配置显式挑选的非敏感 provider 诊断事实。
   observationScope: AgentRunScope; // 当前子运行复用的语义 scope。
   providerType: LlmConfig['agentType']; // usage记录使用的 provider协议类型。
+  providerId?: string; // 当前解析配置的非敏感 provider 标识；写 usage 时保留归因。
   reasoningEffort?: LlmConfig['reasoningEffort']; // 子运行固定的推理强度。
   registry: ToolRegistry; // 子 provider schema与执行器共用的裁剪目录。
   skillCatalog: SkillCatalogEntry[]; // 子 scope 内一次投影后的有界 skill 目录。
@@ -203,16 +203,21 @@ function createSubagentLoopRuntime(cwd: string, inheritedContext: InheritedAgent
         ...(input.sessionId ? {sessionId: input.sessionId} : {}),
         skillRegistry: scopedSkillRegistry
       });
-      const contextWindow = resolveContextWindow(config);
-      // 子运行在最终模型解析后按自身窗口创建一次 catalog 投影，全部 continuation 复用。
-      const skillCatalogProjection = createSkillCatalogPromptProjection(scopedSkillRegistry.listCatalog(), contextWindow, inheritedContext.skillCatalogContextRatio);
+      // 子运行在最终模型解析后按自身配置解析一次运行派生材料，全部 continuation 复用。
+      const runtimeMaterials = resolveRuntimeMaterials({
+        config,
+        executionMode: input.executionMode,
+        registry,
+        ...(input.sandboxModeOverride ? {sandboxModeOverride: input.sandboxModeOverride} : {}),
+        skillCatalogContextRatio: inheritedContext.skillCatalogContextRatio
+      });
       const sandboxResolutionOptions = input.sandboxModeOverride ? {modeOverride: input.sandboxModeOverride} : {};
       const bashSandboxEffective = isReadonlyBashSandboxEffective(config.tools.sandbox, input.executionMode, sandboxResolutionOptions);
       // MCP 只读集合与本次 registry 同源:定义未声明 MCP 可见性时缺省,审批判定保持保守。
       const readonlyMcpToolNames = definition.includeMcpTools && mcpManager ? mcpManager.listReadonlyToolNames() : undefined;
       state = {
         agent,
-        contextWindow,
+        contextWindow: runtimeMaterials.contextWindow,
         ...(input.sessionId ? {sessionId: input.sessionId} : {}),
         executor: createToolExecutor(registry),
         model: config.model,
@@ -231,22 +236,19 @@ function createSubagentLoopRuntime(cwd: string, inheritedContext: InheritedAgent
           subagent: input.metadata
         },
         providerType: config.agentType,
+        ...(config.providerId ? {providerId: config.providerId} : {}),
         reasoningEffort: config.reasoningEffort,
         registry,
-        skillCatalog: skillCatalogProjection.catalog,
-        skillCatalogTokens: skillCatalogProjection.estimatedTokens,
-        skillCatalogProjection: {
-          budgetTokens: skillCatalogProjection.budgetTokens,
-          mode: skillCatalogProjection.mode,
-          originalTokens: skillCatalogProjection.originalTokens
-        },
+        skillCatalog: runtimeMaterials.skillCatalog,
+        skillCatalogTokens: runtimeMaterials.skillCatalogTokens,
+        skillCatalogProjection: runtimeMaterials.skillCatalogProjection,
         todoState: undefined,
         toolDefinitions: registry.listDefinitions(),
         ...(readonlyMcpToolNames ? {readonlyMcpToolNames} : {}),
         readonlyBashSandboxed: input.toolPolicy === 'readonly' && bashSandboxEffective,
         // Worker 继承的是父运行同一份收紧与 interaction mode,分层事实按同样的组合重算,保证与主 Agent 一致。
         planBashSandboxed: (input.toolPolicy ?? 'default') === 'default' && input.interactionMode === 'plan' && bashSandboxEffective,
-        sandboxNote: createSandboxRuntimeNote(config.tools.sandbox, input.executionMode, sandboxResolutionOptions)
+        sandboxNote: runtimeMaterials.sandboxNote ?? null
       };
     } catch (error: unknown) {
       throw normalizeError(error, '无法加载子 Agent LLM 配置');
@@ -257,7 +259,10 @@ function createSubagentLoopRuntime(cwd: string, inheritedContext: InheritedAgent
     let usageAnchor: TokenUsageAnchor | null = null;
     callbacks.onThinking?.();
 
-    /** 子运行独立维护压缩状态，不向主 transcript提交 compaction notice。 */
+    /**
+     * 子运行独立维护压缩状态，不向主 transcript提交 compaction notice。
+     * 摘要请求复用子运行冻结的材料与父记忆投影构造前导，并携带父会话身份以复用缓存路由。
+     */
     async function maybeCompact(): Promise<void> {
       throwIfAborted(input.abortSignal);
       const result = await runCompaction({
@@ -268,9 +273,26 @@ function createSubagentLoopRuntime(cwd: string, inheritedContext: InheritedAgent
         thresholdRatio: input.configSnapshot.getAppSettings().compactionThresholdRatio,
         force: false,
         agent: state.agent,
+        promptPrefix: buildProviderRequestPrefix({
+          agentInstructions: inheritedContext.agentInstructions,
+          basePrompt: inheritedContext.basePrompt,
+          compaction: compactionState,
+          cwd,
+          memoryPrompts: inheritedContext.memoryPrompt.sections,
+          rolePrompt: definition.prompt,
+          sandboxNote: state.sandboxNote ?? undefined,
+          skillCatalog: state.skillCatalog
+        }),
+        ...(state.sessionId ? {sessionId: state.sessionId} : {}),
         abortSignal: input.abortSignal
       });
       throwIfAborted(input.abortSignal);
+
+      if (hasRecordableProviderUsage(result.usage, result.usageInputTokens)) {
+        state.observation.providerUsage({scope: state.observationScope, usage: result.usage, usageInputTokens: result.usageInputTokens});
+      }
+      recordProviderUsage(result.usage, result.usageInputTokens);
+
       if (!result.didCompact || !result.compaction) {
         return;
       }
@@ -294,6 +316,7 @@ function createSubagentLoopRuntime(cwd: string, inheritedContext: InheritedAgent
         usageStore.appendEvent({
           cwdHash,
           providerType: state.providerType,
+          ...(state.providerId ? {providerId: state.providerId} : {}),
           model: state.model,
           contextWindow: state.contextWindow,
           inputTokens: usage?.inputTokens ?? usageInputTokens,

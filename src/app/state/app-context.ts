@@ -24,7 +24,7 @@ import type {CommandSurface, SlashCommandDescriptor} from '../../types/command';
 import type {InputEvent} from '../../types/input';
 import type {RenderState, SlashSuggestionState, StatusLineModelRenderState} from '../../types/render';
 import type {ToolExecutionResult} from '../../types/tool';
-import type {TranscriptForkResult, TranscriptRecord, TranscriptSession, TranscriptStore, UserTranscriptMetadata} from '../../types/transcript';
+import type {TranscriptForkResult, TranscriptRecord, TranscriptSession, TranscriptSessionDeleteResult, TranscriptStore, UserTranscriptMetadata} from '../../types/transcript';
 import type {SessionModelSettingsStore} from '../../types/session-model-settings';
 import type {UndoExecuteResult} from '../../types/change-history';
 import type {ToolApprovalContext} from './tool-approval-context';
@@ -38,6 +38,7 @@ type AppSettingsApplyResult = {
   reasoningVisibilityChanged: boolean;
   skillCatalogContextRatioChanged: boolean;
   slashSuggestionLimitChanged: boolean;
+  mouseInteractionChanged: boolean; // 终端鼠标协议与可执行 hit region 是否需要重新投影。
   toolApprovalChanged: boolean; // 审批模式或 reviewer profile 是否变化，不代表需要 transcript 重绘。
 };
 
@@ -104,6 +105,7 @@ class AppContext {
   private mcpBootstrapStatus: 'idle' | 'initializing' | 'ready';
   private modelConfigSnapshot: UserConfigSnapshot;
   private readonly userConfigContext: UserConfigContext;
+  private readonly sessionModelSettingsStore: SessionModelSettingsStore;
 
   constructor(
     terminal: TerminalController,
@@ -120,6 +122,7 @@ class AppContext {
     this.getCurrentCwdValue = cwd;
     this.getNodeVersionValue = nodeVersion;
     this.userConfigContext = userConfigContext;
+    this.sessionModelSettingsStore = sessionModelSettingsStore;
     this.modelConfigSnapshot = userConfigContext.capture();
     this.appSettingsSnapshot = this.modelConfigSnapshot;
     const initialAppSettings = this.appSettingsSnapshot.getAppSettings();
@@ -186,6 +189,11 @@ class AppContext {
    */
   getAutoCompressImages(): boolean {
     return this.userConfigContext.capture().getAppSettings().autoCompressImages;
+  }
+
+  /** 返回当前实例缓存的 UI 鼠标交互开关；main render 据此决定是否暴露可执行 hit region。 */
+  isMouseInteractionEnabled(): boolean {
+    return this.appSettingsSnapshot.getAppSettings().mouseInteractionEnabled;
   }
 
   /**
@@ -260,7 +268,7 @@ class AppContext {
   /**
    * 组合渲染层需要的瞬时状态，避免 main.ts 反复散落访问实例字段。
    */
-  createRenderState(options: {commandSurface?: CommandSurface | null; toolApproval?: Pick<ToolApprovalContext, 'isAllowAllForSession'> | null} = {}): RenderState {
+  createRenderState(options: {commandSurface?: CommandSurface | null; footerInteractionId?: RenderState['footerInteractionId']; toolApproval?: Pick<ToolApprovalContext, 'isAllowAllForSession'> | null} = {}): RenderState {
     const appSettings = this.userConfigContext.capture().getAppSettings();
     const commandSurface = options.commandSurface ?? null;
     const modelTuningSnapshot = commandSurface ? null : this.modelTuningContext.getRenderState();
@@ -281,6 +289,7 @@ class AppContext {
       commandSurface,
       conversationReference: this.conversationReferenceContext.getRenderState(),
       contextUsage: this.contextUsage,
+      footerInteractionId: options.footerInteractionId,
       model,
       pendingMessage: this.pendingMessageContext.getRenderState(),
       renderPreferences: {
@@ -405,6 +414,7 @@ class AppContext {
     const reasoningVisibilityChanged = next.showReasoningSummary !== previous.showReasoningSummary;
     const skillCatalogContextRatioChanged = next.skillCatalogContextRatio !== previous.skillCatalogContextRatio;
     const slashSuggestionLimitChanged = next.slashSuggestionMaxVisible !== previous.slashSuggestionMaxVisible;
+    const mouseInteractionChanged = next.mouseInteractionEnabled !== previous.mouseInteractionEnabled;
     const toolApprovalChanged = next.toolApprovalMode !== previous.toolApprovalMode
       || next.toolApprovalModelProfileId !== previous.toolApprovalModelProfileId;
 
@@ -412,7 +422,7 @@ class AppContext {
     if (agentInstructionFileChanged || fileEditModeChanged || skillCatalogContextRatioChanged) {
       this.clearContextUsage();
     }
-    return {agentInstructionFileChanged, fileEditModeChanged, reasoningVisibilityChanged, skillCatalogContextRatioChanged, slashSuggestionLimitChanged, toolApprovalChanged};
+    return {agentInstructionFileChanged, fileEditModeChanged, reasoningVisibilityChanged, skillCatalogContextRatioChanged, slashSuggestionLimitChanged, mouseInteractionChanged, toolApprovalChanged};
   }
 
   /**
@@ -482,6 +492,34 @@ class AppContext {
   }
 
   /**
+   * 处理 slash 建议的鼠标命中；点击只完成命令文本，不复用 Enter 的提交语义。
+   */
+  handleSlashSuggestionPointer(index: number, activate: boolean): boolean {
+    const composerText = this.composerContext.getText();
+
+    if (!this.slashSuggestionContext.isVisible(composerText)) {
+      return false;
+    }
+
+    const focused = this.slashSuggestionContext.selectIndex(composerText, index);
+
+    if (!activate) {
+      return focused;
+    }
+
+    const completedText = this.slashSuggestionContext.completeSelection(composerText, {appendSpace: true});
+
+    if (!completedText) {
+      return focused;
+    }
+
+    this.composerContext.leaveHistoryBrowsing();
+    this.composerContext.setText(completedText);
+    this.slashSuggestionContext.resetSelection();
+    return true;
+  }
+
+  /**
    * 从持久化存储加载 session，并用其 transcript records 替换当前可见 transcript。
    */
   loadTranscriptSession(sessionId: string): TranscriptSession | null {
@@ -496,6 +534,24 @@ class AppContext {
     }
 
     return loadedSession;
+  }
+
+  /**
+   * 删除非当前的历史 transcript，并在 journal 提交后尽力回收对应 model settings sidecar。
+   */
+  deleteTranscriptSession(sessionId: string): TranscriptSessionDeleteResult {
+    const result = this.transcriptContext.deleteSession(sessionId);
+    if (!result.ok) {
+      return result;
+    }
+
+    try {
+      this.sessionModelSettingsStore.remove(this.getCurrentCwd(), result.sessionId);
+    } catch {
+      // Sidecar 仅用于恢复，清理失败不得改变已提交的 journal 删除结果。
+    }
+
+    return result;
   }
 
   /**

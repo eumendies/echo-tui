@@ -4,7 +4,7 @@ import { activeBackground, renderFocusBar, resolveFooterTheme, tokenText, type F
 import { clampPlainText, padVisibleText } from './text';
 import { createSelectedWindowRows } from './window';
 import type { ResumeCommandSurface, ResumeCommandSurfacePreviewRecord, ResumeCommandSurfaceSession } from '../../types/command';
-import type { FooterLayout } from '../../types/render';
+import type { FooterHitRegion, FooterLayout } from '../../types/render';
 
 type PreviewRowsOptions = {
   height: number;
@@ -15,6 +15,7 @@ type PreviewRowsOptions = {
 type SessionListRow =
   | {
       kind: 'session'; // 标识该行承载一个可选择的会话。
+      index: number; // 会话在完整 session 候选集合中的绝对索引。
       session: ResumeCommandSurfaceSession; // 左栏需要展示的会话标签。
       selected: boolean; // 指示该会话是否为当前选中项。
     }
@@ -34,12 +35,9 @@ const WIDE_BOX_HORIZONTAL_MARGIN = 4;
 export function renderResumeSurface(commandSurface: ResumeCommandSurface, width: number, maxLines: number | undefined = Number.POSITIVE_INFINITY, theme: FooterTheme = resolveFooterTheme(undefined)): FooterLayout {
   const safeWidth = safeRenderWidth(width);
   const boxWidth = calculateBoxWidth(safeWidth);
-  const splitWidth = Math.max(2, boxWidth - 7);
-  const leftWidth = calculateLeftWidth(splitWidth);
-  const rightWidth = Math.max(1, splitWidth - leftWidth);
+  const {bodyHeight, leftWidth, rightWidth} = createResumePanelMetrics(commandSurface, safeWidth, maxLines);
   const sessions = commandSurface.sessions;
   const selectedIndex = clampIndex(commandSurface.selectedIndex, sessions.length);
-  const bodyHeight = calculateBodyHeight(maxLines);
   const sessionRows = createSessionListRows(commandSurface, selectedIndex, bodyHeight);
   const previewStatus = commandSurface.previewStatus || 'ready';
   const previewHint = previewStatus === 'loading'
@@ -54,6 +52,7 @@ export function renderResumeSurface(commandSurface: ResumeCommandSurface, width:
     theme
   );
   const focus = commandSurface.focus === 'preview' ? 'preview' : 'list';
+  const leftPrefix = `${tokenText(theme, 'frame', '│')} `;
   const lines = [
     renderBoxTop(boxWidth, theme),
     renderFullLine(renderTitle(commandSurface.title, boxWidth - 4, theme), boxWidth, theme),
@@ -62,16 +61,19 @@ export function renderResumeSurface(commandSurface: ResumeCommandSurface, width:
       renderPanelHeader('预览', focus === 'preview', theme),
       leftWidth,
       rightWidth,
-      theme
+      theme,
+      leftPrefix
     ),
     renderSplitLine(
       renderPanelDivider(leftWidth, theme),
       renderPanelDivider(rightWidth, theme),
       leftWidth,
       rightWidth,
-      theme
+      theme,
+      leftPrefix
     )
   ];
+  const bodyStart = lines.length;
 
   for (let index = 0; index < bodyHeight; index += 1) {
     lines.push(renderSplitLine(
@@ -79,18 +81,37 @@ export function renderResumeSurface(commandSurface: ResumeCommandSurface, width:
       previewRows[index] || '',
       leftWidth,
       rightWidth,
-      theme
+      theme,
+      leftPrefix
     ));
+  }
+
+  if (commandSurface.notice) {
+    lines.push(renderFullLine(tokenText(theme, 'warning', clampPlainText(commandSurface.notice, boxWidth - 4)), boxWidth, theme));
   }
 
   lines.push(renderFullLine(ansi.dim(clampPlainText(commandSurface.dismissHint, boxWidth - 4)), boxWidth, theme));
   lines.push(renderBoxBottom(boxWidth, theme));
+  const leftColumnStart = displayWidth(leftPrefix) + 1;
+  const hitRegions: FooterHitRegion[] = sessionRows.flatMap((row, visualIndex) => row.kind === 'session' ? [{
+    owner: 'resume' as const,
+    target: {kind: 'command_resume_session' as const, index: row.index},
+    rowStart: bodyStart + visualIndex,
+    rowEnd: bodyStart + visualIndex,
+    columnStart: leftColumnStart,
+    columnEnd: leftColumnStart + leftWidth - 1
+  }] : []);
 
   return {
     lines,
     cursorRow: lines.length - 1,
     cursorColumn: 0,
-    showCursor: false
+    showCursor: false,
+    hitRegions,
+    // 预览即使未聚焦也保留右侧滚轮区域；左侧会话仅沿用原有点击区域。
+    wheelRegions: [
+      {owner: 'resume' as const, pane: 'secondary' as const, rowStart: bodyStart, rowEnd: bodyStart + bodyHeight - 1, columnStart: leftColumnStart + leftWidth + 3, columnEnd: leftColumnStart + leftWidth + 2 + rightWidth}
+    ].filter((region) => region.columnEnd <= safeWidth)
   };
 }
 
@@ -100,7 +121,7 @@ export function renderResumeSurface(commandSurface: ResumeCommandSurface, width:
 function createSessionListRows(commandSurface: ResumeCommandSurface, selectedIndex: number, height: number): SessionListRow[] {
   return createSelectedWindowRows(commandSurface.sessions, selectedIndex, height).map((row) => row.kind === 'more'
     ? {kind: 'more' as const, count: row.count, direction: row.direction}
-    : {kind: 'session' as const, session: row.item, selected: row.index === selectedIndex});
+    : {kind: 'session' as const, index: row.index, session: row.item, selected: row.index === selectedIndex});
 }
 
 /**
@@ -126,14 +147,42 @@ function calculateLeftWidth(splitWidth: number): number {
 }
 
 /**
- * 计算双栏主体高度：footer 的 maxLines 行数预算扣除固定外壳 6 行；无预算时保持默认 8 行。
+ * 计算双栏主体高度：footer 的 maxLines 行数预算扣除固定外壳及可选提示；无预算时保持默认 8 行。
  */
-function calculateBodyHeight(maxLines: number | undefined): number {
+function calculateBodyHeight(maxLines: number | undefined, hasNotice: boolean): number {
   if (maxLines === undefined || !Number.isFinite(maxLines)) {
     return RESUME_BODY_HEIGHT;
   }
 
-  return Math.max(1, Math.floor(Number(maxLines)) - RESUME_FIXED_ROW_COUNT);
+  return Math.max(1, Math.floor(Number(maxLines)) - RESUME_FIXED_ROW_COUNT - (hasNotice ? 1 : 0));
+}
+
+type ResumePanelMetrics = {
+  bodyHeight: number; // 预览/列表主体可用行数，已扣除面板外壳和可选提示行。
+  leftWidth: number; // 左栏会话列表列宽。
+  rightWidth: number; // 右栏预览列宽。
+};
+
+/**
+ * 汇总 /resume 双栏布局派生值；渲染与滚轮滚动上限共用同一套列宽和行预算。
+ */
+function createResumePanelMetrics(commandSurface: ResumeCommandSurface, safeWidth: number, maxLines: number | undefined): ResumePanelMetrics {
+  const splitWidth = Math.max(2, calculateBoxWidth(safeWidth) - 7);
+  const leftWidth = calculateLeftWidth(splitWidth);
+  return {
+    bodyHeight: calculateBodyHeight(maxLines, Boolean(commandSurface.notice)),
+    leftWidth,
+    rightWidth: Math.max(1, splitWidth - leftWidth)
+  };
+}
+
+/**
+ * 按 renderer 的实际宽高约束计算预览最大滚动位置，供滚轮 handler 提前钳制。
+ */
+export function calculateResumePreviewMaxScroll(commandSurface: ResumeCommandSurface, width: number, maxLines: number | undefined = Number.POSITIVE_INFINITY): number {
+  const {bodyHeight, rightWidth} = createResumePanelMetrics(commandSurface, safeRenderWidth(width), maxLines);
+  const records = (commandSurface.previewStatus || 'ready') === 'ready' ? commandSurface.previewRecords : [];
+  return Math.max(0, projectPreviewRows(records, rightWidth, resolveFooterTheme(undefined)).length - bodyHeight);
 }
 
 /**
@@ -195,13 +244,20 @@ function renderSessionListRow(row: SessionListRow | undefined, width: number, th
 }
 
 /**
+ * 把 preview records 投影为可见单行摘要并过滤空行；窗口裁剪与滚动上限共用同一投影。
+ */
+function projectPreviewRows(records: ResumeCommandSurfacePreviewRecord[], width: number, theme: FooterTheme): string[] {
+  return records
+    .map((record) => renderPreviewRecord(record, width, theme))
+    .filter((line) => displayWidth(line) > 0);
+}
+
+/**
  * 把 preview records 投影为单行摘要，再按 scroll 裁剪到右栏窗口内。
  */
 function createPreviewRows(records: ResumeCommandSurfacePreviewRecord[], emptyPreviewHint: string, options: PreviewRowsOptions, theme: FooterTheme): string[] {
   const {height, scroll, width} = options;
-  const rows = records
-    .map((record) => renderPreviewRecord(record, width, theme))
-    .filter((line) => displayWidth(line) > 0);
+  const rows = projectPreviewRows(records, width, theme);
 
   if (rows.length === 0) {
     return [ansi.dim(clampPlainText(emptyPreviewHint, width))];
@@ -303,7 +359,7 @@ function renderFullLine(content: string, width: number, theme: FooterTheme): str
 /**
  * 渲染左右两栏内容行。
  */
-function renderSplitLine(left: string, right: string, leftWidth: number, rightWidth: number, theme: FooterTheme): string {
+function renderSplitLine(left: string, right: string, leftWidth: number, rightWidth: number, theme: FooterTheme, leftPrefix: string): string {
   const bar = tokenText(theme, 'frame', '│');
-  return `${bar} ${padVisibleText(left, leftWidth)} ${bar} ${padVisibleText(right, rightWidth)} ${bar}`;
+  return `${leftPrefix}${padVisibleText(left, leftWidth)} ${bar} ${padVisibleText(right, rightWidth)} ${bar}`;
 }

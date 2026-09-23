@@ -55,6 +55,7 @@ function createConfigRootFromAppSettings(settings) {
     },
     ui: {
       defaultInteractionMode: settings.defaultInteractionMode,
+      mouseInteractionEnabled: settings.mouseInteractionEnabled,
       showReasoningSummary: settings.showReasoningSummary,
       slashSuggestionMaxVisible: settings.slashSuggestionMaxVisible
     }
@@ -98,6 +99,9 @@ function createFakeSessionModelSettingsStore(initialSettings = []) {
       settings.set(input.sessionId, value);
       return structuredClone(value);
     },
+    remove(_cwd, sessionId) {
+      settings.delete(sessionId);
+    },
     settings
   };
 }
@@ -111,6 +115,9 @@ function createFailingSessionModelSettingsStore(message) {
       return {kind: 'missing'};
     },
     write() {
+      throw new Error(message);
+    },
+    remove() {
       throw new Error(message);
     }
   };
@@ -224,6 +231,17 @@ function createFakeTranscriptStore(initialSessions = []) {
     return loadSession(cwd, sessionId);
   }
 
+  function deleteSession(cwd, sessionId) {
+    const sessions = getSessions(cwd);
+    const index = sessions.findIndex((candidate) => candidate.reference.sessionId === sessionId);
+    if (index < 0) {
+      return {ok: false, reason: 'missing'};
+    }
+
+    sessions.splice(index, 1);
+    return {ok: true, sessionId};
+  }
+
   function getSessionFilePath(cwd, sessionId) {
     return `/tmp/${sessionId}.jsonl`;
   }
@@ -233,6 +251,7 @@ function createFakeTranscriptStore(initialSessions = []) {
     appendSession,
     getSessionFilePath,
     listSessionSummaries,
+    deleteSession,
     loadSession,
     loadSessionReadOnly,
     loadSessionPreview,
@@ -798,6 +817,7 @@ test('AppContext snapshots app settings into render state and agent sessions', (
       compactionThresholdRatio: 0.65,
       defaultInteractionMode: 'plan',
       fileEditMode: 'apply_patch',
+      mouseInteractionEnabled: true,
       skillCatalogContextRatio: 0.04,
       showReasoningSummary: false,
       slashSuggestionMaxVisible: 3,
@@ -814,6 +834,7 @@ test('AppContext snapshots app settings into render state and agent sessions', (
   assert.equal(context.getAgentSession().skillCatalogContextRatio, 0.04);
   assert.equal(context.getInteractionMode(), 'plan');
   assert.equal(context.getAutoCompressImages(), false);
+  assert.equal(context.isMouseInteractionEnabled(), true);
   assert.deepEqual(context.getToolApprovalSettings(), {mode: 'auto', modelProfileId: 'reviewer'});
 });
 
@@ -834,7 +855,7 @@ test('AppContext refreshes external app settings and classifies redraw impact', 
       instructions: {fileName: 'CLAUDE.md'},
       skills: {catalogContextRatio: 0.07},
       tools: {readFiles: {autoCompressImages: false}},
-      ui: {defaultInteractionMode: 'plan', showReasoningSummary: false, slashSuggestionMaxVisible: 4}
+      ui: {defaultInteractionMode: 'plan', mouseInteractionEnabled: true, showReasoningSummary: false, slashSuggestionMaxVisible: 4}
     }));
     const result = context.applyAppSettingsSnapshot(userConfigContext.refresh().snapshot);
 
@@ -844,12 +865,14 @@ test('AppContext refreshes external app settings and classifies redraw impact', 
       reasoningVisibilityChanged: true,
       skillCatalogContextRatioChanged: true,
       slashSuggestionLimitChanged: true,
+      mouseInteractionChanged: true,
       toolApprovalChanged: false
     });
     assert.equal(context.getAgentSession().compactionThresholdRatio, 0.65);
     assert.equal(context.getAgentSession().skillCatalogContextRatio, 0.07);
     assert.equal(context.getInteractionMode(), 'normal');
     assert.equal(context.getAutoCompressImages(), false);
+    assert.equal(context.isMouseInteractionEnabled(), true);
     assert.equal(context.getContextUsage(), null);
     assert.deepEqual(context.createRenderState().renderPreferences, {
       showReasoningSummary: false,
@@ -884,6 +907,7 @@ test('AppContext refreshes image compression without clearing context usage or r
       reasoningVisibilityChanged: false,
       skillCatalogContextRatioChanged: false,
       slashSuggestionLimitChanged: false,
+      mouseInteractionChanged: false,
       toolApprovalChanged: false
     });
     assert.equal(context.getAutoCompressImages(), false);
@@ -2317,6 +2341,60 @@ test('AppContext forks into a self-contained real journal', () => {
   assert.deepEqual(transcriptStore.loadSession(cwd, result.sessionId).session.records, childBeforeSourceRemoval.records);
 });
 
+test('AppContext deletes a historical session and its settings sidecar without changing the current session', () => {
+  const historicalSession = {
+    sessionId: 'history-session',
+    createdAt: '2026-05-18T00:00:00.000Z',
+    updatedAt: '2026-05-18T00:00:00.000Z',
+    records: [{role: 'user', text: 'historical'}]
+  };
+  const transcriptStore = createFakeTranscriptStore([historicalSession]);
+  const settingsStore = createFakeSessionModelSettingsStore([{
+    schemaVersion: 1,
+    sessionId: historicalSession.sessionId,
+    modelProfileId: 'fast',
+    updatedAt: '2026-05-18T00:00:00.000Z'
+  }]);
+  const context = createContext({sessionModelSettingsStore: settingsStore, transcriptStore});
+  context.beginUserTurn('current');
+  context.turnContext.finishAssistantTurn('reply');
+  const currentSessionId = context.transcriptContext.getCurrentSessionId();
+  const recordsBeforeDelete = context.transcriptContext.getRecords().map((record) => record.text);
+
+  assert.deepEqual(context.deleteTranscriptSession(historicalSession.sessionId), {ok: true, sessionId: historicalSession.sessionId});
+  assert.equal(settingsStore.settings.has(historicalSession.sessionId), false);
+  assert.equal(context.transcriptContext.getCurrentSessionId(), currentSessionId);
+  assert.deepEqual(context.transcriptContext.getRecords().map((record) => record.text), recordsBeforeDelete);
+  assert.equal(context.transcriptContext.listSessionSummaries().some((session) => session.sessionId === historicalSession.sessionId), false);
+});
+
+test('AppContext keeps a session deleted when its settings sidecar cleanup fails', () => {
+  const historicalSession = {
+    sessionId: 'history-session',
+    createdAt: '2026-05-18T00:00:00.000Z',
+    updatedAt: '2026-05-18T00:00:00.000Z',
+    records: [{role: 'user', text: 'historical'}]
+  };
+  const transcriptStore = createFakeTranscriptStore([historicalSession]);
+  const settingsStore = createFakeSessionModelSettingsStore([{
+    schemaVersion: 1,
+    sessionId: historicalSession.sessionId,
+    modelProfileId: 'fast',
+    updatedAt: '2026-05-18T00:00:00.000Z'
+  }]);
+  settingsStore.remove = () => {
+    throw new Error('sidecar unavailable');
+  };
+  const context = createContext({sessionModelSettingsStore: settingsStore, transcriptStore});
+  context.beginUserTurn('current');
+  const currentSessionId = context.transcriptContext.getCurrentSessionId();
+
+  assert.deepEqual(context.deleteTranscriptSession(historicalSession.sessionId), {ok: true, sessionId: historicalSession.sessionId});
+  assert.equal(settingsStore.settings.has(historicalSession.sessionId), true);
+  assert.equal(context.transcriptContext.getCurrentSessionId(), currentSessionId);
+  assert.equal(context.transcriptContext.listSessionSummaries().some((session) => session.sessionId === historicalSession.sessionId), false);
+});
+
 test('AppContext isolates session settings across clear and resume', () => {
   withTemporaryModelConfig({
     llm: {
@@ -2688,7 +2766,7 @@ test('AppContext closes a pending tool call as a paired interrupted result when 
       toolCallId: 'call-tool',
       toolName: 'grep',
       ok: false,
-      details: {kind: 'generic'}
+      details: {kind: 'generic', interrupted: true}
     }
   ]);
   assert.deepEqual(context.transcriptContext.records, [

@@ -4,7 +4,9 @@ const root = process.cwd();
 const terminalModule = require(path.join(root, 'dist/src/terminal/tty'));
 terminalModule.setupTerminal = () => ({
   cleanup() {},
-  getSize() { return {columns: 80, rows: 24}; }
+  getSize() { return {columns: 80, rows: 24}; },
+  setMouseTracking() {},
+  requestCursorPosition() { return false; }
 });
 
 let streamingCommits = 0;

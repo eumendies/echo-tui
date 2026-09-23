@@ -110,3 +110,123 @@ test('createKeyParser handles split bracketed paste markers', () => {
     { type: INPUT_EVENTS.TEXT, value: 'x' }
   ]);
 });
+
+test('createKeyParser parses split SGR mouse reports without leaking bytes into text', () => {
+  const parser = createKeyParser();
+
+  assert.deepEqual(parser.parse('\x1b[<32;12'), []);
+  assert.deepEqual(parser.parse(';8M'), [{
+    type: INPUT_EVENTS.MOUSE,
+    phase: 'move',
+    button: 'left',
+    column: 12,
+    row: 8,
+    shift: false,
+    alt: false,
+    ctrl: false
+  }]);
+  assert.deepEqual(parser.parse('\x1b[<0;12;8M\x1b[<0;12;8m'), [
+    {
+      type: INPUT_EVENTS.MOUSE,
+      phase: 'down',
+      button: 'left',
+      column: 12,
+      row: 8,
+      shift: false,
+      alt: false,
+      ctrl: false
+    },
+    {
+      type: INPUT_EVENTS.MOUSE,
+      phase: 'up',
+      button: 'left',
+      column: 12,
+      row: 8,
+      shift: false,
+      alt: false,
+      ctrl: false
+    }
+  ]);
+  assert.deepEqual(parser.parse('\x1b[<35;12;8M'), [{
+    type: INPUT_EVENTS.MOUSE,
+    phase: 'move',
+    button: 'other',
+    column: 12,
+    row: 8,
+    shift: false,
+    alt: false,
+    ctrl: false
+  }]);
+});
+
+test('createKeyParser buffers split vertical wheel reports and preserves consecutive directions and nearby text', () => {
+  const parser = createKeyParser();
+  assert.deepEqual(parser.parse('a\x1b[<64;12'), [{type: INPUT_EVENTS.TEXT, value: 'a'}]);
+  assert.deepEqual(parser.parse(';8M\x1b[<65;12;8M\x1b[<64;3;4'), [
+    {type: INPUT_EVENTS.MOUSE_WHEEL, direction: 'up', column: 12, row: 8},
+    {type: INPUT_EVENTS.MOUSE_WHEEL, direction: 'down', column: 12, row: 8}
+  ]);
+  assert.deepEqual(parser.parse('M\r'), [
+    {type: INPUT_EVENTS.MOUSE_WHEEL, direction: 'up', column: 3, row: 4},
+    {type: INPUT_EVENTS.SUBMIT}
+  ]);
+});
+
+test('parseKeyChunk discards modified, horizontal, released and invalid wheel reports without leaking text or mouse clicks', () => {
+  const invalid = [
+    68, 72, 80, 96, 97, 66, 67, 255, 256
+  ].map((code) => `\x1b[<${code};5;6M`).join('');
+  assert.deepEqual(parseKeyChunk(`\x1b[<64;5;6m${invalid}\x1b[<64;0;6M\x1b[<65;5;0M\x1b[<65;99999;6M!`), [
+    {type: INPUT_EVENTS.TEXT, value: '!'}
+  ]);
+  assert.deepEqual(parseKeyChunk('\x1b[<0;5;6M\x1b[<65;5;6M'), [
+    {type: INPUT_EVENTS.MOUSE, phase: 'down', button: 'left', column: 5, row: 6, shift: false, alt: false, ctrl: false},
+    {type: INPUT_EVENTS.MOUSE_WHEEL, direction: 'down', column: 5, row: 6}
+  ]);
+});
+
+test('createKeyParser consumes cursor position replies and malformed mouse CSI without creating text', () => {
+  const parser = createKeyParser();
+
+  assert.deepEqual(parser.parse('\x1b[14;27R'), [{type: INPUT_EVENTS.CURSOR_POSITION, row: 14, column: 27}]);
+  assert.deepEqual(parser.parse('\x1b[<xignored'), [
+    {type: INPUT_EVENTS.TEXT, value: 'i'},
+    {type: INPUT_EVENTS.TEXT, value: 'g'},
+    {type: INPUT_EVENTS.TEXT, value: 'n'},
+    {type: INPUT_EVENTS.TEXT, value: 'o'},
+    {type: INPUT_EVENTS.TEXT, value: 'r'},
+    {type: INPUT_EVENTS.TEXT, value: 'e'},
+    {type: INPUT_EVENTS.TEXT, value: 'd'}
+  ]);
+  assert.deepEqual(parser.parse('\x1b[<9;2'), []);
+  assert.deepEqual(parser.parse(';0M'), []);
+});
+
+test('createKeyParser drops overlong terminal reports until their CSI terminator', () => {
+  const parser = createKeyParser();
+  const prefix = `\x1b[<${'1'.repeat(62)}`;
+
+  assert.deepEqual(parser.parse(prefix), []);
+  assert.deepEqual(parser.parse(';2;3Mafter'), [
+    {type: INPUT_EVENTS.TEXT, value: 'a'},
+    {type: INPUT_EVENTS.TEXT, value: 'f'},
+    {type: INPUT_EVENTS.TEXT, value: 't'},
+    {type: INPUT_EVENTS.TEXT, value: 'e'},
+    {type: INPUT_EVENTS.TEXT, value: 'r'}
+  ]);
+  assert.deepEqual(parser.parse(`\x1b[<${'1'.repeat(62)};2;3Mnext`), [
+    {type: INPUT_EVENTS.TEXT, value: 'n'},
+    {type: INPUT_EVENTS.TEXT, value: 'e'},
+    {type: INPUT_EVENTS.TEXT, value: 'x'},
+    {type: INPUT_EVENTS.TEXT, value: 't'}
+  ]);
+
+  const cursorPrefix = `\x1b[${'1'.repeat(61)};2`;
+  assert.deepEqual(parser.parse(cursorPrefix), []);
+  assert.deepEqual(parser.parse('Rdone'), [
+    {type: INPUT_EVENTS.TEXT, value: 'd'},
+    {type: INPUT_EVENTS.TEXT, value: 'o'},
+    {type: INPUT_EVENTS.TEXT, value: 'n'},
+    {type: INPUT_EVENTS.TEXT, value: 'e'}
+  ]);
+});

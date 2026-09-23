@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
+const {ActiveInputResolver} = require('../../src/app/active-input-resolver');
 const {InputEventController} = require('../../src/app/input-event-controller');
 const composerOps = require('../../src/input/composer');
 const {INPUT_EVENTS} = require('../../src/input/event-types');
@@ -11,44 +12,107 @@ function createHarness(overrides = {}) {
   appContext.setMcpBootstrapStatus('ready');
   const calls = [];
   let localSurfaceActive = Boolean(overrides.localSurfaceActive);
-  const controller = new InputEventController({
-    appContext,
-    userQuestion: overrides.userQuestion || {
-      hasActiveRequest: () => false,
-      handleEvent: () => calls.push('question')
-    },
-    toolApproval: overrides.toolApproval || {
-      hasActiveRequest: () => false,
-      handleEvent: () => calls.push('approval'),
-      toggleAllowAllForSession: () => calls.push('toggle-approval')
-    },
-    filePicker: overrides.filePicker || {
-      hasActiveRequest: () => false,
-      handleEvent: () => calls.push('picker-event'),
-      open: (index) => calls.push(`picker-open:${index}`)
-    },
-    autoUpdate: overrides.autoUpdate || {
-      hasActiveRequest: () => false,
-      handleEvent: () => calls.push('auto-update-event')
-    },
-    subagentView: overrides.subagentView || {
-      isActive: () => false,
-      toggle: () => calls.push('subagent-view-toggle'),
-      handleEvent: () => false
-    },
-    command: overrides.command || {
-      hasActiveSession: () => false,
-      handleEvent: () => undefined
-    },
-    localSurface: {
-      hasActive: () => localSurfaceActive,
-      dismiss() {
-        calls.push('dismiss-local');
-        localSurfaceActive = false;
+  const userQuestion = overrides.userQuestion || {
+    hasActiveRequest: () => false,
+    handleEvent: () => calls.push('question')
+  };
+  const toolApproval = overrides.toolApproval || {
+    hasActiveRequest: () => false,
+    handleEvent: () => calls.push('approval'),
+    toggleAllowAllForSession: () => calls.push('toggle-approval')
+  };
+  const filePicker = overrides.filePicker || {
+    hasActiveRequest: () => false,
+    handleEvent: () => calls.push('picker-event'),
+    open: (index) => calls.push(`picker-open:${index}`)
+  };
+  const autoUpdate = overrides.autoUpdate || {
+    hasActiveRequest: () => false,
+    handleEvent: () => calls.push('auto-update-event')
+  };
+  const subagentView = overrides.subagentView || {
+    isActive: () => false,
+    toggle: () => calls.push('subagent-view-toggle'),
+    handleEvent: () => false
+  };
+  const command = overrides.command || {
+    hasActiveSession: () => false,
+    handleEvent: () => undefined
+  };
+  const localSurface = {
+    hasActive: () => localSurfaceActive,
+    dismiss() {
+      calls.push('dismiss-local');
+      localSurfaceActive = false;
+    }
+  };
+  const resolver = new ActiveInputResolver([
+    {id: 'question', isActive: userQuestion.hasActiveRequest, handleEvent(event) { userQuestion.handleEvent(event); return true; }},
+    {id: 'approval', isActive: toolApproval.hasActiveRequest, handleEvent(event) { toolApproval.handleEvent(event); return true; }},
+    {id: 'picker', isActive: filePicker.hasActiveRequest, handleEvent(event) { filePicker.handleEvent(event); return true; }},
+    {id: 'auto-update', isActive: autoUpdate.hasActiveRequest, handleEvent(event) { autoUpdate.handleEvent(event); return true; }},
+    {id: 'subagent-view', isActive: subagentView.isActive, handleEvent: subagentView.handleEvent},
+    {
+      id: 'command',
+      isActive: command.hasActiveSession,
+      handleEvent(event) {
+        const result = command.handleEvent(event);
+        const dispatchAfterClose = () => {
+          if (!command.hasActiveSession()) void (overrides.dispatchPendingMessage || (async () => { calls.push('dispatch-pending'); }))();
+        };
+        if (result) return result.then(() => {
+          dispatchAfterClose();
+          return true;
+        });
+        dispatchAfterClose();
+        return true;
       }
     },
-    cancelReferencePreparation: () => calls.push('cancel-reference-preparation'),
-    dispatchPendingMessage: overrides.dispatchPendingMessage || (async () => { calls.push('dispatch-pending'); }),
+    {
+      id: 'reference',
+      isActive: () => appContext.conversationReferenceContext.isPreparing(),
+      handleEvent(event) {
+        if (event.type === INPUT_EVENTS.ESCAPE) calls.push('cancel-reference-preparation');
+        else if (event.type === INPUT_EVENTS.EXIT) calls.push('exit');
+        return true;
+      }
+    },
+    {
+      id: 'local',
+      isActive: localSurface.hasActive,
+      handleEvent(event) {
+        if (event.type === INPUT_EVENTS.EXIT) calls.push('exit');
+        else if (event.type === INPUT_EVENTS.ESCAPE || event.type === INPUT_EVENTS.SUBMIT) {
+          localSurface.dismiss();
+          calls.push('render');
+        }
+        return true;
+      }
+    },
+    {
+      id: 'model-tuning',
+      isActive: () => appContext.modelTuningContext.isActive(),
+      handleEvent(event) {
+        const handled = appContext.handleModelTuningEvent(event);
+        if (handled) calls.push('render');
+        return handled;
+      }
+    },
+    {
+      id: 'slash',
+      isActive: () => appContext.getSlashSuggestionState() !== null,
+      handleEvent(event) {
+        const handled = appContext.handleSlashSuggestionEvent(event);
+        if (handled) calls.push('render');
+        return handled;
+      }
+    }
+  ]);
+  const controller = new InputEventController({
+    appContext,
+    resolver,
+    openFilePicker: (index) => filePicker.open(index),
+    openSubagentView: () => subagentView.toggle(),
     submitComposer: overrides.submitComposer || (async () => { calls.push('submit'); }),
     interruptActiveShellCommand: overrides.interruptActiveShellCommand || (() => {
       calls.push('interrupt-shell');
@@ -59,7 +123,8 @@ function createHarness(overrides = {}) {
       return false;
     }),
     exit: () => calls.push('exit'),
-    render: () => calls.push('render')
+    render: () => calls.push('render'),
+    toggleAllowAllForSession: () => toolApproval.toggleAllowAllForSession()
   });
 
   return {appContext, calls, controller};
@@ -87,6 +152,50 @@ test('InputEventController gives active modals and command sessions priority', a
   });
   await command.controller.handleChunk('\r');
   assert.deepEqual(command.calls, ['command-start', 'command-end']);
+});
+
+test('InputEventController consumes terminal pointer reports before modal or composer routing', () => {
+  const pointerEvents = [];
+  const appContext = createAppContext();
+  appContext.setMcpBootstrapStatus('ready');
+  const controller = new InputEventController({
+    appContext,
+    resolver: new ActiveInputResolver([{
+      id: 'question',
+      isActive: () => true,
+      handleEvent: () => {
+        pointerEvents.push('question');
+        return true;
+      }
+    }]),
+    openFilePicker() {},
+    openSubagentView() {},
+    submitComposer: async () => {},
+    interruptActiveShellCommand: () => false,
+    interruptActiveTurn: () => false,
+    exit() {},
+    render() {},
+    toggleAllowAllForSession() {},
+    pointer: {handleEvent(event) { pointerEvents.push(event.type); return true; }}
+  });
+
+  controller.handleEvent({type: INPUT_EVENTS.MOUSE, phase: 'move', button: 'left', row: 1, column: 1, shift: false, alt: false, ctrl: false});
+  assert.deepEqual(pointerEvents, [INPUT_EVENTS.MOUSE]);
+});
+
+test('AppContext completes a hovered slash suggestion without submitting it', () => {
+  const appContext = createAppContext();
+  appContext.setMcpBootstrapStatus('ready');
+  appContext.configureSlashSuggestions([
+    {name: 'help', description: '帮助'},
+    {name: 'history', description: '历史'}
+  ], () => false);
+  appContext.composerContext.setText('/h');
+
+  assert.equal(appContext.handleSlashSuggestionPointer(1, false), true);
+  assert.equal(appContext.getSlashSuggestionState().selectedIndex, 1);
+  assert.equal(appContext.handleSlashSuggestionPointer(1, true), true);
+  assert.equal(composerOps.getText(appContext.composerContext.composer), '/history ');
 });
 
 test('InputEventController keeps the auto update prompt below other modals and consumes its input', async () => {
@@ -244,6 +353,11 @@ test('InputEventController handles tuning, approval shortcut, slash completion, 
   harness.appContext.composerContext.setText('/he');
   harness.controller.handleEvent({type: INPUT_EVENTS.TAB});
   assert.equal(composerOps.getText(harness.appContext.composerContext.composer), '/help ');
+
+  harness.appContext.composerContext.setText('/he');
+  harness.controller.handleEvent({type: INPUT_EVENTS.SUBMIT});
+  assert.equal(composerOps.getText(harness.appContext.composerContext.composer), '/help');
+  assert.equal(harness.calls.includes('submit'), true);
 
   harness.appContext.composerContext.reset();
   harness.appContext.composerContext.recordInput('previous input');

@@ -8,7 +8,7 @@ import {renderStyledLine} from '../markdown/styled-line';
 import {highlightCodeBlock} from '../markdown/syntax-highlight';
 
 import type {FilePickerCommandSurface, FilePickerSurfaceEntry} from '../../types/command';
-import type {FooterLayout} from '../../types/render';
+import type {FooterHitRegion, FooterLayout} from '../../types/render';
 
 const BODY_OUTER_DECORATION_WIDTH = 7;
 const BODY_INNER_DECORATION_WIDTH = 5;
@@ -37,7 +37,7 @@ function renderFilePickerSurface(
   const leftWidth = calculateListWidth(surface.entries, splitWidth);
   const rightWidth = Math.max(1, splitWidth - leftWidth);
   const rows = createSelectedWindowRows(surface.entries, surface.selectedIndex, bodyHeight);
-    const previewRows = createPreviewRows(surface.previewLines, bodyHeight, rightWidth, surface.previewMode, tuiTheme, theme);
+  const previewRows = createPreviewRows(surface.previewLines, bodyHeight, rightWidth, surface.previewMode, surface.previewScroll, tuiTheme, theme);
   const previewFocusIndex = getPreviewFocusIndex(surface.previewLines, bodyHeight);
   const bodyRows = rows.map((row) => row.kind === 'more'
     ? {entry: null, index: -1, more: `${row.direction === 'up' ? '↑' : '↓'} ${row.count} 更多`}
@@ -57,12 +57,30 @@ function renderFilePickerSurface(
     renderLine(ansi.dim(clampPlainText(surface.notice || surface.dismissHint, innerWidth)), boxWidth, theme),
     renderBottom(boxWidth, theme)
   ];
+  const bodyStart = 3 + queryLineCount;
+  const hitRegions: FooterHitRegion[] = bodyRows.flatMap((row, visualIndex) => row.entry ? [{
+    owner: 'file_picker' as const,
+    target: {
+      kind: 'file_picker_entry' as const,
+      index: row.index
+    },
+    rowStart: bodyStart + visualIndex,
+    rowEnd: bodyStart + visualIndex,
+    // body 行左栏从外框和内侧空格后的第 3 列开始；preview 和中间分隔线不能命中 entry。
+    columnStart: 3,
+    columnEnd: 2 + leftWidth
+  }] : []);
 
   return {
     lines,
     cursorRow: lines.length - 1,
     cursorColumn: 0,
-    showCursor: false
+    showCursor: false,
+    hitRegions,
+    // 仅右侧预览主体可滚动；左侧条目继续只响应 hover/点击与键盘导航。
+    wheelRegions: [
+      {owner: 'file_picker' as const, pane: 'secondary' as const, rowStart: bodyStart, rowEnd: bodyStart + bodyHeight - 1, columnStart: 6 + leftWidth, columnEnd: 5 + leftWidth + rightWidth}
+    ].filter((region) => region.columnEnd <= safeWidth)
   };
 }
 
@@ -141,7 +159,8 @@ function renderSelectedSummary(surface: FilePickerCommandSurface, width: number,
   return `${tokenText(theme, 'accent', prefix)}${tokenText(theme, 'accent', clampPlainText(names.join(' · '), Math.max(1, width - displayWidth(prefix) - displayWidth(suffix))))}${ansi.dim(suffix)}`;
 }
 
-function createPreviewRows(previewLines: string[], height: number, width: number, mode: FilePickerCommandSurface['previewMode'], tuiTheme: TuiTheme, theme: FooterTheme): string[] {
+/** 用与滚动上限相同的物理行投影生成右栏可见窗口，固定文件名和元信息标题。 */
+function createPreviewRows(previewLines: string[], height: number, width: number, mode: FilePickerCommandSurface['previewMode'], scroll: number, tuiTheme: TuiTheme, theme: FooterTheme): string[] {
   const rows: string[] = [];
 
   if (previewLines[0]) {
@@ -154,7 +173,9 @@ function createPreviewRows(previewLines: string[], height: number, width: number
 
   if (previewLines.length > 2) {
     rows.push(ansi.dim(frame('─'.repeat(width), theme)));
-    rows.push(...createPreviewBodyRows(previewLines.slice(2), width, mode, tuiTheme));
+    const body = createPreviewBodyRows(previewLines.slice(2), width, mode, tuiTheme);
+    const start = Math.min(Math.max(0, scroll), Math.max(0, body.length - Math.max(0, height - rows.length)));
+    rows.push(...body.slice(start, start + Math.max(0, height - rows.length)));
   }
 
   while (rows.length < height) {
@@ -162,6 +183,18 @@ function createPreviewRows(previewLines: string[], height: number, width: number
   }
 
   return rows.slice(0, height);
+}
+
+/** 按当前两栏列宽和换行后的物理行计算文本预览上界；与实际 renderer 共用投影。 */
+function calculateFilePickerPreviewMaxScroll(surface: FilePickerCommandSurface, width: number, maxLines: number, tuiTheme: TuiTheme = DEFAULT_TUI_THEME): number {
+  const safeWidth = Math.max(1, safeRenderWidth(width));
+  const boxWidth = calculateBoxWidth(safeWidth);
+  const splitWidth = Math.max(2, boxWidth - BODY_OUTER_DECORATION_WIDTH);
+  const rightWidth = Math.max(1, splitWidth - calculateListWidth(surface.entries, splitWidth));
+  const bodyHeight = calculateBodyHeight(maxLines, surface.query ? 1 : 0);
+  if (bodyHeight <= 3 || surface.previewLines.length <= 2) return 0;
+  const rows = createPreviewBodyRows(surface.previewLines.slice(2), rightWidth, surface.previewMode, tuiTheme);
+  return Math.max(0, rows.length - (bodyHeight - 3));
 }
 
 /**
@@ -265,4 +298,4 @@ function contentWidth(boxWidth: number): number {
   return Math.max(0, boxWidth - 4);
 }
 
-export {renderFilePickerSurface};
+export {renderFilePickerSurface, calculateFilePickerPreviewMaxScroll};

@@ -4,8 +4,8 @@ import {activeBackground, renderFocusBar, tokenText, type FooterTheme} from '../
 import {clampPlainText, padVisibleText} from './text';
 
 /**
- * 配置类面板（/config、/mcp）共用的边框与行原语：两边共享同一套外框、双列、动作行与选中态渲染，
- * 避免两处各写一份导致视觉风格漂移。
+ * 配置与管理类面板（/config、/mcp、/agents）共用的边框与行原语：共享同一套外框、分区标题、
+ * 双列、动作行与选中态渲染，避免各处各写一份导致视觉风格漂移。
  */
 function contentWidth(width: number): number {
   return Math.max(0, width - 4);
@@ -75,10 +75,18 @@ function dimHint(width: number, text: string): string {
   return ansi.dim(clampInnerText(text, contentWidth(width)));
 }
 
+/**
+ * 分区标题正文：加粗标签加填充轨道；标签超宽时先按正文列宽裁剪，保证轨道不会越界。
+ */
+function sectionTitle(label: string, inner: number, theme: FooterTheme): string {
+  const text = clampInnerText(label, Math.max(0, inner - 1));
+  const styled = tokenText(theme, 'accentDeep', ansi.bold(text));
+  const rail = tokenText(theme, 'accentDeep', '─'.repeat(Math.max(0, inner - displayWidth(styled) - 1)));
+  return `${styled} ${rail}`;
+}
+
 function sectionLine(width: number, text: string, theme: FooterTheme): string {
-  const label = tokenText(theme, 'accentDeep', ansi.bold(text));
-  const rail = tokenText(theme, 'accentDeep', '─'.repeat(Math.max(0, contentWidth(width) - displayWidth(label) - 1)));
-  return line(width, `${label} ${rail}`, theme);
+  return line(width, sectionTitle(text, contentWidth(width), theme), theme);
 }
 
 function top(width: number, title: string, token: keyof FooterTheme['colors'], theme: FooterTheme, right = ''): string {
@@ -130,6 +138,7 @@ export {
   renderDot,
   renderSelectableBody,
   sectionLine,
+  sectionTitle,
   splitRow,
   top
 };

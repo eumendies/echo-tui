@@ -369,6 +369,46 @@ test('convertTranscriptToOpenAiChatMessages keeps tool results adjacent when a t
   );
 });
 
+test('convertTranscriptToOpenAiChatMessages keeps image messages after reasoning records inside a tool group', () => {
+  assert.deepEqual(
+    convertTranscriptToOpenAiChatMessages([
+      { role: 'assistant', text: 'I will look.' },
+      { role: 'tool_call', text: '', toolCallId: 'call_img', toolName: 'read_files', argumentsText: '{"files":[{"path":"a.png"}]}' },
+      {
+        role: 'tool_result',
+        text: 'image_attached: true',
+        toolCallId: 'call_img',
+        toolName: 'read_files',
+        ok: true,
+        attachments: [{ kind: 'image', mediaType: 'image/png', dataBase64: 'aW1n', path: 'a.png', sizeBytes: 3 }]
+      },
+      { role: 'reasoning_summary', text: 'The diagram shows a hub-spoke layout.' },
+      createOpenAiChatReasoningTranscriptRecord('One more check before reporting.'),
+      { role: 'tool_call', text: '', toolCallId: 'call_bash', toolName: 'run_bash_command', argumentsText: '{"command":"pwd"}' },
+      { role: 'tool_result', text: 'exit_code: 0', toolCallId: 'call_bash', toolName: 'run_bash_command', ok: true }
+    ]),
+    [
+      {
+        role: 'assistant',
+        content: 'I will look.',
+        tool_calls: [
+          { id: 'call_img', type: 'function', function: { name: 'read_files', arguments: '{"files":[{"path":"a.png"}]}' } },
+          { id: 'call_bash', type: 'function', function: { name: 'run_bash_command', arguments: '{"command":"pwd"}' } }
+        ]
+      },
+      { role: 'tool', tool_call_id: 'call_img', content: 'image_attached: true' },
+      { role: 'tool', tool_call_id: 'call_bash', content: 'exit_code: 0' },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'Images attached from tool result read_files (call_img).' },
+          { type: 'image_url', image_url: { url: 'data:image/png;base64,aW1n' } }
+        ]
+      }
+    ]
+  );
+});
+
 test('convertTranscriptToOpenAiChatMessages maps image attachments from user records', () => {
   assert.deepEqual(
     convertTranscriptToOpenAiChatMessages([
@@ -494,21 +534,48 @@ test('createChatRequest sends reasoning_effort when configured', () => {
   );
 });
 
-test('createChatRequest omits tools and reasoning for compaction requests', () => {
+test('createChatRequest carries tools but keeps compaction reasoning', () => {
   const records = [{ role: 'user', text: 'summarize' }];
   const config = { ...TEST_CONFIG, reasoningEffort: 'xhigh' };
-  const request = createChatRequest(records, config, createToolRegistry(), {isCompaction: true});
+  const toolRegistry = createToolRegistry();
+  const request = createChatRequest(records, config, toolRegistry, {isCompaction: true, includeToolDefinitions: true});
 
   assert.deepEqual(request, {
     messages: [{ role: 'user', content: 'summarize' }],
     model: 'test-chat-model',
-    prompt_cache_key: createPromptCacheKey(records, config),
+    // 键材料与请求体都包含工具目录：压缩请求与普通请求共享同一前缀缓存。
+    prompt_cache_key: createPromptCacheKey(records, config, toolRegistry.listDefinitions()),
+    reasoning_effort: 'xhigh',
     stream: true,
-    stream_options: {include_usage: true}
+    stream_options: {include_usage: true},
+    tools: [
+      {
+        type: 'function',
+        function: {
+          name: 'run_bash_command',
+          description: 'Run bash',
+          parameters: { type: 'object' }
+        }
+      }
+    ]
   });
-  assert.equal('tools' in request, false);
+  // 工具调用控制参数维持剥离。
   assert.equal('parallel_tool_calls' in request, false);
-  assert.equal('reasoning_effort' in request, false);
+});
+
+test('createChatRequest keeps explicit none effort for compaction requests', () => {
+  const records = [{ role: 'user', text: 'summarize' }];
+  const request = createChatRequest(records, { ...TEST_CONFIG, reasoningEffort: 'none' }, createToolRegistry(), {isCompaction: true, includeToolDefinitions: true});
+
+  assert.equal(request.reasoning_effort, 'none');
+  assert.equal(Array.isArray(request.tools), true);
+});
+
+test('createChatRequest keeps summary requests without the tool flag tool-free', () => {
+  const request = createChatRequest([{ role: 'user', text: 'summarize' }], TEST_CONFIG, createToolRegistry(), {isCompaction: true});
+
+  // 引用总结等一次性摘要请求不开启 includeToolDefinitions，保持不携带工具定义。
+  assert.equal('tools' in request, false);
 });
 
 test('createOpenAiChatAgent streams text chunks and returns prompt usage', async () => {
@@ -893,6 +960,7 @@ test('Chat agent can generate compaction summaries without provider usage', asyn
   });
   const summary = await generateCompactionSummary({
     agent,
+    prefixRecords: [{ role: 'system', text: TEST_SYSTEM_PROMPT }],
     compactedRecords: [
       { role: 'user', text: '请检查项目' },
       { role: 'assistant', text: '好的' }
@@ -900,7 +968,7 @@ test('Chat agent can generate compaction summaries without provider usage', asyn
     previousSummary: ''
   });
 
-  assert.equal(summary, '## 背景与目标\n- 已检查项目。');
+  assert.equal(summary.summaryText, '## 背景与目标\n- 已检查项目。');
   assert.equal(requests[0].messages[0].role, 'system');
   assert.equal(requests[0].messages[1].role, 'user');
 });

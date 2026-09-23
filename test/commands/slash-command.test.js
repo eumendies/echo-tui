@@ -79,8 +79,11 @@ function createFakeHost(options = {}) {
     resizeRecoveries: 0,
     referencePreparations: [],
     referencePreviewLoads: [],
-    resumePreviewLoads: []
+    resumePreviewLoads: [],
+    resumeSessionSummaryLists: 0,
+    deletedSessionIds: []
   };
+  const resumeSessions = (options.sessions || []).map((session) => ({...session, fingerprint: {...session.fingerprint}}));
   let activeSession = null;
   const host = {
     btw: {
@@ -102,9 +105,24 @@ function createFakeHost(options = {}) {
         calls.forkCalls += 1;
         return options.forkResult || {ok: false, reason: 'empty'};
       },
+      getCurrentSessionId() {
+        return options.currentSessionId || null;
+      },
       loadSession(sessionId) {
         calls.loadedSessionIds.push(sessionId);
         return true;
+      },
+      deleteSession(sessionId) {
+        calls.deletedSessionIds.push(sessionId);
+        if (options.deleteSession) {
+          return options.deleteSession(sessionId, resumeSessions);
+        }
+        const index = resumeSessions.findIndex((session) => session.sessionId === sessionId);
+        if (index < 0) {
+          return {ok: false, reason: 'missing'};
+        }
+        resumeSessions.splice(index, 1);
+        return {ok: true, sessionId};
       },
       append(record) {
         calls.transcriptAppends.push(record);
@@ -113,14 +131,15 @@ function createFakeHost(options = {}) {
         return (options.copyableRecords || []).map((record) => ({...record}));
       },
       listSessionSummaries() {
-        return (options.sessions || []).map((session) => ({ ...session }));
+        calls.resumeSessionSummaryLists += 1;
+        return resumeSessions.map((session) => ({...session, fingerprint: {...session.fingerprint}}));
       },
       loadSessionPreview(candidate) {
         calls.resumePreviewLoads.push(candidate.sessionId);
         if (options.loadSessionPreview) {
           return options.loadSessionPreview(candidate);
         }
-        const session = (options.sessions || []).find((item) => item.sessionId === candidate.sessionId);
+        const session = resumeSessions.find((item) => item.sessionId === candidate.sessionId);
         return Promise.resolve(session ? {
           sessionId: candidate.sessionId,
           previewRecords: [{role: 'assistant', text: `message ${session.messageCount}`}]
@@ -191,6 +210,7 @@ function createFakeHost(options = {}) {
           compactionThresholdRatio: 0.8,
           defaultInteractionMode: 'normal',
           fileEditMode: 'apply_patch',
+          mouseInteractionEnabled: false,
           skillCatalogContextRatio: 0.02,
           showReasoningSummary: true,
           slashSuggestionMaxVisible: 8,
@@ -353,8 +373,13 @@ function createFakeHost(options = {}) {
           agentInstructions: [],
           userMemoryCount: 0,
           agentMemoryCatalogs: [],
+          compaction: null,
+          todoState: {items: [], updatedAt: ''},
           diagnostics: []
         });
+      },
+      getViewport() {
+        return options.statusViewport || {width: 80, maxLines: 16};
       },
       queryDeepseekBalance() {
         calls.deepseekBalanceQueries += 1;
@@ -379,7 +404,14 @@ function createFakeHost(options = {}) {
       listDailyUsage(query) {
         calls.usageQueries = calls.usageQueries || [];
         calls.usageQueries.push(query || {});
-        return (options.dailyUsage || []).map((day) => ({ ...day }));
+        const dailyUsage = options.listDailyUsage ? options.listDailyUsage(query) : options.dailyUsage || [];
+        return dailyUsage.map((day) => ({ ...day }));
+      },
+      listModelUsage(query) {
+        calls.modelUsageQueries = calls.modelUsageQueries || [];
+        calls.modelUsageQueries.push(query || {});
+        const modelUsage = options.listModelUsage ? options.listModelUsage(query) : options.modelUsage || [];
+        return modelUsage.map((model) => ({ ...model }));
       },
       getViewport() {
         return options.usageViewport || {width: 100, maxLines: 22};
@@ -558,6 +590,72 @@ test('createDefaultSlashCommandHandlers wires handlers in order', () => {
   assert.equal(handlers[24] instanceof SkillInvocationCommandHandler, true);
 });
 
+test('statusCommandHandler navigates session details and refreshes only the local snapshot', () => {
+  const handler = new StatusCommandHandler();
+  const snapshot = {
+    agentInstructionFileName: 'AGENTS.md',
+    cwd: '/tmp/project',
+    sessionId: 'session-1',
+    model: {agentType: 'fake', model: 'echo-fake-agent', provider: 'fake'},
+    sandbox: {mode: 'off', network: false, provider: null, available: false},
+    agentInstructions: [],
+    userMemoryCount: 0,
+    agentMemoryCatalogs: [],
+    compaction: {
+      summaryText: '# 当前进展\n\n- 第一条摘要\n- 第二条摘要\n- 第三条摘要\n- 第四条摘要',
+      activeStartIndex: 12,
+      createdAt: '2030-01-02T03:04:00.000Z'
+    },
+    todoState: {
+      updatedAt: '2030-01-02T03:05:00.000Z',
+      items: [
+        {id: 'todo-1', text: '完成第一项待办', status: 'completed'},
+        {id: 'todo-2', text: '完成第二项待办并保留足够长的文本以验证滚动位置', status: 'open'},
+        {id: 'todo-3', text: '完成第三项待办', status: 'open'}
+      ]
+    },
+    diagnostics: []
+  };
+  const harness = createFakeHost({statusSnapshot: snapshot, statusViewport: {width: 36, maxLines: 12}});
+  let session = startCommand(handler, '/status', harness.host);
+
+  assert.equal(session.surface.page, 'overview');
+  assert.equal(harness.calls.statusQueries, 1);
+  assert.equal(harness.calls.deepseekBalanceQueries, 1);
+  assert.equal(harness.calls.opencodeUsageQueries, 1);
+
+  handler.handleEvent(session, {type: INPUT_EVENTS.MOVE_RIGHT}, harness.host);
+  session = harness.host.session.getActive();
+  assert.equal(session.surface.page, 'compaction');
+
+  handler.handleEvent(session, {type: INPUT_EVENTS.MOVE_END}, harness.host);
+  session = harness.host.session.getActive();
+  assert.ok(session.surface.compactionScroll > 0);
+  const compactionScroll = session.surface.compactionScroll;
+
+  handler.handleEvent(session, {type: INPUT_EVENTS.MOVE_RIGHT}, harness.host);
+  session = harness.host.session.getActive();
+  assert.equal(session.surface.page, 'todos');
+  handler.handleEvent(session, {type: INPUT_EVENTS.MOVE_DOWN}, harness.host);
+  session = harness.host.session.getActive();
+  assert.ok(session.surface.todoScroll > 0);
+
+  snapshot.todoState.items.push({id: 'todo-4', text: '刷新后出现的待办', status: 'open'});
+  handler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: 'r'}, harness.host);
+  session = harness.host.session.getActive();
+  assert.equal(session.surface.page, 'todos');
+  assert.equal(session.surface.snapshot.todoState.items.length, 4);
+  assert.equal(harness.calls.statusQueries, 1);
+  assert.equal(harness.calls.deepseekBalanceQueries, 1);
+  assert.equal(harness.calls.opencodeUsageQueries, 1);
+  assert.deepEqual(harness.calls.transcriptAppends, []);
+
+  handler.handleEvent(session, {type: INPUT_EVENTS.MOVE_LEFT}, harness.host);
+  session = harness.host.session.getActive();
+  assert.equal(session.surface.page, 'compaction');
+  assert.equal(session.surface.compactionScroll, compactionScroll);
+});
+
 test('statusCommandHandler loads Codex usage and isolates late results', async () => {
   const handler = new StatusCommandHandler();
   let resolveUsage;
@@ -620,6 +718,47 @@ test('statusCommandHandler loads Codex usage and isolates late results', async (
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(lateHarness.calls.sessionUpdates.length, 0);
   assert.equal(lateHarness.calls.renders, 0);
+});
+
+test('statusCommandHandler keeps detail page and refreshed snapshot when an account result arrives late', async () => {
+  const handler = new StatusCommandHandler();
+  let resolveUsage;
+  const usagePromise = new Promise((resolve) => {
+    resolveUsage = resolve;
+  });
+  const snapshot = {
+    agentInstructionFileName: 'AGENTS.md',
+    cwd: '/tmp/project',
+    sessionId: 'session-1',
+    model: {agentType: 'codex', model: 'gpt-codex', provider: 'codex'},
+    sandbox: {mode: 'off', network: false, provider: null, available: false},
+    agentInstructions: [],
+    userMemoryCount: 0,
+    agentMemoryCatalogs: [],
+    compaction: {summaryText: '摘要', activeStartIndex: 1, createdAt: '2030-01-02T03:04:00.000Z'},
+    todoState: {items: [], updatedAt: ''},
+    diagnostics: []
+  };
+  const harness = createFakeHost({
+    statusSnapshot: snapshot,
+    queryStatusUsage: () => usagePromise,
+    queryDeepseekBalance: () => Promise.resolve({status: 'not_applicable'}),
+    queryOpencodeUsage: () => Promise.resolve({status: 'not_applicable'})
+  });
+  let session = startCommand(handler, '/status', harness.host);
+
+  handler.handleEvent(session, {type: INPUT_EVENTS.MOVE_RIGHT}, harness.host);
+  session = harness.host.session.getActive();
+  handler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: 'r'}, harness.host);
+  assert.equal(harness.calls.statusQueries, 1);
+
+  resolveUsage({status: 'available', primary: {usedPercent: 25, resetAt: 1_800_000_000_000}});
+  await new Promise((resolve) => setImmediate(resolve));
+  session = harness.host.session.getActive();
+  assert.equal(session.surface.page, 'compaction');
+  assert.equal(session.surface.snapshot.compaction.summaryText, '摘要');
+  assert.equal(session.surface.usage.status, 'available');
+  assert.equal(session.surface.usage.primary.usedPercent, 25);
 });
 
 test('statusCommandHandler resolves non-Codex usage and maps query rejection', async () => {
@@ -856,7 +995,7 @@ test('usageCommandHandler opens empty state without submitting transcript', () =
   assert.equal(empty.calls.sessionCloses, 1);
 });
 
-test('usageCommandHandler opens usage surface, navigates dates, and closes without transcript changes', () => {
+test('usageCommandHandler selects dates, keeps the selection visible, and closes without transcript changes', () => {
   const usageCommandHandler = new UsageCommandHandler();
   const dailyUsage = Array.from({length: 20}, (_value, index) => ({
     localDay: `2026-06-${String(index + 1).padStart(2, '0')}`,
@@ -874,43 +1013,102 @@ test('usageCommandHandler opens usage surface, navigates dates, and closes witho
   let session = startCommand(usageCommandHandler, '/usage', selectable.host);
 
   assert.equal(session.surface.kind, 'usage');
+  assert.equal(session.surface.view, 'daily');
   assert.equal(session.surface.offset, 6);
+  assert.equal(session.surface.selectedIndex, 19);
   assert.equal(session.data.dailyUsage.length, 20);
   assert.deepEqual(selectable.calls.transcriptAppends, []);
 
   usageCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_UP}, selectable.host);
   session = selectable.host.session.getActive();
-  assert.equal(session.surface.offset, 5);
+  assert.equal(session.surface.selectedIndex, 18);
+  assert.equal(session.surface.offset, 6);
 
   usageCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_DOWN}, selectable.host);
   session = selectable.host.session.getActive();
-  assert.equal(session.surface.offset, 6);
-
-  usageCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_LEFT}, selectable.host);
-  session = selectable.host.session.getActive();
-  assert.equal(session.surface.offset, 5);
-
-  usageCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_RIGHT}, selectable.host);
-  session = selectable.host.session.getActive();
+  assert.equal(session.surface.selectedIndex, 19);
   assert.equal(session.surface.offset, 6);
 
   usageCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_HOME}, selectable.host);
   session = selectable.host.session.getActive();
+  assert.equal(session.surface.selectedIndex, 0);
   assert.equal(session.surface.offset, 0);
+
+  usageCommandHandler.handleEvent(session, {type: INPUT_EVENTS.PAGE_DOWN}, selectable.host);
+  session = selectable.host.session.getActive();
+  assert.equal(session.surface.selectedIndex, 14);
+  assert.equal(session.surface.offset, 1);
+
+  usageCommandHandler.handleEvent(session, {type: INPUT_EVENTS.PAGE_UP}, selectable.host);
+  session = selectable.host.session.getActive();
+  assert.equal(session.surface.selectedIndex, 0);
+  assert.equal(session.surface.offset, 0);
+
+  usageCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_END}, selectable.host);
+  session = selectable.host.session.getActive();
+  assert.equal(session.surface.selectedIndex, 19);
+  assert.equal(session.surface.offset, 6);
+
+  usageCommandHandler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: 'q'}, selectable.host);
+  assert.equal(selectable.calls.sessionCloses, 1);
+  assert.deepEqual(selectable.calls.transcriptAppends, []);
+});
+
+test('usageCommandHandler opens selected-day models and returns to the same date without transcript changes', () => {
+  const usageCommandHandler = new UsageCommandHandler();
+  const dailyUsage = [{
+    localDay: '2026-06-01',
+    inputTokens: 200,
+    cacheReadInputTokens: 80,
+    cacheCreationInputTokens: 0,
+    uncachedInputTokens: 120,
+    outputTokens: 50,
+    totalTokens: 250,
+    hitRate: 0.4,
+    eventCount: 2
+  }];
+  const modelUsage = Array.from({length: 20}, (_value, index) => ({
+    providerType: index % 2 === 0 ? 'openai' : 'anthropic',
+    providerId: index % 2 === 0 ? 'primary-openai' : 'backup-anthropic',
+    model: `model-${String(index + 1).padStart(2, '0')}`,
+    inputTokens: 100 - index,
+    cacheReadInputTokens: 20,
+    cacheCreationInputTokens: 0,
+    uncachedInputTokens: 80 - index,
+    outputTokens: 20,
+    totalTokens: 120 - index,
+    hitRate: 0.2,
+    eventCount: 1,
+    share: 0.05
+  }));
+  const selectable = createFakeHost({
+    dailyUsage,
+    modelUsage,
+    usageViewport: {width: 100, maxLines: 26}
+  });
+
+  let session = startCommand(usageCommandHandler, '/usage', selectable.host);
+  assert.equal(session.surface.view, 'daily');
+  assert.equal(session.surface.title, 'Token 用量 · 按日期');
+  assert.equal(session.surface.selectedIndex, 0);
+
+  usageCommandHandler.handleEvent(session, {type: INPUT_EVENTS.SUBMIT}, selectable.host);
+  session = selectable.host.session.getActive();
+  assert.equal(session.surface.view, 'dayModels');
+  assert.match(session.surface.title, /2026-06-01 · 各模型/);
+  assert.equal(session.surface.offset, 0);
+  assert.deepEqual(selectable.calls.modelUsageQueries, [{fromDay: '2026-06-01', toDay: '2026-06-01'}]);
 
   usageCommandHandler.handleEvent(session, {type: INPUT_EVENTS.PAGE_DOWN}, selectable.host);
   session = selectable.host.session.getActive();
   assert.equal(session.surface.offset, 6);
 
-  usageCommandHandler.handleEvent(session, {type: INPUT_EVENTS.PAGE_UP}, selectable.host);
+  usageCommandHandler.handleEvent(session, {type: INPUT_EVENTS.ESCAPE}, selectable.host);
   session = selectable.host.session.getActive();
-  assert.equal(session.surface.offset, 0);
+  assert.equal(session.surface.view, 'daily');
+  assert.equal(session.surface.selectedIndex, 0);
 
-  usageCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_END}, selectable.host);
-  session = selectable.host.session.getActive();
-  assert.equal(session.surface.offset, 6);
-
-  usageCommandHandler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: 'q'}, selectable.host);
+  usageCommandHandler.handleEvent(session, {type: INPUT_EVENTS.ESCAPE}, selectable.host);
   assert.equal(selectable.calls.sessionCloses, 1);
   assert.deepEqual(selectable.calls.transcriptAppends, []);
 });
@@ -932,13 +1130,16 @@ test('usageCommandHandler starts at the latest day when the viewport shows fewer
   let session = startCommand(usageCommandHandler, '/usage', selectable.host);
 
   assert.equal(session.surface.offset, 2);
+  assert.equal(session.surface.selectedIndex, 11);
 
   usageCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_UP}, selectable.host);
   session = selectable.host.session.getActive();
-  assert.equal(session.surface.offset, 1);
+  assert.equal(session.surface.selectedIndex, 10);
+  assert.equal(session.surface.offset, 2);
 
   usageCommandHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_DOWN}, selectable.host);
   session = selectable.host.session.getActive();
+  assert.equal(session.surface.selectedIndex, 11);
   assert.equal(session.surface.offset, 2);
 });
 
@@ -1241,6 +1442,11 @@ test('configCommandHandler opens general tab, saves independently, and lazily op
     configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
   }
   configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_RIGHT}, host);
+  assert.equal(host.session.getActive().surface.state.draft.mouseInteractionEnabled, true);
+  configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
+  assert.equal(host.session.getActive().surface.state.draft.mouseInteractionEnabled, false);
+  configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
+  configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_RIGHT}, host);
   assert.equal(host.session.getActive().surface.state.draft.defaultInteractionMode, 'plan');
   assert.equal(calls.savedSettingsDrafts.length, 0);
   configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
@@ -1271,6 +1477,7 @@ test('configCommandHandler opens general tab, saves independently, and lazily op
   assert.equal(calls.savedSettingsDrafts[0].defaultInteractionMode, 'plan');
   assert.equal(calls.savedSettingsDrafts[0].autoCompressImages, false);
   assert.equal(calls.savedSettingsDrafts[0].checkUpdatesOnStartup, true);
+  assert.equal(calls.savedSettingsDrafts[0].mouseInteractionEnabled, false);
   assert.equal(calls.savedSettingsDrafts[0].fileEditMode, 'edit_file');
   assert.equal(calls.savedSettingsDrafts[0].agentInstructionFileName, 'CLAUDE.md');
   assert.match(host.session.getActive().surface.state.feedback, /已保存/);
@@ -1363,7 +1570,8 @@ test('configCommandHandler isolates tab read errors and keeps save errors inline
     }
   });
   const session = startCommand(configCommandHandler, '/config', saveError.host);
-  for (let index = 0; index < 10; index += 1) {
+  while (saveError.host.session.getActive().data.general.state.selectedIndex
+    < getGeneralConfigRowIds(saveError.host.session.getActive().data.general.state).indexOf('save')) {
     configCommandHandler.handleEvent(saveError.host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, saveError.host);
   }
   configCommandHandler.handleEvent(saveError.host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, saveError.host);
@@ -1692,9 +1900,9 @@ test('createSlashCommandDescriptors derives display metadata from handlers', () 
     { name: 'model', description: '切换模型' },
     { name: 'effort', description: '调整推理等级' },
     { name: 'mode', description: '切换交互模式' },
-    { name: 'status', description: '查看运行状态与账户用量', allowDuringAssistantTurn: true },
+    { name: 'status', description: '查看运行状态、账户用量与会话计划', allowDuringAssistantTurn: true },
     { name: 'context', description: '查看 context 占用详情', allowDuringAssistantTurn: true },
-    { name: 'usage', description: '查看每日 token 用量', allowDuringAssistantTurn: true },
+    { name: 'usage', description: '查看每日 token 用量与当日模型明细', allowDuringAssistantTurn: true },
     { name: 'copy', description: '复制会话消息', allowDuringAssistantTurn: true },
     { name: 'clear', description: '清空当前会话' },
     { name: 'compact', description: '手动压缩当前会话上下文' },
@@ -2680,6 +2888,386 @@ test('resumeCommandHandler opens empty state, selectable sessions, moves, confir
   const cancelSession = startCommand(resumeCommandHandler, '/resume', cancel.host);
   resumeCommandHandler.handleEvent(cancelSession, { type: INPUT_EVENTS.ESCAPE }, cancel.host);
   assert.equal(cancel.calls.sessionCloses, 1);
+});
+
+test('pointer-enabled command handlers preserve their command-specific selection semantics', () => {
+  const modelHandler = new ModelCommandHandler();
+  const model = createFakeHost({
+    modelCommandInfo: {
+      selectedIndex: 0,
+      models: [
+        {id: 'fast', model: 'gpt-fast', provider: 'openai'},
+        {id: 'deep', model: 'gpt-deep', provider: 'openai'}
+      ]
+    }
+  });
+  let session = startCommand(modelHandler, '/model', model.host);
+  modelHandler.handlePointer(session, {kind: 'command_select_option', index: 1}, false, model.host);
+  assert.equal(model.host.session.getActive().data.selectedIndex, 1);
+  assert.deepEqual(model.calls.modelSelections, []);
+  modelHandler.handlePointer(model.host.session.getActive(), {kind: 'command_select_option', index: 1}, true, model.host);
+  assert.deepEqual(model.calls.modelSelections, ['deep']);
+  assert.equal(model.host.session.getActive(), null);
+
+  const modelInfo = createFakeHost({modelCommandInfo: {error: 'missing'}});
+  session = startCommand(modelHandler, '/model', modelInfo.host);
+  modelHandler.handlePointer(session, {kind: 'command_select_option', index: 0}, true, modelInfo.host);
+  assert.deepEqual(modelInfo.calls.modelSelections, []);
+
+  const modeHandler = new ModeCommandHandler();
+  const mode = createFakeHost({interactionMode: 'normal'});
+  session = startCommand(modeHandler, '/mode', mode.host);
+  modeHandler.handlePointer(session, {kind: 'command_select_option', index: 2}, false, mode.host);
+  assert.equal(mode.host.session.getActive().data.selectedIndex, 2);
+  modeHandler.handlePointer(mode.host.session.getActive(), {kind: 'command_select_option', index: 2}, true, mode.host);
+  assert.deepEqual(mode.calls.modeSelections, ['shell']);
+
+  const copyHandler = new CopyCommandHandler();
+  const copy = createFakeHost({
+    copyableRecords: [
+      {id: 'message-0', role: 'user', text: 'question'},
+      {id: 'message-1', role: 'assistant', text: 'answer'}
+    ]
+  });
+  session = startCommand(copyHandler, '/copy', copy.host);
+  copyHandler.handlePointer(session, {kind: 'command_copy_message', index: 0}, false, copy.host);
+  assert.equal(copy.host.session.getActive().data.focus, 'list');
+  assert.equal(copy.host.session.getActive().data.selectedIndex, 0);
+  assert.deepEqual(copy.host.session.getActive().data.selectedIds, ['message-1']);
+  copyHandler.handlePointer(copy.host.session.getActive(), {kind: 'command_copy_message', index: 0}, true, copy.host);
+  assert.deepEqual(copy.host.session.getActive().data.selectedIds, ['message-1', 'message-0']);
+  assert.deepEqual(copy.calls.clipboardWrites, []);
+  const copyUpdateCount = copy.calls.sessionUpdates.length;
+  copyHandler.handlePointer(copy.host.session.getActive(), {kind: 'command_copy_message', index: 9}, true, copy.host);
+  assert.equal(copy.calls.sessionUpdates.length, copyUpdateCount);
+
+  const diffHandler = new DiffCommandHandler();
+  const diff = createFakeHost({
+    diffSource: {
+      status: 'ready',
+      source: {kind: 'history', label: 'history'},
+      notices: [],
+      files: [
+        {path: 'a.ts', kind: 'modified', added: 1, removed: 1, hunks: []},
+        {path: 'b.ts', kind: 'added', added: 2, removed: 0, hunks: []}
+      ]
+    }
+  });
+  session = startCommand(diffHandler, '/diff', diff.host);
+  diffHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_RIGHT}, diff.host);
+  diffHandler.handlePointer(diff.host.session.getActive(), {kind: 'command_diff_file', index: 1}, true, diff.host);
+  assert.equal(diff.host.session.getActive().data.focus, 'list');
+  assert.equal(diff.host.session.getActive().data.selectedIndex, 1);
+  assert.equal(diff.host.session.getActive().data.detailScroll, 0);
+  assert.equal(diff.calls.sessionCloses, 0);
+
+  const resumeHandler = new ResumeCommandHandler();
+  const resumeSessions = createSessionSummarys(2);
+  const resume = createFakeHost({sessions: resumeSessions});
+  session = startCommand(resumeHandler, '/resume', resume.host);
+  resumeHandler.handlePointer(session, {kind: 'command_resume_session', index: 1}, false, resume.host);
+  assert.equal(resume.host.session.getActive().data.selectedIndex, 1);
+  assert.deepEqual(resume.calls.loadedSessionIds, []);
+  resumeHandler.handlePointer(resume.host.session.getActive(), {kind: 'command_resume_session', index: 1}, true, resume.host);
+  assert.deepEqual(resume.calls.loadedSessionIds, [resumeSessions[1].sessionId]);
+  assert.equal(resume.host.session.getActive(), null);
+
+  assert.equal(new EffortCommandHandler().handlePointer, undefined);
+});
+
+test('select command handlers keep hover but do not declare wheel navigation', () => {
+  for (const handler of [new ModelCommandHandler(), new ModeCommandHandler(), new EffortCommandHandler()]) {
+    assert.equal(handler.handleWheel, undefined);
+  }
+  assert.equal(typeof new ModelCommandHandler().handlePointer, 'function');
+  assert.equal(typeof new ModeCommandHandler().handlePointer, 'function');
+});
+
+test('copy wheel scrolls only wrapped right preview from list focus without toggling messages', () => {
+  const copy = createFakeHost({
+    statusViewport: {width: 80, maxLines: 9},
+    copyableRecords: [
+      {id: 'short', role: 'user', text: 'short'},
+      {id: 'long', role: 'assistant', text: Array.from({length: 12}, (_v, i) => `row${i}`).join('\n')},
+      {id: 'last', role: 'user', text: 'last'}
+    ]
+  });
+  const handler = new CopyCommandHandler();
+  let session = startCommand(handler, '/copy', copy.host);
+  const selectedIds = session.data.selectedIds;
+  const initialIndex = session.data.selectedIndex;
+  assert.equal(session.data.focus, 'list');
+  assert.equal(copy.calls.sessionUpdates.length, 0);
+  handler.handleWheel(session, 'secondary', 'down', copy.host);
+  session = copy.host.session.getActive();
+  assert.equal(session.data.previewScroll, 1);
+  assert.equal(session.data.focus, 'preview');
+  for (let i = 0; i < 30; i += 1) handler.handleWheel(copy.host.session.getActive(), 'secondary', 'down', copy.host);
+  session = copy.host.session.getActive();
+  assert.equal(session.data.previewScroll, 9);
+  const updates = copy.calls.sessionUpdates.length;
+  handler.handleWheel(session, 'secondary', 'down', copy.host);
+  session = copy.host.session.getActive();
+  assert.equal(copy.calls.sessionUpdates.length, updates);
+  assert.equal(session.data.focus, 'preview');
+  assert.equal(session.data.selectedIndex, initialIndex);
+  assert.equal(session.data.previewScroll, 9);
+  assert.deepEqual(session.data.selectedIds, selectedIds);
+  assert.deepEqual(copy.calls.clipboardWrites, []);
+  handler.handleWheel(session, 'secondary', 'down', copy.host);
+  assert.equal(copy.calls.sessionUpdates.length, updates);
+
+  // 键盘历史路径可能留下超出视口的偏移；滚轮在可见边界仍须静默。
+  copy.host.session.update({data: {...session.data, previewScroll: 99}, surface: {...session.surface, previewScroll: 99}});
+  session = copy.host.session.getActive();
+  const overscrollUpdates = copy.calls.sessionUpdates.length;
+  handler.handleWheel(session, 'secondary', 'down', copy.host);
+  assert.equal(copy.calls.sessionUpdates.length, overscrollUpdates);
+});
+
+test('copy wheel counts wrapped preview rows rather than source newline count', () => {
+  const copy = createFakeHost({statusViewport: {width: 50, maxLines: 9}, copyableRecords: [
+    {id: 'wrapped', role: 'assistant', text: 'w'.repeat(130)}
+  ]});
+  const handler = new CopyCommandHandler();
+  let session = startCommand(handler, '/copy', copy.host);
+  handler.handleWheel(session, 'secondary', 'down', copy.host);
+  session = copy.host.session.getActive();
+  assert.equal(session.data.previewScroll, 1);
+  assert.equal(copy.calls.sessionUpdates.length, 1);
+});
+
+test('resume wheel scrolls preview from list focus, ignores left list and does not reload it', async () => {
+  const sessions = createSessionSummarys(3);
+  const resume = createFakeHost({sessions, statusViewport: {width: 80, maxLines: 10}, loadSessionPreview(candidate) {
+    return Promise.resolve({sessionId: candidate.sessionId, previewRecords: Array.from({length: 9}, (_v, i) => ({role: 'assistant', text: `row ${i}`}))});
+  }});
+  const handler = new ResumeCommandHandler();
+  let session = startCommand(handler, '/resume', resume.host);
+  assert.equal(resume.calls.sessionUpdates.length, 0);
+  handler.handleWheel(session, 'secondary', 'down', resume.host);
+  assert.equal(resume.calls.sessionUpdates.length, 0);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  session = resume.host.session.getActive();
+  for (let i = 0; i < 8; i += 1) handler.handleWheel(resume.host.session.getActive(), 'secondary', 'down', resume.host);
+  session = resume.host.session.getActive();
+  assert.equal(session.data.focus, 'preview');
+  assert.equal(session.data.previewScroll, 5);
+  const updates = resume.calls.sessionUpdates.length;
+  handler.handleWheel(session, 'secondary', 'down', resume.host);
+  assert.equal(resume.calls.sessionUpdates.length, updates);
+  session = resume.host.session.getActive();
+  assert.equal(session.data.focus, 'preview');
+  assert.equal(session.data.selectedIndex, 0);
+  assert.equal(session.data.previewScroll, 5);
+  assert.equal(session.surface.previewStatus, 'ready');
+  assert.deepEqual(resume.calls.loadedSessionIds, []);
+  assert.equal(resume.calls.sessionUpdates.length, updates);
+  assert.deepEqual(resume.calls.resumePreviewLoads, [sessions[0].sessionId]);
+  handler.handleEvent(resume.host.session.getActive(), {type: INPUT_EVENTS.ESCAPE}, resume.host);
+});
+
+test('resume hover returns from scrolled preview to list and click still resumes the hit session', async () => {
+  const sessions = createSessionSummarys(2);
+  const resume = createFakeHost({sessions, statusViewport: {width: 80, maxLines: 10}, loadSessionPreview(candidate) {
+    return Promise.resolve({sessionId: candidate.sessionId, previewRecords: Array.from({length: 9}, (_v, i) => ({role: 'assistant', text: `row ${i}`}))});
+  }});
+  const handler = new ResumeCommandHandler();
+  startCommand(handler, '/resume', resume.host);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  handler.handleWheel(resume.host.session.getActive(), 'secondary', 'down', resume.host);
+  let session = resume.host.session.getActive();
+  assert.equal(session.data.focus, 'preview');
+  assert.equal(session.data.previewScroll, 1);
+  const previewLoads = resume.calls.resumePreviewLoads.length;
+  handler.handlePointer(session, {kind: 'command_resume_session', index: 0}, false, resume.host);
+  session = resume.host.session.getActive();
+  assert.equal(session.data.focus, 'list');
+  assert.equal(session.data.previewScroll, 0);
+  assert.equal(resume.calls.resumePreviewLoads.length, previewLoads);
+  assert.deepEqual(resume.calls.loadedSessionIds, []);
+
+  handler.handleWheel(session, 'secondary', 'down', resume.host);
+  session = resume.host.session.getActive();
+  handler.handlePointer(session, {kind: 'command_resume_session', index: 1}, true, resume.host);
+  assert.deepEqual(resume.calls.loadedSessionIds, [sessions[1].sessionId]);
+  assert.equal(resume.host.session.getActive(), null);
+});
+
+test('diff wheel uses current file detail scroll limit and leaves boundary focus unchanged', () => {
+  const diff = createFakeHost({diffViewport: {width: 100, maxLines: 9}, diffSource: {
+    status: 'ready', source: {kind: 'history', label: 'history'}, notices: [], files: [
+      {path: 'short.ts', kind: 'modified', added: 1, removed: 0, hunks: []},
+      {path: 'long.ts', kind: 'modified', added: 25, removed: 0, hunks: [{oldStart: 0, newStart: 1, lines: Array.from({length: 25}, (_v, i) => ({kind: 'added', text: `line ${i}`, oldLine: null, newLine: i + 1}))}]}
+    ]
+  }});
+  const handler = new DiffCommandHandler();
+  let session = startCommand(handler, '/diff', diff.host);
+  handler.handleWheel(session, 'secondary', 'down', diff.host);
+  assert.equal(diff.calls.sessionUpdates.length, 0);
+  session = diff.host.session.getActive();
+  assert.equal(session.data.selectedIndex, 0);
+  const updates = diff.calls.sessionUpdates.length;
+  handler.handlePointer(session, {kind: 'command_diff_file', index: 1}, false, diff.host);
+  session = diff.host.session.getActive();
+  assert.equal(session.data.selectedIndex, 1);
+  const afterHover = diff.calls.sessionUpdates.length;
+  assert.equal(diff.calls.sessionUpdates.length, afterHover);
+  handler.handleWheel(session, 'secondary', 'down', diff.host);
+  session = diff.host.session.getActive();
+  assert.equal(session.data.focus, 'detail');
+  assert.equal(session.data.detailScroll, 1);
+  assert.equal(session.data.selectedIndex, 1);
+  assert.equal(diff.calls.sessionCloses, 0);
+});
+
+test('diff wheel uses visible scroll after viewport shrink and never redraws at a visible boundary', () => {
+  const diff = createFakeHost({diffViewport: {width: 80, maxLines: 12}, diffSource: {
+    status: 'ready', source: {kind: 'history', label: 'history'}, notices: [], files: [
+      {path: 'long.ts', kind: 'modified', added: 25, removed: 0, hunks: [{oldStart: 0, newStart: 1, lines: Array.from({length: 25}, (_v, i) => ({kind: 'added', text: `line ${i}`, oldLine: null, newLine: i + 1}))}]}
+    ]
+  }});
+  const handler = new DiffCommandHandler();
+  let session = startCommand(handler, '/diff', diff.host);
+  diff.host.session.update({data: {...session.data, detailScroll: 999}, surface: {...session.surface, detailScroll: 999}});
+  session = diff.host.session.getActive();
+  const updates = diff.calls.sessionUpdates.length;
+  handler.handleWheel(session, 'secondary', 'down', diff.host);
+  assert.equal(diff.calls.sessionUpdates.length, updates);
+  assert.equal(diff.host.session.getActive().data.focus, 'list');
+  handler.handleWheel(session, 'secondary', 'up', diff.host);
+  session = diff.host.session.getActive();
+  assert.equal(diff.calls.sessionUpdates.length, updates + 1);
+  assert.equal(session.data.focus, 'detail');
+  assert.ok(session.data.detailScroll < 999);
+});
+
+test('resumeCommandHandler deletes a selected historical session only after confirmation and refreshes storage candidates', async () => {
+  const handler = new ResumeCommandHandler();
+  const selectable = createFakeHost({sessions: createSessionSummarys(2)});
+  let session = startCommand(handler, '/resume', selectable.host);
+
+  handler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: 'd'}, selectable.host);
+  session = selectable.host.session.getActive();
+  assert.equal(session.surface.kind, 'confirm');
+  assert.match(session.surface.bodyLines.join('\n'), /conversation 2/);
+  assert.match(session.surface.bodyLines.join('\n'), /不可恢复/);
+  assert.deepEqual(selectable.calls.deletedSessionIds, []);
+
+  handler.handleEvent(session, {type: INPUT_EVENTS.ESCAPE}, selectable.host);
+  session = selectable.host.session.getActive();
+  assert.equal(session.surface.kind, 'resume');
+  assert.deepEqual(selectable.calls.deletedSessionIds, []);
+
+  handler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: 'd'}, selectable.host);
+  session = selectable.host.session.getActive();
+  handler.handleEvent(session, {type: INPUT_EVENTS.SUBMIT}, selectable.host);
+  session = selectable.host.session.getActive();
+
+  assert.deepEqual(selectable.calls.deletedSessionIds, ['session-2']);
+  assert.equal(selectable.calls.resumeSessionSummaryLists, 3);
+  assert.equal(session.surface.kind, 'resume');
+  assert.equal(session.surface.sessions.length, 1);
+  assert.equal(session.surface.focus, 'list');
+  assert.equal(session.data.selectedIndex, 0);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(session.data.sessions.map((item) => item.sessionId), ['session-1']);
+});
+
+test('resumeCommandHandler restores preview focus and scroll after cancelling deletion', async () => {
+  const handler = new ResumeCommandHandler();
+  const selectable = createFakeHost({
+    sessions: createSessionSummarys(1),
+    loadSessionPreview(candidate) {
+      return Promise.resolve({
+        sessionId: candidate.sessionId,
+        previewRecords: Array.from({length: 12}, (_value, index) => ({role: 'assistant', text: `preview ${index}`}))
+      });
+    }
+  });
+  let session = startCommand(handler, '/resume', selectable.host);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  handler.handleEvent(session, {type: INPUT_EVENTS.MOVE_RIGHT}, selectable.host);
+  session = selectable.host.session.getActive();
+  for (let step = 0; step < 3; step += 1) {
+    handler.handleEvent(session, {type: INPUT_EVENTS.MOVE_DOWN}, selectable.host);
+    session = selectable.host.session.getActive();
+  }
+  handler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: 'd'}, selectable.host);
+  handler.handleEvent(selectable.host.session.getActive(), {type: INPUT_EVENTS.ESCAPE}, selectable.host);
+
+  session = selectable.host.session.getActive();
+  assert.equal(session.surface.kind, 'resume');
+  assert.equal(session.data.focus, 'preview');
+  assert.equal(session.surface.focus, 'preview');
+  assert.equal(session.data.previewScroll, 3);
+  assert.equal(session.surface.previewScroll, 3);
+  assert.equal(session.surface.previewStatus, 'loading');
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(selectable.host.session.getActive().surface.previewStatus, 'ready');
+  assert.equal(selectable.host.session.getActive().surface.previewScroll, 3);
+});
+
+test('resumeCommandHandler protects the current session and handles empty or failed deletion states', () => {
+  const sessions = createSessionSummarys(1);
+  const protectedHost = createFakeHost({sessions, currentSessionId: sessions[0].sessionId});
+  const handler = new ResumeCommandHandler();
+  let session = startCommand(handler, '/resume', protectedHost.host);
+
+  handler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: 'd'}, protectedHost.host);
+  session = protectedHost.host.session.getActive();
+  assert.equal(session.surface.kind, 'resume');
+  assert.match(session.surface.notice, /不能删除/);
+  assert.deepEqual(protectedHost.calls.deletedSessionIds, []);
+
+  const emptyHost = createFakeHost({sessions: createSessionSummarys(1)});
+  const emptyHandler = new ResumeCommandHandler();
+  session = startCommand(emptyHandler, '/resume', emptyHost.host);
+  emptyHandler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: 'd'}, emptyHost.host);
+  emptyHandler.handleEvent(emptyHost.host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, emptyHost.host);
+  session = emptyHost.host.session.getActive();
+  assert.equal(session.surface.kind, 'info');
+  assert.match(session.surface.lines[0], /没有可恢复会话/);
+  assert.deepEqual(emptyHost.calls.resumePreviewLoads, []);
+
+  const failedHost = createFakeHost({
+    sessions: createSessionSummarys(1),
+    deleteSession() {
+      return {ok: false, reason: 'failed', error: '删除存储失败'};
+    }
+  });
+  const failedHandler = new ResumeCommandHandler();
+  session = startCommand(failedHandler, '/resume', failedHost.host);
+  failedHandler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: 'd'}, failedHost.host);
+  failedHandler.handleEvent(failedHost.host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, failedHost.host);
+  session = failedHost.host.session.getActive();
+  assert.equal(session.surface.kind, 'confirm');
+  assert.match(session.surface.bodyLines.join('\n'), /删除存储失败/);
+});
+
+test('resumeCommandHandler ignores a late preview after entering deletion confirmation', async () => {
+  let resolvePreview;
+  const selectable = createFakeHost({
+    sessions: createSessionSummarys(1),
+    loadSessionPreview() {
+      return new Promise((resolve) => {
+        resolvePreview = resolve;
+      });
+    }
+  });
+  const handler = new ResumeCommandHandler();
+  let session = startCommand(handler, '/resume', selectable.host);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  handler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: 'd'}, selectable.host);
+
+  resolvePreview({sessionId: 'session-1', previewRecords: [{role: 'assistant', text: 'late'}]});
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  session = selectable.host.session.getActive();
+  assert.equal(session.surface.kind, 'confirm');
+  assert.equal(selectable.calls.sessionUpdates.some((patch) => patch.surface?.kind === 'resume' && patch.surface.previewRecords?.[0]?.text === 'late'), false);
 });
 
 test('resumeCommandHandler switches focus and scrolls preview without moving session', async () => {

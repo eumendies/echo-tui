@@ -69,6 +69,20 @@ test('session model settings store atomically round-trips current values includi
   assert.deepEqual(fs.readdirSync(path.dirname(filePath)).filter((name) => name.includes('.tmp-')), []);
 });
 
+test('session model settings store removes an existing or missing sidecar without touching siblings', () => {
+  const {store} = createHarness();
+  const cwd = '/tmp/example/session-settings-remove';
+  store.write(cwd, {sessionId: 'session-1', modelProfileId: 'fast'});
+  store.write(cwd, {sessionId: 'session-2', modelProfileId: 'deep'});
+
+  store.remove(cwd, 'session-1');
+  store.remove(cwd, 'missing-session');
+
+  assert.deepEqual(store.read(cwd, 'session-1'), {kind: 'missing'});
+  assert.equal(store.read(cwd, 'session-2').kind, 'found');
+  assert.equal(fs.existsSync(store.getFilePath(cwd, 'session-1')), false);
+});
+
 test('transcript store creates the first journal only with its first record', () => {
   const {transcriptStore} = createHarness();
   const cwd = '/tmp/example/reserved-session';
