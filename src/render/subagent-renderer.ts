@@ -27,6 +27,12 @@ function renderSubagentRunAppendBlock(records: SubagentTranscriptRecord[], width
   return renderSubagentRecords(records, width, theme, {continuation, showUnexpectedInterruption: false});
 }
 
+/** 父 turn 合成中断结果时仅续写原有过程栏的取消终态；此投影不伪造 transcript 终态或耗时。 */
+function renderSubagentInterruptedBlock(width: number, theme: TuiTheme): string {
+  const {outerPrefix} = createSubagentRailLayout(width);
+  return `${renderSubagentRailSpacer(outerPrefix, theme)}\n${renderRailText('cancelled', width, outerPrefix, outerPrefix, theme, 1).join('\n')}\n\n`;
+}
+
 /** 在静态恢复与实时增量之间共享事件投影，二者只区别标题和意外中断策略。 */
 function renderSubagentRecords(records: SubagentTranscriptRecord[], width: number, theme: TuiTheme, options: SubagentRunRenderOptions): string {
   if (records.length === 0) {
@@ -245,4 +251,4 @@ export function createSubagentRunRowText(run: SubagentPendingState): string {
   return sanitizeTerminalText(`${run.agentName} · ${run.task} · ${phaseText}${toolText} · ${(run.elapsedMs / 1000).toFixed(1)}s`);
 }
 
-export {renderSubagentPendingLines, renderSubagentRunAppendBlock, renderSubagentRunBlock};
+export {renderSubagentInterruptedBlock, renderSubagentPendingLines, renderSubagentRunAppendBlock, renderSubagentRunBlock};

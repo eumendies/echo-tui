@@ -2766,7 +2766,7 @@ test('AppContext closes a pending tool call as a paired interrupted result when 
       toolCallId: 'call-tool',
       toolName: 'grep',
       ok: false,
-      details: {kind: 'generic'}
+      details: {kind: 'generic', interrupted: true}
     }
   ]);
   assert.deepEqual(context.transcriptContext.records, [

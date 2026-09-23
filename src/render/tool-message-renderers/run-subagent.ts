@@ -45,7 +45,7 @@ function renderRunSubagentToolPairLines(
   return lines;
 }
 
-/** 渲染 run_subagent 工具对的折叠形态：单行终态身份文案，用于已有本地子运行终态的单委派；自 tool-message-renderer 内联投影迁入。 */
+/** 渲染 run_subagent 工具对的折叠形态：已有本地终态的单委派只保留终态身份，不重复标题。 */
 function renderRunSubagentCompactPairLines(
   call: ToolCallTranscriptRecord,
   result: ToolResultTranscriptRecord,

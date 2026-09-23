@@ -99,7 +99,7 @@ type ToolResultTranscriptRecordBase = TranscriptRecordBase & {
 };
 
 export type ToolResultTranscriptDetails =
-  | {kind: 'generic'}
+  | {kind: 'generic'; interrupted?: boolean} // interrupted 仅标识 Esc 为未返回的工具调用补出的失败结果，不代表工具自身失败。
   | {
       kind: 'bash';
       exitCode?: number | null;

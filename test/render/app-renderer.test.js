@@ -2282,6 +2282,31 @@ test('createAppRenderer keeps one incremental subagent rail and compacts the lat
   assert.match(written, /Explorer · returned report/u);
 });
 
+test('createAppRenderer keeps the interruption status inside one rail in incremental and destructive projection', () => {
+  const output = {writes: [], write(chunk) { this.writes.push(String(chunk)); }};
+  const renderer = createAppRenderer(output);
+  const state = {composer: createComposer(''), pending: null, working: null, statusLine: DEFAULT_STATUS_LINE, width: 80};
+  const start = {role: 'subagent', agentName: 'explorer', parentToolCallId: 'outer', runId: 'run', text: 'inspect', event: {kind: 'start', task: 'inspect'}};
+  const outerPair = [
+    {role: 'tool_call', text: '', toolCallId: 'outer', toolName: 'run_subagent', argumentsText: '{"agent":"explorer","task":"inspect"}'},
+    {role: 'tool_result', text: 'Tool execution was interrupted by the user before it returned a result.', toolCallId: 'outer', toolName: 'run_subagent', ok: false, details: {kind: 'generic', interrupted: true}}
+  ];
+
+  renderer.renderRecords({records: [start], ...state});
+  renderer.renderRecords({records: outerPair, ...state});
+  const incremental = stripAnsi(output.writes.join(''));
+  assert.equal((incremental.match(/explorer · inspect/gu) || []).length, 1);
+  assert.match(incremental, /\n  ▌ cancelled(?:\n|$)/u);
+  assert.doesNotMatch(incremental, /◆ Explorer · cancelled/u);
+
+  output.writes.length = 0;
+  renderer.renderDestructive({bannerContext: {projectName: 'echo_tui'}, records: [start, ...outerPair], ...state});
+  const recovered = stripAnsi(output.writes.join(''));
+  assert.equal((recovered.match(/explorer · inspect/gu) || []).length, 1);
+  assert.match(recovered, /\n  ▌ cancelled(?:\n|$)/u);
+  assert.doesNotMatch(recovered, /interrupted before completion|◆ Explorer · cancelled/u);
+});
+
 test('createAppRenderer keeps a persisted subagent call transient until its result can render the pair', () => {
   const output = {writes: [], write(chunk) { this.writes.push(String(chunk)); }};
   const renderer = createAppRenderer(output);

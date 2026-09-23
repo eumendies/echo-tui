@@ -36,7 +36,7 @@ function createToolResultTranscriptRecord(result: ToolExecutionResult): ToolResu
 /**
  * 为 Esc 中断时仍未取得结果的工具调用构造合成失败 result。
  * 直接构造 record 而不经过 ToolExecutionResult：调用已被中断，没有真实工具专属 details 可言；
- * ok=false 加 generic details 保证 provider 按失败工具结果转换，不伪装成成功或带专属元数据的结果。
+ * ok=false 加 generic details 保证 provider 按失败工具结果转换；interrupted 供投影识别合成中断结果。
  */
 function createInterruptedToolResultTranscriptRecord(call: ToolCall): ToolResultTranscriptRecord {
   return {
@@ -45,7 +45,7 @@ function createInterruptedToolResultTranscriptRecord(call: ToolCall): ToolResult
     toolCallId: call.callId,
     toolName: call.toolName,
     ok: false,
-    details: {kind: 'generic'}
+    details: {kind: 'generic', interrupted: true}
   };
 }
 
