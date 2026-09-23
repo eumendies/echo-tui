@@ -10,7 +10,6 @@ type PatchOperation = {
   kind: 'add' | 'update' | 'delete';
   filePath: string;
   hunks: PatchHunk[];
-  matchMode: 'independent' | 'sequential';
 };
 
 // oldLines 是精确匹配锚点，newLines 是替换后的内容；行号只在 parser 层校验格式。
@@ -30,14 +29,14 @@ type ParsedPatchLine = {
 type Result<T> = {ok: true; value: T} | {ok: false; reason: string; hint?: string};
 
 /**
- * 将 Begin Patch 或 unified diff 输入归一为文件操作，不使用 header 行号定位内容。
+ * 仅将 Begin Patch 输入解析为文件操作；数字块头只校验格式，不用作定位。
  */
 function parsePatchText(patch: string, limits: ApplyPatchLimits): Result<PatchOperation[]> {
   const normalizedPatch = patch.replace(/\r\n?/g, '\n');
   const beginPatch = prepareBeginPatchInput(normalizedPatch);
 
   return beginPatch === null
-    ? parseUnifiedDiff(normalizedPatch, limits)
+    ? {ok: false, reason: 'patch must use *** Begin Patch format'}
     : parseBeginPatch(beginPatch, limits);
 }
 
@@ -138,8 +137,7 @@ function parseBeginPatch(patch: string, limits: ApplyPatchLimits): Result<PatchO
       operations.push({
         filePath: deleteFile[1].trim(),
         hunks: [],
-        kind: 'delete',
-        matchMode: 'independent'
+        kind: 'delete'
       });
       index += 1;
 
@@ -221,7 +219,6 @@ function parseBeginPatchAddFile(
       operation: {
         filePath,
         hunks: [{hasChange: true, oldLines: [], newLines, displayLines}],
-        matchMode: 'independent',
         kind: 'add'
       }
     }
@@ -235,7 +232,7 @@ function parseBeginPatchUpdateFile(
   limits: ApplyPatchLimits,
   startingHunkCount: number
 ): Result<{operation: PatchOperation; nextIndex: number; hunkCount: number}> {
-  const operation: PatchOperation = {kind: 'update', filePath, hunks: [], matchMode: 'sequential'};
+  const operation: PatchOperation = {kind: 'update', filePath, hunks: []};
   let index = startIndex;
   let hunkCount = startingHunkCount;
   let hasChangedHunk = false;
@@ -389,317 +386,6 @@ function normalizeBeginPatchLine(line: string): string {
 
 function isBeginPatchDirective(line: string): boolean {
   return line.startsWith('*** ');
-}
-
-/**
- * 解析 unified diff 常见子集；不支持的 git patch 元数据会在这里明确失败。
- */
-function parseUnifiedDiff(patch: string, limits: ApplyPatchLimits): Result<PatchOperation[]> {
-  const lines = patch.split('\n');
-  const operations: PatchOperation[] = [];
-  let index = 0;
-  let hunkCount = 0;
-  let inferredOperation: PatchOperation | null = null;
-
-  while (index < lines.length) {
-    const line = lines[index];
-
-    if (line.trim() === '') {
-      index += 1;
-      continue;
-    }
-
-    const unsupported = detectUnsupportedMetadata(line);
-
-    if (!unsupported.ok) {
-      return unsupported;
-    }
-
-    if (line.startsWith('diff --git ')) {
-      const inferred = parseDiffGitOperation(line);
-
-      if (!inferred.ok) {
-        return inferred;
-      }
-
-      inferredOperation = inferred.value;
-      index += 1;
-      continue;
-    }
-
-    if (isIgnoredDeletedFileMode(line)) {
-      if (inferredOperation) {
-        inferredOperation = {...inferredOperation, kind: 'delete'};
-      }
-
-      index += 1;
-      continue;
-    }
-
-    if (line.startsWith('index ') || isIgnoredNewFileMode(line)) {
-      index += 1;
-      continue;
-    }
-
-    if (!line.startsWith('--- ')) {
-      if (line.startsWith('@@') && inferredOperation) {
-        const parsed = parseOperationHunks(lines, index, inferredOperation, limits, hunkCount);
-
-        if (!parsed.ok) {
-          return parsed;
-        }
-
-        operations.push(parsed.value.operation);
-        hunkCount = parsed.value.hunkCount;
-        index = parsed.value.nextIndex;
-        inferredOperation = null;
-
-        if (operations.length > limits.maxChangedFiles) {
-          return {ok: false, reason: `patch changes more than ${limits.maxChangedFiles} files`};
-        }
-
-        continue;
-      }
-
-      return {ok: false, reason: `expected file header, got: ${line}`};
-    }
-
-    if (index + 1 >= lines.length || !lines[index + 1].startsWith('+++ ')) {
-      return {ok: false, reason: 'file header must contain both --- and +++ lines'};
-    }
-
-    const operation = parseFileOperation(line, lines[index + 1]);
-
-    if (!operation.ok) {
-      return operation;
-    }
-
-    index += 2;
-    inferredOperation = null;
-    const parsed = parseOperationHunks(lines, index, operation.value, limits, hunkCount);
-
-    if (!parsed.ok) {
-      return parsed;
-    }
-
-    operations.push(parsed.value.operation);
-    hunkCount = parsed.value.hunkCount;
-    index = parsed.value.nextIndex;
-
-    if (operations.length > limits.maxChangedFiles) {
-      return {ok: false, reason: `patch changes more than ${limits.maxChangedFiles} files`};
-    }
-  }
-
-  return operations.length === 0
-    ? {ok: false, reason: 'patch contains no file changes'}
-    : {ok: true, value: operations};
-}
-
-function parseOperationHunks(
-  lines: string[],
-  startIndex: number,
-  operation: PatchOperation,
-  limits: ApplyPatchLimits,
-  startingHunkCount: number
-): Result<{operation: PatchOperation; nextIndex: number; hunkCount: number}> {
-  let index = startIndex;
-  let hunkCount = startingHunkCount;
-
-  while (index < lines.length) {
-    const current = lines[index];
-
-    if (current.trim() === '') {
-      index += 1;
-      continue;
-    }
-
-    const unsupported = detectUnsupportedMetadata(current);
-
-    if (!unsupported.ok) {
-      return unsupported;
-    }
-
-    if (
-      current.startsWith('diff --git ') ||
-      (current.startsWith('--- ') && index + 1 < lines.length && lines[index + 1].startsWith('+++ '))
-    ) {
-      break;
-    }
-
-    if (current.startsWith('index ') || isIgnoredNewFileMode(current) || isIgnoredDeletedFileMode(current)) {
-      index += 1;
-      continue;
-    }
-
-    if (!current.startsWith('@@')) {
-      return {ok: false, reason: `expected hunk header, got: ${current}`};
-    }
-
-    const hunk = parseHunk(lines, index);
-
-    if (!hunk.ok) {
-      return hunk;
-    }
-
-    hunkCount += 1;
-
-    if (hunkCount > limits.maxHunks) {
-      return {ok: false, reason: `patch exceeds ${limits.maxHunks} hunks`};
-    }
-
-    operation.hunks.push(hunk.value.hunk);
-    index = hunk.value.nextIndex;
-  }
-
-  return operation.hunks.length === 0
-    ? {ok: false, reason: `file patch for ${operation.filePath} has no hunks`}
-    : {ok: true, value: {hunkCount, nextIndex: index, operation}};
-}
-
-function parseDiffGitOperation(line: string): Result<PatchOperation> {
-  const match = /^diff --git\s+(\S+)\s+(\S+)$/.exec(line);
-
-  if (!match) {
-    return {ok: false, reason: `invalid diff --git header: ${line}`};
-  }
-
-  const oldPath = normalizeDiffPath(match[1]);
-  const newPath = normalizeDiffPath(match[2]);
-
-  return oldPath === newPath
-    ? {ok: true, value: {kind: 'update', filePath: newPath, hunks: [], matchMode: 'independent'}}
-    : {ok: false, reason: 'rename or move patches are not supported'};
-}
-
-function parseFileOperation(oldHeader: string, newHeader: string): Result<PatchOperation> {
-  const oldPath = parseHeaderPath(oldHeader.slice(4));
-  const newPath = parseHeaderPath(newHeader.slice(4));
-
-  if (!oldPath || !newPath) {
-    return {ok: false, reason: 'file header is missing a path'};
-  }
-
-  if (newPath === '/dev/null') {
-    return oldPath === '/dev/null'
-      ? {ok: false, reason: 'file header is missing a path'}
-      : {ok: true, value: {kind: 'delete', filePath: normalizeDiffPath(oldPath), hunks: [], matchMode: 'independent'}};
-  }
-
-  if (oldPath === '/dev/null') {
-    return {ok: true, value: {kind: 'add', filePath: normalizeDiffPath(newPath), hunks: [], matchMode: 'independent'}};
-  }
-
-  const oldNormalized = normalizeDiffPath(oldPath);
-  const newNormalized = normalizeDiffPath(newPath);
-
-  return oldNormalized === newNormalized
-    ? {ok: true, value: {kind: 'update', filePath: newNormalized, hunks: [], matchMode: 'independent'}}
-    : {ok: false, reason: 'rename or move patches are not supported'};
-}
-
-function parseHunk(lines: string[], startIndex: number): Result<{hunk: PatchHunk; nextIndex: number}> {
-  const header = lines[startIndex];
-
-  if (!/^@@\s+-\d+(?:,\d+)?\s+\+\d+(?:,\d+)?\s+@@/.test(header)) {
-    return {ok: false, reason: `invalid hunk header: ${header}`};
-  }
-
-  const oldLines: string[] = [];
-  const newLines: string[] = [];
-  const displayLines: ParsedPatchLine[] = [];
-  let hasChange = false;
-  let index = startIndex + 1;
-
-  while (index < lines.length) {
-    const line = lines[index];
-
-    if (
-      line.startsWith('@@') ||
-      line.startsWith('diff --git ') ||
-      (line.startsWith('--- ') && index + 1 < lines.length && lines[index + 1].startsWith('+++ '))
-    ) {
-      break;
-    }
-
-    if (line.startsWith('\\ No newline at end of file')) {
-      index += 1;
-      continue;
-    }
-
-    if (line.startsWith(' ')) {
-      const text = line.slice(1);
-      oldLines.push(text);
-      newLines.push(text);
-      displayLines.push({kind: 'context', text});
-    } else if (line.startsWith('-')) {
-      const text = line.slice(1);
-      oldLines.push(text);
-      displayLines.push({kind: 'removed', text});
-      hasChange = true;
-    } else if (line.startsWith('+')) {
-      const text = line.slice(1);
-      newLines.push(text);
-      displayLines.push({kind: 'added', text});
-      hasChange = true;
-    } else if (line === '' && index === lines.length - 1) {
-      break;
-    } else {
-      return {ok: false, reason: `invalid hunk line: ${line}`};
-    }
-
-    index += 1;
-  }
-
-  return hasChange
-    ? {ok: true, value: {hunk: {hasChange: true, oldLines, newLines, displayLines}, nextIndex: index}}
-    : {ok: false, reason: 'hunk must contain at least one added or removed line'};
-}
-
-function detectUnsupportedMetadata(line: string): Result<void> {
-  if (line.startsWith('deleted file mode')) {
-    return line === 'deleted file mode 120000'
-      ? {ok: false, reason: 'symlink patches are not supported'}
-      : {ok: true, value: undefined};
-  }
-
-  if (line.startsWith('rename from') || line.startsWith('rename to') || line.startsWith('copy from') || line.startsWith('copy to')) {
-    return {ok: false, reason: 'rename, move, and copy patches are not supported'};
-  }
-
-  if (line.startsWith('old mode') || line.startsWith('new mode')) {
-    return {ok: false, reason: 'mode change patches are not supported'};
-  }
-
-  if (line.startsWith('GIT binary patch') || line.startsWith('Binary files ')) {
-    return {ok: false, reason: 'binary patches are not supported'};
-  }
-
-  if (line === 'new file mode 120000') {
-    return {ok: false, reason: 'symlink patches are not supported'};
-  }
-
-  if (line.startsWith('new file mode ') && !isIgnoredNewFileMode(line)) {
-    return {ok: false, reason: 'file mode patches are not supported'};
-  }
-
-  return {ok: true, value: undefined};
-}
-
-function isIgnoredNewFileMode(line: string): boolean {
-  return line === 'new file mode 100644';
-}
-
-function isIgnoredDeletedFileMode(line: string): boolean {
-  return line.startsWith('deleted file mode') && line !== 'deleted file mode 120000';
-}
-
-function parseHeaderPath(rawPath: string): string {
-  return rawPath.trim().split('\t')[0];
-}
-
-function normalizeDiffPath(diffPath: string): string {
-  return diffPath.startsWith('a/') || diffPath.startsWith('b/') ? diffPath.slice(2) : diffPath;
 }
 
 export {

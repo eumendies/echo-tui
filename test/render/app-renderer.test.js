@@ -1756,7 +1756,7 @@ test('renderTranscriptLines renders current apply_patch metadata with file group
         text: 'apply_patch({"patch":"raw"})',
         toolCallId: 'call_patch',
         toolName: 'apply_patch',
-        argumentsText: '{"patch":"--- a/src.txt\\n+++ b/src.txt\\n@@ -1 +1 @@\\n-alpha\\n+BETA\\n"}'
+        argumentsText: '{"patch":"*** Begin Patch\\n*** Update File: src.txt\\n@@\\n-alpha\\n+BETA\\n*** End Patch"}'
       },
       {
         role: 'tool_result',
@@ -1933,7 +1933,7 @@ test('renderTranscriptLines renders apply_patch failures without previews and re
         text: 'apply_patch({})',
         toolCallId: 'failed_patch',
         toolName: 'apply_patch',
-        argumentsText: '{"patch":"--- a/src.txt\\n+++ b/src.txt\\n@@ -1 +1 @@\\n-old\\n+new\\n"}'
+        argumentsText: '{"patch":"*** Begin Patch\\n*** Update File: src.txt\\n@@\\n-old\\n+new\\n*** End Patch"}'
       },
       {
         role: 'tool_result',

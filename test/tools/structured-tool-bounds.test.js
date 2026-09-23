@@ -198,7 +198,7 @@ test('apply_patch bounds success summaries, long paths, parser reasons, and file
   // hunk 匹配失败回显的期望行同样受预算约束。
   fs.writeFileSync(path.join(cwd, 'stale.txt'), 'actual\n', 'utf8');
   const staleBody = Array.from({length: 6_000}, (_, index) => `-missing ${index}`).join('\n');
-  const stalePatch = ['--- a/stale.txt', '+++ b/stale.txt', '@@ -1,6000 +1,0 @@', staleBody, ''].join('\n');
+  const stalePatch = ['*** Begin Patch', '*** Update File: stale.txt', '@@ -1,6000 +1,0 @@', staleBody, '*** End Patch'].join('\n');
   const staleEcho = createApplyPatchToolHandler({cwd}).execute(
     {patch: stalePatch},
     createCall('apply_patch', {patch: stalePatch})

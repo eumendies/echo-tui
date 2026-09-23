@@ -1098,7 +1098,7 @@ agent loop runtime SHALL 支持 interactive tool continuation。对于 `ask_user
 
 #### Scenario: OpenAI 请求包含 apply_patch tool schema
 - **WHEN** 默认真实 agent 初始化 tool registry 并构造 OpenAI request
-- **THEN** OpenAI request tools SHALL 包含 `apply_patch` function tool definition
+- **THEN** OpenAI request tools SHALL 包含 `apply_patch` function tool definition，其 `patch` 参数说明 SHALL 只声明 `*** Begin Patch` 格式及 Add/Update/Delete File 指令，不得声明支持 unified diff
 - **THEN** OpenAI request tools SHALL 继续包含 `run_bash_command` function tool definition
 
 #### Scenario: agent loop runtime 执行 apply_patch tool call

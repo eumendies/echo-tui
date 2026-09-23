@@ -170,8 +170,17 @@ test('tool risk classifier previews apply_patch calls with a lightweight label',
   }), {
     risk: 'approval_required',
     approval: {
-      preview: 'apply_patch(delete old.txt)'
+      preview: 'apply_patch'
     }
+  });
+
+  assert.deepEqual(classifyToolCallRisk({
+    callId: 'call_patch',
+    toolName: 'apply_patch',
+    argumentsText: JSON.stringify({patch: '*** Begin Patch\n*** Delete File: a/old.txt\n*** End Patch'})
+  }), {
+    risk: 'approval_required',
+    approval: {preview: 'apply_patch(delete a/old.txt)'}
   });
 
   assert.deepEqual(classifyToolCallRisk({

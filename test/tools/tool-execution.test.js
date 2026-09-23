@@ -3317,19 +3317,17 @@ test('apply_patch updates existing files with multiple hunks', async () => {
   fs.writeFileSync(path.join(cwd, 'src.txt'), 'alpha\nbeta\ngamma\ndelta\n', 'utf8');
   const executor = createToolExecutor(createToolRegistry([createApplyPatchToolHandler({ cwd })]));
   const patch = [
-    '--- a/src.txt',
-    '+++ b/src.txt',
+    '*** Begin Patch',
+    '*** Update File: src.txt',
     '@@ -1,4 +1,4 @@',
     ' alpha',
     '-beta',
     '+BETA',
-    ' gamma',
     '@@ -2,3 +2,3 @@',
-    ' BETA',
     '-gamma',
     '+GAMMA',
     ' delta',
-    ''
+    '*** End Patch'
   ].join('\n');
 
   const result = await executor.execute(createPatchCall(patch));
@@ -3348,17 +3346,15 @@ test('apply_patch records change snapshots after successful simulation', async (
   const executor = createToolExecutor(createToolRegistry([createApplyPatchToolHandler({ cwd })]));
   const change = createRecordingChangeRecorder();
   const patch = [
-    '--- a/src.txt',
-    '+++ b/src.txt',
+    '*** Begin Patch',
+    '*** Update File: src.txt',
     '@@ -1,2 +1,2 @@',
     ' alpha',
     '-beta',
     '+BETA',
-    '--- /dev/null',
-    '+++ b/created.txt',
-    '@@ -0,0 +1 @@',
+    '*** Add File: created.txt',
     '+created',
-    ''
+    '*** End Patch'
   ].join('\n');
 
   const result = await executor.execute(createPatchCall(patch), {changeRecorder: change.recorder});
@@ -3370,13 +3366,13 @@ test('apply_patch records change snapshots after successful simulation', async (
 
   const failed = createRecordingChangeRecorder();
   const failedResult = await executor.execute(createPatchCall([
-    '--- a/src.txt',
-    '+++ b/src.txt',
+    '*** Begin Patch',
+    '*** Update File: src.txt',
     '@@ -1,2 +1,2 @@',
     ' missing',
     '-beta',
     '+BETA',
-    ''
+    '*** End Patch'
   ].join('\n')), {changeRecorder: failed.recorder});
 
   assert.equal(failedResult.ok, false);
@@ -3393,17 +3389,15 @@ test('apply_patch marks change entries as written one file at a time', async () 
   const executor = createToolExecutor(createToolRegistry([createApplyPatchToolHandler({ cwd })]));
   const change = createRecordingChangeRecorder();
   const patch = [
-    '--- a/src.txt',
-    '+++ b/src.txt',
+    '*** Begin Patch',
+    '*** Update File: src.txt',
     '@@ -1,2 +1,2 @@',
     ' alpha',
     '-beta',
     '+BETA',
-    '--- /dev/null',
-    '+++ b/blocked/created.txt',
-    '@@ -0,0 +1 @@',
+    '*** Add File: blocked/created.txt',
     '+created',
-    ''
+    '*** End Patch'
   ].join('\n');
 
   const result = await executor.execute(createPatchCall(patch), {changeRecorder: change.recorder});
@@ -3415,25 +3409,21 @@ test('apply_patch marks change entries as written one file at a time', async () 
   assert.deepEqual(change.calls.invalidations, []);
 });
 
-test('apply_patch updates existing files when diff --git omits file headers', async () => {
+test('apply_patch rejects independent unified diff without changing files', async () => {
   const cwd = createTempWorkspace();
-  fs.writeFileSync(path.join(cwd, 'src.txt'), 'alpha\nbeta\ngamma\n', 'utf8');
-  const executor = createToolExecutor(createToolRegistry([createApplyPatchToolHandler({ cwd })]));
-  const patch = [
-    'diff --git a/src.txt b/src.txt',
-    'index 1111111..2222222 100644',
-    '@@ -1,3 +1,3 @@',
-    ' alpha',
-    '-beta',
-    '+BETA',
-    ' gamma',
-    ''
-  ].join('\n');
-
-  const result = await executor.execute(createPatchCall(patch));
-
-  assert.equal(result.ok, true);
-  assert.equal(readWorkspaceFile(cwd, 'src.txt'), 'alpha\nBETA\ngamma\n');
+  fs.writeFileSync(path.join(cwd, 'src.txt'), 'alpha\nbeta\n', 'utf8');
+  const executor = createToolExecutor(createToolRegistry([createApplyPatchToolHandler({cwd})]));
+  for (const patch of [
+    ['diff --git a/src.txt b/src.txt', '@@ -1,2 +1,2 @@', '-alpha', '+ALPHA'].join('\n'),
+    ['--- a/src.txt', '+++ b/src.txt', '@@ -1,2 +1,2 @@', '-alpha', '+ALPHA'].join('\n'),
+    ['--- /dev/null', '+++ b/created.txt', '@@ -0,0 +1 @@', '+created'].join('\n')
+  ]) {
+    const result = await executor.execute(createPatchCall(patch));
+    assert.equal(result.ok, false);
+    assert.match(result.text, /must use \*\*\* Begin Patch format/);
+    assert.equal(readWorkspaceFile(cwd, 'src.txt'), 'alpha\nbeta\n');
+    assert.equal(fs.existsSync(path.join(cwd, 'created.txt')), false);
+  }
 });
 
 test('apply_patch updates symlink targets while delete still rejects symlinks', async () => {
@@ -3442,13 +3432,13 @@ test('apply_patch updates symlink targets while delete still rejects symlinks', 
   fs.symlinkSync(path.join(cwd, 'real.txt'), path.join(cwd, 'link.txt'));
   const executor = createToolExecutor(createToolRegistry([createApplyPatchToolHandler({ cwd })]));
   const updatePatch = [
-    '--- a/link.txt',
-    '+++ b/link.txt',
+    '*** Begin Patch',
+    '*** Update File: link.txt',
     '@@ -1,2 +1,2 @@',
     ' alpha',
     '-beta',
     '+BETA',
-    ''
+    '*** End Patch'
   ].join('\n');
 
   const update = await executor.execute(createPatchCall(updatePatch));
@@ -3464,45 +3454,28 @@ test('apply_patch updates symlink targets while delete still rejects symlinks', 
   assert.equal(fs.lstatSync(path.join(cwd, 'link.txt')).isSymbolicLink(), true);
 });
 
-test('apply_patch supports mixed standard and headerless file patches', async () => {
+test('apply_patch rejects unified diff headers mixed with Begin Patch without writing files', async () => {
   const cwd = createTempWorkspace();
-  fs.writeFileSync(path.join(cwd, 'one.txt'), 'one\ntwo\n', 'utf8');
-  fs.writeFileSync(path.join(cwd, 'two.txt'), 'red\nblue\n', 'utf8');
-  const executor = createToolExecutor(createToolRegistry([createApplyPatchToolHandler({ cwd })]));
-  const patch = [
-    'diff --git a/one.txt b/one.txt',
-    '@@ -1,2 +1,2 @@',
-    ' one',
-    '-two',
-    '+TWO',
-    '--- a/two.txt',
-    '+++ b/two.txt',
-    '@@ -1,2 +1,2 @@',
-    ' red',
-    '-blue',
-    '+BLUE',
-    ''
-  ].join('\n');
-
-  const result = await executor.execute(createPatchCall(patch));
-
-  assert.equal(result.ok, true);
-  assert.equal(readWorkspaceFile(cwd, 'one.txt'), 'one\nTWO\n');
-  assert.equal(readWorkspaceFile(cwd, 'two.txt'), 'red\nBLUE\n');
+  fs.writeFileSync(path.join(cwd, 'existing.txt'), 'keep\n', 'utf8');
+  const executor = createToolExecutor(createToolRegistry([createApplyPatchToolHandler({cwd})]));
+  for (const header of ['diff --git a/old.txt b/old.txt', '--- a/old.txt\n+++ b/old.txt', 'deleted file mode 100644']) {
+    const patch = ['*** Begin Patch', '*** Add File: created.txt', '+created', '*** Delete File: existing.txt', header, '*** End Patch'].join('\n');
+    const result = await executor.execute(createPatchCall(patch));
+    assert.equal(result.ok, false, header);
+    assert.equal(fs.existsSync(path.join(cwd, 'created.txt')), false, header);
+    assert.equal(readWorkspaceFile(cwd, 'existing.txt'), 'keep\n', header);
+  }
 });
 
 test('apply_patch adds files and creates parent directories', async () => {
   const cwd = createTempWorkspace();
   const executor = createToolExecutor(createToolRegistry([createApplyPatchToolHandler({ cwd })]));
   const patch = [
-    'diff --git a/nested/new.txt b/nested/new.txt',
-    'new file mode 100644',
-    '--- /dev/null',
-    '+++ b/nested/new.txt',
-    '@@ -0,0 +1,2 @@',
+    '*** Begin Patch',
+    '*** Add File: nested/new.txt',
     '+hello',
     '+world',
-    ''
+    '*** End Patch'
   ].join('\n');
 
   const result = await executor.execute(createPatchCall(patch));
@@ -3890,42 +3863,10 @@ test('apply_patch deletes files from Begin Patch and restores through change his
   assert.equal(fs.readFileSync(target, 'utf8'), 'alpha\nbeta\n');
 });
 
-test('apply_patch deletes files from unified diff with content verification', async () => {
-  const cwd = createTempWorkspace();
-  fs.writeFileSync(path.join(cwd, 'remove.txt'), 'alpha\nbeta\n', 'utf8');
-  const executor = createToolExecutor(createToolRegistry([createApplyPatchToolHandler({ cwd })]));
-  const patch = [
-    'diff --git a/remove.txt b/remove.txt',
-    'deleted file mode 100644',
-    'index 1111111..0000000',
-    '--- a/remove.txt',
-    '+++ /dev/null',
-    '@@ -1,2 +0,0 @@',
-    '-alpha',
-    '-beta',
-    ''
-  ].join('\n');
-
-  const result = await executor.execute(createPatchCall(patch));
-
-  assert.equal(result.ok, true);
-  assert.match(result.text, /remove\.txt \(deleted\)/);
-  assert.equal(fs.existsSync(path.join(cwd, 'remove.txt')), false);
-  assert.deepEqual(result.details.display.files[0], {
-    path: 'remove.txt',
-    kind: 'deleted',
-    lines: [
-      {kind: 'removed', text: 'alpha', postLine: null},
-      {kind: 'removed', text: 'beta', postLine: null}
-    ]
-  });
-});
-
 test('apply_patch rejects unsafe delete targets without writing other changes', async () => {
   const cwd = createTempWorkspace();
   fs.writeFileSync(path.join(cwd, 'victim.txt'), 'keep\n', 'utf8');
   fs.writeFileSync(path.join(cwd, 'changed.txt'), 'actual\n', 'utf8');
-  fs.writeFileSync(path.join(cwd, 'partial.txt'), 'actual\nleftover\n', 'utf8');
   fs.mkdirSync(path.join(cwd, 'dir-target'));
   fs.writeFileSync(path.join(cwd, 'link-target.txt'), 'target\n', 'utf8');
   fs.symlinkSync(path.join(cwd, 'link-target.txt'), path.join(cwd, 'link.txt'));
@@ -3933,41 +3874,6 @@ test('apply_patch rejects unsafe delete targets without writing other changes', 
   fs.writeFileSync(path.join(cwd, 'large.txt'), '12345', 'utf8');
   const executor = createToolExecutor(createToolRegistry([createApplyPatchToolHandler({cwd})]));
   const smallExecutor = createToolExecutor(createToolRegistry([createApplyPatchToolHandler({cwd, maxFileBytes: 4})]));
-
-  const staleDelete = await executor.execute(createPatchCall([
-    '--- a/changed.txt',
-    '+++ /dev/null',
-    '@@ -1 +0,0 @@',
-    '-expected',
-    ''
-  ].join('\n')));
-  assert.equal(staleDelete.ok, false);
-  assert.match(staleDelete.text, /matched 0 locations/);
-  assert.match(staleDelete.text, /hunk 1 of 1 matched 0 locations in changed\.txt\nHint: [^\n]+\nFailed hunk lines:\nexpected$/);
-  assert.equal(readWorkspaceFile(cwd, 'changed.txt'), 'actual\n');
-
-  const partialDelete = await executor.execute(createPatchCall([
-    '--- a/partial.txt',
-    '+++ /dev/null',
-    '@@ -1,2 +0,0 @@',
-    '-actual',
-    ''
-  ].join('\n')));
-  assert.equal(partialDelete.ok, false);
-  assert.match(partialDelete.text, /does not remove the entire file/);
-  assert.equal(readWorkspaceFile(cwd, 'partial.txt'), 'actual\nleftover\n');
-
-  const additiveDelete = await executor.execute(createPatchCall([
-    '--- a/changed.txt',
-    '+++ /dev/null',
-    '@@ -1 +0,0 @@',
-    '-actual',
-    '+leftover',
-    ''
-  ].join('\n')));
-  assert.equal(additiveDelete.ok, false);
-  assert.match(additiveDelete.text, /must only contain removed lines/);
-  assert.equal(readWorkspaceFile(cwd, 'changed.txt'), 'actual\n');
 
   const missingDelete = await executor.execute(createPatchCall('*** Begin Patch\n*** Delete File: missing.txt\n*** End Patch'));
   assert.equal(missingDelete.ok, false);
@@ -4020,17 +3926,15 @@ test('apply_patch applies multi-file patches all at once', async () => {
   fs.writeFileSync(path.join(cwd, 'one.txt'), 'one\ntwo\n', 'utf8');
   const executor = createToolExecutor(createToolRegistry([createApplyPatchToolHandler({ cwd })]));
   const patch = [
-    '--- a/one.txt',
-    '+++ b/one.txt',
+    '*** Begin Patch',
+    '*** Update File: one.txt',
     '@@ -1,2 +1,2 @@',
     ' one',
     '-two',
     '+TWO',
-    '--- /dev/null',
-    '+++ b/two.txt',
-    '@@ -0,0 +1 @@',
+    '*** Add File: two.txt',
     '+created',
-    ''
+    '*** End Patch'
   ].join('\n');
 
   const result = await executor.execute(createPatchCall(patch));
@@ -4047,15 +3951,12 @@ test('apply_patch allows absolute and workspace-escaping paths', async () => {
   const absoluteTarget = path.join(outsideDir, 'absolute.txt');
   const escapingTarget = path.join(cwd, '..', `${path.basename(cwd)}-sibling.txt`);
   const patch = [
-    '--- /dev/null',
-    `+++ ${absoluteTarget}`,
-    '@@ -0,0 +1 @@',
+    '*** Begin Patch',
+    `*** Add File: ${absoluteTarget}`,
     '+absolute',
-    '--- /dev/null',
-    `+++ b/../${path.basename(escapingTarget)}`,
-    '@@ -0,0 +1 @@',
+    `*** Add File: ../${path.basename(escapingTarget)}`,
     '+escaped',
-    ''
+    '*** End Patch'
   ].join('\n');
 
   const result = await executor.execute(createPatchCall(patch));
@@ -4072,11 +3973,10 @@ test('apply_patch still rejects NUL and .git paths', async () => {
 
   for (const filePath of cases) {
     const patch = [
-      '--- /dev/null',
-      `+++ b/${filePath}`,
-      '@@ -0,0 +1 @@',
+      '*** Begin Patch',
+      `*** Add File: ${filePath}`,
       '+content',
-      ''
+      '*** End Patch'
     ].join('\n');
     const result = await executor.execute(createPatchCall(patch));
 
@@ -4121,30 +4021,6 @@ test('apply_patch replaces the same file through repeated Begin Patch operations
   ]);
 });
 
-test('apply_patch replaces the same file through repeated unified diff operations', async () => {
-  const cwd = createTempWorkspace();
-  fs.writeFileSync(path.join(cwd, 'replace.txt'), 'old\n', 'utf8');
-  const executor = createToolExecutor(createToolRegistry([createApplyPatchToolHandler({ cwd })]));
-  const patch = [
-    '--- a/replace.txt',
-    '+++ /dev/null',
-    '@@ -1 +0,0 @@',
-    '-old',
-    '--- /dev/null',
-    '+++ b/replace.txt',
-    '@@ -0,0 +1 @@',
-    '+new',
-    ''
-  ].join('\n');
-
-  const result = await executor.execute(createPatchCall(patch));
-
-  assert.equal(result.ok, true);
-  assert.equal(result.text, 'Applied patch.\nChanged files:\n- replace.txt (updated)');
-  assert.equal(readWorkspaceFile(cwd, 'replace.txt'), 'new\n');
-  assert.deepEqual(result.details.display.files.map((file) => file.kind), ['deleted', 'added']);
-});
-
 test('apply_patch sequences repeated updates across relative and absolute paths', async () => {
   const cwd = createTempWorkspace();
   const target = path.join(cwd, 'same.txt');
@@ -4152,28 +4028,24 @@ test('apply_patch sequences repeated updates across relative and absolute paths'
   fs.writeFileSync(target, 'alpha\nbeta\n', 'utf8');
   const executor = createToolExecutor(createToolRegistry([createApplyPatchToolHandler({ cwd })]));
   const patch = [
-    '--- a/same.txt',
-    '+++ b/same.txt',
+    '*** Begin Patch',
+    '*** Update File: same.txt',
     '@@ -1,2 +1,2 @@',
     '-alpha',
     '+ALPHA',
     ' beta',
-    `--- ${target}`,
-    `+++ ${target}`,
+    `*** Update File: ${target}`,
     '@@ -1,2 +1,2 @@',
     ' ALPHA',
     '-beta',
     '+BETA',
-    '--- /dev/null',
-    '+++ b/created.txt',
-    '@@ -0,0 +1 @@',
+    '*** Add File: created.txt',
     '+first',
-    `--- ${created}`,
-    `+++ ${created}`,
+    `*** Update File: ${created}`,
     '@@ -1 +1 @@',
     '-first',
     '+second',
-    ''
+    '*** End Patch'
   ].join('\n');
 
   const result = await executor.execute(createPatchCall(patch));
@@ -4210,17 +4082,16 @@ test('apply_patch rejects invalid repeated state transitions without writing vir
   assert.equal(fs.existsSync(path.join(cwd, 'untouched.txt')), false);
 
   const staleSecondUpdate = [
-    '--- a/existing.txt',
-    '+++ b/existing.txt',
+    '*** Begin Patch',
+    '*** Update File: existing.txt',
     '@@ -1 +1 @@',
     '-old',
     '+middle',
-    '--- a/existing.txt',
-    '+++ b/existing.txt',
+    '*** Update File: existing.txt',
     '@@ -1 +1 @@',
     '-missing',
     '+final',
-    ''
+    '*** End Patch'
   ].join('\n');
   const staleResult = await executor.execute(createPatchCall(staleSecondUpdate));
 
@@ -4278,44 +4149,26 @@ test('apply_patch skips writes and change history for add then delete', async ()
   assert.deepEqual(change.calls.after, []);
 });
 
-test('apply_patch rejects hunk mismatches and ambiguous hunks', async () => {
+test('apply_patch rejects unmatched Begin Patch hunks without writing', async () => {
   const cwd = createTempWorkspace();
   fs.writeFileSync(path.join(cwd, 'missing.txt'), 'actual\n', 'utf8');
-  fs.writeFileSync(path.join(cwd, 'ambiguous.txt'), 'same\nkeep\nsame\nkeep\n', 'utf8');
-  const executor = createToolExecutor(createToolRegistry([createApplyPatchToolHandler({ cwd })]));
-
-  const missingResult = await executor.execute(createPatchCall([
-    '--- a/missing.txt',
-    '+++ b/missing.txt',
+  const executor = createToolExecutor(createToolRegistry([createApplyPatchToolHandler({cwd})]));
+  const result = await executor.execute(createPatchCall([
+    '*** Begin Patch',
+    '*** Update File: missing.txt',
     '@@ -1 +1 @@',
     '-expected',
     '+changed',
-    ''
+    '*** End Patch'
   ].join('\n')));
-
-  assert.equal(missingResult.ok, false);
-  assert.match(missingResult.text, /matched 0 locations/);
+  assert.equal(result.ok, false);
+  assert.match(result.text, /matched 0 locations/);
   assert.equal(readWorkspaceFile(cwd, 'missing.txt'), 'actual\n');
-
-  const ambiguousResult = await executor.execute(createPatchCall([
-    '--- a/ambiguous.txt',
-    '+++ b/ambiguous.txt',
-    '@@ -1,2 +1,2 @@',
-    ' same',
-    '-keep',
-    '+changed',
-    ''
-  ].join('\n')));
-
-  assert.equal(ambiguousResult.ok, false);
-  assert.match(ambiguousResult.text, /matched multiple locations/);
-  assert.equal(readWorkspaceFile(cwd, 'ambiguous.txt'), 'same\nkeep\nsame\nkeep\n');
 });
 
 test('apply_patch failure reasons identify the failing hunk', async () => {
   const cwd = createTempWorkspace();
   fs.writeFileSync(path.join(cwd, 'seq.txt'), 'alpha\nkeep\nomega\n', 'utf8');
-  fs.writeFileSync(path.join(cwd, 'amb.txt'), 'top\nalpha\nkeep\nbeta\nkeep\n', 'utf8');
   const executor = createToolExecutor(createToolRegistry([createApplyPatchToolHandler({ cwd })]));
 
   const staleSecondHunk = await executor.execute(createPatchCall([
@@ -4352,24 +4205,6 @@ test('apply_patch failure reasons identify the failing hunk', async () => {
   assert.match(staleSecondAnchor.text, /hunk 2 of 2 anchor line matched 0 locations in seq\.txt/);
   assert.match(staleSecondAnchor.text, /hunk 2 of 2 anchor line matched 0 locations in seq\.txt\nHint: [^\n]+\nFailed hunk lines:\ngone$/);
   assert.equal(readWorkspaceFile(cwd, 'seq.txt'), 'alpha\nkeep\nomega\n');
-
-  const ambiguousSecondHunk = await executor.execute(createPatchCall([
-    '--- a/amb.txt',
-    '+++ b/amb.txt',
-    '@@ -1,2 +1,2 @@',
-    ' top',
-    '-alpha',
-    '+ALPHA',
-    '@@ -3 +3 @@',
-    '-keep',
-    '+KEEP',
-    ''
-  ].join('\n')));
-
-  assert.equal(ambiguousSecondHunk.ok, false);
-  assert.match(ambiguousSecondHunk.text, /hunk 2 of 2 matched multiple locations in amb\.txt/);
-  assert.match(ambiguousSecondHunk.text, /hunk 2 of 2 matched multiple locations in amb\.txt\nHint: [^\n]+\nFailed hunk lines:\nkeep$/);
-  assert.equal(readWorkspaceFile(cwd, 'amb.txt'), 'top\nalpha\nkeep\nbeta\nkeep\n');
 });
 
 test('apply_patch rejects invalid input, missing targets, and existing add targets', async () => {
@@ -4387,48 +4222,47 @@ test('apply_patch rejects invalid input, missing targets, and existing add targe
 
   const invalidResult = await executor.execute(createPatchCall('not a diff'));
   assert.equal(invalidResult.ok, false);
-  assert.match(invalidResult.text, /expected file header/);
+  assert.match(invalidResult.text, /must use \*\*\* Begin Patch format/);
 
   const missingTargetResult = await executor.execute(createPatchCall([
-    '--- a/missing.txt',
-    '+++ b/missing.txt',
+    '*** Begin Patch',
+    '*** Update File: missing.txt',
     '@@ -1 +1 @@',
     '-old',
     '+new',
-    ''
+    '*** End Patch'
   ].join('\n')));
   assert.equal(missingTargetResult.ok, false);
   assert.match(missingTargetResult.text, /target file does not exist/);
 
   const existingAddResult = await executor.execute(createPatchCall([
-    '--- /dev/null',
-    '+++ b/exists.txt',
-    '@@ -0,0 +1 @@',
+    '*** Begin Patch',
+    '*** Add File: exists.txt',
     '+new',
-    ''
+    '*** End Patch'
   ].join('\n')));
   assert.equal(existingAddResult.ok, false);
   assert.match(existingAddResult.text, /already exists/);
   assert.equal(readWorkspaceFile(cwd, 'exists.txt'), 'exists\n');
 });
 
-test('apply_patch rejects unsupported patch types', async () => {
+test('apply_patch rejects unsupported Begin Patch directives', async () => {
   const cwd = createTempWorkspace();
   fs.writeFileSync(path.join(cwd, 'file.txt'), 'old\n', 'utf8');
-  const executor = createToolExecutor(createToolRegistry([createApplyPatchToolHandler({ cwd })]));
-  const cases = [
-    ['rename', ['diff --git a/file.txt b/renamed.txt', 'rename from file.txt', 'rename to renamed.txt', '']],
-    ['mode', ['old mode 100644', 'new mode 100755', '--- a/file.txt', '+++ b/file.txt', '@@ -1 +1 @@', '-old', '+new', '']],
-    ['binary', ['GIT binary patch', 'literal 0', '']],
-    ['symlink', ['diff --git a/link b/link', 'new file mode 120000', '--- /dev/null', '+++ b/link', '@@ -0,0 +1 @@', '+target', '']],
-    ['deleted symlink', ['diff --git a/link b/link', 'deleted file mode 120000', '--- a/link', '+++ /dev/null', '@@ -1 +0,0 @@', '-target', '']]
-  ];
-
-  for (const [name, lines] of cases) {
-    const result = await executor.execute(createPatchCall(lines.join('\n')));
-
-    assert.equal(result.ok, false, name);
-    assert.match(result.text, /not supported/, name);
+  const executor = createToolExecutor(createToolRegistry([createApplyPatchToolHandler({cwd})]));
+  for (const directive of ['*** Move to: renamed.txt', '*** Rename to: renamed.txt', '*** Unsupported: file.txt']) {
+    const result = await executor.execute(createPatchCall([
+      '*** Begin Patch',
+      '*** Update File: file.txt',
+      '@@',
+      '-old',
+      '+new',
+      directive,
+      '*** End Patch'
+    ].join('\n')));
+    assert.equal(result.ok, false, directive);
+    assert.match(result.text, /not supported|unsupported/, directive);
+    assert.equal(readWorkspaceFile(cwd, 'file.txt'), 'old\n');
   }
 });
 
@@ -4437,12 +4271,12 @@ test('apply_patch does not treat ordinary content ending with 120000 as symlink 
   fs.writeFileSync(path.join(cwd, 'file.txt'), 'value 100000\n', 'utf8');
   const executor = createToolExecutor(createToolRegistry([createApplyPatchToolHandler({ cwd })]));
   const patch = [
-    '--- a/file.txt',
-    '+++ b/file.txt',
+    '*** Begin Patch',
+    '*** Update File: file.txt',
     '@@ -1 +1 @@',
     '-value 100000',
     '+value 120000',
-    ''
+    '*** End Patch'
   ].join('\n');
 
   const result = await executor.execute(createPatchCall(patch));
@@ -4456,16 +4290,14 @@ test('apply_patch does not write any files when one operation fails', async () =
   fs.writeFileSync(path.join(cwd, 'existing.txt'), 'original\n', 'utf8');
   const executor = createToolExecutor(createToolRegistry([createApplyPatchToolHandler({ cwd })]));
   const patch = [
-    '--- /dev/null',
-    '+++ b/new.txt',
-    '@@ -0,0 +1 @@',
+    '*** Begin Patch',
+    '*** Add File: new.txt',
     '+created',
-    '--- a/existing.txt',
-    '+++ b/existing.txt',
+    '*** Update File: existing.txt',
     '@@ -1 +1 @@',
     '-missing',
     '+changed',
-    ''
+    '*** End Patch'
   ].join('\n');
 
   const result = await executor.execute(createPatchCall(patch));
@@ -4482,14 +4314,14 @@ test('apply_patch returns display metadata for successful and failed parsed patc
   const executor = createToolExecutor(createToolRegistry([createApplyPatchToolHandler({ cwd })]));
 
   const updateResult = await executor.execute(createPatchCall([
-    '--- a/src.txt',
-    '+++ b/src.txt',
+    '*** Begin Patch',
+    '*** Update File: src.txt',
     '@@ -1,3 +1,3 @@',
     ' alpha',
     '-beta',
     '+BETA',
     ' gamma',
-    ''
+    '*** End Patch'
   ].join('\n')));
 
   assert.equal(updateResult.ok, true);
@@ -4531,12 +4363,12 @@ test('apply_patch returns display metadata for successful and failed parsed patc
   });
 
   const failedResult = await executor.execute(createPatchCall([
-    '--- a/missing.txt',
-    '+++ b/missing.txt',
+    '*** Begin Patch',
+    '*** Update File: missing.txt',
     '@@ -1 +1 @@',
     '-expected',
     '+changed',
-    ''
+    '*** End Patch'
   ].join('\n')));
 
   assert.equal(failedResult.ok, false);
@@ -4562,15 +4394,15 @@ test('apply_patch display metadata returns complete post-image lines across hunk
   ].join('\n'), 'utf8');
   const executor = createToolExecutor(createToolRegistry([createApplyPatchToolHandler({ cwd })]));
   const result = await executor.execute(createPatchCall([
-    '--- a/src.txt',
-    '+++ b/src.txt',
+    '*** Begin Patch',
+    '*** Update File: src.txt',
     '@@ -5 +5,2 @@',
     '-five',
     '+FIVE',
     '+five-and-half',
     '@@ -9 +10,0 @@',
     '-nine',
-    ''
+    '*** End Patch'
   ].join('\n')));
 
   assert.equal(result.ok, true);
@@ -4603,27 +4435,34 @@ test('apply_patch display metadata returns complete post-image lines across hunk
   assert.equal(result.details.display.files[0].lines.find((line) => line.postLine === 10).text, 'ten');
 });
 
-test('apply_patch display metadata clears added status when a later hunk deletes that line', async () => {
+test('apply_patch display metadata tracks later operations removing a newly added line', async () => {
   const cwd = createTempWorkspace();
   fs.writeFileSync(path.join(cwd, 'src.txt'), 'A\nC\n', 'utf8');
   const executor = createToolExecutor(createToolRegistry([createApplyPatchToolHandler({ cwd })]));
   const result = await executor.execute(createPatchCall([
-    '--- a/src.txt',
-    '+++ b/src.txt',
+    '*** Begin Patch',
+    '*** Update File: src.txt',
     '@@ -1 +1 @@',
     '-A',
     '+B',
+    '*** Update File: src.txt',
     '@@ -1 +0,0 @@',
     '-B',
-    ''
+    '*** End Patch'
   ].join('\n')));
 
   assert.equal(result.ok, true);
   assert.equal(readWorkspaceFile(cwd, 'src.txt'), 'C\n');
-  assert.deepEqual(result.details.display.files[0].lines, [
-    {kind: 'removed', text: 'A', postLine: null},
-    {kind: 'removed', text: 'B', postLine: null},
-    {kind: 'context', text: 'C', postLine: 1}
+  assert.deepEqual(result.details.display.files.map((file) => file.lines), [
+    [
+      {kind: 'removed', text: 'A', postLine: null},
+      {kind: 'added', text: 'B', postLine: 1},
+      {kind: 'context', text: 'C', postLine: 2}
+    ],
+    [
+      {kind: 'removed', text: 'B', postLine: null},
+      {kind: 'context', text: 'C', postLine: 1}
+    ]
   ]);
 });
 
@@ -4640,7 +4479,7 @@ test('apply_patch enforces patch, file, changed file, and hunk limits', async ()
   });
   const executor = createToolExecutor(createToolRegistry([handler]));
 
-  const tooLargePatch = await executor.execute(createPatchCall('--- /dev/null\n+++ b/a.txt\n@@ -0,0 +1 @@\n+x\n'));
+  const tooLargePatch = await executor.execute(createPatchCall('*** Begin Patch\n*** Add File: a.txt\n+x\n*** End Patch'));
   assert.equal(tooLargePatch.ok, false);
   assert.match(tooLargePatch.text, /patch exceeds/);
 
@@ -4652,26 +4491,23 @@ test('apply_patch enforces patch, file, changed file, and hunk limits', async ()
     maxHunks: 10
   })]));
   const tooLargeFile = await roomyExecutor.execute(createPatchCall([
-    '--- a/large.txt',
-    '+++ b/large.txt',
+    '*** Begin Patch',
+    '*** Update File: large.txt',
     '@@ -1 +1 @@',
     '-123456',
     '+changed',
-    ''
+    '*** End Patch'
   ].join('\n')));
   assert.equal(tooLargeFile.ok, false);
   assert.match(tooLargeFile.text, /target file exceeds/);
 
   const tooManyFiles = await roomyExecutor.execute(createPatchCall([
-    '--- /dev/null',
-    '+++ b/a.txt',
-    '@@ -0,0 +1 @@',
+    '*** Begin Patch',
+    '*** Add File: a.txt',
     '+a',
-    '--- /dev/null',
-    '+++ b/b.txt',
-    '@@ -0,0 +1 @@',
+    '*** Add File: b.txt',
     '+b',
-    ''
+    '*** End Patch'
   ].join('\n')));
   assert.equal(tooManyFiles.ok, false);
   assert.match(tooManyFiles.text, /more than 1 files/);
@@ -4684,15 +4520,15 @@ test('apply_patch enforces patch, file, changed file, and hunk limits', async ()
     maxHunks: 1
   })]));
   const tooManyHunks = await hunkLimitExecutor.execute(createPatchCall([
-    '--- a/small.txt',
-    '+++ b/small.txt',
+    '*** Begin Patch',
+    '*** Update File: small.txt',
     '@@ -1 +1 @@',
     '-old',
     '+new',
     '@@ -1 +1 @@',
     '-new',
     '+newer',
-    ''
+    '*** End Patch'
   ].join('\n')));
   assert.equal(tooManyHunks.ok, false);
   assert.match(tooManyHunks.text, /exceeds 1 hunks/);
