@@ -6,7 +6,7 @@ import {DEFAULT_RENDER_PREFERENCES} from '../config/app-settings-config';
 import {DEFAULT_TUI_THEME} from '../config/theme-config';
 import {sanitizeTerminalText} from '../terminal/control-chars';
 import { renderAssistantBlock, renderCompactionNoticeBlock, renderConversationReferenceBlock, renderErrorBlock, renderLocalNoticeBlock, renderReasoningSummaryBlock, renderShellBlock, renderUserBlock } from './blocks/message-renderer';
-import {renderSubagentRunAppendBlock, renderSubagentRunBlock} from './subagent-renderer';
+import {renderSubagentInterruptedBlock, renderSubagentRunAppendBlock, renderSubagentRunBlock} from './subagent-renderer';
 import { renderToolPairBlock, renderToolRecordBlock } from './tool-message-renderer';
 
 import type {RenderState} from '../types/render';
@@ -30,9 +30,14 @@ type TranscriptSubagentRunBlock = {
   showUnexpectedInterruption: boolean; // destructive/resume 投影是否补意外中断状态。
 };
 
-type TranscriptBlock = TranscriptRecordBlock | TranscriptToolPairBlock | TranscriptSubagentRunBlock;
+type TranscriptSubagentInterruptedBlock = {
+  kind: 'subagent_interrupted'; // 已有过程栏但没有稳定终态的单委派，续写 Esc 合成的取消状态。
+};
+
+type TranscriptBlock = TranscriptRecordBlock | TranscriptToolPairBlock | TranscriptSubagentRunBlock | TranscriptSubagentInterruptedBlock;
 
 export type SubagentAppendRenderState = {
+  localParentToolCallIds: Set<string>; // 已出现单委派子运行 start 的外层 call；其合成中断结果续写原过程栏。
   parallelParentToolCallIds: Set<string>; // 并行分组内 run_subagent 外层 call id；其 tool pair 保持展开报告正文。
   parallelRunIds: Set<string>; // 并行分组子运行身份；其过程记录不进入主窗口投影，由增量批次间共享。
   pendingToolCalls: Map<string, SubagentTranscriptRecord>; // 已持久化但仍由 footer 展示的内部调用，等待 result 后成对写入历史区。
@@ -42,6 +47,7 @@ export type SubagentAppendRenderState = {
 
 export function createSubagentAppendRenderState(): SubagentAppendRenderState {
   return {
+    localParentToolCallIds: new Set(),
     parallelParentToolCallIds: new Set(),
     parallelRunIds: new Set(),
     pendingToolCalls: new Map(),
@@ -83,24 +89,29 @@ function sanitizeRecordDisplayText(record: TranscriptRecord): TranscriptRecord {
 }
 
 /**
- * 登记并行子运行的 start 事实；增量批次之间共享，保证后续事件批次持续被过滤。
+ * 登记单委派与并行子运行的 start 事实；增量批次之间共享，分别供中断续写和后续事件过滤。
  */
 export function trackParallelSubagentRecords(state: SubagentAppendRenderState, records: TranscriptRecord[]): void {
   for (const record of records) {
-    if (record.role === 'subagent' && record.event.kind === 'start' && record.event.parallelSize !== undefined) {
-      state.parallelRunIds.add(record.runId);
-      state.parallelParentToolCallIds.add(record.parentToolCallId);
+    if (record.role === 'subagent' && record.event.kind === 'start') {
+      if (record.event.parallelSize !== undefined) {
+        state.parallelRunIds.add(record.runId);
+        state.parallelParentToolCallIds.add(record.parentToolCallId);
+      } else {
+        state.localParentToolCallIds.add(record.parentToolCallId);
+      }
     }
   }
 }
 
 /**
- * 快照/重放路径按 records 重建子 Agent 增量 append 状态：run 身份、终态集合、
- * 并行集合与当前活跃 run 的 pending 内部调用。
+ * 快照/重放路径按 records 重建子 Agent 增量 append 状态：run 身份、终态与单委派/并行集合，
+ * 以及当前活跃 run 的 pending 内部调用。
  */
 export function rebuildSubagentAppendState(state: SubagentAppendRenderState, records: TranscriptRecord[], activeSubagentRunId?: string): void {
   state.runIds.clear();
   state.terminalCallIds.clear();
+  state.localParentToolCallIds.clear();
   state.parallelRunIds.clear();
   state.parallelParentToolCallIds.clear();
   state.pendingToolCalls.clear();
@@ -110,6 +121,8 @@ export function rebuildSubagentAppendState(state: SubagentAppendRenderState, rec
       if (record.event.kind === 'start' && record.event.parallelSize !== undefined) {
         state.parallelRunIds.add(record.runId);
         state.parallelParentToolCallIds.add(record.parentToolCallId);
+      } else if (record.event.kind === 'start') {
+        state.localParentToolCallIds.add(record.parentToolCallId);
       }
       if (record.event.kind === 'completed' || record.event.kind === 'failed' || record.event.kind === 'cancelled') {
         state.terminalCallIds.add(record.parentToolCallId);
@@ -162,7 +175,7 @@ export function renderTranscriptBlocks(
   const renderRecords = subagentAppendState
     ? prepareSubagentAppendRecords(visibleRecords, subagentAppendState)
     : visibleRecords;
-  return groupTranscriptRecords(renderRecords, showUnexpectedSubagentInterruption, subagentAppendState?.terminalCallIds, activeSubagentRunId, subagentAppendState?.parallelParentToolCallIds)
+  return groupTranscriptRecords(renderRecords, showUnexpectedSubagentInterruption, subagentAppendState?.terminalCallIds, activeSubagentRunId, subagentAppendState?.parallelParentToolCallIds, subagentAppendState?.localParentToolCallIds)
     .map((block) => renderTranscriptBlock(block, width, theme, subagentAppendState?.runIds))
     .filter((block) => block.length > 0);
 }
@@ -244,25 +257,36 @@ export function filterPendingSubagentToolCallRecords(records: TranscriptRecord[]
     !state.pendingToolCalls.has(createSubagentToolCallKey(record.runId, record.event.toolCallId)));
 }
 /**
- * 顺序扫描 transcript，把相邻且同 call id 的工具调用和结果聚合为一个渲染块。
+ * 顺序扫描 transcript，把相邻且同 call id 的工具调用和结果聚合为一个渲染块；
+ * 单委派已出现 start 且结果为合成中断时，以过程栏取消终态代替外层工具对。
  */
-function groupTranscriptRecords(records: TranscriptRecord[], showUnexpectedSubagentInterruption = false, knownTerminalCallIds?: Set<string>, activeSubagentRunId?: string, knownParallelToolCallIds?: Set<string>): TranscriptBlock[] {
+function groupTranscriptRecords(records: TranscriptRecord[], showUnexpectedSubagentInterruption = false, knownTerminalCallIds?: Set<string>, activeSubagentRunId?: string, knownParallelToolCallIds?: Set<string>, knownLocalToolCallIds?: Set<string>): TranscriptBlock[] {
   const blocks: TranscriptBlock[] = [];
   const subagentTerminalCallIds = new Set(knownTerminalCallIds || []);
   const parallelToolCallIds = new Set(knownParallelToolCallIds || []);
-  for (const parentToolCallId of records
-    .filter((record): record is SubagentTranscriptRecord => record.role === 'subagent')
-    .filter((record) => record.event.kind === 'completed' || record.event.kind === 'failed' || record.event.kind === 'cancelled')
-    .map((record) => record.parentToolCallId)) {
-    subagentTerminalCallIds.add(parentToolCallId);
-    knownTerminalCallIds?.add(parentToolCallId);
-  }
-  for (const record of records) {
-    if (record.role === 'subagent' && record.event.kind === 'start' && record.event.parallelSize !== undefined) {
-      // start 在场的路径（快照/重放/退出）自行携带并行事实；增量批次由 appendState 传入补充。
-      parallelToolCallIds.add(record.parentToolCallId);
+  const localToolCallIds = new Set(knownLocalToolCallIds || []);
+  const interruptedCallIds = new Set<string>();
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index];
+    const nextRecord = records[index + 1];
+    if (record.role === 'subagent') {
+      if (record.event.kind === 'start') {
+        // start 在场的路径（快照/重放/退出）自行携带身份；增量批次由 appendState 补充。
+        if (record.event.parallelSize !== undefined) parallelToolCallIds.add(record.parentToolCallId);
+        else localToolCallIds.add(record.parentToolCallId);
+      } else if (record.event.kind === 'completed' || record.event.kind === 'failed' || record.event.kind === 'cancelled') {
+        subagentTerminalCallIds.add(record.parentToolCallId);
+        knownTerminalCallIds?.add(record.parentToolCallId);
+      }
+    }
+    if (record.role === 'tool_call' && record.toolName === 'run_subagent' && record.toolCallId !== '' &&
+        nextRecord?.role === 'tool_result' && record.toolCallId === nextRecord.toolCallId && nextRecord.toolName === 'run_subagent' &&
+        nextRecord.details.kind === 'generic' && nextRecord.details.interrupted === true) {
+      interruptedCallIds.add(record.toolCallId);
     }
   }
+  // 必须在整份记录的 start 身份收集完成后才判定候选；不能依赖 call 与 start 的物理先后。
+  const interruptedLocalCallIds = new Set([...interruptedCallIds].filter((callId) => localToolCallIds.has(callId)));
 
   for (let index = 0; index < records.length; index += 1) {
     const record = records[index];
@@ -281,7 +305,7 @@ function groupTranscriptRecords(records: TranscriptRecord[], showUnexpectedSubag
       blocks.push({
         kind: 'subagent_run',
         records: runRecords,
-        showUnexpectedInterruption: showUnexpectedSubagentInterruption && record.runId !== activeSubagentRunId
+        showUnexpectedInterruption: showUnexpectedSubagentInterruption && record.runId !== activeSubagentRunId && !interruptedLocalCallIds.has(record.parentToolCallId)
       });
       continue;
     }
@@ -292,6 +316,14 @@ function groupTranscriptRecords(records: TranscriptRecord[], showUnexpectedSubag
       record.toolCallId !== '' &&
       record.toolCallId === nextRecord.toolCallId
     ) {
+      if (interruptedLocalCallIds.has(record.toolCallId)) {
+        // 收到真实取消终态的路径已有 rail 状态；否则只补一条同栏状态，避免伪造运行耗时。
+        if (!subagentTerminalCallIds.has(record.toolCallId)) {
+          blocks.push({kind: 'subagent_interrupted'});
+        }
+        index += 1;
+        continue;
+      }
       blocks.push({
         kind: 'tool_pair',
         call: record,
@@ -313,6 +345,10 @@ function groupTranscriptRecords(records: TranscriptRecord[], showUnexpectedSubag
  * 按聚合后的 transcript block 类型选择对应 renderer。
  */
 function renderTranscriptBlock(block: TranscriptBlock, width: number, theme: RenderState['theme'], appendedSubagentRuns?: Set<string>): string {
+  if (block.kind === 'subagent_interrupted') {
+    return renderSubagentInterruptedBlock(width, theme);
+  }
+
   if (block.kind === 'tool_pair') {
     return renderToolPairBlock(block.call, block.result, width, theme, block.compactSubagentResult);
   }

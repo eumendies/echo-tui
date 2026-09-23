@@ -178,6 +178,68 @@ test('completed subagent rail shows its report once and compacts the outer run_s
   assert.doesNotMatch(plain, /\{"task":"inspect repository"\}/);
 });
 
+test('interrupted single subagent continues its existing rail instead of creating a second status block', () => {
+  const records = [
+    subagentRecord('inspect repository', {kind: 'start', task: 'inspect repository'}),
+    {role: 'tool_call', text: '', toolCallId: 'outer-1', toolName: 'run_subagent', argumentsText: '{"agent":"explorer","task":"inspect repository"}'},
+    {role: 'tool_result', text: 'Tool execution was interrupted by the user before it returned a result.', toolCallId: 'outer-1', toolName: 'run_subagent', ok: false, details: {kind: 'generic', interrupted: true}}
+  ];
+  const plain = renderTranscriptLines(records, 80).map(stripAnsi).join('\n');
+
+  assert.equal((plain.match(/explorer · inspect repository/gu) || []).length, 1);
+  assert.match(plain, /\n  ▌ cancelled(?:\n|$)/u);
+  assert.equal((plain.match(/cancelled/gu) || []).length, 1);
+  assert.doesNotMatch(plain, /interrupted before completion|◆ Explorer · cancelled/u);
+  assert.doesNotMatch(plain, /Tool execution was interrupted by the user before it returned a result/u);
+});
+
+test('interrupted outer result does not repeat an already received subagent cancelled terminal', () => {
+  const records = [
+    subagentRecord('inspect repository', {kind: 'start', task: 'inspect repository'}),
+    subagentRecord('Explorer cancelled.', {kind: 'cancelled', durationMs: 1200}),
+    {role: 'tool_call', text: '', toolCallId: 'outer-1', toolName: 'run_subagent', argumentsText: '{"agent":"explorer","task":"inspect repository"}'},
+    {role: 'tool_result', text: 'Tool execution was interrupted by the user before it returned a result.', toolCallId: 'outer-1', toolName: 'run_subagent', ok: false, details: {kind: 'generic', interrupted: true}}
+  ];
+  const plain = renderTranscriptLines(records, 80).map(stripAnsi).join('\n');
+
+  assert.match(plain, /\n  ▌ cancelled · 1\.2s(?:\n|$)/u);
+  assert.equal((plain.match(/cancelled/gu) || []).length, 1);
+  assert.doesNotMatch(plain, /Tool execution was interrupted by the user before it returned a result/u);
+});
+
+test('interrupted parallel and unstarted subagent calls keep their outer report visible', () => {
+  const outerCall = {role: 'tool_call', text: '', toolCallId: 'outer-1', toolName: 'run_subagent', argumentsText: '{"agent":"explorer","task":"inspect repository"}'};
+  const outerResult = {role: 'tool_result', text: 'Tool execution was interrupted by the user before it returned a result.', toolCallId: 'outer-1', toolName: 'run_subagent', ok: false, details: {kind: 'generic', interrupted: true}};
+
+  for (const records of [
+    [outerCall, outerResult],
+    [subagentRecord('inspect repository', {kind: 'start', task: 'inspect repository', parallelSize: 2}), outerCall, outerResult],
+    [subagentRecord('inspect repository', {kind: 'start', task: 'inspect repository'}), outerCall, {...outerResult, details: {kind: 'generic'}}]
+  ]) {
+    const plain = renderTranscriptLines(records, 80).map(stripAnsi).join('\n');
+    assert.match(plain, /Tool execution was interrupted by the user before it returned a result/u);
+  }
+});
+
+test('snapshot grouping uses the complete record set when start or terminal follows an outer pair', () => {
+  const call = {role: 'tool_call', text: '', toolCallId: 'outer-1', toolName: 'run_subagent', argumentsText: '{"agent":"explorer","task":"inspect"}'};
+  const interrupted = {role: 'tool_result', text: 'Tool execution was interrupted by the user before it returned a result.', toolCallId: 'outer-1', toolName: 'run_subagent', ok: false, details: {kind: 'generic', interrupted: true}};
+  const parallel = renderTranscriptLines([
+    call, interrupted,
+    subagentRecord('inspect', {kind: 'start', task: 'inspect', parallelSize: 2})
+  ], 80).map(stripAnsi).join('\n');
+  assert.match(parallel, /Tool execution was interrupted by the user before it returned a result/u);
+  assert.doesNotMatch(parallel, /\n  ▌ cancelled(?:\n|$)/u);
+
+  const completed = renderTranscriptLines([
+    subagentRecord('inspect', {kind: 'start', task: 'inspect'}),
+    call, {...interrupted, text: 'report', ok: true, details: {kind: 'generic'}},
+    subagentRecord('', {kind: 'completed', durationMs: 10})
+  ], 80).map(stripAnsi).join('\n');
+  assert.match(completed, /Explorer · returned report/u);
+  assert.doesNotMatch(completed, /  ▌ report/u);
+});
+
 test('Worker rail and compact outer result preserve Worker identity', () => {
   const workerBase = {...BASE, agentName: 'worker', runId: 'worker-run', parentToolCallId: 'worker-outer'};
   const records = [
