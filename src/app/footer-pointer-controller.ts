@@ -172,7 +172,7 @@ class FooterPointerController {
     }, CURSOR_POSITION_TIMEOUT_MS);
   }
 
-  /** 将已校准命中的 target 交给仍然匹配 interactionId 的当前 consumer，不解释业务 choice 或文件语义。 */
+  /** 将已校准命中的 target 交给仍然匹配 interactionId 的当前 consumer；异步结果不阻塞终端协议输入。 */
   private route(region: FooterHitRegion, activate: boolean): void {
     const consumer = this.getActivePointerConsumer();
 
@@ -180,7 +180,10 @@ class FooterPointerController {
       return;
     }
 
-    consumer.handlePointer(region.target, activate);
+    const result = consumer.handlePointer(region.target, activate);
+    if (result && typeof result === 'object' && 'then' in result && typeof result.then === 'function') {
+      void result.catch(() => {});
+    }
   }
 
   /** 清空当前 frame、校准与 hover 状态；调用方在关闭交互时同时取消在途 CPR。 */

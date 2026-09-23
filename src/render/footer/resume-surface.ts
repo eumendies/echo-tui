@@ -4,7 +4,7 @@ import { activeBackground, renderFocusBar, resolveFooterTheme, tokenText, type F
 import { clampPlainText, padVisibleText } from './text';
 import { createSelectedWindowRows } from './window';
 import type { ResumeCommandSurface, ResumeCommandSurfacePreviewRecord, ResumeCommandSurfaceSession } from '../../types/command';
-import type { FooterLayout } from '../../types/render';
+import type { FooterHitRegion, FooterLayout } from '../../types/render';
 
 type PreviewRowsOptions = {
   height: number;
@@ -15,6 +15,7 @@ type PreviewRowsOptions = {
 type SessionListRow =
   | {
       kind: 'session'; // 标识该行承载一个可选择的会话。
+      index: number; // 会话在完整 session 候选集合中的绝对索引。
       session: ResumeCommandSurfaceSession; // 左栏需要展示的会话标签。
       selected: boolean; // 指示该会话是否为当前选中项。
     }
@@ -54,6 +55,7 @@ export function renderResumeSurface(commandSurface: ResumeCommandSurface, width:
     theme
   );
   const focus = commandSurface.focus === 'preview' ? 'preview' : 'list';
+  const leftPrefix = `${tokenText(theme, 'frame', '│')} `;
   const lines = [
     renderBoxTop(boxWidth, theme),
     renderFullLine(renderTitle(commandSurface.title, boxWidth - 4, theme), boxWidth, theme),
@@ -62,16 +64,19 @@ export function renderResumeSurface(commandSurface: ResumeCommandSurface, width:
       renderPanelHeader('预览', focus === 'preview', theme),
       leftWidth,
       rightWidth,
-      theme
+      theme,
+      leftPrefix
     ),
     renderSplitLine(
       renderPanelDivider(leftWidth, theme),
       renderPanelDivider(rightWidth, theme),
       leftWidth,
       rightWidth,
-      theme
+      theme,
+      leftPrefix
     )
   ];
+  const bodyStart = lines.length;
 
   for (let index = 0; index < bodyHeight; index += 1) {
     lines.push(renderSplitLine(
@@ -79,7 +84,8 @@ export function renderResumeSurface(commandSurface: ResumeCommandSurface, width:
       previewRows[index] || '',
       leftWidth,
       rightWidth,
-      theme
+      theme,
+      leftPrefix
     ));
   }
 
@@ -89,12 +95,22 @@ export function renderResumeSurface(commandSurface: ResumeCommandSurface, width:
 
   lines.push(renderFullLine(ansi.dim(clampPlainText(commandSurface.dismissHint, boxWidth - 4)), boxWidth, theme));
   lines.push(renderBoxBottom(boxWidth, theme));
+  const leftColumnStart = displayWidth(leftPrefix) + 1;
+  const hitRegions: FooterHitRegion[] = commandSurface.focus === 'list' ? sessionRows.flatMap((row, visualIndex) => row.kind === 'session' ? [{
+    owner: 'resume' as const,
+    target: {kind: 'command_resume_session' as const, index: row.index},
+    rowStart: bodyStart + visualIndex,
+    rowEnd: bodyStart + visualIndex,
+    columnStart: leftColumnStart,
+    columnEnd: leftColumnStart + leftWidth - 1
+  }] : []) : [];
 
   return {
     lines,
     cursorRow: lines.length - 1,
     cursorColumn: 0,
-    showCursor: false
+    showCursor: false,
+    hitRegions
   };
 }
 
@@ -104,7 +120,7 @@ export function renderResumeSurface(commandSurface: ResumeCommandSurface, width:
 function createSessionListRows(commandSurface: ResumeCommandSurface, selectedIndex: number, height: number): SessionListRow[] {
   return createSelectedWindowRows(commandSurface.sessions, selectedIndex, height).map((row) => row.kind === 'more'
     ? {kind: 'more' as const, count: row.count, direction: row.direction}
-    : {kind: 'session' as const, session: row.item, selected: row.index === selectedIndex});
+    : {kind: 'session' as const, index: row.index, session: row.item, selected: row.index === selectedIndex});
 }
 
 /**
@@ -307,7 +323,7 @@ function renderFullLine(content: string, width: number, theme: FooterTheme): str
 /**
  * 渲染左右两栏内容行。
  */
-function renderSplitLine(left: string, right: string, leftWidth: number, rightWidth: number, theme: FooterTheme): string {
+function renderSplitLine(left: string, right: string, leftWidth: number, rightWidth: number, theme: FooterTheme, leftPrefix: string): string {
   const bar = tokenText(theme, 'frame', '│');
-  return `${bar} ${padVisibleText(left, leftWidth)} ${bar} ${padVisibleText(right, rightWidth)} ${bar}`;
+  return `${leftPrefix}${padVisibleText(left, leftWidth)} ${bar} ${padVisibleText(right, rightWidth)} ${bar}`;
 }

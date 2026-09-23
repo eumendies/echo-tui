@@ -100,6 +100,33 @@ test('createApp gates UI mouse interaction by the saved setting and applies chan
   }
 });
 
+test('createApp gates command pointer sessions, recovers calibration after resize, and disables tracking on close', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-main-command-pointer-'));
+
+  try {
+    const fixturePath = path.join(__dirname, 'fixtures/main-command-pointer-scenario.js');
+    const output = childProcess.execFileSync(process.execPath, [fixturePath], {
+      cwd: path.resolve(__dirname, '../../..'),
+      encoding: 'utf8',
+      env: {...process.env, HOME: home},
+      timeout: 15_000
+    });
+    const result = JSON.parse(output);
+
+    assert.equal(result.disabledInteractionId, null);
+    assert.equal(result.disabledCprRequests, 0);
+    assert.equal(result.requestsBeforeHover > 0, true);
+    assert.equal(result.requestsBeforeResize > result.requestsBeforeHover, true);
+    assert.equal(result.destructiveFrames > 0, true);
+    assert.equal(result.requestsAfterStaleCpr > result.requestsBeforeResize, true);
+    assert.equal(result.trackingAfterClose, true);
+    assert.equal(result.requestsBeforeClosedMouse, result.requestsAfterStaleCpr);
+    assert.equal(result.effortInteractionId, null);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
 test('createApp destructively recovers when terminal rows expand to realign footer mouse calibration', () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-main-resize-expansion-'));
 

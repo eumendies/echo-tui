@@ -195,11 +195,27 @@ export type FooterMouseTarget =
   | {
       kind: 'file_picker_entry'; // file picker 左栏中当前可见的路径 entry。
       index: number; // entry 在当前过滤后列表中的绝对索引。
+    }
+  | {
+      kind: 'command_select_option'; // command select surface 中当前可见的 option。
+      index: number; // option 在 command handler 完整候选集合中的绝对索引。
+    }
+  | {
+      kind: 'command_resume_session'; // /resume 左栏中当前可见的会话。
+      index: number; // 会话在当前 command session 完整候选集合中的绝对索引。
+    }
+  | {
+      kind: 'command_copy_message'; // /copy 左栏中当前可见的可复制消息。
+      index: number; // 消息在当前 command session 完整候选集合中的绝对索引。
+    }
+  | {
+      kind: 'command_diff_file'; // /diff 左栏中当前可见的文件。
+      index: number; // 文件在当前 command session 完整候选集合中的绝对索引。
     };
 
 export type FooterHitRegion = {
   interactionId?: string; // 生成本区域的 pointer consumer 身份；缺省区域不得被终端鼠标路由执行。
-  owner: 'slash_suggestion' | 'choice' | 'file_picker'; // 生成该区域的 footer 交互 surface 类别。
+  owner: 'slash_suggestion' | 'choice' | 'file_picker' | 'command_select' | 'resume' | 'copy' | 'diff'; // 生成该区域的 footer 交互 surface 类别。
   target: FooterMouseTarget; // 命中后交给输入路由的无副作用语义目标。
   rowStart: number; // 相对 footer 的 0-based 起始可见行，含端点。
   rowEnd: number; // 相对 footer 的 0-based 结束可见行，含端点。

@@ -14,6 +14,7 @@ import type {CustomSubagentManifest} from '../agent/subagent/manifest';
 import type {AgentDefinitionMutationResult, AgentManagementDiagnostic, AgentManagementItem, AgentManagementScope} from '../agent/subagent/management-store';
 import type {AgentsSettingsMutationResult, AgentsSettingsScopeReadResult, BuiltinSubagentName, BuiltinSubagentOverride} from '../agent/subagent/settings';
 import type {McpConfigEditDraft, McpConfigEditIssue, McpPromptArgument, McpPromptMessage} from './mcp';
+import type {FooterMouseTarget} from './render';
 
 export type CommandSurfaceOption = {
   label: string;
@@ -1003,6 +1004,7 @@ export type CommandHandler<TData extends object = Record<string, unknown>> = {
   match?(text: string): boolean;
   start(text: string, host: CommandHost): void | CommandStartResult;
   handleEvent?(session: CommandSession<TData>, event: InputEvent, host: CommandHost): void | Promise<void>;
+  handlePointer?(session: CommandSession<TData>, target: FooterMouseTarget, activate: boolean, host: CommandHost): void | Promise<void>; // 已完成 footer frame 与 consumer 校验的语义命中；handler 负责验证 target 是否适用于当前 session。
 };
 
 export type CommandStartResult =

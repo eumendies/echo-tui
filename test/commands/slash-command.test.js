@@ -2890,6 +2890,91 @@ test('resumeCommandHandler opens empty state, selectable sessions, moves, confir
   assert.equal(cancel.calls.sessionCloses, 1);
 });
 
+test('pointer-enabled command handlers preserve their command-specific selection semantics', () => {
+  const modelHandler = new ModelCommandHandler();
+  const model = createFakeHost({
+    modelCommandInfo: {
+      selectedIndex: 0,
+      models: [
+        {id: 'fast', model: 'gpt-fast', provider: 'openai'},
+        {id: 'deep', model: 'gpt-deep', provider: 'openai'}
+      ]
+    }
+  });
+  let session = startCommand(modelHandler, '/model', model.host);
+  modelHandler.handlePointer(session, {kind: 'command_select_option', index: 1}, false, model.host);
+  assert.equal(model.host.session.getActive().data.selectedIndex, 1);
+  assert.deepEqual(model.calls.modelSelections, []);
+  modelHandler.handlePointer(model.host.session.getActive(), {kind: 'command_select_option', index: 1}, true, model.host);
+  assert.deepEqual(model.calls.modelSelections, ['deep']);
+  assert.equal(model.host.session.getActive(), null);
+
+  const modelInfo = createFakeHost({modelCommandInfo: {error: 'missing'}});
+  session = startCommand(modelHandler, '/model', modelInfo.host);
+  modelHandler.handlePointer(session, {kind: 'command_select_option', index: 0}, true, modelInfo.host);
+  assert.deepEqual(modelInfo.calls.modelSelections, []);
+
+  const modeHandler = new ModeCommandHandler();
+  const mode = createFakeHost({interactionMode: 'normal'});
+  session = startCommand(modeHandler, '/mode', mode.host);
+  modeHandler.handlePointer(session, {kind: 'command_select_option', index: 2}, false, mode.host);
+  assert.equal(mode.host.session.getActive().data.selectedIndex, 2);
+  modeHandler.handlePointer(mode.host.session.getActive(), {kind: 'command_select_option', index: 2}, true, mode.host);
+  assert.deepEqual(mode.calls.modeSelections, ['shell']);
+
+  const copyHandler = new CopyCommandHandler();
+  const copy = createFakeHost({
+    copyableRecords: [
+      {id: 'message-0', role: 'user', text: 'question'},
+      {id: 'message-1', role: 'assistant', text: 'answer'}
+    ]
+  });
+  session = startCommand(copyHandler, '/copy', copy.host);
+  copyHandler.handlePointer(session, {kind: 'command_copy_message', index: 0}, false, copy.host);
+  assert.equal(copy.host.session.getActive().data.focus, 'list');
+  assert.equal(copy.host.session.getActive().data.selectedIndex, 0);
+  assert.deepEqual(copy.host.session.getActive().data.selectedIds, ['message-1']);
+  copyHandler.handlePointer(copy.host.session.getActive(), {kind: 'command_copy_message', index: 0}, true, copy.host);
+  assert.deepEqual(copy.host.session.getActive().data.selectedIds, ['message-1', 'message-0']);
+  assert.deepEqual(copy.calls.clipboardWrites, []);
+  const copyUpdateCount = copy.calls.sessionUpdates.length;
+  copyHandler.handlePointer(copy.host.session.getActive(), {kind: 'command_copy_message', index: 9}, true, copy.host);
+  assert.equal(copy.calls.sessionUpdates.length, copyUpdateCount);
+
+  const diffHandler = new DiffCommandHandler();
+  const diff = createFakeHost({
+    diffSource: {
+      status: 'ready',
+      source: {kind: 'history', label: 'history'},
+      notices: [],
+      files: [
+        {path: 'a.ts', kind: 'modified', added: 1, removed: 1, hunks: []},
+        {path: 'b.ts', kind: 'added', added: 2, removed: 0, hunks: []}
+      ]
+    }
+  });
+  session = startCommand(diffHandler, '/diff', diff.host);
+  diffHandler.handleEvent(session, {type: INPUT_EVENTS.MOVE_RIGHT}, diff.host);
+  diffHandler.handlePointer(diff.host.session.getActive(), {kind: 'command_diff_file', index: 1}, true, diff.host);
+  assert.equal(diff.host.session.getActive().data.focus, 'list');
+  assert.equal(diff.host.session.getActive().data.selectedIndex, 1);
+  assert.equal(diff.host.session.getActive().data.detailScroll, 0);
+  assert.equal(diff.calls.sessionCloses, 0);
+
+  const resumeHandler = new ResumeCommandHandler();
+  const resumeSessions = createSessionSummarys(2);
+  const resume = createFakeHost({sessions: resumeSessions});
+  session = startCommand(resumeHandler, '/resume', resume.host);
+  resumeHandler.handlePointer(session, {kind: 'command_resume_session', index: 1}, false, resume.host);
+  assert.equal(resume.host.session.getActive().data.selectedIndex, 1);
+  assert.deepEqual(resume.calls.loadedSessionIds, []);
+  resumeHandler.handlePointer(resume.host.session.getActive(), {kind: 'command_resume_session', index: 1}, true, resume.host);
+  assert.deepEqual(resume.calls.loadedSessionIds, [resumeSessions[1].sessionId]);
+  assert.equal(resume.host.session.getActive(), null);
+
+  assert.equal(new EffortCommandHandler().handlePointer, undefined);
+});
+
 test('resumeCommandHandler deletes a selected historical session only after confirmation and refreshes storage candidates', async () => {
   const handler = new ResumeCommandHandler();
   const selectable = createFakeHost({sessions: createSessionSummarys(2)});

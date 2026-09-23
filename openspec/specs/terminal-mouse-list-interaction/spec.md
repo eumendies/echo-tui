@@ -4,11 +4,11 @@
 TBD - created by archiving change add-mouse-list-interactions. Update Purpose after archive.
 ## Requirements
 ### Requirement: 鼠标能力按交互列表生命周期启停
-系统 SHALL 仅在 `ui.mouseInteractionEnabled` 为 `true`、stdin 与 stdout 均为 TTY、且当前可见 footer 为第一阶段支持鼠标的交互列表时启用终端鼠标报告。系统 SHALL 使用支持移动、按下和释放坐标的 SGR 扩展报告格式，并 SHALL 在设置关闭、列表关闭、owner 切换、应用退出、信号清理或终端初始化失败时禁用此前启用的鼠标模式。系统 SHALL NOT 在 headless `--once`、非 TTY 路径或用户关闭 UI 鼠标交互时启用该模式。
+系统 SHALL 仅在 `ui.mouseInteractionEnabled` 为 `true`、stdin 与 stdout 均为 TTY、且当前可见 footer 为明确支持鼠标的交互列表时启用终端鼠标报告。支持的交互列表包括 slash suggestion、用户问题 choice、工具审批 choice、file picker，以及 handler 显式声明 pointer 能力的通用 `select`、`/resume`、`/copy` 与 `/diff` command session surface。系统 SHALL 使用支持移动、按下和释放坐标的 SGR 扩展报告格式，并 SHALL 在设置关闭、列表关闭、owner 切换、应用退出、信号清理或终端初始化失败时禁用此前启用的鼠标模式。系统 SHALL NOT 在 headless `--once`、非 TTY 路径或用户关闭 UI 鼠标交互时启用该模式。
 
 #### Scenario: 开启 UI 鼠标交互后打开支持的交互列表
 - **WHEN** `ui.mouseInteractionEnabled` 为 true
-- **AND** slash suggestion、用户问题 choice、工具审批 choice 或 file picker 成为当前可见且接收输入的 surface
+- **AND** slash suggestion、用户问题 choice、工具审批 choice、file picker，或已声明 pointer 能力的 select、resume、copy、diff command session surface 成为当前可见且接收输入的 surface
 - **AND** stdin 与 stdout 均为 TTY
 - **THEN** 系统 SHALL 启用 SGR 鼠标报告以接收移动、左键按下和左键释放坐标
 - **THEN** 系统 SHALL 保持既有 raw mode 与 bracketed paste 行为

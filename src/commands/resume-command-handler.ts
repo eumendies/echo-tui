@@ -10,6 +10,7 @@ import {SessionBrowserPreviewController} from './session/session-browser-preview
 
 import type {CommandHandler, CommandHost, CommandSession, ConfirmCommandSurface, InfoCommandSurface, ResumeCommandSurface} from '../types/command';
 import type {InputEvent} from '../types/input';
+import type {FooterMouseTarget} from '../types/render';
 import type {TranscriptSessionDeleteResult, TranscriptSessionSummary} from '../types/transcript';
 import type {SessionBrowserData} from './session/session-browser';
 
@@ -80,6 +81,10 @@ function createEmptyResumeSurface(): InfoCommandSurface {
 
 function confirmResumeSelection(session: CommandSession<ResumeData>, host: CommandHost): void {
   const data = normalizeSessionBrowserData(session.data);
+  confirmResumeData(data, host);
+}
+
+function confirmResumeData(data: ResumeData, host: CommandHost): void {
   const selectedSession = data.sessions[data.selectedIndex];
 
   if (!selectedSession) {
@@ -198,6 +203,38 @@ export class ResumeCommandHandler implements CommandHandler<ResumeData> {
     if (event.type === INPUT_EVENTS.ESCAPE) {
       this.previewController.invalidate();
       host.session.close();
+    }
+  }
+
+  handlePointer(session: CommandSession<ResumeData>, target: FooterMouseTarget, activate: boolean, host: CommandHost): void {
+    if (target.kind !== 'command_resume_session' || session.surface.kind !== 'resume') {
+      return;
+    }
+
+    const current = normalizeResumeData(session.data);
+    const selected = Number.isInteger(target.index) ? current.sessions[target.index] : undefined;
+    if (!selected || current.deleteTarget || current.focus !== 'list') {
+      return;
+    }
+
+    const {notice: _notice, ...withoutNotice} = current;
+    const selectionChanged = current.selectedIndex !== target.index;
+    const next = normalizeResumeData({
+      ...withoutNotice,
+      previewScroll: 0,
+      selectedIndex: target.index,
+      ...(selectionChanged ? {previewState: createLoadingSessionPreviewState(selected.sessionId)} : {})
+    });
+    if (selectionChanged || current.notice || current.previewScroll !== 0) {
+      host.session.update({data: next, surface: createResumeSurfaceFromData(next)});
+      if (selectionChanged) {
+        this.schedulePreview(next, host, 120);
+      }
+    }
+
+    if (activate) {
+      this.previewController.invalidate();
+      confirmResumeData(next, host);
     }
   }
 

@@ -7,7 +7,7 @@ import {DEFAULT_TUI_THEME} from '../../config/theme-config';
 
 import type {DiffCommandSurface} from '../../types/command';
 import type {DiffFile, DiffHunk, DiffLine} from '../../types/diff';
-import type {FooterLayout} from '../../types/render';
+import type {FooterHitRegion, FooterLayout} from '../../types/render';
 
 const MIN_SPLIT_CELL_WIDTH = 56;
 const BODY_OUTER_DECORATION_WIDTH = 7;
@@ -15,6 +15,9 @@ const DEFAULT_DIFF_SURFACE_MAX_LINES = 22;
 const NOTICE_SEPARATOR = ' · ';
 
 type DetailRow = string;
+type FileListRow =
+  | {kind: 'file'; index: number; line: string}
+  | {kind: 'more'; line: string};
 
 type DiffSurfaceMetrics = {
   bodyHeight: number;
@@ -34,22 +37,36 @@ function renderDiffSurface(surface: DiffCommandSurface, width: number, maxLines 
   const metrics = createDiffSurfaceMetrics(surface, width, maxLines, theme);
   const detailWindow = createDetailWindow(metrics.detailRows, surface.detailScroll, metrics.bodyHeight, metrics.detailWidth);
   const listRows = metrics.listWidth > 0 ? createFileListRows(surface, metrics.selectedIndex, metrics.listWidth, metrics.bodyHeight, theme) : [];
+  const leftPrefix = `${frame('│', theme)} `;
   const lines = [
     renderTop(metrics.boxWidth, surface, theme),
     renderLine(renderSummary(surface, metrics.selectedIndex, metrics.boxWidth - 4, theme), metrics.boxWidth, theme),
-    renderDivider(metrics.splitWidth, theme),
-    ...Array.from({length: metrics.bodyHeight}, (_value, index) => renderBodyLine(listRows[index] || '', detailWindow[index] || '', metrics.listWidth, metrics.detailWidth, theme)),
-    renderDivider(metrics.splitWidth, theme),
-    ...(metrics.hasNotice ? [renderLine(ansi.dim(clampPlainText((surface.notices || []).join(NOTICE_SEPARATOR), metrics.boxWidth - 4)), metrics.boxWidth, theme)] : []),
-    renderLine(ansi.dim(clampPlainText('↑↓ 选择/滚动 · ←→ 切换焦点 · Enter/Esc 关闭', metrics.boxWidth - 4)), metrics.boxWidth, theme),
-    renderBottom(metrics.boxWidth, theme)
+    renderDivider(metrics.splitWidth, theme)
   ];
+  const bodyStart = lines.length;
+  lines.push(...Array.from({length: metrics.bodyHeight}, (_value, index) => renderBodyLine(listRows[index]?.line || '', detailWindow[index] || '', metrics.listWidth, metrics.detailWidth, theme, leftPrefix)));
+  lines.push(renderDivider(metrics.splitWidth, theme));
+  if (metrics.hasNotice) {
+    lines.push(renderLine(ansi.dim(clampPlainText((surface.notices || []).join(NOTICE_SEPARATOR), metrics.boxWidth - 4)), metrics.boxWidth, theme));
+  }
+  lines.push(renderLine(ansi.dim(clampPlainText('↑↓ 选择/滚动 · ←→ 切换焦点 · Enter/Esc 关闭', metrics.boxWidth - 4)), metrics.boxWidth, theme));
+  lines.push(renderBottom(metrics.boxWidth, theme));
+  const leftColumnStart = displayWidth(leftPrefix) + 1;
+  const hitRegions: FooterHitRegion[] = listRows.flatMap((row, visualIndex) => row.kind === 'file' ? [{
+    owner: 'diff' as const,
+    target: {kind: 'command_diff_file' as const, index: row.index},
+    rowStart: bodyStart + visualIndex,
+    rowEnd: bodyStart + visualIndex,
+    columnStart: leftColumnStart,
+    columnEnd: leftColumnStart + metrics.listWidth - 1
+  }] : []);
 
   return {
     lines,
     cursorRow: lines.length - 1,
     cursorColumn: 0,
-    showCursor: false
+    showCursor: false,
+    hitRegions
   };
 }
 
@@ -123,15 +140,19 @@ function renderSummary(surface: DiffCommandSurface, selectedIndex: number, width
   return `${left}${' '.repeat(gap)}${right}`;
 }
 
-function createFileListRows(surface: DiffCommandSurface, selectedIndex: number, width: number, height: number, theme: FooterTheme): string[] {
+function createFileListRows(surface: DiffCommandSurface, selectedIndex: number, width: number, height: number, theme: FooterTheme): FileListRow[] {
   const rows = createSelectedWindowRows(surface.files, selectedIndex, height);
 
   return rows.map((row) => {
     if (row.kind === 'more') {
-      return fitCell(ansi.dim(`${row.direction === 'up' ? '↑' : '↓'} ${row.count} 更多`), width);
+      return {kind: 'more', line: fitCell(ansi.dim(`${row.direction === 'up' ? '↑' : '↓'} ${row.count} 更多`), width)};
     }
 
-    return renderFileRow(row.item, row.index === selectedIndex, surface.focus === 'list', width, theme);
+    return {
+      kind: 'file',
+      index: row.index,
+      line: renderFileRow(row.item, row.index === selectedIndex, surface.focus === 'list', width, theme)
+    };
   });
 }
 
@@ -316,12 +337,13 @@ function formatNumber(value: number | null, width: number, theme: FooterTheme): 
   return ansi.dim(tokenText(theme, 'muted', value === null ? ' '.repeat(width) : String(value).padStart(width)));
 }
 
-function renderBodyLine(left: string, right: string, leftWidth: number, rightWidth: number, theme: FooterTheme): string {
+/** 绘制文件列表与详情，左侧前缀与命中列范围共用同一份布局值。 */
+function renderBodyLine(left: string, right: string, leftWidth: number, rightWidth: number, theme: FooterTheme, leftPrefix: string): string {
   if (leftWidth <= 0) {
-    return `${frame('│', theme)} ${fitCell(right, rightWidth)} ${frame('│', theme)}`;
+    return `${leftPrefix}${fitCell(right, rightWidth)} ${frame('│', theme)}`;
   }
 
-  return `${frame('│', theme)} ${fitCell(left, leftWidth)} ${frame('│', theme)} ${fitCell(right, rightWidth)} ${frame('│', theme)}`;
+  return `${leftPrefix}${fitCell(left, leftWidth)} ${frame('│', theme)} ${fitCell(right, rightWidth)} ${frame('│', theme)}`;
 }
 
 function renderLine(content: string, boxWidth: number, theme: FooterTheme): string {
