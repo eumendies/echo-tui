@@ -17,6 +17,7 @@ import {resolveMemoryPrompt} from '../context/memory-prompt';
 import {buildProviderRequestPrefix, resolveProviderPromptMaterials} from '../context/provider-request-prefix';
 import {prepareAgent} from '../agent-setup';
 import {createCompactionNoticeRecord, runCompaction} from '../context/context-compaction';
+import {boundConversationImages} from '../context/conversation-image-budget';
 import {createUsageCwdHash} from '../../persistence/usage-store';
 import {isReadonlyBashSandboxEffective} from '../../sandbox/provider';
 import {createSubagentToolPort} from '../subagent/runtime';
@@ -411,7 +412,7 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
     state.todoState = session.todoState;
 
     /**
-     * 发请求前检查：调用共享压缩核心，压缩发生时回填运行态并通知 app。
+     * 发请求前检查：文本、图片或附件字节超预算时调用共享压缩核心，压缩发生时回填运行态并通知 app。
      * 摘要请求复用本次运行冻结的材料与当前记忆投影构造前导，并携带会话身份以复用缓存路由。
      * 摘要供应商请求一旦发生，其 usage 与普通 turn 同款记入观测与 usage 账本。
      */
@@ -510,7 +511,8 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
 
       const activeStartIndex = compactionState ? compactionState.activeStartIndex : 0;
       const activeRecords = recordRegion.slice(activeStartIndex);
-      const providerRecords = buildProviderRecords({
+      // 压缩后仍超限（例如最近 20 条记录包含大量图片）时仅约束发送副本；本地历史保持完整。
+      const imageBound = boundConversationImages(buildProviderRecords({
         activeRecords,
         agentInstructions: state.agentInstructions,
         basePrompt: state.basePrompt,
@@ -521,7 +523,12 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
         sessionJournalPath: session.sessionJournalPath,
         skillCatalog: state.skillCatalog,
         todoState: state.todoState
-      });
+      }));
+      const providerRecords = imageBound.records;
+      if (imageBound.omittedImages > 0) {
+        // 上一次 provider usage 可能包含此次删去的图片，不能再当成原始历史的真值锚点。
+        usageAnchor = null;
+      }
       state.observation.providerRequestBuilt({
         scope: state.observationScope,
         request: {
@@ -562,7 +569,9 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
         const estimatedUsageSegments = estimateContextUsageSegments(providerRecords, state.toolDefinitions, state.skillCatalogTokens, memoryPrompt.estimatedTokens);
 
         // 以本次真实 prompt token 为锚点，记下当时活跃记录数，供下一轮叠加字符增量。
-        usageAnchor = {usageInputTokens, measuredAtRecordCount: recordRegion.length - activeStartIndex};
+        usageAnchor = imageBound.omittedImages > 0
+          ? null
+          : {usageInputTokens, measuredAtRecordCount: recordRegion.length - activeStartIndex};
         callbacks.onContextUsage?.({
           usedTokens: usageInputTokens,
           contextWindow: state.contextWindow,

@@ -1,5 +1,6 @@
 import {COMPACTION_RECENT_KEEP_COUNT, COMPACTION_THRESHOLD_RATIO} from '../../config/llm-config';
 import {estimateTextTokens} from './token-estimator';
+import {boundConversationImages, DEFAULT_CONVERSATION_IMAGE_BYTES, estimateRecordImageTokens, getConversationImageBytes} from './conversation-image-budget';
 import {shouldIncludeRecordInProviderContext} from '../transcript-converter-common';
 import {throwIfAborted} from '../../types/agent';
 
@@ -26,7 +27,7 @@ type CompactionSummaryResult = {
 };
 
 /**
- * 估算一组记录的字符 token 总量，含摘要文本。
+ * 估算一组记录的文本与模型可见图片 token 总量，含摘要文本。
  * 跳过不会发送给 provider 的 role（error、compaction_notice），避免高估上下文长度。
  */
 function estimateRecordsTokens(records: TranscriptRecord[], summaryText = ''): number {
@@ -38,14 +39,15 @@ function estimateRecordsTokens(records: TranscriptRecord[], summaryText = ''): n
     }
 
     total += estimateTextTokens(record.role === 'extension' ? JSON.stringify(record.extension) : record.text);
+    total += estimateRecordImageTokens(record);
   }
 
   return total;
 }
 
 /**
- * 综合预估当前上下文 token 数：有 usage 真值锚点时以其为基线叠加新增记录的字符估算增量；
- * 无锚点时退化为对全部活跃记录与摘要做纯字符估算。
+ * 综合预估当前上下文 token 数：有适用 usage 锚点时叠加新增记录的文本及图片估算；
+ * 无锚点时估算全部活跃文本及图片。
  */
 function estimateContextTokens(options: {
   activeRecords: TranscriptRecord[];
@@ -159,7 +161,7 @@ async function generateCompactionSummary(options: {
   ];
 
   throwIfAborted(abortSignal);
-  const result: AgentTurnResult = await agent.runTurn(summaryRecords, {}, {
+  const result: AgentTurnResult = await agent.runTurn(boundConversationImages(summaryRecords).records, {}, {
     abortSignal,
     isCompaction: true,
     includeToolDefinitions: true,
@@ -215,7 +217,8 @@ async function runCompaction(options: {
       anchor
     });
 
-    if (typeof contextWindow !== 'number' || !exceedsCompactionThreshold(estimated, contextWindow, thresholdRatio)) {
+    if ((typeof contextWindow !== 'number' || !exceedsCompactionThreshold(estimated, contextWindow, thresholdRatio)) &&
+        getConversationImageBytes(activeRecords) <= DEFAULT_CONVERSATION_IMAGE_BYTES) {
       return {didCompact: false, reason: 'below_threshold'};
     }
   }
