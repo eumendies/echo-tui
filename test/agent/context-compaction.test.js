@@ -10,6 +10,7 @@ const {
   runCompaction
 } = require('../../src/agent/context/context-compaction');
 const {buildProviderRequestPrefix} = require('../../src/agent/context/provider-request-prefix');
+const {getConversationImageBytes} = require('../../src/agent/context/conversation-image-budget');
 
 const SUMMARY_CWD = '/tmp/echo_tui';
 const SUMMARY_SECTIONS = [
@@ -109,6 +110,58 @@ test('estimateContextTokens uses usage anchor plus added record increment', () =
   });
 
   assert.equal(estimated, 1001);
+});
+
+test('image estimates cover restored history and usage-anchor increments without counting base64 as text', () => {
+  const attachment = {kind: 'image', mediaType: 'image/png', path: 'image.png', sizeBytes: 2, dataBase64: Buffer.from('ab').toString('base64')};
+  const records = [
+    {role: 'user', text: 'aaaa', attachments: [attachment]},
+    {role: 'tool_result', text: 'bbbb', toolCallId: 'c', toolName: 'read_files', ok: true, attachments: [attachment]},
+    {role: 'reasoning_summary', text: 'local', attachments: [attachment]}
+  ];
+
+  assert.equal(estimateContextTokens({activeRecords: records}), 2 + 2048 * 2);
+  assert.equal(estimateContextTokens({activeRecords: records, anchor: {usageInputTokens: 100, measuredAtRecordCount: 1}}), 101 + 2048);
+});
+
+test('image budget triggers automatic compaction before the context token threshold', async () => {
+  const agent = createSummaryAgent();
+  const dataBase64 = Buffer.alloc(6_000_000, 1).toString('base64');
+  const records = [
+    {role: 'user', text: 'first', attachments: [{kind: 'image', mediaType: 'image/png', dataBase64, path: 'first.png', sizeBytes: 1}]},
+    {role: 'tool_call', text: '', toolCallId: 'read-1', toolName: 'read_files', argumentsText: '{}'},
+    {role: 'tool_result', text: '--- image: second.png\nimage_attached: true', toolCallId: 'read-1', toolName: 'read_files', ok: true,
+      attachments: [{kind: 'image', mediaType: 'image/png', dataBase64, path: 'second.png', sizeBytes: 1}]},
+    ...buildRecords(30)
+  ];
+  const result = await runCompaction({records, contextWindow: 1_000_000, agent, promptPrefix: buildSummaryPrefix(), sessionId: 'stable'});
+
+  assert.equal(result.didCompact, true);
+  const summaryRecords = agent.calls[0].records;
+  assert.equal(getConversationImageBytes(summaryRecords), 6_000_000);
+  assert.equal(summaryRecords[0].role, 'system');
+  assert.deepEqual(summaryRecords[1].attachments, []);
+  assert.match(summaryRecords[1].text, /pixels are not visible/);
+  assert.equal(summaryRecords[2].toolCallId, 'read-1');
+  assert.equal(summaryRecords[3].toolCallId, 'read-1');
+  assert.match(summaryRecords[3].text, /image_attached: true/);
+  assert.equal(summaryRecords[3].attachments[0].path, 'second.png');
+  assert.equal(summaryRecords.at(-1).role, 'user');
+  assert.equal(agent.calls[0].options.sessionId, 'stable');
+  assert.equal(records[0].attachments.length, 1);
+  assert.equal(records[2].attachments.length, 1);
+});
+
+test('forced compaction limits its own image request and preserves history on empty summaries', async () => {
+  const dataBase64 = Buffer.alloc(10_000_001, 2).toString('base64');
+  const imageRecord = {role: 'user', text: 'image', attachments: [{kind: 'image', mediaType: 'image/png', path: 'huge.png', sizeBytes: 2, dataBase64}]};
+  const agent = createSummaryAgent('   ', {usageInputTokens: 21});
+  const result = await runCompaction({records: [imageRecord, ...buildRecords(30)], force: true, agent, promptPrefix: buildSummaryPrefix()});
+
+  assert.equal(result.didCompact, false);
+  assert.equal(result.usageInputTokens, 21);
+  assert.equal(getConversationImageBytes(agent.calls[0].records), 0);
+  assert.equal(imageRecord.attachments.length, 1);
 });
 
 test('estimateContextTokens falls back to pure char estimate without anchor', () => {

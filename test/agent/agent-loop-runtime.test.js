@@ -8,6 +8,7 @@ const {buildProviderRecords, createAgentLoopRuntime: createRuntime} = require('.
 const {createObservation} = require('../../src/observation/observation-projector');
 const {UserConfigContext} = require('../../src/config/user-config-context');
 const {createCompactionNoticeRecord} = require('../../src/agent/context/context-compaction');
+const {getConversationImageBytes} = require('../../src/agent/context/conversation-image-budget');
 const {formatAgentMemoryCatalogPrompt, formatUserMemoriesPrompt} = require('../../src/agent/context/memory-prompt');
 const { createBuiltInSystemPrompt } = require('../../src/agent/context/system-prompt');
 const agentSetupModule = require('../../src/agent/agent-setup');
@@ -2665,6 +2666,116 @@ test('createAgentLoopRuntime reuses the normal request prefix for compaction and
   // 摘要 provider turn 的 usage 同时进入观测与 usage 账本。
   assert.equal(debug.events.some((event) => event.event === 'provider_usage' && event.payload.usage?.inputTokens === 9), true);
   assert.equal(usageEvents.some((event) => event.inputTokens === 9 && event.cacheReadInputTokens === 7), true);
+});
+
+test('restored history without a compaction boundary omits old images only from provider requests', async () => {
+  const dataBase64 = Buffer.alloc(6_000_000, 5).toString('base64');
+  const old = {kind: 'image', mediaType: 'image/png', dataBase64, path: 'old.png', sizeBytes: 1};
+  const recent = {kind: 'image', mediaType: 'image/png', dataBase64, path: 'recent.png', sizeBytes: 1};
+  const records = [
+    {role: 'user', text: 'old upload', attachments: [old]},
+    {role: 'tool_call', text: '', toolName: 'read_files', toolCallId: 'old-read', argumentsText: '{}'},
+    {role: 'tool_result', text: '--- image: recent.png\nimage_attached: true', toolName: 'read_files', toolCallId: 'old-read', ok: true, attachments: [recent]}
+  ];
+  const requests = [];
+  const agent = {
+    async runTurn(input) {
+      requests.push(input);
+      return {draft: 'done', toolCalls: [], usageInputTokens: 25};
+    }
+  };
+
+  await withPatchedAgentRuntime(agent, async () => {
+    const runAgent = createAgentLoopRuntime(TEST_CWD);
+    assert.equal(await runAgent({records, sessionId: 'restored'}), 'done');
+    assert.equal(await runAgent({records: [...records, {role: 'user', text: 'next turn'}], sessionId: 'restored'}), 'done');
+  });
+
+  assert.equal(requests.length, 2);
+  for (const request of requests) {
+    assert.equal(getConversationImageBytes(request), 6_000_000);
+    assert.deepEqual(request[1].attachments, []);
+    assert.match(request[1].text, /pixels are not visible/);
+    assert.equal(request[2].toolCallId, 'old-read');
+    assert.equal(request[3].toolCallId, 'old-read');
+    assert.equal(request[3].attachments[0], recent);
+  }
+  assert.equal(records[0].text, 'old upload');
+  assert.equal(records[0].attachments[0], old);
+  assert.equal(records[2].attachments[0], recent);
+});
+
+test('automatic compaction removes older images before the ordinary request without losing the summary budget', async () => {
+  const dataBase64 = Buffer.alloc(6_000_000, 3).toString('base64');
+  const records = [
+    {role: 'user', text: 'older photo', attachments: [{kind: 'image', mediaType: 'image/png', path: 'old.png', sizeBytes: 1, dataBase64}]},
+    {role: 'user', text: 'second photo', attachments: [{kind: 'image', mediaType: 'image/png', path: 'second.png', sizeBytes: 1, dataBase64}]},
+    ...Array.from({length: 30}, (_, index) => ({role: index % 2 === 0 ? 'user' : 'assistant', text: `message ${index}`}))
+  ];
+  const requests = [];
+  const agent = {
+    async runTurn(input, _callbacks, options = {}) {
+      requests.push({input, options});
+      return {draft: options.isCompaction ? 'summary' : 'done', toolCalls: []};
+    }
+  };
+
+  const result = await withPatchedAgentRuntime(agent, () => {
+    const runAgent = createAgentLoopRuntime(TEST_CWD);
+    return runAgent({records, sessionId: 'stable'});
+  }, {...TEST_CONFIG, contextWindow: 1_000_000});
+
+  assert.equal(result, 'done');
+  assert.equal(requests.length, 2);
+  assert.equal(requests[0].options.isCompaction, true);
+  assert.equal(getConversationImageBytes(requests[0].input), 6_000_000);
+  assert.equal(requests[0].options.sessionId, 'stable');
+  assert.equal(getConversationImageBytes(requests[1].input), 0);
+  assert.equal(records[0].attachments.length, 1);
+  assert.equal(records[1].attachments.length, 1);
+});
+
+test('multiple image reads during one turn stay bounded and the newest tool result can be reread', async () => {
+  const dataBase64 = Buffer.alloc(6_000_000, 7).toString('base64');
+  const image = (name) => ({kind: 'image', mediaType: 'image/png', path: name, sizeBytes: 1, dataBase64});
+  const records = [{role: 'user', text: 'inspect both', attachments: [image('upload.png')]}];
+  const requests = [];
+  const emitted = [];
+  let turn = 0;
+  const agent = {
+    async runTurn(input) {
+      requests.push(input);
+      turn += 1;
+      return turn <= 2
+        ? {draft: '', toolCalls: [{callId: `read-${turn}`, toolName: 'read_files', argumentsText: '{}'}], usageInputTokens: 25}
+        : {draft: 'done', toolCalls: [], usageInputTokens: 25};
+    }
+  };
+  const handler = {
+    definition: {name: 'read_files', description: 'read image', parameters: {type: 'object'}},
+    async execute(_args, call) {
+      return {callId: call.callId, toolName: call.toolName, ok: true, details: {kind: 'read_files', truncated: false},
+        text: `--- image: ${call.callId}.png\nimage_attached: true`, attachments: [image(`${call.callId}.png`)]};
+    }
+  };
+
+  const result = await withPatchedAgentRegistry(agent, [handler], () => {
+    const runAgent = createAgentLoopRuntime(TEST_CWD);
+    return runAgent({records}, {onToolResult(toolResult) { emitted.push(toolResult); }});
+  });
+
+  assert.equal(result, 'done');
+  assert.equal(requests.length, 3);
+  assert.equal(emitted.length, 2);
+  assert.equal(getConversationImageBytes(requests[1]), 6_000_000);
+  assert.equal(getConversationImageBytes(requests[2]), 6_000_000);
+  const latest = requests[2].find((record) => record.role === 'tool_result' && record.toolCallId === 'read-2');
+  assert.equal(latest.attachments[0].path, 'read-2.png');
+  const previous = requests[2].find((record) => record.role === 'tool_result' && record.toolCallId === 'read-1');
+  assert.match(previous.text, /read-1\.png.*use read_files/);
+  assert.deepEqual(previous.attachments, []);
+  assert.equal(emitted[0].attachments.length, 1);
+  assert.equal(emitted[1].attachments.length, 1);
 });
 
 test('createAgentLoopRuntime emits debug provider and tool summaries without changing provider records', async () => {

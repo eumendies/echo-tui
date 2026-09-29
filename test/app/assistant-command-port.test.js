@@ -7,6 +7,7 @@ const path = require('node:path');
 const {createAssistantCommandPort} = require('../../src/app/command/assistant-command-port');
 const agentSetupModule = require('../../src/agent/agent-setup');
 const {UserConfigContext} = require('../../src/config/user-config-context');
+const {getConversationImageBytes} = require('../../src/agent/context/conversation-image-budget');
 
 const TEST_CWD = '/tmp/echo_manual_compaction';
 const TEST_JOURNAL_PATH = '/tmp/echo_manual_compaction/session.jsonl';
@@ -217,5 +218,42 @@ test('manual compaction derives the plan-mode sandbox tightening', async () => {
       // plan 模式默认派生运行级 read-only 收紧，与 runAgentLoop 的默认工具策略组合一致。
       assert.equal(preparations[0].sandboxModeOverride, 'read-only');
     });
+  });
+});
+
+test('manual compaction bounds images in the summary request without changing persisted records', async () => {
+  await withTemporaryHome(async () => {
+    const dataBase64 = Buffer.alloc(6_000_000, 4).toString('base64');
+    const session = createSession('normal');
+    session.records[0].attachments = [{kind: 'image', mediaType: 'image/png', path: 'old.png', sizeBytes: 1, dataBase64}];
+    session.records[2].attachments = [{kind: 'image', mediaType: 'image/png', path: 'new.png', sizeBytes: 1, dataBase64}];
+    let summaryRecords;
+    const agent = {
+      async runTurn(records) {
+        summaryRecords = records;
+        return {draft: 'summary', toolCalls: []};
+      }
+    };
+
+    await withPatchedPrepareAgent(agent, async () => {
+      const port = createAssistantCommandPort({
+        appContext: createAppContext(session, 'normal'),
+        mcpManager: {listReadonlyToolNames: () => new Set()},
+        render() {},
+        renderRecords() {},
+        submitUserMessage: async () => true,
+        usageStore: {appendEvent: () => null, listDailyUsage: () => [], listModelUsage: () => []},
+        userConfigContext: new UserConfigContext()
+      });
+
+      assert.equal((await port.compactContext({force: true})).didCompact, true);
+    });
+
+    assert.equal(getConversationImageBytes(summaryRecords), 6_000_000);
+    assert.deepEqual(summaryRecords[2].attachments, []);
+    assert.match(summaryRecords[2].text, /pixels are not visible/);
+    assert.equal(summaryRecords[4].attachments[0].path, 'new.png');
+    assert.equal(session.records[0].attachments.length, 1);
+    assert.equal(session.records[2].attachments.length, 1);
   });
 });
