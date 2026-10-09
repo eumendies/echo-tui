@@ -52,12 +52,13 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
     sandboxModeOverride,
     attachments,
     observation,
-    observationScope,
+    observationScope: initialObservationScope,
     renderRecords,
     render
   } = input;
   appContext.beginChangeCheckpoint();
-  const interactionMode = appContext.getInteractionMode();
+  let interactionMode = metadata?.interactionMode ?? appContext.getInteractionMode();
+  let observationScope = {...initialObservationScope, interactionMode};
   const userConfigSnapshot = appContext.captureUserConfigSnapshot();
   const toolApprovalSettings = appContext.getToolApprovalSettings(userConfigSnapshot);
   const userRecord = appContext.beginUserTurn(userText, {
@@ -66,7 +67,9 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
     attachments
   });
   // thinking 和 streaming 都只进入 pending preview，完成或 partial 失败后才正式追加 assistant block。
-  const turn = appContext.beginAssistantTurn(modelProfileIdOverride, reasoningEffortOverride);
+  const messagePolicy = userConfigSnapshot.getAppSettings().activeTurnMessagePolicy ?? 'pending';
+  const turn = appContext.beginAssistantTurn(modelProfileIdOverride, reasoningEffortOverride, messagePolicy);
+  const steeringInput = messagePolicy === 'steer' ? appContext.pendingMessageContext.createSteeringInputPort(turn.id) : undefined;
   const cancelQuestionOnAbort = () => {
     userQuestion.cancelActiveRequest('User question was interrupted because the assistant turn ended.');
   };
@@ -87,7 +90,7 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
     cwd: () => appContext.getCurrentCwd(),
     observation,
     getRecords: () => appContext.transcriptContext.getRecords(),
-    interactionMode,
+    interactionMode: () => interactionMode,
     isCurrentTurn,
     reviewer: input.toolApprovalReviewer,
     settings: toolApprovalSettings,
@@ -116,11 +119,27 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
     const session = appContext.getAgentSession({modelProfileIdOverride, reasoningEffortOverride}, userConfigSnapshot);
     await runAgent({
       ...session,
+      interactionMode,
       ...(toolPolicy ? {toolPolicy} : {}),
       ...(sandboxModeOverride ? {sandboxModeOverride} : {}),
-      abortSignal: turn.abortSignal
+      abortSignal: turn.abortSignal,
+      ...(steeringInput ? {steeringInput} : {})
     }, {
       changeRecorder: appContext.changeHistoryContext.createRecorder(),
+      onUserMessage(record) {
+        if (!isCurrentTurn()) return;
+        interactionMode = record.metadata?.interactionMode ?? interactionMode;
+        observationScope = {...observationScope, interactionMode};
+        // runtime 在工具配对完成后同步领取；此处只追加同一记录，不 beginUserTurn 或释放 response lock。
+        renderRecords([appContext.transcriptContext.appendRecord(record)]);
+        appContext.turnContext.startSpinner('thinking');
+        render();
+      },
+      /** 冻结预览直到 SDK 收尾后唯一提交；期间整轮 Esc 仍能保存草稿，渲染不丢弃已显示的稳定前缀。 */
+      onRequestPreempted() {
+        if (!isCurrentTurn()) return;
+        render();
+      },
       onModelResolved(model) {
         if (!isCurrentTurn()) {
           return;
@@ -211,6 +230,7 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
 
         renderRecords(appContext.transcriptContext.appendRecords(records));
       },
+      /** 将完整或引导中止的正文保存为普通记录；renderer 只补稳定前缀之外的尾部，不释放响应锁。 */
       onAssistantSegment(segmentText: string) {
         if (!isCurrentTurn()) {
           return;
@@ -343,6 +363,7 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
       observation.assistantTurnFailed({scope: observationScope, error});
     }
   } finally {
+    appContext.pendingMessageContext.finishTurn(turn.id);
     turn.abortSignal.removeEventListener('abort', cancelQuestionOnAbort);
     const wasCurrentTurn = isCurrentTurn();
 

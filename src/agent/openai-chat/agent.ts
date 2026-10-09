@@ -5,7 +5,7 @@ import {createPromptCacheKey} from '../prompt-cache';
 import {convertTranscriptToOpenAiChatMessages, createOpenAiChatReasoningRecord} from './transcript-converter';
 import {convertToolDefinitionsToOpenAiChatTools} from './tool-converter';
 
-import {isAbortError, throwIfAborted} from '../../types/agent';
+import {AgentAbortError, isAbortError, throwIfAborted} from '../../types/agent';
 import type {AgentTurnCallbacks, AgentTurnOptions, AgentTurnResult, LlmConfig, OpenAiChatAgentDependencies, ProviderAgent, ProviderUsage} from '../../types/agent';
 import type {ToolCall, ToolRegistry} from '../../types/tool';
 import type {TranscriptRecord} from '../../types/transcript';
@@ -218,6 +218,8 @@ async function readChatCompletionStream(
 
   try {
     for await (const chunk of stream) {
+      // 完成标记已确认的响应即使遇到尾部取消，也保留完整结果。
+      if (completed && options.abortSignal?.aborted) break;
       throwIfAborted(options.abortSignal);
 
       if (isChatChunk(chunk) && chunk.error) {
@@ -274,14 +276,15 @@ async function readChatCompletionStream(
       });
     }
   } catch (error: unknown) {
-    if (isAbortError(error) || options.abortSignal?.aborted) {
-      throwIfAborted(options.abortSignal);
+    if (isAbortError(error) || error instanceof OpenAI.APIUserAbortError) {
+      if (!completed) throw new AgentAbortError();
+    } else {
+      throw normalizeError(error, '模型响应流异常');
     }
-
-    throw normalizeError(error, '模型响应流异常');
   }
 
   if (!completed) {
+    throwIfAborted(options.abortSignal);
     throw new LlmAgentError('模型响应流未完成');
   }
 
@@ -324,8 +327,8 @@ class OpenAiChatAgent implements ProviderAgent {
     try {
       stream = await this.client.chat.completions.create(createChatRequest(records, this.config, this.registry, options), {signal: options.abortSignal});
     } catch (error: unknown) {
-      if (isAbortError(error) || options.abortSignal?.aborted) {
-        throwIfAborted(options.abortSignal);
+      if (isAbortError(error) || error instanceof OpenAI.APIUserAbortError) {
+        throw new AgentAbortError();
       }
 
       throw normalizeError(error, '无法启动模型响应');

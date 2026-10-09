@@ -620,6 +620,7 @@ test('CommandHost config facade saves and refreshes skill catalog context ratio'
   withTemporaryUserConfig(JSON.stringify({unknown: {kept: true}}), ({readConfig}) => {
     const {calls, host} = createHostHarness();
     const result = host.config.saveSettings({
+      activeTurnMessagePolicy: 'pending',
       agentInstructionFileName: 'CLAUDE.md',
       autoCompressImages: false,
       checkUpdatesOnStartup: false,

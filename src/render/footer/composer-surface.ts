@@ -1,4 +1,5 @@
 import * as ansi from '../../terminal/ansi';
+import {sanitizeTerminalText} from '../../terminal/control-chars';
 import { ECHO_SPINNER_ACTIVE_FRAME_COUNT, getEchoSpinnerFrame, getEchoSpinnerFrameIndex, renderEchoSpinnerFrame } from '../echo-spinner';
 import { displayWidth, renderComposer, safeRenderWidth } from '../layout';
 import { activeBackground, renderFocusBar, resolveFooterTheme, tokenText, type FooterTheme, type TuiTheme } from '../colors';
@@ -101,7 +102,7 @@ export function renderSubagentViewSurface(statusLine: StatusLineState | undefine
 }
 
 /**
- * 渲染固定高度的待发送卡片；紧张空间退化为单行，正文永不按自然换行扩张。
+ * 渲染固定高度的排队或引导卡片；引导仅保留准备提示，净化文本并预留 Esc 列宽，紧张空间退化为单行。
  */
 function renderPendingMessageLines(message: RenderState['pendingMessage'], width: number, theme: FooterTheme, maxLines: number): string[] {
   if (!message || maxLines <= 0) {
@@ -109,14 +110,26 @@ function renderPendingMessageLines(message: RenderState['pendingMessage'], width
   }
 
   const safeWidth = safeRenderWidth(width);
-  const preview = message.preview;
+  const preview = sanitizeTerminalText(message.preview).replace(/\s+/gu, ' ').trim();
+  const errorText = sanitizeTerminalText(message.error || '素材读取失败').replace(/\s+/gu, ' ').trim();
+  const label = message.status ? '引导' : '待发送';
+  const statusText = message.status === 'preparing' ? '准备引导消息'
+    : message.status === 'failed' ? `引导准备失败：${errorText}`
+    : message.status === 'ready' ? ''
+    : '当前回答结束后发送';
+  const removalHint = ' · Esc 移除';
+  const previewText = maxLines === 1 ? `↳ ${message.status && statusText ? statusText : label} · ${preview}` : `  ${preview}`;
+  // clampPlainText 自行预留终端末列；只扣提示的实际宽度，单行与双行共用同一规则。
+  const previewLine = displayWidth(removalHint) < safeWidth
+    ? `${clampPlainText(previewText, width - displayWidth(removalHint))}${removalHint}`
+    : clampPlainText('Esc 移除', width);
   if (maxLines === 1) {
-    return [tokenText(theme, 'accentStrong', ansi.bold(clampPlainText(`↳ 待发送 · ${preview} · Esc 移除`, safeWidth)))];
+    return [tokenText(theme, 'accentStrong', ansi.bold(previewLine))];
   }
 
   return [
-    tokenText(theme, 'accentStrong', ansi.bold(clampPlainText('↳ 待发送消息 · 当前回答结束后发送', safeWidth))),
-    tokenText(theme, 'muted', clampPlainText(`  ${preview} · Esc 移除`, safeWidth))
+    tokenText(theme, 'accentStrong', ansi.bold(clampPlainText(`↳ ${label}消息${statusText ? ` · ${statusText}` : ''}`, width))),
+    tokenText(theme, 'muted', previewLine)
   ];
 }
 

@@ -86,7 +86,8 @@ function prepareAgent(options: PrepareAgentOptions): PreparedAgent {
     allowedToolNames: options.allowedToolNames,
     executionMode: options.executionMode,
     ...(options.mcpManager ? {mcpManager: options.mcpManager} : {}),
-    ...(options.sandboxModeOverride ? {sandboxModeOverride: options.sandboxModeOverride} : {}),
+    // 引导在安全边界更新运行模式；handler 执行时读取最新派生收紧，不重建固定工具目录。
+    get sandboxModeOverride() { return options.sandboxModeOverride; },
     ...(options.skillRegistry ? {skillRegistry: options.skillRegistry} : {}),
     subagentPort: options.subagentPort
   });

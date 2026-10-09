@@ -4,7 +4,7 @@ import {LlmAgentError, normalizeError, redactSensitiveText} from '../agent-error
 import {convertToolDefinitionsToAnthropicTools} from './tool-converter';
 import {convertTranscriptToAnthropicMessages, createAnthropicThinkingRecord} from './transcript-converter';
 
-import {isAbortError, throwIfAborted} from '../../types/agent';
+import {AgentAbortError, isAbortError, throwIfAborted} from '../../types/agent';
 import type {AgentTurnCallbacks, AgentTurnOptions, AgentTurnResult, AnthropicAgentDependencies, LlmConfig, ProviderAgent, ProviderUsage} from '../../types/agent';
 import type {ReasoningEffort} from '../../types/agent';
 import type {ToolCall, ToolRegistry} from '../../types/tool';
@@ -406,6 +406,8 @@ async function readAnthropicStream(stream: AnthropicStream, callbacks: AgentTurn
 
   try {
     for await (const event of stream) {
+      // 完成标记已确认的响应即使遇到尾部取消，也保留完整结果。
+      if (completed && options.abortSignal?.aborted) break;
       throwIfAborted(options.abortSignal);
 
       if (isAnthropicEvent(event) && event.error) {
@@ -415,8 +417,9 @@ async function readAnthropicStream(stream: AnthropicStream, callbacks: AgentTurn
       const eventUsage = extractProviderUsage(event);
 
       if (eventUsage) {
-        usage = eventUsage;
-        usageInputTokens = eventUsage.inputTokens;
+        // message_delta 常只带输出累计量，不能覆盖 message_start 已取得的输入/cache 真值。
+        usage = {...usage, ...eventUsage};
+        usageInputTokens = usage.inputTokens;
       }
 
       if (!isAnthropicEvent(event)) {
@@ -448,14 +451,15 @@ async function readAnthropicStream(stream: AnthropicStream, callbacks: AgentTurn
       }
     }
   } catch (error: unknown) {
-    if (isAbortError(error) || options.abortSignal?.aborted) {
-      throwIfAborted(options.abortSignal);
+    if (isAbortError(error) || error instanceof Anthropic.APIUserAbortError) {
+      if (!completed) throw new AgentAbortError();
+    } else {
+      throw normalizeError(error, '模型响应流异常');
     }
-
-    throw normalizeError(error, '模型响应流异常');
   }
 
   if (!completed) {
+    throwIfAborted(options.abortSignal);
     throw new LlmAgentError('模型响应流未完成');
   }
 
@@ -501,8 +505,8 @@ class AnthropicAgent implements ProviderAgent {
     try {
       stream = await this.client.messages.create(createAnthropicRequest(records, this.config, this.registry, options), {signal: options.abortSignal});
     } catch (error: unknown) {
-      if (isAbortError(error) || options.abortSignal?.aborted) {
-        throwIfAborted(options.abortSignal);
+      if (isAbortError(error) || error instanceof Anthropic.APIUserAbortError) {
+        throw new AgentAbortError();
       }
 
       throw normalizeError(error, '无法启动模型响应');

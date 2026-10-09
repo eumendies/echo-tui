@@ -23,7 +23,7 @@ type AppScope = {
 };
 
 type AssistantTurnScope = {
-  interactionMode: InteractionMode; // 回合启动时固定的交互模式。
+  interactionMode: InteractionMode; // 当前已应用用户消息的交互模式，等待中的引导不改变此事实。
   runtimeKind: 'tui' | 'headless'; // 回合是否属于交互式 TUI。
 };
 

@@ -3,7 +3,8 @@ const assert = require('node:assert/strict');
 
 const { INPUT_EVENTS } = require('../../src/input/event-types');
 const { displayWidth, stripAnsi } = require('../../src/render/layout');
-const { createInitialAppearanceConfigState, createInitialConfigState, createInitialGeneralConfigState, getConfigRows } = require('../../src/commands/config/state');
+const { createInitialAppearanceConfigState, createInitialConfigState, createInitialGeneralConfigState, getConfigRows, getGeneralConfigRowIds } = require('../../src/commands/config/state');
+const {DEFAULT_APP_SETTINGS} = require('../../src/config/app-settings-config');
 const { handleConfigPanelEvent } = require('../../src/commands/config/panel-state');
 const { listProviderPresets } = require('../../src/config/provider-presets');
 const { renderConfigSurface } = require('../../src/render/footer/config-surface');
@@ -167,6 +168,7 @@ function nextState(state, event) {
 
 test('config center renders general tabs, settings, and constrained width', () => {
   const state = createInitialGeneralConfigState({
+    activeTurnMessagePolicy: 'pending',
     agentInstructionFileName: 'CLAUDE.md',
     autoCompressImages: true,
     checkUpdatesOnStartup: true,
@@ -205,12 +207,34 @@ test('config center renders general tabs, settings, and constrained width', () =
   assert.match(text, /文件编辑工具/);
   assert.match(text, /edit_file/);
   assert.match(text, /超限图片自动压缩/);
-  assert.match(text, /↓ 3 更多/);
+  assert.match(text, /↓ 4 更多/);
   assert.ok(layout.lines.every((line) => displayWidth(line) <= 38));
+});
+
+test('config center renders Chinese message policies and bounded tool safety hint', () => {
+  for (const [policy, label] of [['pending', '排队'], ['steer', '即时引导']]) {
+    const state = createInitialGeneralConfigState({...DEFAULT_APP_SETTINGS, activeTurnMessagePolicy: policy});
+    state.selectedIndex = getGeneralConfigRowIds(state).indexOf('activeTurnMessagePolicy');
+    const surface = {kind: 'config', view: 'general', activeTab: 'general', tabs: [{id: 'general', label: '常规'}], state};
+    const layout = renderConfigSurface(surface, 100, {maxLines: 12});
+    const text = layout.lines.map(stripAnsi).join('\n');
+    assert.match(text, new RegExp(`响应期间发送消息\\s+${label}`));
+    assert.match(text, /下一轮生效/);
+    assert.match(text, /即时引导不强停工具，等待其完成/);
+    assert.ok(layout.lines.length <= 12);
+    assert.ok(layout.lines.every((line) => displayWidth(line) <= 96));
+    for (const columns of [24, 42, 70]) {
+      const narrow = renderConfigSurface(surface, columns, {maxLines: 10});
+      assert.ok(narrow.lines.length <= 10);
+      assert.ok(narrow.lines.every((line) => displayWidth(line) <= columns - 4));
+      assert.match(narrow.lines.map(stripAnsi).join('\n'), columns < 42 ? /响应期间发送/ : /响应期间发送消息/);
+    }
+  }
 });
 
 test('config center highlights active tab with foreground color only', () => {
   const state = createInitialGeneralConfigState({
+    activeTurnMessagePolicy: 'pending',
     agentInstructionFileName: 'AGENTS.md',
     autoCompressImages: false,
     checkUpdatesOnStartup: true,
@@ -242,6 +266,7 @@ test('config center highlights active tab with foreground color only', () => {
 
 test('config center only renders approval model for auto draft', () => {
   const settings = {
+    activeTurnMessagePolicy: 'pending',
     agentInstructionFileName: 'AGENTS.md',
     autoCompressImages: true,
     checkUpdatesOnStartup: true,

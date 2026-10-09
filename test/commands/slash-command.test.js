@@ -8,6 +8,8 @@ const { ClearCommandHandler } = require('../../src/commands/clear-command-handle
 const { CompactCommandHandler } = require('../../src/commands/compact-command-handler');
 const { ConfigCommandHandler } = require('../../src/commands/config/handler');
 const {getGeneralConfigRowIds} = require('../../src/commands/config/state');
+const {DEFAULT_APP_SETTINGS, validateAppSettingsDraft} = require('../../src/config/app-settings-config');
+const {UserConfigContext} = require('../../src/config/user-config-context');
 const { ContextCommandHandler } = require('../../src/commands/context-command-handler');
 const { CopyCommandHandler } = require('../../src/commands/copy-command-handler');
 const { DiffCommandHandler } = require('../../src/commands/diff-command-handler');
@@ -204,6 +206,7 @@ function createFakeHost(options = {}) {
           throw new Error(options.settingsReadError);
         }
         return structuredClone(options.appSettings || {
+          activeTurnMessagePolicy: 'pending',
           agentInstructionFileName: 'AGENTS.md',
           autoCompressImages: true,
           checkUpdatesOnStartup: true,
@@ -1470,6 +1473,7 @@ test('configCommandHandler opens general tab, saves independently, and lazily op
   configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_RIGHT}, host);
   assert.equal(host.session.getActive().surface.state.draft.agentInstructionFileName, 'CLAUDE.md');
   configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
+  configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
   configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
   assert.equal(calls.savedSettingsDrafts.length, 1);
   assert.equal(calls.savedSettingsDrafts[0].compactionThresholdRatio, 0.85);
@@ -1485,6 +1489,109 @@ test('configCommandHandler opens general tab, saves independently, and lazily op
   configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.TAB}, host);
   assert.equal(host.session.getActive().surface.view, 'models');
   assert.equal(host.session.getActive().surface.state.draft.providers[0].id, 'chat');
+});
+
+test('configCommandHandler message policy edits draft with Enter/Left/Right and saves explicitly', async () => {
+  let contents = JSON.stringify({ui: {kept: 'initial'}, unknown: {kept: true}});
+  let temporaryContents;
+  let writes = 0;
+  const context = new UserConfigContext({
+    configPath: '/tmp/echo-message-policy/config.json',
+    readFile() { return contents; },
+    mkdir() {},
+    writeFile(_path, value) { temporaryContents = value; writes += 1; },
+    rename() { contents = temporaryContents; }
+  });
+  try {
+    const handler = new ConfigCommandHandler();
+    const {calls, host} = createFakeHost({
+      appSettings: context.capture().getAppSettingsDraft(),
+      saveSettings(draft) {
+        context.saveAppSettingsDraft(draft);
+        return {ok: true};
+      }
+    });
+    startCommand(handler, '/config', host);
+    const moveTo = async (rowId) => {
+      while (host.session.getActive().data.general.state.selectedIndex
+        < getGeneralConfigRowIds(host.session.getActive().data.general.state).indexOf(rowId)) {
+        await handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
+      }
+    };
+    await moveTo('activeTurnMessagePolicy');
+    const initialFingerprint = host.session.getActive().data.general.state.initialDraftFingerprint;
+    for (const type of [INPUT_EVENTS.SUBMIT, INPUT_EVENTS.MOVE_LEFT, INPUT_EVENTS.MOVE_RIGHT]) {
+      await handler.handleEvent(host.session.getActive(), {type}, host);
+      let session = host.session.getActive();
+      assert.equal(session.data.general.state.draft.activeTurnMessagePolicy, 'steer');
+      assert.equal(session.surface.tabs.find((tab) => tab.id === 'general').status, 'dirty');
+      assert.equal(session.data.general.state.initialDraftFingerprint, initialFingerprint);
+      assert.equal(writes, 0);
+      assert.equal(context.capture().getAppSettings().activeTurnMessagePolicy, 'pending');
+      await handler.handleEvent(session, {type}, host);
+      session = host.session.getActive();
+      assert.equal(session.data.general.state.draft.activeTurnMessagePolicy, 'pending');
+      assert.equal(session.surface.tabs.find((tab) => tab.id === 'general').status, undefined);
+    }
+    await handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
+    // 保存读取最新根对象，而不是覆盖打开面板后由外部加入的未知字段。
+    contents = JSON.stringify({ui: {kept: 'external', sibling: 42}, unknown: {kept: true}});
+    await moveTo('save');
+    await handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
+    const session = host.session.getActive();
+    assert.equal(writes, 1);
+    assert.equal(calls.savedSettingsDrafts.length, 1);
+    assert.equal(calls.sessionCloses, 0);
+    assert.equal(session.surface.view, 'general');
+    assert.match(session.surface.state.feedback, /常规设置已保存/);
+    assert.equal(session.data.general.state.initialDraftFingerprint, JSON.stringify(session.data.general.state.draft));
+    assert.equal(session.surface.tabs.find((tab) => tab.id === 'general').status, undefined);
+    assert.equal(context.capture().getAppSettings().activeTurnMessagePolicy, 'steer');
+    const saved = JSON.parse(contents);
+    assert.equal(saved.ui.activeTurnMessagePolicy, 'steer');
+    assert.equal(saved.ui.kept, 'external');
+    assert.equal(saved.ui.sibling, 42);
+    assert.deepEqual(saved.unknown, {kept: true});
+  } finally {
+    context.close();
+  }
+});
+
+test('configCommandHandler discards message policy draft without saving', async () => {
+  const handler = new ConfigCommandHandler();
+  const {calls, host} = createFakeHost({appSettings: DEFAULT_APP_SETTINGS});
+  startCommand(handler, '/config', host);
+  while (host.session.getActive().data.general.state.selectedIndex
+    < getGeneralConfigRowIds(host.session.getActive().data.general.state).indexOf('activeTurnMessagePolicy')) {
+    await handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
+  }
+  await handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
+  await handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.ESCAPE}, host);
+  assert.equal(host.session.getActive().surface.view, 'discardConfirm');
+  assert.deepEqual(host.session.getActive().surface.dirtyTabs, ['常规']);
+  await handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
+  await handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
+  assert.equal(calls.sessionCloses, 1);
+  assert.equal(calls.savedSettingsDrafts.length, 0);
+  assert.equal(host.config.readSettings().activeTurnMessagePolicy, 'pending');
+  const reopened = startCommand(handler, '/config', host);
+  assert.equal(reopened.data.general.state.draft.activeTurnMessagePolicy, 'pending');
+});
+
+test('configCommandHandler keeps invalid message policy save errors inline and dirty', async () => {
+  const handler = new ConfigCommandHandler();
+  const {host} = createFakeHost({saveSettings: validateAppSettingsDraft});
+  const session = startCommand(handler, '/config', host);
+  session.data.general.state.draft.activeTurnMessagePolicy = 'invalid';
+  while (host.session.getActive().data.general.state.selectedIndex
+    < getGeneralConfigRowIds(host.session.getActive().data.general.state).indexOf('save')) {
+    await handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
+  }
+  await handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
+  const surface = host.session.getActive().surface;
+  assert.match(surface.state.error, /响应期间发送消息/);
+  assert.equal(surface.state.feedback, undefined);
+  assert.equal(surface.tabs.find((tab) => tab.id === 'general').status, 'dirty');
 });
 
 test('configCommandHandler dynamically shows auto approval model and cycles saved profiles', () => {
