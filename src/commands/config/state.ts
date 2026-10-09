@@ -49,6 +49,7 @@ const GENERAL_CONFIG_BASE_ROW_IDS = [
   'fileEditMode',
   'toolApprovalMode',
   'instructionFile',
+  'activeTurnMessagePolicy',
   'save'
 ] as const;
 

@@ -4,11 +4,11 @@
 TBD - created by archiving change add-pending-message. Update Purpose after archive.
 ## Requirements
 ### Requirement: Active assistant turn 期间可排队一条用户输入
-系统 SHALL 在 active assistant turn 占用 response lock 时，允许用户通过 Enter 将当前非空 composer 草稿排为一条待发送输入，但显式声明可在 active assistant turn 期间启动且当前命中的 slash command SHALL 优先立即执行而不进入待发送状态。其他待发送输入 SHALL 保存在独立 transient 单槽状态中；排队时 SHALL 消费当时的 composer 草稿，但 SHALL NOT 追加 transcript record、启动新的 provider request 或把该输入注入当前 assistant turn。
+系统 SHALL 在 active assistant turn 占用 response lock 时，允许用户通过 Enter 接收一条非空 composer 输入，但显式声明可在 active assistant turn 期间启动且当前命中的 slash command SHALL 优先立即执行而不进入待处理状态。当前 turn 的消息策略为 `pending` 时，其他输入 SHALL 保持本规范的待发送语义；策略为 `steer` 时，普通用户消息 SHALL 遵循 `active-turn-steering` 规范，而需要 idle 路由的 slash command、skill invocation 或 shell 输入 SHALL 仍进入 pending。pending 和尚未提交的 steer 输入 SHALL 共用一个独立 transient 单槽，准备中的 steer 输入也占用该槽。排队时 SHALL 消费当时的 composer 草稿，但 SHALL NOT 追加 transcript record、启动新的 provider request 或把 pending 输入注入当前 assistant turn。
 
 #### Scenario: 响应期间排队非空普通草稿
-- **WHEN** active assistant turn 正在 thinking、streaming、执行工具或等待 continuation
-- **AND** composer 包含不匹配响应期可用命令的非空输入且当前没有待发送消息
+- **WHEN** active assistant turn 正在 thinking、streaming、执行工具或等待 continuation，且该 turn 使用 `pending`
+- **AND** composer 包含不匹配响应期可用命令的非空输入且当前没有待处理消息
 - **AND** 用户按 Enter
 - **THEN** 系统 SHALL 保存一条待发送原始文本
 - **THEN** 系统 SHALL 清空当时的 composer 草稿并允许用户继续编辑
@@ -24,27 +24,39 @@ TBD - created by archiving change add-pending-message. Update Purpose after arch
 #### Scenario: 空 composer 不创建待发送消息
 - **WHEN** active assistant turn 仍在运行且 composer 为空
 - **AND** 用户按 Enter
-- **THEN** 系统 SHALL NOT 创建待发送消息
+- **THEN** 系统 SHALL NOT 创建待处理消息
 - **THEN** 系统 SHALL NOT 追加 user transcript record 或启动新的 provider request
 
+#### Scenario: 普通排队消息保留接收时选择
+- **WHEN** 用户按 pending 策略以 plan 或 normal 提交普通消息，随后为下一条输入选择其他 mode
+- **THEN** 已接收普通消息下一轮发送时 SHALL 保持自身接收时的 mode
+- **THEN** 系统 SHALL NOT 将其改为后来选择的 shell 命令或覆盖其 mode
+
 #### Scenario: 单槽已有消息时不覆盖
-- **WHEN** active assistant turn 仍在运行且已经存在一条待发送消息
+- **WHEN** active assistant turn 仍在运行且已经存在一条 pending 或未提交 steer 消息
 - **AND** 用户在 composer 输入另一条不匹配响应期可用命令的草稿后按 Enter
-- **THEN** 系统 SHALL 保留原待发送消息不变
+- **THEN** 系统 SHALL 保留原待处理消息不变
 - **THEN** 系统 SHALL 保留当前 composer 草稿不变
-- **THEN** 系统 SHALL NOT 创建第二条待发送消息
+- **THEN** 系统 SHALL NOT 创建第二条待处理消息
 
 #### Scenario: 已有单槽不阻止响应期命令
-- **WHEN** active assistant turn 仍在运行且已经存在一条待发送消息
+- **WHEN** active assistant turn 仍在运行且已经存在一条待处理消息
 - **AND** 用户提交显式声明响应期可用的 slash command
 - **THEN** 系统 SHALL 立即启动该命令
-- **THEN** 原待发送消息 SHALL 保持不变
+- **THEN** 原待处理消息 SHALL 保持不变
 
 #### Scenario: 非 assistant response lock 不借用待发送队列
 - **WHEN** 系统处于 shell command、手动 compact、MCP bootstrap 或 conversation reference preparation 状态且没有 active assistant turn
 - **AND** 用户按 Enter
 - **THEN** 系统 SHALL 遵循该状态已有的提交或阻止语义
 - **THEN** 系统 SHALL NOT 因该 Enter 创建 pending message
+
+#### Scenario: steer 策略不把下一轮命令转换为提示词
+- **WHEN** active assistant turn 使用 `steer`
+- **AND** 用户提交需要 idle 处理的本地 slash command、direct skill invocation 或 shell 输入
+- **AND** 待处理单槽为空
+- **THEN** 系统 SHALL 保存为 pending 并在当前 turn 结束后按正常路由处理
+- **THEN** 系统 SHALL NOT 抢占当前模型或改变当前运行的模型、模式和工具权限
 
 ### Requirement: 待发送输入在当前 turn 结束后按正常路由处理
 系统 SHALL 在当前 active assistant turn 释放 response lock 后原子取得待发送输入，并通过普通 composer submit 使用的同一输入路由处理。待发送输入在真正开始 user turn 时 SHALL 追加为 user transcript record；该 record SHALL 位于前一 turn 已提交的 assistant、error 或 interruption 事实之后。slash command、skill invocation 和 file mention SHALL 保持普通提交时的既有解释规则；排队的 `/reference` SHALL 在 turn 结束后打开引用选择器，而不是提前携带引用附件。

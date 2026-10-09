@@ -70,7 +70,8 @@ function renderConfigSurface(commandSurface: ConfigCommandSurface, width: number
 }
 
 /**
- * 渲染常规设置 Tab；数值只显示归一化草稿，状态转移由 command handler 负责。
+ * 渲染常规设置 Tab；只投影归一化草稿，选中消息策略时显示工具安全边界说明并计入行预算。
+ * 使用普通屏幕 footer 的可用宽高，不读盘或改变草稿，状态转移由 command handler 负责。
  */
 function renderGeneralView(state: GeneralConfigState, tabs: ConfigSurfaceTab[], activeTab: ConfigTabId, columns: number, maxLines: number | undefined, theme: FooterTheme): string[] {
   const width = calculateBoxWidth(columns);
@@ -90,9 +91,11 @@ function renderGeneralView(state: GeneralConfigState, tabs: ConfigSurfaceTab[], 
       return {label: '自动审批模型', value: profile ? `${profile.model} (${profile.provider})` : '未配置（无法保存 auto）'};
     }
     if (rowId === 'instructionFile') return {label: '项目指令文件', value: state.draft.agentInstructionFileName};
+    if (rowId === 'activeTurnMessagePolicy') return {label: '响应期间发送消息', value: state.draft.activeTurnMessagePolicy === 'steer' ? '即时引导' : '排队'};
     return {label: '保存常规设置', value: '写入 ~/.echo/config.json', action: true};
   });
-  const fixedLines = 5 + (state.error || state.feedback ? 1 : 0);
+  const showMessagePolicyHint = getGeneralConfigRowIds(state)[state.selectedIndex] === 'activeTurnMessagePolicy';
+  const fixedLines = 5 + (state.error || state.feedback ? 1 : 0) + (showMessagePolicyHint ? 1 : 0);
   const visibleRows = Number.isFinite(maxLines)
     ? createSelectedWindowRows(rows, state.selectedIndex, calculateItemBudget(maxLines, fixedLines))
     : rows.map((item, index) => ({kind: 'item' as const, item, index}));
@@ -112,6 +115,9 @@ function renderGeneralView(state: GeneralConfigState, tabs: ConfigSurfaceTab[], 
     lines.push(errorLine(width, state.error, theme));
   } else if (state.feedback) {
     lines.push(feedbackLine(width, state.feedback, theme));
+  }
+  if (showMessagePolicyHint) {
+    lines.push(line(width, dimHint(width, '下一轮生效；即时引导不强停工具，等待其完成'), theme));
   }
   lines.push(line(width, dimHint(width, 'Tab 切换 · ↑/↓ 移动 · ←/→ 调整 · Enter 执行 · Esc 关闭'), theme));
   lines.push(bottom(width, theme));

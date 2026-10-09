@@ -158,6 +158,8 @@ export type ConversationReferenceRenderState = {
 
 export type PendingMessageRenderState = {
   preview: string; // 已压成单行但尚未按终端宽度裁剪的待发送文本。
+  status?: 'preparing' | 'ready' | 'failed'; // 缺省为下一轮排队，否则只表示未应用引导的素材准备状态，不携带运行阶段。
+  error?: string; // 准备失败的有界展示来源，不进入 transcript 或 provider 请求。
 };
 
 export type RenderState = {

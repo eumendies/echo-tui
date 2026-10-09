@@ -143,6 +143,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     lifecycle = 'stopped';
     observation.appExiting({cwd: appContext.getCurrentCwd(), interactionMode: appContext.getInteractionMode()});
     activeShellController?.abort();
+    appContext.pendingMessageContext.clear();
     if (activityTimer) clearInterval(activityTimer);
     activityTimer = null;
     detachTerminalListeners();

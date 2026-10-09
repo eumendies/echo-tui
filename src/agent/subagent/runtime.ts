@@ -36,7 +36,7 @@ type SubagentToolPortOptions = {
   createRuntime: SubagentLoopRuntimeFactory; // 为每次委派创建拥有独立装配状态的 loop runtime 实例。
   cwd: string; // 当前父运行工作目录，决定项目级定义发现边界。
   executionMode: AgentExecutionMode; // 父 run 的 interactive/headless 安全边界。
-  interactionMode: InteractionMode; // 父提交时捕获的 mode，供通用 Worker执行策略使用。
+  interactionMode: InteractionMode; // 子运行启动时父运行已应用的 mode，已启动子运行不接受后续更新。
   getInheritedContext: () => InheritedAgentRunContext; // 延迟读取父 run 已初始化的完整上下文快照。
   modelProfileId?: string; // 父 run 已解析选择的模型 profile。
   observation: Observation; // 接收本次目录加载形成的诊断快照。

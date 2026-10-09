@@ -55,19 +55,22 @@ function createToolRegistry(handlers: ToolHandler[] = []): ToolRegistry {
 }
 
 /**
- * 创建 CLI 默认工具目录；glob/grep/read_files/web_fetch/web_search 负责观察，apply_patch 负责受控文本编辑。
+ * 创建固定默认工具目录；Bash 在调用启动时读取运行级沙箱，其余工具沿用初始化快照。
  */
 function createDefaultToolRegistry(config: LlmConfig, cwd: string | (() => string) = process.cwd, toolResultStore: ToolResultStore = createToolResultStore({cwd}), options: DefaultToolRegistryOptions = {}): ToolRegistry {
   const skillRegistry = options.skillRegistry || createSkillManager({cwd});
   const fileEditHandler = config.tools.fileEditMode === 'edit_file'
     ? createEditFileToolHandler({cwd})
     : createApplyPatchToolHandler({cwd});
-  const bashSandbox = resolveBashSandboxContext(config.tools.sandbox, options.executionMode, options.sandboxModeOverride ? {modeOverride: options.sandboxModeOverride} : {});
   const handlers = [
     createBashToolHandler({
       cwd,
       maxOutputBytes: config.tools.bash.maxOutputBytes,
-      sandbox: bashSandbox || undefined,
+      // 每个调用启动时固定自己的沙箱；后续引导不会改变已经执行中的命令。
+      get sandbox() {
+        const modeOverride = options.sandboxModeOverride;
+        return resolveBashSandboxContext(config.tools.sandbox, options.executionMode, modeOverride ? {modeOverride} : {}) ?? undefined;
+      },
       toolResultStore,
       timeoutMs: config.tools.bash.timeoutMs
     }),

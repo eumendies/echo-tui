@@ -7,7 +7,7 @@ import {convertToolDefinitionsToOpenAiTools} from '../openai-responses/tool-conv
 import {convertTranscriptToOpenAiInput} from '../openai-responses/transcript-converter';
 
 import {resolveCodexOAuthCredential} from '../../config/codex-oauth';
-import {isAbortError, throwIfAborted} from '../../types/agent';
+import {AgentAbortError, isAbortError} from '../../types/agent';
 import type {AgentTurnCallbacks, AgentTurnOptions, AgentTurnResult, CodexAgentDependencies, CodexOAuthCredential, CodexOAuthRuntimeConfig, LlmConfig, ProviderAgent} from '../../types/agent';
 import type {ToolRegistry} from '../../types/tool';
 import type {TranscriptRecord} from '../../types/transcript';
@@ -140,8 +140,8 @@ class CodexAgent implements ProviderAgent {
         options
       );
     } catch (error: unknown) {
-      if (isAbortError(error) || options.abortSignal?.aborted) {
-        throwIfAborted(options.abortSignal);
+      if (isAbortError(error) || error instanceof OpenAI.APIUserAbortError) {
+        throw new AgentAbortError();
       }
 
       throw normalizeError(error, '无法启动模型响应');

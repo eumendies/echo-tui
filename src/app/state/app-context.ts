@@ -15,9 +15,10 @@ import {DEFAULT_TUI_THEME, type TuiTheme} from '../../config/theme-config';
 import type {UserConfigContext, UserConfigSnapshot} from '../../config/user-config-context';
 import {createSessionModelSettingsStore} from '../../persistence/session-model-settings-store';
 import {isShellInteractionMode} from '../../types/agent';
+import {createModeTransitionUserMessage} from '../../agent/context/interaction-mode';
 
 import type {TerminalController} from '../../types/app';
-import type {AgentSessionInput, AgentUserConfigSnapshot, ContextUsage, InteractionMode, ReasoningEffort} from '../../types/agent';
+import type {ActiveTurnMessagePolicy, AgentSessionInput, AgentUserConfigSnapshot, ContextUsage, InteractionMode, ReasoningEffort} from '../../types/agent';
 import type {ToolApprovalSettings} from '../../config/app-settings-config';
 import type {DiffSourceResult} from '../../types/diff';
 import type {CommandSurface, SlashCommandDescriptor} from '../../types/command';
@@ -30,8 +31,6 @@ import type {UndoExecuteResult} from '../../types/change-history';
 import type {ToolApprovalContext} from './tool-approval-context';
 import type {AssistantTurnHandle, InterruptAssistantTurnResult} from './turn-context';
 
-type AgentInteractionMode = 'normal' | 'plan';
-
 type AppSettingsApplyResult = {
   agentInstructionFileChanged: boolean;
   fileEditModeChanged: boolean;
@@ -42,42 +41,8 @@ type AppSettingsApplyResult = {
   toolApprovalChanged: boolean; // 审批模式或 reviewer profile 是否变化，不代表需要 transcript 重绘。
 };
 
-const PLAN_MODE_INSTRUCTIONS = 'Plan mode is active. Discuss and inspect only; do not modify files, install dependencies, change branch or repository state, run tests or builds, or use MCP tools. Shell commands either run inside a read-only sandbox (no workspace writes, no network access) or, when no sandbox is available, must stay within readonly inspection commands. Ask the user to switch to /mode normal before implementing.';
-const NORMAL_MODE_INSTRUCTIONS = 'Normal mode is active. Previous Plan Mode restrictions no longer apply. You may implement changes and use mutation tools, subject to the normal tool approval and risk policies.';
-
 function isInteractionMode(value: unknown): value is InteractionMode {
   return value === 'normal' || value === 'plan' || value === 'shell' || value === 'shell-local';
-}
-
-/**
- * 把四种 UI interaction mode 收敛为模型可见的执行或规划语义。
- */
-function toAgentInteractionMode(mode: InteractionMode): AgentInteractionMode {
-  return mode === 'plan' ? 'plan' : 'normal';
-}
-
-/**
- * 仅在模型可见 mode 改变时包装 user message；返回 null 表示原文可直接提交。
- */
-function createModeTransitionUserMessage(userText: string, from: AgentInteractionMode, to: AgentInteractionMode): {metadata: {from: AgentInteractionMode; to: AgentInteractionMode}; text: string} | null {
-  if (from === to) {
-    return null;
-  }
-
-  return {
-    metadata: {from, to},
-    text: [
-      '[Interaction Mode Transition]',
-      `from: ${from}`,
-      `to: ${to}`,
-      '',
-      '[Mode Instructions]',
-      to === 'plan' ? PLAN_MODE_INSTRUCTIONS : NORMAL_MODE_INSTRUCTIONS,
-      '',
-      '[User Request]',
-      userText
-    ].join('\n')
-  };
 }
 
 /**
@@ -100,7 +65,6 @@ class AppContext {
   private appSettingsSnapshot: UserConfigSnapshot;
   private slashSuggestionContext: SlashSuggestionContext;
   private interactionMode: InteractionMode;
-  private lastSubmittedAgentMode: AgentInteractionMode;
   private contextUsage: ContextUsage | null;
   private mcpBootstrapStatus: 'idle' | 'initializing' | 'ready';
   private modelConfigSnapshot: UserConfigSnapshot;
@@ -146,7 +110,6 @@ class AppContext {
     this.pendingMessageContext = new PendingMessageContext();
     this.theme = theme;
     this.interactionMode = initialAppSettings.defaultInteractionMode;
-    this.lastSubmittedAgentMode = 'normal';
     this.contextUsage = null;
     this.mcpBootstrapStatus = 'idle';
     this.slashSuggestionContext = new SlashSuggestionContext([], {
@@ -530,7 +493,6 @@ class AppContext {
       this.pendingMessageContext.clear();
       this.changeHistoryContext.restoreHistory(this.transcriptContext.changeHistory);
       this.modelContext.restoreSession(sessionId);
-      this.rebuildLastSubmittedAgentMode();
     }
 
     return loadedSession;
@@ -581,7 +543,6 @@ class AppContext {
     this.transcriptContext.clearRecords();
     this.changeHistoryContext.restoreHistory(this.transcriptContext.changeHistory);
     this.modelContext.resetSessionToGlobalDefaults();
-    this.lastSubmittedAgentMode = 'normal';
   }
 
   /**
@@ -632,7 +593,6 @@ class AppContext {
         nextChangeHistory
       );
       this.changeHistoryContext.markLastUsed();
-      this.rebuildLastSubmittedAgentMode();
       this.clearContextUsage();
       return result;
     } catch (error: unknown) {
@@ -681,53 +641,50 @@ class AppContext {
   }
 
   /**
-   * 提交用户消息并进入响应中状态；mode 改变时把一次性切换说明写入 provider-facing text。
+   * 按提交记录的 mode 进入响应状态；共享转换函数仅在模型语义改变时追加切换说明。
    */
   beginUserTurn(userText: string, options: {displayText?: string; metadata?: UserTranscriptMetadata; attachments?: ToolExecutionResult['attachments']} = {}): TranscriptRecord {
-    const currentAgentMode = toAgentInteractionMode(this.interactionMode);
-    const transition = createModeTransitionUserMessage(userText, this.lastSubmittedAgentMode, currentAgentMode);
+    const interactionMode = options.metadata?.interactionMode ?? this.interactionMode;
+    const transition = createModeTransitionUserMessage(userText, this.getLastSubmittedInteractionMode(), interactionMode);
     const record = this.turnContext.beginUserTurn(transition?.text || userText, {
       ...options,
       ...(transition ? {displayText: options.displayText || userText} : {}),
       metadata: {
         ...(options.metadata || {}),
         ...(transition ? {
-          interactionMode: this.interactionMode,
+          interactionMode,
           modeTransition: transition.metadata
         } : {})
       }
     });
 
     this.modelContext.persistCurrentSessionSettings();
-    this.lastSubmittedAgentMode = currentAgentMode;
     return record;
   }
 
   /**
-   * 从当前 transcript 尾部重建上一条模型可见 mode；旧记录缺少 metadata 时回退 normal。
+   * 从已提交历史取得原始 interaction mode，包含同轮引导；无有效模式记录时回退 normal。
    */
-  private rebuildLastSubmittedAgentMode(): void {
+  private getLastSubmittedInteractionMode(): InteractionMode {
     for (let index = this.transcriptContext.records.length - 1; index >= 0; index -= 1) {
       const record = this.transcriptContext.records[index];
 
       if (record.role === 'user' && isInteractionMode(record.metadata?.interactionMode)) {
-        this.lastSubmittedAgentMode = toAgentInteractionMode(record.metadata.interactionMode);
-        return;
+        return record.metadata.interactionMode;
       }
     }
-
-    this.lastSubmittedAgentMode = 'normal';
+    return 'normal';
   }
 
   /**
-   * 创建当前 assistant turn 句柄，主流程只使用句柄绑定回调和 agent signal。
+   * 创建当前 assistant turn 句柄并固定启动 snapshot 的消息策略；句柄用于绑定回调和整轮取消。
    */
-  beginAssistantTurn(modelProfileIdOverride?: string, reasoningEffortOverride?: ReasoningEffort): AssistantTurnHandle {
+  beginAssistantTurn(modelProfileIdOverride?: string, reasoningEffortOverride?: ReasoningEffort, messagePolicy: ActiveTurnMessagePolicy = 'pending'): AssistantTurnHandle {
     const statusLineModel = modelProfileIdOverride || reasoningEffortOverride
       ? this.modelContext.resolveSkillOverrideStatusLineModelState({modelProfileIdOverride, reasoningEffortOverride})
       : this.modelContext.getStatusLineModelState();
 
-    return this.turnContext.beginAssistantTurn(statusLineModel);
+    return this.turnContext.beginAssistantTurn(statusLineModel, messagePolicy);
   }
 
   /**

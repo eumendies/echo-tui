@@ -19,7 +19,8 @@ import {prepareAgent} from '../agent-setup';
 import {createCompactionNoticeRecord, runCompaction} from '../context/context-compaction';
 import {boundConversationImages} from '../context/conversation-image-budget';
 import {createUsageCwdHash} from '../../persistence/usage-store';
-import {isReadonlyBashSandboxEffective} from '../../sandbox/provider';
+import {createSandboxRuntimeNote, isReadonlyBashSandboxEffective} from '../../sandbox/provider';
+import {createModeTransitionUserMessage} from '../context/interaction-mode';
 import {createSubagentToolPort} from '../subagent/runtime';
 import {createSubagentLoopRuntime} from './subagent-loop-runtime';
 import type {SandboxModeOverride} from '../../sandbox/types';
@@ -29,10 +30,11 @@ import {
   hasRecordableProviderUsage
 } from './shared';
 import {disabledObservation} from '../../observation/observation';
+import {runProviderStep} from './provider-step';
 
 import type {TokenUsageAnchor} from '../context/context-compaction';
 import type {MemoryPromptResolution} from '../context/memory-prompt';
-import type {AgentCallbacks, AgentConversationKind, AgentExecutionMode, AgentInstruction, AgentInstructionFileName, AgentSessionInput, AgentToolPolicy, AgentTurnCallbacks, AgentUserConfigSnapshot, InteractionMode, LlmConfig, ProviderAgent, ProviderRetry, ProviderUsage, RunAgent, SubagentToolPort, ToolApprovalDecision} from '../../types/agent';
+import type {AgentCallbacks, AgentConversationKind, AgentExecutionMode, AgentInstruction, AgentInstructionFileName, AgentSessionInput, AgentToolPolicy, AgentTurnCallbacks, AgentUserConfigSnapshot, InteractionMode, LlmConfig, ProviderAgent, ProviderRetry, ProviderUsage, RunAgent, SandboxToolConfig, SubagentToolPort, ToolApprovalDecision} from '../../types/agent';
 import type {UsageStore} from '../../types/usage';
 import type {SkillCatalogEntry} from '../../types/skill';
 import type {SkillCatalogPromptProjection} from '../../skills/skill-catalog-prompt';
@@ -120,7 +122,7 @@ async function executeToolCall(toolCall: ToolCall, state: AgentLoopRunState, cal
   }
 
   // 默认运行在这里执行普通风险分类;只读运行复用 readonly 判定结果,不进入审批分支。
-  // plan 运行的 bash 分层事实由 runtime 初始化时一次性解析,分类器不自行读取配置。
+  // Bash 分层由 runtime 在初始化及引导应用边界解析，分类器不自行读取配置。
   const riskAssessment: ToolRiskAssessment = readonlyAssessment
     ?? classifyToolCallRisk(toolCall, state.interactionMode, state.readonlyMcpToolNames, state.planBashSandboxed);
   state.observation.toolRiskAssessed({scope: state.observationScope, call: toolCall, assessment: riskAssessment});
@@ -219,7 +221,8 @@ type AgentLoopRunState = {
   providerId?: string; // 当前解析配置的非敏感 provider 标识；写 usage 时保留归因。
   model: string; // 当前运行固定的 provider 模型名。
   reasoningEffort?: LlmConfig['reasoningEffort']; // 当前运行固定的推理强度。
-  interactionMode: InteractionMode; // 父提交时捕获的 normal/plan 等模式。
+  interactionMode: InteractionMode; // 最新已应用消息选择的模式；等待中的消息尚不生效。
+  sandboxConfig: SandboxToolConfig; // 配置快照的沙箱设置，模式变化仅更新派生收紧。
   executor: ToolExecutor; // 与 provider definitions 共用 registry 的统一执行器。
   contextWindow: number; // 自动压缩和 skill 预算使用的模型窗口。
   compactionThresholdRatio: number; // 自动压缩触发占比。
@@ -258,7 +261,7 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
   /**
    * 初始化单次调用的 loop 状态；provider、配置和 registry 由统一装配入口提供。
    */
-  function initializeRunState(interactionMode: InteractionMode, abortSignal: AbortSignal | undefined, executionMode: AgentExecutionMode, compactionThresholdRatio: number, skillCatalogContextRatio: number, agentInstructionFileName: AgentInstructionFileName, toolPolicy: AgentToolPolicy, sandboxModeOverride: SandboxModeOverride | undefined, conversationKind: AgentConversationKind, configSnapshot: AgentUserConfigSnapshot, modelProfileId?: string, reasoningEffortOverride?: LlmConfig['reasoningEffort'], subagentPort?: SubagentToolPort, sessionId?: string): AgentLoopRunState {
+  function initializeRunState(interactionMode: InteractionMode, abortSignal: AbortSignal | undefined, executionMode: AgentExecutionMode, compactionThresholdRatio: number, skillCatalogContextRatio: number, agentInstructionFileName: AgentInstructionFileName, toolPolicy: AgentToolPolicy, getSandboxModeOverride: () => SandboxModeOverride | undefined, conversationKind: AgentConversationKind, configSnapshot: AgentUserConfigSnapshot, modelProfileId?: string, reasoningEffortOverride?: LlmConfig['reasoningEffort'], subagentPort?: SubagentToolPort, sessionId?: string): AgentLoopRunState {
     // 只读 subagent 名称集合在 run 启动时固定；并发分类不得在运行中重新读取目录。
     const readonlySubagentNames = subagentPort
       ? new Set(subagentPort.listDefinitions()
@@ -277,10 +280,11 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
       modelProfileId,
       reasoningEffortOverride,
       skillRegistry: skillSnapshot,
-      ...(sandboxModeOverride ? {sandboxModeOverride} : {}),
+      get sandboxModeOverride() { return getSandboxModeOverride(); },
       ...(subagentPort ? {subagentPort} : {}),
       ...(sessionId ? {sessionId} : {})
     });
+    const sandboxModeOverride = getSandboxModeOverride();
     // 请求前导材料与手动压缩路径共用同一解析口径，保证压缩请求的前导与普通请求逐字一致。
     const materials = resolveProviderPromptMaterials({
       agentInstructionFileName,
@@ -304,6 +308,7 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
       model: config.model,
       reasoningEffort: config.reasoningEffort,
       interactionMode,
+      sandboxConfig: config.tools.sandbox,
       executor: createToolExecutor(registry),
       registry,
       ...(readonlySubagentNames ? {readonlySubagentNames} : {}),
@@ -340,14 +345,15 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
 
   const runAgentLoop: RunAgent = async function runAgentLoop(session: AgentSessionInput, callbacks: AgentCallbacks = {}): Promise<string> {
     const abortSignal = session.abortSignal;
-    const interactionMode = session.interactionMode || 'normal';
+    let interactionMode = session.interactionMode || 'normal';
     const executionMode = session.executionMode || INTERACTIVE_EXECUTION_MODE;
     const toolPolicy = session.toolPolicy || 'default';
     // plan 运行默认派生运行级 read-only 收紧:plan 的 bash 分层需要该收紧作为主边界,
     // 否则沙箱生效后会放行工作区写入。显式声明优先,off 与 headless full-access 豁免仍由 resolver 统一收敛。
-    const sandboxModeOverride = session.sandboxModeOverride
+    let sandboxModeOverride = session.sandboxModeOverride
       ?? (interactionMode === 'plan' && toolPolicy === 'default' ? 'read-only' : undefined);
     const conversationKind = session.conversationKind || 'primary';
+    const steeringInput = executionMode.kind === 'interactive' && conversationKind === 'primary' ? session.steeringInput : undefined;
     const configSnapshot = session.userConfigSnapshot || configContext.capture();
     const appSettings = configSnapshot.getAppSettings() || DEFAULT_APP_SETTINGS;
     // 单次 assistant run 固定使用启动时设置，运行中配置变化只影响后续 turn。
@@ -361,6 +367,33 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
     let usageAnchor: TokenUsageAnchor | null = null;
     let currentMemoryPrompt: MemoryPromptResolution | undefined;
     let state: AgentLoopRunState;
+
+    /** 在安全边界让就绪引导生效：领取消息、应用提交时模式并同步发布记录；未领取到消息时返回 false。 */
+    function applySteeringMessage(): boolean {
+      throwIfAborted(abortSignal);
+      const record = steeringInput?.claim();
+      if (!record) return false;
+      const nextMode = record.metadata?.interactionMode ?? interactionMode;
+      const transition = createModeTransitionUserMessage(record.text, interactionMode, nextMode);
+      if (transition) {
+        record.displayText ??= record.text;
+        record.text = transition.text;
+        record.metadata = {...record.metadata, modeTransition: transition.metadata};
+      }
+      interactionMode = nextMode;
+      sandboxModeOverride = session.sandboxModeOverride
+        ?? (interactionMode === 'plan' && toolPolicy === 'default' ? 'read-only' : undefined);
+      state.interactionMode = interactionMode;
+      state.observationScope = {...state.observationScope, interactionMode};
+      const sandboxOptions = sandboxModeOverride ? {modeOverride: sandboxModeOverride} : {};
+      const bashReadonly = isReadonlyBashSandboxEffective(state.sandboxConfig, executionMode, sandboxOptions);
+      state.readonlyBashSandboxed = toolPolicy === 'readonly' && bashReadonly;
+      state.planBashSandboxed = toolPolicy === 'default' && interactionMode === 'plan' && bashReadonly;
+      state.sandboxNote = createSandboxRuntimeNote(state.sandboxConfig, executionMode, sandboxOptions);
+      callbacks.onUserMessage?.(record);
+      recordRegion.push(record);
+      return true;
+    }
 
     function publishSubagentRecords(records: SubagentTranscriptRecord[]): void {
       if (records.length === 0) {
@@ -378,7 +411,7 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
           createRuntime: (inheritedContext, definition) => createSubagentLoopRuntime(cwd, inheritedContext, definition, observation, usageStore, mcpManager),
           cwd,
           executionMode,
-          interactionMode,
+          get interactionMode() { return interactionMode; },
           getInheritedContext: () => ({
             agentInstructions: state.agentInstructions,
             basePrompt: state.basePrompt,
@@ -390,14 +423,14 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
           observation,
           publishRecords: publishSubagentRecords,
           reasoningEffortOverride: session.reasoningEffortOverride,
-          ...(sandboxModeOverride ? {sandboxModeOverride} : {}),
+          get sandboxModeOverride() { return sandboxModeOverride; },
           toolPolicy,
           sessionId: session.sessionId
         })
       : undefined;
 
     try {
-      state = initializeRunState(interactionMode, abortSignal, executionMode, compactionThresholdRatio, skillCatalogContextRatio, appSettings.agentInstructionFileName, toolPolicy, sandboxModeOverride, conversationKind, configSnapshot, session.modelProfileId, session.reasoningEffortOverride, subagentPort, session.sessionId);
+      state = initializeRunState(interactionMode, abortSignal, executionMode, compactionThresholdRatio, skillCatalogContextRatio, appSettings.agentInstructionFileName, toolPolicy, () => sandboxModeOverride, conversationKind, configSnapshot, session.modelProfileId, session.reasoningEffortOverride, subagentPort, session.sessionId);
     } catch (error: unknown) {
       throw normalizeError(error, '无法加载 LLM 配置');
     }
@@ -468,6 +501,13 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
       recordRegion.push(...records);
     }
 
+    /** 正常 continuation 与引导中止共用正文提交边界；同步发布到 app 和运行历史，不结束 turn。 */
+    function commitAssistantSegment(text: string): void {
+      if (text.trim() === '') return;
+      callbacks.onAssistantSegment?.(text);
+      recordRegion.push({role: 'assistant', text});
+    }
+
     function commitProviderRetry(retry: ProviderRetry): void {
       recordRegion.push({role: 'local_notice', text: retry.message});
       callbacks.onProviderRetry?.(retry);
@@ -502,12 +542,16 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
      * ----------------------------
      */
     while (true) {
+      throwIfAborted(abortSignal);
+      applySteeringMessage();
       // 记忆投影先于压缩解析：同一次迭代里的压缩请求与普通请求必须共用同一份前导材料。
       const memoryPrompt = resolveMemoryPrompt(cwd, state.contextWindow);
       currentMemoryPrompt = memoryPrompt;
 
       await maybeCompact(memoryPrompt);
       throwIfAborted(abortSignal);
+      // 新添素材必须重新检查预算，不能复用压缩前的估计。
+      if (applySteeringMessage()) continue;
 
       const activeStartIndex = compactionState ? compactionState.activeStartIndex : 0;
       const activeRecords = recordRegion.slice(activeStartIndex);
@@ -559,11 +603,19 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
         } : {}),
         onToken: callbacks.onToken
       };
-      const {draft, providerRecords: turnProviderRecords, toolCalls, usage, usageInputTokens} = await state.agent.runTurn(providerRecords, providerTurnCallbacks, {
+      const step = await runProviderStep(state.agent, providerRecords, providerTurnCallbacks, {
         abortSignal,
         ...(state.sessionId ? {sessionId: state.sessionId} : {})
-      });
+      }, steeringInput, callbacks.onRequestPreempted);
       throwIfAborted(abortSignal);
+      if (step.reasoningDraft.trim() !== '') {
+        providerTurnCallbacks.onReasoningUpdate?.({kind: 'complete', text: step.reasoningDraft});
+      }
+      if (!step.result) {
+        commitAssistantSegment(step.draft);
+        continue;
+      }
+      const {draft, providerRecords: turnProviderRecords, toolCalls, usage, usageInputTokens} = step.result;
 
       if (typeof usageInputTokens === 'number') {
         const estimatedUsageSegments = estimateContextUsageSegments(providerRecords, state.toolDefinitions, state.skillCatalogTokens, memoryPrompt.estimatedTokens);
@@ -582,25 +634,35 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
       state.observation.providerUsage({scope: state.observationScope, usage, usageInputTokens});
       recordProviderUsage(usage, usageInputTokens);
 
+      commitProviderRecords(turnProviderRecords);
       if (toolCalls.length === 0) {
-        // 没有 tool call 表示模型已经给出本轮最终 assistant 回复。
-        commitProviderRecords(turnProviderRecords);
-
         throwIfAborted(abortSignal);
-        callbacks.onComplete?.(draft);
-        return draft;
+        if (!steeringInput?.hasReady()) {
+          callbacks.onComplete?.(draft);
+          return draft;
+        }
       }
 
-      commitProviderRecords(turnProviderRecords);
+      commitAssistantSegment(draft);
 
-      if (draft.trim() !== '') {
-        // tool call 前的文本是已完成 assistant segment，需要先交给 app 落盘但不释放响应锁。
-        callbacks.onAssistantSegment?.(draft);
-        recordRegion.push({role: 'assistant', text: draft});
+      if (toolCalls.length === 0) {
+        applySteeringMessage();
+        continue;
       }
 
       for (let toolIndex = 0; toolIndex < toolCalls.length;) {
         throwIfAborted(abortSignal);
+        if (steeringInput?.hasReady()) {
+          // 完整响应声明的所有剩余调用都要配对，包括尚未向 app 播报的调用。
+          for (; toolIndex < toolCalls.length; toolIndex += 1) {
+            const skippedCall = toolCalls[toolIndex];
+            const skippedResult = createRejectedToolResult(skippedCall, '新用户指令到达，调用已跳过且未执行。');
+            callbacks.onToolCall?.(skippedCall);
+            recordRegion.push(createToolCallTranscriptRecord(skippedCall), createToolResultTranscriptRecord(skippedResult));
+            callbacks.onToolResult?.(skippedResult);
+          }
+          break;
+        }
         const toolCall = toolCalls[toolIndex];
 
         if (classifyToolCallConcurrency(toolCall, state.readonlySubagentNames) === 'parallel_read') {

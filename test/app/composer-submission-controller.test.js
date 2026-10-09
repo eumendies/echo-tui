@@ -78,7 +78,7 @@ test('ComposerSubmissionController submits command results without re-parsing sl
   assert.equal(harness.submissions[0].userText, '[MCP prompt: docs:code_review]\n\n[user]\nbody');
   assert.equal(harness.submissions[0].userRequestText, '[MCP prompt: docs:code_review]\n\n[user]\nbody');
   assert.equal(harness.submissions[0].displayText, '/docs:code_review code=1');
-  assert.deepEqual(harness.submissions[0].metadata, {mcpPrompt: {server: 'docs', name: 'code_review', argumentsText: 'code=1'}});
+  assert.deepEqual(harness.submissions[0].metadata, {interactionMode: 'normal', mcpPrompt: {server: 'docs', name: 'code_review', argumentsText: 'code=1'}});
 });
 
 test('ComposerSubmissionController executes an allowed response-time command without using pending', async () => {

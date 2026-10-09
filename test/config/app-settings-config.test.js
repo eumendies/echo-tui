@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 
 const {
   DEFAULT_APP_SETTINGS,
+  applyAppSettingsDraft,
   validateAppSettingsDraft
 } = require('../../src/config/app-settings-config');
 const {UserConfigContext} = require('../../src/config/user-config-context');
@@ -36,7 +37,7 @@ test('readAppSettings reads valid fields and falls back invalid fields independe
         instructions: {fileName: 'CLAUDE.md'},
         skills: {catalogContextRatio: 0.05},
         tools: {approval: {mode: 'auto', modelProfileId: 'reviewer'}, fileEdit: {mode: 'edit_file'}, readFiles: {autoCompressImages: false}},
-        ui: {defaultInteractionMode: 'plan', mouseInteractionEnabled: true, slashSuggestionMaxVisible: 12, showReasoningSummary: false},
+        ui: {activeTurnMessagePolicy: 'steer', defaultInteractionMode: 'plan', mouseInteractionEnabled: true, slashSuggestionMaxVisible: 12, showReasoningSummary: false},
         updates: {checkOnStartup: false}
       });
     }
@@ -54,6 +55,7 @@ test('readAppSettings reads valid fields and falls back invalid fields independe
   });
 
   assert.deepEqual(valid, {
+    activeTurnMessagePolicy: 'steer',
     agentInstructionFileName: 'CLAUDE.md',
     autoCompressImages: false,
     checkUpdatesOnStartup: false,
@@ -78,6 +80,7 @@ test('readAppSettings uses defaults for missing and malformed optional config', 
   assert.deepEqual(readAppSettings({readFile() { return '{broken'; }}), DEFAULT_APP_SETTINGS);
   assert.deepEqual(readAppSettings({readFile() { return JSON.stringify({compaction: {thresholdRatio: 0.49}, ui: {slashSuggestionMaxVisible: 0}}); }}), DEFAULT_APP_SETTINGS);
   assert.deepEqual(readAppSettings({readFile() { return JSON.stringify({compaction: {thresholdRatio: 0.95}, skills: {catalogContextRatio: 0.1}, ui: {slashSuggestionMaxVisible: 20}}); }}), {
+    activeTurnMessagePolicy: 'pending',
     agentInstructionFileName: 'AGENTS.md',
     autoCompressImages: true,
     checkUpdatesOnStartup: true,
@@ -97,12 +100,48 @@ test('readAppSettingsDraft allows missing files but reports malformed files', ()
   assert.throws(() => readAppSettingsDraft({readFile() { return '{broken'; }}), /配置文件不是有效 JSON/);
 });
 
+test('active turn message policy defaults independently for old and invalid config fields', () => {
+  for (const value of [undefined, null, true, false, 1, 'invalid', 'STEER', {}, []]) {
+    const settings = readAppSettings({
+      readFile() {
+        return JSON.stringify({ui: {activeTurnMessagePolicy: value, defaultInteractionMode: 'plan', showReasoningSummary: false}});
+      }
+    });
+    assert.equal(settings.activeTurnMessagePolicy, 'pending');
+    assert.equal(settings.defaultInteractionMode, 'plan');
+    assert.equal(settings.showReasoningSummary, false);
+  }
+  for (const policy of ['pending', 'steer']) {
+    assert.equal(readAppSettings({readFile() { return JSON.stringify({ui: {activeTurnMessagePolicy: policy}}); }}).activeTurnMessagePolicy, policy);
+  }
+});
+
+test('invalid active turn message policy drafts cannot mutate or write config', () => {
+  for (const value of [undefined, null, true, 1, 'invalid']) {
+    const draft = {...DEFAULT_APP_SETTINGS, activeTurnMessagePolicy: value};
+    assert.deepEqual(validateAppSettingsDraft(draft), {
+      ok: false,
+      error: '响应期间发送消息必须是排队（pending）或即时引导（steer）'
+    });
+    const root = {ui: {activeTurnMessagePolicy: 'steer', kept: true}, unknown: 42};
+    const original = structuredClone(root);
+    assert.throws(() => applyAppSettingsDraft(root, draft), /响应期间发送消息/);
+    assert.deepEqual(root, original);
+    assert.throws(() => saveAppSettingsDraft(draft, {
+      readFile() { return JSON.stringify({ui: {activeTurnMessagePolicy: 'steer', kept: true}}); },
+      writeFile() { assert.fail('invalid draft must not write'); },
+      rename() { assert.fail('invalid draft must not rename'); }
+    }), /响应期间发送消息/);
+  }
+});
+
 test('saveAppSettingsDraft patches owned fields and writes atomically', () => {
   const writes = [];
   const renames = [];
   const mkdirs = [];
 
   saveAppSettingsDraft({
+    activeTurnMessagePolicy: 'steer',
     agentInstructionFileName: 'CLAUDE.md',
     autoCompressImages: false,
     checkUpdatesOnStartup: false,
@@ -150,7 +189,7 @@ test('saveAppSettingsDraft patches owned fields and writes atomically', () => {
   assert.equal(saved.compaction.keepCount, 20);
   assert.deepEqual(saved.instructions, {other: 'kept', fileName: 'CLAUDE.md'});
   assert.deepEqual(saved.skills, {other: 'kept', catalogContextRatio: 0.04});
-  assert.deepEqual(saved.ui, {other: 'kept', defaultInteractionMode: 'plan', mouseInteractionEnabled: true, slashSuggestionMaxVisible: 5, showReasoningSummary: false});
+  assert.deepEqual(saved.ui, {other: 'kept', activeTurnMessagePolicy: 'steer', defaultInteractionMode: 'plan', mouseInteractionEnabled: true, slashSuggestionMaxVisible: 5, showReasoningSummary: false});
   assert.deepEqual(saved.updates, {other: 'kept', checkOnStartup: false});
   assert.equal(saved.llm.selectedModel, 'fast');
   assert.equal(saved.tools.bash.timeoutMs, 1000);
@@ -182,7 +221,7 @@ test('saveAppSettingsDraft creates missing config and rejects invalid drafts bef
     compaction: {thresholdRatio: 0.8},
     instructions: {fileName: 'AGENTS.md'},
     skills: {catalogContextRatio: 0.02},
-    ui: {defaultInteractionMode: 'normal', mouseInteractionEnabled: false, slashSuggestionMaxVisible: 8, showReasoningSummary: true},
+    ui: {activeTurnMessagePolicy: 'pending', defaultInteractionMode: 'normal', mouseInteractionEnabled: false, slashSuggestionMaxVisible: 8, showReasoningSummary: true},
     updates: {checkOnStartup: true},
     tools: {approval: {mode: 'manual'}, fileEdit: {mode: 'apply_patch'}, readFiles: {autoCompressImages: true}}
   });

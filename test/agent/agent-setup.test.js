@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const agentSetupModule = require('../../src/agent/agent-setup');
+const sandboxProvider = require('../../src/sandbox/provider');
 
 const TEST_CONFIG = {
   agentType: 'fake',
@@ -43,6 +44,31 @@ test('prepareAgent consumes the supplied runtime config and merges MCP tools', (
   assert.equal(prepared.config, TEST_CONFIG);
   assert.ok(toolNames.includes('read_files'));
   assert.ok(toolNames.includes('mcp__docs__search'));
+});
+
+test('prepareAgent keeps its registry while each bash invocation captures the current sandbox override', async (t) => {
+  const original = sandboxProvider.resolveBashSandboxContext;
+  const modes = [];
+  sandboxProvider.resolveBashSandboxContext = (_config, _executionMode, options) => {
+    modes.push(options.modeOverride);
+    return null;
+  };
+  t.after(() => { sandboxProvider.resolveBashSandboxContext = original; });
+  let modeOverride;
+  const prepared = agentSetupModule.prepareAgent({config: TEST_CONFIG, cwd: process.cwd(),
+    get sandboxModeOverride() { return modeOverride; }});
+  const registry = prepared.registry;
+  const bash = registry.getHandler('run_bash_command');
+  const call = {callId: 'bash', toolName: 'run_bash_command', argumentsText: '{}'};
+  const first = bash.execute({command: 'echo original'}, call);
+  modeOverride = 'read-only';
+  assert.equal((await first).ok, true);
+  assert.equal((await bash.execute({command: 'echo plan'}, call)).ok, true);
+  modeOverride = undefined;
+  assert.equal((await bash.execute({command: 'echo normal'}, call)).ok, true);
+  assert.deepEqual(modes, [undefined, 'read-only', undefined]);
+  assert.equal(prepared.registry, registry);
+  assert.equal(registry.getHandler('run_bash_command'), bash);
 });
 
 test('prepareAgent injects the run skill registry and honors allowed tool filtering', () => {

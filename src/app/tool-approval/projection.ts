@@ -245,10 +245,13 @@ function extractPatchOperations(patch: string): PatchOperation[] {
 }
 
 /**
- * 构造带信任分区的有界 reviewer user message，并只从当前 turn 恢复真实用户澄清答案。
+ * 构造有界 reviewer 输入；当前 turn 已应用的后续用户原文与配对澄清答案参与授权，展开素材不参与。
  */
 function createToolApprovalPrompt(input: ToolApprovalPromptInput): ToolApprovalPromptProjection {
-  const currentRequest = truncateApprovalText(input.currentUserRequest, CURRENT_USER_REQUEST_MAX_CHARACTERS);
+  const followUpRequests = input.records.slice(Math.max(0, input.turnUserRecordIndex + 1))
+    .flatMap((record) => record.role === 'user' ? [record.displayText ?? record.text] : []);
+  const userRequests = [input.currentUserRequest, ...followUpRequests.map((text, index) => `Follow-up user request ${index + 1}:\n${text}`)].join('\n\n');
+  const currentRequest = truncateApprovalText(userRequests, CURRENT_USER_REQUEST_MAX_CHARACTERS);
   const prior = countCodePoints(input.currentUserRequest, SHORT_USER_REQUEST_MAX_CHARACTERS + 1) <= SHORT_USER_REQUEST_MAX_CHARACTERS
     ? projectPriorExchange(input.records, input.turnUserRecordIndex)
     : null;

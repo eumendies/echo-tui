@@ -332,6 +332,24 @@ test('InputEventController routes picker, composer editing, mode, submit, and ex
   assert.deepEqual(harness.calls, ['picker-open:0', 'render', 'render', 'render', 'submit', 'exit']);
 });
 
+test('InputEventController allows choosing submission mode during an assistant turn without interrupting it', () => {
+  const harness = createHarness();
+  harness.appContext.beginUserTurn('original');
+  const turn = harness.appContext.beginAssistantTurn();
+  harness.controller.handleEvent({type: INPUT_EVENTS.TAB});
+  assert.equal(harness.appContext.getInteractionMode(), 'plan');
+  assert.equal(harness.appContext.turnContext.activeAssistantTurn.id, turn.id);
+  assert.equal(turn.abortSignal.aborted, false);
+  assert.equal(harness.appContext.transcriptContext.getRecords().length, 1);
+});
+
+test('InputEventController does not cycle mode under a non-assistant response lock', () => {
+  const harness = createHarness();
+  harness.appContext.beginUserTurn('blocked');
+  harness.controller.handleEvent({type: INPUT_EVENTS.TAB});
+  assert.equal(harness.appContext.getInteractionMode(), 'normal');
+});
+
 test('InputEventController keeps parser state across split bracketed paste chunks', async () => {
   const harness = createHarness();
   await harness.controller.handleChunk('\x1b[200~hello');
