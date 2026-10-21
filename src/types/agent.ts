@@ -127,13 +127,15 @@ export type AgentCallbacks = {
   onSubagentUserQuestionRequest?: (metadata: SubagentRunMetadata, call: ToolCall, request: AskUserQuestionsRequest) => Promise<ToolExecutionResult> | ToolExecutionResult; // 把受 run identity 保护的子 Agent 问题桥接到共享交互 surface。
   onTodoStateChange?: (todoState: TodoState) => void;
   onComplete?: (finalText: string) => void;
-  onCompacted?: (next: CompactionState) => void;
+  onCompacted?: (next: CompactionState) => void; // 同步持久化压缩及 notice；成功返回后 runtime 才采纳边界并释放前缀。
   onContextUsage?: (usage: ContextUsage) => void;
 };
 
 export type AgentSessionInput = {
   steeringInput?: AgentSteeringInputPort; // 仅交互式主运行使用的有界引导输入端口，子运行与 headless 不继承。
-  records: TranscriptRecord[]; // 当前回合开始时提供给 agent 的完整 transcript 快照。
+  records: TranscriptRecord[]; // 当前回合的连续驻留后缀；缺省不修改调用方数组。
+  baseRecordIndex?: number; // records 首条在完整历史中的位置；旧版完整快照缺省为 0，不写入 journal。
+  recordsOwnership?: 'transfer'; // 仅转移独立 records 数组，允许原地追加及裁剪；其余 session 元数据不是运行输出。
   compaction?: CompactionState; // 已持久化的上下文压缩状态，缺省时从未压缩状态开始。
   todoState?: TodoState; // 当前会话的待办状态，供 agent 在工具调用间延续。
   sessionJournalPath?: string; // 当前 session 的 transcript journal 文件绝对路径，供压缩后模型按需回读原始记录；headless 无 session 时缺省。

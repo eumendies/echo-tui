@@ -54,6 +54,7 @@ function createAssistantCommandPort(options: AssistantCommandPortOptions): Comma
     /**
      * 手动压缩与 agent loop 共用同一前导与材料口径：按同一规则派生 execution/sandbox 边界、
      * 构建含 MCP 合并与委派目录的 registry，并透传会话身份，使摘要请求复用普通请求已建立的前缀缓存。
+     * 驻留起点取自主 transcript，使连续手动压缩返回完整历史边界；持久化及裁剪仍由完成端口采纳。
      */
     async compactContext(compactionOptions: {force: true}) {
       const session = appContext.getAgentSession();
@@ -86,6 +87,7 @@ function createAssistantCommandPort(options: AssistantCommandPortOptions): Comma
       });
       const result = await runCompaction({
         records: session.records,
+        baseRecordIndex: appContext.transcriptContext.baseRecordIndex,
         compaction: session.compaction,
         force: compactionOptions.force,
         agent: prepared.agent,

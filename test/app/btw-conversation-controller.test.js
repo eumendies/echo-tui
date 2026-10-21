@@ -4,9 +4,35 @@ const test = require('node:test');
 const {BTW_BOUNDARY, BtwConversationController} = require('../../src/app/btw-conversation-controller');
 const {createComposer, getText} = require('../../src/input/composer');
 const {INPUT_EVENTS} = require('../../src/input/event-types');
+const {createAgentLoopRuntime} = require('../../src/agent/loop-runtime/agent-loop-runtime');
+const agentSetup = require('../../src/agent/agent-setup');
+const {UserConfigContext} = require('../../src/config/user-config-context');
+const {createToolRegistry} = require('../../src/tools/tool-registry');
 
 function flush() {
   return new Promise((resolve) => setImmediate(resolve));
+}
+
+async function withProviderRuntime(agent, callback) {
+  const original = agentSetup.prepareAgent;
+  agentSetup.prepareAgent = () => ({
+    agent,
+    config: {
+      agentType: 'fake', apiKey: '', model: 'fake', contextWindow: 20,
+      tools: {bash: {timeoutMs: 1000, maxOutputBytes: 1024}, sandbox: {mode: 'off', network: false, extraWritablePaths: []}}
+    },
+    registry: createToolRegistry()
+  });
+  try {
+    await callback(createAgentLoopRuntime('/tmp/echo-btw-test', new UserConfigContext()));
+  } finally {
+    agentSetup.prepareAgent = original;
+  }
+}
+
+async function submit(controller, text) {
+  controller.handleEvent({type: INPUT_EVENTS.TEXT, value: text});
+  await controller.handleEvent({type: INPUT_EVENTS.SUBMIT});
 }
 
 function createBaseRenderState() {
@@ -365,5 +391,257 @@ test('BTW keeps tool pairs, todo, compaction, and provider-private records in si
   assert.equal(sessions[1].compaction.summaryText, 'side summary');
   assert.deepEqual(parent.todoState.items.map((item) => item.id), ['main']);
   assert.equal(parent.compaction.summaryText, 'main summary');
+  controller.close();
+});
+
+test('BTW freezes only the owned parent suffix at a nonzero offset and transfers independent turn inputs', async () => {
+  const sessions = [];
+  const {controller, parent} = createHarness(async (session, callbacks) => {
+    sessions.push(session);
+    assert.equal(session.baseRecordIndex, 800);
+    assert.equal(session.recordsOwnership, 'transfer');
+    assert.equal(session.compaction.activeStartIndex, 800);
+    assert.equal(session.compaction.summaryText, 'frozen summary');
+    assert.equal(session.records[0].attachments[0].dataBase64, 'AQ==');
+    assert.equal(session.records[0].metadata.interactionMode, 'normal');
+    session.records[0].attachments[0].dataBase64 = 'runtime mutation';
+    session.records.at(-1).displayText = 'runtime mutation';
+    session.records.push({role: 'assistant', text: 'runtime-only record'});
+    callbacks.onComplete?.('side answer');
+  });
+  parent.baseRecordIndex = 800;
+  parent.compaction = {summaryText: 'frozen summary', activeStartIndex: 800, createdAt: 'old'};
+  parent.records[0].attachments = [{kind: 'image', mediaType: 'image/png', path: 'recent.png', dataBase64: 'AQ==', sizeBytes: 1}];
+  parent.records[0].metadata = {interactionMode: 'normal'};
+  controller.open();
+  parent.records[0].attachments[0].dataBase64 = 'main mutation';
+  parent.records[0].metadata.interactionMode = 'plan';
+  parent.records.splice(0, 1, {role: 'assistant', text: 'later main suffix'});
+  parent.baseRecordIndex = 900;
+  parent.compaction.summaryText = 'later main summary';
+  parent.compaction.activeStartIndex = 900;
+
+  await submit(controller, 'first');
+  await submit(controller, 'second');
+
+  assert.equal(sessions.length, 2);
+  assert.notEqual(sessions[0].records, sessions[1].records);
+  assert.notEqual(sessions[1].records, controller.getRecords());
+  assert.deepEqual(controller.getRecords().map((record) => record.displayText || record.text), ['first', 'side answer', 'second', 'side answer']);
+  assert.equal(sessions[1].records.some((record) => record.text === 'runtime-only record'), true);
+  assert.equal(sessions[1].records.filter((record) => record.text === 'runtime-only record').length, 1);
+  assert.equal(parent.records[0].text, 'later main suffix');
+  controller.close();
+});
+
+test('BTW releases the frozen base before its own prefix, keeps side display counts local, and labels later questions as follow-ups', async () => {
+  const sessions = [];
+  const {controller, parent} = createHarness(async (session, callbacks) => {
+    sessions.push(structuredClone({...session, abortSignal: undefined}));
+    if (sessions.length === 1) {
+      callbacks.onCompacted?.({summaryText: 'base partial', activeStartIndex: 801, createdAt: 'one'});
+      assert.deepEqual(controller.getRecords().map((record) => record.role), ['user', 'compaction_notice']);
+      assert.equal(controller.getRecords().at(-1).text, '已将较早的主会话参考记录压缩为摘要');
+      callbacks.onCompacted?.({summaryText: 'base released', activeStartIndex: 803, createdAt: 'two'});
+      assert.deepEqual(controller.getRecords().map((record) => record.role), ['user', 'compaction_notice', 'compaction_notice']);
+      callbacks.onCompacted?.({summaryText: 'side released', activeStartIndex: 806, createdAt: 'three'});
+      assert.deepEqual(controller.getRecords().map((record) => record.role), ['compaction_notice']);
+      assert.equal(controller.getRecords()[0].text, '已将较早的 3 条旁路历史压缩为摘要');
+    }
+    callbacks.onComplete?.('recent answer');
+  });
+  parent.records = Array.from({length: 3}, (_, index) => ({role: 'user', text: `main-${index}`}));
+  parent.baseRecordIndex = 800;
+  parent.compaction.activeStartIndex = 800;
+  controller.open();
+  await submit(controller, 'first');
+  await submit(controller, 'next');
+
+  assert.equal(sessions[1].baseRecordIndex, 806);
+  assert.equal(sessions[1].compaction.activeStartIndex, 806);
+  assert.deepEqual(sessions[1].records.map((record) => record.role), ['compaction_notice', 'assistant', 'user']);
+  assert.equal(sessions[1].records.at(-1).text, '[BTW FOLLOW-UP]\n\nnext');
+  assert.equal(controller.getRecords().length, 4);
+  assert.equal(controller.getRecords().some((record) => record.text.startsWith('main-')), false);
+  assert.equal(parent.records.length, 3);
+  controller.close();
+});
+
+test('BTW and the real runtime align repeated compactions from a nonzero parent offset and the next turn never double slices', async () => {
+  const sessions = [];
+  const inputs = [];
+  const acceptedStates = [];
+  const summaries = [];
+  const requests = [];
+  let turns = 0;
+  let controller;
+  let adoptedState;
+  const agent = {async runTurn(records, _callbacks, options) {
+    if (options.isCompaction) {
+      summaries.push(structuredClone(records));
+      return {draft: `summary-${summaries.length}`, toolCalls: []};
+    }
+    turns += 1;
+    requests.push(structuredClone(records));
+    const session = sessions.at(-1);
+    assert.equal(adoptedState.compaction.activeStartIndex, adoptedState.baseRecordIndex);
+    const sideStart = Math.max(0, 840 - adoptedState.baseRecordIndex);
+    const sideRecords = session.records.slice(sideStart);
+    assert.equal(sideRecords.length, controller.getRecords().length);
+    // 旁路提示使用自身计数；runtime 的不可发送 notice 仍采用完整逻辑边界，不影响事实坐标与模型投影。
+    assert.deepEqual(sideRecords.filter((record) => record.role !== 'compaction_notice'),
+      controller.getRecords().filter((record) => record.role !== 'compaction_notice'));
+    for (const record of session.records.filter((record) => record.role !== 'compaction_notice' && record.role !== 'error')) {
+      assert.ok(records.some((projected) => projected.role === record.role && projected.text === record.text && projected.toolCallId === record.toolCallId));
+    }
+    if (turns <= 2) {
+      return {draft: `segment-${turns}`, toolCalls: Array.from({length: 25}, (_, index) => ({callId: `batch-${turns}-${index}`, toolName: 'missing_tool', argumentsText: '{}'})), usageInputTokens: 1000};
+    }
+    return {draft: `answer-${turns}`, toolCalls: []};
+  }};
+
+  await withProviderRuntime(agent, async (runAgent) => {
+    const harness = createHarness(async (session, callbacks) => {
+      sessions.push(session);
+      const input = structuredClone({baseRecordIndex: session.baseRecordIndex, compaction: session.compaction});
+      inputs.push(input);
+      adoptedState = structuredClone(input);
+      const transferredRecords = session.records;
+      assert.equal(session.recordsOwnership, 'transfer');
+      assert.notEqual(session.records, controller.getRecords());
+      await runAgent(session, {
+        ...callbacks,
+        onCompacted(compaction) {
+          callbacks.onCompacted(compaction);
+          adoptedState = structuredClone({baseRecordIndex: compaction.activeStartIndex, compaction});
+          acceptedStates.push({...structuredClone(adoptedState), sideRecords: structuredClone(controller.getRecords())});
+        }
+      });
+      assert.equal(session.records, transferredRecords);
+      assert.deepEqual({baseRecordIndex: session.baseRecordIndex, compaction: session.compaction}, input);
+    });
+    controller = harness.controller;
+    harness.parent.baseRecordIndex = 800;
+    harness.parent.compaction.activeStartIndex = 800;
+    harness.parent.records = Array.from({length: 40}, (_, index) => ({role: index % 2 ? 'assistant' : 'user', text: `main-${index} `.repeat(20)}));
+    controller.open();
+    await submit(controller, 'first');
+
+    assert.equal(summaries.length, 3);
+    assert.equal(acceptedStates.length, 3);
+    assert.ok(adoptedState.baseRecordIndex > 840);
+    assert.equal(sessions[0].records.some((record) => record.text.startsWith('main-')), false);
+    assert.equal(summaries[1].some((record) => record.text.startsWith('main-0 ')), false);
+    assert.equal(summaries[2].some((record) => record.toolCallId === 'batch-1-0'), false);
+    const previousState = structuredClone(adoptedState);
+    const recent = structuredClone(controller.getRecords());
+    await submit(controller, 'next');
+
+    assert.equal(summaries.length, 4);
+    assert.equal(acceptedStates.length, 4);
+    assert.deepEqual(inputs[1], previousState);
+    assert.ok(adoptedState.baseRecordIndex > previousState.baseRecordIndex);
+    for (const state of acceptedStates) {
+      assert.equal(state.sideRecords.at(-1).text, state.baseRecordIndex > 840
+        ? `已将较早的 ${state.baseRecordIndex - 840} 条旁路历史压缩为摘要`
+        : '已将较早的主会话参考记录压缩为摘要');
+    }
+    assert.deepEqual(sessions.map(({baseRecordIndex, compaction}) => ({baseRecordIndex, compaction})), inputs);
+    assert.ok(requests.at(-1).some((record) => record.text === 'answer-3'));
+    assert.ok(requests.at(-1).some((record) => record.text === '[BTW FOLLOW-UP]\n\nnext'));
+    assert.ok(requests.at(-1).some((record) => record.toolCallId === 'batch-2-24'));
+    assert.ok(recent.some((record) => record.text === 'answer-3'));
+    assert.equal(controller.getRecords().at(-1).text, 'answer-4');
+    assert.equal(harness.parent.baseRecordIndex, 800);
+    assert.equal(harness.parent.records.length, 40);
+    controller.close();
+  });
+});
+
+for (const rejection of ['empty summary', 'summary error']) {
+  test(`BTW retains its frozen suffix after ${rejection} and can continue on the next turn`, async () => {
+    const sessions = [];
+    const inputs = [];
+    const acceptedStates = [];
+    let summaries = 0;
+    const agent = {async runTurn(_records, _callbacks, options) {
+      if (options.isCompaction) {
+        summaries += 1;
+        if (summaries === 1) {
+          if (rejection === 'summary error') throw new Error('summary failed');
+          return {draft: '  ', toolCalls: []};
+        }
+        return {draft: 'accepted summary', toolCalls: []};
+      }
+      return {draft: 'continued', toolCalls: []};
+    }};
+    await withProviderRuntime(agent, async (runAgent) => {
+      const {controller, parent} = createHarness(async (session, callbacks) => {
+        sessions.push(session);
+        const input = structuredClone({baseRecordIndex: session.baseRecordIndex, compaction: session.compaction});
+        inputs.push(input);
+        const transferredRecords = session.records;
+        try {
+          await runAgent(session, {
+            ...callbacks,
+            onCompacted(compaction) {
+              callbacks.onCompacted(compaction);
+              acceptedStates.push(structuredClone({baseRecordIndex: compaction.activeStartIndex, compaction, sideRecords: controller.getRecords()}));
+            }
+          });
+        } finally {
+          assert.equal(session.records, transferredRecords);
+          assert.deepEqual({baseRecordIndex: session.baseRecordIndex, compaction: session.compaction}, input);
+        }
+      });
+      parent.baseRecordIndex = 800;
+      parent.compaction.activeStartIndex = 800;
+      parent.records = Array.from({length: 30}, (_, index) => ({role: index % 2 ? 'assistant' : 'user', text: `frozen-${index} `.repeat(20)}));
+      controller.open();
+      await submit(controller, 'first');
+
+      assert.equal(sessions[0].baseRecordIndex, 800);
+      assert.equal(sessions[0].compaction.summaryText, 'main summary');
+      assert.equal(sessions[0].records[0].text, parent.records[0].text);
+      assert.equal(acceptedStates.length, 0);
+      assert.equal(summaries, 1);
+      assert.equal(controller.getRecords().some((record) => record.role === 'compaction_notice'), false);
+      assert.equal(controller.getRecords().at(-1).role, rejection === 'summary error' ? 'error' : 'assistant');
+      await submit(controller, 'next');
+
+      assert.equal(summaries, 2);
+      assert.equal(acceptedStates.length, 1);
+      assert.ok(acceptedStates[0].baseRecordIndex > 800);
+      assert.equal(acceptedStates[0].compaction.summaryText, 'accepted summary');
+      assert.equal(acceptedStates[0].sideRecords.at(-1).role, 'compaction_notice');
+      assert.deepEqual(inputs[1], inputs[0]);
+      assert.deepEqual(sessions.map(({baseRecordIndex, compaction}) => ({baseRecordIndex, compaction})), inputs);
+      assert.equal(controller.getRecords().at(-1).text, 'continued');
+      assert.equal(sessions[1].records.at(-2).text, '[BTW FOLLOW-UP]\n\nnext');
+      controller.close();
+    });
+  });
+}
+
+test('BTW ignores late compaction and private records after close and reopening at another offset', async () => {
+  const runs = [];
+  const {controller, parent, appended} = createHarness((session, callbacks) => {
+    runs.push({session, callbacks});
+    return new Promise(() => {});
+  });
+  parent.baseRecordIndex = 800;
+  parent.compaction.activeStartIndex = 800;
+  controller.open('old');
+  controller.close();
+  parent.baseRecordIndex = 900;
+  parent.compaction.activeStartIndex = 900;
+  controller.open('new');
+  const count = appended.length;
+  runs[0].callbacks.onCompacted?.({summaryText: 'late summary', activeStartIndex: 801, createdAt: 'late'});
+  runs[0].callbacks.onProviderRecords?.([{role: 'local_notice', text: 'late record'}]);
+  runs[0].callbacks.onComplete?.('late answer');
+  assert.equal(appended.length, count);
+  assert.equal(runs[1].session.baseRecordIndex, 900);
+  assert.deepEqual(controller.getRecords().map((record) => record.displayText), ['new']);
   controller.close();
 });

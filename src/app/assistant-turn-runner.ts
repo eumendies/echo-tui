@@ -74,7 +74,7 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
     userQuestion.cancelActiveRequest('User question was interrupted because the assistant turn ended.');
   };
   turn.abortSignal.addEventListener('abort', cancelQuestionOnAbort, {once: true});
-  const turnUserRecordIndex = appContext.transcriptContext.getRecords().length - 1;
+  const turnUserRecordIndex = appContext.transcriptContext.getRecordCount() - 1;
   const isCurrentTurn = () => appContext.turnContext.isCurrentAssistantTurn(turn);
   /** 只有创建人工审批 surface 时才发布交互式审批事实。 */
   async function requestManualApproval(call: ToolCall, request?: ToolApprovalRequest): Promise<ToolApprovalDecision> {
@@ -89,7 +89,7 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
     currentUserRequest: userRequestText,
     cwd: () => appContext.getCurrentCwd(),
     observation,
-    getRecords: () => appContext.transcriptContext.getRecords(),
+    getRecords: () => appContext.transcriptContext.getCompleteRecords(),
     interactionMode: () => interactionMode,
     isCurrentTurn,
     reviewer: input.toolApprovalReviewer,
@@ -113,7 +113,7 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
       text: `当前 skill 本轮使用 ${activeStatusLineModel.modelLabel}${effortText}。`
     })]);
   }
-  observation.assistantTurnStarted({scope: observationScope, userText, recordCount: appContext.transcriptContext.records.length});
+  observation.assistantTurnStarted({scope: observationScope, userText, recordCount: appContext.transcriptContext.getRecordCount()});
 
   try {
     const session = appContext.getAgentSession({modelProfileIdOverride, reasoningEffortOverride}, userConfigSnapshot);

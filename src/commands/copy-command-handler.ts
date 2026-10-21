@@ -30,6 +30,15 @@ function createEmptyCopySurface(): InfoCommandSurface {
   };
 }
 
+function createUnavailableCopySurface(): InfoCommandSurface {
+  return {
+    kind: 'info',
+    title: '/copy 复制消息',
+    lines: ['无法读取当前会话的完整历史，请稍后重试。'],
+    dismissHint: 'Esc 关闭'
+  };
+}
+
 function createInitialCopyData(messages: CopyableMessageRecord[]): CopyCommandData {
   const assistantIndex = findLastIndex(messages, (message) => message.role === 'assistant');
   const selectedIndex = assistantIndex >= 0 ? assistantIndex : Math.max(0, messages.length - 1);
@@ -218,6 +227,16 @@ export class CopyCommandHandler implements CommandHandler<CopyCommandData> {
    */
   start(_text: string, host: CommandHost): void {
     const messages = host.transcript.listCopyableRecords();
+
+    if (!messages) {
+      host.session.open({
+        commandName: 'copy',
+        handler: this,
+        surface: createUnavailableCopySurface(),
+        data: null
+      });
+      return;
+    }
 
     if (messages.length === 0) {
       host.session.open({

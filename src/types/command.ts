@@ -867,7 +867,7 @@ export type CommandHostApp = {
     loadSession(sessionId: string): boolean;
     deleteSession(sessionId: string): TranscriptSessionDeleteResult; // 请求删除当前 cwd 中的非当前历史 session。
     append(record: TranscriptRecord): void;
-    listCopyableRecords(): CopyableMessageRecord[];
+    listCopyableRecords(): CopyableMessageRecord[] | null; // 完整有效历史的可复制消息；历史读取失败时为 null。
     listSessionSummaries(): TranscriptSessionSummary[];
     loadSessionPreview(candidate: TranscriptSessionSummary): Promise<TranscriptSessionPreview | null>;
   };

@@ -18,6 +18,7 @@ import type {
   TranscriptJournalOperation,
   TranscriptProjectMetadata,
   TranscriptSessionIndex,
+  TranscriptSessionIndexState,
   TranscriptSessionSummary,
   TranscriptSessionPreview,
   TranscriptSessionJournalReference,
@@ -180,7 +181,10 @@ function createTranscriptStore(options: TranscriptStoreOptions = {}): Transcript
         continue;
       }
 
-      sessions.push(createSessionSummary(loaded.reference, loaded.session.records, refreshedStat));
+      sessions.push(createSessionSummary(loaded.reference, {
+        messageCount: loaded.session.records.length,
+        title: createSessionTitle(loaded.session.records)
+      }, refreshedStat));
     }
 
     sessions.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
@@ -192,14 +196,14 @@ function createTranscriptStore(options: TranscriptStoreOptions = {}): Transcript
   }
 
   /**
-   * 在 journal 已成功提交后原子更新单个摘要；调用方决定失败是否影响业务写入。
+   * 在 journal 已成功提交后用完整计数及缓存标题原子更新摘要，不重放历史；调用方决定失败是否影响业务写入。
    */
-  function updateSessionIndex(cwd: string, reference: TranscriptSessionJournalReference, records: import('../types/transcript').TranscriptRecord[]): void {
+  function updateSessionIndex(cwd: string, reference: TranscriptSessionJournalReference, state: TranscriptSessionIndexState): void {
     const normalizedCwd = String(cwd);
     const stat = fsImpl.statSync(getSessionFilePath(normalizedCwd, reference.sessionId));
     const current = readSessionIndex(normalizedCwd)?.sessions || [];
     const next = current.filter((session) => session.sessionId !== reference.sessionId);
-    next.push(createSessionSummary(reference, records, stat));
+    next.push(createSessionSummary(reference, state, stat));
     next.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
     writeSessionIndex(normalizedCwd, next);
   }
@@ -419,7 +423,7 @@ function createTranscriptStore(options: TranscriptStoreOptions = {}): Transcript
 
 function createSessionSummary(
   reference: TranscriptSessionJournalReference,
-  records: import('../types/transcript').TranscriptRecord[],
+  state: TranscriptSessionIndexState,
   stat: Pick<import('node:fs').Stats, 'mtimeMs' | 'size'>
 ): TranscriptSessionSummary {
   return {
@@ -427,8 +431,8 @@ function createSessionSummary(
     createdAt: reference.createdAt,
     updatedAt: reference.updatedAt,
     cwd: reference.cwd,
-    messageCount: records.length,
-    title: createSessionTitle(records),
+    messageCount: state.messageCount,
+    title: state.title,
     fingerprint: {size: stat.size, mtimeMs: stat.mtimeMs}
   };
 }
@@ -578,5 +582,6 @@ function createSessionTitle(records: TranscriptRecord[]): string {
 
 export {
   STORE_SCHEMA_VERSION,
+  createSessionTitle,
   createTranscriptStore
 };

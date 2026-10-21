@@ -298,6 +298,11 @@ export type TranscriptSessionIndex = {
   sessions: TranscriptSessionSummary[]; // 当前项目下按 sessionId 唯一的轻量摘要集合。
 };
 
+export type TranscriptSessionIndexState = {
+  messageCount: number; // 完整有效历史的记录总数，包含已压缩且不再驻留的前缀。
+  title: string; // 按完整有效历史派生并缓存的有界标题，不从驻留后缀重新推导。
+};
+
 export type TranscriptSessionPreview = {
   sessionId: string; // 本次预览所属 session，用于隔离迟到异步结果。
   previewRecords: TranscriptSessionPreviewRecord[]; // replay 最终状态派生的有界右栏记录。
@@ -417,5 +422,5 @@ export type TranscriptStore = {
   loadSessionReadOnly: (cwd: string, sessionId: string) => LoadedTranscriptSession | null; // 重放 journal 但绝不修复或改写源文件。
   loadSessionPreview: (cwd: string, sessionId: string) => Promise<TranscriptSessionPreview | null>;
   deleteSession: (cwd: string, sessionId: string) => TranscriptSessionDeleteResult; // 删除当前 cwd 中已验证的历史 journal，并尽力同步 index。
-  updateSessionIndex: (cwd: string, reference: TranscriptSessionJournalReference, records: TranscriptRecord[]) => void;
+  updateSessionIndex: (cwd: string, reference: TranscriptSessionJournalReference, state: TranscriptSessionIndexState) => void; // 使用轻量事实更新可重建索引，不重放完整 journal。
 };

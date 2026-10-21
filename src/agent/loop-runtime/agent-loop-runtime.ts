@@ -343,7 +343,17 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
     };
   }
 
+  /** 运行独立活跃记录区；仅显式转移的输入快照允许原地裁剪，采纳压缩须先完成同步持久化回调。 */
   const runAgentLoop: RunAgent = async function runAgentLoop(session: AgentSessionInput, callbacks: AgentCallbacks = {}): Promise<string> {
+    let baseRecordIndex = session.baseRecordIndex ?? 0;
+    const initialActiveStart = Math.max(0, (session.compaction?.activeStartIndex ?? baseRecordIndex) - baseRecordIndex);
+    // 默认保留调用方输入，但不让运行闭包继续持有其完整 records；转移的独立快照只保留唯一记录区。
+    if (session.recordsOwnership === 'transfer') {
+      session.records.splice(0, initialActiveStart);
+    } else {
+      session = {...session, records: session.records.slice(initialActiveStart)};
+    }
+    baseRecordIndex += initialActiveStart;
     const abortSignal = session.abortSignal;
     let interactionMode = session.interactionMode || 'normal';
     const executionMode = session.executionMode || INTERACTIVE_EXECUTION_MODE;
@@ -362,7 +372,7 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
 
     throwIfAborted(abortSignal);
     // 运行态记录区先于 registry 创建，供 run_subagent Port 在外层 tool pair 提交前发布过程事件。
-    const recordRegion: TranscriptRecord[] = [...session.records];
+    const recordRegion: TranscriptRecord[] = session.records;
     let compactionState: CompactionState | undefined = session.compaction;
     let usageAnchor: TokenUsageAnchor | null = null;
     let currentMemoryPrompt: MemoryPromptResolution | undefined;
@@ -453,6 +463,7 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
       throwIfAborted(abortSignal);
       const result = await runCompaction({
         records: recordRegion,
+        baseRecordIndex,
         compaction: compactionState,
         anchor: usageAnchor,
         contextWindow: state.contextWindow,
@@ -483,12 +494,17 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
         return;
       }
 
+      // app 先提交 compaction/notice batch；回调失败不得推进运行边界或逐出旧记录。
+      callbacks.onCompacted?.(result.compaction);
+      const releasedCount = result.compaction.activeStartIndex - baseRecordIndex;
+      recordRegion.splice(0, releasedCount);
+      baseRecordIndex = result.compaction.activeStartIndex;
+      // session 只转移记录数组所有权；应用元数据由回调采纳，运行边界保留在局部状态。
       compactionState = result.compaction;
       // 压缩后活跃区间已变，旧 usage 锚点失效，回退到纯字符估算直到下一次真值到达。
       usageAnchor = null;
       // app 会持久化同一 notice；runtime 同步追加以保持后续压缩索引与 session records 对齐。
       recordRegion.push(createCompactionNoticeRecord(compactionState));
-      callbacks.onCompacted?.(compactionState);
       state.observation.compactionCompleted({scope: state.observationScope, compaction: compactionState});
     }
 
@@ -554,7 +570,7 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
       if (applySteeringMessage()) continue;
 
       const activeStartIndex = compactionState ? compactionState.activeStartIndex : 0;
-      const activeRecords = recordRegion.slice(activeStartIndex);
+      const activeRecords = recordRegion.slice(activeStartIndex - baseRecordIndex);
       // 压缩后仍超限（例如最近 20 条记录包含大量图片）时仅约束发送副本；本地历史保持完整。
       const imageBound = boundConversationImages(buildProviderRecords({
         activeRecords,
@@ -623,7 +639,7 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
         // 以本次真实 prompt token 为锚点，记下当时活跃记录数，供下一轮叠加字符增量。
         usageAnchor = imageBound.omittedImages > 0
           ? null
-          : {usageInputTokens, measuredAtRecordCount: recordRegion.length - activeStartIndex};
+          : {usageInputTokens, measuredAtRecordCount: recordRegion.length - (activeStartIndex - baseRecordIndex)};
         callbacks.onContextUsage?.({
           usedTokens: usageInputTokens,
           contextWindow: state.contextWindow,

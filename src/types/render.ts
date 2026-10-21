@@ -1,6 +1,6 @@
 import type { ComposerState } from './composer';
 import type { CommandSurface, CommandSurfaceOption } from './command';
-import type { TranscriptRecord } from './transcript';
+import type { CompactionState, TranscriptRecord } from './transcript';
 import type { TuiTheme } from '../config/theme-config';
 import type { ContextUsage, ReasoningEffort } from './agent';
 import type { AppRenderPreferences } from '../config/app-settings-config';
@@ -162,7 +162,14 @@ export type PendingMessageRenderState = {
   error?: string; // 准备失败的有界展示来源，不进入 transcript 或 provider 请求。
 };
 
+export type MainTranscriptRenderState = {
+  records: TranscriptRecord[]; // 主会话当前驻留后缀；renderer 仅在本次调用中读取，不缓存数组。
+  baseRecordIndex: number; // 后缀首条的完整历史位置，用于检测前缀逐出，而不是终端清屏信号。
+  compaction: CompactionState | null; // 当前摘要元数据，仅主会话恢复投影使用，不写入展示记录。
+};
+
 export type RenderState = {
+  mainTranscript?: Omit<MainTranscriptRenderState, 'records'>; // 主投影的边界与摘要提示；记录只从 renderRecords/renderDestructive 的 records 接收，其他窗口不得携带。
   composer: ComposerState;
   footerInteractionId?: string | null; // 当前 footer 可鼠标交互消费者的稳定身份；省略时所有命中区域仅作布局投影。
   streamingOwner?: string; // 区分主会话与各个 BTW 会话独立的流式显示进度。
@@ -272,6 +279,7 @@ export type RenderDestructiveOptions = RenderState & {
 };
 
 export type AppRenderer = {
+  syncMainTranscript: (snapshot: MainTranscriptRenderState, pending: PendingState | null) => void; // coordinator 每帧统一同步主会话驻留状态；后台逐出也不写终端。
   renderRecords: (options: RenderRecordsOptions) => FooterPointerSnapshot;
   render: (options: RenderState, finalizeRecord?: Extract<TranscriptRecord, {role: 'assistant' | 'reasoning_summary'}>) => FooterPointerSnapshot;
   clearFooter: () => void;

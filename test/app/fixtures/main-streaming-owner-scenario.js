@@ -13,6 +13,7 @@ let streamingCommits = 0;
 let latestMainDraft = '';
 const destructiveFrames = [];
 const renderer = {
+  syncMainTranscript() {},
   renderRecords() {},
   render(options) {
     if (options.streamingOwner === 'main' && options.pending?.kind === 'streaming' && options.pending.text !== latestMainDraft) {

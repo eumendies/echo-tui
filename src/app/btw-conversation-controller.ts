@@ -1,6 +1,5 @@
 import * as composerOps from '../input/composer';
 import {INPUT_EVENTS} from '../input/event-types';
-import {createCompactionNoticeRecord} from '../agent/context/context-compaction';
 import {createToolCallTranscriptRecord, createToolResultTranscriptRecord} from '../tools/tool-transcript-record';
 
 import type {AgentCallbacks, AgentSessionInput, AgentUserConfigSnapshot, RunAgent} from '../types/agent';
@@ -24,6 +23,8 @@ const BTW_BOUNDARY = [
 type BtwConversationState = {
   conversationId: number; // 当前临时会话 identity，关闭后旧 callback 失效。
   baseRecords: TranscriptRecord[]; // 打开时冻结的主 transcript provider 上下文。
+  baseRecordIndex: number; // 合并驻留区首条记录的完整历史位置，随 BTW 压缩推进。
+  sideOriginRecordIndex: number; // 首条 BTW 记录的固定完整位置，用于将压缩边界换算为旁路自身坐标。
   records: TranscriptRecord[]; // BTW 自身产生且仅在内存存在的 records。
   composer: ComposerState; // BTW 独立输入编辑状态。
   compaction?: CompactionState; // BTW 独立演进的压缩状态。
@@ -38,7 +39,7 @@ type BtwConversationState = {
   streamingDraft: string; // 当前 provider segment 的完整 assistant 草稿。
   reasoningDraft: string; // 当前 side provider turn 的完整可读 reasoning 草稿。
   modelLabel?: string; // provider 解析后的 side model 标签。
-  agentOptions: Omit<AgentSessionInput, 'records' | 'compaction' | 'todoState' | 'sessionJournalPath' | 'abortSignal' | 'interactionMode' | 'toolPolicy' | 'conversationKind' | 'userConfigSnapshot'>; // 打开时冻结的模型与压缩阈值选择。
+  agentOptions: Omit<AgentSessionInput, 'records' | 'baseRecordIndex' | 'recordsOwnership' | 'compaction' | 'todoState' | 'sessionJournalPath' | 'abortSignal' | 'interactionMode' | 'toolPolicy' | 'conversationKind' | 'userConfigSnapshot'>; // 打开时冻结的模型与压缩阈值选择。
   interactionMode: 'normal' | 'plan'; // BTW 仅继承 normal/plan 回答语义，不继承 shell 提交模式。
 };
 
@@ -49,7 +50,7 @@ type BtwParentTurnState = {
 
 type BtwConversationDependencies = {
   runAgent: RunAgent; // 共享 provider-neutral agent loop。
-  getParentSession(): AgentSessionInput; // 捕获打开瞬间的主 transcript provider 上下文。
+  getParentSession(): AgentSessionInput; // 返回打开瞬间独立深拷贝的主活跃后缀及其完整历史起点，所有权交给 BTW。
   captureUserConfigSnapshot(): AgentUserConfigSnapshot; // 为每次 side turn 捕获当时最新的用户配置 revision。
   getParentTurnState(): BtwParentTurnState; // 读取主 turn 的最小活动状态，不把 BTW 展示文案放进 main 编排层。
   renderRecords(records: TranscriptRecord[]): void; // 成组渲染已经写入 side 会话状态的普通 records。
@@ -96,14 +97,16 @@ class BtwConversationController {
     return parent.responding ? 'MAIN working' : 'MAIN idle';
   }
 
-  /** 捕获主会话快照并进入 BTW；首条问题异步启动，避免阻塞 command runtime。 */
+  /** 接管主会话已独立深拷贝的活跃快照及全局起点；首条问题异步启动，不复制已压缩历史。 */
   open(initialQuestion?: string): void {
     if (this.state) return;
     const parent = this.dependencies.getParentSession();
-    const {records, compaction, todoState: _todoState, sessionJournalPath: _journalPath, abortSignal: _abortSignal, interactionMode, toolPolicy: _toolPolicy, conversationKind: _conversationKind, userConfigSnapshot: _userConfigSnapshot, ...agentOptions} = parent;
+    const {records, baseRecordIndex = 0, recordsOwnership: _recordsOwnership, compaction, todoState: _todoState, sessionJournalPath: _journalPath, abortSignal: _abortSignal, interactionMode, toolPolicy: _toolPolicy, conversationKind: _conversationKind, userConfigSnapshot: _userConfigSnapshot, ...agentOptions} = parent;
     this.state = {
       conversationId: this.nextConversationId++,
-      baseRecords: structuredClone(records),
+      baseRecords: records,
+      baseRecordIndex,
+      sideOriginRecordIndex: baseRecordIndex + records.length,
       records: [],
       composer: composerOps.createComposer(),
       compaction: compaction ? structuredClone(compaction) : undefined,
@@ -229,13 +232,13 @@ class BtwConversationController {
     this.dependencies.render(record);
   }
 
-  /** 启动单次 side turn；所有 callback 在写状态前验证 conversation 与 turn identity。 */
+  /** 将独立深拷贝的合并活跃区转移给 runtime；回调仅写旁路状态，并用双重 identity 隔离迟到事件。 */
   private async runTurn(userText: string): Promise<void> {
     const state = this.state;
     if (!state) return;
     const conversationId = state.conversationId;
     const turnId = this.nextTurnId++;
-    const firstQuestion = state.records.every((record) => record.role !== 'user');
+    const firstQuestion = state.baseRecordIndex <= state.sideOriginRecordIndex && state.records.every((record) => record.role !== 'user');
     const userRecord: TranscriptRecord = {
       role: 'user',
       text: firstQuestion ? `${BTW_BOUNDARY}${userText}` : `[BTW FOLLOW-UP]\n\n${userText}`,
@@ -322,9 +325,18 @@ class BtwConversationController {
       },
       onCompacted: (compaction) => {
         if (!isCurrent()) return;
-        this.state!.compaction = structuredClone(compaction);
+        const current = this.state!;
+        // 合并区先是冻结主上下文、后是旁路；旁路起点固定，不能把主偏移当作已删除的旁路条数。
+        const sideReleasedCount = Math.max(0, compaction.activeStartIndex - Math.max(current.baseRecordIndex, current.sideOriginRecordIndex));
+        current.baseRecords.splice(0, compaction.activeStartIndex - current.baseRecordIndex);
+        current.records.splice(0, sideReleasedCount);
+        current.baseRecordIndex = compaction.activeStartIndex;
+        current.compaction = structuredClone(compaction);
         this.dependencies.render();
-        append([createCompactionNoticeRecord(compaction)]);
+        append([{
+          role: 'compaction_notice',
+          text: createBtwCompactionNoticeText(Math.max(0, compaction.activeStartIndex - current.sideOriginRecordIndex))
+        }]);
       },
       onComplete: (text) => {
         if (!isCurrent()) return;
@@ -340,9 +352,12 @@ class BtwConversationController {
       await this.dependencies.runAgent({
         ...state.agentOptions,
         userConfigSnapshot: this.dependencies.captureUserConfigSnapshot(),
-        records: [...state.baseRecords, ...state.records],
-        compaction: state.compaction,
-        todoState: state.todoState,
+        // 深拷贝隔离冻结基线：runtime 会原地裁剪并追加它收到的数组，且旁路冻结区必须与主会话状态完全独立。
+        records: structuredClone([...state.baseRecords, ...state.records]),
+        baseRecordIndex: state.baseRecordIndex,
+        recordsOwnership: 'transfer',
+        compaction: state.compaction ? structuredClone(state.compaction) : undefined,
+        todoState: state.todoState ? structuredClone(state.todoState) : undefined,
         abortSignal: state.abortController.signal,
         interactionMode: state.interactionMode,
         toolPolicy: 'readonly',
@@ -371,6 +386,15 @@ class BtwConversationController {
       if (next) await this.runTurn(next);
     }
   }
+}
+
+/**
+ * 旁路压缩提示使用旁路自身计数：主会话偏移不是已删除的旁路条数，不能直接展示。
+ */
+function createBtwCompactionNoticeText(sideCompactedCount: number): string {
+  return sideCompactedCount > 0
+    ? `已将较早的 ${sideCompactedCount} 条旁路历史压缩为摘要`
+    : '已将较早的主会话参考记录压缩为摘要';
 }
 
 /**

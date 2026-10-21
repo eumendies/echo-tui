@@ -20,6 +20,7 @@ function capture(options) {
   };
 }
 const renderer = {
+  syncMainTranscript() {},
   renderRecords(options) {
     renders.push(capture(options));
   },

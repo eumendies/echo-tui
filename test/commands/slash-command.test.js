@@ -130,6 +130,7 @@ function createFakeHost(options = {}) {
         calls.transcriptAppends.push(record);
       },
       listCopyableRecords() {
+        if (options.copyableRecords === null) return null;
         return (options.copyableRecords || []).map((record) => ({...record}));
       },
       listSessionSummaries() {
@@ -914,6 +915,16 @@ test('copyCommandHandler handles empty, no selection, and clipboard failure stat
   assert.equal(failure.calls.sessionCloses, 0);
   assert.deepEqual(failure.host.session.getActive().surface.selectedIds, ['message-1']);
   assert.match(failure.host.session.getActive().surface.notice, /missing clipboard/);
+});
+
+test('copyCommandHandler reports unreadable complete history instead of an empty list', () => {
+  const copyCommandHandler = new CopyCommandHandler();
+  const unavailable = createFakeHost({copyableRecords: null});
+  const session = startCommand(copyCommandHandler, '/copy', unavailable.host);
+
+  assert.equal(session.surface.kind, 'info');
+  assert.match(session.surface.lines.join('\n'), /无法读取当前会话的完整历史/);
+  assert.deepEqual(unavailable.calls.clipboardWrites, []);
 });
 
 test('copyCommandHandler ignores clipboard results after copy session closes', async () => {

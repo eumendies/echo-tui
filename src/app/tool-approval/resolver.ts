@@ -57,7 +57,7 @@ type ToolApprovalResolverDependencies = {
   currentUserRequest: string; // 当前 turn 展开前的用户原始提交文本。
   cwd: string | (() => string); // pending action 投影中的当前工作目录。
   observation: Observation; // 当前 runtime 的单一观察边界。
-  getRecords: () => TranscriptRecord[]; // 返回发起审批时的主 transcript 快照。
+  getRecords: () => TranscriptRecord[] | null; // 返回发起审批时的完整主历史；读取失败返回 null，回退人工审批。
   interactionMode: InteractionMode | (() => InteractionMode); // reviewer usage 读取最新已应用的模式，独立运行也可传固定值。
   isCurrentTurn: () => boolean; // 判断回调是否仍属于当前 assistant turn。
   reviewer?: ToolApprovalReviewer; // auto 模式使用的独立模型判断器。
@@ -256,6 +256,11 @@ function createToolApprovalResolver(dependencies: ToolApprovalResolverDependenci
 
   /** 等待模型判断，并在回合仍有效时映射为一次允许或人工回退。 */
   async function resolveAutomatic(call: ToolCall, request: ToolApprovalRequest | undefined, action: Extract<ToolApprovalActionProjection, {kind: 'exact' | 'summarized'}>, modelProfileId: string, reviewer: ToolApprovalReviewer): Promise<ToolApprovalDecision> {
+    const records = dependencies.getRecords();
+    // 拿不到完整历史就无法按全局下标投影审批上下文；此时回退人工审批，而不是让整轮失败。
+    if (!records) {
+      return dependencies.toolApproval.requestManual(call, request);
+    }
     const allowed = await reviewer({
       action,
       approval: request,
@@ -265,7 +270,7 @@ function createToolApprovalResolver(dependencies: ToolApprovalResolverDependenci
       interactionMode: typeof dependencies.interactionMode === 'function' ? dependencies.interactionMode() : dependencies.interactionMode,
       modelProfileId,
       observation,
-      records: dependencies.getRecords(),
+      records,
       turnUserRecordIndex: dependencies.turnUserRecordIndex,
       userConfigSnapshot: dependencies.userConfigSnapshot
     });
