@@ -355,14 +355,14 @@ test('AppContext creates isolated runtime state per app instance', () => {
   firstContext.beginUserTurn('hello');
   firstContext.turnContext.enterSpinnerState('thinking');
 
-  assert.deepEqual(firstContext.transcriptContext.records, [{ role: 'user', text: 'hello', metadata: {} }]);
+  assert.deepEqual(firstContext.transcriptContext.getResidentRecords(), [{ role: 'user', text: 'hello', metadata: {} }]);
   assert.deepEqual(firstContext.composerContext.inputHistory, []);
   assert.equal(firstContext.turnContext.responding, true);
   const firstPending = firstContext.turnContext.getPending();
   assert.equal(firstPending.kind, 'thinking');
   assert.equal(typeof firstPending.elapsedMs, 'number');
 
-  assert.deepEqual(secondContext.transcriptContext.records, []);
+  assert.deepEqual(secondContext.transcriptContext.getResidentRecords(), []);
   assert.deepEqual(secondContext.composerContext.inputHistory, []);
   assert.equal(secondContext.turnContext.responding, false);
   assert.equal(secondContext.turnContext.getPending(), null);
@@ -375,7 +375,7 @@ test('AppContext undo restores transcript records and compaction state', () => {
   const compaction = {summaryText: 'old summary', activeStartIndex: 1, createdAt: '2026-05-19T00:00:00.000Z'};
 
   context.transcriptContext.appendRecord({role: 'user', text: 'before'});
-  context.transcriptContext.setCompaction(compaction);
+  const notice = context.transcriptContext.applyCompaction(compaction);
   context.beginChangeCheckpoint();
   context.transcriptContext.appendRecord({role: 'user', text: 'change'});
   context.transcriptContext.appendRecord({role: 'reasoning_summary', text: 'thinking'});
@@ -387,9 +387,11 @@ test('AppContext undo restores transcript records and compaction state', () => {
   const result = context.executeUndo();
 
   assert.equal(result.ok, true);
-  assert.deepEqual(context.transcriptContext.records, [{role: 'user', text: 'before'}]);
+  assert.deepEqual(context.transcriptContext.getResidentRecords(), [notice]);
+  assert.equal(context.transcriptContext.baseRecordIndex, 1);
+  assert.deepEqual(context.transcriptContext.getCompleteRecords(), [{role: 'user', text: 'before'}, notice]);
   assert.deepEqual(context.transcriptContext.compaction, compaction);
-  assert.equal(transcriptStore.saveCalls.at(-1).records.length, 1);
+  assert.equal(transcriptStore.saveCalls.at(-1).records.length, 2);
   assert.deepEqual(transcriptStore.saveCalls.at(-1).compaction, compaction);
   assert.deepEqual(transcriptStore.operations.at(-1).operations.map((operation) => operation.op), [
     'truncate_records',
@@ -427,7 +429,7 @@ test('AppContext does not retain records whose journal append fails', () => {
   };
 
   assert.throws(() => context.transcriptContext.appendRecord({role: 'assistant', text: 'not saved'}), /append failed/);
-  assert.deepEqual(context.transcriptContext.records, [{role: 'user', text: 'saved'}]);
+  assert.deepEqual(context.transcriptContext.getResidentRecords(), [{role: 'user', text: 'saved'}]);
 
   transcriptStore.appendSession = appendSession;
   context.transcriptContext.appendRecord({role: 'assistant', text: 'continued'});
@@ -459,7 +461,7 @@ test('AppContext keeps the undo checkpoint when journal truncation fails', () =>
   assert.equal(result.ok, false);
   assert.equal(result.reason, 'restore_failed');
   assert.equal(context.changeHistoryContext.getSummary().status, 'ready');
-  assert.deepEqual(context.transcriptContext.records, [
+  assert.deepEqual(context.transcriptContext.getResidentRecords(), [
     {role: 'user', text: 'before'},
     {role: 'user', text: 'change'}
   ]);
@@ -477,7 +479,7 @@ test('AppContext undo can remove interrupted turn records without appending a su
   const result = context.executeUndo();
 
   assert.equal(result.ok, true);
-  assert.deepEqual(context.transcriptContext.records, []);
+  assert.deepEqual(context.transcriptContext.getResidentRecords(), []);
 });
 
 test('AppContext undo can step through multiple ready checkpoints', () => {
@@ -496,7 +498,7 @@ test('AppContext undo can step through multiple ready checkpoints', () => {
   let result = context.executeUndo();
 
   assert.equal(result.ok, true);
-  assert.deepEqual(context.transcriptContext.records, [
+  assert.deepEqual(context.transcriptContext.getResidentRecords(), [
     {role: 'user', text: 'first'},
     {role: 'assistant', text: 'first done'}
   ]);
@@ -504,7 +506,7 @@ test('AppContext undo can step through multiple ready checkpoints', () => {
   result = context.executeUndo();
 
   assert.equal(result.ok, true);
-  assert.deepEqual(context.transcriptContext.records, []);
+  assert.deepEqual(context.transcriptContext.getResidentRecords(), []);
   assert.deepEqual(context.changeHistoryContext.getSummary(), {status: 'none'});
 });
 
@@ -526,7 +528,7 @@ test('AppContext invalid change checkpoint blocks older history', () => {
   assert.equal(result.ok, false);
   assert.equal(result.reason, 'invalid');
   assert.deepEqual(context.changeHistoryContext.getSummary(), {status: 'invalid', reason: '写入型 bash 不可追踪'});
-  assert.deepEqual(context.transcriptContext.records, [
+  assert.deepEqual(context.transcriptContext.getResidentRecords(), [
     {role: 'user', text: 'first'},
     {role: 'assistant', text: 'first done'},
     {role: 'user', text: 'second'}
@@ -2159,19 +2161,19 @@ test('AppContext persists, clears, and reloads transcript sessions through one i
   assert.equal(transcriptStore.saveCalls.length, 2);
   const sessionId = transcriptStore.saveCalls.at(-1).sessionId;
   assert.equal(context.transcriptContext.currentSessionId, sessionId);
-  assert.deepEqual(context.transcriptContext.records, [
+  assert.deepEqual(context.transcriptContext.getResidentRecords(), [
     { role: 'user', text: 'persist me', metadata: {} },
     { role: 'assistant', text: 'persisted reply' }
   ]);
 
   context.clearTranscriptRecords();
   assert.equal(context.transcriptContext.currentSessionId, null);
-  assert.deepEqual(context.transcriptContext.records, []);
+  assert.deepEqual(context.transcriptContext.getResidentRecords(), []);
 
   const loadedSession = context.loadTranscriptSession(sessionId);
-  assert.equal(loadedSession.sessionId, sessionId);
+  assert.equal(loadedSession, true);
   assert.equal(context.transcriptContext.currentSessionId, sessionId);
-  assert.deepEqual(context.transcriptContext.records, [
+  assert.deepEqual(context.transcriptContext.getResidentRecords(), [
     { role: 'user', text: 'persist me', metadata: {} },
     { role: 'assistant', text: 'persisted reply' }
   ]);
@@ -2234,14 +2236,14 @@ test('AppContext rejects empty forks and preserves the source session when journ
   context.beginUserTurn('keep source');
   context.turnContext.finishAssistantTurn('source reply');
   const sourceSessionId = context.transcriptContext.getCurrentSessionId();
-  const recordsBefore = structuredClone(context.transcriptContext.records);
+  const recordsBefore = structuredClone(context.transcriptContext.getResidentRecords());
   transcriptStore.createSession = () => {
     throw new Error('disk contains sk-secret-value');
   };
 
   assert.deepEqual(context.forkTranscriptSession(), {ok: false, reason: 'failed', error: '无法创建分叉会话'});
   assert.equal(context.transcriptContext.getCurrentSessionId(), sourceSessionId);
-  assert.deepEqual(context.transcriptContext.records, recordsBefore);
+  assert.deepEqual(context.transcriptContext.getResidentRecords(), recordsBefore);
   assert.deepEqual(transcriptStore.loadSession('/tmp/echo_tui', sourceSessionId).session.records, recordsBefore);
 });
 
@@ -2359,12 +2361,12 @@ test('AppContext deletes a historical session and its settings sidecar without c
   context.beginUserTurn('current');
   context.turnContext.finishAssistantTurn('reply');
   const currentSessionId = context.transcriptContext.getCurrentSessionId();
-  const recordsBeforeDelete = context.transcriptContext.getRecords().map((record) => record.text);
+  const recordsBeforeDelete = context.transcriptContext.getResidentRecords().map((record) => record.text);
 
   assert.deepEqual(context.deleteTranscriptSession(historicalSession.sessionId), {ok: true, sessionId: historicalSession.sessionId});
   assert.equal(settingsStore.settings.has(historicalSession.sessionId), false);
   assert.equal(context.transcriptContext.getCurrentSessionId(), currentSessionId);
-  assert.deepEqual(context.transcriptContext.getRecords().map((record) => record.text), recordsBeforeDelete);
+  assert.deepEqual(context.transcriptContext.getResidentRecords().map((record) => record.text), recordsBeforeDelete);
   assert.equal(context.transcriptContext.listSessionSummaries().some((session) => session.sessionId === historicalSession.sessionId), false);
 });
 
@@ -2422,6 +2424,8 @@ test('AppContext isolates session settings across clear and resume', () => {
     assert.equal(userConfigSnapshot.revision, 1);
     assert.deepEqual(session, {
       records: [],
+      baseRecordIndex: 0,
+      recordsOwnership: 'transfer',
       compaction: undefined,
       todoState: {items: [], updatedAt: ''},
       interactionMode: 'normal',
@@ -2568,7 +2572,7 @@ test('AppContext exposes semantic subcontexts for resume sessions and composer s
     sessionId: 'saved-session',
     previewRecords: [{role: 'assistant', text: 'latest reply'}]
   });
-  assert.deepEqual(context.transcriptContext.records, []);
+  assert.deepEqual(context.transcriptContext.getResidentRecords(), []);
 });
 
 test('AppContext lists reference sessions without current session and clears pending references on load and clear', () => {
@@ -2688,7 +2692,7 @@ test('AppContext failAssistantTurn clears pending state and redacts local error 
     role: 'error',
     text: '模型响应失败：upstream failed Bearer <redacted> <redacted>'
   });
-  assert.deepEqual(context.transcriptContext.records, [
+  assert.deepEqual(context.transcriptContext.getResidentRecords(), [
     { role: 'user', text: 'fail please', metadata: {} },
     errorRecord
   ]);
@@ -2769,7 +2773,7 @@ test('AppContext closes a pending tool call as a paired interrupted result when 
       details: {kind: 'generic', interrupted: true}
     }
   ]);
-  assert.deepEqual(context.transcriptContext.records, [
+  assert.deepEqual(context.transcriptContext.getResidentRecords(), [
     { role: 'user', text: 'use tool', metadata: {} },
     ...result.interruptedToolRecords,
     { role: 'local_notice', text: '已中断模型回答' }

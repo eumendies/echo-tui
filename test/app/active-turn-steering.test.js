@@ -111,7 +111,7 @@ test('controller rejects failed steering preparation without abort, history dupl
   assert.equal(port.hasReady(), false);
   assert.equal(notices, 0);
   assert.equal(turn.abortSignal.aborted, false);
-  assert.deepEqual(harness.appContext.transcriptContext.getRecords().map((r) => r.text), ['original']);
+  assert.deepEqual(harness.appContext.transcriptContext.getResidentRecords().map((r) => r.text), ['original']);
   inputController(harness, submit).handleEvent({type: 'escape'});
   assert.equal(harness.appContext.pendingMessageContext.getPending(), null);
   assert.equal(turn.abortSignal.aborted, false);
@@ -346,7 +346,7 @@ test('real controller, runner and loop apply submission modes in one turn and jo
     assert.equal(sessions.length, 1);
     assert.equal(preparations.length, 1);
     assert.equal(harness.appContext.changeHistoryContext.history.length, 1);
-    const records = harness.appContext.transcriptContext.getRecords();
+    const records = harness.appContext.transcriptContext.getResidentRecords();
     const users = records.filter((record) => record.role === 'user');
     assert.deepEqual(users.map((record) => record.metadata.interactionMode), ['normal', 'plan', 'normal']);
     assert.deepEqual(users.map((record) => record.displayText ?? record.text), ['original', 'inspect only', 'implement now']);
@@ -394,12 +394,12 @@ test('real controller + runner + loop keeps continuous steering in one session/c
       oldCallbacks.onReasoningUpdate({kind: 'complete', text: 'LATE REASONING'});
       oldCallbacks.onProviderRetry({message: 'LATE RETRY'});
       assert.equal(harness.appContext.turnContext.streamingDraft, '');
-      assert.deepEqual(harness.appContext.transcriptContext.getRecords().slice(-3), [
+      assert.deepEqual(harness.appContext.transcriptContext.getResidentRecords().slice(-3), [
         {role: 'reasoning_summary', text: 'local reasoning A'},
         {role: 'assistant', text: 'retained segment A'},
         {role: 'user', text: 'steer A', metadata: {interactionMode: 'normal'}}
       ]);
-      assert.deepEqual(store.loadSession().session.records, harness.appContext.transcriptContext.getRecords());
+      assert.deepEqual(store.loadSession().session.records, harness.appContext.transcriptContext.getResidentRecords());
       cb.onReasoningUpdate({kind: 'draft', text: 'local reasoning B'});
       cb.onToken('partial', 'retained segment B');
       second.resolve(options.abortSignal);
@@ -429,7 +429,7 @@ test('real controller + runner + loop keeps continuous steering in one session/c
     assert.equal(harness.appContext.turnContext.streamingDraft, 'retained segment A');
     assert.equal(harness.appContext.turnContext.reasoningDraft, 'local reasoning A');
     assert.equal(store.loadSession().session.records.some((r) => r.text === 'retained segment A' || r.text === 'local reasoning A'), false);
-    assert.equal(harness.appContext.transcriptContext.getRecords().some((r) => r.text === 'steer A'), false);
+    assert.equal(harness.appContext.transcriptContext.getResidentRecords().some((r) => r.text === 'steer A'), false);
     oldCallbacks.onToken('late', 'LATE BEFORE SETTLE');
     oldCallbacks.onReasoningUpdate({kind: 'draft', text: 'LATE REASONING BEFORE SETTLE'});
     assert.equal(harness.appContext.turnContext.streamingDraft, 'retained segment A');
@@ -457,7 +457,7 @@ test('real controller + runner + loop keeps continuous steering in one session/c
     assert.equal(harness.appContext.turnContext.responding, false);
     assert.equal(harness.appContext.changeHistoryContext.history.length, 1);
     assert.equal(harness.appContext.changeHistoryContext.last.id, checkpoint.id);
-    const records = harness.appContext.transcriptContext.getRecords();
+    const records = harness.appContext.transcriptContext.getResidentRecords();
     assert.deepEqual(records.map((r) => r.role), ['user', 'assistant', 'tool_call', 'tool_result', 'tool_call', 'tool_result', 'reasoning_summary', 'assistant', 'user', 'reasoning_summary', 'assistant', 'user', 'assistant']);
     assert.deepEqual(records.filter((r) => r.role === 'user').map((r) => r.text), ['original task', 'steer A', 'steer B']);
     assert.deepEqual(records.filter((r) => r.role === 'assistant'), [
@@ -476,7 +476,7 @@ test('real controller + runner + loop keeps continuous steering in one session/c
     assert.equal(harness.hookEvents.filter((e) => e.event === 'assistant_turn_end').length, 1);
     assert.equal(harness.hookEvents.filter((e) => e.event === 'tool_approval_request').length, 1);
     assert.ok(harness.appContext.loadTranscriptSession(sessionId));
-    assert.deepEqual(harness.appContext.transcriptContext.getRecords(), records);
+    assert.deepEqual(harness.appContext.transcriptContext.getResidentRecords(), records);
     await submit.dispatchPendingMessage();
     assert.equal(sessions.length, 1);
     assert.equal(harness.appContext.pendingMessageContext.getPending(), null);
@@ -519,7 +519,7 @@ for (const outcome of ['abort', 'complete']) {
       assert.equal(harness.appContext.turnContext.streamingDraft, 'frozen body');
       input.handleEvent({type: 'escape'});
       assert.equal(sessions[0].abortSignal.aborted, true);
-      const cancelledRecords = structuredClone(harness.appContext.transcriptContext.getRecords());
+      const cancelledRecords = structuredClone(harness.appContext.transcriptContext.getResidentRecords());
       assert.deepEqual(cancelledRecords.map((r) => r.role), ['user', 'reasoning_summary', 'assistant', 'local_notice']);
       assert.deepEqual(cancelledRecords[1], {role: 'reasoning_summary', text: 'frozen local reasoning'});
       assert.deepEqual(cancelledRecords[2], {role: 'assistant', text: 'frozen body'});
@@ -527,19 +527,19 @@ for (const outcome of ['abort', 'complete']) {
       providerCallbacks.onToken('late', 'LATE BEFORE SETTLE');
       providerCallbacks.onReasoningUpdate({kind: 'draft', text: 'LATE BEFORE SETTLE REASONING'});
       input.handleEvent({type: 'escape'});
-      assert.deepEqual(harness.appContext.transcriptContext.getRecords(), cancelledRecords);
+      assert.deepEqual(harness.appContext.transcriptContext.getResidentRecords(), cancelledRecords);
       settle.resolve();
       await running;
       assert.equal(requests, 1);
       assert.equal(sessions.length, 1);
-      assert.deepEqual(harness.appContext.transcriptContext.getRecords(), cancelledRecords);
+      assert.deepEqual(harness.appContext.transcriptContext.getResidentRecords(), cancelledRecords);
       assert.deepEqual(store.loadSession().session.records, cancelledRecords);
       assert.equal(harness.appContext.turnContext.getPending(), null);
       assert.equal(harness.appContext.turnContext.responding, false);
       assert.equal(harness.appContext.turnContext.activeAssistantTurn, null);
       assert.deepEqual(harness.appContext.transcriptContext.todoState.items, []);
       assert.ok(harness.appContext.loadTranscriptSession(sessionId));
-      assert.deepEqual(harness.appContext.transcriptContext.getRecords(), cancelledRecords);
+      assert.deepEqual(harness.appContext.transcriptContext.getResidentRecords(), cancelledRecords);
       await submit.dispatchPendingMessage();
       assert.equal(requests, 1);
     }, createTodoToolHandlers());
@@ -564,10 +564,10 @@ for (const withTool of [false, true]) {
         return {draft: 'body prefix plus complete tail',
           toolCalls: withTool ? [call('skipped', 'create_todos', {items: ['must not execute']})] : []};
       }
-      assert.deepEqual(harness.appContext.transcriptContext.getRecords().filter((r) => r.role === 'assistant'), [
+      assert.deepEqual(harness.appContext.transcriptContext.getResidentRecords().filter((r) => r.role === 'assistant'), [
         {role: 'assistant', text: 'body prefix plus complete tail'}
       ]);
-      assert.deepEqual(store.loadSession().session.records, harness.appContext.transcriptContext.getRecords());
+      assert.deepEqual(store.loadSession().session.records, harness.appContext.transcriptContext.getResidentRecords());
       return done;
     }};
     await withRuntime(t, harness, agent, async ({submit}) => {
@@ -580,7 +580,7 @@ for (const withTool of [false, true]) {
       assert.deepEqual(store.loadSession().session.records.map((r) => r.role), ['user']);
       settle.resolve();
       await running;
-      const records = harness.appContext.transcriptContext.getRecords();
+      const records = harness.appContext.transcriptContext.getResidentRecords();
       assert.deepEqual(records.filter((r) => r.role === 'assistant'), [
         {role: 'assistant', text: 'body prefix plus complete tail'},
         {role: 'assistant', text: 'done'}
@@ -596,7 +596,7 @@ for (const withTool of [false, true]) {
       assert.deepEqual(providerHistory, records.slice(0, -1).filter((r) => r.role !== 'reasoning_summary'));
       assert.deepEqual(store.loadSession().session.records, records);
       assert.ok(harness.appContext.loadTranscriptSession(sessionId));
-      assert.deepEqual(harness.appContext.transcriptContext.getRecords(), records);
+      assert.deepEqual(harness.appContext.transcriptContext.getResidentRecords(), records);
       assert.equal(harness.hookEvents.filter((e) => e.event === 'assistant_turn_end').length, 1);
     }, createTodoToolHandlers());
   });
@@ -648,7 +648,7 @@ for (const applied of [false, true]) {
       }
       end.resolve();
       await running;
-      const records = harness.appContext.transcriptContext.getRecords();
+      const records = harness.appContext.transcriptContext.getResidentRecords();
       assert.equal(records.some((r) => r.text === 'steer'), applied);
       assert.equal(records.some((r) => r.role === 'local_notice'), applied);
       assert.equal(records.some((r) => r.role === 'error'), false);
@@ -674,7 +674,7 @@ for (const action of ['clear', 'resume']) {
     await preparing;
     assert.equal(harness.appContext.pendingMessageContext.getPending(), null);
     assert.deepEqual(harness.appContext.composerContext.composer, draft);
-    assert.equal(harness.appContext.transcriptContext.getRecords().some((r) => r.text.includes('contents')), false);
+    assert.equal(harness.appContext.transcriptContext.getResidentRecords().some((r) => r.text.includes('contents')), false);
   });
 }
 

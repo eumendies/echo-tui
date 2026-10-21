@@ -13,6 +13,7 @@ terminalModule.setupTerminal = () => ({
 
 const snapshots = [];
 const renderer = {
+  syncMainTranscript() {},
   renderRecords(options) {
     capture(options);
   },

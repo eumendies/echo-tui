@@ -37,6 +37,7 @@ function capture(options) {
   };
 }
 require(path.join(root, 'dist/src/render/app-renderer')).createAppRenderer = () => ({
+  syncMainTranscript() {},
   clearFooter() {},
   render: capture,
   renderDestructive: capture,

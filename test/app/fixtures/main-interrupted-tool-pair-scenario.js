@@ -21,6 +21,7 @@ function capturePending(options) {
   lastPendingKind = options.pending?.kind || null;
 }
 const renderer = {
+  syncMainTranscript() {},
   clearFooter() {},
   render(options) {
     capturePending(options);

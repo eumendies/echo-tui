@@ -47,12 +47,26 @@ function createRenderCoordinator(options: RenderCoordinatorOptions) {
       footerInteractionId: pointerConsumer?.id || null,
       toolApproval
     });
+    const mainTranscript = {
+      records: appContext.transcriptContext.getResidentRecords(),
+      baseRecordIndex: appContext.transcriptContext.baseRecordIndex,
+      compaction: appContext.transcriptContext.compaction
+    };
+    // 后台主会话压缩也必须释放 renderer 引用，但不能用主记录改变 BTW/窗口的投影。
+    renderer.syncMainTranscript(mainTranscript, base.pending);
     if (owner === 'view') {
       return subagentView.createRenderState({...base, streamingOwner: 'view'});
     }
     return owner === 'btw'
       ? btwConversation.createRenderState({...base, streamingOwner: 'btw'})
-      : {...base, streamingOwner: 'main'};
+      : {
+        ...base,
+        streamingOwner: 'main',
+        mainTranscript: {
+          baseRecordIndex: mainTranscript.baseRecordIndex,
+          compaction: mainTranscript.compaction
+        }
+      };
   }
 
   /** 将已绘制的 footer frame 同步给鼠标控制器，再记录此次绘制的终端尺寸。 */
@@ -104,7 +118,7 @@ function createRenderCoordinator(options: RenderCoordinatorOptions) {
 
     // 窗口命中当前 run 的记录时必须重绘 body；其余 owner 的记录仅刷新 footer。
     if (subagentView.isActive()) {
-      if (subagentView.containsRunRecords(records)) renderResizeRecovery();
+      if (owner === 'main' && subagentView.appendRecords(records)) renderResizeRecovery();
       else render();
       return;
     }
@@ -118,17 +132,17 @@ function createRenderCoordinator(options: RenderCoordinatorOptions) {
     finishFrame(snapshot);
   }
 
-  /** 清屏后按窗口、BTW 或主会话重新投影完整记录，并重新校准 footer。 */
+  /** 清屏后按当前 owner 重建投影；主会话仅使用驻留后缀，不读取 journal，并重新校准 footer。 */
   function renderResizeRecovery(): void {
     if (options.isStopped()) return;
-    observation.resizeRecovered({recordCount: appContext.transcriptContext.records.length, terminalSize: terminal.getSize()});
+    observation.resizeRecovered({recordCount: appContext.transcriptContext.getRecordCount(), terminalSize: terminal.getSize()});
     const owner = currentOwner();
     // 窗口投影当前 run 的稳定记录，流式 draft 由 footer pending 呈现；只有 BTW 覆盖 banner 形态。
     const snapshot = renderer.renderDestructive({
       bannerContext: owner === 'btw'
         ? {...appContext.renderContext.createBannerContext(), variant: 'btw', parentActivity: btwConversation.getParentActivity()}
         : appContext.renderContext.createBannerContext(),
-      records: owner === 'view' ? subagentView.getViewRecords() : owner === 'btw' ? btwConversation.getRecords() : appContext.transcriptContext.records,
+      records: owner === 'view' ? subagentView.getViewRecords() : owner === 'btw' ? btwConversation.getRecords() : appContext.transcriptContext.getResidentRecords(),
       skipParallelSubagentFilter: owner === 'view',
       ...createRenderState()
     });

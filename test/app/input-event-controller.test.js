@@ -340,7 +340,7 @@ test('InputEventController allows choosing submission mode during an assistant t
   assert.equal(harness.appContext.getInteractionMode(), 'plan');
   assert.equal(harness.appContext.turnContext.activeAssistantTurn.id, turn.id);
   assert.equal(turn.abortSignal.aborted, false);
-  assert.equal(harness.appContext.transcriptContext.getRecords().length, 1);
+  assert.equal(harness.appContext.transcriptContext.getResidentRecords().length, 1);
 });
 
 test('InputEventController does not cycle mode under a non-assistant response lock', () => {

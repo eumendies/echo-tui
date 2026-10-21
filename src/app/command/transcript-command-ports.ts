@@ -36,7 +36,7 @@ function createTranscriptCommandPort(options: TranscriptCommandPortOptions): Com
       return appContext.transcriptContext.getCurrentSessionId();
     },
     loadSession(sessionId: string): boolean {
-      const didLoad = Boolean(appContext.loadTranscriptSession(sessionId));
+      const didLoad = appContext.loadTranscriptSession(sessionId);
 
       if (didLoad) {
         appContext.clearContextUsage();
@@ -52,7 +52,10 @@ function createTranscriptCommandPort(options: TranscriptCommandPortOptions): Com
       renderRecords([appContext.transcriptContext.appendRecord(record)]);
     },
     listCopyableRecords() {
-      return createCopyableRecords(appContext.transcriptContext.records);
+      const records = appContext.transcriptContext.getCompleteRecords();
+
+      // 历史读取失败时返回 null，由命令 handler 展示不可用 surface，不伪造空列表。
+      return records ? createCopyableRecords(records) : null;
     },
     listSessionSummaries() {
       return appContext.transcriptContext.listSessionSummaries();

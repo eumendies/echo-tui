@@ -64,7 +64,7 @@ function createAppContext(session, interactionMode) {
     getInteractionMode() {
       return interactionMode;
     },
-    transcriptContext: {},
+    transcriptContext: {baseRecordIndex: 0},
     turnContext: {}
   };
 }
@@ -255,5 +255,59 @@ test('manual compaction bounds images in the summary request without changing pe
     assert.equal(summaryRecords[4].attachments[0].path, 'new.png');
     assert.equal(session.records[0].attachments.length, 1);
     assert.equal(session.records[2].attachments.length, 1);
+  });
+});
+
+test('manual compaction uses transcript offsets and leaves adoption to the persistence callback across repeated compaction', async () => {
+  await withTemporaryHome(async () => {
+    const session = createSession('normal');
+    // 故意不在 session 上提供起点：手动端口必须使用主 transcript 的驻留坐标。
+    session.compaction.activeStartIndex = 800;
+    const appContext = createAppContext(session, 'normal');
+    appContext.transcriptContext.baseRecordIndex = 800;
+    const requests = [];
+    const notices = [];
+    const finished = [];
+    appContext.turnContext.stopSpinner = () => {};
+    appContext.turnContext.finishAssistantTurn = (text) => finished.push(text);
+    appContext.transcriptContext.applyCompaction = (next) => {
+      const localBoundary = next.activeStartIndex - appContext.transcriptContext.baseRecordIndex;
+      assert.ok(localBoundary > 0);
+      session.records = session.records.slice(localBoundary);
+      session.compaction = next;
+      appContext.transcriptContext.baseRecordIndex = next.activeStartIndex;
+      const notice = {role: 'compaction_notice', text: 'saved notice'};
+      session.records.push(notice);
+      return notice;
+    };
+    await withPatchedPrepareAgent({async runTurn(records) {
+      requests.push(records);
+      return {draft: `summary-${requests.length}`, toolCalls: []};
+    }}, async () => {
+      const port = createAssistantCommandPort({
+        appContext,
+        mcpManager: {listReadonlyToolNames: () => new Set()},
+        render() {},
+        renderRecords(records) { notices.push(...records); },
+        submitUserMessage: async () => true,
+        usageStore: {appendEvent: () => null, listDailyUsage: () => [], listModelUsage: () => []},
+        userConfigContext: new UserConfigContext()
+      });
+      for (let round = 0; round < 2; round += 1) {
+        const before = {records: structuredClone(session.records), compaction: structuredClone(session.compaction)};
+        const base = appContext.transcriptContext.baseRecordIndex;
+        const result = await port.compactContext({force: true});
+        assert.equal(result.didCompact, true);
+        assert.equal(result.compaction.activeStartIndex, round === 0 ? 810 : 841);
+        assert.deepEqual({records: session.records, compaction: session.compaction}, before);
+        const expectedSummaryRecords = session.records.slice(0, result.compaction.activeStartIndex - base).filter((record) => record.role !== 'compaction_notice');
+        assert.deepEqual(requests.at(-1).slice(2, -1), expectedSummaryRecords);
+        port.finishManualCompaction(result);
+        assert.equal(session.records.length, 21);
+        if (round === 0) session.records.push(...createSession('normal').records);
+      }
+    });
+    assert.equal(notices.length, 2);
+    assert.deepEqual(finished, ['', '']);
   });
 });

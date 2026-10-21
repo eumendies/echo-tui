@@ -414,7 +414,7 @@ test('runAssistantTurn persists subagent events, restores pending after permissi
     }
   });
 
-  assert.deepEqual(harness.appContext.transcriptContext.getRecords().map((record) => record.role), [
+  assert.deepEqual(harness.appContext.transcriptContext.getResidentRecords().map((record) => record.role), [
     'user', 'subagent', 'subagent', 'subagent', 'subagent', 'subagent', 'tool_call', 'tool_result', 'assistant'
   ]);
   assert.equal(harness.appContext.subagentRunContext.getPending(), null);
@@ -425,13 +425,13 @@ test('runAssistantTurn persists subagent events, restores pending after permissi
   assert.equal(approvalHooks.every((event) => event.payload.agentName === 'explorer'), true);
   assert.equal(approvalHooks.every((event) => Object.hasOwn(event.payload, 'runId') === false), true);
   assert.equal(approvalHooks.every((event) => Object.hasOwn(event.payload, 'parentToolCallId') === false), true);
-  const recordCount = harness.appContext.transcriptContext.getRecords().length;
+  const recordCount = harness.appContext.transcriptContext.getResidentRecords().length;
   capturedCallbacks.onSubagentRecords([{...base, text: 'late', event: {kind: 'assistant'}}]);
   capturedCallbacks.onSubagentActivity({agentName: 'explorer', phase: 'streaming', runId: 'run-1', task: 'late'});
   assert.deepEqual(await capturedCallbacks.onToolApprovalRequest({callId: 'late', toolName: 'run_bash_command', argumentsText: '{}'}, {
     origin: {kind: 'subagent', agentName: 'explorer', runId: 'run-1'}
   }), {kind: 'deny', message: 'Tool execution was interrupted.'});
-  assert.equal(harness.appContext.transcriptContext.getRecords().length, recordCount);
+  assert.equal(harness.appContext.transcriptContext.getResidentRecords().length, recordCount);
   assert.equal(harness.appContext.subagentRunContext.getPending(), null);
 });
 
@@ -523,7 +523,7 @@ test('runAssistantTurn closes an interrupted tool call as a paired result and dr
   assert.equal(harness.appContext.interruptActiveAssistantTurn().interrupted, true);
   await running;
 
-  const records = harness.appContext.transcriptContext.getRecords();
+  const records = harness.appContext.transcriptContext.getResidentRecords();
   const callIndex = records.findIndex((record) => record.role === 'tool_call');
   assert.deepEqual(records.slice(callIndex).map((record) => [record.role, record.toolCallId || null]), [
     ['tool_call', 'call-interrupt'],
@@ -534,7 +534,7 @@ test('runAssistantTurn closes an interrupted tool call as a paired result and dr
   assert.equal(records[callIndex + 1].details.kind, 'generic');
   assert.match(records[callIndex + 1].text, /interrupted by the user/u);
 
-  const recordCount = harness.appContext.transcriptContext.getRecords().length;
+  const recordCount = harness.appContext.transcriptContext.getResidentRecords().length;
   toolResult = capturedCallbacks.onToolResult({
     callId: 'call-interrupt',
     toolName: 'run_bash_command',
@@ -543,7 +543,7 @@ test('runAssistantTurn closes an interrupted tool call as a paired result and dr
     details: {kind: 'bash', exitCode: 0}
   });
   assert.equal(toolResult, undefined);
-  assert.equal(harness.appContext.transcriptContext.getRecords().length, recordCount);
+  assert.equal(harness.appContext.transcriptContext.getResidentRecords().length, recordCount);
 });
 
 test('runAssistantTurn leaves high-frequency subagent activity rendering to the timer', async () => {
@@ -605,10 +605,10 @@ test('runAssistantTurn clears subagent pending and releases response lock after 
   await running;
   assert.equal(harness.appContext.subagentRunContext.getPending(), null);
   assert.equal(harness.appContext.turnContext.responding, false);
-  assert.equal(harness.appContext.transcriptContext.getRecords().some((record) => record.role === 'subagent' && record.event.kind === 'cancelled'), true);
-  const count = harness.appContext.transcriptContext.getRecords().length;
+  assert.equal(harness.appContext.transcriptContext.getResidentRecords().some((record) => record.role === 'subagent' && record.event.kind === 'cancelled'), true);
+  const count = harness.appContext.transcriptContext.getResidentRecords().length;
   capturedCallbacks.onSubagentActivity({agentName: 'explorer', phase: 'streaming', runId: 'run-cancel', task: 'late'});
-  assert.equal(harness.appContext.transcriptContext.getRecords().length, count);
+  assert.equal(harness.appContext.transcriptContext.getResidentRecords().length, count);
   assert.equal(harness.appContext.subagentRunContext.getPending(), null);
 });
 
@@ -716,7 +716,7 @@ test('runAssistantTurn freezes preempted previews until reasoning and assistant 
     }
   });
 
-  const records = harness.appContext.transcriptContext.getRecords();
+  const records = harness.appContext.transcriptContext.getResidentRecords();
   assert.deepEqual(records.map((r) => [r.role, r.text]), [
     ['user', 'hello'], ['reasoning_summary', 'local reasoning'], ['assistant', 'retained body'],
     ['user', 'guidance'], ['assistant', 'next body']
@@ -749,7 +749,7 @@ test('runAssistantTurn does not resave a committed preempted segment on immediat
     }
   });
 
-  const records = structuredClone(harness.appContext.transcriptContext.getRecords());
+  const records = structuredClone(harness.appContext.transcriptContext.getResidentRecords());
   assert.deepEqual(records.map((r) => r.role), ['user', 'reasoning_summary', 'assistant', 'local_notice']);
   assert.deepEqual(records[2], {role: 'assistant', text: 'retained body'});
   assert.deepEqual(harness.appendedProjections.filter(Boolean), ['reasoning', 'assistant']);
@@ -759,7 +759,7 @@ test('runAssistantTurn does not resave a committed preempted segment on immediat
   capturedCallbacks.onAssistantSegment('late segment');
   capturedCallbacks.onUserMessage({role: 'user', text: 'late guidance'});
   capturedCallbacks.onComplete('late final');
-  assert.deepEqual(harness.appContext.transcriptContext.getRecords(), records);
+  assert.deepEqual(harness.appContext.transcriptContext.getResidentRecords(), records);
   assert.deepEqual(store.loadSession().session.records, records);
   assert.equal(harness.appContext.turnContext.getPending(), null);
   assert.equal(harness.appContext.turnContext.streamingDraft, '');
@@ -853,7 +853,7 @@ test('runAssistantTurn injects only effective mode transitions across turns', as
     }
   });
 
-  const userRecords = harness.appContext.transcriptContext.records.filter((record) => record.role === 'user');
+  const userRecords = harness.appContext.transcriptContext.getResidentRecords().filter((record) => record.role === 'user');
   assert.deepEqual(userRecords.map((record) => record.metadata?.modeTransition), [
     {from: 'normal', to: 'plan'},
     undefined,
@@ -882,7 +882,7 @@ test('runAssistantTurn persists provider records without visible assistant text'
   });
 
   assert.deepEqual(harness.appended.map((record) => record.role), ['user', 'extension', 'assistant']);
-  assert.deepEqual(harness.appContext.transcriptContext.records.map((record) => record.role), ['user', 'extension', 'assistant']);
+  assert.deepEqual(harness.appContext.transcriptContext.getResidentRecords().map((record) => record.role), ['user', 'extension', 'assistant']);
 });
 
 test('runAssistantTurn persists shared tool records with result metadata', async () => {
@@ -916,8 +916,8 @@ test('runAssistantTurn persists shared tool records with result metadata', async
     }
   });
 
-  const [toolCall, toolResult] = harness.appContext.transcriptContext.records.slice(1, 3);
-  assert.deepEqual(harness.appContext.transcriptContext.records.map((record) => record.role), [
+  const [toolCall, toolResult] = harness.appContext.transcriptContext.getResidentRecords().slice(1, 3);
+  assert.deepEqual(harness.appContext.transcriptContext.getResidentRecords().map((record) => record.role), [
     'user',
     'tool_call',
     'tool_result',
@@ -954,7 +954,7 @@ test('runAssistantTurn keeps multiple pending calls and persists matching pairs 
     }
   });
 
-  assert.deepEqual(harness.appContext.transcriptContext.records.map((record) => [record.role, record.toolCallId]), [
+  assert.deepEqual(harness.appContext.transcriptContext.getResidentRecords().map((record) => [record.role, record.toolCallId]), [
     ['user', undefined],
     ['tool_call', 'call-1'], ['tool_result', 'call-1'],
     ['tool_call', 'call-2'], ['tool_result', 'call-2'],
@@ -1173,7 +1173,7 @@ test('runAssistantTurn emits a local model-switch notice and restores the global
   assert.equal(renderedModels.at(-1).model.skillOverride, undefined);
   assert.deepEqual(harness.appended.map((record) => record.role), ['user', 'local_notice', 'assistant']);
   assert.equal(harness.appended[1].text, '当前 skill 本轮使用 claude-sonnet-4-6，effort high。');
-  assert.equal(harness.appContext.transcriptContext.records[1].role, 'local_notice');
+  assert.equal(harness.appContext.transcriptContext.getResidentRecords()[1].role, 'local_notice');
 });
 
 test('runAssistantTurn appends a local notice for provider retry callbacks', async () => {
@@ -1195,7 +1195,7 @@ test('runAssistantTurn appends a local notice for provider retry callbacks', asy
 
   assert.deepEqual(harness.appended.map((record) => record.role), ['user', 'local_notice', 'assistant']);
   assert.equal(harness.appended[1].text, '模型响应临时失败，正在重试第 1/7 次。');
-  assert.equal(harness.appContext.transcriptContext.records[1].role, 'local_notice');
+  assert.equal(harness.appContext.transcriptContext.getResidentRecords()[1].role, 'local_notice');
 });
 
 test('runAssistantTurn does not emit a model-switch notice when a stale override falls back', async () => {

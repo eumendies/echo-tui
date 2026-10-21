@@ -25,7 +25,7 @@ import type {CommandSurface, SlashCommandDescriptor} from '../../types/command';
 import type {InputEvent} from '../../types/input';
 import type {RenderState, SlashSuggestionState, StatusLineModelRenderState} from '../../types/render';
 import type {ToolExecutionResult} from '../../types/tool';
-import type {TranscriptForkResult, TranscriptRecord, TranscriptSession, TranscriptSessionDeleteResult, TranscriptStore, UserTranscriptMetadata} from '../../types/transcript';
+import type {TranscriptForkResult, TranscriptRecord, TranscriptSessionDeleteResult, TranscriptStore, UserTranscriptMetadata} from '../../types/transcript';
 import type {SessionModelSettingsStore} from '../../types/session-model-settings';
 import type {UndoExecuteResult} from '../../types/change-history';
 import type {ToolApprovalContext} from './tool-approval-context';
@@ -483,9 +483,9 @@ class AppContext {
   }
 
   /**
-   * 从持久化存储加载 session，并用其 transcript records 替换当前可见 transcript。
+   * 恢复 session 的活跃 transcript 及关联状态，只返回成功标志，不向调用方复制会话记录。
    */
-  loadTranscriptSession(sessionId: string): TranscriptSession | null {
+  loadTranscriptSession(sessionId: string): boolean {
     const loadedSession = this.transcriptContext.loadSession(sessionId);
 
     if (loadedSession) {
@@ -552,7 +552,7 @@ class AppContext {
     this.changeHistoryContext.beginCheckpoint({
       compactionBefore: this.transcriptContext.compaction ? {...this.transcriptContext.compaction} : undefined,
       cwd: this.getCurrentCwd(),
-      transcriptStartIndex: this.transcriptContext.getRecords().length
+      transcriptStartIndex: this.transcriptContext.getRecordCount()
     });
   }
 
@@ -575,9 +575,18 @@ class AppContext {
   }
 
   /**
-   * 执行一次 undo：先恢复文件，再以一个 journal batch 回退 transcript、compaction 和 history。
+   * 只有跨驻留边界的 undo 才预读完整历史，读取失败不得先改写文件；其余回退直接截短驻留后缀。
    */
   executeUndo(): UndoExecuteResult {
+    let completeRecords: TranscriptRecord[] | undefined;
+    const checkpoint = this.changeHistoryContext.last;
+    if (checkpoint?.status === 'ready' && (checkpoint.compactionBefore?.activeStartIndex ?? 0) < this.transcriptContext.baseRecordIndex) {
+      const loadedRecords = this.transcriptContext.getCompleteRecords();
+      if (!loadedRecords) {
+        return {ok: false, reason: 'restore_failed', message: '无法读取当前会话的完整历史'};
+      }
+      completeRecords = loadedRecords;
+    }
     const result = this.changeHistoryContext.executeUndo();
 
     if (!result.ok) {
@@ -590,7 +599,8 @@ class AppContext {
       this.transcriptContext.restoreToBoundary(
         result.checkpoint.transcriptStartIndex,
         result.checkpoint.compactionBefore,
-        nextChangeHistory
+        nextChangeHistory,
+        completeRecords
       );
       this.changeHistoryContext.markLastUsed();
       this.clearContextUsage();
@@ -616,8 +626,7 @@ class AppContext {
   }
 
   /**
-   * 组装本次 agent 调用的会话输入：当前 transcript 快照 + 当前压缩状态。
-   * records 与 compaction 同源于 transcriptContext，拼装由 app 层内聚，不外泄到 main。
+   * 复制活跃 transcript 与完整历史起点，将独立快照所有权交给 runtime 原地裁剪。
    */
   getAgentSession(skillOverride: AgentModelSelectionOverride = {}, snapshot?: AgentUserConfigSnapshot): AgentSessionInput {
     const modelSelection = this.modelContext.resolveAgentSelection(skillOverride);
@@ -627,7 +636,9 @@ class AppContext {
     const appSettings = capturedSnapshot.getAppSettings();
 
     return {
-      records: structuredClone(this.transcriptContext.getRecords()),
+      records: structuredClone(this.transcriptContext.getResidentRecords()),
+      baseRecordIndex: this.transcriptContext.baseRecordIndex,
+      recordsOwnership: 'transfer',
       compaction: this.transcriptContext.compaction ? {...this.transcriptContext.compaction} : undefined,
       todoState: structuredClone(this.transcriptContext.todoState),
       interactionMode: this.interactionMode,
@@ -663,14 +674,25 @@ class AppContext {
   }
 
   /**
-   * 从已提交历史取得原始 interaction mode，包含同轮引导；无有效模式记录时回退 normal。
+   * 从已提交历史取得原始 interaction mode，包含同轮引导；无有效模式记录或历史读取失败时回退 normal。
+   * 每个压缩周期最多回读一次：新的 user record 落入驻留后缀后，上面的驻留扫描即可命中。
    */
   private getLastSubmittedInteractionMode(): InteractionMode {
-    for (let index = this.transcriptContext.records.length - 1; index >= 0; index -= 1) {
-      const record = this.transcriptContext.records[index];
+    const residentRecords = this.transcriptContext.getResidentRecords();
+    for (let index = residentRecords.length - 1; index >= 0; index -= 1) {
+      const record = residentRecords[index];
 
       if (record.role === 'user' && isInteractionMode(record.metadata?.interactionMode)) {
         return record.metadata.interactionMode;
+      }
+    }
+    if (this.transcriptContext.baseRecordIndex > 0) {
+      const records = this.transcriptContext.getCompleteRecords();
+      if (records) {
+        for (let index = this.transcriptContext.baseRecordIndex - 1; index >= 0; index -= 1) {
+          const record = records[index];
+          if (record.role === 'user' && isInteractionMode(record.metadata?.interactionMode)) return record.metadata.interactionMode;
+        }
       }
     }
     return 'normal';

@@ -4,9 +4,11 @@ const assert = require('node:assert/strict');
 const {
   computeCompactionBoundary,
   createCompactionNoticeRecord,
+  createCompactionSummaryNoticeText,
   estimateContextTokens,
   estimateTextTokens,
   exceedsCompactionThreshold,
+  isCompactionSummaryNotice,
   runCompaction
 } = require('../../src/agent/context/context-compaction');
 const {buildProviderRequestPrefix} = require('../../src/agent/context/provider-request-prefix');
@@ -55,6 +57,75 @@ function buildRecords(count) {
   return records;
 }
 
+test('runCompaction converts resident offsets and preserves native recent records across repeated compaction', async () => {
+  const original = buildRecords(40);
+  original.splice(28, 0,
+    {role: 'extension', text: '', extension: {kind: 'openai_reasoning', item: {type: 'reasoning', encrypted_content: 'reasoning-recent'}}},
+    {role: 'tool_call', text: 'recent call', toolCallId: 'recent', toolName: 'read_files', argumentsText: '{}'},
+    {role: 'tool_result', text: 'recent result', toolCallId: 'recent', toolName: 'read_files', ok: true});
+  original[35].attachments = [{kind: 'image', mediaType: 'image/png', path: 'recent.png', dataBase64: 'AQ==', sizeBytes: 1}];
+  const before = structuredClone(original);
+  const previous = {summaryText: 'old summary', activeStartIndex: 800, createdAt: 'old'};
+  const agent = createSummaryAgent('updated summary');
+  const first = await runCompaction({records: original, baseRecordIndex: 800, compaction: previous, force: true, agent, promptPrefix: buildSummaryPrefix(previous)});
+  const localBoundary = first.compaction.activeStartIndex - 800;
+  assert.equal(localBoundary, computeCompactionBoundary(original));
+  assert.deepEqual(agent.calls[0].records.slice(2, -1), original.slice(0, localBoundary));
+  assert.deepEqual(original, before);
+  assert.notEqual(original[localBoundary].role, 'tool_result');
+
+  const resident = original.slice(localBoundary);
+  const recentRecords = resident.slice();
+  resident.push(createCompactionNoticeRecord(first.compaction), ...buildRecords(30));
+  const second = await runCompaction({records: resident, baseRecordIndex: first.compaction.activeStartIndex, compaction: first.compaction, force: true, agent, promptPrefix: buildSummaryPrefix(first.compaction)});
+  const secondLocalBoundary = second.compaction.activeStartIndex - first.compaction.activeStartIndex;
+  assert.equal(secondLocalBoundary, computeCompactionBoundary(resident));
+  assert.deepEqual(agent.calls[1].records.slice(2, -1), resident.slice(0, secondLocalBoundary).filter((record) => record.role !== 'compaction_notice'));
+  assert.equal(agent.calls[1].records.includes(recentRecords.find((record) => record.role === 'extension')), true);
+  assert.equal(agent.calls[1].records.includes(recentRecords.find((record) => record.role === 'tool_result')), true);
+  assert.equal(agent.calls[1].records.some((record) => record.attachments?.[0]?.path === 'recent.png'), true);
+  assert.deepEqual(original, before);
+});
+
+test('runCompaction projects an untrimmed offset snapshot from the global active boundary', async () => {
+  const records = buildRecords(35);
+  const compaction = {summaryText: 'old summary', activeStartIndex: 804, createdAt: 'old'};
+  const agent = createSummaryAgent();
+  const result = await runCompaction({records, baseRecordIndex: 800, compaction, force: true, agent, promptPrefix: buildSummaryPrefix(compaction)});
+  assert.equal(result.compaction.activeStartIndex, 800 + computeCompactionBoundary(records));
+  assert.deepEqual(agent.calls[0].records.slice(2, -1), records.slice(4, result.compaction.activeStartIndex - 800));
+});
+
+test('runCompaction estimates a nonempty resident suffix instead of slicing twice by the global index', async () => {
+  const records = buildRecords(30).map((record) => ({...record, text: 'active material '.repeat(30)}));
+  const compaction = {summaryText: 's', activeStartIndex: 800, createdAt: 'old'};
+  const result = await runCompaction({records, baseRecordIndex: 800, compaction, contextWindow: 100, agent: createSummaryAgent(), promptPrefix: buildSummaryPrefix(compaction)});
+  assert.equal(result.didCompact, true);
+  assert.equal(result.compaction.activeStartIndex, 810);
+});
+
+test('runCompaction leaves offset input and previous state unchanged for rejected summaries and boundaries', async () => {
+  for (const failure of ['no_boundary', 'empty', 'exception', 'abort']) {
+    const records = buildRecords(failure === 'no_boundary' ? 2 : 30);
+    const before = structuredClone(records);
+    const compaction = {summaryText: 'old', activeStartIndex: 800, createdAt: 'old'};
+    const controller = new AbortController();
+    const agent = {async runTurn() {
+      if (failure === 'exception') throw new Error('summary failed');
+      if (failure === 'abort') controller.abort();
+      return {draft: failure === 'empty' ? '  ' : 'summary', toolCalls: []};
+    }};
+    const run = () => runCompaction({records, baseRecordIndex: 800, compaction, force: true, agent, promptPrefix: buildSummaryPrefix(compaction), abortSignal: controller.signal});
+    if (failure === 'exception' || failure === 'abort') {
+      await assert.rejects(run, failure === 'exception' ? /summary failed/ : /中断/);
+    } else {
+      assert.equal((await run()).didCompact, false);
+    }
+    assert.deepEqual(records, before);
+    assert.deepEqual(compaction, {summaryText: 'old', activeStartIndex: 800, createdAt: 'old'});
+  }
+});
+
 test('estimateTextTokens distinguishes CJK and other characters', () => {
   // 4 个 ASCII 字符约 1 token；纯 CJK 字符按更高密度计。
   assert.equal(estimateTextTokens('abcd'), 1);
@@ -79,6 +150,17 @@ test('createCompactionNoticeRecord renders compacted count only', () => {
 
   assert.equal(record.role, 'compaction_notice');
   assert.equal(record.text, '已将较早的 7 条历史压缩为摘要');
+});
+
+test('compaction summary notice round-trips through the shared predicate', () => {
+  const record = createCompactionNoticeRecord({summaryText: 'summary', activeStartIndex: 42, createdAt: 'now'});
+
+  // 渲染层用判定函数替代提示，生成与判定必须共用同一文案模板。
+  assert.equal(record.text, createCompactionSummaryNoticeText(42));
+  assert.equal(isCompactionSummaryNotice(record), true);
+  assert.equal(isCompactionSummaryNotice({role: 'compaction_notice', text: '当前无需压缩'}), false);
+  assert.equal(isCompactionSummaryNotice({role: 'compaction_notice', text: '已将较早的 42 条旁路历史压缩为摘要'}), false);
+  assert.equal(isCompactionSummaryNotice({role: 'assistant', text: createCompactionSummaryNoticeText(42)}), false);
 });
 
 test('runCompaction uses a custom threshold while force bypasses it', async () => {

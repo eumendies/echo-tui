@@ -20,6 +20,7 @@ function capture(options) {
   });
 }
 const renderer = {
+  syncMainTranscript() {},
   clearFooter() {},
   render: capture,
   renderDestructive: capture,

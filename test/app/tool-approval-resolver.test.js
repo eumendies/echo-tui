@@ -427,3 +427,28 @@ test('tool approval resolver sends oversized actions directly to manual approval
   assert.deepEqual(debug.events[0].payload.actionProjection, 'manual_only');
   assert.equal(JSON.stringify(debug.events).includes('x'.repeat(100)), false);
 });
+
+test('tool approval falls back to manual approval when complete history is unavailable', async () => {
+  const debug = createDebug();
+  let reviews = 0;
+  let manualCalls = 0;
+  const resolver = createToolApprovalResolver({
+    currentUserRequest: 'update generated output', cwd: '/tmp/project', observation: debug.observation,
+    interactionMode: 'normal', isCurrentTurn: () => true,
+    // 完整历史读不到时无法按全局下标投影审批上下文，必须回退人工 surface 而不是让整轮失败。
+    getRecords: () => null, turnUserRecordIndex: 0,
+    settings: {mode: 'auto', modelProfileId: 'reviewer'},
+    reviewer: async () => { reviews += 1; return true; },
+    toolApproval: {
+      getCachedDecision() { return null; },
+      requestManual() { manualCalls += 1; return Promise.resolve({kind: 'deny', message: 'manual fallback'}); }
+    }
+  });
+
+  assert.deepEqual(await resolver.request({
+    callId: 'write', toolName: 'run_bash_command', argumentsText: '{"command":"touch generated.txt"}'
+  }), {kind: 'deny', message: 'manual fallback'});
+  assert.equal(reviews, 0);
+  assert.equal(manualCalls, 1);
+  assert.deepEqual(debug.events, []);
+});
