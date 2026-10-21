@@ -173,7 +173,8 @@ class TranscriptContext {
     }
 
     return {
-      session: structuredClone(loaded.session),
+      // 调用方只把 session 投影成有界引用素材、不保留 session 本身，因此直接移交读取结果。
+      session: loaded.session,
       sourcePath: this.transcriptStore.getSessionFilePath(this.getCurrentCwd(), candidate.sessionId),
       title: candidate.title
     };
@@ -232,7 +233,8 @@ class TranscriptContext {
 
     const session = loaded.session;
     this.baseRecordIndex = session.compaction?.activeStartIndex ?? 0;
-    this.records = structuredClone(session.records.slice(this.baseRecordIndex));
+    // 读取结果由本次恢复独占，直接安装活跃后缀即可，不需要再复制一份等量记录。
+    this.records = session.records.slice(this.baseRecordIndex);
     this.sessionTitle = createSessionTitle(session.records);
     const firstUserIndex = session.records.findIndex((record) => record.role === 'user');
     this.firstUserRecordIndex = firstUserIndex < 0 ? null : firstUserIndex;

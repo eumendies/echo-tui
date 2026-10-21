@@ -6,8 +6,10 @@ import path from 'node:path';
 import {
   createTranscriptJournalEntry,
   createTranscriptJournalStart,
+  createRepairedJournalText,
   parseTranscriptJournalStart,
-  replayTranscriptJournal,
+  replayTranscriptJournalFile,
+  replayTranscriptJournalStream,
   serializeTranscriptJournalLine
 } from './transcript-journal';
 
@@ -208,34 +210,23 @@ function createTranscriptStore(options: TranscriptStoreOptions = {}): Transcript
     writeSessionIndex(normalizedCwd, next);
   }
 
-  /** 异步只读重放一个 journal，并只返回右栏需要的有界预览。 */
+  /** 异步只读重放一个 journal，并只返回右栏需要的有界预览；按行读取，读取期间不阻塞事件循环。 */
   function loadSessionPreview(cwd: string, sessionId: string): Promise<TranscriptSessionPreview | null> {
     const normalizedCwd = String(cwd);
     const filePath = getSessionFilePath(normalizedCwd, sessionId);
 
-    return new Promise((resolve) => {
-      fsImpl.readFile(filePath, 'utf8', (error, text) => {
-        if (error) {
-          resolve(null);
-          return;
+    return replayTranscriptJournalStream(fsImpl.createReadStream(filePath))
+      .then((loaded) => {
+        if (!loaded || loaded.session.cwd !== normalizedCwd || loaded.session.sessionId !== sessionId) {
+          return null;
         }
 
-        try {
-          const loaded = replayTranscriptJournal(String(text));
-          if (!loaded || loaded.session.cwd !== normalizedCwd || loaded.session.sessionId !== sessionId) {
-            resolve(null);
-            return;
-          }
-
-          resolve({
-            sessionId,
-            previewRecords: createSessionPreviewRecords(loaded.session.records)
-          });
-        } catch {
-          resolve(null);
-        }
-      });
-    });
+        return {
+          sessionId,
+          previewRecords: createSessionPreviewRecords(loaded.session.records)
+        };
+      })
+      .catch(() => null);
   }
 
   /**
@@ -302,14 +293,15 @@ function createTranscriptStore(options: TranscriptStoreOptions = {}): Transcript
 
   function safelyReadJournal(filePath: string, cwd: string, repairTail: boolean): LoadedTranscriptSession | null {
     try {
-      const loaded = replayTranscriptJournal(fsImpl.readFileSync(filePath, 'utf8'));
+      const loaded = replayTranscriptJournalFile(filePath, fsImpl);
 
       if (!loaded || loaded.session.cwd !== String(cwd)) {
         return null;
       }
 
       if (repairTail && loaded.requiresRepair) {
-        repairJournal(filePath, loaded.repairedJournalText);
+        // 修复文本只在确实需要修复时按需重建，代价是重读一次文件。
+        repairJournal(filePath, createRepairedJournalText(filePath, fsImpl, loaded.reference.sequence));
       }
 
       return {

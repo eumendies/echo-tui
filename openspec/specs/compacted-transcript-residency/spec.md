@@ -44,7 +44,7 @@
 - **THEN** 系统 SHALL NOT 为该次正常摘要更新全量重载 journal 或复制完整历史
 
 ### Requirement: 恢复与回退后安装活跃记录
-系统 SHALL 在恢复 session 或完成 Undo 后，依据目标 compaction 安装其活跃记录及完整历史起点；无 compaction 时 SHALL 保留目标完整记录且起点为零。恢复及跨边界 Undo MAY 临时全量读取现有 journal，但操作完成后主会话 SHALL NOT 长期保留被目标摘要覆盖的前缀。
+系统 SHALL 在恢复 session 或完成 Undo 后，依据目标 compaction 安装其活跃记录及完整历史起点；无 compaction 时 SHALL 保留目标完整记录且起点为零。恢复及跨边界 Undo MAY 临时全量读取现有 journal，但操作完成后主会话 SHALL NOT 长期保留被目标摘要覆盖的前缀。安装活跃后缀时系统 SHALL NOT 重复深拷贝读取路径已经独占持有的记录数组。
 
 #### Scenario: 恢复已压缩的旧 session
 - **WHEN** `/resume` 加载 schemaVersion 1 的完整 journal 且其中包含 compaction
@@ -72,8 +72,13 @@
 - **THEN** 当前驻留记录、compaction 和历史起点 SHALL 一起重置
 - **THEN** 原 journal SHALL 仍可按现有机制恢复
 
+#### Scenario: 安装后缀不复制读取结果
+- **WHEN** 恢复会话并安装活跃后缀
+- **THEN** 系统 SHALL 直接安装该次读取产生的记录，SHALL NOT 为同一批记录再做一次等量深拷贝
+- **THEN** 安装后的常驻 records SHALL 只包含目标边界之后的有效记录
+
 ### Requirement: 完整历史操作不退化为活跃区操作
-系统 SHALL 保持完整历史消费者的既有语义，SHALL NOT 因内存裁剪使 `/fork`、`/copy`、历史引用或子 Agent 回看静默遗漏有效记录。需要旧原文时系统 MAY 按需全量读取 journal；新引入的临时记录持有者 SHALL 在对应操作或视图结束后释放，不得重新装入主会话常驻 records。
+系统 SHALL 保持完整历史消费者的既有语义，SHALL NOT 因内存裁剪使 `/fork`、`/copy`、历史引用或子 Agent 回看静默遗漏有效记录。需要旧原文时系统 MAY 按需全量读取 journal；新引入的临时记录持有者 SHALL 在对应操作或视图结束后释放，不得重新装入主会话常驻 records。该按需回读 SHALL 逐行读取 journal，SHALL NOT 额外保留完整文件副本，SHALL NOT 为回读结果再做一次等量深拷贝。
 
 #### Scenario: 分叉已压缩会话
 - **WHEN** 用户对已压缩会话执行 `/fork`
@@ -95,6 +100,12 @@
 - **WHEN** 同一 assistant loop 压缩后，审批流程需要查找已逐出的用户请求或已提交问答记录
 - **THEN** 系统 SHALL 按完整历史位置查找必要事实，SHALL NOT 将其误判为从未存在
 - **THEN** 回读 SHALL NOT 建立永久完整 transcript 副本
+
+#### Scenario: 大 journal 的完整历史回读内存特征
+- **WHEN** `/fork`、`/copy`、历史引用、子 Agent 回看或跨边界 Undo 触发一次完整历史回读
+- **THEN** 回读 SHALL NOT 以整文件为单位读取 journal 内容
+- **THEN** 回读的临时保留量 SHALL 由解析出的有效记录与重放期间的有效状态决定，SHALL NOT 额外携带完整文件副本
+- **THEN** 系统 SHALL NOT 为同一批回读结果再复制一份等量对象
 
 ### Requirement: 运行入口共享偏移语义
 系统 SHALL 让自动、手动、子 Agent 及 headless 压缩共享驻留起点与完整边界转换规则。BTW 捕获主会话输入时 SHALL 仅冻结当前摘要和活跃记录，保持打开时快照隔离；主会话逻辑起点 SHALL NOT 被误用于旁路自身显示记录计数。无持久化 journal 的入口 SHALL NOT 因本变更新建可恢复 transcript session。

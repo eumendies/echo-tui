@@ -36,9 +36,9 @@ function createHarness(t) {
   // 保留真实文件系统与 store；只在既有 I/O 边界计数和注入可恢复故障。
   const fsImpl = {
     ...fs,
-    readFileSync(filePath, ...args) {
+    openSync(filePath, ...args) {
       if (String(filePath).endsWith('.jsonl')) io.journalReads += 1;
-      return fs.readFileSync(filePath, ...args);
+      return fs.openSync(filePath, ...args);
     },
     appendFileSync(filePath, ...args) {
       io.appendAttempts += 1;
@@ -175,6 +175,8 @@ test('repeated compaction keeps a fixed resident suffix, logical totals and the 
   assert.ok(journalText(h).length > 290000);
   const complete = context.getCompleteRecords();
   assert.equal(io.readOnlyLoads, 1);
+  // 反向断言：计数点确实观测到 journal 读取，避免"日常操作不 replay"断言恒真。
+  assert.equal(io.journalReads, 1);
   assert.equal(complete.length, logicalTotal);
   assert.equal(complete[1].displayText, '  Original\n  first title  ');
   assert.deepEqual(complete.slice(context.baseRecordIndex), resident);

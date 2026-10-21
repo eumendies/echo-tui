@@ -298,6 +298,35 @@ test('createTranscriptStore tolerates a torn final write and rejects corrupt ear
   assert.equal(store.loadSession(cwd, reference.sessionId), null);
 });
 
+test('journal replay streams long single lines and append-then-truncate histories', () => {
+  const rootDir = createTempRoot();
+  const cwd = '/tmp/example/streamed-replay';
+  const store = createTranscriptStore({rootDir});
+  // 单行远超 64 KiB chunk；回放的中间状态（401 条）远大于最终结果（1 条）。
+  const longText = 'y'.repeat(1_500_000);
+  const reference = store.createSession(cwd, createAppendRecordsOperation([{role: 'user', text: longText}]), '2026-07-01T00:00:00.000Z');
+  const bulk = Array.from({length: 400}, (_value, index) => ({role: 'assistant', text: `bulk-${index}`}));
+  const appended = store.appendSession(cwd, reference, createAppendRecordsOperation(bulk), '2026-07-01T00:00:01.000Z');
+  const truncated = store.appendSession(cwd, appended, createTruncateRecordsOperation(1), '2026-07-01T00:00:02.000Z');
+  const calls = {openSync: 0, readFileSync: 0};
+  const countingFs = Object.create(fs);
+  countingFs.openSync = (filePath, ...args) => {
+    if (String(filePath).endsWith('.jsonl')) calls.openSync += 1;
+    return fs.openSync(filePath, ...args);
+  };
+  countingFs.readFileSync = (filePath, ...args) => {
+    if (String(filePath).endsWith('.jsonl')) calls.readFileSync += 1;
+    return fs.readFileSync(filePath, ...args);
+  };
+  const reopened = createTranscriptStore({rootDir, fsImpl: countingFs});
+
+  const loaded = reopened.loadSession(cwd, truncated.sessionId);
+
+  assert.deepEqual(loaded.session.records, [{role: 'user', text: longText}]);
+  assert.equal(calls.openSync, 1);
+  assert.equal(calls.readFileSync, 0);
+});
+
 test('loadSessionReadOnly replays a torn tail without repairing the source journal', () => {
   const rootDir = createTempRoot();
   const store = createTranscriptStore({rootDir});
@@ -567,15 +596,18 @@ test('session index fast path sorts summaries without reading journal bodies', (
   assert.deepEqual(store.listSessionSummaries(cwd).map((session) => session.sessionId), [second.sessionId, first.sessionId]);
   const journalReads = [];
   const countingFs = Object.create(fs);
-  countingFs.readFileSync = (filePath, encoding) => {
+  countingFs.openSync = (filePath, ...args) => {
     if (String(filePath).endsWith('.jsonl')) journalReads.push(filePath);
-    return fs.readFileSync(filePath, encoding);
+    return fs.openSync(filePath, ...args);
   };
   const reopened = createTranscriptStore({rootDir, fsImpl: countingFs});
   const sessions = reopened.listSessionSummaries(cwd);
 
   assert.deepEqual(sessions.map((session) => session.messageCount), [1, 1]);
   assert.deepEqual(journalReads, []);
+  // 反向断言：计数点确实观测到 journal 读取，避免断言恒真。
+  reopened.loadSession(cwd, second.sessionId);
+  assert.deepEqual(journalReads, [store.getSessionFilePath(cwd, second.sessionId)]);
   assert.equal(fs.existsSync(reopened.getSessionIndexFilePath(cwd)), true);
 });
 
@@ -598,9 +630,9 @@ test('session index rebuilds only stale journals and removes invalid or orphan e
 
   const journalReads = [];
   const countingFs = Object.create(fs);
-  countingFs.readFileSync = (filePath, encoding) => {
+  countingFs.openSync = (filePath, ...args) => {
     if (String(filePath).endsWith('.jsonl')) journalReads.push(path.basename(filePath));
-    return fs.readFileSync(filePath, encoding);
+    return fs.openSync(filePath, ...args);
   };
   const reopened = createTranscriptStore({rootDir, fsImpl: countingFs});
   const sessions = reopened.listSessionSummaries(cwd);
@@ -608,6 +640,9 @@ test('session index rebuilds only stale journals and removes invalid or orphan e
 
   assert.deepEqual(sessions.map((session) => session.sessionId), [first.sessionId, second.sessionId]);
   assert.deepEqual(journalReads.sort(), [`${first.sessionId}.jsonl`, 'broken.jsonl'].sort());
+  // 反向断言：计数点确实观测到 journal 读取，避免断言恒真。
+  reopened.loadSession(cwd, second.sessionId);
+  assert.deepEqual(journalReads.sort(), [`${first.sessionId}.jsonl`, `${second.sessionId}.jsonl`, 'broken.jsonl'].sort());
   assert.equal(sessions[0].messageCount, 2);
   assert.deepEqual(repaired.sessions.map((session) => session.sessionId), [first.sessionId, second.sessionId]);
   assert.deepEqual(fs.readdirSync(sessionsDir).filter((name) => name.includes('index.json.tmp-')), []);
