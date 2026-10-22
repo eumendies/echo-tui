@@ -4353,3 +4353,121 @@ for (const rows of [6, 10]) {
     assert.doesNotMatch(lines.join('\n'), /等待|素材已就绪|当前回答结束后发送/u);
   });
 }
+
+test('renderFooterLayout keeps the turn timer while a subagent run is active', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer(''),
+    pending: {
+      kind: 'subagent',
+      agentName: 'explorer',
+      elapsedMs: 1200,
+      phase: 'tool',
+      runId: 'r1',
+      task: 'investigate',
+      toolName: 'grep'
+    },
+    working: {elapsedMs: 65000},
+    statusLine: {...DEFAULT_STATUS_LINE, mode: 'streaming', keyHint: 'Esc 中断'},
+    rows: 24,
+    width: 100
+  });
+  const statusText = stripAnsi(layout.lines.at(-1));
+
+  // 子 agent 的 elapsedMs 从它自己的 run 开始计；状态行必须继续显示本轮累积时间，否则看起来像被重置。
+  assert.ok(statusText.includes('working 01:05'), statusText);
+  assert.ok(!statusText.includes('working 00:01'), statusText);
+});
+
+test('renderFooterLayout keeps the turn timer while parallel subagent runs are active', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer(''),
+    pending: {
+      kind: 'subagents',
+      runs: [
+        {kind: 'subagent', agentName: 'explorer', elapsedMs: 1200, phase: 'thinking', runId: 'r1', task: 'first'},
+        {kind: 'subagent', agentName: 'explorer', elapsedMs: 2400, phase: 'tool', runId: 'r2', task: 'second', toolName: 'grep'}
+      ]
+    },
+    working: {elapsedMs: 65000},
+    statusLine: {...DEFAULT_STATUS_LINE, mode: 'streaming'},
+    rows: 24,
+    width: 100
+  });
+  const statusText = stripAnsi(layout.lines.at(-1));
+
+  assert.ok(statusText.includes('working 01:05'), statusText);
+});
+
+test('renderFooterLayout keeps the subagent view detail while the main turn timer runs', () => {
+  const layout = renderRuntimeFooterLayout({
+    composer: createComposer(''),
+    commandSurface: null,
+    slashSuggestions: null,
+    pending: {
+      kind: 'subagent',
+      agentName: 'explorer',
+      elapsedMs: 4200,
+      phase: 'tool',
+      runId: 'r1',
+      task: 'investigate',
+      toolName: 'grep'
+    },
+    working: {elapsedMs: 65000},
+    statusLine: {
+      projectName: 'echo_tui',
+      model: {kind: 'default', label: 'GPT-4o'},
+      mode: 'subagent_view',
+      detail: 'subagent 1/1 · explorer · investigate · tool · grep · 4.2s'
+    },
+    rows: 24,
+    width: 100
+  });
+  const statusText = stripAnsi(layout.lines.at(-1));
+
+  // 窗口的 detail 自带 phase 与 elapsed；主 turn 的 activity 不得抢占它。
+  assert.ok(statusText.includes('subagent 1/1 · explorer · investigate · tool · grep · 4.2s'), statusText);
+  assert.ok(!statusText.includes('working'), statusText);
+});
+
+test('renderFooterLayout falls back to the subagent elapsed when no turn timer is running', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer(''),
+    pending: {
+      kind: 'subagent',
+      agentName: 'explorer',
+      elapsedMs: 4200,
+      phase: 'tool',
+      runId: 'r1',
+      task: 'investigate',
+      toolName: 'grep'
+    },
+    working: null,
+    statusLine: {...DEFAULT_STATUS_LINE, mode: 'streaming'},
+    rows: 24,
+    width: 100
+  });
+  const statusText = stripAnsi(layout.lines.at(-1));
+
+  // 没有主 turn 计时器时，子 agent 自己的 elapsed 仍是唯一可用来源。
+  assert.ok(statusText.includes('working 00:04'), statusText);
+});
+
+test('renderFooterLayout falls back to the longest parallel subagent elapsed without a turn timer', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer(''),
+    pending: {
+      kind: 'subagents',
+      runs: [
+        {kind: 'subagent', agentName: 'explorer', elapsedMs: 1200, phase: 'thinking', runId: 'r1', task: 'first'},
+        {kind: 'subagent', agentName: 'explorer', elapsedMs: 2400, phase: 'tool', runId: 'r2', task: 'second', toolName: 'grep'}
+      ]
+    },
+    working: null,
+    statusLine: {...DEFAULT_STATUS_LINE, mode: 'streaming'},
+    rows: 24,
+    width: 100
+  });
+  const statusText = stripAnsi(layout.lines.at(-1));
+
+  assert.ok(statusText.includes('working 00:02'), statusText);
+});

@@ -3231,3 +3231,69 @@ test('AppContext change history writes stay constant per turn instead of growing
   const all = pushBytes.reduce((sum, bytes) => sum + bytes, 0);
   assert.ok(all / firstTen < 20, `ratio=${all / firstTen}`);
 });
+
+test('AppContext status line keeps the turn timer while a subagent run is active', () => {
+  const context = createContext();
+
+  context.beginUserTurn('delegate');
+  context.beginAssistantTurn();
+  context.turnContext.enterSpinnerState('working');
+  // 主 turn 已经跑了 65s，而子 agent 的计时器刚从 0 开始。
+  context.turnContext.workingStartedAt = Date.now() - 65000;
+  // 子运行必须先由记录注册，之后的活动快照才会进入 footer 投影。
+  context.subagentRunContext.acceptRecords([{
+    role: 'subagent',
+    text: 'investigate',
+    agentName: 'explorer',
+    parentToolCallId: 'outer',
+    runId: 'run-1',
+    event: {kind: 'start', task: 'investigate'}
+  }]);
+  context.subagentRunContext.updateActivity({
+    agentName: 'explorer',
+    phase: 'tool',
+    runId: 'run-1',
+    task: 'investigate',
+    toolName: 'grep'
+  });
+
+  const renderState = context.createRenderState();
+
+  assert.equal(renderState.pending.kind, 'subagent');
+  assert.equal(renderState.statusLine.detail, 'explorer · grep');
+  assert.equal(renderState.statusLine.activity.kind, 'working');
+  // 子 agent 的 elapsedMs 从它自己的 run 开始计；状态行必须继续显示本轮累积时间。
+  assert.ok(renderState.statusLine.activity.elapsedMs >= 65000, String(renderState.statusLine.activity.elapsedMs));
+});
+
+test('AppContext status line falls back to parallel subagent activity without a turn timer', () => {
+  const context = createContext();
+
+  context.subagentRunContext.acceptRecords([
+    {
+      role: 'subagent',
+      text: 'first',
+      agentName: 'explorer',
+      parentToolCallId: 'outer-1',
+      runId: 'run-1',
+      event: {kind: 'start', task: 'first', parallelSize: 2}
+    },
+    {
+      role: 'subagent',
+      text: 'second',
+      agentName: 'explorer',
+      parentToolCallId: 'outer-2',
+      runId: 'run-2',
+      event: {kind: 'start', task: 'second', parallelSize: 2}
+    }
+  ]);
+  context.subagentRunContext.updateActivity({agentName: 'explorer', phase: 'thinking', runId: 'run-1', task: 'first'});
+  context.subagentRunContext.updateActivity({agentName: 'explorer', phase: 'tool', runId: 'run-2', task: 'second', toolName: 'grep'});
+
+  const renderState = context.createRenderState();
+
+  // 与 render 层同一优先级：没有主 turn 计时器时，并行子运行取最长 elapsed。
+  assert.equal(renderState.pending.kind, 'subagents');
+  assert.equal(renderState.statusLine.activity.kind, 'working');
+  assert.equal(typeof renderState.statusLine.activity.elapsedMs, 'number');
+});
