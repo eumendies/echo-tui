@@ -95,6 +95,10 @@ function applyOperation(session, operation) {
     session.records.length = operation.recordCount;
   } else if (operation.op === 'set_change_history') {
     session.changeHistory = structuredClone(operation.changeHistory);
+  } else if (operation.op === 'push_change_checkpoint') {
+    session.changeHistory = [...(session.changeHistory || []), structuredClone(operation.checkpoint)];
+  } else if (operation.op === 'pop_change_checkpoint') {
+    (session.changeHistory || []).pop();
   } else if (operation.op === 'set_compaction') {
     if (operation.compaction) {
       session.compaction = {...operation.compaction};

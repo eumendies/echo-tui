@@ -93,7 +93,7 @@ function residentState(context) {
     compaction: context.compaction,
     changeHistory: context.changeHistory,
     todoState: context.todoState,
-    pendingChangeHistory: context.pendingChangeHistory,
+    pendingChangeHistoryDeltas: context.pendingChangeHistoryDeltas,
     pendingTodoState: context.pendingTodoState
   });
 }
@@ -188,20 +188,20 @@ test('failed compaction leaves resident records, durable journal, installed stat
   const {context, io} = h;
   context.appendRecords(richRecords());
   context.applyCompaction(compaction(7));
-  context.setChangeHistory([{id: 'pending-checkpoint', createdAt: TIMESTAMP, cwd: h.cwd,
-    transcriptStartIndex: 12, status: 'ready', files: []}]);
+  context.stageChangeHistoryDelta({kind: 'push', checkpoint: {id: 'pending-checkpoint', createdAt: TIMESTAMP, cwd: h.cwd,
+    transcriptStartIndex: 12, status: 'ready', files: []}});
   context.setTodoState({updatedAt: TIMESTAMP, items: [{id: 'todo_1', text: 'pending todo', status: 'open'}]});
   const before = residentState(context);
   const bytes = journalText(h);
   const resident = context.getResidentRecords();
-  const pendingHistory = context.pendingChangeHistory;
+  const pendingHistory = context.pendingChangeHistoryDeltas;
   const pendingTodo = context.pendingTodoState;
   io.failAppend = true;
 
   assert.throws(() => context.applyCompaction(compaction(12)), /controlled journal append failure/);
   assert.deepEqual(residentState(context), before);
   assert.strictEqual(context.getResidentRecords(), resident);
-  assert.strictEqual(context.pendingChangeHistory, pendingHistory);
+  assert.strictEqual(context.pendingChangeHistoryDeltas, pendingHistory);
   assert.strictEqual(context.pendingTodoState, pendingTodo);
   assert.equal(journalText(h), bytes);
   assert.equal(io.readOnlyLoads, 0);
@@ -213,12 +213,12 @@ test('failed compaction leaves resident records, durable journal, installed stat
   assert.equal(context.getRecordCount(), before.total + 1);
   assert.deepEqual(context.compaction, next);
   assert.equal(context.currentSession.sequence, before.session.sequence + 1);
-  assert.equal(context.pendingChangeHistory, undefined);
+  assert.deepEqual(context.pendingChangeHistoryDeltas, []);
   assert.equal(context.pendingTodoState, undefined);
   const entry = journalEntries(h).at(-1);
   assert.equal(entry.op, 'batch');
   assert.deepEqual(entry.operations.map((operation) => operation.op), [
-    'append_records', 'set_change_history', 'set_compaction', 'set_todo_state'
+    'append_records', 'push_change_checkpoint', 'set_compaction', 'set_todo_state'
   ]);
   assert.deepEqual(entry.operations[0].records, [notice]);
   const complete = context.getCompleteRecords();
@@ -498,8 +498,8 @@ test('real AppContext checkpoints use logical boundaries and resumed undo restor
   const operations = fs.readFileSync(h.store.getSessionFilePath(h.cwd, sessionId), 'utf8')
     .trim().split('\n').map((line) => JSON.parse(line)).slice(-2);
   assert.deepEqual(operations.map((entry) => entry.operations.map((operation) => operation.op)), [
-    ['truncate_records', 'set_compaction', 'set_change_history'],
-    ['truncate_records', 'set_compaction', 'set_change_history']
+    ['truncate_records', 'set_compaction', 'pop_change_checkpoint'],
+    ['truncate_records', 'set_compaction', 'pop_change_checkpoint']
   ]);
   assert.deepEqual(operations.map((entry) => entry.operations[0].recordCount), [8, 5]);
   const saved = h.store.loadSessionReadOnly(h.cwd, sessionId).session;
@@ -718,7 +718,7 @@ test('restoreToBoundary refuses a cross-boundary rollback without caller-provide
 
   const complete = h.context.getCompleteRecords();
   assert.ok(complete);
-  h.context.restoreToBoundary(1, undefined, undefined, complete);
+  h.context.restoreToBoundary(1, undefined, complete);
   assert.equal(h.context.baseRecordIndex, 0);
   assert.equal(h.context.getRecordCount(), 1);
   assert.deepEqual(h.context.getResidentRecords(), [{role: 'user', text: 'cold question'}]);
@@ -773,4 +773,168 @@ test('display-only history reads degrade instead of throwing when complete histo
   h.io.readFailure = null;
   assert.ok(h.port.listCopyableRecords().length > 0);
   assert.deepEqual(h.app.beginUserTurn('replayed request').metadata?.modeTransition, {from: 'plan', to: 'normal'});
+});
+
+test('a failed change history write keeps the delta pending and retries it exactly once', (t) => {
+  const h = createHarness(t);
+  h.context.appendRecord({role: 'user', text: 'base'});
+  h.app.beginChangeCheckpoint();
+  h.context.appendRecord({role: 'user', text: 'change'});
+  const before = journalText(h);
+
+  h.io.failAppend = true;
+  assert.throws(() => h.app.finalizeChangeCheckpoint(), /controlled journal append failure/);
+  assert.equal(journalText(h), before);
+  // 失败后待写增量保留，且增量只被应用过一次：镜像栈与 context 栈各一个 checkpoint。
+  assert.equal(h.context.pendingChangeHistoryDeltas.length, 1);
+  assert.equal(h.context.pendingChangeHistoryDeltas[0].kind, 'push');
+  assert.equal(h.context.changeHistory.length, 1);
+  assert.equal(h.app.changeHistoryContext.history.length, 1);
+
+  h.io.failAppend = false;
+  h.context.persistCurrentSession();
+
+  assert.deepEqual(h.context.pendingChangeHistoryDeltas, []);
+  assert.equal(h.context.changeHistory.length, 1);
+  assert.equal(h.app.changeHistoryContext.history.length, 1);
+  assert.equal(journalEntries(h).filter((entry) => entry.op === 'push_change_checkpoint').length, 1);
+  const saved = h.store.loadSessionReadOnly(h.cwd, h.context.currentSessionId).session;
+  assert.deepEqual(saved.changeHistory.map((checkpoint) => checkpoint.id), h.context.changeHistory.map((checkpoint) => checkpoint.id));
+});
+
+test('finalizing a turn without a new checkpoint does not append another change history operation', (t) => {
+  const h = createHarness(t);
+  h.context.appendRecord({role: 'user', text: 'base'});
+  h.app.beginChangeCheckpoint();
+  h.context.appendRecord({role: 'user', text: 'change'});
+  h.app.finalizeChangeCheckpoint();
+
+  assert.equal(journalEntries(h).filter((entry) => entry.op === 'push_change_checkpoint').length, 1);
+  const bytes = journalText(h);
+
+  h.app.finalizeChangeCheckpoint();
+
+  assert.equal(journalText(h), bytes);
+});
+
+test('clearing or loading a session drops a staged change history delta', (t) => {
+  const h = createHarness(t);
+  h.context.appendRecord({role: 'user', text: 'base'});
+  const sessionId = h.context.currentSessionId;
+  const checkpoint = {id: 'staged', createdAt: TIMESTAMP, cwd: h.cwd, transcriptStartIndex: 1, status: 'ready', files: []};
+
+  h.context.stageChangeHistoryDelta({kind: 'push', checkpoint});
+  assert.equal(h.context.pendingChangeHistoryDeltas.length, 1);
+
+  h.context.clearRecords();
+  assert.deepEqual(h.context.pendingChangeHistoryDeltas, []);
+
+  h.context.stageChangeHistoryDelta({kind: 'push', checkpoint});
+  assert.equal(h.context.loadSession(sessionId), true);
+  assert.deepEqual(h.context.pendingChangeHistoryDeltas, []);
+});
+
+test('restoreToBoundary without a change checkpoint truncates without writing an unreplayable pop', (t) => {
+  const h = createHarness(t);
+  h.context.appendRecords([{role: 'user', text: 'one'}, {role: 'assistant', text: 'two'}]);
+  const sessionId = h.context.currentSessionId;
+
+  h.context.restoreToBoundary(1, undefined);
+
+  assert.deepEqual(journalEntries(h).at(-1).operations.map((operation) => operation.op), ['truncate_records', 'set_compaction']);
+  assert.ok(h.store.loadSession(h.cwd, sessionId));
+});
+
+test('undoing after a failed change history write flushes the pending delta before the pop', (t) => {
+  const h = createHarness(t);
+  h.context.appendRecord({role: 'user', text: 'base'});
+
+  h.app.beginChangeCheckpoint();
+  h.context.appendRecord({role: 'user', text: 'first change'});
+  h.app.finalizeChangeCheckpoint();
+
+  h.app.beginChangeCheckpoint();
+  h.context.appendRecord({role: 'user', text: 'second change'});
+  h.io.failAppend = true;
+  assert.throws(() => h.app.finalizeChangeCheckpoint(), /controlled journal append failure/);
+  h.io.failAppend = false;
+
+  assert.equal(h.app.executeUndo().ok, true);
+  assert.deepEqual(h.context.pendingChangeHistoryDeltas, []);
+
+  // journal 必须先补齐待写的 push 再写 pop，否则重放会弹掉前一个 checkpoint，与内存栈分叉。
+  const saved = h.store.loadSession(h.cwd, h.context.currentSessionId);
+  assert.ok(saved);
+  assert.deepEqual(
+    saved.session.changeHistory.map((checkpoint) => checkpoint.id),
+    h.context.changeHistory.map((checkpoint) => checkpoint.id)
+  );
+});
+
+test('undoing after a failed first change history write keeps the session recoverable', (t) => {
+  const h = createHarness(t);
+  h.context.appendRecord({role: 'user', text: 'base'});
+  h.app.beginChangeCheckpoint();
+  h.context.appendRecord({role: 'user', text: 'only change'});
+  h.io.failAppend = true;
+  assert.throws(() => h.app.finalizeChangeCheckpoint(), /controlled journal append failure/);
+  h.io.failAppend = false;
+
+  assert.equal(h.app.executeUndo().ok, true);
+
+  // 栈在 journal 里还是空的：此时若只写 pop，重放会判定该 session 不可恢复。
+  assert.ok(h.store.loadSession(h.cwd, h.context.currentSessionId));
+  assert.deepEqual(h.context.changeHistory, []);
+});
+
+test('consecutive failed change history writes keep every pending delta in order', (t) => {
+  const h = createHarness(t);
+  h.context.appendRecord({role: 'user', text: 'base'});
+
+  // 两轮都让 journal 写入失败：只有这种连续失败才会出现多个未落盘增量并存。
+  h.app.beginChangeCheckpoint();
+  h.io.failAppend = true;
+  assert.throws(() => h.context.appendRecord({role: 'user', text: 'first change'}), /controlled journal append failure/);
+  assert.throws(() => h.app.finalizeChangeCheckpoint(), /controlled journal append failure/);
+
+  h.app.beginChangeCheckpoint();
+  assert.throws(() => h.context.appendRecord({role: 'user', text: 'second change'}), /controlled journal append failure/);
+  assert.throws(() => h.app.finalizeChangeCheckpoint(), /controlled journal append failure/);
+  h.io.failAppend = false;
+
+  // 两次失败都不能丢掉第一次的增量。
+  assert.equal(h.context.pendingChangeHistoryDeltas.length, 2);
+  assert.equal(h.context.changeHistory.length, 2);
+
+  h.context.persistCurrentSession();
+
+  assert.deepEqual(h.context.pendingChangeHistoryDeltas, []);
+  const saved = h.store.loadSession(h.cwd, h.context.currentSessionId);
+  assert.deepEqual(
+    saved.session.changeHistory.map((checkpoint) => checkpoint.id),
+    h.context.changeHistory.map((checkpoint) => checkpoint.id)
+  );
+});
+
+test('a successful write consuming a pending delta keeps a later undo consistent', (t) => {
+  const h = createHarness(t);
+  h.context.appendRecord({role: 'user', text: 'base'});
+
+  h.app.beginChangeCheckpoint();
+  h.context.appendRecord({role: 'user', text: 'first change'});
+  h.io.failAppend = true;
+  assert.throws(() => h.app.finalizeChangeCheckpoint(), /controlled journal append failure/);
+  h.io.failAppend = false;
+
+  // 一次成功的其他状态写入先消费掉待写增量。
+  h.context.updateTodoState({updatedAt: TIMESTAMP, items: [{id: 'todo_1', text: 'pending', status: 'open'}]});
+  assert.deepEqual(h.context.pendingChangeHistoryDeltas, []);
+
+  // 此后 undo 不应再补写任何增量，只需按 journal 现有栈弹出。
+  assert.equal(h.app.executeUndo().ok, true);
+  assert.deepEqual(h.context.changeHistory, []);
+
+  const saved = h.store.loadSession(h.cwd, h.context.currentSessionId);
+  assert.ok(saved);
+  assert.deepEqual(saved.session.changeHistory, undefined);
 });

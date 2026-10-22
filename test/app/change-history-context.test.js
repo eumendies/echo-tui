@@ -256,3 +256,36 @@ test('ChangeHistoryContext exposes one persisted history for undo and diff fallb
 
   fs.rmSync(cwd, {recursive: true, force: true});
 });
+
+test('ChangeHistoryContext reports the stack delta for every mutation path', () => {
+  const cwd = createTempDir();
+  const context = new ChangeHistoryContext();
+
+  context.beginCheckpoint({cwd, transcriptStartIndex: 0});
+  const pushed = context.finalizeCheckpoint();
+
+  assert.equal(pushed.kind, 'push');
+  assert.strictEqual(pushed.checkpoint, context.last);
+
+  // 重复 finalize：current 已为 null，没有改动就没有增量。
+  assert.equal(context.finalizeCheckpoint(), null);
+
+  context.beginCheckpoint({cwd, transcriptStartIndex: 1});
+  context.invalidate('写入型 bash 不可追踪');
+  // invalidate 只清空内存栈，增量由随后的 finalize 表达。
+  assert.equal(context.history.length, 0);
+
+  const reset = context.finalizeCheckpoint();
+
+  assert.equal(reset.kind, 'reset');
+  assert.deepEqual(reset.history.map((checkpoint) => checkpoint.status), ['invalid']);
+  assert.strictEqual(reset.history[0], context.history[0]);
+
+  // 无 current 时 invalidate 是空操作：栈与增量都不变。
+  const before = context.getHistory();
+  context.invalidate('再次失效');
+  assert.deepEqual(context.getHistory(), before);
+  assert.equal(context.finalizeCheckpoint(), null);
+
+  fs.rmSync(cwd, {recursive: true, force: true});
+});

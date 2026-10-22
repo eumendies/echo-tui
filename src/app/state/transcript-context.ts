@@ -1,6 +1,8 @@
 import {
   createAppendRecordsOperation,
   createBatchOperation,
+  createPopChangeCheckpointOperation,
+  createPushChangeCheckpointOperation,
   createSetChangeHistoryOperation,
   createSetCompactionOperation,
   createSetTodoStateOperation,
@@ -10,7 +12,7 @@ import {createCompactionNoticeRecord} from '../../agent/context/context-compacti
 import {cloneChangeHistory} from './change-history-context';
 import {createSessionTitle} from '../../persistence/transcript-store';
 
-import type {ChangeCheckpoint} from '../../types/change-history';
+import type {ChangeCheckpoint, ChangeHistoryDelta} from '../../types/change-history';
 import type {
   CompactionState,
   ConversationReferenceSource,
@@ -43,7 +45,7 @@ class TranscriptContext {
   changeHistory: ChangeCheckpoint[];
   compaction: CompactionState | null;
   todoState: TodoState;
-  pendingChangeHistory: ChangeCheckpoint[] | undefined;
+  pendingChangeHistoryDeltas: ChangeHistoryDelta[]; // 尚未写出的增量，按应用顺序排列；写入失败时保留到下一次成功提交。
   pendingTodoState: TodoState | undefined;
 
   constructor(transcriptStore: TranscriptStore, getCurrentCwd: () => string) {
@@ -55,7 +57,7 @@ class TranscriptContext {
     this.changeHistory = [];
     this.compaction = null;
     this.todoState = createEmptyTodoState();
-    this.pendingChangeHistory = undefined;
+    this.pendingChangeHistoryDeltas = [];
     this.pendingTodoState = undefined;
   }
 
@@ -283,8 +285,9 @@ class TranscriptContext {
   /**
    * 按完整历史位置回退；目标后缀仍驻留时直接截取，跨边界时只使用调用方在恢复文件前预读的完整历史。
    * 跨边界却缺少完整历史时抛错，不隐式回读，也不把与起点不一致的后缀安装进状态。
+   * change history 固定按"弹出栈顶一个 checkpoint"回退：唯一调用方 /undo 每次只回退一轮。
    */
-  restoreToBoundary(recordCount: number, compaction: CompactionState | undefined, changeHistory = this.changeHistory, completeRecords?: TranscriptRecord[]): void {
+  restoreToBoundary(recordCount: number, compaction: CompactionState | undefined, completeRecords?: TranscriptRecord[]): void {
     const nextCount = Math.min(Math.max(0, Math.floor(recordCount)), this.getRecordCount());
     const nextCompaction = compaction ? {...compaction} : null;
     const nextBase = nextCompaction?.activeStartIndex ?? 0;
@@ -304,16 +307,27 @@ class TranscriptContext {
     }
 
     const nextRecords = sourceRecords.slice(nextBase - sourceBase, nextCount - sourceBase);
-    const nextChangeHistory = cloneChangeHistory(changeHistory);
     // 普通截尾不需要旧原文；用首条用户的完整位置判断缓存标题是否仍然有效。
     const firstUserIndex = needsHistory ? sourceRecords.findIndex((record) => record.role === 'user') : this.firstUserRecordIndex;
     const nextFirstUserIndex = firstUserIndex !== null && firstUserIndex >= 0 && firstUserIndex < nextCount ? firstUserIndex : null;
     const nextTitle = nextFirstUserIndex === null ? '未命名对话' : needsHistory ? createSessionTitle(sourceRecords) : this.sessionTitle;
-    const operation = createBatchOperation([
+    // 栈为空时"弹出栈顶"没有可回退的 checkpoint：内存上是空操作，写进 journal 却会让重放判定不可恢复。
+    const popsChangeCheckpoint = this.changeHistory.length > 0;
+    const nextOperations: TranscriptJournalSubOperation[] = [
       createTruncateRecordsOperation(nextCount),
-      createSetCompactionOperation(nextCompaction),
-      createSetChangeHistoryOperation(nextChangeHistory)
-    ]);
+      createSetCompactionOperation(nextCompaction)
+    ];
+
+    // 先补齐此前写入失败、尚未落盘的增量，再写弹出；顺序反了会让重放看到没有对应 checkpoint 的 pop。
+    for (const delta of this.pendingChangeHistoryDeltas) {
+      nextOperations.push(createChangeHistoryDeltaOperation(delta));
+    }
+
+    if (popsChangeCheckpoint) {
+      nextOperations.push(createPopChangeCheckpointOperation());
+    }
+
+    const operation = createBatchOperation(nextOperations);
 
     if (this.currentSession) {
       this.currentSession = this.transcriptStore.appendSession(this.getCurrentCwd(), this.currentSession, operation);
@@ -326,16 +340,21 @@ class TranscriptContext {
     this.sessionTitle = nextTitle;
     this.firstUserRecordIndex = nextFirstUserIndex;
     this.compaction = nextCompaction;
-    this.changeHistory = nextChangeHistory;
-    this.pendingChangeHistory = undefined;
+
+    if (popsChangeCheckpoint) {
+      this.changeHistory.pop();
+    }
+
+    this.pendingChangeHistoryDeltas = [];
   }
 
   /**
-   * 更新当前 session 关联的 change history；调用方决定何时追加独立状态操作。
+   * 安装一次 change history 增量：同步镜像栈并记为待写操作，调用方决定何时追加独立状态操作。
+   * 增量只在安装时应用一次，写入失败后的重试只重写 journal；失败期间又产生新增量时两者都保留，不会互相覆盖。
    */
-  setChangeHistory(changeHistory: ChangeCheckpoint[] | null | undefined): void {
-    this.changeHistory = cloneChangeHistory(changeHistory);
-    this.pendingChangeHistory = cloneChangeHistory(this.changeHistory);
+  stageChangeHistoryDelta(delta: ChangeHistoryDelta): void {
+    applyChangeHistoryDelta(this.changeHistory, delta);
+    this.pendingChangeHistoryDeltas.push(delta);
   }
 
   /**
@@ -447,8 +466,8 @@ class TranscriptContext {
       operations.push(createAppendRecordsOperation(records));
     }
 
-    if (this.pendingChangeHistory !== undefined) {
-      operations.push(createSetChangeHistoryOperation(this.pendingChangeHistory));
+    for (const delta of this.pendingChangeHistoryDeltas) {
+      operations.push(createChangeHistoryDeltaOperation(delta));
     }
 
     if (compaction !== undefined) {
@@ -468,7 +487,7 @@ class TranscriptContext {
 
   /** 已提交或切换会话后清空待写状态，不改变已安装的 transcript。 */
   private clearPendingState(): void {
-    this.pendingChangeHistory = undefined;
+    this.pendingChangeHistoryDeltas = [];
     this.pendingTodoState = undefined;
   }
 }
@@ -478,6 +497,39 @@ export {
   cloneTodoState,
   createEmptyTodoState
 };
+
+/**
+ * 把增量应用到镜像栈；与 journal 重放保持同一组语义，避免内存栈与已写操作分叉。
+ */
+function applyChangeHistoryDelta(history: ChangeCheckpoint[], delta: ChangeHistoryDelta): void {
+  switch (delta.kind) {
+    case 'push':
+      history.push(delta.checkpoint);
+      return;
+    case 'pop':
+      history.pop();
+      return;
+    case 'reset':
+      history.length = 0;
+      // 逐条 push：整份替换可能来自 fork 初始快照，展开参数会超出引擎的实参上限。
+      for (const checkpoint of delta.history) {
+        history.push(checkpoint);
+      }
+      return;
+  }
+}
+
+/** 把 change history 增量映射为对应的 journal 子操作。 */
+function createChangeHistoryDeltaOperation(delta: ChangeHistoryDelta): TranscriptJournalSubOperation {
+  switch (delta.kind) {
+    case 'push':
+      return createPushChangeCheckpointOperation(delta.checkpoint);
+    case 'pop':
+      return createPopChangeCheckpointOperation();
+    case 'reset':
+      return createSetChangeHistoryOperation(delta.history);
+  }
+}
 
 function createEmptyTodoState(): TodoState {
   return {

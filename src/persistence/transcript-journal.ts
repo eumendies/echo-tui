@@ -6,6 +6,8 @@ import type {
   BatchJournalOperation,
   CompactionState,
   LoadedTranscriptSession,
+  PopChangeCheckpointJournalOperation,
+  PushChangeCheckpointJournalOperation,
   SetChangeHistoryJournalOperation,
   SetCompactionJournalOperation,
   SetTodoStateJournalOperation,
@@ -64,6 +66,14 @@ function createTruncateRecordsOperation(recordCount: number): TruncateRecordsJou
 
 function createSetChangeHistoryOperation(changeHistory: ChangeCheckpoint[]): SetChangeHistoryJournalOperation {
   return {op: 'set_change_history', changeHistory};
+}
+
+function createPushChangeCheckpointOperation(checkpoint: ChangeCheckpoint): PushChangeCheckpointJournalOperation {
+  return {op: 'push_change_checkpoint', checkpoint};
+}
+
+function createPopChangeCheckpointOperation(): PopChangeCheckpointJournalOperation {
+  return {op: 'pop_change_checkpoint'};
 }
 
 function createSetCompactionOperation(compaction: CompactionState | null): SetCompactionJournalOperation {
@@ -398,6 +408,10 @@ function isTranscriptJournalOperation(value: unknown): value is TranscriptJourna
       return isNonNegativeInteger(value.recordCount);
     case 'set_change_history':
       return Array.isArray(value.changeHistory) && value.changeHistory.every(isChangeCheckpoint);
+    case 'push_change_checkpoint':
+      return isChangeCheckpoint(value.checkpoint);
+    case 'pop_change_checkpoint':
+      return true;
     case 'set_compaction':
       return value.compaction === null || isCompactionState(value.compaction);
     case 'set_todo_state':
@@ -625,6 +639,17 @@ function applyTranscriptJournalOperation(operation: TranscriptJournalOperation, 
     case 'set_change_history':
       state.changeHistory = operation.changeHistory;
       return true;
+    case 'push_change_checkpoint':
+      state.changeHistory.push(operation.checkpoint);
+      return true;
+    case 'pop_change_checkpoint':
+      // 栈为空说明操作序列与 change history 起点不一致，按不可恢复处理而不是静默忽略。
+      if (state.changeHistory.length === 0) {
+        return false;
+      }
+
+      state.changeHistory.pop();
+      return true;
     case 'set_compaction':
       state.compaction = operation.compaction;
       return true;
@@ -642,6 +667,8 @@ export {
   TRANSCRIPT_JOURNAL_SCHEMA_VERSION,
   createAppendRecordsOperation,
   createBatchOperation,
+  createPopChangeCheckpointOperation,
+  createPushChangeCheckpointOperation,
   createRepairedJournalText,
   createSetChangeHistoryOperation,
   createSetCompactionOperation,
