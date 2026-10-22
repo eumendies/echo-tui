@@ -127,6 +127,9 @@ class ConfigCommandHandler implements CommandHandler<ConfigCommandData> {
     }
   }
 
+  /**
+   * 在常规快照中编辑草稿；消息策略支持 Enter 与方向键切换，只有保存行会经 host 写入配置。
+   */
   private handleGeneralEvent(data: ConfigCommandData, state: GeneralConfigState, event: InputEvent, host: CommandHost): void {
     if (event.type === INPUT_EVENTS.ESCAPE) {
       this.requestClose(data, host);
@@ -152,6 +155,8 @@ class ConfigCommandHandler implements CommandHandler<ConfigCommandData> {
         nextState.draft.autoCompressImages = !nextState.draft.autoCompressImages;
       } else if (selectedRow === 'checkUpdatesOnStartup') {
         nextState.draft.checkUpdatesOnStartup = !nextState.draft.checkUpdatesOnStartup;
+      } else if (selectedRow === 'activeTurnMessagePolicy') {
+        nextState = adjustGeneralValue(nextState, 1);
       } else if (selectedRow === 'save') {
         const result = host.config.saveSettings(nextState.draft);
         nextState = result.ok
@@ -443,6 +448,7 @@ function initializeTab(data: ConfigCommandData, tab: ConfigTabId, host: CommandH
   return data;
 }
 
+/** 按选中行调整常规草稿；二选一策略在任一方向上切换，不触发持久化。 */
 function adjustGeneralValue(state: GeneralConfigState, direction: number): GeneralConfigState {
   const selectedRow = getGeneralConfigRowIds(state)[state.selectedIndex];
   if (selectedRow === 'compactionThreshold') {
@@ -459,6 +465,8 @@ function adjustGeneralValue(state: GeneralConfigState, direction: number): Gener
     state.draft.mouseInteractionEnabled = !state.draft.mouseInteractionEnabled;
   } else if (selectedRow === 'defaultInteractionMode') {
     state.draft.defaultInteractionMode = state.draft.defaultInteractionMode === 'normal' ? 'plan' : 'normal';
+  } else if (selectedRow === 'activeTurnMessagePolicy') {
+    state.draft.activeTurnMessagePolicy = state.draft.activeTurnMessagePolicy === 'pending' ? 'steer' : 'pending';
   } else if (selectedRow === 'autoCompressImages') {
     state.draft.autoCompressImages = !state.draft.autoCompressImages;
   } else if (selectedRow === 'checkUpdatesOnStartup') {

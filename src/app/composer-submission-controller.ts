@@ -3,11 +3,11 @@ import {isShellInteractionMode} from '../types/agent';
 import {expandConversationReferenceForUserText} from '../agent/context/conversation-reference';
 import {expandFileMentionsForUserText} from './utils';
 
-import type {AgentToolPolicy, ReasoningEffort} from '../types/agent';
+import type {AgentToolPolicy, InteractionMode, ReasoningEffort} from '../types/agent';
 import type {SandboxModeOverride} from '../sandbox/types';
 import type {CommandHostApp, CommandStartOptions, CommandStartResult} from '../types/command';
 import type {ToolResultAttachment} from '../types/tool';
-import type {PendingConversationReference, UserTranscriptMetadata} from '../types/transcript';
+import type {PendingConversationReference, UserTranscriptMetadata, UserTranscriptRecord} from '../types/transcript';
 import type {AppContext} from './state/app-context';
 
 type AssistantTurnSubmission = {
@@ -29,6 +29,7 @@ type SubmissionCommandPort = {
 };
 
 type SubmitDraftOptions = {
+  interactionMode?: InteractionMode; // 已接收的普通排队输入保留接收时选择，不读取后来界面值。
   conversationReference?: PendingConversationReference; // 本次提交捕获的历史会话引用。
   commandResult?: Extract<CommandStartResult, {kind: 'submit_user_message'}>; // 命令 handler 已解析的提交结果，跳过 slash 再解析。
   onAssistantTurnStarted?: () => void; // user turn 占用 response lock 后释放提交预处理锁。
@@ -82,7 +83,7 @@ class ComposerSubmissionController {
   }
 
   /**
-   * 提交 live composer；活动 assistant turn 中把文本写入单槽，其他 response lock 保持阻止语义。
+   * 提交 live composer；活动 turn 按固定策略排队或准备引导，单槽被占用时保留新草稿及光标。
    */
   async submitComposer(): Promise<void> {
     // pending 正在抢占下一轮，或其他交互 surface/初始化流程已接管输入，此次 Enter 不提交 composer。
@@ -106,6 +107,7 @@ class ComposerSubmissionController {
     }
 
     const userInput = composerOps.getText(this.appContext.composerContext.composer);
+    const interactionMode = this.appContext.getInteractionMode();
 
     // assistant turn 运行期间先尝试响应期命令，未处理的输入才进入 pending 单槽。
     if (hasActiveAssistantTurn) {
@@ -117,10 +119,27 @@ class ComposerSubmissionController {
         this.render();
         return;
       }
+
+      const activeTurn = this.appContext.turnContext.activeAssistantTurn!;
+      // slash（包括动态 skill/MCP）和 shell 必须保留下一轮路由；运行中不扩展引用选择。
+      if (activeTurn.messagePolicy === 'steer' && !userInput.trimStart().startsWith('/')
+        && !isShellInteractionMode(interactionMode)
+        && !this.appContext.conversationReferenceContext.getPending()) {
+        const messageId = this.appContext.pendingMessageContext.beginSteer(userInput, activeTurn.id);
+        if (messageId === null) {
+          this.render();
+          return;
+        }
+        this.consumeComposerInput(userInput);
+        this.render();
+        await this.prepareSteeringMessage(messageId, userInput, interactionMode);
+        return;
+      }
     }
 
     // active turn 的 pending 单槽已被占用时，保留当前 composer 草稿，避免覆盖旧消息。
-    if (hasActiveAssistantTurn && !this.appContext.pendingMessageContext.enqueue(userInput)) {
+    const pendingMode = !userInput.trimStart().startsWith('/') && !isShellInteractionMode(interactionMode) ? interactionMode : undefined;
+    if (hasActiveAssistantTurn && !this.appContext.pendingMessageContext.enqueue(userInput, pendingMode)) {
       this.render();
       return;
     }
@@ -135,7 +154,7 @@ class ComposerSubmissionController {
 
     const conversationReference = this.appContext.conversationReferenceContext.getPending();
     // 空闲提交在引用准备失败或取消时恢复尚未被新输入占用的 composer。
-    if (!await this.submitDraft(userInput, {conversationReference: conversationReference || undefined})) {
+    if (!await this.submitDraft(userInput, {interactionMode: pendingMode, conversationReference: conversationReference || undefined})) {
       // 用户已在异步准备期间输入新草稿时，不用旧输入覆盖它。
       if (composerOps.isEmpty(this.appContext.composerContext.composer)) {
         this.appContext.composerContext.setText(userInput);
@@ -147,28 +166,45 @@ class ComposerSubmissionController {
   }
 
   /**
-   * response lock 释放后串行 claim 并发送 pending 单槽；同步锁避免完成与中断回调重复派发。
+   * response lock 和旧运行身份均释放后串行消费单槽，已准备素材直接移交；同步锁避免重复派发。
    */
   async dispatchPendingMessage(): Promise<void> {
-    if (this.startingPendingTurn || this.appContext.turnContext.responding) {
+    if (this.startingPendingTurn || this.appContext.turnContext.responding || this.appContext.turnContext.activeAssistantTurn) {
       return;
     }
 
     this.startingPendingTurn = true;
     try {
-      while (!this.appContext.turnContext.responding) {
+      // onComplete 已释放响应锁但旧 runner 仍在收尾时不创建新 checkpoint；外层提交收尾后再次派发。
+      while (!this.appContext.turnContext.responding && !this.appContext.turnContext.activeAssistantTurn) {
         const pendingText = this.appContext.pendingMessageContext.getPending();
         if (this.command.hasActiveSession() && pendingText && this.command.matches(pendingText)) {
           // command surface 关闭前不 claim queued command，避免 runtime 将它降级成普通模型消息。
           return;
         }
 
-        const pendingMessage = this.appContext.pendingMessageContext.claim();
+        const pendingMessage = this.appContext.pendingMessageContext.claimForDispatch();
         if (!pendingMessage) {
           return;
         }
 
-        await this.submitDraft(pendingMessage, {
+        if (pendingMessage.record) {
+          const record = pendingMessage.record;
+          // 已准备输入只在此移交一次；不重读文件、不重路由成 shell/命令，也不重复写入输入历史。
+          const assistantTurn = this.startAssistantTurn({
+            userText: record.text,
+            userRequestText: pendingMessage.text,
+            displayText: record.displayText,
+            metadata: record.metadata,
+            attachments: record.attachments
+          });
+          this.startingPendingTurn = false;
+          await assistantTurn;
+          continue;
+        }
+
+        await this.submitDraft(pendingMessage.text, {
+          interactionMode: pendingMessage.interactionMode,
           onAssistantTurnStarted: () => {
             this.startingPendingTurn = false;
           }
@@ -184,6 +220,39 @@ class ComposerSubmissionController {
     this.appContext.composerContext.leaveHistoryBrowsing();
     this.appContext.composerContext.recordInput(userInput);
     this.appContext.composerContext.reset();
+  }
+
+  /** 准备素材前捕获提交模式；引导拒绝失败读取，普通提交保留既有 unavailable 诊断。 */
+  private async prepareUserRecord(userText: string, displayText?: string, metadata?: UserTranscriptMetadata, rejectFileErrors = false): Promise<UserTranscriptRecord> {
+    const interactionMode = metadata?.interactionMode ?? this.appContext.getInteractionMode();
+    const expanded = await expandFileMentionsForUserText(userText, this.appContext.getCurrentCwd(), {
+      autoCompressImages: this.appContext.getAutoCompressImages()
+    });
+    if (rejectFileErrors && expanded.errors?.length) throw new Error(expanded.errors.join('; '));
+    return {
+      role: 'user',
+      text: expanded.text,
+      ...(displayText || expanded.text !== userText || expanded.attachments ? {displayText: displayText || userText} : {}),
+      metadata: {...metadata, interactionMode},
+      ...(expanded.attachments ? {attachments: expanded.attachments} : {})
+    };
+  }
+
+  /** 槽位身份隔离准备完成；只有素材成功才通知抢占，失效 turn 则交给空闲 dispatcher。 */
+  private async prepareSteeringMessage(messageId: number, userInput: string, interactionMode: InteractionMode): Promise<void> {
+    let record: UserTranscriptRecord;
+    try {
+      record = await this.prepareUserRecord(userInput, undefined, {interactionMode}, true);
+    } catch (error: unknown) {
+      if (this.appContext.pendingMessageContext.failPreparation(messageId, error instanceof Error ? error.message : String(error))) this.render();
+      return;
+    }
+    // 就绪通知或渲染异常属于运行错误，不应把准备成功的消息重新标成素材失败。
+    if (!this.appContext.pendingMessageContext.completePreparation(messageId, record)) return;
+    this.render();
+    // 素材准备可能跨过原 turn 的结束；就绪后再尝试空闲派发，避免消息留在单槽中无人发送。
+    // 原 turn 尚未收尾时 dispatcher 直接返回，消息仍由当前运行在安全边界应用。
+    await this.dispatchPendingMessage();
   }
 
   /**
@@ -204,14 +273,13 @@ class ComposerSubmissionController {
 
     let displayText: string | undefined;
     let userMetadata: UserTranscriptMetadata | undefined;
-    let userAttachments: ToolResultAttachment[] | undefined;
     let modelProfileIdOverride: string | undefined;
     let reasoningEffortOverride: ReasoningEffort | undefined;
     let toolPolicy: AgentToolPolicy | undefined;
     let sandboxModeOverride: SandboxModeOverride | undefined;
 
     // shell mode，当作 shell command 执行。
-    if (commandResult.kind === 'not_matched' && isShellInteractionMode(this.appContext.getInteractionMode())) {
+    if (commandResult.kind === 'not_matched' && isShellInteractionMode(options.interactionMode ?? this.appContext.getInteractionMode())) {
       await this.submitShellCommand(userText);
       return true;
     }
@@ -228,14 +296,13 @@ class ComposerSubmissionController {
     }
 
     // file mention 在真正发送时读取文件
-    const expanded = await expandFileMentionsForUserText(userText, this.appContext.getCurrentCwd(), {
-      autoCompressImages: this.appContext.getAutoCompressImages()
+    const userRecord = await this.prepareUserRecord(userText, displayText, {
+      ...userMetadata,
+      ...(options.interactionMode ? {interactionMode: options.interactionMode} : {})
     });
-    if (expanded.text !== userText || expanded.attachments) {
-      displayText = displayText || userText;
-      userText = expanded.text;
-      userAttachments = expanded.attachments;
-    }
+    userText = userRecord.text;
+    displayText = userRecord.displayText;
+    userMetadata = userRecord.metadata;
 
     // 处理会话引用
     if (conversationReference) {
@@ -281,7 +348,7 @@ class ComposerSubmissionController {
       reasoningEffortOverride,
       toolPolicy,
       sandboxModeOverride,
-      attachments: userAttachments
+      attachments: userRecord.attachments
     });
     options.onAssistantTurnStarted?.();
     await assistantTurn;

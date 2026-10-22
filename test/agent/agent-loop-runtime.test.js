@@ -8,6 +8,7 @@ const {buildProviderRecords, createAgentLoopRuntime: createRuntime} = require('.
 const {createObservation} = require('../../src/observation/observation-projector');
 const {UserConfigContext} = require('../../src/config/user-config-context');
 const {createCompactionNoticeRecord} = require('../../src/agent/context/context-compaction');
+const {getConversationImageBytes} = require('../../src/agent/context/conversation-image-budget');
 const {formatAgentMemoryCatalogPrompt, formatUserMemoriesPrompt} = require('../../src/agent/context/memory-prompt');
 const { createBuiltInSystemPrompt } = require('../../src/agent/context/system-prompt');
 const agentSetupModule = require('../../src/agent/agent-setup');
@@ -2611,6 +2612,213 @@ test('createAgentLoopRuntime keeps persisted indexes aligned across two compacti
   assert.equal(normalRequests[1].some((record) => record.role === 'tool_call' && record.toolCallId === 'call-15'), true);
 });
 
+for (const executionMode of [{kind: 'interactive'}, {kind: 'headless', approvalPolicy: 'deny'}]) {
+  test(`runtime releases transferred snapshots only after commit across three compactions (${executionMode.kind})`, async () => {
+    const initialRecords = Array.from({length: 40}, (_, index) => ({role: index % 2 ? 'assistant' : 'user', text: `initial-${index} `.repeat(20)}));
+    initialRecords[0].attachments = [{kind: 'image', mediaType: 'image/png', path: 'evicted.png', dataBase64: 'AQ==', sizeBytes: 1}];
+    initialRecords.splice(30, 0,
+      {role: 'extension', text: '', extension: {kind: 'openai_reasoning', item: {type: 'reasoning', encrypted_content: 'recent reasoning'}}},
+      {role: 'tool_call', text: 'recent call', toolCallId: 'recent', toolName: 'read_files', argumentsText: '{}'},
+      {role: 'tool_result', text: 'recent result', toolCallId: 'recent', toolName: 'read_files', ok: true});
+    initialRecords[38].attachments = [{kind: 'image', mediaType: 'image/png', path: 'recent.png', dataBase64: 'Ag==', sizeBytes: 1}];
+    const base = 800;
+    const persistedRecords = [...initialRecords];
+    const previous = {summaryText: 'previous summary', activeStartIndex: base, createdAt: 'old'};
+    const session = Object.freeze({records: initialRecords.slice(), baseRecordIndex: base, recordsOwnership: 'transfer', compaction: previous, executionMode});
+    let adopted = {baseRecordIndex: base, compaction: previous};
+    const ownedRecords = session.records;
+    const compactions = [];
+    const summaryInputs = [];
+    const pending = new Map();
+    let turns = 0;
+    const agent = {async runTurn(records, _callbacks, options) {
+      if (options.isCompaction) {
+        assert.match(records[1].text, new RegExp(adopted.compaction.summaryText));
+        summaryInputs.push(records);
+        return {draft: `summary-${summaryInputs.length}`, toolCalls: [], usageInputTokens: 1000};
+      }
+      turns += 1;
+      const latest = compactions.at(-1);
+      assert.equal(adopted.baseRecordIndex, latest.activeStartIndex);
+      assert.equal(adopted.compaction, latest);
+      assert.equal(session.records, ownedRecords);
+      assert.deepEqual(session.records, persistedRecords.slice(latest.activeStartIndex - base));
+      assert.deepEqual(records.slice(2), session.records);
+      assert.match(records[1].text, new RegExp(latest.summaryText));
+      assert.equal(session.records.some((record) => record.attachments?.[0]?.path === 'evicted.png'), false);
+      if (turns === 1) {
+        assert.equal(records.some((record) => record.role === 'extension'), true);
+        assert.equal(records.some((record) => record.toolCallId === 'recent'), true);
+        assert.equal(records.some((record) => record.attachments?.[0]?.path === 'recent.png'), true);
+      }
+      if (turns <= 2) return {draft: '', toolCalls: Array.from({length: 25}, (_, index) => ({callId: `batch-${turns}-${index}`, toolName: 'missing_tool', argumentsText: '{}'})), usageInputTokens: 1000};
+      return {draft: 'done', toolCalls: []};
+    }};
+    await withPatchedAgentRuntime(agent, () => createAgentLoopRuntime(TEST_CWD)(session, {
+      onCompacted(next) {
+        // journal 采纳前运行区仍是上次提交的后缀，应用仅通过回调推进元数据。
+        assert.ok(next.activeStartIndex > adopted.baseRecordIndex);
+        assert.deepEqual(session.records, persistedRecords.slice(adopted.baseRecordIndex - base));
+        compactions.push(next);
+        persistedRecords.push(createCompactionNoticeRecord(next));
+        adopted = {baseRecordIndex: next.activeStartIndex, compaction: next};
+      },
+      onToolCall(call) { pending.set(call.callId, call); },
+      onToolResult(result) {
+        persistedRecords.push(createToolCallTranscriptRecord(pending.get(result.callId)), createToolResultTranscriptRecord(result));
+        pending.delete(result.callId);
+      }
+    }), {...TEST_CONFIG, contextWindow: 20});
+    assert.equal(compactions.length, 3);
+    assert.equal(session.records.length, 21);
+    assert.equal(adopted.baseRecordIndex + session.records.length, base + persistedRecords.length);
+    assert.equal(session.baseRecordIndex, base);
+    assert.equal(session.compaction, previous);
+    assert.equal(summaryInputs[1].some((record) => record.text?.startsWith('initial-0 ')), false);
+    assert.equal(summaryInputs[2].some((record) => record.toolCallId === 'batch-1-0'), false);
+    assert.equal(session.records[0].toolCallId, 'batch-2-15');
+  });
+}
+
+test('runtime preserves default caller input while initializing older full and resident snapshots equivalently', async () => {
+  const full = Array.from({length: 30}, (_, index) => ({role: index % 2 ? 'assistant' : 'user', text: `input-${index}`}));
+  const compaction = {summaryText: 'summary', activeStartIndex: 10, createdAt: 'old'};
+  const requests = [];
+  const sessions = [
+    {records: full, compaction},
+    {records: full.slice(10), compaction, baseRecordIndex: 10},
+    {records: full.slice(4), compaction, baseRecordIndex: 4}
+  ];
+  for (const session of sessions) {
+    const originalArray = session.records;
+    const before = structuredClone(session);
+    await withPatchedAgentRuntime({async runTurn(records, _callbacks, options) {
+      assert.equal(options.isCompaction, undefined);
+      requests.push(records);
+      return {draft: 'done', toolCalls: []};
+    }}, () => createAgentLoopRuntime(TEST_CWD)(session));
+    assert.equal(session.records, originalArray);
+    assert.deepEqual(session, before);
+  }
+  assert.deepEqual(requests[0], requests[1]);
+  assert.deepEqual(requests[1], requests[2]);
+  assert.deepEqual(requests[0].slice(2), full.slice(10));
+});
+
+test('runtime initializes a transferred old full snapshot with only its active suffix', async () => {
+  const records = Array.from({length: 30}, (_, index) => ({role: index % 2 ? 'assistant' : 'user', text: `input-${index}`}));
+  const expected = records.slice(10);
+  const previous = {summaryText: 'old', activeStartIndex: 10, createdAt: 'old'};
+  const session = Object.freeze({records, compaction: previous, recordsOwnership: 'transfer'});
+  await withPatchedAgentRuntime({async runTurn(input) {
+    assert.equal(session.records, records);
+    assert.deepEqual(records, expected);
+    assert.deepEqual(input.slice(2), expected);
+    return {draft: 'done', toolCalls: []};
+  }}, () => createAgentLoopRuntime(TEST_CWD)(session));
+  assert.equal(Object.hasOwn(session, 'baseRecordIndex'), false);
+  assert.equal(session.compaction, previous);
+});
+
+test('runtime releases its private snapshot after successful compaction without mutating non-owned caller input', async () => {
+  const session = {records: Array.from({length: 30}, (_, index) => ({role: index % 2 ? 'assistant' : 'user', text: `input-${index} `.repeat(20)}))};
+  const records = session.records;
+  const before = structuredClone(session);
+  let committed;
+  await withPatchedAgentRuntime({async runTurn(input, _callbacks, options) {
+    if (options.isCompaction) return {draft: 'summary', toolCalls: []};
+    assert.deepEqual(input.slice(2), [...records.slice(committed.activeStartIndex), createCompactionNoticeRecord(committed)]);
+    assert.deepEqual(session, before);
+    return {draft: 'done', toolCalls: []};
+  }}, () => createAgentLoopRuntime(TEST_CWD)(session, {onCompacted(next) {
+    assert.deepEqual(session, before);
+    assert.equal(session.records, records);
+    committed = next;
+  }}), {...TEST_CONFIG, contextWindow: 20});
+  assert.equal(committed.activeStartIndex, 10);
+  assert.equal(session.records, records);
+  assert.deepEqual(session, before);
+});
+
+for (const failure of ['no_boundary', 'empty', 'exception', 'abort', 'persistence']) {
+  test(`runtime does not release transferred records before adoption (${failure})`, async () => {
+    const records = Array.from({length: failure === 'no_boundary' ? 2 : 30}, (_, index) => ({role: index % 2 ? 'assistant' : 'user', text: `input-${index} `.repeat(20)}));
+    const before = structuredClone(records);
+    const controller = new AbortController();
+    const session = {records, recordsOwnership: 'transfer', baseRecordIndex: 800, compaction: {summaryText: 'previous', activeStartIndex: 800, createdAt: 'old'}, abortSignal: controller.signal};
+    const previous = session.compaction;
+    let commits = 0;
+    const agent = {async runTurn(_input, _callbacks, options) {
+      if (options.isCompaction) {
+        if (failure === 'exception') throw new Error('summary failed');
+        if (failure === 'abort') controller.abort();
+        return {draft: failure === 'empty' ? '  ' : 'new summary', toolCalls: []};
+      }
+      return {draft: 'done', toolCalls: []};
+    }};
+    await withPatchedAgentRuntime(agent, async () => {
+      const run = () => createAgentLoopRuntime(TEST_CWD)(session, {onCompacted() { commits += 1; throw new Error('journal failed'); }});
+      if (['exception', 'abort', 'persistence'].includes(failure)) {
+        await assert.rejects(run, failure === 'abort' ? /中断/ : failure === 'exception' ? /summary failed/ : /journal failed/);
+      } else {
+        assert.equal(await run(), 'done');
+      }
+    }, {...TEST_CONFIG, contextWindow: 20});
+    assert.deepEqual(records, before);
+    assert.equal(session.records, records);
+    assert.equal(session.compaction, previous);
+    assert.equal(session.baseRecordIndex, 800);
+    assert.equal(commits, failure === 'persistence' ? 1 : 0);
+  });
+}
+
+test('runtime keeps committed eviction when cancelled inside the successful compaction callback', async () => {
+  const records = Array.from({length: 30}, (_, index) => ({role: index % 2 ? 'assistant' : 'user', text: `input-${index} `.repeat(20)}));
+  const expected = records.slice(10);
+  const controller = new AbortController();
+  const session = Object.freeze({records, recordsOwnership: 'transfer', abortSignal: controller.signal});
+  let committed;
+  await withPatchedAgentRuntime({async runTurn() { return {draft: 'summary', toolCalls: []}; }}, async () => {
+    await assert.rejects(() => createAgentLoopRuntime(TEST_CWD)(session, {onCompacted(next) {
+      committed = next;
+      assert.equal(records.length, 30);
+      controller.abort();
+    }}), /中断/);
+  }, {...TEST_CONFIG, contextWindow: 20});
+  assert.equal(committed.activeStartIndex, 10);
+  assert.equal(Object.hasOwn(session, 'baseRecordIndex'), false);
+  assert.equal(Object.hasOwn(session, 'compaction'), false);
+  assert.deepEqual(records, [...expected, createCompactionNoticeRecord(committed)]);
+});
+
+test('headless runtime without persistence callback retains correct boundaries through repeated compactions', async () => {
+  const hooks = createHookRecorder();
+  const session = Object.freeze({records: Array.from({length: 30}, (_, index) => ({role: index % 2 ? 'assistant' : 'user', text: `input-${index} `.repeat(20)})), recordsOwnership: 'transfer', executionMode: {kind: 'headless', approvalPolicy: 'deny'}});
+  let normalTurns = 0;
+  let summaries = 0;
+  await withPatchedAgentRuntime({async runTurn(input, _callbacks, options) {
+    if (options.isCompaction) {
+      summaries += 1;
+      return {draft: `summary-${summaries}`, toolCalls: []};
+    }
+    normalTurns += 1;
+    assert.deepEqual(input.slice(2), session.records);
+    assert.match(input[1].text, new RegExp(`summary-${summaries}`));
+    assert.equal(session.records.length, 21);
+    if (normalTurns > 1) assert.equal(session.records[0].toolCallId, `batch-${normalTurns - 1}-15`);
+    if (normalTurns < 3) return {draft: '', toolCalls: Array.from({length: 25}, (_, index) => ({callId: `batch-${normalTurns}-${index}`, toolName: 'missing_tool', argumentsText: '{}'}))};
+    return {draft: 'done', toolCalls: []};
+  }}, () => createAgentLoopRuntime(TEST_CWD, undefined, hooks.dispatcher)(session), {...TEST_CONFIG, contextWindow: 20});
+  assert.equal(summaries, 3);
+  const boundaries = hooks.events.filter((event) => event.event === 'compaction_end').map((event) => event.payload.activeStartIndex);
+  assert.deepEqual(boundaries, [10, 61, 112]);
+  assert.equal(boundaries.at(-1) + session.records.length, 30 + 100 + 3);
+  assert.equal(Object.hasOwn(session, 'baseRecordIndex'), false);
+  assert.equal(Object.hasOwn(session, 'compaction'), false);
+  assert.equal(session.records.length, 21);
+  assert.equal(session.sessionJournalPath, undefined);
+});
+
 test('createAgentLoopRuntime reuses the normal request prefix for compaction and records summary usage', async () => {
   const debug = createDebugRecorder();
   const summaryRequests = [];
@@ -2665,6 +2873,116 @@ test('createAgentLoopRuntime reuses the normal request prefix for compaction and
   // 摘要 provider turn 的 usage 同时进入观测与 usage 账本。
   assert.equal(debug.events.some((event) => event.event === 'provider_usage' && event.payload.usage?.inputTokens === 9), true);
   assert.equal(usageEvents.some((event) => event.inputTokens === 9 && event.cacheReadInputTokens === 7), true);
+});
+
+test('restored history without a compaction boundary omits old images only from provider requests', async () => {
+  const dataBase64 = Buffer.alloc(6_000_000, 5).toString('base64');
+  const old = {kind: 'image', mediaType: 'image/png', dataBase64, path: 'old.png', sizeBytes: 1};
+  const recent = {kind: 'image', mediaType: 'image/png', dataBase64, path: 'recent.png', sizeBytes: 1};
+  const records = [
+    {role: 'user', text: 'old upload', attachments: [old]},
+    {role: 'tool_call', text: '', toolName: 'read_files', toolCallId: 'old-read', argumentsText: '{}'},
+    {role: 'tool_result', text: '--- image: recent.png\nimage_attached: true', toolName: 'read_files', toolCallId: 'old-read', ok: true, attachments: [recent]}
+  ];
+  const requests = [];
+  const agent = {
+    async runTurn(input) {
+      requests.push(input);
+      return {draft: 'done', toolCalls: [], usageInputTokens: 25};
+    }
+  };
+
+  await withPatchedAgentRuntime(agent, async () => {
+    const runAgent = createAgentLoopRuntime(TEST_CWD);
+    assert.equal(await runAgent({records, sessionId: 'restored'}), 'done');
+    assert.equal(await runAgent({records: [...records, {role: 'user', text: 'next turn'}], sessionId: 'restored'}), 'done');
+  });
+
+  assert.equal(requests.length, 2);
+  for (const request of requests) {
+    assert.equal(getConversationImageBytes(request), 6_000_000);
+    assert.deepEqual(request[1].attachments, []);
+    assert.match(request[1].text, /pixels are not visible/);
+    assert.equal(request[2].toolCallId, 'old-read');
+    assert.equal(request[3].toolCallId, 'old-read');
+    assert.equal(request[3].attachments[0], recent);
+  }
+  assert.equal(records[0].text, 'old upload');
+  assert.equal(records[0].attachments[0], old);
+  assert.equal(records[2].attachments[0], recent);
+});
+
+test('automatic compaction removes older images before the ordinary request without losing the summary budget', async () => {
+  const dataBase64 = Buffer.alloc(6_000_000, 3).toString('base64');
+  const records = [
+    {role: 'user', text: 'older photo', attachments: [{kind: 'image', mediaType: 'image/png', path: 'old.png', sizeBytes: 1, dataBase64}]},
+    {role: 'user', text: 'second photo', attachments: [{kind: 'image', mediaType: 'image/png', path: 'second.png', sizeBytes: 1, dataBase64}]},
+    ...Array.from({length: 30}, (_, index) => ({role: index % 2 === 0 ? 'user' : 'assistant', text: `message ${index}`}))
+  ];
+  const requests = [];
+  const agent = {
+    async runTurn(input, _callbacks, options = {}) {
+      requests.push({input, options});
+      return {draft: options.isCompaction ? 'summary' : 'done', toolCalls: []};
+    }
+  };
+
+  const result = await withPatchedAgentRuntime(agent, () => {
+    const runAgent = createAgentLoopRuntime(TEST_CWD);
+    return runAgent({records, sessionId: 'stable'});
+  }, {...TEST_CONFIG, contextWindow: 1_000_000});
+
+  assert.equal(result, 'done');
+  assert.equal(requests.length, 2);
+  assert.equal(requests[0].options.isCompaction, true);
+  assert.equal(getConversationImageBytes(requests[0].input), 6_000_000);
+  assert.equal(requests[0].options.sessionId, 'stable');
+  assert.equal(getConversationImageBytes(requests[1].input), 0);
+  assert.equal(records[0].attachments.length, 1);
+  assert.equal(records[1].attachments.length, 1);
+});
+
+test('multiple image reads during one turn stay bounded and the newest tool result can be reread', async () => {
+  const dataBase64 = Buffer.alloc(6_000_000, 7).toString('base64');
+  const image = (name) => ({kind: 'image', mediaType: 'image/png', path: name, sizeBytes: 1, dataBase64});
+  const records = [{role: 'user', text: 'inspect both', attachments: [image('upload.png')]}];
+  const requests = [];
+  const emitted = [];
+  let turn = 0;
+  const agent = {
+    async runTurn(input) {
+      requests.push(input);
+      turn += 1;
+      return turn <= 2
+        ? {draft: '', toolCalls: [{callId: `read-${turn}`, toolName: 'read_files', argumentsText: '{}'}], usageInputTokens: 25}
+        : {draft: 'done', toolCalls: [], usageInputTokens: 25};
+    }
+  };
+  const handler = {
+    definition: {name: 'read_files', description: 'read image', parameters: {type: 'object'}},
+    async execute(_args, call) {
+      return {callId: call.callId, toolName: call.toolName, ok: true, details: {kind: 'read_files', truncated: false},
+        text: `--- image: ${call.callId}.png\nimage_attached: true`, attachments: [image(`${call.callId}.png`)]};
+    }
+  };
+
+  const result = await withPatchedAgentRegistry(agent, [handler], () => {
+    const runAgent = createAgentLoopRuntime(TEST_CWD);
+    return runAgent({records}, {onToolResult(toolResult) { emitted.push(toolResult); }});
+  });
+
+  assert.equal(result, 'done');
+  assert.equal(requests.length, 3);
+  assert.equal(emitted.length, 2);
+  assert.equal(getConversationImageBytes(requests[1]), 6_000_000);
+  assert.equal(getConversationImageBytes(requests[2]), 6_000_000);
+  const latest = requests[2].find((record) => record.role === 'tool_result' && record.toolCallId === 'read-2');
+  assert.equal(latest.attachments[0].path, 'read-2.png');
+  const previous = requests[2].find((record) => record.role === 'tool_result' && record.toolCallId === 'read-1');
+  assert.match(previous.text, /read-1\.png.*use read_files/);
+  assert.deepEqual(previous.attachments, []);
+  assert.equal(emitted[0].attachments.length, 1);
+  assert.equal(emitted[1].attachments.length, 1);
 });
 
 test('createAgentLoopRuntime emits debug provider and tool summaries without changing provider records', async () => {

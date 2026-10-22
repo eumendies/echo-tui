@@ -16,8 +16,9 @@ import type {ToolResultAttachment} from '../types/tool';
 import type {FileReadResult} from '../tools/read-files/readers';
 
 type ExpandedFileContext = {
-  attachments?: ToolResultAttachment[];
-  text: string;
+  attachments?: ToolResultAttachment[]; // 展开得到的多模态附件，普通与引导提交共用。
+  text: string; // 带有 selected_files 素材的模型可见文本。
+  errors?: string[]; // 读取失败的路径诊断，供引导拒绝抢占而普通提交仍保留 unavailable 投影。
 };
 
 type ExpandFileMentionsOptions = {
@@ -48,6 +49,7 @@ async function expandFileMentionsForUserText(userText: string, cwd: string, opti
   const uniquePaths = Array.from(new Set(mentions.map((mention) => mention.path)));
   const sections: string[] = [];
   const attachments: ToolResultAttachment[] = [];
+  const errors: string[] = [];
 
   for (const filePath of uniquePaths) {
     const result = await readOneFile({path: filePath, offset: 0}, {
@@ -70,6 +72,7 @@ async function expandFileMentionsForUserText(userText: string, cwd: string, opti
       remainingImageAttachmentBytes: DEFAULT_MAX_TOTAL_IMAGE_BYTES
     });
     sections.push(formatSelectedFileForModel(filePath, result));
+    if (!result.ok) errors.push(`${filePath}: ${extractReadError(result.text)}`);
 
     if (result.attachments) {
       attachments.push(...result.attachments);
@@ -78,6 +81,7 @@ async function expandFileMentionsForUserText(userText: string, cwd: string, opti
 
   return {
     ...(attachments.length > 0 ? {attachments} : {}),
+    ...(errors.length > 0 ? {errors} : {}),
     text: [
       userText,
       '',

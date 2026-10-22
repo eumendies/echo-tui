@@ -97,6 +97,12 @@ echo-tui --once --full-access "按要求修改文件并运行检查"
 | `/init` `/review` | 初始化项目指令、审查当前 Git 改动 |
 | `/<skill-name> [args]` | 调用已启用的 Skill |
 
+### 上下文压缩与历史
+
+自动压缩或 `/compact` 成功后，模型使用摘要与近期记录，应用释放已压缩原文的常驻内存；完整原文仍保存在会话 JSONL journal 中，不因压缩删除。压缩本身不清除终端已有 scrollback；resize、主题切换或恢复后的重绘只展示“较早历史已压缩”的提示与活跃记录。
+
+`/copy` 仍可复制旧消息原文，`/fork` 保存完整有效历史为独立分支，`/undo` 仍可跨压缩边界回退。这些历史操作及恢复可能临时全量读取 journal，存在内存峰值；压缩不是整个进程的内存上限，也不限制 Undo 文件快照、输入历史或 shell-local 输出。详见[驻留语义与验证边界](docs/compacted-transcript-memory.md)。
+
 ## 项目指令与扩展
 
 ### 项目指令

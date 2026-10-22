@@ -1,5 +1,6 @@
 import {estimateJsonTokens, estimateTextTokens} from './token-estimator';
 import {formatShellRecordForProvider, shouldIncludeRecordInProviderContext} from '../transcript-converter-common';
+import {estimateRecordImageTokens} from './conversation-image-budget';
 
 import type {ContextUsageSegment, ContextUsageSegmentCategory} from '../../types/agent';
 import type {ToolDefinition} from '../../types/tool';
@@ -138,7 +139,7 @@ function estimateRecordContextTokens(record: TranscriptRecord, category: Context
     }
   }
 
-  return estimateTextTokens(record.text);
+  return estimateTextTokens(record.text) + estimateRecordImageTokens(record);
 }
 
 export {

@@ -37,6 +37,7 @@ type TranscriptSubagentInterruptedBlock = {
 type TranscriptBlock = TranscriptRecordBlock | TranscriptToolPairBlock | TranscriptSubagentRunBlock | TranscriptSubagentInterruptedBlock;
 
 export type SubagentAppendRenderState = {
+  parentToolCallIdsByRun: Map<string, string>; // 子运行与外层 call 的轻量关联，逐出时保留活动运行身份而不保留原始记录。
   localParentToolCallIds: Set<string>; // 已出现单委派子运行 start 的外层 call；其合成中断结果续写原过程栏。
   parallelParentToolCallIds: Set<string>; // 并行分组内 run_subagent 外层 call id；其 tool pair 保持展开报告正文。
   parallelRunIds: Set<string>; // 并行分组子运行身份；其过程记录不进入主窗口投影，由增量批次间共享。
@@ -45,8 +46,10 @@ export type SubagentAppendRenderState = {
   terminalCallIds: Set<string>; // 已经出现终态的外层 call，用于稍后到达的 outer pair 压缩重复报告。
 };
 
+/** 创建只由当前 renderer 使用的增量身份与未完成工具对状态。 */
 export function createSubagentAppendRenderState(): SubagentAppendRenderState {
   return {
+    parentToolCallIdsByRun: new Map(),
     localParentToolCallIds: new Set(),
     parallelParentToolCallIds: new Set(),
     parallelRunIds: new Set(),
@@ -93,6 +96,7 @@ function sanitizeRecordDisplayText(record: TranscriptRecord): TranscriptRecord {
  */
 export function trackParallelSubagentRecords(state: SubagentAppendRenderState, records: TranscriptRecord[]): void {
   for (const record of records) {
+    if (record.role === 'subagent') state.parentToolCallIdsByRun.set(record.runId, record.parentToolCallId);
     if (record.role === 'subagent' && record.event.kind === 'start') {
       if (record.event.parallelSize !== undefined) {
         state.parallelRunIds.add(record.runId);
@@ -105,31 +109,72 @@ export function trackParallelSubagentRecords(state: SubagentAppendRenderState, r
 }
 
 /**
- * 快照/重放路径按 records 重建子 Agent 增量 append 状态：run 身份、终态与单委派/并行集合，
- * 以及当前活跃 run 的 pending 内部调用。
+ * 前缀逐出时按驻留快照清理身份与原始调用引用；活动 run 可保留轻量身份，但不能保留已逐出的调用正文。
+ * 本函数仅在驻留边界变化或投影恢复时调用，不参与普通 footer tick 的扫描。
  */
-export function rebuildSubagentAppendState(state: SubagentAppendRenderState, records: TranscriptRecord[], activeSubagentRunId?: string): void {
+export function pruneSubagentAppendState(state: SubagentAppendRenderState, records: TranscriptRecord[], activeRunIds: readonly string[] = []): void {
+  const runIds = new Set(activeRunIds);
+  const parentCallIds = new Set<string>();
+  const residentCalls = new Map<string, SubagentTranscriptRecord>();
+  for (const record of records) {
+    if (record.role === 'subagent') {
+      runIds.add(record.runId);
+      parentCallIds.add(record.parentToolCallId);
+      state.parentToolCallIdsByRun.set(record.runId, record.parentToolCallId);
+      if (record.event.kind === 'tool_call') residentCalls.set(createSubagentToolCallKey(record.runId, record.event.toolCallId), record);
+    } else if (record.role === 'tool_call' || record.role === 'tool_result') {
+      parentCallIds.add(record.toolCallId);
+    }
+  }
+  for (const runId of activeRunIds) {
+    const parentCallId = state.parentToolCallIdsByRun.get(runId);
+    if (parentCallId) parentCallIds.add(parentCallId);
+  }
+  for (const [runId] of state.parentToolCallIdsByRun) {
+    if (!runIds.has(runId)) state.parentToolCallIdsByRun.delete(runId);
+  }
+  for (const ids of [state.runIds, state.parallelRunIds]) {
+    for (const id of ids) if (!runIds.has(id)) ids.delete(id);
+  }
+  for (const ids of [state.localParentToolCallIds, state.parallelParentToolCallIds, state.terminalCallIds]) {
+    for (const id of ids) if (!parentCallIds.has(id)) ids.delete(id);
+  }
+  for (const [key] of state.pendingToolCalls) {
+    const call = residentCalls.get(key);
+    if (call) state.pendingToolCalls.set(key, call);
+    else state.pendingToolCalls.delete(key);
+  }
+  trackParallelSubagentRecords(state, records);
+}
+
+/**
+ * 快照/重放路径按 records 重建子 Agent 增量 append 状态：run 身份、终态与单委派/并行集合，
+ * 以及当前活跃 run 的 pending 内部调用；主会话可保留仍驻留或活动的并行身份，防止 start 被逐出后泄漏过程栏。
+ */
+export function rebuildSubagentAppendState(state: SubagentAppendRenderState, records: TranscriptRecord[], activeSubagentRunIds: readonly string[] = [], preserveRunIdentity = false): void {
+  if (preserveRunIdentity) {
+    // 主投影的身份集合要跨逐出保留，因此先按驻留快照清理；prune 同时补齐驻留区内的并行/单委派身份。
+    pruneSubagentAppendState(state, records, activeSubagentRunIds);
+  } else {
+    state.parentToolCallIdsByRun.clear();
+    state.localParentToolCallIds.clear();
+    state.parallelRunIds.clear();
+    state.parallelParentToolCallIds.clear();
+    trackParallelSubagentRecords(state, records);
+  }
   state.runIds.clear();
   state.terminalCallIds.clear();
-  state.localParentToolCallIds.clear();
-  state.parallelRunIds.clear();
-  state.parallelParentToolCallIds.clear();
   state.pendingToolCalls.clear();
+  const activeRunIds = new Set(activeSubagentRunIds);
   for (const record of records) {
     if (record.role === 'subagent') {
       state.runIds.add(record.runId);
-      if (record.event.kind === 'start' && record.event.parallelSize !== undefined) {
-        state.parallelRunIds.add(record.runId);
-        state.parallelParentToolCallIds.add(record.parentToolCallId);
-      } else if (record.event.kind === 'start') {
-        state.localParentToolCallIds.add(record.parentToolCallId);
-      }
       if (record.event.kind === 'completed' || record.event.kind === 'failed' || record.event.kind === 'cancelled') {
         state.terminalCallIds.add(record.parentToolCallId);
       }
-      if (record.runId === activeSubagentRunId && record.event.kind === 'tool_call') {
+      if (activeRunIds.has(record.runId) && record.event.kind === 'tool_call') {
         state.pendingToolCalls.set(createSubagentToolCallKey(record.runId, record.event.toolCallId), record);
-      } else if (record.runId === activeSubagentRunId && record.event.kind === 'tool_result') {
+      } else if (activeRunIds.has(record.runId) && record.event.kind === 'tool_result') {
         state.pendingToolCalls.delete(createSubagentToolCallKey(record.runId, record.event.toolCallId));
       }
     }
@@ -228,17 +273,6 @@ function prepareSubagentAppendRecords(records: TranscriptRecord[], state: Subage
 /** 为运行内工具调用生成不会跨 run 冲突的瞬时渲染键。 */
 function createSubagentToolCallKey(runId: string, toolCallId: string): string {
   return `${runId}\u0000${toolCallId}`;
-}
-
-/** 收集记录中的并行子运行身份；增量批次可能不含 start，因此与已知集合合并。 */
-export function collectParallelSubagentRunIds(records: TranscriptRecord[], known?: Set<string>): Set<string> {
-  const runIds = new Set(known || []);
-  for (const record of records) {
-    if (record.role === 'subagent' && record.event.kind === 'start' && record.event.parallelSize !== undefined) {
-      runIds.add(record.runId);
-    }
-  }
-  return runIds;
 }
 
 /** 主窗口投影过滤并行子运行的全部过程记录；外层 tool pair 保留并负责展示最终报告。 */

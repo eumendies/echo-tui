@@ -23,6 +23,7 @@ const { createGrepToolHandler, DEFAULT_MAX_MATCHES, GREP_TOOL_NAME } = require('
 const {
   createReadFilesToolHandler,
   DEFAULT_MAX_DIRECTORY_ENTRIES,
+  DEFAULT_MAX_IMAGE_BYTES,
   DEFAULT_MAX_PDF_OUTPUT_BYTES,
   DEFAULT_MAX_TOTAL_IMAGE_BYTES,
   DEFAULT_MAX_TOTAL_OUTPUT_BYTES: DEFAULT_READ_FILES_MAX_TOTAL_OUTPUT_BYTES,
@@ -1808,6 +1809,29 @@ test('read_files keeps all image attachments when the aggregate is exactly at it
   assert.equal(result.attachments.reduce((sum, attachment) => sum + attachment.sizeBytes, 0), imageBytes.length * 2);
 });
 
+test('read_files defaults to 3 MB per image and 6 MB per call', async () => {
+  const cwd = createTempWorkspace();
+  const withinLimit = Buffer.alloc(DEFAULT_MAX_IMAGE_BYTES, 1);
+  fs.writeFileSync(path.join(cwd, 'first.png'), withinLimit);
+  fs.writeFileSync(path.join(cwd, 'second.png'), withinLimit);
+  fs.writeFileSync(path.join(cwd, 'third.png'), Buffer.from([1]));
+  fs.writeFileSync(path.join(cwd, 'oversized.png'), Buffer.alloc(DEFAULT_MAX_IMAGE_BYTES + 1, 2));
+  const executor = createToolExecutor(createToolRegistry([createReadFilesToolHandler({autoCompressImages: false, cwd})]));
+
+  const batch = await executor.execute(createReadFilesCall([
+    {path: 'first.png'}, {path: 'second.png'}, {path: 'third.png'}
+  ]));
+  assert.deepEqual(batch.attachments.map((attachment) => attachment.path), ['first.png', 'second.png']);
+  assert.equal(batch.attachments.reduce((total, attachment) => total + attachment.sizeBytes, 0), DEFAULT_MAX_TOTAL_IMAGE_BYTES);
+  assert.equal(batch.details.truncated, true);
+  assert.match(batch.text, /--- image: third\.png[\s\S]*image_attached: false/);
+
+  const oversized = await executor.execute(createReadFilesCall([{path: 'oversized.png'}]));
+  assert.equal(oversized.ok, false);
+  assert.equal(oversized.attachments, undefined);
+  assert.match(oversized.text, /image exceeds max size: 3000001 bytes > 3000000 bytes/);
+});
+
 test('read_files extracts PDF text without exposing binary or attachments', async () => {
   const cwd = createTempWorkspace();
   const rootDir = createTempWorkspace();
@@ -1835,7 +1859,8 @@ test('read_files extracts PDF text without exposing binary or attachments', asyn
 test('read_files defaults text, PDF, and image aggregates to bounded budgets', () => {
   assert.equal(DEFAULT_MAX_PDF_OUTPUT_BYTES, 65_536);
   assert.equal(DEFAULT_READ_FILES_MAX_TOTAL_OUTPUT_BYTES, 65_536);
-  assert.equal(DEFAULT_MAX_TOTAL_IMAGE_BYTES, 10_000_000);
+  assert.equal(DEFAULT_MAX_IMAGE_BYTES, 3_000_000);
+  assert.equal(DEFAULT_MAX_TOTAL_IMAGE_BYTES, 6_000_000);
 });
 
 test('read_files offloads oversized PDF formatted text and supports exact artifact rereads', async () => {

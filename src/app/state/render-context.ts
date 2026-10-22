@@ -135,16 +135,34 @@ class RenderContext {
         : pending?.kind === 'subagent'
           ? `${formatSubagentRawName(pending.agentName)}${pending.toolName ? ` · ${pending.toolName}` : ''}`
           : undefined,
-      activity: pending?.kind === 'subagent'
-        ? {kind: 'working', elapsedMs: pending.elapsedMs}
-        : working
-          ? {kind: 'working', elapsedMs: working.elapsedMs}
-          : pending?.kind === 'thinking'
-            ? {kind: 'thinking', elapsedMs: pending.elapsedMs}
-            : undefined,
+      activity: resolveStatusLineActivity(pending, working),
       ...(keyHint ? {keyHint} : {})
     };
   }
+}
+
+/**
+ * 派生 status line 的活动段，与 render 层 attachStatusLineActivity 保持同一优先级。
+ * 主 turn 的计时器优先：子 agent 的 elapsedMs 从它自己的 run 开始计，用它会让本轮累积时间看起来被重置。
+ */
+function resolveStatusLineActivity(pending: PendingState | null, working: WorkingState | null): StatusLineState['activity'] {
+  if (working) {
+    return {kind: 'working', elapsedMs: working.elapsedMs};
+  }
+
+  if (pending?.kind === 'subagent') {
+    return {kind: 'working', elapsedMs: pending.elapsedMs};
+  }
+
+  if (pending?.kind === 'subagents') {
+    return {kind: 'working', elapsedMs: Math.max(0, ...pending.runs.map((run) => run.elapsedMs))};
+  }
+
+  if (pending?.kind === 'thinking') {
+    return {kind: 'thinking', elapsedMs: pending.elapsedMs};
+  }
+
+  return undefined;
 }
 
 function resolveStatusLineKeyHint(mode: StatusLineMode, canInterruptAssistantTurn: boolean, hasWorkingState: boolean, hasPendingMessage: boolean): string | undefined {

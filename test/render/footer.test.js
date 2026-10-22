@@ -4270,3 +4270,204 @@ test('renderFooterLayout renders the subagent view surface without a composer bo
   // idle 模式下状态行不展示 detail，改为校验模型标签
   assert.ok(normal[normal.length - 1].includes('GPT-4o'));
 });
+
+test('two-line pending card uses the content budget without reserving the terminal margin twice', () => {
+  const layout = renderFooterLayout({composer: createComposer('draft'), pendingMessage: {preview: 'a'.repeat(200)},
+    commandSurface: null, statusLine: DEFAULT_STATUS_LINE, rows: 10, width: 60});
+  const previewLine = layout.lines.map(stripAnsi).find((line) => line.startsWith('  a'));
+  assert.ok(previewLine.endsWith(' · Esc 移除'));
+  assert.equal(displayWidth(previewLine), safeRenderWidth(60));
+});
+
+for (const status of [undefined, 'ready', 'failed']) {
+  test(`compact ${status || 'pending'} card keeps removal hint and sanitizes external text`, () => {
+    const layout = renderFooterLayout({composer: createComposer('draft'),
+      pendingMessage: {preview: '\x1b[2J预览\r\n\t\x00\x07\x1b]0;malicious\x07消息'.repeat(50), status,
+        error: '\x1b[31m读取\r\n\t\x00\x07失败\x1b[0m'.repeat(50)},
+      commandSurface: null, statusLine: DEFAULT_STATUS_LINE, rows: 6, width: 60});
+    const card = layout.lines.map(stripAnsi).filter((line) => line.startsWith('↳'));
+    assert.equal(card.length, 1);
+    assert.ok(card[0].endsWith(' · Esc 移除'));
+    assert.ok(displayWidth(card[0]) <= safeRenderWidth(60));
+    assert.doesNotMatch(card[0], /[\u0000-\u001f\u007f-\u009f]/u);
+    assert.equal(layout.lines.length <= 4, true);
+    assert.ok(layout.lines.every((line) => !line.includes('\x1b[2J') && !line.includes('\x1b]0;')));
+  });
+}
+
+for (const [status, label] of Object.entries({
+  preparing: '准备引导消息', ready: '↳ 引导消息', failed: '引导准备失败：读取失败'
+})) {
+  test(`steering ${status} card has fixed height, safe width and shared footer budget`, () => {
+    const {PendingMessageContext} = require('../../src/app/state/pending-message-context');
+    const context = new PendingMessageContext();
+    context.createSteeringInputPort(1);
+    const id = context.beginSteer('中文👩‍💻\n\t长消息'.repeat(100), 1);
+    if (status === 'failed') context.failPreparation(id, '读取失败');
+    else if (status !== 'preparing') {
+      context.completePreparation(id, {role: 'user', text: 'prepared'});
+    }
+    const card = context.getRenderState();
+    assert.equal(card.status, status);
+    for (const width of [4, 18, 34, 100]) {
+      for (const rows of [5, 9, 14]) {
+        const composer = createComposer('draft\nnext');
+        const before = structuredClone(composer);
+        const layout = renderFooterLayout({composer, pendingMessage: card, commandSurface: null,
+          conversationReference: {projectionMode: 'full', title: '引用'},
+          pending: {kind: 'streaming', text: 'answer\n'.repeat(30)},
+          statusLine: DEFAULT_STATUS_LINE, rows, width});
+        assert.ok(layout.lines.length <= rows - 2, `${width}x${rows} height`);
+        assert.ok(layout.lines.every((line) => !stripAnsi(line).includes('\n')));
+        // 极窄终端的旧 composer 框保留最小宽度；新增卡片自身仍须按安全列宽截断。
+        const widthCheckedLines = width < 8 ? layout.lines.filter((line) => /^(↳|  )/u.test(stripAnsi(line))) : layout.lines;
+        assert.ok(widthCheckedLines.every((line) => displayWidth(line) <= safeRenderWidth(width)), `${width}x${rows} width`);
+        assert.ok(layout.cursorRow >= 0 && layout.cursorRow < layout.lines.length);
+        assert.deepEqual(composer, before);
+        if (width === 100 && rows === 14) {
+          const lines = layout.lines.map(stripAnsi);
+          const titleIndex = lines.findIndex((line) => line.includes(label));
+          assert.ok(titleIndex >= 0);
+          assert.ok(lines[titleIndex + 1].includes('Esc 移除'));
+          assert.equal(lines.filter((line) => line.includes('引导消息')).length, 1);
+        }
+      }
+    }
+  });
+}
+
+for (const rows of [6, 10]) {
+  test(`ready steering card omits waiting reasons in ${rows === 6 ? 'compact' : 'two-line'} layout`, () => {
+    const layout = renderFooterLayout({composer: createComposer('draft'),
+      pendingMessage: {preview: '先检查原因', status: 'ready'},
+      commandSurface: null, statusLine: DEFAULT_STATUS_LINE, rows, width: 80});
+    const lines = layout.lines.map(stripAnsi);
+    const titleIndex = lines.findIndex((line) => line.startsWith('↳'));
+    assert.ok(titleIndex >= 0);
+    if (rows === 6) {
+      assert.equal(lines[titleIndex], '↳ 引导 · 先检查原因 · Esc 移除');
+    } else {
+      assert.equal(lines[titleIndex], '↳ 引导消息');
+      assert.equal(lines[titleIndex + 1], '  先检查原因 · Esc 移除');
+    }
+    assert.doesNotMatch(lines.join('\n'), /等待|素材已就绪|当前回答结束后发送/u);
+  });
+}
+
+test('renderFooterLayout keeps the turn timer while a subagent run is active', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer(''),
+    pending: {
+      kind: 'subagent',
+      agentName: 'explorer',
+      elapsedMs: 1200,
+      phase: 'tool',
+      runId: 'r1',
+      task: 'investigate',
+      toolName: 'grep'
+    },
+    working: {elapsedMs: 65000},
+    statusLine: {...DEFAULT_STATUS_LINE, mode: 'streaming', keyHint: 'Esc 中断'},
+    rows: 24,
+    width: 100
+  });
+  const statusText = stripAnsi(layout.lines.at(-1));
+
+  // 子 agent 的 elapsedMs 从它自己的 run 开始计；状态行必须继续显示本轮累积时间，否则看起来像被重置。
+  assert.ok(statusText.includes('working 01:05'), statusText);
+  assert.ok(!statusText.includes('working 00:01'), statusText);
+});
+
+test('renderFooterLayout keeps the turn timer while parallel subagent runs are active', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer(''),
+    pending: {
+      kind: 'subagents',
+      runs: [
+        {kind: 'subagent', agentName: 'explorer', elapsedMs: 1200, phase: 'thinking', runId: 'r1', task: 'first'},
+        {kind: 'subagent', agentName: 'explorer', elapsedMs: 2400, phase: 'tool', runId: 'r2', task: 'second', toolName: 'grep'}
+      ]
+    },
+    working: {elapsedMs: 65000},
+    statusLine: {...DEFAULT_STATUS_LINE, mode: 'streaming'},
+    rows: 24,
+    width: 100
+  });
+  const statusText = stripAnsi(layout.lines.at(-1));
+
+  assert.ok(statusText.includes('working 01:05'), statusText);
+});
+
+test('renderFooterLayout keeps the subagent view detail while the main turn timer runs', () => {
+  const layout = renderRuntimeFooterLayout({
+    composer: createComposer(''),
+    commandSurface: null,
+    slashSuggestions: null,
+    pending: {
+      kind: 'subagent',
+      agentName: 'explorer',
+      elapsedMs: 4200,
+      phase: 'tool',
+      runId: 'r1',
+      task: 'investigate',
+      toolName: 'grep'
+    },
+    working: {elapsedMs: 65000},
+    statusLine: {
+      projectName: 'echo_tui',
+      model: {kind: 'default', label: 'GPT-4o'},
+      mode: 'subagent_view',
+      detail: 'subagent 1/1 · explorer · investigate · tool · grep · 4.2s'
+    },
+    rows: 24,
+    width: 100
+  });
+  const statusText = stripAnsi(layout.lines.at(-1));
+
+  // 窗口的 detail 自带 phase 与 elapsed；主 turn 的 activity 不得抢占它。
+  assert.ok(statusText.includes('subagent 1/1 · explorer · investigate · tool · grep · 4.2s'), statusText);
+  assert.ok(!statusText.includes('working'), statusText);
+});
+
+test('renderFooterLayout falls back to the subagent elapsed when no turn timer is running', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer(''),
+    pending: {
+      kind: 'subagent',
+      agentName: 'explorer',
+      elapsedMs: 4200,
+      phase: 'tool',
+      runId: 'r1',
+      task: 'investigate',
+      toolName: 'grep'
+    },
+    working: null,
+    statusLine: {...DEFAULT_STATUS_LINE, mode: 'streaming'},
+    rows: 24,
+    width: 100
+  });
+  const statusText = stripAnsi(layout.lines.at(-1));
+
+  // 没有主 turn 计时器时，子 agent 自己的 elapsed 仍是唯一可用来源。
+  assert.ok(statusText.includes('working 00:04'), statusText);
+});
+
+test('renderFooterLayout falls back to the longest parallel subagent elapsed without a turn timer', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer(''),
+    pending: {
+      kind: 'subagents',
+      runs: [
+        {kind: 'subagent', agentName: 'explorer', elapsedMs: 1200, phase: 'thinking', runId: 'r1', task: 'first'},
+        {kind: 'subagent', agentName: 'explorer', elapsedMs: 2400, phase: 'tool', runId: 'r2', task: 'second', toolName: 'grep'}
+      ]
+    },
+    working: null,
+    statusLine: {...DEFAULT_STATUS_LINE, mode: 'streaming'},
+    rows: 24,
+    width: 100
+  });
+  const statusText = stripAnsi(layout.lines.at(-1));
+
+  assert.ok(statusText.includes('working 00:02'), statusText);
+});

@@ -21,16 +21,25 @@
 - **THEN** 系统 SHALL NOT 因模型未知而阻止请求
 
 ### Requirement: 上下文长度估算
-系统 SHALL 在发起每次 provider 请求前估算即将发送的上下文 token 长度。估算 SHALL 结合字符启发式与上一次请求返回的 `usage` 真值：当存在上一轮 `input_tokens` 真值时，系统 SHALL 以该真值为基线并叠加此后新增活跃记录的字符估算增量；当不存在真值时，系统 SHALL 对完整投影内容做字符估算。
+系统 SHALL 在发起每次 provider 请求前估算即将发送的上下文 token 长度。估算 SHALL 结合字符启发式、模型可见图片的非零估算成本与上一次请求返回的 `usage` 真值：当存在适用于当前投影的上一轮 `input_tokens` 真值时，系统 SHALL 以该真值为基线并叠加此后新增活跃记录的文本及图片估算增量；当不存在适用真值时，系统 SHALL 对完整投影的文本及图片做估算。图片附件的 base64 长度 SHALL NOT 直接当作视觉 token 数；本地不可见角色 SHALL NOT 被计入。压缩或附件省略使锚点与当前投影不再一致时，系统 SHALL 使旧锚点失效并重新估算。
 
 #### Scenario: 首轮无 usage 真值时纯字符估算
 - **WHEN** 当前 session 尚未取得任何 `usage` 真值且即将发起请求
-- **THEN** 系统 SHALL 对即将投影发送的全部内容做字符估算得到预估 token 数
+- **THEN** 系统 SHALL 对即将投影发送的全部文本内容做字符估算得到文本预估 token 数
+- **THEN** 系统 SHALL 对模型可见图片追加非零图片预估 token 数
 
 #### Scenario: 有 usage 真值时按增量校准
 - **WHEN** 上一次请求返回了 `input_tokens` 真值，且其后追加了新的活跃记录
 - **THEN** 系统 SHALL 以上一轮 `input_tokens` 为基线
-- **THEN** 系统 SHALL 叠加新增活跃记录的字符估算增量得到当前预估 token 数
+- **THEN** 系统 SHALL 叠加新增活跃记录的文本字符与图片估算增量得到当前预估 token 数
+
+#### Scenario: 恢复历史图片会话
+- **WHEN** 会话恢复后没有可用的 usage 锚点，活跃历史包含多条附图记录
+- **THEN** 系统 SHALL 对这些图片做非零成本估算，而非只估算记录文本
+
+#### Scenario: 历史投影变化使旧锚点失效
+- **WHEN** 之前记录的模型可见图片被本次请求预算省略或历史经过上下文压缩
+- **THEN** 系统 SHALL NOT 将未调整的旧 `input_tokens` 锚点当作新投影的准确基线
 
 ### Requirement: 压缩阈值判定
 系统 SHALL 在发起请求前比较当前预估 token 数与上下文窗口阈值。阈值 SHALL 为上下文窗口上限乘以当前 assistant run 初始化时取得的用户级安全比例；有效比例 SHALL 为 0.5 至 0.95，缺失或无效配置 SHALL 回退 0.8。系统 SHALL 在单次 assistant run 及其 tool continuation 内保持该比例快照。当预估值超过阈值时，系统 SHALL 触发自动上下文压缩；未超过时 SHALL 直接按现有流程发送请求。强制压缩 SHALL 继续绕过阈值判定。
@@ -147,30 +156,31 @@
 - **THEN** 后续普通 turn SHALL 继续按既有行为发送固定 verbosity
 
 ### Requirement: 压缩状态存储
-系统 SHALL 把压缩状态作为 session 级元数据持久化，包含摘要文本、活跃区间起点索引和创建时间。完整 `records[]` SHALL 保持全量 append-only，不因压缩而删除任何记录。活跃区间起点索引 `activeStartIndex` SHALL 以条数表示，使 `records[activeStartIndex:]` 唯一确定活跃区间。自动压缩追加可见提示记录时，runtime record region 与持久化 transcript SHALL 保持相同的记录坐标系，使同一 agent run 内后续压缩返回的索引仍直接对应持久化 `records[]`。
+系统 SHALL 把压缩状态作为 session 级元数据持久化，包含摘要文本、活跃区间起点索引和创建时间。完整持久化历史 SHALL 不因压缩而删除任何记录；内存驻留数组 SHALL 在成功采纳压缩后释放被压缩前缀。`activeStartIndex` SHALL 表示完整有效历史中的记录位置，而非驻留数组下标；驻留起点 SHALL 与该位置一致。自动压缩追加可见提示记录时，runtime 与应用 SHALL 维护相同的完整历史坐标及提示事实，使同一 agent run 的后续压缩仍能返回正确的持久化位置。
 
 #### Scenario: 压缩后保存压缩元数据
-- **WHEN** 一次压缩完成
-- **THEN** 系统 SHALL 在当前 session 中保存摘要文本和活跃区间起点索引
-- **THEN** 系统 SHALL 保留完整的 `records[]`，不删除被压缩区间的任何记录
+- **WHEN** 一次压缩完成并成功采纳
+- **THEN** 系统 SHALL 在当前 session 中保存摘要文本和完整历史中的活跃区间起点
+- **THEN** 系统 SHALL 释放应用及对应 runtime 中的已压缩前缀，但 SHALL NOT 删除 journal 中的原始记录
 
 #### Scenario: 完整历史不因压缩丢失
 - **WHEN** session 已发生压缩
-- **THEN** 持久化的 `records[]` SHALL 仍包含被压缩区间的全部原始记录
+- **THEN** 从持久化 journal 重放的完整有效历史 SHALL 仍包含被压缩区间的全部原始记录
 
 #### Scenario: 同一 agent run 连续压缩保持索引一致
 - **WHEN** 自动压缩追加了可见提示记录，且同一 agent run 随后再次触发压缩
-- **THEN** runtime record region 与持久化 transcript SHALL 在提示记录位置保持一致
-- **THEN** 第二次压缩返回的 `activeStartIndex` SHALL 指向两侧同一条业务记录
-- **THEN** 已纳入摘要的记录 SHALL NOT 因索引偏移再次出现在活跃区间
+- **THEN** runtime 与应用 SHALL 在提示记录位置保持一致的完整历史坐标
+- **THEN** 第二次压缩返回的 `activeStartIndex` SHALL 指向两侧同一条业务记录，并正确包含此前驻留起点偏移
+- **THEN** 已纳入摘要的记录 SHALL NOT 因索引偏移再次出现在活跃区间或新增摘要素材中
 
 ### Requirement: 压缩后的请求投影
-系统 SHALL 在存在压缩状态时按「system prompt + 摘要消息 + 活跃区间」投影 provider 请求。摘要 SHALL 作为一条 `user` 消息置于内置 system prompt 之后、活跃区间之前。活跃区间 SHALL 为 `records[activeStartIndex:]`，按现有转换规则投影。无压缩状态时 SHALL 退化为现有「system prompt + 全部记录」投影。当当前 session 的 journal 源路径可用时，摘要消息 SHALL 附加该 `source_file` 绝对路径，并提示模型仅在需要精确细节时使用现有 `read_files` 工具分页读取该文件；路径不可用（如 headless 单轮运行）时 SHALL 只注入摘要本身。
+系统 SHALL 在存在压缩状态时按「system prompt + 摘要消息 + 活跃区间」投影 provider 请求。摘要 SHALL 作为一条 `user` 消息置于内置 system prompt 之后、活跃区间之前。活跃区间 SHALL 为完整有效历史中 `activeStartIndex` 之后的记录；当输入为裁剪后的驻留数组时，系统 SHALL 根据驻留起点转换为局部下标，SHALL NOT 再直接以完整 `activeStartIndex` 切片而遗漏记录。无压缩状态时 SHALL 退化为现有「system prompt + 全部记录」投影。当当前 session 的 journal 源路径可用时，摘要消息 SHALL 附加该 `source_file` 绝对路径，并提示模型仅在需要精确细节时使用现有 `read_files` 工具分页读取该文件；路径不可用（如 headless 单轮运行）时 SHALL 只注入摘要本身。
 
-#### Scenario: 存在压缩状态时注入摘要并切片
+#### Scenario: 存在压缩状态时注入摘要与活跃记录
 - **WHEN** session 存在压缩状态且发起 provider 请求
 - **THEN** provider input SHALL 在 system prompt 之后包含一条携带摘要文本的 `user` 消息
-- **THEN** provider input SHALL 只包含 `records[activeStartIndex:]` 投影出的记录，而不是全部记录
+- **THEN** provider input SHALL 只包含完整历史中 `activeStartIndex` 之后的活跃记录投影
+- **THEN** 已裁剪驻留数组 SHALL NOT 被同一完整历史起点再次切片而变为空或遗漏近期记录
 
 #### Scenario: 无压缩状态时退化为全量投影
 - **WHEN** session 不存在压缩状态且发起 provider 请求
@@ -279,4 +289,24 @@
 - **THEN** journal 中的 `set_compaction` 操作与 `CompactionState` 结构 SHALL 保持不变
 - **THEN** 源路径 SHALL 只出现在 provider-facing 摘要消息中
 - **THEN** 可见的 `compaction_notice` 记录 SHALL 保持既有文本，不包含源路径
+
+### Requirement: 压缩摘要请求受图片预算保护
+系统 SHALL 在自动或强制压缩摘要请求发出前，对被压缩区间的用户和工具图片施加与普通请求相同的总图片附件字节预算。超预算时 SHALL 仅在摘要请求的发送副本中省略较早图片，保留模型可见文本、工具调用/结果关系、provider reasoning 记录以及摘要指令原有顺序；被压缩历史原记录 SHALL NOT 被改写。摘要请求 SHALL 继续使用既有原生 provider 转换器，不得把多模态历史拍平成纯文本 role 列表。压缩摘要及 usage 的既有处理规则 SHALL 保持不变。
+
+#### Scenario: 自动压缩大量历史图片
+- **WHEN** 被压缩区间包含的图片累计超过单次 provider 请求图片预算
+- **THEN** 摘要请求 SHALL NOT 携带超预算图片附件
+- **THEN** 摘要请求 SHALL 保留工具调用/结果配对和足以识别省略图片的文字提示
+
+#### Scenario: 手动压缩大量历史图片
+- **WHEN** 用户执行 `/compact` 且待压缩历史图片累计超过请求预算
+- **THEN** 用于生成摘要的请求 SHALL 遵守相同图片预算
+
+#### Scenario: 摘要输入中的原始附件不被删除
+- **WHEN** 摘要请求省略了某条 `tool_result` 的图片
+- **THEN** 会话持久化历史中的同一条 `tool_result` SHALL 仍保存原图片附件
+
+#### Scenario: 摘要失败不改变原历史
+- **WHEN** 有界摘要请求失败或返回空摘要
+- **THEN** 系统 SHALL 维持现有压缩失败/未采纳语义，并 SHALL NOT 以失败为由删除原始图片历史
 

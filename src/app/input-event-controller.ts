@@ -101,7 +101,7 @@ class InputEventController {
   };
 
   /**
-   * 处理没有 active surface 消费的主 composer 事件；此处保留历史、模式、@、Esc 与提交的既有顺序。
+   * 处理未被 surface 消费的 composer 事件；主响应期 Tab 只选择后续提交模式，其他响应锁仍阻止切换。
    */
   private handleComposerFallback(event: InputEvent): Promise<void> | void {
     if (event.type === INPUT_EVENTS.OPEN_SUBAGENT_VIEW) {
@@ -128,7 +128,7 @@ class InputEventController {
     }
 
     if (event.type === INPUT_EVENTS.TAB) {
-      if (!this.appContext.turnContext.responding && this.appContext.getMcpBootstrapStatus() !== 'initializing') {
+      if ((!this.appContext.turnContext.responding || this.appContext.turnContext.canInterruptAssistantTurn()) && this.appContext.getMcpBootstrapStatus() !== 'initializing') {
         this.appContext.cycleInteractionMode();
       }
       this.render();

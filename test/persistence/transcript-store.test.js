@@ -14,6 +14,7 @@ const {
 } = require('../../src/persistence/transcript-journal');
 const {
   STORE_SCHEMA_VERSION,
+  createSessionTitle,
   createTranscriptStore
 } = require('../../src/persistence/transcript-store');
 const {TranscriptContext} = require('../../src/app/state/transcript-context');
@@ -297,6 +298,35 @@ test('createTranscriptStore tolerates a torn final write and rejects corrupt ear
   assert.equal(store.loadSession(cwd, reference.sessionId), null);
 });
 
+test('journal replay streams long single lines and append-then-truncate histories', () => {
+  const rootDir = createTempRoot();
+  const cwd = '/tmp/example/streamed-replay';
+  const store = createTranscriptStore({rootDir});
+  // 单行远超 64 KiB chunk；回放的中间状态（401 条）远大于最终结果（1 条）。
+  const longText = 'y'.repeat(1_500_000);
+  const reference = store.createSession(cwd, createAppendRecordsOperation([{role: 'user', text: longText}]), '2026-07-01T00:00:00.000Z');
+  const bulk = Array.from({length: 400}, (_value, index) => ({role: 'assistant', text: `bulk-${index}`}));
+  const appended = store.appendSession(cwd, reference, createAppendRecordsOperation(bulk), '2026-07-01T00:00:01.000Z');
+  const truncated = store.appendSession(cwd, appended, createTruncateRecordsOperation(1), '2026-07-01T00:00:02.000Z');
+  const calls = {openSync: 0, readFileSync: 0};
+  const countingFs = Object.create(fs);
+  countingFs.openSync = (filePath, ...args) => {
+    if (String(filePath).endsWith('.jsonl')) calls.openSync += 1;
+    return fs.openSync(filePath, ...args);
+  };
+  countingFs.readFileSync = (filePath, ...args) => {
+    if (String(filePath).endsWith('.jsonl')) calls.readFileSync += 1;
+    return fs.readFileSync(filePath, ...args);
+  };
+  const reopened = createTranscriptStore({rootDir, fsImpl: countingFs});
+
+  const loaded = reopened.loadSession(cwd, truncated.sessionId);
+
+  assert.deepEqual(loaded.session.records, [{role: 'user', text: longText}]);
+  assert.equal(calls.openSync, 1);
+  assert.equal(calls.readFileSync, 0);
+});
+
 test('loadSessionReadOnly replays a torn tail without repairing the source journal', () => {
   const rootDir = createTempRoot();
   const store = createTranscriptStore({rootDir});
@@ -475,6 +505,87 @@ test('createTranscriptStore hides provider-facing mode prompts from session summ
   assert.deepEqual(preview.previewRecords, [{role: 'user', text: 'inspect'}]);
 });
 
+test('createSessionTitle preserves first-user display text, normalization, bounds, and unnamed fallback', () => {
+  assert.equal(createSessionTitle([]), '未命名对话');
+  assert.equal(createSessionTitle([{role: 'assistant', text: 'not a title'}]), '未命名对话');
+  assert.equal(createSessionTitle([{role: 'user', text: ' \n\t '}]), '未命名对话');
+  assert.equal(createSessionTitle([
+    {role: 'assistant', text: 'ignored'},
+    {role: 'user', text: 'provider wrapper', displayText: '  Readable\n title\t '},
+    {role: 'user', text: 'later request'}
+  ]), 'Readable title');
+  assert.equal(createSessionTitle([{role: 'user', text: 'fallback', displayText: ''}]), 'fallback');
+  assert.equal(createSessionTitle([{role: 'user', text: 'x'.repeat(100)}]), 'x'.repeat(60));
+});
+
+test('session index metadata update preserves full count and cached title without replaying compacted history', () => {
+  const rootDir = createTempRoot();
+  const cwd = '/tmp/example/resume-index-compacted';
+  const store = createTranscriptStore({rootDir});
+  const records = [
+    {role: 'user', text: 'provider wrapper', displayText: 'Original title'},
+    {role: 'assistant', text: 'old answer'},
+    {role: 'user', text: 'active request'}
+  ];
+  let reference = store.createSession(cwd, createAppendRecordsOperation(records), '2026-07-01T00:00:00.000Z');
+  const title = createSessionTitle(records);
+  reference = store.appendSession(cwd, reference, createBatchOperation([
+    createSetCompactionOperation({summaryText: 'earlier context', activeStartIndex: 2, createdAt: '2026-07-01T00:00:01.000Z'}),
+    createAppendRecordsOperation([{role: 'compaction_notice', text: 'compacted'}])
+  ]), '2026-07-01T00:00:01.000Z');
+  const journalReads = [];
+  const countingFs = Object.create(fs);
+  countingFs.readFileSync = (filePath, encoding) => {
+    if (String(filePath).endsWith('.jsonl')) journalReads.push(filePath);
+    return fs.readFileSync(filePath, encoding);
+  };
+  const reopened = createTranscriptStore({rootDir, fsImpl: countingFs});
+
+  reopened.updateSessionIndex(cwd, reference, {messageCount: 4, title});
+  reference = reopened.appendSession(cwd, reference, createAppendRecordsOperation([{role: 'assistant', text: 'new answer'}]), '2026-07-01T00:00:02.000Z');
+  reopened.updateSessionIndex(cwd, reference, {messageCount: 5, title});
+  const [summary] = reopened.listSessionSummaries(cwd);
+
+  assert.equal(summary.messageCount, 5);
+  assert.equal(summary.title, 'Original title');
+  assert.equal(summary.updatedAt, reference.updatedAt);
+  const stat = fs.statSync(store.getSessionFilePath(cwd, reference.sessionId));
+  assert.deepEqual(summary.fingerprint, {size: stat.size, mtimeMs: stat.mtimeMs});
+  assert.deepEqual(journalReads, []);
+  assert.equal(JSON.parse(fs.readFileSync(store.getSessionIndexFilePath(cwd), 'utf8')).schemaVersion, 1);
+});
+
+test('session index rebuild derives count and title from full valid compacted records after truncate', () => {
+  const rootDir = createTempRoot();
+  const cwd = '/tmp/example/resume-index-compacted-rebuild';
+  const store = createTranscriptStore({rootDir});
+  const records = [{role: 'user', text: 'discarded title'}, {role: 'assistant', text: 'discarded answer'}];
+  let reference = store.createSession(cwd, createAppendRecordsOperation(records), '2026-07-01T00:00:00.000Z');
+  store.updateSessionIndex(cwd, reference, {messageCount: records.length, title: createSessionTitle(records)});
+  reference = store.appendSession(cwd, reference, createBatchOperation([
+    createTruncateRecordsOperation(0),
+    createAppendRecordsOperation([
+      {role: 'user', text: 'wrapper', displayText: 'Replacement title'},
+      {role: 'assistant', text: 'replacement answer'},
+      {role: 'user', text: 'active request'}
+    ]),
+    createSetCompactionOperation({summaryText: 'earlier context', activeStartIndex: 2, createdAt: '2026-07-01T00:00:01.000Z'}),
+    createAppendRecordsOperation([{role: 'compaction_notice', text: 'compacted'}])
+  ]), '2026-07-01T00:00:01.000Z');
+  const filePath = store.getSessionFilePath(cwd, reference.sessionId);
+  fs.appendFileSync(filePath, '{incomplete', 'utf8');
+  const journal = fs.readFileSync(filePath, 'utf8');
+
+  for (const invalidate of [() => {}, () => fs.rmSync(store.getSessionIndexFilePath(cwd))]) {
+    invalidate();
+    const [summary] = store.listSessionSummaries(cwd);
+    assert.equal(summary.messageCount, 4);
+    assert.equal(summary.title, 'Replacement title');
+    assert.equal(summary.updatedAt, reference.updatedAt);
+    assert.equal(fs.readFileSync(filePath, 'utf8'), journal);
+  }
+});
+
 test('session index fast path sorts summaries without reading journal bodies', () => {
   const rootDir = createTempRoot();
   const cwd = '/tmp/example/resume-index-fast';
@@ -485,15 +596,18 @@ test('session index fast path sorts summaries without reading journal bodies', (
   assert.deepEqual(store.listSessionSummaries(cwd).map((session) => session.sessionId), [second.sessionId, first.sessionId]);
   const journalReads = [];
   const countingFs = Object.create(fs);
-  countingFs.readFileSync = (filePath, encoding) => {
+  countingFs.openSync = (filePath, ...args) => {
     if (String(filePath).endsWith('.jsonl')) journalReads.push(filePath);
-    return fs.readFileSync(filePath, encoding);
+    return fs.openSync(filePath, ...args);
   };
   const reopened = createTranscriptStore({rootDir, fsImpl: countingFs});
   const sessions = reopened.listSessionSummaries(cwd);
 
   assert.deepEqual(sessions.map((session) => session.messageCount), [1, 1]);
   assert.deepEqual(journalReads, []);
+  // 反向断言：计数点确实观测到 journal 读取，避免断言恒真。
+  reopened.loadSession(cwd, second.sessionId);
+  assert.deepEqual(journalReads, [store.getSessionFilePath(cwd, second.sessionId)]);
   assert.equal(fs.existsSync(reopened.getSessionIndexFilePath(cwd)), true);
 });
 
@@ -516,9 +630,9 @@ test('session index rebuilds only stale journals and removes invalid or orphan e
 
   const journalReads = [];
   const countingFs = Object.create(fs);
-  countingFs.readFileSync = (filePath, encoding) => {
+  countingFs.openSync = (filePath, ...args) => {
     if (String(filePath).endsWith('.jsonl')) journalReads.push(path.basename(filePath));
-    return fs.readFileSync(filePath, encoding);
+    return fs.openSync(filePath, ...args);
   };
   const reopened = createTranscriptStore({rootDir, fsImpl: countingFs});
   const sessions = reopened.listSessionSummaries(cwd);
@@ -526,6 +640,9 @@ test('session index rebuilds only stale journals and removes invalid or orphan e
 
   assert.deepEqual(sessions.map((session) => session.sessionId), [first.sessionId, second.sessionId]);
   assert.deepEqual(journalReads.sort(), [`${first.sessionId}.jsonl`, 'broken.jsonl'].sort());
+  // 反向断言：计数点确实观测到 journal 读取，避免断言恒真。
+  reopened.loadSession(cwd, second.sessionId);
+  assert.deepEqual(journalReads.sort(), [`${first.sessionId}.jsonl`, `${second.sessionId}.jsonl`, 'broken.jsonl'].sort());
   assert.equal(sessions[0].messageCount, 2);
   assert.deepEqual(repaired.sessions.map((session) => session.sessionId), [first.sessionId, second.sessionId]);
   assert.deepEqual(fs.readdirSync(sessionsDir).filter((name) => name.includes('index.json.tmp-')), []);
@@ -614,7 +731,7 @@ test('session index removes its temporary file when atomic rename fails', () => 
   };
   const failingStore = createTranscriptStore({rootDir, fsImpl: failingFs});
 
-  assert.throws(() => failingStore.updateSessionIndex(cwd, reference, records), /rename failed/);
+  assert.throws(() => failingStore.updateSessionIndex(cwd, reference, {messageCount: records.length, title: createSessionTitle(records)}), /rename failed/);
   assert.deepEqual(
     fs.readdirSync(path.dirname(store.getSessionFilePath(cwd, reference.sessionId))).filter((name) => name.includes('index.json.tmp-')),
     []

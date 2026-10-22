@@ -6,6 +6,7 @@ import {createShellRecord, formatShellCommandLine} from '../../tools/shell-trans
 
 import type {ToolCall, ToolExecutionResult} from '../../types/tool';
 import type {TranscriptRecord, UserTranscriptMetadata} from '../../types/transcript';
+import type {ActiveTurnMessagePolicy} from '../../types/agent';
 import type {BashCommandOutputEvent, BashCommandRunResult} from '../../tools/bash-command-runner';
 
 type TranscriptTurnBridge = {
@@ -26,9 +27,10 @@ type AssistantTurnHandle = {
 };
 
 type ActiveAssistantTurn = {
-  id: number;
-  controller: AbortController;
-  statusLineModel?: StatusLineModelState;
+  id: number; // 隔离本轮回调与下一轮运行的身份。
+  controller: AbortController; // Esc 使用的整轮取消，不用于引导抢占。
+  statusLineModel?: StatusLineModelState; // 本轮已解析的模型展示快照。
+  messagePolicy: ActiveTurnMessagePolicy; // 本轮固定的响应期间消息策略。
 };
 
 type InterruptAssistantTurnResult = {
@@ -107,10 +109,11 @@ class TurnContext {
   /**
    * 创建当前 assistant turn 的身份与中断信号，供 app 层绑定本次 agent 调用。
    */
-  beginAssistantTurn(statusLineModel?: StatusLineModelState): AssistantTurnHandle {
+  beginAssistantTurn(statusLineModel?: StatusLineModelState, messagePolicy: ActiveTurnMessagePolicy = 'pending'): AssistantTurnHandle {
     const activeTurn = {
       id: this.nextAssistantTurnId,
       controller: new AbortController(),
+      messagePolicy,
       ...(statusLineModel ? {statusLineModel: {...statusLineModel}} : {})
     };
 

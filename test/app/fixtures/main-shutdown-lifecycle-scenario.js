@@ -14,6 +14,7 @@ terminalModule.setupTerminal = () => ({
 let renders = 0;
 const rendererModule = require(path.join(root, 'dist/src/render/app-renderer'));
 rendererModule.createAppRenderer = () => ({
+  syncMainTranscript() {},
   clearFooter() {},
   render() { renders += 1; },
   renderRecords() { renders += 1; },

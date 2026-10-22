@@ -3,225 +3,8 @@ const assert = require('node:assert/strict');
 
 const {runAssistantTurn} = require('../../src/app/assistant-turn-runner');
 const {AgentAbortError} = require('../../src/types/agent');
-const {AppContext} = require('../../src/app/state/app-context');
-const {ToolApprovalContext} = require('../../src/app/state/tool-approval-context');
-const {UserQuestionContext} = require('../../src/app/state/user-question-context');
-const {UserConfigContext} = require('../../src/config/user-config-context');
-const {createObservation} = require('../../src/observation/observation-projector');
 
-function createFakeTranscriptStore() {
-  let currentSession = null;
-  let currentReference = null;
-
-  return {
-    createSession(cwd, operation) {
-      currentSession = {
-        schemaVersion: 1,
-        sessionId: 'session-1',
-        cwd,
-        createdAt: '2026-06-29T00:00:00.000Z',
-        updatedAt: '2026-06-29T00:00:00.000Z',
-        records: []
-      };
-      applyOperation(currentSession, operation);
-      currentReference = {
-        sessionId: currentSession.sessionId,
-        cwd,
-        createdAt: currentSession.createdAt,
-        updatedAt: currentSession.updatedAt,
-        sequence: 1
-      };
-      return {...currentReference};
-    },
-    appendSession(cwd, reference, operation) {
-      if (!currentSession || reference.sessionId !== currentSession.sessionId) {
-        throw new Error('missing session');
-      }
-
-      applyOperation(currentSession, operation);
-      currentReference = {
-        ...currentReference,
-        cwd,
-        updatedAt: '2026-06-29T00:00:00.000Z',
-        sequence: currentReference.sequence + 1
-      };
-      currentSession.updatedAt = currentReference.updatedAt;
-      return {...currentReference};
-    },
-    listSessionSummaries() {
-      return [];
-    },
-    loadSession() {
-      return currentSession ? {session: structuredClone(currentSession), reference: {...currentReference}} : null;
-    },
-    loadSessionReadOnly() {
-      return currentSession ? {session: structuredClone(currentSession), reference: {...currentReference}} : null;
-    },
-    getSessionFilePath(_cwd, sessionId) {
-      return `/tmp/${sessionId}.jsonl`;
-    }
-  };
-}
-
-function createFakeSessionModelSettingsStore() {
-  let current = null;
-
-  return {
-    getFilePath(_cwd, sessionId) {
-      return `/tmp/${sessionId}.settings.json`;
-    },
-    read(_cwd, sessionId) {
-      return current?.sessionId === sessionId ? {kind: 'found', settings: structuredClone(current)} : {kind: 'missing'};
-    },
-    write(_cwd, input, updatedAt = '2026-06-29T00:00:00.000Z') {
-      current = {
-        schemaVersion: 1,
-        sessionId: input.sessionId,
-        modelProfileId: input.modelProfileId,
-        ...(input.reasoningEffortOverride !== undefined ? {reasoningEffortOverride: input.reasoningEffortOverride} : {}),
-        updatedAt
-      };
-      return structuredClone(current);
-    }
-  };
-}
-
-function applyOperation(session, operation) {
-  if (operation.op === 'batch') {
-    for (const item of operation.operations) {
-      applyOperation(session, item);
-    }
-    return;
-  }
-
-  if (operation.op === 'append_records') {
-    session.records.push(...operation.records.map((record) => ({...record})));
-  } else if (operation.op === 'truncate_records') {
-    session.records.length = operation.recordCount;
-  } else if (operation.op === 'set_change_history') {
-    session.changeHistory = structuredClone(operation.changeHistory);
-  } else if (operation.op === 'set_compaction') {
-    if (operation.compaction) {
-      session.compaction = {...operation.compaction};
-    } else {
-      delete session.compaction;
-    }
-  } else if (operation.op === 'set_todo_state') {
-    session.todoState = structuredClone(operation.todoState);
-  }
-}
-
-function createHarness(options = {}) {
-  const userConfigContext = options.userConfigContext || new UserConfigContext({
-    readFile: options.appSettings
-      ? () => JSON.stringify(createConfigRootFromAppSettings(options.appSettings))
-      : undefined
-  });
-  const appContext = new AppContext(
-    {getSize() { return {columns: 80, rows: 24}; }},
-    options.transcriptStore || createFakeTranscriptStore(),
-    '/tmp/echo_tui',
-    'v20.0.0',
-    undefined,
-    options.sessionModelSettingsStore || createFakeSessionModelSettingsStore(),
-    userConfigContext
-  );
-  const appended = [];
-  const appendedProjections = [];
-  const hookEvents = [];
-  const debugEvents = [];
-  const hooks = {
-    emit(event, payload) {
-      hookEvents.push({event, payload});
-    },
-    async flush() {}
-  };
-  const debug = {
-    enabled: true,
-    logPath: '/tmp/debug.jsonl',
-    emit(event, payload) {
-      debugEvents.push({event, payload});
-    },
-    close() {}
-  };
-  const observation = createObservation(debug, hooks);
-
-  return {
-    appContext,
-    appended,
-    appendedProjections,
-    debugEvents,
-    hookEvents,
-    input: {
-      appContext,
-      toolApproval: new ToolApprovalContext(() => {}),
-      userQuestion: new UserQuestionContext(() => {}),
-      userText: 'hello',
-      userRequestText: 'hello',
-      renderRecords(records) {
-        appended.push(...records);
-      },
-      render(finalizeRecord) {
-        if (!finalizeRecord) return;
-        appended.push(finalizeRecord);
-        appendedProjections.push(finalizeRecord.role === 'reasoning_summary' ? 'reasoning' : 'assistant');
-      },
-      observation,
-      observationScope: {interactionMode: 'normal', runtimeKind: 'tui'}
-    }
-  };
-}
-
-function createConfigRootFromAppSettings(settings) {
-  return {
-    compaction: {thresholdRatio: settings.compactionThresholdRatio},
-    instructions: {fileName: settings.agentInstructionFileName},
-    skills: {catalogContextRatio: settings.skillCatalogContextRatio},
-    tools: {
-      approval: {mode: settings.toolApprovalMode, ...(settings.toolApprovalModelProfileId ? {modelProfileId: settings.toolApprovalModelProfileId} : {})},
-      fileEdit: {mode: settings.fileEditMode},
-      readFiles: {autoCompressImages: settings.autoCompressImages}
-    },
-    ui: {
-      defaultInteractionMode: settings.defaultInteractionMode,
-      showReasoningSummary: settings.showReasoningSummary,
-      slashSuggestionMaxVisible: settings.slashSuggestionMaxVisible
-    }
-  };
-}
-
-function createUserConfigSnapshot(revision = 1) {
-  const config = {
-    agentType: 'fake',
-    apiKey: '',
-    model: `fake-${revision}`,
-    contextWindow: 128000,
-    tools: {bash: {timeoutMs: null, maxOutputBytes: 65536}, autoCompressImages: true, fileEditMode: 'apply_patch', sandbox: {mode: 'off', network: false, extraWritablePaths: []}}
-  };
-  return {
-    revision,
-    getAppSettings() {
-      return {
-        agentInstructionFileName: 'AGENTS.md',
-        autoCompressImages: true,
-        compactionThresholdRatio: 0.8,
-        defaultInteractionMode: 'normal',
-        fileEditMode: 'apply_patch',
-        skillCatalogContextRatio: 0.02,
-        showReasoningSummary: true,
-        slashSuggestionMaxVisible: 8,
-        toolApprovalMode: 'auto',
-        toolApprovalModelProfileId: 'reviewer'
-      };
-    },
-    getLlmModelConfigInfo() {
-      return {kind: 'profiles', selectedModelId: 'main', models: [{id: 'main', provider: 'fake', model: config.model}]};
-    },
-    resolveLlmConfig() { return config; },
-    resolveLlmConfigStrict() { return config; },
-    resolveLlmConfigForProfile() { return config; }
-  };
-}
+const {createHarness, createUserConfigSnapshot, createFakeTranscriptStore, createFakeSessionModelSettingsStore} = require('./assistant-turn-test-helpers');
 
 test('runAssistantTurn keeps manual approval unchanged and does not call auto reviewer', async () => {
   const harness = createHarness({appSettings: {
@@ -631,7 +414,7 @@ test('runAssistantTurn persists subagent events, restores pending after permissi
     }
   });
 
-  assert.deepEqual(harness.appContext.transcriptContext.getRecords().map((record) => record.role), [
+  assert.deepEqual(harness.appContext.transcriptContext.getResidentRecords().map((record) => record.role), [
     'user', 'subagent', 'subagent', 'subagent', 'subagent', 'subagent', 'tool_call', 'tool_result', 'assistant'
   ]);
   assert.equal(harness.appContext.subagentRunContext.getPending(), null);
@@ -642,13 +425,13 @@ test('runAssistantTurn persists subagent events, restores pending after permissi
   assert.equal(approvalHooks.every((event) => event.payload.agentName === 'explorer'), true);
   assert.equal(approvalHooks.every((event) => Object.hasOwn(event.payload, 'runId') === false), true);
   assert.equal(approvalHooks.every((event) => Object.hasOwn(event.payload, 'parentToolCallId') === false), true);
-  const recordCount = harness.appContext.transcriptContext.getRecords().length;
+  const recordCount = harness.appContext.transcriptContext.getResidentRecords().length;
   capturedCallbacks.onSubagentRecords([{...base, text: 'late', event: {kind: 'assistant'}}]);
   capturedCallbacks.onSubagentActivity({agentName: 'explorer', phase: 'streaming', runId: 'run-1', task: 'late'});
   assert.deepEqual(await capturedCallbacks.onToolApprovalRequest({callId: 'late', toolName: 'run_bash_command', argumentsText: '{}'}, {
     origin: {kind: 'subagent', agentName: 'explorer', runId: 'run-1'}
   }), {kind: 'deny', message: 'Tool execution was interrupted.'});
-  assert.equal(harness.appContext.transcriptContext.getRecords().length, recordCount);
+  assert.equal(harness.appContext.transcriptContext.getResidentRecords().length, recordCount);
   assert.equal(harness.appContext.subagentRunContext.getPending(), null);
 });
 
@@ -740,7 +523,7 @@ test('runAssistantTurn closes an interrupted tool call as a paired result and dr
   assert.equal(harness.appContext.interruptActiveAssistantTurn().interrupted, true);
   await running;
 
-  const records = harness.appContext.transcriptContext.getRecords();
+  const records = harness.appContext.transcriptContext.getResidentRecords();
   const callIndex = records.findIndex((record) => record.role === 'tool_call');
   assert.deepEqual(records.slice(callIndex).map((record) => [record.role, record.toolCallId || null]), [
     ['tool_call', 'call-interrupt'],
@@ -751,7 +534,7 @@ test('runAssistantTurn closes an interrupted tool call as a paired result and dr
   assert.equal(records[callIndex + 1].details.kind, 'generic');
   assert.match(records[callIndex + 1].text, /interrupted by the user/u);
 
-  const recordCount = harness.appContext.transcriptContext.getRecords().length;
+  const recordCount = harness.appContext.transcriptContext.getResidentRecords().length;
   toolResult = capturedCallbacks.onToolResult({
     callId: 'call-interrupt',
     toolName: 'run_bash_command',
@@ -760,7 +543,7 @@ test('runAssistantTurn closes an interrupted tool call as a paired result and dr
     details: {kind: 'bash', exitCode: 0}
   });
   assert.equal(toolResult, undefined);
-  assert.equal(harness.appContext.transcriptContext.getRecords().length, recordCount);
+  assert.equal(harness.appContext.transcriptContext.getResidentRecords().length, recordCount);
 });
 
 test('runAssistantTurn leaves high-frequency subagent activity rendering to the timer', async () => {
@@ -822,10 +605,10 @@ test('runAssistantTurn clears subagent pending and releases response lock after 
   await running;
   assert.equal(harness.appContext.subagentRunContext.getPending(), null);
   assert.equal(harness.appContext.turnContext.responding, false);
-  assert.equal(harness.appContext.transcriptContext.getRecords().some((record) => record.role === 'subagent' && record.event.kind === 'cancelled'), true);
-  const count = harness.appContext.transcriptContext.getRecords().length;
+  assert.equal(harness.appContext.transcriptContext.getResidentRecords().some((record) => record.role === 'subagent' && record.event.kind === 'cancelled'), true);
+  const count = harness.appContext.transcriptContext.getResidentRecords().length;
   capturedCallbacks.onSubagentActivity({agentName: 'explorer', phase: 'streaming', runId: 'run-cancel', task: 'late'});
-  assert.equal(harness.appContext.transcriptContext.getRecords().length, count);
+  assert.equal(harness.appContext.transcriptContext.getResidentRecords().length, count);
   assert.equal(harness.appContext.subagentRunContext.getPending(), null);
 });
 
@@ -894,6 +677,92 @@ test('runAssistantTurn resets streaming progress between tool-call assistant seg
     'second segment'
   ]);
   assert.deepEqual(harness.appendedProjections.filter(Boolean), ['assistant', 'assistant']);
+});
+
+test('runAssistantTurn freezes preempted previews until reasoning and assistant segments are committed before guidance', async () => {
+  const store = createFakeTranscriptStore();
+  const harness = createHarness({transcriptStore: store, appSettings: {activeTurnMessagePolicy: 'steer'}});
+
+  await runAssistantTurn({
+    ...harness.input,
+    async runAgent(_session, callbacks) {
+      callbacks.onReasoningUpdate({kind: 'draft', text: 'local reasoning'});
+      callbacks.onToken('body', 'retained body');
+      callbacks.onRequestPreempted();
+      callbacks.onRequestPreempted();
+      assert.equal(harness.appContext.turnContext.streamingDraft, 'retained body');
+      assert.equal(harness.appContext.turnContext.reasoningDraft, 'local reasoning');
+      assert.deepEqual(harness.appContext.turnContext.getPending(), {
+        kind: 'streaming', text: 'retained body', reasoningText: 'local reasoning'
+      });
+      assert.equal(harness.appContext.turnContext.responding, true);
+      assert.deepEqual(store.loadSession().session.records.map((r) => r.role), ['user']);
+      assert.deepEqual(harness.appendedProjections, []);
+
+      callbacks.onReasoningUpdate({kind: 'complete', text: 'local reasoning'});
+      assert.equal(harness.appContext.turnContext.streamingDraft, 'retained body');
+      callbacks.onAssistantSegment('retained body');
+      assert.equal(harness.appContext.turnContext.streamingDraft, '');
+      assert.equal(harness.appContext.turnContext.reasoningDraft, '');
+      assert.equal(harness.appContext.turnContext.responding, true);
+      assert.deepEqual(store.loadSession().session.records.slice(-2), [
+        {role: 'reasoning_summary', text: 'local reasoning'},
+        {role: 'assistant', text: 'retained body'}
+      ]);
+      callbacks.onUserMessage({role: 'user', text: 'guidance', metadata: {interactionMode: 'normal'}});
+      callbacks.onToken('next', 'next body');
+      callbacks.onComplete('next body');
+      return 'next body';
+    }
+  });
+
+  const records = harness.appContext.transcriptContext.getResidentRecords();
+  assert.deepEqual(records.map((r) => [r.role, r.text]), [
+    ['user', 'hello'], ['reasoning_summary', 'local reasoning'], ['assistant', 'retained body'],
+    ['user', 'guidance'], ['assistant', 'next body']
+  ]);
+  assert.deepEqual(harness.appendedProjections.filter(Boolean), ['reasoning', 'assistant', 'assistant']);
+  assert.deepEqual(store.loadSession().session.records, records);
+  assert.equal(harness.appContext.turnContext.getPending(), null);
+});
+
+test('runAssistantTurn does not resave a committed preempted segment on immediate whole-turn cancellation or late callbacks', async () => {
+  const store = createFakeTranscriptStore();
+  const harness = createHarness({transcriptStore: store, appSettings: {activeTurnMessagePolicy: 'steer'}});
+  let capturedCallbacks;
+
+  await runAssistantTurn({
+    ...harness.input,
+    async runAgent(_session, callbacks) {
+      capturedCallbacks = callbacks;
+      callbacks.onReasoningUpdate({kind: 'draft', text: 'local reasoning'});
+      callbacks.onToken('body', 'retained body');
+      callbacks.onRequestPreempted();
+      callbacks.onReasoningUpdate({kind: 'complete', text: 'local reasoning'});
+      callbacks.onAssistantSegment('retained body');
+      const interrupted = harness.appContext.interruptActiveAssistantTurn();
+      assert.equal(interrupted.interrupted, true);
+      assert.equal(interrupted.partialRecord, undefined);
+      assert.equal(interrupted.reasoningRecord, undefined);
+      harness.input.renderRecords([interrupted.noticeRecord]);
+      throw new AgentAbortError();
+    }
+  });
+
+  const records = structuredClone(harness.appContext.transcriptContext.getResidentRecords());
+  assert.deepEqual(records.map((r) => r.role), ['user', 'reasoning_summary', 'assistant', 'local_notice']);
+  assert.deepEqual(records[2], {role: 'assistant', text: 'retained body'});
+  assert.deepEqual(harness.appendedProjections.filter(Boolean), ['reasoning', 'assistant']);
+  capturedCallbacks.onRequestPreempted();
+  capturedCallbacks.onToken('late', 'late body');
+  capturedCallbacks.onReasoningUpdate({kind: 'complete', text: 'late reasoning'});
+  capturedCallbacks.onAssistantSegment('late segment');
+  capturedCallbacks.onUserMessage({role: 'user', text: 'late guidance'});
+  capturedCallbacks.onComplete('late final');
+  assert.deepEqual(harness.appContext.transcriptContext.getResidentRecords(), records);
+  assert.deepEqual(store.loadSession().session.records, records);
+  assert.equal(harness.appContext.turnContext.getPending(), null);
+  assert.equal(harness.appContext.turnContext.streamingDraft, '');
 });
 
 test('runAssistantTurn preserves final streamed text without an activity tick', async () => {
@@ -984,7 +853,7 @@ test('runAssistantTurn injects only effective mode transitions across turns', as
     }
   });
 
-  const userRecords = harness.appContext.transcriptContext.records.filter((record) => record.role === 'user');
+  const userRecords = harness.appContext.transcriptContext.getResidentRecords().filter((record) => record.role === 'user');
   assert.deepEqual(userRecords.map((record) => record.metadata?.modeTransition), [
     {from: 'normal', to: 'plan'},
     undefined,
@@ -1013,7 +882,7 @@ test('runAssistantTurn persists provider records without visible assistant text'
   });
 
   assert.deepEqual(harness.appended.map((record) => record.role), ['user', 'extension', 'assistant']);
-  assert.deepEqual(harness.appContext.transcriptContext.records.map((record) => record.role), ['user', 'extension', 'assistant']);
+  assert.deepEqual(harness.appContext.transcriptContext.getResidentRecords().map((record) => record.role), ['user', 'extension', 'assistant']);
 });
 
 test('runAssistantTurn persists shared tool records with result metadata', async () => {
@@ -1047,8 +916,8 @@ test('runAssistantTurn persists shared tool records with result metadata', async
     }
   });
 
-  const [toolCall, toolResult] = harness.appContext.transcriptContext.records.slice(1, 3);
-  assert.deepEqual(harness.appContext.transcriptContext.records.map((record) => record.role), [
+  const [toolCall, toolResult] = harness.appContext.transcriptContext.getResidentRecords().slice(1, 3);
+  assert.deepEqual(harness.appContext.transcriptContext.getResidentRecords().map((record) => record.role), [
     'user',
     'tool_call',
     'tool_result',
@@ -1085,7 +954,7 @@ test('runAssistantTurn keeps multiple pending calls and persists matching pairs 
     }
   });
 
-  assert.deepEqual(harness.appContext.transcriptContext.records.map((record) => [record.role, record.toolCallId]), [
+  assert.deepEqual(harness.appContext.transcriptContext.getResidentRecords().map((record) => [record.role, record.toolCallId]), [
     ['user', undefined],
     ['tool_call', 'call-1'], ['tool_result', 'call-1'],
     ['tool_call', 'call-2'], ['tool_result', 'call-2'],
@@ -1304,7 +1173,7 @@ test('runAssistantTurn emits a local model-switch notice and restores the global
   assert.equal(renderedModels.at(-1).model.skillOverride, undefined);
   assert.deepEqual(harness.appended.map((record) => record.role), ['user', 'local_notice', 'assistant']);
   assert.equal(harness.appended[1].text, '当前 skill 本轮使用 claude-sonnet-4-6，effort high。');
-  assert.equal(harness.appContext.transcriptContext.records[1].role, 'local_notice');
+  assert.equal(harness.appContext.transcriptContext.getResidentRecords()[1].role, 'local_notice');
 });
 
 test('runAssistantTurn appends a local notice for provider retry callbacks', async () => {
@@ -1326,7 +1195,7 @@ test('runAssistantTurn appends a local notice for provider retry callbacks', asy
 
   assert.deepEqual(harness.appended.map((record) => record.role), ['user', 'local_notice', 'assistant']);
   assert.equal(harness.appended[1].text, '模型响应临时失败，正在重试第 1/7 次。');
-  assert.equal(harness.appContext.transcriptContext.records[1].role, 'local_notice');
+  assert.equal(harness.appContext.transcriptContext.getResidentRecords()[1].role, 'local_notice');
 });
 
 test('runAssistantTurn does not emit a model-switch notice when a stale override falls back', async () => {

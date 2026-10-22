@@ -296,15 +296,17 @@ function attachStatusLineActivity(statusLine: StatusLineState | undefined, pendi
     return undefined;
   }
 
+  // 主 turn 的计时器优先：子 agent 的 elapsedMs 从它自己的 run 开始计，用它会让本轮累积时间看起来被重置。
+  // 只有在没有主 turn 计时器时才回退到子 agent 的 elapsed。
+  if (working) {
+    return {...statusLine, activity: {kind: 'working', elapsedMs: working.elapsedMs}};
+  }
+
   if (pending?.kind === 'subagent' || pending?.kind === 'subagents') {
     const elapsedMs = pending.kind === 'subagent'
       ? pending.elapsedMs
       : Math.max(0, ...pending.runs.map((run) => run.elapsedMs));
     return {...statusLine, activity: {kind: 'working', elapsedMs}};
-  }
-
-  if (working) {
-    return {...statusLine, activity: {kind: 'working', elapsedMs: working.elapsedMs}};
   }
 
   if (pending?.kind === 'thinking') {

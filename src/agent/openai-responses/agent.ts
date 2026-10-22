@@ -383,6 +383,8 @@ async function readResponseStream(stream: ResponseStream, callbacks: AgentTurnCa
 
   try {
     for await (const event of stream) {
+      // 完成标记已确认的响应即使遇到尾部取消，也保留完整结果。
+      if (completed && options.abortSignal?.aborted) break;
       throwIfAborted(options.abortSignal);
 
       if (isFailureEvent(event)) {
@@ -462,14 +464,15 @@ async function readResponseStream(stream: ResponseStream, callbacks: AgentTurnCa
       }
     }
   } catch (error: unknown) {
-    if (isAbortError(error) || options.abortSignal?.aborted) {
-      throwIfAborted(options.abortSignal);
+    if (isAbortError(error) || error instanceof OpenAI.APIUserAbortError) {
+      if (!completed) throw new AgentAbortError();
+    } else {
+      throw normalizeResponseStreamError(error);
     }
-
-    throw normalizeResponseStreamError(error);
   }
 
   if (!completed) {
+    throwIfAborted(options.abortSignal);
     throw new LlmAgentError('模型响应流未完成');
   }
 
@@ -602,8 +605,8 @@ class OpenAiAgent implements ProviderAgent {
         options
       );
     } catch (error: unknown) {
-      if (isAbortError(error) || options.abortSignal?.aborted) {
-        throwIfAborted(options.abortSignal);
+      if (isAbortError(error) || error instanceof OpenAI.APIUserAbortError) {
+        throw new AgentAbortError();
       }
 
       throw normalizeError(error, '无法启动模型响应');

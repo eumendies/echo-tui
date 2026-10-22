@@ -1,5 +1,6 @@
 import {COMPACTION_RECENT_KEEP_COUNT, COMPACTION_THRESHOLD_RATIO} from '../../config/llm-config';
 import {estimateTextTokens} from './token-estimator';
+import {boundConversationImages, DEFAULT_CONVERSATION_IMAGE_BYTES, estimateRecordImageTokens, getConversationImageBytes} from './conversation-image-budget';
 import {shouldIncludeRecordInProviderContext} from '../transcript-converter-common';
 import {throwIfAborted} from '../../types/agent';
 
@@ -7,14 +8,14 @@ import type {AgentTurnResult, ProviderAgent, ProviderUsage} from '../../types/ag
 import type {CompactionState, TranscriptRecord} from '../../types/transcript';
 
 type TokenUsageAnchor = {
-  usageInputTokens: number;
-  measuredAtRecordCount: number;
+  usageInputTokens: number; // provider 测得的当前请求输入 token 真值。
+  measuredAtRecordCount: number; // 测量时的活跃记录数量，不是完整历史位置。
 };
 
 type RunCompactionResult = {
-  didCompact: boolean;
-  reason: 'compacted' | 'below_threshold' | 'no_boundary';
-  compaction?: CompactionState;
+  didCompact: boolean; // 是否产出可被调用方采纳的非空摘要及新边界。
+  reason: 'compacted' | 'below_threshold' | 'no_boundary'; // 未压缩时区分预算充足与无可用边界。
+  compaction?: CompactionState; // 新摘要及完整历史坐标，调用方持久化成功后才采纳。
   usage?: ProviderUsage; // 摘要 provider turn 的 usage;未发起摘要请求时缺省。
   usageInputTokens?: number; // 摘要 provider turn 的输入 token 真值;未发起摘要请求时缺省。
 };
@@ -26,7 +27,7 @@ type CompactionSummaryResult = {
 };
 
 /**
- * 估算一组记录的字符 token 总量，含摘要文本。
+ * 估算一组记录的文本与模型可见图片 token 总量，含摘要文本。
  * 跳过不会发送给 provider 的 role（error、compaction_notice），避免高估上下文长度。
  */
 function estimateRecordsTokens(records: TranscriptRecord[], summaryText = ''): number {
@@ -38,14 +39,15 @@ function estimateRecordsTokens(records: TranscriptRecord[], summaryText = ''): n
     }
 
     total += estimateTextTokens(record.role === 'extension' ? JSON.stringify(record.extension) : record.text);
+    total += estimateRecordImageTokens(record);
   }
 
   return total;
 }
 
 /**
- * 综合预估当前上下文 token 数：有 usage 真值锚点时以其为基线叠加新增记录的字符估算增量；
- * 无锚点时退化为对全部活跃记录与摘要做纯字符估算。
+ * 综合预估当前上下文 token 数：有适用 usage 锚点时叠加新增记录的文本及图片估算；
+ * 无锚点时估算全部活跃文本及图片。
  */
 function estimateContextTokens(options: {
   activeRecords: TranscriptRecord[];
@@ -159,7 +161,7 @@ async function generateCompactionSummary(options: {
   ];
 
   throwIfAborted(abortSignal);
-  const result: AgentTurnResult = await agent.runTurn(summaryRecords, {}, {
+  const result: AgentTurnResult = await agent.runTurn(boundConversationImages(summaryRecords).records, {}, {
     abortSignal,
     isCompaction: true,
     includeToolDefinitions: true,
@@ -177,10 +179,25 @@ async function generateCompactionSummary(options: {
 /**
  * 构造可见压缩提示；runtime 与持久化 transcript 复用同一记录语义以保持索引平行。
  */
+/** 成功压缩提示的文案模板；判定函数复用同一模板，消费方不得自行拼接或匹配本文案。 */
+function createCompactionSummaryNoticeText(compactedCount: number): string {
+  return `已将较早的 ${compactedCount} 条历史压缩为摘要`;
+}
+
+/** 判定一条记录是否为成功压缩提示：反解计数后用同一模板重新生成，避免两处格式定义漂移。 */
+function isCompactionSummaryNotice(record: TranscriptRecord): boolean {
+  if (record.role !== 'compaction_notice') {
+    return false;
+  }
+
+  const compactedCount = /^已将较早的 (\d+) 条历史压缩为摘要$/.exec(record.text)?.[1];
+  return compactedCount !== undefined && createCompactionSummaryNoticeText(Number(compactedCount)) === record.text;
+}
+
 function createCompactionNoticeRecord(compaction: CompactionState): TranscriptRecord {
   return {
     role: 'compaction_notice',
-    text: `已将较早的 ${compaction.activeStartIndex} 条历史压缩为摘要`
+    text: createCompactionSummaryNoticeText(compaction.activeStartIndex)
   };
 }
 
@@ -188,22 +205,24 @@ function createCompactionNoticeRecord(compaction: CompactionState): TranscriptRe
  * 可复用的压缩编排核心：估算（非 force）→ 阈值判定（非 force）→ 边界吸附 → 摘要生成。
  * 纯函数式：仅依据入参计算并返回结果，不修改外部状态、不触发回调。
  * force=true 时跳过阈值判定直接压缩，但仍执行边界吸附以保护工具配对。
+ * records 可为完整快照或驻留后缀；baseRecordIndex 只参与局部下标与完整边界转换。
  * 只要发起过摘要 provider 请求，usage 与 usageInputTokens 就随结果返回（含摘要为空未被采纳的路径）。
  */
 async function runCompaction(options: {
-  records: TranscriptRecord[];
-  compaction?: CompactionState;
-  anchor?: TokenUsageAnchor | null;
-  contextWindow?: number;
-  thresholdRatio?: number;
-  force?: boolean;
-  agent: ProviderAgent;
+  records: TranscriptRecord[]; // 连续驻留记录或尚未裁剪的完整快照；本函数不修改它。
+  baseRecordIndex?: number; // 驻留数组第一条的完整历史位置，完整快照缺省为 0。
+  compaction?: CompactionState; // 旧摘要及完整历史中的活跃起点。
+  anchor?: TokenUsageAnchor | null; // 当前活跃区间的 usage 真值锚点。
+  contextWindow?: number; // 非强制压缩时采用的模型窗口。
+  thresholdRatio?: number; // 自动压缩触发比例，不改变图片预算。
+  force?: boolean; // 只跳过阈值检查，不跳过工具配对保护。
+  agent: ProviderAgent; // 执行原生摘要请求的 provider。
   promptPrefix: TranscriptRecord[]; // 与同一会话普通请求同源构造的请求前导记录;摘要请求的 token 0 前缀。
   sessionId?: string; // 会话稳定身份;透传给摘要请求以复用同一缓存路由。
-  abortSignal?: AbortSignal;
+  abortSignal?: AbortSignal; // 采纳之前取消时不返回新摘要。
 }): Promise<RunCompactionResult> {
-  const {records, compaction, anchor, contextWindow, thresholdRatio = COMPACTION_THRESHOLD_RATIO, force = false, agent, promptPrefix, sessionId, abortSignal} = options;
-  const activeStartIndex = compaction ? compaction.activeStartIndex : 0;
+  const {records, baseRecordIndex = 0, compaction, anchor, contextWindow, thresholdRatio = COMPACTION_THRESHOLD_RATIO, force = false, agent, promptPrefix, sessionId, abortSignal} = options;
+  const activeStartIndex = Math.max(0, (compaction?.activeStartIndex ?? baseRecordIndex) - baseRecordIndex);
 
   throwIfAborted(abortSignal);
 
@@ -215,7 +234,8 @@ async function runCompaction(options: {
       anchor
     });
 
-    if (typeof contextWindow !== 'number' || !exceedsCompactionThreshold(estimated, contextWindow, thresholdRatio)) {
+    if ((typeof contextWindow !== 'number' || !exceedsCompactionThreshold(estimated, contextWindow, thresholdRatio)) &&
+        getConversationImageBytes(activeRecords) <= DEFAULT_CONVERSATION_IMAGE_BYTES) {
       return {didCompact: false, reason: 'below_threshold'};
     }
   }
@@ -252,7 +272,7 @@ async function runCompaction(options: {
     reason: 'compacted',
     compaction: {
       summaryText: summary.summaryText,
-      activeStartIndex: boundary,
+      activeStartIndex: baseRecordIndex + boundary,
       createdAt: new Date().toISOString()
     },
     ...summaryUsage
@@ -262,11 +282,13 @@ async function runCompaction(options: {
 export {
   computeCompactionBoundary,
   createCompactionNoticeRecord,
+  createCompactionSummaryNoticeText,
   estimateContextTokens,
   estimateRecordsTokens,
   estimateTextTokens,
   exceedsCompactionThreshold,
   generateCompactionSummary,
+  isCompactionSummaryNotice,
   runCompaction
 };
 

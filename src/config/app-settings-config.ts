@@ -1,7 +1,8 @@
 import type {UserConfigSource} from './user-config';
-import type {AgentInstructionFileName, FileEditToolMode} from '../types/agent';
+import type {ActiveTurnMessagePolicy, AgentInstructionFileName, FileEditToolMode} from '../types/agent';
 
 type AppSettings = {
+  activeTurnMessagePolicy: ActiveTurnMessagePolicy; // 主 assistant turn 响应期间普通消息的处理策略；缺省排队，启动时固定。
   agentInstructionFileName: AgentInstructionFileName;
   autoCompressImages: boolean; // 控制本地图片超过最终附件上限时是否自动缩小。
   checkUpdatesOnStartup: boolean; // 控制启动时是否检查 echo-tui 新版本，持久化为 updates.checkOnStartup。
@@ -31,6 +32,7 @@ type AppSettingsValidationResult =
   | {ok: false; error: string};
 
 const DEFAULT_APP_SETTINGS: Readonly<AppSettings> = {
+  activeTurnMessagePolicy: 'pending',
   agentInstructionFileName: 'AGENTS.md',
   autoCompressImages: true,
   checkUpdatesOnStartup: true,
@@ -58,6 +60,10 @@ const MAX_SLASH_SUGGESTION_MAX_VISIBLE = 20;
  * 校验面板草稿范围，确保写入后的值能被运行时无损读取。
  */
 function validateAppSettingsDraft(draft: AppSettings, modelProfileIds?: ReadonlySet<string>): AppSettingsValidationResult {
+  if (!isActiveTurnMessagePolicy(draft.activeTurnMessagePolicy)) {
+    return {ok: false, error: '响应期间发送消息必须是排队（pending）或即时引导（steer）'};
+  }
+
   if (!isAgentInstructionFileName(draft.agentInstructionFileName)) {
     return {ok: false, error: '项目指令文件必须是 AGENTS.md 或 CLAUDE.md'};
   }
@@ -140,6 +146,7 @@ function applyAppSettingsDraft(rootConfig: UserConfigSource, draft: AppSettings)
   compaction.thresholdRatio = draft.compactionThresholdRatio;
   instructions.fileName = draft.agentInstructionFileName;
   skills.catalogContextRatio = draft.skillCatalogContextRatio;
+  ui.activeTurnMessagePolicy = draft.activeTurnMessagePolicy;
   ui.defaultInteractionMode = draft.defaultInteractionMode;
   ui.mouseInteractionEnabled = draft.mouseInteractionEnabled;
   ui.slashSuggestionMaxVisible = draft.slashSuggestionMaxVisible;
@@ -177,6 +184,9 @@ function normalizeAppSettings(rootConfig: UserConfigSource): AppSettings {
   const slashMaxVisible = ui.slashSuggestionMaxVisible;
 
   return {
+    activeTurnMessagePolicy: isActiveTurnMessagePolicy(ui.activeTurnMessagePolicy)
+      ? ui.activeTurnMessagePolicy
+      : DEFAULT_APP_SETTINGS.activeTurnMessagePolicy,
     agentInstructionFileName: isAgentInstructionFileName(instructions.fileName)
       ? instructions.fileName
       : DEFAULT_APP_SETTINGS.agentInstructionFileName,
@@ -222,6 +232,10 @@ function isDefaultInteractionMode(value: unknown): value is DefaultInteractionMo
   return value === 'normal' || value === 'plan';
 }
 
+function isActiveTurnMessagePolicy(value: unknown): value is ActiveTurnMessagePolicy {
+  return value === 'pending' || value === 'steer';
+}
+
 function isToolApprovalMode(value: unknown): value is ToolApprovalMode {
   return value === 'manual' || value === 'auto';
 }
@@ -258,6 +272,7 @@ export {
 };
 
 export type {
+  ActiveTurnMessagePolicy,
   AppRenderPreferences,
   AppSettings,
   AppSettingsValidationResult,

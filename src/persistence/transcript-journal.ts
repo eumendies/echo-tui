@@ -1,9 +1,13 @@
 import type {ChangeCheckpoint} from '../types/change-history';
+import {StringDecoder} from 'node:string_decoder';
+
 import type {
   AppendRecordsJournalOperation,
   BatchJournalOperation,
   CompactionState,
   LoadedTranscriptSession,
+  PopChangeCheckpointJournalOperation,
+  PushChangeCheckpointJournalOperation,
   SetChangeHistoryJournalOperation,
   SetCompactionJournalOperation,
   SetTodoStateJournalOperation,
@@ -17,6 +21,10 @@ import type {
 } from '../types/transcript';
 
 const TRANSCRIPT_JOURNAL_SCHEMA_VERSION = 1 as const;
+const JOURNAL_READ_CHUNK_BYTES = 64 * 1024;
+
+/** 同步分块读取只需要 descriptor 级别的原语，便于测试注入计数或故障。 */
+type JournalFileReader = Pick<typeof import('node:fs'), 'closeSync' | 'openSync' | 'readSync'>;
 
 type ReplayState = {
   records: TranscriptRecord[];
@@ -27,8 +35,12 @@ type ReplayState = {
 };
 
 type TranscriptJournalReplayResult = LoadedTranscriptSession & {
-  repairedJournalText: string;
-  requiresRepair: boolean;
+  requiresRepair: boolean; // 尾部需要修复：结构无效尾行或文件缺少结尾换行。
+};
+
+type JournalReplay = {
+  feed: (line: string) => boolean; // 返回 false 表示已判定不可恢复，调用方可以停止读取剩余内容。
+  finish: (endedWithNewline: boolean) => TranscriptJournalReplayResult | null;
 };
 
 /**
@@ -54,6 +66,14 @@ function createTruncateRecordsOperation(recordCount: number): TruncateRecordsJou
 
 function createSetChangeHistoryOperation(changeHistory: ChangeCheckpoint[]): SetChangeHistoryJournalOperation {
   return {op: 'set_change_history', changeHistory};
+}
+
+function createPushChangeCheckpointOperation(checkpoint: ChangeCheckpoint): PushChangeCheckpointJournalOperation {
+  return {op: 'push_change_checkpoint', checkpoint};
+}
+
+function createPopChangeCheckpointOperation(): PopChangeCheckpointJournalOperation {
+  return {op: 'pop_change_checkpoint'};
 }
 
 function createSetCompactionOperation(compaction: CompactionState | null): SetCompactionJournalOperation {
@@ -82,84 +102,263 @@ function serializeTranscriptJournalLine(entry: TranscriptJournalStart | Transcri
 }
 
 /**
- * 顺序重放一个 session journal；只允许最后一条非空行作为中断写入残留被忽略。
+ * 增量重放核心：逐行喂入 journal 内容，由调用方决定读取方式与修复时机；核心不接触文件与 I/O。
+ * 只有"结构无效或未知操作"出现在最后一行时才按中断写入残留忽略；seq 不连续与越界截断即使出现在最后一行也不可恢复。
  */
-function replayTranscriptJournal(text: string): TranscriptJournalReplayResult | null {
-  const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
-
-  if (lines.length === 0) {
-    return null;
-  }
-
-  const start = parseTranscriptJournalStart(lines[0]);
-
-  if (!start) {
-    return null;
-  }
-
-  const state: ReplayState = {
-    records: [],
-    changeHistory: [],
-    compaction: null,
-    todoState: createEmptyTodoState(),
-    updatedAt: start.createdAt
-  };
-  let sequence = 0;
-  let recoveredTail = false;
-
-  for (let index = 1; index < lines.length; index += 1) {
-    const isLastLine = index === lines.length - 1;
-    const parsed = parseJson(lines[index]);
-
-    if (parsed === undefined) {
-      if (isLastLine) {
-        recoveredTail = true;
-        break;
-      }
-
-      return null;
-    }
-
-    const entry = isTranscriptJournalEntry(parsed) ? parsed : null;
-
-    if (!entry) {
-      if (isLastLine) {
-        recoveredTail = true;
-        break;
-      }
-
-      return null;
-    }
-
-    if (entry.seq !== sequence + 1 || !applyTranscriptJournalOperation(entry, state)) {
-      return null;
-    }
-
-    sequence = entry.seq;
-    state.updatedAt = entry.updatedAt;
-  }
+function createJournalReplay(): JournalReplay {
+  let journal: {sequence: number; start: TranscriptJournalStart; state: ReplayState} | null = null;
+  let failed = false;
+  // 结构无效行先按"可能是中断写入的尾行"处理；若之后仍有非空行，即判定为中间损坏。
+  let pendingTail = false;
 
   return {
-    session: {
-      schemaVersion: TRANSCRIPT_JOURNAL_SCHEMA_VERSION,
-      sessionId: start.sessionId,
-      cwd: start.cwd,
-      createdAt: start.createdAt,
-      updatedAt: state.updatedAt,
-      records: state.records,
-      ...(state.changeHistory.length > 0 ? {changeHistory: state.changeHistory} : {}),
-      ...(state.compaction ? {compaction: state.compaction} : {}),
-      todoState: state.todoState
+    feed(line: string): boolean {
+      if (failed) {
+        return false;
+      }
+
+      const normalized = line.trim();
+      if (normalized === '') {
+        // 空行既不参与"是否为最后一行"的判定，也不推进任何状态。
+        return true;
+      }
+
+      if (pendingTail) {
+        failed = true;
+        return false;
+      }
+
+      if (!journal) {
+        const start = parseTranscriptJournalStart(normalized);
+        if (!start) {
+          failed = true;
+          return false;
+        }
+
+        journal = {
+          sequence: 0,
+          start,
+          state: {
+            records: [],
+            changeHistory: [],
+            compaction: null,
+            todoState: createEmptyTodoState(),
+            updatedAt: start.createdAt
+          }
+        };
+        return true;
+      }
+
+      const parsed = parseJson(normalized);
+      const entry = parsed !== undefined && isTranscriptJournalEntry(parsed) ? parsed : null;
+      if (!entry) {
+        pendingTail = true;
+        return true;
+      }
+
+      if (entry.seq !== journal.sequence + 1 || !applyTranscriptJournalOperation(entry, journal.state)) {
+        failed = true;
+        return false;
+      }
+
+      journal.sequence = entry.seq;
+      journal.state.updatedAt = entry.updatedAt;
+      return true;
     },
-    reference: {
-      sessionId: start.sessionId,
-      cwd: start.cwd,
-      createdAt: start.createdAt,
-      updatedAt: state.updatedAt,
-      sequence
+    finish(endedWithNewline: boolean): TranscriptJournalReplayResult | null {
+      if (failed || !journal) {
+        return null;
+      }
+
+      const {sequence, start, state} = journal;
+
+      return {
+        session: {
+          schemaVersion: TRANSCRIPT_JOURNAL_SCHEMA_VERSION,
+          sessionId: start.sessionId,
+          cwd: start.cwd,
+          createdAt: start.createdAt,
+          updatedAt: state.updatedAt,
+          records: state.records,
+          ...(state.changeHistory.length > 0 ? {changeHistory: state.changeHistory} : {}),
+          ...(state.compaction ? {compaction: state.compaction} : {}),
+          todoState: state.todoState
+        },
+        reference: {
+          sessionId: start.sessionId,
+          cwd: start.cwd,
+          createdAt: start.createdAt,
+          updatedAt: state.updatedAt,
+          sequence
+        },
+        requiresRepair: pendingTail || !endedWithNewline
+      };
+    }
+  };
+}
+
+/**
+ * 顺序重放一个 session journal 文本；只允许最后一条非空行作为中断写入残留被忽略。
+ */
+function replayTranscriptJournal(text: string): TranscriptJournalReplayResult | null {
+  const replay = createJournalReplay();
+
+  for (const line of text.split('\n')) {
+    if (!replay.feed(line)) {
+      break;
+    }
+  }
+
+  return replay.finish(text.endsWith('\n'));
+}
+
+/**
+ * 同步分块读取一个 journal 文件并按行喂入重放核心；内存由读取缓冲与当前行决定，不构造整文件副本。
+ * 返回文件是否以换行结尾；调用方需要修复尾部时由 createRepairedJournalText 按需重建文本。
+ */
+function replayTranscriptJournalFile(filePath: string, fsImpl: JournalFileReader): TranscriptJournalReplayResult | null {
+  const replay = createJournalReplay();
+  const endedWithNewline = readJournalFileLines(filePath, fsImpl, (line) => replay.feed(line));
+
+  return replay.finish(endedWithNewline);
+}
+
+/**
+ * 异步分块读取并按行喂入重放核心，供不能阻塞事件循环的调用方使用。
+ * 用 for await 而不是事件回调：回调里抛出的同步异常不会进入 Promise 的 catch，会直接终结进程。
+ * 读取失败、不可恢复与重放异常都统一降级为 null。
+ */
+async function replayTranscriptJournalStream(stream: AsyncIterable<string | Buffer>): Promise<TranscriptJournalReplayResult | null> {
+  const replay = createJournalReplay();
+  const splitter = createJournalLineSplitter((line) => replay.feed(line));
+
+  try {
+    for await (const chunk of stream) {
+      if (!splitter.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk)) {
+        break;
+      }
+    }
+
+    return replay.finish(splitter.end());
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 逐行读取 journal 文件；`onLine` 返回 false 时立即停止读取剩余内容。
+ * 跨 chunk 的多字节字符由 StringDecoder 处理，调用方拿到的行不包含行尾换行。
+ */
+function readJournalFileLines(filePath: string, fsImpl: JournalFileReader, onLine: (line: string) => boolean): boolean {
+  const buffer = Buffer.alloc(JOURNAL_READ_CHUNK_BYTES);
+  const splitter = createJournalLineSplitter(onLine);
+  let descriptor: number | undefined;
+
+  try {
+    descriptor = fsImpl.openSync(filePath, 'r');
+
+    for (;;) {
+      const bytesRead = fsImpl.readSync(descriptor, buffer, 0, buffer.length, null);
+      if (bytesRead <= 0) {
+        break;
+      }
+
+      if (!splitter.push(bytesRead === buffer.length ? buffer : buffer.subarray(0, bytesRead))) {
+        break;
+      }
+    }
+
+    return splitter.end();
+  } finally {
+    if (descriptor !== undefined) {
+      try {
+        fsImpl.closeSync(descriptor);
+      } catch {
+        // 关闭 descriptor 失败不得改变读取结果。
+      }
+    }
+  }
+}
+
+/**
+ * 按既有规范化规则重建仅包含有效前缀的修复文本：逐行 trim、丢弃空行、保留 header 与前 `sequence` 条操作。
+ * 仅在尾部确实需要修复时调用，代价是重读一次文件；计数单位是非空逻辑行，与物理行数无关。
+ */
+function createRepairedJournalText(filePath: string, fsImpl: JournalFileReader, sequence: number): string {
+  const lines: string[] = [];
+
+  readJournalFileLines(filePath, fsImpl, (line) => {
+    const normalized = line.trim();
+    if (normalized === '') {
+      return true;
+    }
+
+    lines.push(normalized);
+    // 收齐 header 与前 sequence 条操作后立即停止读取，不再等待下一条非空行。
+    return lines.length < sequence + 1;
+  });
+
+  return `${lines.join('\n')}\n`;
+}
+
+/**
+ * 把字节流切成行：跨 chunk 的残行以片段数组暂存、成行时一次性拼接，避免超长行反复拼接字符串。
+ * `push` 返回 false 表示 `onLine` 要求停止（已判定结果或已收齐所需前缀），调用方应立即结束读取；
+ * `stopped` 之后不再产出任何行，因此 `end()` 的结尾换行判定在该路径上不再代表真实结尾。
+ */
+function createJournalLineSplitter(onLine: (line: string) => boolean): {end: () => boolean; push: (chunk: Buffer) => boolean} {
+  const decoder = new StringDecoder('utf8');
+  let pending: string[] = [];
+  let stopped = false;
+
+  return {
+    push(chunk: Buffer): boolean {
+      if (stopped) {
+        return false;
+      }
+
+      let rest = decoder.write(chunk);
+
+      let lineEnd = rest.indexOf('\n');
+      while (lineEnd >= 0) {
+        const head = rest.slice(0, lineEnd);
+        const line = pending.length === 0 ? head : `${pending.join('')}${head}`;
+        pending = [];
+        rest = rest.slice(lineEnd + 1);
+
+        if (!onLine(line)) {
+          stopped = true;
+          return false;
+        }
+
+        lineEnd = rest.indexOf('\n');
+      }
+
+      if (rest !== '') {
+        pending.push(rest);
+      }
+
+      return true;
     },
-    repairedJournalText: `${lines.slice(0, sequence + 1).join('\n')}\n`,
-    requiresRepair: recoveredTail || !text.endsWith('\n')
+    end(): boolean {
+      if (stopped) {
+        return true;
+      }
+
+      const tail = decoder.end();
+      if (tail !== '') {
+        pending.push(tail);
+      }
+
+      if (pending.length === 0) {
+        return true;
+      }
+
+      const line = pending.join('');
+      pending = [];
+      onLine(line);
+      return false;
+    }
   };
 }
 
@@ -209,6 +408,10 @@ function isTranscriptJournalOperation(value: unknown): value is TranscriptJourna
       return isNonNegativeInteger(value.recordCount);
     case 'set_change_history':
       return Array.isArray(value.changeHistory) && value.changeHistory.every(isChangeCheckpoint);
+    case 'push_change_checkpoint':
+      return isChangeCheckpoint(value.checkpoint);
+    case 'pop_change_checkpoint':
+      return true;
     case 'set_compaction':
       return value.compaction === null || isCompactionState(value.compaction);
     case 'set_todo_state':
@@ -420,7 +623,11 @@ function applyTranscriptJournalOperation(operation: TranscriptJournalOperation, 
 
   switch (operation.op) {
     case 'append_records':
-      state.records.push(...operation.records.map((record) => structuredClone(record)));
+      // 操作对象来自本次读取的解析产物，由重放核心独占，不需要再复制一份。
+      // 逐条 push：单次操作可能包含整段历史（例如 fork 的初始快照），展开参数会超出引擎的实参上限。
+      for (const record of operation.records) {
+        state.records.push(record);
+      }
       return true;
     case 'truncate_records':
       if (operation.recordCount > state.records.length) {
@@ -430,13 +637,24 @@ function applyTranscriptJournalOperation(operation: TranscriptJournalOperation, 
       state.records.length = operation.recordCount;
       return true;
     case 'set_change_history':
-      state.changeHistory = structuredClone(operation.changeHistory);
+      state.changeHistory = operation.changeHistory;
+      return true;
+    case 'push_change_checkpoint':
+      state.changeHistory.push(operation.checkpoint);
+      return true;
+    case 'pop_change_checkpoint':
+      // 栈为空说明操作序列与 change history 起点不一致，按不可恢复处理而不是静默忽略。
+      if (state.changeHistory.length === 0) {
+        return false;
+      }
+
+      state.changeHistory.pop();
       return true;
     case 'set_compaction':
-      state.compaction = operation.compaction ? {...operation.compaction} : null;
+      state.compaction = operation.compaction;
       return true;
     case 'set_todo_state':
-      state.todoState = structuredClone(operation.todoState);
+      state.todoState = operation.todoState;
       return true;
   }
 }
@@ -449,6 +667,9 @@ export {
   TRANSCRIPT_JOURNAL_SCHEMA_VERSION,
   createAppendRecordsOperation,
   createBatchOperation,
+  createPopChangeCheckpointOperation,
+  createPushChangeCheckpointOperation,
+  createRepairedJournalText,
   createSetChangeHistoryOperation,
   createSetCompactionOperation,
   createSetTodoStateOperation,
@@ -457,5 +678,7 @@ export {
   createTruncateRecordsOperation,
   parseTranscriptJournalStart,
   replayTranscriptJournal,
+  replayTranscriptJournalFile,
+  replayTranscriptJournalStream,
   serializeTranscriptJournalLine
 };

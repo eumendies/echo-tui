@@ -12,6 +12,14 @@ export type AgentExecutionMode =
 export type AgentToolPolicy = 'default' | 'readonly';
 export type AgentConversationKind = 'primary' | 'btw' | 'subagent';
 
+export type ActiveTurnMessagePolicy = 'pending' | 'steer';
+
+export type AgentSteeringInputPort = {
+  hasReady(): boolean; // 是否存在属于当前运行且已准备成功的引导消息。
+  claim(): Extract<TranscriptRecord, {role: 'user'}> | null; // 在安全边界原子消费一条消息，调用方同步提交到两份历史。
+  subscribe(listener: () => void): () => void; // 监听就绪输入，返回取消订阅入口；通知本身不消费消息。
+};
+
 export type SubagentRunMetadata = {
   agentName: string; // 当前内置或自定义子 Agent 名称，用于 prompt、审批和可见投影。
   depth: number; // 当前嵌套深度；主 run 为 0，第一版子 Agent 为 1。
@@ -100,6 +108,8 @@ export type ToolApprovalDecision =
   | {kind: 'provide_feedback'; message: string};
 
 export type AgentCallbacks = {
+  onUserMessage?: (record: Extract<TranscriptRecord, {role: 'user'}>) => void; // 同轮引导的唯一 user record 持久化入口，不启动新的 turn。
+  onRequestPreempted?: () => void; // 请求抢占时冻结正文与推理预览，等待收尾后唯一提交，不释放响应锁。
   changeRecorder?: ChangeFileRecorder;
   onModelResolved?: (model: ResolvedAgentModel) => void;
   onThinking?: () => void;
@@ -117,18 +127,21 @@ export type AgentCallbacks = {
   onSubagentUserQuestionRequest?: (metadata: SubagentRunMetadata, call: ToolCall, request: AskUserQuestionsRequest) => Promise<ToolExecutionResult> | ToolExecutionResult; // 把受 run identity 保护的子 Agent 问题桥接到共享交互 surface。
   onTodoStateChange?: (todoState: TodoState) => void;
   onComplete?: (finalText: string) => void;
-  onCompacted?: (next: CompactionState) => void;
+  onCompacted?: (next: CompactionState) => void; // 同步持久化压缩及 notice；成功返回后 runtime 才采纳边界并释放前缀。
   onContextUsage?: (usage: ContextUsage) => void;
 };
 
 export type AgentSessionInput = {
-  records: TranscriptRecord[]; // 当前回合开始时提供给 agent 的完整 transcript 快照。
+  steeringInput?: AgentSteeringInputPort; // 仅交互式主运行使用的有界引导输入端口，子运行与 headless 不继承。
+  records: TranscriptRecord[]; // 当前回合的连续驻留后缀；缺省不修改调用方数组。
+  baseRecordIndex?: number; // records 首条在完整历史中的位置；旧版完整快照缺省为 0，不写入 journal。
+  recordsOwnership?: 'transfer'; // 仅转移独立 records 数组，允许原地追加及裁剪；其余 session 元数据不是运行输出。
   compaction?: CompactionState; // 已持久化的上下文压缩状态，缺省时从未压缩状态开始。
   todoState?: TodoState; // 当前会话的待办状态，供 agent 在工具调用间延续。
   sessionJournalPath?: string; // 当前 session 的 transcript journal 文件绝对路径，供压缩后模型按需回读原始记录；headless 无 session 时缺省。
   sessionId?: string; // 当前会话的稳定身份；sessionHeader 类 provider 用它注入会话亲和 header，fork/resume/clear 后自动换新。
   abortSignal?: AbortSignal; // 取消当前 agent 运行及其可中断下游操作的信号。
-  interactionMode?: InteractionMode; // 本回合的 normal、plan 或 shell 等交互模式。
+  interactionMode?: InteractionMode; // 首次提交的执行模式；主运行可在引导应用边界采用后续提交的模式。
   executionMode?: AgentExecutionMode; // 本回合的 interactive 或 headless 执行与审批策略。
   modelProfileId?: string; // 本回合已解析并验证的最终模型 profile，不是未验证的 skill override。
   reasoningEffortOverride?: ReasoningEffort; // 仅本回合生效的推理强度覆盖，包含显式 none。
@@ -143,6 +156,7 @@ export type AgentSessionInput = {
 export type AgentUserConfigSnapshot = {
   revision: number; // 本回合使用的用户配置 revision，仅用于一致性与诊断。
   getAppSettings(): {
+    activeTurnMessagePolicy?: ActiveTurnMessagePolicy; // 主 turn 启动时固定的消息策略；旧 snapshot 缺省仍按排队处理。
     agentInstructionFileName: AgentInstructionFileName; // 本回合加载项目指令时使用的文件名。
     compactionThresholdRatio: number; // 本回合自动压缩触发比例。
     skillCatalogContextRatio: number; // 本回合 skill catalog 的上下文预算比例。

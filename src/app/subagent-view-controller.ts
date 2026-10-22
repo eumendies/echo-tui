@@ -21,7 +21,7 @@ type SubagentRunActivity = {
 };
 
 type SubagentViewDependencies = {
-  getRecords: () => TranscriptRecord[]; // 主 transcript 只读快照，窗口按 runId 过滤投影。
+  getRecords: () => TranscriptRecord[] | null; // 仅打开窗口时读取完整主历史；读取失败返回 null，不打开窗口。
   getActivity: (runId: string) => SubagentRunActivity | null; // 活跃 run 的瞬时活动；已结束或未知 run 返回 null。
   hasActiveRuns: () => boolean; // 活跃 run 注册表探测；供计时重绘判断免扫 transcript。
   repaint: () => void; // 进入、切换与 body 变化时的 destructive 全屏重绘。
@@ -35,6 +35,7 @@ type SubagentViewDependencies = {
 class SubagentViewController {
   private readonly dependencies: SubagentViewDependencies;
   private activeRunId: string | null = null;
+  private readonly recordsByRun = new Map<string, SubagentTranscriptRecord[]>(); // 仅窗口打开期间持有各 run 的稳定记录。
 
   constructor(dependencies: SubagentViewDependencies) {
     this.dependencies = dependencies;
@@ -50,26 +51,31 @@ class SubagentViewController {
     return this.activeRunId;
   }
 
-  /** Ctrl+O 入口：未打开时优先定位最近一个仍在活动的 run，无活跃 run 时回看最近一次委派；已打开时关闭。 */
+  /** Ctrl+O 入口：打开时只读取一次完整历史并缓存子 Agent 记录；优先定位最近活动 run，关闭时释放缓存并重绘。 */
   toggle(): void {
     if (this.activeRunId !== null) {
       this.closeAndRepaint();
       return;
     }
-    const byRun = this.groupRunRecords();
-    const runIds = Array.from(byRun.keys());
+    const records = this.dependencies.getRecords();
+    // 完整历史读不到时保持关闭：没有可用 body 的窗口比静默失败更糟。
+    if (!records) return;
+    this.ingestRecords(records);
+    const runIds = Array.from(this.recordsByRun.keys());
     const activeRunIds = runIds.filter((runId) => this.dependencies.getActivity(runId) !== null);
     const targetRunIds = activeRunIds.length > 0 ? activeRunIds : runIds;
     if (targetRunIds.length === 0) {
+      this.close();
       return;
     }
     this.activeRunId = targetRunIds[targetRunIds.length - 1];
     this.dependencies.repaint();
   }
 
-  /** 静默关闭窗口；exit 收尾与 /btw 打开前的互斥清理由调用方统一重绘。 */
+  /** 静默关闭并释放所有历史缓存；exit 收尾与 /btw 打开前的互斥清理由调用方统一重绘。 */
   close(): void {
     this.activeRunId = null;
+    this.recordsByRun.clear();
   }
 
   /** 窗口内输入：Esc/Ctrl+O 关闭，↑/↓ 循环切换 run；EXIT 放行退出，其余输入只读吞掉。 */
@@ -91,34 +97,35 @@ class SubagentViewController {
     return true;
   }
 
-  /** 判断一批新记录是否命中当前打开的 run；命中时主循环用 destructive 重绘刷新 body。 */
-  containsRunRecords(records: TranscriptRecord[]): boolean {
-    return this.activeRunId !== null && records.some((record) => record.role === 'subagent' && record.runId === this.activeRunId);
+  /** 打开期间增量摄取主 transcript 的追加批次，更新所有 run；返回当前 body 是否变化。调用方不得传入 BTW 批次。 */
+  appendRecords(records: TranscriptRecord[]): boolean {
+    return this.activeRunId !== null && this.ingestRecords(records);
   }
 
-  /** 当前 run 的全部稳定记录，供 destructive 重绘投影窗口 body。 */
+  /** 从窗口缓存读取当前 run 的稳定记录，供 destructive 重绘；不回读主历史。 */
   getViewRecords(): SubagentTranscriptRecord[] {
     if (this.activeRunId === null) {
       return [];
     }
-    return this.groupRunRecords().get(this.activeRunId) ?? [];
+    return this.recordsByRun.get(this.activeRunId) ?? [];
   }
 
-  /** 单遍扫描把 subagent 稳定记录按 runId 分组；Map 的插入序即 start 顺序，避免按 run 重复全量过滤。 */
-  private groupRunRecords(): Map<string, SubagentTranscriptRecord[]> {
-    const byRun = new Map<string, SubagentTranscriptRecord[]>();
-    for (const record of this.dependencies.getRecords()) {
+  /** 单遍摄取已按 append-only 顺序提交的记录，只缓存子 Agent；Map 插入序保留 run 顺序，不做批次去重。 */
+  private ingestRecords(records: TranscriptRecord[]): boolean {
+    let currentBodyChanged = false;
+    for (const record of records) {
       if (record.role !== 'subagent') {
         continue;
       }
-      const runRecords = byRun.get(record.runId);
+      const runRecords = this.recordsByRun.get(record.runId);
       if (runRecords) {
         runRecords.push(record);
       } else {
-        byRun.set(record.runId, [record]);
+        this.recordsByRun.set(record.runId, [record]);
       }
+      if (record.runId === this.activeRunId) currentBodyChanged = true;
     }
-    return byRun;
+    return currentBodyChanged;
   }
 
   /** 汇总全部 run 的索引条目；顺序 = start 顺序，状态取瞬时活动或稳定终态。 */
@@ -156,12 +163,12 @@ class SubagentViewController {
     return this.activeRunId !== null && this.dependencies.hasActiveRuns();
   }
 
-  /** 用窗口状态行与 draft 尾部覆盖基础 RenderState；其余主题与终端约束继续复用。 */
+  /** 从窗口缓存派生索引与状态行，再读取活动 draft；footer 与 resize 重绘均不读取完整历史。 */
   createRenderState(base: RenderState): RenderState {
     if (this.activeRunId === null) {
       return base;
     }
-    const byRun = this.groupRunRecords();
+    const byRun = this.recordsByRun;
     const runIds = Array.from(byRun.keys());
     const position = runIds.indexOf(this.activeRunId) + 1;
     const activity = this.dependencies.getActivity(this.activeRunId);
@@ -200,17 +207,18 @@ class SubagentViewController {
     };
   }
 
+  /** 释放历史窗口后请求 destructive 重绘，恢复主会话当前驻留投影。 */
   private closeAndRepaint(): void {
-    this.activeRunId = null;
+    this.close();
     this.dependencies.repaint();
   }
 
-  /** ↑/↓ 在当前循环范围内切换并重绘；范围内只有一个 run 时保持原位。 */
+  /** ↑/↓ 在缓存中的全部 run 之间循环切换并重绘；单 run 保持原位，不回读历史。 */
   private switchRun(direction: 1 | -1): void {
     if (this.activeRunId === null) {
       return;
     }
-    const runIds = Array.from(this.groupRunRecords().keys());
+    const runIds = Array.from(this.recordsByRun.keys());
     if (runIds.length <= 1) {
       return;
     }

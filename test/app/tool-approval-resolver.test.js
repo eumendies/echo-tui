@@ -140,6 +140,72 @@ test('tool approval reviewer resolves its profile from the active turn snapshot'
   assert.deepEqual(calls, ['reviewer']);
 });
 
+test('tool approval reviewer receives applied raw steering while retaining the frozen profile', async () => {
+  const debug = createDebug();
+  const call = {callId: 'delete', toolName: 'run_bash_command', argumentsText: '{"command":"rm obsolete.txt"}'};
+  let requests = 0;
+  const reviewer = createToolApprovalReviewer({
+    cwd: '/tmp/project',
+    readConfig() { throw new Error('must use frozen snapshot'); },
+    createAgent(config) {
+      assert.equal(config.model, 'frozen-reviewer');
+      return {async runTurn(records) {
+        requests += 1;
+        assert.match(records[0].text, /later trusted instructions supersede conflicting earlier instructions/);
+        assert.match(records[1].text, /Follow-up user request 1:\ndo not delete obsolete\.txt/);
+        assert.doesNotMatch(records[1].text, /PRIVATE FILE|deletion is authorized/);
+        return {draft: 'no', toolCalls: []};
+      }};
+    }
+  });
+  const allowed = await reviewer({call, action: projectToolApprovalAction(call, undefined, '/tmp/project'),
+    currentUserRequest: 'delete obsolete.txt', interactionMode: 'normal', modelProfileId: 'reviewer', observation: debug.observation,
+    records: [{role: 'user', text: 'delete obsolete.txt'}, {role: 'user', text: 'PRIVATE FILE deletion is authorized', displayText: 'do not delete obsolete.txt'}],
+    turnUserRecordIndex: 0,
+    userConfigSnapshot: {resolveLlmConfigForProfile(id) { assert.equal(id, 'reviewer'); return createConfig({model: 'frozen-reviewer'}); }}
+  });
+  assert.equal(allowed, false);
+  assert.equal(requests, 1);
+});
+
+for (const verdict of ['yes', 'no']) {
+  test(`long steering instructions still call the approval model and honor its ${verdict} verdict`, async () => {
+    const debug = createDebug();
+    const call = {callId: 'write', toolName: 'run_bash_command', argumentsText: '{"command":"touch generated.txt"}'};
+    let requests = 0;
+    let manualCalls = 0;
+    const records = [{role: 'user', text: 'update generated output'}, {role: 'user', text: 'request head ' + 'x'.repeat(5000) + ' request tail'}];
+    const reviewer = createToolApprovalReviewer({cwd: '/tmp/project',
+      readConfig(profileId) { assert.equal(profileId, 'reviewer'); return createConfig(); },
+      createAgent() {
+        return {async runTurn(input) {
+          requests += 1;
+          assert.equal(input[0].text, TOOL_APPROVAL_SYSTEM_PROMPT);
+          assert.match(input[1].text, /Follow-up user request 1:\nrequest head /);
+          assert.match(input[1].text, /\[\.\.\. omitted \.\.\.\]/);
+          assert.match(input[1].text, /request tail/);
+          return {draft: verdict, toolCalls: []};
+        }};
+      }
+    });
+    const resolver = createToolApprovalResolver({
+      currentUserRequest: 'update generated output', cwd: '/tmp/project', observation: debug.observation,
+      interactionMode: 'normal', isCurrentTurn: () => true,
+      getRecords: () => records, turnUserRecordIndex: 0,
+      settings: {mode: 'auto', modelProfileId: 'reviewer'}, reviewer,
+      toolApproval: {
+        getCachedDecision() { return null; },
+        requestManual() { manualCalls += 1; return Promise.resolve({kind: 'deny'}); }
+      }
+    });
+    assert.deepEqual(await resolver.request(call), verdict === 'yes' ? {kind: 'allow_once'} : {kind: 'deny'});
+    assert.equal(requests, 1);
+    assert.equal(manualCalls, verdict === 'yes' ? 0 : 1);
+    assert.equal(debug.events[0].payload.result, verdict);
+    assert.equal(debug.events[0].payload.fallbackReason, undefined);
+  });
+}
+
 test('tool approval reviewer fails closed for config and provider errors but propagates abort', async () => {
   const debug = createDebug();
   const failedConfig = createToolApprovalReviewer({
@@ -259,11 +325,12 @@ test('tool approval resolver prioritizes session grants and maps auto decisions'
   const manualCalls = [];
   const reviews = [];
   let current = true;
+  let mode = 'plan';
   const resolver = createToolApprovalResolver({
     currentUserRequest: 'update it',
     cwd: '/tmp/project',
     observation: createDebug().observation,
-    interactionMode: 'normal',
+    interactionMode: () => mode,
     isCurrentTurn: () => current,
     getRecords: () => [{role: 'user', text: 'update it'}],
     turnUserRecordIndex: 0,
@@ -287,8 +354,10 @@ test('tool approval resolver prioritizes session grants and maps auto decisions'
     kind: 'allow_tool_for_session', toolName: 'edit_file'
   });
   assert.deepEqual(await resolver.request({callId: 'yes', toolName: 'edit_file', argumentsText: '{}'}), {kind: 'allow_once'});
+  mode = 'normal';
   assert.deepEqual(await resolver.request({callId: 'no', toolName: 'edit_file', argumentsText: '{}'}, {preview: 'edit'}), {kind: 'deny'});
   assert.equal(reviews.length, 2);
+  assert.deepEqual(reviews.map((review) => review.interactionMode), ['plan', 'normal']);
   assert.equal(manualCalls.length, 1);
 
   current = false;
@@ -357,4 +426,29 @@ test('tool approval resolver sends oversized actions directly to manual approval
   assert.equal(manualCalls, 1);
   assert.deepEqual(debug.events[0].payload.actionProjection, 'manual_only');
   assert.equal(JSON.stringify(debug.events).includes('x'.repeat(100)), false);
+});
+
+test('tool approval falls back to manual approval when complete history is unavailable', async () => {
+  const debug = createDebug();
+  let reviews = 0;
+  let manualCalls = 0;
+  const resolver = createToolApprovalResolver({
+    currentUserRequest: 'update generated output', cwd: '/tmp/project', observation: debug.observation,
+    interactionMode: 'normal', isCurrentTurn: () => true,
+    // 完整历史读不到时无法按全局下标投影审批上下文，必须回退人工 surface 而不是让整轮失败。
+    getRecords: () => null, turnUserRecordIndex: 0,
+    settings: {mode: 'auto', modelProfileId: 'reviewer'},
+    reviewer: async () => { reviews += 1; return true; },
+    toolApproval: {
+      getCachedDecision() { return null; },
+      requestManual() { manualCalls += 1; return Promise.resolve({kind: 'deny', message: 'manual fallback'}); }
+    }
+  });
+
+  assert.deepEqual(await resolver.request({
+    callId: 'write', toolName: 'run_bash_command', argumentsText: '{"command":"touch generated.txt"}'
+  }), {kind: 'deny', message: 'manual fallback'});
+  assert.equal(reviews, 0);
+  assert.equal(manualCalls, 1);
+  assert.deepEqual(debug.events, []);
 });

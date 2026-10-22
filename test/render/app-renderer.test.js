@@ -202,6 +202,44 @@ test('createAppRenderer computes streaming history and final record suffix inter
   assert.equal(plain.includes('◆ beta'), false);
 });
 
+test('createAppRenderer preserves an already displayed stable prefix across frozen steering preview and ordinary assistant finalization', () => {
+  const output = {writes: [], write(chunk) { this.writes.push(String(chunk)); }};
+  const renderer = createAppRenderer(output);
+  const state = {
+    streamingOwner: 'main',
+    composer: createComposer(),
+    commandSurface: null,
+    slashSuggestions: null,
+    pending: {kind: 'streaming', text: 'stable prefix\n\nunfinished tail'},
+    working: {elapsedMs: 10},
+    renderPreferences: {showReasoningSummary: true, slashSuggestionMaxVisible: 8},
+    statusLine: {...DEFAULT_STATUS_LINE, mode: 'streaming'},
+    rows: 24,
+    width: 80
+  };
+
+  renderer.render(state);
+  assert.match(stripAnsi(output.writes.join('')), /◆ stable prefix/);
+  const frozen = {...state};
+  const beforePreemption = output.writes.length;
+  renderer.render(frozen);
+  renderer.render({...frozen, pendingMessage: {preview: 'steer', status: 'ready'}});
+  assert.doesNotMatch(stripAnsi(output.writes.slice(beforePreemption).join('')), /stable prefix/);
+  const beforeFinalization = output.writes.length;
+  renderer.render({...frozen, pending: null}, {role: 'assistant', text: 'stable prefix\n\nunfinished tail'});
+  const finalized = stripAnsi(output.writes.slice(beforeFinalization).join(''));
+  assert.doesNotMatch(finalized, /stable prefix/);
+  assert.match(finalized, /unfinished tail/);
+  assert.equal((stripAnsi(output.writes.join('')).match(/◆ stable prefix/g) || []).length, 1);
+
+  renderer.renderRecords({...frozen, records: [{role: 'user', text: 'steer'}]});
+  renderer.render({...state, pending: {kind: 'streaming', text: 'next prefix\n\nnext tail'}});
+  const beforeNextFinalization = output.writes.length;
+  renderer.render({...state, pending: null, working: null}, {role: 'assistant', text: 'next prefix\n\nnext tail'});
+  assert.doesNotMatch(stripAnsi(output.writes.slice(beforeNextFinalization).join('')), /next prefix/);
+  assert.equal((stripAnsi(output.writes.join('')).match(/◆ next prefix/g) || []).length, 1);
+});
+
 test('createAppRenderer flushes the reasoning tail before assistant history and filters hidden reasoning', () => {
   const shownChunks = [];
   const shown = createAppRenderer({write(chunk) { shownChunks.push(String(chunk)); }});

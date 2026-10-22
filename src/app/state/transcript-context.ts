@@ -1,6 +1,8 @@
 import {
   createAppendRecordsOperation,
   createBatchOperation,
+  createPopChangeCheckpointOperation,
+  createPushChangeCheckpointOperation,
   createSetChangeHistoryOperation,
   createSetCompactionOperation,
   createSetTodoStateOperation,
@@ -8,8 +10,9 @@ import {
 } from '../../persistence/transcript-journal';
 import {createCompactionNoticeRecord} from '../../agent/context/context-compaction';
 import {cloneChangeHistory} from './change-history-context';
+import {createSessionTitle} from '../../persistence/transcript-store';
 
-import type {ChangeCheckpoint} from '../../types/change-history';
+import type {ChangeCheckpoint, ChangeHistoryDelta} from '../../types/change-history';
 import type {
   CompactionState,
   ConversationReferenceSource,
@@ -20,7 +23,6 @@ import type {
   TranscriptRecord,
   TranscriptSessionSummary,
   TranscriptSessionPreview,
-  TranscriptSession,
   TranscriptSessionJournalReference,
   TranscriptSessionDeleteResult,
   TranscriptStore
@@ -32,7 +34,10 @@ import type {
 class TranscriptContext {
   transcriptStore: TranscriptStore;
   getCurrentCwd: () => string;
-  records: TranscriptRecord[];
+  private records: TranscriptRecord[]; // 完整有效历史的连续驻留后缀；完整历史只在显式历史操作中按需回读。
+  baseRecordIndex = 0;
+  private sessionTitle = '未命名对话';
+  private firstUserRecordIndex: number | null = null; // 普通 Undo 按此完整位置判断缓存标题是否仍有效，无需回读旧原文。
   currentSession: TranscriptSessionJournalReference | null;
   currentSessionId: string | null;
   private sessionPreviewCache = new Map<string, TranscriptSessionPreview>();
@@ -40,8 +45,7 @@ class TranscriptContext {
   changeHistory: ChangeCheckpoint[];
   compaction: CompactionState | null;
   todoState: TodoState;
-  pendingChangeHistory: ChangeCheckpoint[] | undefined;
-  pendingCompaction: CompactionState | null | undefined;
+  pendingChangeHistoryDeltas: ChangeHistoryDelta[]; // 尚未写出的增量，按应用顺序排列；写入失败时保留到下一次成功提交。
   pendingTodoState: TodoState | undefined;
 
   constructor(transcriptStore: TranscriptStore, getCurrentCwd: () => string) {
@@ -53,16 +57,37 @@ class TranscriptContext {
     this.changeHistory = [];
     this.compaction = null;
     this.todoState = createEmptyTodoState();
-    this.pendingChangeHistory = undefined;
-    this.pendingCompaction = undefined;
+    this.pendingChangeHistoryDeltas = [];
     this.pendingTodoState = undefined;
   }
 
   /**
-   * 返回当前 transcript records 引用，供 app 渲染层读取。
+   * 返回当前驻留后缀引用，供 app 渲染层与 agent 输入快照读取；完整历史用 getCompleteRecords。
    */
-  getRecords(): TranscriptRecord[] {
+  getResidentRecords(): TranscriptRecord[] {
     return this.records;
+  }
+
+  /** 返回完整有效历史的记录数；驻留数组只保存压缩边界之后的连续后缀。 */
+  getRecordCount(): number {
+    return this.baseRecordIndex + this.records.length;
+  }
+
+  /**
+   * 显式历史操作按需回读完整 journal；结果由调用方临时持有，不重新装入驻留区。
+   * 读不到、序列不一致或读取本身失败时返回 null，由调用方决定降级方式，且都不改写 journal。
+   */
+  getCompleteRecords(): TranscriptRecord[] | null {
+    if (this.baseRecordIndex === 0) return this.records;
+    if (!this.currentSessionId) return null;
+
+    try {
+      const loaded = this.transcriptStore.loadSessionReadOnly(this.getCurrentCwd(), this.currentSessionId);
+      return loaded && loaded.reference.sequence === this.currentSession?.sequence ? loaded.session.records : null;
+    } catch {
+      // 展示与审批路径不应因历史读取失败崩溃；失败语义统一由 null 表达。
+      return null;
+    }
   }
 
   /**
@@ -150,7 +175,8 @@ class TranscriptContext {
     }
 
     return {
-      session: structuredClone(loaded.session),
+      // 调用方只把 session 投影成有界引用素材、不保留 session 本身，因此直接移交读取结果。
+      session: loaded.session,
       sourcePath: this.transcriptStore.getSessionFilePath(this.getCurrentCwd(), candidate.sessionId),
       title: candidate.title
     };
@@ -167,14 +193,18 @@ class TranscriptContext {
    * 将当前稳定会话保存为自包含快照，并在新 journal 原子创建成功后切换持久化指针。
    */
   forkSession(): TranscriptForkResult {
-    if (!this.currentSession || this.records.length === 0) {
+    if (!this.currentSession || this.getRecordCount() === 0) {
       return {ok: false, reason: 'empty'};
     }
 
     this.persistCurrentSession();
     const sourceSessionId = this.currentSession.sessionId;
+    const completeRecords = this.getCompleteRecords();
+    if (!completeRecords) {
+      return {ok: false, reason: 'failed', error: '无法读取当前会话的完整历史'};
+    }
     const operation = createBatchOperation([
-      createAppendRecordsOperation(structuredClone(this.records)),
+      createAppendRecordsOperation(completeRecords),
       createSetChangeHistoryOperation(cloneChangeHistory(this.changeHistory)),
       createSetCompactionOperation(this.compaction ? {...this.compaction} : null),
       createSetTodoStateOperation(cloneTodoState(this.todoState))
@@ -184,7 +214,7 @@ class TranscriptContext {
     this.currentSession = nextSession;
     this.currentSessionId = nextSession.sessionId;
     this.clearPendingState();
-    this.updateSessionIndex(nextSession, this.records);
+    this.updateSessionIndex(nextSession, this.getRecordCount(), this.sessionTitle);
 
     return {
       ok: true,
@@ -194,18 +224,22 @@ class TranscriptContext {
   }
 
   /**
-   * 从持久化存储加载 session，并用其 transcript records 替换当前可见 transcript。
+   * 从持久化历史恢复状态，只安装活跃后缀并返回是否成功，不额外复制会话作为返回值。
    */
-  loadSession(sessionId: string): TranscriptSession | null {
+  loadSession(sessionId: string): boolean {
     const loaded = this.transcriptStore.loadSession(this.getCurrentCwd(), sessionId);
 
     if (!loaded) {
-      return null;
+      return false;
     }
 
     const session = loaded.session;
-    this.records.length = 0;
-    this.records.push(...structuredClone(session.records || []));
+    this.baseRecordIndex = session.compaction?.activeStartIndex ?? 0;
+    // 读取结果由本次恢复独占，直接安装活跃后缀即可，不需要再复制一份等量记录。
+    this.records = session.records.slice(this.baseRecordIndex);
+    this.sessionTitle = createSessionTitle(session.records);
+    const firstUserIndex = session.records.findIndex((record) => record.role === 'user');
+    this.firstUserRecordIndex = firstUserIndex < 0 ? null : firstUserIndex;
     this.currentSession = loaded.reference;
     this.currentSessionId = loaded.reference.sessionId;
     this.changeHistory = cloneChangeHistory(session.changeHistory);
@@ -213,7 +247,7 @@ class TranscriptContext {
     this.todoState = cloneTodoState(session.todoState);
     this.clearPendingState();
 
-    return structuredClone(session);
+    return true;
   }
 
   /**
@@ -237,6 +271,9 @@ class TranscriptContext {
    */
   clearRecords(): void {
     this.records.length = 0;
+    this.baseRecordIndex = 0;
+    this.sessionTitle = '未命名对话';
+    this.firstUserRecordIndex = null;
     this.currentSession = null;
     this.currentSessionId = null;
     this.changeHistory = [];
@@ -246,45 +283,78 @@ class TranscriptContext {
   }
 
   /**
-   * 把当前 transcript 回退到指定边界，并以单个 batch 同步保存 compaction 与 change history。
+   * 按完整历史位置回退；目标后缀仍驻留时直接截取，跨边界时只使用调用方在恢复文件前预读的完整历史。
+   * 跨边界却缺少完整历史时抛错，不隐式回读，也不把与起点不一致的后缀安装进状态。
+   * change history 固定按"弹出栈顶一个 checkpoint"回退：唯一调用方 /undo 每次只回退一轮。
    */
-  restoreToBoundary(recordCount: number, compaction: CompactionState | undefined, changeHistory = this.changeHistory): void {
-    const nextCount = Math.min(Math.max(0, Math.floor(recordCount)), this.records.length);
+  restoreToBoundary(recordCount: number, compaction: CompactionState | undefined, completeRecords?: TranscriptRecord[]): void {
+    const nextCount = Math.min(Math.max(0, Math.floor(recordCount)), this.getRecordCount());
     const nextCompaction = compaction ? {...compaction} : null;
-    const nextChangeHistory = cloneChangeHistory(changeHistory);
-    const operation = createBatchOperation([
+    const nextBase = nextCompaction?.activeStartIndex ?? 0;
+    const needsHistory = nextBase < this.baseRecordIndex;
+    let sourceRecords: TranscriptRecord[];
+    let sourceBase: number;
+
+    if (needsHistory) {
+      if (!completeRecords) {
+        throw new Error('回退到驻留边界之前需要调用方预读的完整历史');
+      }
+      sourceRecords = completeRecords;
+      sourceBase = 0;
+    } else {
+      sourceRecords = this.records;
+      sourceBase = this.baseRecordIndex;
+    }
+
+    const nextRecords = sourceRecords.slice(nextBase - sourceBase, nextCount - sourceBase);
+    // 普通截尾不需要旧原文；用首条用户的完整位置判断缓存标题是否仍然有效。
+    const firstUserIndex = needsHistory ? sourceRecords.findIndex((record) => record.role === 'user') : this.firstUserRecordIndex;
+    const nextFirstUserIndex = firstUserIndex !== null && firstUserIndex >= 0 && firstUserIndex < nextCount ? firstUserIndex : null;
+    const nextTitle = nextFirstUserIndex === null ? '未命名对话' : needsHistory ? createSessionTitle(sourceRecords) : this.sessionTitle;
+    // 栈为空时"弹出栈顶"没有可回退的 checkpoint：内存上是空操作，写进 journal 却会让重放判定不可恢复。
+    const popsChangeCheckpoint = this.changeHistory.length > 0;
+    const nextOperations: TranscriptJournalSubOperation[] = [
       createTruncateRecordsOperation(nextCount),
-      createSetCompactionOperation(nextCompaction),
-      createSetChangeHistoryOperation(nextChangeHistory)
-    ]);
+      createSetCompactionOperation(nextCompaction)
+    ];
+
+    // 先补齐此前写入失败、尚未落盘的增量，再写弹出；顺序反了会让重放看到没有对应 checkpoint 的 pop。
+    for (const delta of this.pendingChangeHistoryDeltas) {
+      nextOperations.push(createChangeHistoryDeltaOperation(delta));
+    }
+
+    if (popsChangeCheckpoint) {
+      nextOperations.push(createPopChangeCheckpointOperation());
+    }
+
+    const operation = createBatchOperation(nextOperations);
 
     if (this.currentSession) {
       this.currentSession = this.transcriptStore.appendSession(this.getCurrentCwd(), this.currentSession, operation);
       this.currentSessionId = this.currentSession.sessionId;
-      this.updateSessionIndex(this.currentSession, this.records.slice(0, nextCount));
+      this.updateSessionIndex(this.currentSession, nextCount, nextTitle);
     }
 
-    this.records.length = nextCount;
+    this.baseRecordIndex = nextBase;
+    this.records = nextRecords;
+    this.sessionTitle = nextTitle;
+    this.firstUserRecordIndex = nextFirstUserIndex;
     this.compaction = nextCompaction;
-    this.changeHistory = nextChangeHistory;
-    this.pendingCompaction = undefined;
-    this.pendingChangeHistory = undefined;
+
+    if (popsChangeCheckpoint) {
+      this.changeHistory.pop();
+    }
+
+    this.pendingChangeHistoryDeltas = [];
   }
 
   /**
-   * 仅更新内存中的压缩状态；紧随其后的 record append 会一起写入 batch。
+   * 安装一次 change history 增量：同步镜像栈并记为待写操作，调用方决定何时追加独立状态操作。
+   * 增量只在安装时应用一次，写入失败后的重试只重写 journal；失败期间又产生新增量时两者都保留，不会互相覆盖。
    */
-  setCompaction(compaction: CompactionState): void {
-    this.compaction = {...compaction};
-    this.pendingCompaction = {...compaction};
-  }
-
-  /**
-   * 更新当前 session 关联的 change history；调用方决定何时追加独立状态操作。
-   */
-  setChangeHistory(changeHistory: ChangeCheckpoint[] | null | undefined): void {
-    this.changeHistory = cloneChangeHistory(changeHistory);
-    this.pendingChangeHistory = cloneChangeHistory(this.changeHistory);
+  stageChangeHistoryDelta(delta: ChangeHistoryDelta): void {
+    applyChangeHistoryDelta(this.changeHistory, delta);
+    this.pendingChangeHistoryDeltas.push(delta);
   }
 
   /**
@@ -304,11 +374,19 @@ class TranscriptContext {
   }
 
   /**
-   * 应用压缩边界并将可见提示与状态写入同一个 journal batch。
+   * 先提交压缩状态与提示，再释放已被摘要覆盖的前缀；写盘失败保持原驻留状态。
    */
   applyCompaction(compaction: CompactionState): TranscriptRecord {
-    this.setCompaction(compaction);
-    return this.appendRecord(createCompactionNoticeRecord(compaction));
+    if (compaction.activeStartIndex < this.baseRecordIndex || compaction.activeStartIndex > this.getRecordCount()) {
+      throw new Error('压缩边界不在当前驻留记录区内');
+    }
+    const notice = createCompactionNoticeRecord(compaction);
+    this.persistOperation([notice], compaction);
+    this.records.push(notice);
+    this.records.splice(0, compaction.activeStartIndex - this.baseRecordIndex);
+    this.baseRecordIndex = compaction.activeStartIndex;
+    this.compaction = {...compaction};
+    return notice;
   }
 
   /**
@@ -332,8 +410,9 @@ class TranscriptContext {
     return records;
   }
 
-  private persistOperation(records: TranscriptRecord[]): void {
-    const operation = this.createPendingOperation(records);
+  /** 增量提交新事实及本次采纳的摘要，成功后更新轻量索引并清空待写状态，不读取完整 journal。 */
+  private persistOperation(records: TranscriptRecord[], compaction?: CompactionState): void {
+    const operation = this.createPendingOperation(records, compaction);
 
     if (!operation) {
       return;
@@ -348,14 +427,21 @@ class TranscriptContext {
     }
 
     this.currentSessionId = this.currentSession.sessionId;
-    this.updateSessionIndex(this.currentSession, records.length > 0 ? [...this.records, ...records] : this.records);
+    if (this.firstUserRecordIndex === null) {
+      const firstUserIndex = records.findIndex((record) => record.role === 'user');
+      if (firstUserIndex >= 0) {
+        this.firstUserRecordIndex = this.getRecordCount() + firstUserIndex;
+        this.sessionTitle = createSessionTitle(records);
+      }
+    }
+    this.updateSessionIndex(this.currentSession, this.getRecordCount() + records.length, this.sessionTitle);
     this.clearPendingState();
   }
 
   /** index 是可重建缓存，维护失败不得改变已经提交的 journal 和内存状态。 */
-  private updateSessionIndex(reference: TranscriptSessionJournalReference, records: TranscriptRecord[]): void {
+  private updateSessionIndex(reference: TranscriptSessionJournalReference, messageCount: number, title: string): void {
     try {
-      this.transcriptStore.updateSessionIndex(this.getCurrentCwd(), reference, records);
+      this.transcriptStore.updateSessionIndex(this.getCurrentCwd(), reference, {messageCount, title});
     } catch {
       // 下一次 /resume 会通过 journal 指纹重建缺失或过期条目。
     }
@@ -372,19 +458,20 @@ class TranscriptContext {
     }
   }
 
-  private createPendingOperation(records: TranscriptRecord[]): TranscriptJournalOperation | null {
+  /** 合并新记录、当前摘要采纳和待写状态，确保一次追加使用同一个 journal batch。 */
+  private createPendingOperation(records: TranscriptRecord[], compaction?: CompactionState): TranscriptJournalOperation | null {
     const operations: TranscriptJournalSubOperation[] = [];
 
     if (records.length > 0) {
       operations.push(createAppendRecordsOperation(records));
     }
 
-    if (this.pendingChangeHistory !== undefined) {
-      operations.push(createSetChangeHistoryOperation(this.pendingChangeHistory));
+    for (const delta of this.pendingChangeHistoryDeltas) {
+      operations.push(createChangeHistoryDeltaOperation(delta));
     }
 
-    if (this.pendingCompaction !== undefined) {
-      operations.push(createSetCompactionOperation(this.pendingCompaction));
+    if (compaction !== undefined) {
+      operations.push(createSetCompactionOperation(compaction));
     }
 
     if (this.pendingTodoState !== undefined) {
@@ -398,9 +485,9 @@ class TranscriptContext {
     return operations.length === 1 ? operations[0] : createBatchOperation(operations);
   }
 
+  /** 已提交或切换会话后清空待写状态，不改变已安装的 transcript。 */
   private clearPendingState(): void {
-    this.pendingChangeHistory = undefined;
-    this.pendingCompaction = undefined;
+    this.pendingChangeHistoryDeltas = [];
     this.pendingTodoState = undefined;
   }
 }
@@ -410,6 +497,39 @@ export {
   cloneTodoState,
   createEmptyTodoState
 };
+
+/**
+ * 把增量应用到镜像栈；与 journal 重放保持同一组语义，避免内存栈与已写操作分叉。
+ */
+function applyChangeHistoryDelta(history: ChangeCheckpoint[], delta: ChangeHistoryDelta): void {
+  switch (delta.kind) {
+    case 'push':
+      history.push(delta.checkpoint);
+      return;
+    case 'pop':
+      history.pop();
+      return;
+    case 'reset':
+      history.length = 0;
+      // 逐条 push：整份替换可能来自 fork 初始快照，展开参数会超出引擎的实参上限。
+      for (const checkpoint of delta.history) {
+        history.push(checkpoint);
+      }
+      return;
+  }
+}
+
+/** 把 change history 增量映射为对应的 journal 子操作。 */
+function createChangeHistoryDeltaOperation(delta: ChangeHistoryDelta): TranscriptJournalSubOperation {
+  switch (delta.kind) {
+    case 'push':
+      return createPushChangeCheckpointOperation(delta.checkpoint);
+    case 'pop':
+      return createPopChangeCheckpointOperation();
+    case 'reset':
+      return createSetChangeHistoryOperation(delta.history);
+  }
+}
 
 function createEmptyTodoState(): TodoState {
   return {

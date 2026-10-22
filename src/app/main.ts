@@ -96,7 +96,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
 
   // subagent 会话窗口：按 runId 过滤主 transcript 的只读全屏投影；优先级低于 modal、高于 BTW。
   const subagentView = new SubagentViewController({
-    getRecords: () => appContext.transcriptContext.records,
+    getRecords: () => appContext.transcriptContext.getCompleteRecords(),
     getActivity: (runId) => appContext.subagentRunContext.getActivity(runId),
     hasActiveRuns: () => appContext.subagentRunContext.hasTimedActivity(),
     repaint: () => renderCoordinator.renderResizeRecovery()
@@ -143,6 +143,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     lifecycle = 'stopped';
     observation.appExiting({cwd: appContext.getCurrentCwd(), interactionMode: appContext.getInteractionMode()});
     activeShellController?.abort();
+    appContext.pendingMessageContext.clear();
     if (activityTimer) clearInterval(activityTimer);
     activityTimer = null;
     detachTerminalListeners();
@@ -319,7 +320,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
       text: submission.userText,
       displayText: submission.displayText,
       attachmentCount: submission.attachments?.length || 0,
-      recordCount: appContext.transcriptContext.records.length
+      recordCount: appContext.transcriptContext.getRecordCount()
     });
     try {
       await runAssistantTurn({

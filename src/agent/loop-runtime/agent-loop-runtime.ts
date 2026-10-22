@@ -17,8 +17,10 @@ import {resolveMemoryPrompt} from '../context/memory-prompt';
 import {buildProviderRequestPrefix, resolveProviderPromptMaterials} from '../context/provider-request-prefix';
 import {prepareAgent} from '../agent-setup';
 import {createCompactionNoticeRecord, runCompaction} from '../context/context-compaction';
+import {boundConversationImages} from '../context/conversation-image-budget';
 import {createUsageCwdHash} from '../../persistence/usage-store';
-import {isReadonlyBashSandboxEffective} from '../../sandbox/provider';
+import {createSandboxRuntimeNote, isReadonlyBashSandboxEffective} from '../../sandbox/provider';
+import {createModeTransitionUserMessage} from '../context/interaction-mode';
 import {createSubagentToolPort} from '../subagent/runtime';
 import {createSubagentLoopRuntime} from './subagent-loop-runtime';
 import type {SandboxModeOverride} from '../../sandbox/types';
@@ -28,10 +30,11 @@ import {
   hasRecordableProviderUsage
 } from './shared';
 import {disabledObservation} from '../../observation/observation';
+import {runProviderStep} from './provider-step';
 
 import type {TokenUsageAnchor} from '../context/context-compaction';
 import type {MemoryPromptResolution} from '../context/memory-prompt';
-import type {AgentCallbacks, AgentConversationKind, AgentExecutionMode, AgentInstruction, AgentInstructionFileName, AgentSessionInput, AgentToolPolicy, AgentTurnCallbacks, AgentUserConfigSnapshot, InteractionMode, LlmConfig, ProviderAgent, ProviderRetry, ProviderUsage, RunAgent, SubagentToolPort, ToolApprovalDecision} from '../../types/agent';
+import type {AgentCallbacks, AgentConversationKind, AgentExecutionMode, AgentInstruction, AgentInstructionFileName, AgentSessionInput, AgentToolPolicy, AgentTurnCallbacks, AgentUserConfigSnapshot, InteractionMode, LlmConfig, ProviderAgent, ProviderRetry, ProviderUsage, RunAgent, SandboxToolConfig, SubagentToolPort, ToolApprovalDecision} from '../../types/agent';
 import type {UsageStore} from '../../types/usage';
 import type {SkillCatalogEntry} from '../../types/skill';
 import type {SkillCatalogPromptProjection} from '../../skills/skill-catalog-prompt';
@@ -119,7 +122,7 @@ async function executeToolCall(toolCall: ToolCall, state: AgentLoopRunState, cal
   }
 
   // 默认运行在这里执行普通风险分类;只读运行复用 readonly 判定结果,不进入审批分支。
-  // plan 运行的 bash 分层事实由 runtime 初始化时一次性解析,分类器不自行读取配置。
+  // Bash 分层由 runtime 在初始化及引导应用边界解析，分类器不自行读取配置。
   const riskAssessment: ToolRiskAssessment = readonlyAssessment
     ?? classifyToolCallRisk(toolCall, state.interactionMode, state.readonlyMcpToolNames, state.planBashSandboxed);
   state.observation.toolRiskAssessed({scope: state.observationScope, call: toolCall, assessment: riskAssessment});
@@ -218,7 +221,8 @@ type AgentLoopRunState = {
   providerId?: string; // 当前解析配置的非敏感 provider 标识；写 usage 时保留归因。
   model: string; // 当前运行固定的 provider 模型名。
   reasoningEffort?: LlmConfig['reasoningEffort']; // 当前运行固定的推理强度。
-  interactionMode: InteractionMode; // 父提交时捕获的 normal/plan 等模式。
+  interactionMode: InteractionMode; // 最新已应用消息选择的模式；等待中的消息尚不生效。
+  sandboxConfig: SandboxToolConfig; // 配置快照的沙箱设置，模式变化仅更新派生收紧。
   executor: ToolExecutor; // 与 provider definitions 共用 registry 的统一执行器。
   contextWindow: number; // 自动压缩和 skill 预算使用的模型窗口。
   compactionThresholdRatio: number; // 自动压缩触发占比。
@@ -257,7 +261,7 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
   /**
    * 初始化单次调用的 loop 状态；provider、配置和 registry 由统一装配入口提供。
    */
-  function initializeRunState(interactionMode: InteractionMode, abortSignal: AbortSignal | undefined, executionMode: AgentExecutionMode, compactionThresholdRatio: number, skillCatalogContextRatio: number, agentInstructionFileName: AgentInstructionFileName, toolPolicy: AgentToolPolicy, sandboxModeOverride: SandboxModeOverride | undefined, conversationKind: AgentConversationKind, configSnapshot: AgentUserConfigSnapshot, modelProfileId?: string, reasoningEffortOverride?: LlmConfig['reasoningEffort'], subagentPort?: SubagentToolPort, sessionId?: string): AgentLoopRunState {
+  function initializeRunState(interactionMode: InteractionMode, abortSignal: AbortSignal | undefined, executionMode: AgentExecutionMode, compactionThresholdRatio: number, skillCatalogContextRatio: number, agentInstructionFileName: AgentInstructionFileName, toolPolicy: AgentToolPolicy, getSandboxModeOverride: () => SandboxModeOverride | undefined, conversationKind: AgentConversationKind, configSnapshot: AgentUserConfigSnapshot, modelProfileId?: string, reasoningEffortOverride?: LlmConfig['reasoningEffort'], subagentPort?: SubagentToolPort, sessionId?: string): AgentLoopRunState {
     // 只读 subagent 名称集合在 run 启动时固定；并发分类不得在运行中重新读取目录。
     const readonlySubagentNames = subagentPort
       ? new Set(subagentPort.listDefinitions()
@@ -276,10 +280,11 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
       modelProfileId,
       reasoningEffortOverride,
       skillRegistry: skillSnapshot,
-      ...(sandboxModeOverride ? {sandboxModeOverride} : {}),
+      get sandboxModeOverride() { return getSandboxModeOverride(); },
       ...(subagentPort ? {subagentPort} : {}),
       ...(sessionId ? {sessionId} : {})
     });
+    const sandboxModeOverride = getSandboxModeOverride();
     // 请求前导材料与手动压缩路径共用同一解析口径，保证压缩请求的前导与普通请求逐字一致。
     const materials = resolveProviderPromptMaterials({
       agentInstructionFileName,
@@ -303,6 +308,7 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
       model: config.model,
       reasoningEffort: config.reasoningEffort,
       interactionMode,
+      sandboxConfig: config.tools.sandbox,
       executor: createToolExecutor(registry),
       registry,
       ...(readonlySubagentNames ? {readonlySubagentNames} : {}),
@@ -337,16 +343,27 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
     };
   }
 
+  /** 运行独立活跃记录区；仅显式转移的输入快照允许原地裁剪，采纳压缩须先完成同步持久化回调。 */
   const runAgentLoop: RunAgent = async function runAgentLoop(session: AgentSessionInput, callbacks: AgentCallbacks = {}): Promise<string> {
+    let baseRecordIndex = session.baseRecordIndex ?? 0;
+    const initialActiveStart = Math.max(0, (session.compaction?.activeStartIndex ?? baseRecordIndex) - baseRecordIndex);
+    // 默认保留调用方输入，但不让运行闭包继续持有其完整 records；转移的独立快照只保留唯一记录区。
+    if (session.recordsOwnership === 'transfer') {
+      session.records.splice(0, initialActiveStart);
+    } else {
+      session = {...session, records: session.records.slice(initialActiveStart)};
+    }
+    baseRecordIndex += initialActiveStart;
     const abortSignal = session.abortSignal;
-    const interactionMode = session.interactionMode || 'normal';
+    let interactionMode = session.interactionMode || 'normal';
     const executionMode = session.executionMode || INTERACTIVE_EXECUTION_MODE;
     const toolPolicy = session.toolPolicy || 'default';
     // plan 运行默认派生运行级 read-only 收紧:plan 的 bash 分层需要该收紧作为主边界,
     // 否则沙箱生效后会放行工作区写入。显式声明优先,off 与 headless full-access 豁免仍由 resolver 统一收敛。
-    const sandboxModeOverride = session.sandboxModeOverride
+    let sandboxModeOverride = session.sandboxModeOverride
       ?? (interactionMode === 'plan' && toolPolicy === 'default' ? 'read-only' : undefined);
     const conversationKind = session.conversationKind || 'primary';
+    const steeringInput = executionMode.kind === 'interactive' && conversationKind === 'primary' ? session.steeringInput : undefined;
     const configSnapshot = session.userConfigSnapshot || configContext.capture();
     const appSettings = configSnapshot.getAppSettings() || DEFAULT_APP_SETTINGS;
     // 单次 assistant run 固定使用启动时设置，运行中配置变化只影响后续 turn。
@@ -355,11 +372,38 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
 
     throwIfAborted(abortSignal);
     // 运行态记录区先于 registry 创建，供 run_subagent Port 在外层 tool pair 提交前发布过程事件。
-    const recordRegion: TranscriptRecord[] = [...session.records];
+    const recordRegion: TranscriptRecord[] = session.records;
     let compactionState: CompactionState | undefined = session.compaction;
     let usageAnchor: TokenUsageAnchor | null = null;
     let currentMemoryPrompt: MemoryPromptResolution | undefined;
     let state: AgentLoopRunState;
+
+    /** 在安全边界让就绪引导生效：领取消息、应用提交时模式并同步发布记录；未领取到消息时返回 false。 */
+    function applySteeringMessage(): boolean {
+      throwIfAborted(abortSignal);
+      const record = steeringInput?.claim();
+      if (!record) return false;
+      const nextMode = record.metadata?.interactionMode ?? interactionMode;
+      const transition = createModeTransitionUserMessage(record.text, interactionMode, nextMode);
+      if (transition) {
+        record.displayText ??= record.text;
+        record.text = transition.text;
+        record.metadata = {...record.metadata, modeTransition: transition.metadata};
+      }
+      interactionMode = nextMode;
+      sandboxModeOverride = session.sandboxModeOverride
+        ?? (interactionMode === 'plan' && toolPolicy === 'default' ? 'read-only' : undefined);
+      state.interactionMode = interactionMode;
+      state.observationScope = {...state.observationScope, interactionMode};
+      const sandboxOptions = sandboxModeOverride ? {modeOverride: sandboxModeOverride} : {};
+      const bashReadonly = isReadonlyBashSandboxEffective(state.sandboxConfig, executionMode, sandboxOptions);
+      state.readonlyBashSandboxed = toolPolicy === 'readonly' && bashReadonly;
+      state.planBashSandboxed = toolPolicy === 'default' && interactionMode === 'plan' && bashReadonly;
+      state.sandboxNote = createSandboxRuntimeNote(state.sandboxConfig, executionMode, sandboxOptions);
+      callbacks.onUserMessage?.(record);
+      recordRegion.push(record);
+      return true;
+    }
 
     function publishSubagentRecords(records: SubagentTranscriptRecord[]): void {
       if (records.length === 0) {
@@ -377,7 +421,7 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
           createRuntime: (inheritedContext, definition) => createSubagentLoopRuntime(cwd, inheritedContext, definition, observation, usageStore, mcpManager),
           cwd,
           executionMode,
-          interactionMode,
+          get interactionMode() { return interactionMode; },
           getInheritedContext: () => ({
             agentInstructions: state.agentInstructions,
             basePrompt: state.basePrompt,
@@ -389,14 +433,14 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
           observation,
           publishRecords: publishSubagentRecords,
           reasoningEffortOverride: session.reasoningEffortOverride,
-          ...(sandboxModeOverride ? {sandboxModeOverride} : {}),
+          get sandboxModeOverride() { return sandboxModeOverride; },
           toolPolicy,
           sessionId: session.sessionId
         })
       : undefined;
 
     try {
-      state = initializeRunState(interactionMode, abortSignal, executionMode, compactionThresholdRatio, skillCatalogContextRatio, appSettings.agentInstructionFileName, toolPolicy, sandboxModeOverride, conversationKind, configSnapshot, session.modelProfileId, session.reasoningEffortOverride, subagentPort, session.sessionId);
+      state = initializeRunState(interactionMode, abortSignal, executionMode, compactionThresholdRatio, skillCatalogContextRatio, appSettings.agentInstructionFileName, toolPolicy, () => sandboxModeOverride, conversationKind, configSnapshot, session.modelProfileId, session.reasoningEffortOverride, subagentPort, session.sessionId);
     } catch (error: unknown) {
       throw normalizeError(error, '无法加载 LLM 配置');
     }
@@ -411,7 +455,7 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
     state.todoState = session.todoState;
 
     /**
-     * 发请求前检查：调用共享压缩核心，压缩发生时回填运行态并通知 app。
+     * 发请求前检查：文本、图片或附件字节超预算时调用共享压缩核心，压缩发生时回填运行态并通知 app。
      * 摘要请求复用本次运行冻结的材料与当前记忆投影构造前导，并携带会话身份以复用缓存路由。
      * 摘要供应商请求一旦发生，其 usage 与普通 turn 同款记入观测与 usage 账本。
      */
@@ -419,6 +463,7 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
       throwIfAborted(abortSignal);
       const result = await runCompaction({
         records: recordRegion,
+        baseRecordIndex,
         compaction: compactionState,
         anchor: usageAnchor,
         contextWindow: state.contextWindow,
@@ -449,12 +494,17 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
         return;
       }
 
+      // app 先提交 compaction/notice batch；回调失败不得推进运行边界或逐出旧记录。
+      callbacks.onCompacted?.(result.compaction);
+      const releasedCount = result.compaction.activeStartIndex - baseRecordIndex;
+      recordRegion.splice(0, releasedCount);
+      baseRecordIndex = result.compaction.activeStartIndex;
+      // session 只转移记录数组所有权；应用元数据由回调采纳，运行边界保留在局部状态。
       compactionState = result.compaction;
       // 压缩后活跃区间已变，旧 usage 锚点失效，回退到纯字符估算直到下一次真值到达。
       usageAnchor = null;
       // app 会持久化同一 notice；runtime 同步追加以保持后续压缩索引与 session records 对齐。
       recordRegion.push(createCompactionNoticeRecord(compactionState));
-      callbacks.onCompacted?.(compactionState);
       state.observation.compactionCompleted({scope: state.observationScope, compaction: compactionState});
     }
 
@@ -465,6 +515,13 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
 
       callbacks.onProviderRecords?.(records);
       recordRegion.push(...records);
+    }
+
+    /** 正常 continuation 与引导中止共用正文提交边界；同步发布到 app 和运行历史，不结束 turn。 */
+    function commitAssistantSegment(text: string): void {
+      if (text.trim() === '') return;
+      callbacks.onAssistantSegment?.(text);
+      recordRegion.push({role: 'assistant', text});
     }
 
     function commitProviderRetry(retry: ProviderRetry): void {
@@ -501,16 +558,21 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
      * ----------------------------
      */
     while (true) {
+      throwIfAborted(abortSignal);
+      applySteeringMessage();
       // 记忆投影先于压缩解析：同一次迭代里的压缩请求与普通请求必须共用同一份前导材料。
       const memoryPrompt = resolveMemoryPrompt(cwd, state.contextWindow);
       currentMemoryPrompt = memoryPrompt;
 
       await maybeCompact(memoryPrompt);
       throwIfAborted(abortSignal);
+      // 新添素材必须重新检查预算，不能复用压缩前的估计。
+      if (applySteeringMessage()) continue;
 
       const activeStartIndex = compactionState ? compactionState.activeStartIndex : 0;
-      const activeRecords = recordRegion.slice(activeStartIndex);
-      const providerRecords = buildProviderRecords({
+      const activeRecords = recordRegion.slice(activeStartIndex - baseRecordIndex);
+      // 压缩后仍超限（例如最近 20 条记录包含大量图片）时仅约束发送副本；本地历史保持完整。
+      const imageBound = boundConversationImages(buildProviderRecords({
         activeRecords,
         agentInstructions: state.agentInstructions,
         basePrompt: state.basePrompt,
@@ -521,7 +583,12 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
         sessionJournalPath: session.sessionJournalPath,
         skillCatalog: state.skillCatalog,
         todoState: state.todoState
-      });
+      }));
+      const providerRecords = imageBound.records;
+      if (imageBound.omittedImages > 0) {
+        // 上一次 provider usage 可能包含此次删去的图片，不能再当成原始历史的真值锚点。
+        usageAnchor = null;
+      }
       state.observation.providerRequestBuilt({
         scope: state.observationScope,
         request: {
@@ -552,17 +619,27 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
         } : {}),
         onToken: callbacks.onToken
       };
-      const {draft, providerRecords: turnProviderRecords, toolCalls, usage, usageInputTokens} = await state.agent.runTurn(providerRecords, providerTurnCallbacks, {
+      const step = await runProviderStep(state.agent, providerRecords, providerTurnCallbacks, {
         abortSignal,
         ...(state.sessionId ? {sessionId: state.sessionId} : {})
-      });
+      }, steeringInput, callbacks.onRequestPreempted);
       throwIfAborted(abortSignal);
+      if (step.reasoningDraft.trim() !== '') {
+        providerTurnCallbacks.onReasoningUpdate?.({kind: 'complete', text: step.reasoningDraft});
+      }
+      if (!step.result) {
+        commitAssistantSegment(step.draft);
+        continue;
+      }
+      const {draft, providerRecords: turnProviderRecords, toolCalls, usage, usageInputTokens} = step.result;
 
       if (typeof usageInputTokens === 'number') {
         const estimatedUsageSegments = estimateContextUsageSegments(providerRecords, state.toolDefinitions, state.skillCatalogTokens, memoryPrompt.estimatedTokens);
 
         // 以本次真实 prompt token 为锚点，记下当时活跃记录数，供下一轮叠加字符增量。
-        usageAnchor = {usageInputTokens, measuredAtRecordCount: recordRegion.length - activeStartIndex};
+        usageAnchor = imageBound.omittedImages > 0
+          ? null
+          : {usageInputTokens, measuredAtRecordCount: recordRegion.length - (activeStartIndex - baseRecordIndex)};
         callbacks.onContextUsage?.({
           usedTokens: usageInputTokens,
           contextWindow: state.contextWindow,
@@ -573,25 +650,35 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
       state.observation.providerUsage({scope: state.observationScope, usage, usageInputTokens});
       recordProviderUsage(usage, usageInputTokens);
 
+      commitProviderRecords(turnProviderRecords);
       if (toolCalls.length === 0) {
-        // 没有 tool call 表示模型已经给出本轮最终 assistant 回复。
-        commitProviderRecords(turnProviderRecords);
-
         throwIfAborted(abortSignal);
-        callbacks.onComplete?.(draft);
-        return draft;
+        if (!steeringInput?.hasReady()) {
+          callbacks.onComplete?.(draft);
+          return draft;
+        }
       }
 
-      commitProviderRecords(turnProviderRecords);
+      commitAssistantSegment(draft);
 
-      if (draft.trim() !== '') {
-        // tool call 前的文本是已完成 assistant segment，需要先交给 app 落盘但不释放响应锁。
-        callbacks.onAssistantSegment?.(draft);
-        recordRegion.push({role: 'assistant', text: draft});
+      if (toolCalls.length === 0) {
+        applySteeringMessage();
+        continue;
       }
 
       for (let toolIndex = 0; toolIndex < toolCalls.length;) {
         throwIfAborted(abortSignal);
+        if (steeringInput?.hasReady()) {
+          // 完整响应声明的所有剩余调用都要配对，包括尚未向 app 播报的调用。
+          for (; toolIndex < toolCalls.length; toolIndex += 1) {
+            const skippedCall = toolCalls[toolIndex];
+            const skippedResult = createRejectedToolResult(skippedCall, '新用户指令到达，调用已跳过且未执行。');
+            callbacks.onToolCall?.(skippedCall);
+            recordRegion.push(createToolCallTranscriptRecord(skippedCall), createToolResultTranscriptRecord(skippedResult));
+            callbacks.onToolResult?.(skippedResult);
+          }
+          break;
+        }
         const toolCall = toolCalls[toolIndex];
 
         if (classifyToolCallConcurrency(toolCall, state.readonlySubagentNames) === 'parallel_read') {

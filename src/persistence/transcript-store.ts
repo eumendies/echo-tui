@@ -6,8 +6,10 @@ import path from 'node:path';
 import {
   createTranscriptJournalEntry,
   createTranscriptJournalStart,
+  createRepairedJournalText,
   parseTranscriptJournalStart,
-  replayTranscriptJournal,
+  replayTranscriptJournalFile,
+  replayTranscriptJournalStream,
   serializeTranscriptJournalLine
 } from './transcript-journal';
 
@@ -18,6 +20,7 @@ import type {
   TranscriptJournalOperation,
   TranscriptProjectMetadata,
   TranscriptSessionIndex,
+  TranscriptSessionIndexState,
   TranscriptSessionSummary,
   TranscriptSessionPreview,
   TranscriptSessionJournalReference,
@@ -180,7 +183,10 @@ function createTranscriptStore(options: TranscriptStoreOptions = {}): Transcript
         continue;
       }
 
-      sessions.push(createSessionSummary(loaded.reference, loaded.session.records, refreshedStat));
+      sessions.push(createSessionSummary(loaded.reference, {
+        messageCount: loaded.session.records.length,
+        title: createSessionTitle(loaded.session.records)
+      }, refreshedStat));
     }
 
     sessions.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
@@ -192,46 +198,35 @@ function createTranscriptStore(options: TranscriptStoreOptions = {}): Transcript
   }
 
   /**
-   * 在 journal 已成功提交后原子更新单个摘要；调用方决定失败是否影响业务写入。
+   * 在 journal 已成功提交后用完整计数及缓存标题原子更新摘要，不重放历史；调用方决定失败是否影响业务写入。
    */
-  function updateSessionIndex(cwd: string, reference: TranscriptSessionJournalReference, records: import('../types/transcript').TranscriptRecord[]): void {
+  function updateSessionIndex(cwd: string, reference: TranscriptSessionJournalReference, state: TranscriptSessionIndexState): void {
     const normalizedCwd = String(cwd);
     const stat = fsImpl.statSync(getSessionFilePath(normalizedCwd, reference.sessionId));
     const current = readSessionIndex(normalizedCwd)?.sessions || [];
     const next = current.filter((session) => session.sessionId !== reference.sessionId);
-    next.push(createSessionSummary(reference, records, stat));
+    next.push(createSessionSummary(reference, state, stat));
     next.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
     writeSessionIndex(normalizedCwd, next);
   }
 
-  /** 异步只读重放一个 journal，并只返回右栏需要的有界预览。 */
+  /** 异步只读重放一个 journal，并只返回右栏需要的有界预览；按行读取，读取期间不阻塞事件循环。 */
   function loadSessionPreview(cwd: string, sessionId: string): Promise<TranscriptSessionPreview | null> {
     const normalizedCwd = String(cwd);
     const filePath = getSessionFilePath(normalizedCwd, sessionId);
 
-    return new Promise((resolve) => {
-      fsImpl.readFile(filePath, 'utf8', (error, text) => {
-        if (error) {
-          resolve(null);
-          return;
+    return replayTranscriptJournalStream(fsImpl.createReadStream(filePath))
+      .then((loaded) => {
+        if (!loaded || loaded.session.cwd !== normalizedCwd || loaded.session.sessionId !== sessionId) {
+          return null;
         }
 
-        try {
-          const loaded = replayTranscriptJournal(String(text));
-          if (!loaded || loaded.session.cwd !== normalizedCwd || loaded.session.sessionId !== sessionId) {
-            resolve(null);
-            return;
-          }
-
-          resolve({
-            sessionId,
-            previewRecords: createSessionPreviewRecords(loaded.session.records)
-          });
-        } catch {
-          resolve(null);
-        }
-      });
-    });
+        return {
+          sessionId,
+          previewRecords: createSessionPreviewRecords(loaded.session.records)
+        };
+      })
+      .catch(() => null);
   }
 
   /**
@@ -298,14 +293,15 @@ function createTranscriptStore(options: TranscriptStoreOptions = {}): Transcript
 
   function safelyReadJournal(filePath: string, cwd: string, repairTail: boolean): LoadedTranscriptSession | null {
     try {
-      const loaded = replayTranscriptJournal(fsImpl.readFileSync(filePath, 'utf8'));
+      const loaded = replayTranscriptJournalFile(filePath, fsImpl);
 
       if (!loaded || loaded.session.cwd !== String(cwd)) {
         return null;
       }
 
       if (repairTail && loaded.requiresRepair) {
-        repairJournal(filePath, loaded.repairedJournalText);
+        // 修复文本只在确实需要修复时按需重建，代价是重读一次文件。
+        repairJournal(filePath, createRepairedJournalText(filePath, fsImpl, loaded.reference.sequence));
       }
 
       return {
@@ -419,7 +415,7 @@ function createTranscriptStore(options: TranscriptStoreOptions = {}): Transcript
 
 function createSessionSummary(
   reference: TranscriptSessionJournalReference,
-  records: import('../types/transcript').TranscriptRecord[],
+  state: TranscriptSessionIndexState,
   stat: Pick<import('node:fs').Stats, 'mtimeMs' | 'size'>
 ): TranscriptSessionSummary {
   return {
@@ -427,8 +423,8 @@ function createSessionSummary(
     createdAt: reference.createdAt,
     updatedAt: reference.updatedAt,
     cwd: reference.cwd,
-    messageCount: records.length,
-    title: createSessionTitle(records),
+    messageCount: state.messageCount,
+    title: state.title,
     fingerprint: {size: stat.size, mtimeMs: stat.mtimeMs}
   };
 }
@@ -578,5 +574,6 @@ function createSessionTitle(records: TranscriptRecord[]): string {
 
 export {
   STORE_SCHEMA_VERSION,
+  createSessionTitle,
   createTranscriptStore
 };

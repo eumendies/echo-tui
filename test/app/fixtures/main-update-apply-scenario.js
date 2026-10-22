@@ -23,6 +23,7 @@ function capture(options) {
   });
 }
 const renderer = {
+  syncMainTranscript() {},
   clearFooter() {
     footerCleared = true;
   },

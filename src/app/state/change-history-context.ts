@@ -7,6 +7,7 @@ import type {
   ChangeFileEntry,
   ChangeFileRecorder,
   ChangeFileSnapshot,
+  ChangeHistoryDelta,
   UndoExecuteResult,
   UndoSummary
 } from '../../types/change-history';
@@ -56,10 +57,11 @@ class ChangeHistoryContext {
 
   /**
    * 完成当前 checkpoint；ready 进入栈顶，invalid 则成为阻断更早历史的边界。
+   * 返回值是本次栈改动的增量，供调用方写成 journal 操作；没有改动（例如重复调用）时返回 null。
    */
-  finalizeCheckpoint(): void {
+  finalizeCheckpoint(): ChangeHistoryDelta | null {
     if (!this.current) {
-      return;
+      return null;
     }
 
     const checkpoint = this.current;
@@ -71,14 +73,16 @@ class ChangeHistoryContext {
 
     if (checkpoint.status === 'invalid') {
       this.history = [checkpoint];
-      return;
+      return {kind: 'reset', history: [...this.history]};
     }
 
     this.history.push(checkpoint);
+    return {kind: 'push', checkpoint};
   }
 
   /**
    * 标记当前或栈顶 checkpoint 不可回退，并丢弃它之前的历史。
+   * 不产生增量：清空后的栈由随后的 finalizeCheckpoint() 以 reset 增量表达。
    */
   invalidate(reason: string): void {
     const checkpoint = this.current || this.last;
@@ -191,6 +195,7 @@ class ChangeHistoryContext {
 
   /**
    * 在 transcript 回退成功后移除已使用的栈顶 checkpoint。
+   * 不产生增量：undo 的栈弹出由回退 batch 里的 pop 操作表达，见 AppContext.executeUndo。
    */
   markLastUsed(): void {
     const checkpoint = this.last;

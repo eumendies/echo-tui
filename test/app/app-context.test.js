@@ -288,6 +288,10 @@ function applyOperation(session, operation) {
     session.records.length = operation.recordCount;
   } else if (operation.op === 'set_change_history') {
     session.changeHistory = structuredClone(operation.changeHistory);
+  } else if (operation.op === 'push_change_checkpoint') {
+    session.changeHistory = [...(session.changeHistory || []), structuredClone(operation.checkpoint)];
+  } else if (operation.op === 'pop_change_checkpoint') {
+    (session.changeHistory || []).pop();
   } else if (operation.op === 'set_compaction') {
     if (operation.compaction) {
       session.compaction = {...operation.compaction};
@@ -355,14 +359,14 @@ test('AppContext creates isolated runtime state per app instance', () => {
   firstContext.beginUserTurn('hello');
   firstContext.turnContext.enterSpinnerState('thinking');
 
-  assert.deepEqual(firstContext.transcriptContext.records, [{ role: 'user', text: 'hello', metadata: {} }]);
+  assert.deepEqual(firstContext.transcriptContext.getResidentRecords(), [{ role: 'user', text: 'hello', metadata: {} }]);
   assert.deepEqual(firstContext.composerContext.inputHistory, []);
   assert.equal(firstContext.turnContext.responding, true);
   const firstPending = firstContext.turnContext.getPending();
   assert.equal(firstPending.kind, 'thinking');
   assert.equal(typeof firstPending.elapsedMs, 'number');
 
-  assert.deepEqual(secondContext.transcriptContext.records, []);
+  assert.deepEqual(secondContext.transcriptContext.getResidentRecords(), []);
   assert.deepEqual(secondContext.composerContext.inputHistory, []);
   assert.equal(secondContext.turnContext.responding, false);
   assert.equal(secondContext.turnContext.getPending(), null);
@@ -375,7 +379,7 @@ test('AppContext undo restores transcript records and compaction state', () => {
   const compaction = {summaryText: 'old summary', activeStartIndex: 1, createdAt: '2026-05-19T00:00:00.000Z'};
 
   context.transcriptContext.appendRecord({role: 'user', text: 'before'});
-  context.transcriptContext.setCompaction(compaction);
+  const notice = context.transcriptContext.applyCompaction(compaction);
   context.beginChangeCheckpoint();
   context.transcriptContext.appendRecord({role: 'user', text: 'change'});
   context.transcriptContext.appendRecord({role: 'reasoning_summary', text: 'thinking'});
@@ -387,14 +391,16 @@ test('AppContext undo restores transcript records and compaction state', () => {
   const result = context.executeUndo();
 
   assert.equal(result.ok, true);
-  assert.deepEqual(context.transcriptContext.records, [{role: 'user', text: 'before'}]);
+  assert.deepEqual(context.transcriptContext.getResidentRecords(), [notice]);
+  assert.equal(context.transcriptContext.baseRecordIndex, 1);
+  assert.deepEqual(context.transcriptContext.getCompleteRecords(), [{role: 'user', text: 'before'}, notice]);
   assert.deepEqual(context.transcriptContext.compaction, compaction);
-  assert.equal(transcriptStore.saveCalls.at(-1).records.length, 1);
+  assert.equal(transcriptStore.saveCalls.at(-1).records.length, 2);
   assert.deepEqual(transcriptStore.saveCalls.at(-1).compaction, compaction);
   assert.deepEqual(transcriptStore.operations.at(-1).operations.map((operation) => operation.op), [
     'truncate_records',
     'set_compaction',
-    'set_change_history'
+    'pop_change_checkpoint'
   ]);
 });
 
@@ -427,7 +433,7 @@ test('AppContext does not retain records whose journal append fails', () => {
   };
 
   assert.throws(() => context.transcriptContext.appendRecord({role: 'assistant', text: 'not saved'}), /append failed/);
-  assert.deepEqual(context.transcriptContext.records, [{role: 'user', text: 'saved'}]);
+  assert.deepEqual(context.transcriptContext.getResidentRecords(), [{role: 'user', text: 'saved'}]);
 
   transcriptStore.appendSession = appendSession;
   context.transcriptContext.appendRecord({role: 'assistant', text: 'continued'});
@@ -459,7 +465,7 @@ test('AppContext keeps the undo checkpoint when journal truncation fails', () =>
   assert.equal(result.ok, false);
   assert.equal(result.reason, 'restore_failed');
   assert.equal(context.changeHistoryContext.getSummary().status, 'ready');
-  assert.deepEqual(context.transcriptContext.records, [
+  assert.deepEqual(context.transcriptContext.getResidentRecords(), [
     {role: 'user', text: 'before'},
     {role: 'user', text: 'change'}
   ]);
@@ -477,7 +483,7 @@ test('AppContext undo can remove interrupted turn records without appending a su
   const result = context.executeUndo();
 
   assert.equal(result.ok, true);
-  assert.deepEqual(context.transcriptContext.records, []);
+  assert.deepEqual(context.transcriptContext.getResidentRecords(), []);
 });
 
 test('AppContext undo can step through multiple ready checkpoints', () => {
@@ -496,7 +502,7 @@ test('AppContext undo can step through multiple ready checkpoints', () => {
   let result = context.executeUndo();
 
   assert.equal(result.ok, true);
-  assert.deepEqual(context.transcriptContext.records, [
+  assert.deepEqual(context.transcriptContext.getResidentRecords(), [
     {role: 'user', text: 'first'},
     {role: 'assistant', text: 'first done'}
   ]);
@@ -504,7 +510,7 @@ test('AppContext undo can step through multiple ready checkpoints', () => {
   result = context.executeUndo();
 
   assert.equal(result.ok, true);
-  assert.deepEqual(context.transcriptContext.records, []);
+  assert.deepEqual(context.transcriptContext.getResidentRecords(), []);
   assert.deepEqual(context.changeHistoryContext.getSummary(), {status: 'none'});
 });
 
@@ -526,7 +532,7 @@ test('AppContext invalid change checkpoint blocks older history', () => {
   assert.equal(result.ok, false);
   assert.equal(result.reason, 'invalid');
   assert.deepEqual(context.changeHistoryContext.getSummary(), {status: 'invalid', reason: '写入型 bash 不可追踪'});
-  assert.deepEqual(context.transcriptContext.records, [
+  assert.deepEqual(context.transcriptContext.getResidentRecords(), [
     {role: 'user', text: 'first'},
     {role: 'assistant', text: 'first done'},
     {role: 'user', text: 'second'}
@@ -2159,19 +2165,19 @@ test('AppContext persists, clears, and reloads transcript sessions through one i
   assert.equal(transcriptStore.saveCalls.length, 2);
   const sessionId = transcriptStore.saveCalls.at(-1).sessionId;
   assert.equal(context.transcriptContext.currentSessionId, sessionId);
-  assert.deepEqual(context.transcriptContext.records, [
+  assert.deepEqual(context.transcriptContext.getResidentRecords(), [
     { role: 'user', text: 'persist me', metadata: {} },
     { role: 'assistant', text: 'persisted reply' }
   ]);
 
   context.clearTranscriptRecords();
   assert.equal(context.transcriptContext.currentSessionId, null);
-  assert.deepEqual(context.transcriptContext.records, []);
+  assert.deepEqual(context.transcriptContext.getResidentRecords(), []);
 
   const loadedSession = context.loadTranscriptSession(sessionId);
-  assert.equal(loadedSession.sessionId, sessionId);
+  assert.equal(loadedSession, true);
   assert.equal(context.transcriptContext.currentSessionId, sessionId);
-  assert.deepEqual(context.transcriptContext.records, [
+  assert.deepEqual(context.transcriptContext.getResidentRecords(), [
     { role: 'user', text: 'persist me', metadata: {} },
     { role: 'assistant', text: 'persisted reply' }
   ]);
@@ -2234,14 +2240,14 @@ test('AppContext rejects empty forks and preserves the source session when journ
   context.beginUserTurn('keep source');
   context.turnContext.finishAssistantTurn('source reply');
   const sourceSessionId = context.transcriptContext.getCurrentSessionId();
-  const recordsBefore = structuredClone(context.transcriptContext.records);
+  const recordsBefore = structuredClone(context.transcriptContext.getResidentRecords());
   transcriptStore.createSession = () => {
     throw new Error('disk contains sk-secret-value');
   };
 
   assert.deepEqual(context.forkTranscriptSession(), {ok: false, reason: 'failed', error: '无法创建分叉会话'});
   assert.equal(context.transcriptContext.getCurrentSessionId(), sourceSessionId);
-  assert.deepEqual(context.transcriptContext.records, recordsBefore);
+  assert.deepEqual(context.transcriptContext.getResidentRecords(), recordsBefore);
   assert.deepEqual(transcriptStore.loadSession('/tmp/echo_tui', sourceSessionId).session.records, recordsBefore);
 });
 
@@ -2359,12 +2365,12 @@ test('AppContext deletes a historical session and its settings sidecar without c
   context.beginUserTurn('current');
   context.turnContext.finishAssistantTurn('reply');
   const currentSessionId = context.transcriptContext.getCurrentSessionId();
-  const recordsBeforeDelete = context.transcriptContext.getRecords().map((record) => record.text);
+  const recordsBeforeDelete = context.transcriptContext.getResidentRecords().map((record) => record.text);
 
   assert.deepEqual(context.deleteTranscriptSession(historicalSession.sessionId), {ok: true, sessionId: historicalSession.sessionId});
   assert.equal(settingsStore.settings.has(historicalSession.sessionId), false);
   assert.equal(context.transcriptContext.getCurrentSessionId(), currentSessionId);
-  assert.deepEqual(context.transcriptContext.getRecords().map((record) => record.text), recordsBeforeDelete);
+  assert.deepEqual(context.transcriptContext.getResidentRecords().map((record) => record.text), recordsBeforeDelete);
   assert.equal(context.transcriptContext.listSessionSummaries().some((session) => session.sessionId === historicalSession.sessionId), false);
 });
 
@@ -2422,6 +2428,8 @@ test('AppContext isolates session settings across clear and resume', () => {
     assert.equal(userConfigSnapshot.revision, 1);
     assert.deepEqual(session, {
       records: [],
+      baseRecordIndex: 0,
+      recordsOwnership: 'transfer',
       compaction: undefined,
       todoState: {items: [], updatedAt: ''},
       interactionMode: 'normal',
@@ -2568,7 +2576,7 @@ test('AppContext exposes semantic subcontexts for resume sessions and composer s
     sessionId: 'saved-session',
     previewRecords: [{role: 'assistant', text: 'latest reply'}]
   });
-  assert.deepEqual(context.transcriptContext.records, []);
+  assert.deepEqual(context.transcriptContext.getResidentRecords(), []);
 });
 
 test('AppContext lists reference sessions without current session and clears pending references on load and clear', () => {
@@ -2688,7 +2696,7 @@ test('AppContext failAssistantTurn clears pending state and redacts local error 
     role: 'error',
     text: '模型响应失败：upstream failed Bearer <redacted> <redacted>'
   });
-  assert.deepEqual(context.transcriptContext.records, [
+  assert.deepEqual(context.transcriptContext.getResidentRecords(), [
     { role: 'user', text: 'fail please', metadata: {} },
     errorRecord
   ]);
@@ -2769,7 +2777,7 @@ test('AppContext closes a pending tool call as a paired interrupted result when 
       details: {kind: 'generic', interrupted: true}
     }
   ]);
-  assert.deepEqual(context.transcriptContext.records, [
+  assert.deepEqual(context.transcriptContext.getResidentRecords(), [
     { role: 'user', text: 'use tool', metadata: {} },
     ...result.interruptedToolRecords,
     { role: 'local_notice', text: '已中断模型回答' }
@@ -3182,4 +3190,110 @@ test('AppContext keeps stale assistant turn cleanup from clearing a newer turn',
 
   assert.equal(context.turnContext.isCurrentAssistantTurn(firstTurn), false);
   assert.equal(context.turnContext.isCurrentAssistantTurn(secondTurn), true);
+});
+
+test('AppContext change history writes stay constant per turn instead of growing with stack depth', (t) => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-history-growth-'));
+  t.after(() => fs.rmSync(rootDir, {recursive: true, force: true}));
+  const cwd = '/tmp/echo_tui/history-growth';
+  const store = createTranscriptStore({rootDir});
+  const context = createContext({transcriptStore: store, cwd});
+
+  context.transcriptContext.appendRecord({role: 'user', text: 'base'});
+  // 每个 checkpoint 都内联这份摘要，因此整份重写会让第 N 轮重写 N 份摘要。
+  context.transcriptContext.applyCompaction({
+    summaryText: 's'.repeat(20000),
+    activeStartIndex: 1,
+    createdAt: '2026-05-19T00:00:00.000Z'
+  });
+
+  for (let turn = 0; turn < 100; turn += 1) {
+    context.beginChangeCheckpoint();
+    context.transcriptContext.appendRecord({role: 'user', text: `turn ${turn}`});
+    context.finalizeChangeCheckpoint();
+  }
+
+  const journalPath = store.getSessionFilePath(cwd, context.transcriptContext.currentSessionId);
+  const entries = fs.readFileSync(journalPath, 'utf8').trim().split('\n')
+    .map((line) => ({line, entry: JSON.parse(line)}));
+  // 只测 push 行不足以证明没有整份重写：必须同时断言 journal 里不存在整份替换或弹出。
+  assert.equal(entries.filter(({entry}) => entry.op === 'set_change_history').length, 0);
+  assert.equal(entries.filter(({entry}) => entry.op === 'pop_change_checkpoint').length, 0);
+  const pushBytes = entries
+    .filter(({entry}) => entry.op === 'push_change_checkpoint')
+    .map(({line}) => Buffer.byteLength(line));
+
+  assert.equal(pushBytes.length, 100);
+  // 栈深 1 与栈深 100 的单次写入同阶：写入量不随栈深增长。
+  assert.ok(pushBytes.at(-1) < pushBytes[0] * 1.5, `first=${pushBytes[0]} last=${pushBytes.at(-1)}`);
+  // 线性度：100 轮的字节量约为前 10 轮的 10 倍；整份重写会是约 100 倍。
+  const firstTen = pushBytes.slice(0, 10).reduce((sum, bytes) => sum + bytes, 0);
+  const all = pushBytes.reduce((sum, bytes) => sum + bytes, 0);
+  assert.ok(all / firstTen < 20, `ratio=${all / firstTen}`);
+});
+
+test('AppContext status line keeps the turn timer while a subagent run is active', () => {
+  const context = createContext();
+
+  context.beginUserTurn('delegate');
+  context.beginAssistantTurn();
+  context.turnContext.enterSpinnerState('working');
+  // 主 turn 已经跑了 65s，而子 agent 的计时器刚从 0 开始。
+  context.turnContext.workingStartedAt = Date.now() - 65000;
+  // 子运行必须先由记录注册，之后的活动快照才会进入 footer 投影。
+  context.subagentRunContext.acceptRecords([{
+    role: 'subagent',
+    text: 'investigate',
+    agentName: 'explorer',
+    parentToolCallId: 'outer',
+    runId: 'run-1',
+    event: {kind: 'start', task: 'investigate'}
+  }]);
+  context.subagentRunContext.updateActivity({
+    agentName: 'explorer',
+    phase: 'tool',
+    runId: 'run-1',
+    task: 'investigate',
+    toolName: 'grep'
+  });
+
+  const renderState = context.createRenderState();
+
+  assert.equal(renderState.pending.kind, 'subagent');
+  assert.equal(renderState.statusLine.detail, 'explorer · grep');
+  assert.equal(renderState.statusLine.activity.kind, 'working');
+  // 子 agent 的 elapsedMs 从它自己的 run 开始计；状态行必须继续显示本轮累积时间。
+  assert.ok(renderState.statusLine.activity.elapsedMs >= 65000, String(renderState.statusLine.activity.elapsedMs));
+});
+
+test('AppContext status line falls back to parallel subagent activity without a turn timer', () => {
+  const context = createContext();
+
+  context.subagentRunContext.acceptRecords([
+    {
+      role: 'subagent',
+      text: 'first',
+      agentName: 'explorer',
+      parentToolCallId: 'outer-1',
+      runId: 'run-1',
+      event: {kind: 'start', task: 'first', parallelSize: 2}
+    },
+    {
+      role: 'subagent',
+      text: 'second',
+      agentName: 'explorer',
+      parentToolCallId: 'outer-2',
+      runId: 'run-2',
+      event: {kind: 'start', task: 'second', parallelSize: 2}
+    }
+  ]);
+  context.subagentRunContext.updateActivity({agentName: 'explorer', phase: 'thinking', runId: 'run-1', task: 'first'});
+  context.subagentRunContext.updateActivity({agentName: 'explorer', phase: 'tool', runId: 'run-2', task: 'second', toolName: 'grep'});
+
+  const renderState = context.createRenderState();
+
+  // 与 render 层同一优先级：没有主 turn 计时器时，并行子运行取最长 elapsed。
+  assert.equal(renderState.pending.kind, 'subagents');
+  assert.equal(renderState.statusLine.activity.kind, 'working');
+  assert.equal(typeof renderState.statusLine.activity.elapsedMs, 'number');
 });

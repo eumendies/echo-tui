@@ -255,18 +255,20 @@ function createSubagentLoopRuntime(cwd: string, inheritedContext: InheritedAgent
     }
 
     const recordRegion: TranscriptRecord[] = [{role: 'user', text: input.task}];
+    let baseRecordIndex = 0;
     let compactionState: CompactionState | undefined;
     let usageAnchor: TokenUsageAnchor | null = null;
     callbacks.onThinking?.();
 
     /**
-     * 子运行独立维护压缩状态，不向主 transcript提交 compaction notice。
+     * 子运行独立维护完整历史起点与活跃记录区，采纳摘要后释放前缀，不向主 transcript提交 compaction notice。
      * 摘要请求复用子运行冻结的材料与父记忆投影构造前导，并携带父会话身份以复用缓存路由。
      */
     async function maybeCompact(): Promise<void> {
       throwIfAborted(input.abortSignal);
       const result = await runCompaction({
         records: recordRegion,
+        baseRecordIndex,
         compaction: compactionState,
         anchor: usageAnchor,
         contextWindow: state.contextWindow,
@@ -298,6 +300,8 @@ function createSubagentLoopRuntime(cwd: string, inheritedContext: InheritedAgent
       }
 
       compactionState = result.compaction;
+      recordRegion.splice(0, compactionState.activeStartIndex - baseRecordIndex);
+      baseRecordIndex = compactionState.activeStartIndex;
       usageAnchor = null;
       recordRegion.push(createCompactionNoticeRecord(compactionState));
       state.observation.compactionCompleted({scope: state.observationScope, compaction: compactionState});
@@ -333,7 +337,7 @@ function createSubagentLoopRuntime(cwd: string, inheritedContext: InheritedAgent
       await maybeCompact();
       throwIfAborted(input.abortSignal);
       const activeStartIndex = compactionState ? compactionState.activeStartIndex : 0;
-      const activeRecords = recordRegion.slice(activeStartIndex);
+      const activeRecords = recordRegion.slice(activeStartIndex - baseRecordIndex);
       const memoryPrompt = inheritedContext.memoryPrompt;
       const providerRecords = buildProviderRecords({
         activeRecords,
@@ -383,7 +387,7 @@ function createSubagentLoopRuntime(cwd: string, inheritedContext: InheritedAgent
       throwIfAborted(input.abortSignal);
 
       if (typeof usageInputTokens === 'number') {
-        usageAnchor = {usageInputTokens, measuredAtRecordCount: recordRegion.length - activeStartIndex};
+        usageAnchor = {usageInputTokens, measuredAtRecordCount: recordRegion.length - (activeStartIndex - baseRecordIndex)};
       }
       state.observation.providerUsage({scope: state.observationScope, usage, usageInputTokens});
       recordProviderUsage(usage, usageInputTokens);
