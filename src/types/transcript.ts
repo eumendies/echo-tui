@@ -337,6 +337,15 @@ export type SetChangeHistoryJournalOperation = {
   changeHistory: ChangeCheckpoint[];
 };
 
+export type PushChangeCheckpointJournalOperation = {
+  op: 'push_change_checkpoint'; // 追加一个 change checkpoint 到栈顶，写入量不随栈深增长。
+  checkpoint: ChangeCheckpoint; // 本轮新增的 checkpoint，重放时按顺序成为新的栈顶。
+};
+
+export type PopChangeCheckpointJournalOperation = {
+  op: 'pop_change_checkpoint'; // 弹出栈顶 change checkpoint；重放时栈为空按不可恢复处理。
+};
+
 export type SetCompactionJournalOperation = {
   op: 'set_compaction';
   compaction: CompactionState | null;
@@ -351,6 +360,8 @@ export type TranscriptJournalSubOperation =
   | AppendRecordsJournalOperation
   | TruncateRecordsJournalOperation
   | SetChangeHistoryJournalOperation
+  | PushChangeCheckpointJournalOperation
+  | PopChangeCheckpointJournalOperation
   | SetCompactionJournalOperation
   | SetTodoStateJournalOperation;
 

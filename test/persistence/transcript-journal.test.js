@@ -7,6 +7,8 @@ const test = require('node:test');
 const {
   createAppendRecordsOperation,
   createBatchOperation,
+  createPopChangeCheckpointOperation,
+  createPushChangeCheckpointOperation,
   createRepairedJournalText,
   createSetChangeHistoryOperation,
   createSetCompactionOperation,
@@ -45,6 +47,94 @@ function createJournalLines(operations) {
     ...operations.map((operation, index) => serializeTranscriptJournalLine(createTranscriptJournalEntry(operation, index + 1, `2026-07-01T00:00:0${index + 1}.000Z`)))
   ];
 }
+
+function changeCheckpoint(id, overrides = {}) {
+  return {
+    id,
+    createdAt: '2026-07-01T00:00:00.000Z',
+    cwd: '/tmp/project',
+    transcriptStartIndex: 1,
+    status: 'ready',
+    files: [],
+    ...overrides
+  };
+}
+
+test('push and pop replay to the same change history as whole-array rewrites', () => {
+  const first = changeCheckpoint('checkpoint-1');
+  const second = changeCheckpoint('checkpoint-2');
+  const third = changeCheckpoint('checkpoint-3');
+  const records = [createAppendRecordsOperation([{role: 'user', text: 'one'}])];
+  // 非默认的 compaction 与 todoState 一并纳入深比较，避免等价性只在空状态下成立。
+  const state = [
+    createSetCompactionOperation({summaryText: 'earlier context', activeStartIndex: 1, createdAt: '2026-07-01T00:00:00.000Z'}),
+    createSetTodoStateOperation({updatedAt: '2026-07-01T00:00:00.000Z', items: [{id: 'todo_1', text: 'inspect', status: 'open'}]})
+  ];
+
+  const incremental = createJournalLines([
+    ...records,
+    ...state,
+    createPushChangeCheckpointOperation(first),
+    createPushChangeCheckpointOperation(second),
+    createPushChangeCheckpointOperation(third),
+    createPopChangeCheckpointOperation()
+  ]).join('\n');
+  const wholeArray = createJournalLines([
+    ...records,
+    ...state,
+    createSetChangeHistoryOperation([first]),
+    createSetChangeHistoryOperation([first, second]),
+    createSetChangeHistoryOperation([first, second, third]),
+    createSetChangeHistoryOperation([first, second])
+  ]).join('\n');
+
+  const incrementalLoaded = replayTranscriptJournal(incremental);
+  const wholeArrayLoaded = replayTranscriptJournal(wholeArray);
+
+  assert.deepEqual(incrementalLoaded.session, wholeArrayLoaded.session);
+  assert.deepEqual(incrementalLoaded.session.changeHistory.map((checkpoint) => checkpoint.id), ['checkpoint-1', 'checkpoint-2']);
+  assert.equal(incrementalLoaded.session.compaction.summaryText, 'earlier context');
+  assert.deepEqual(incrementalLoaded.session.todoState.items.map((item) => item.id), ['todo_1']);
+});
+
+test('journals mixing whole-array and incremental change history replay without migration', () => {
+  const first = changeCheckpoint('checkpoint-1');
+  const second = changeCheckpoint('checkpoint-2');
+  // 前缀由旧版本写成整份数组，后缀由新版本写成增量，恢复方不应要求迁移或改写。
+  const journal = createJournalLines([
+    createSetChangeHistoryOperation([first]),
+    createPushChangeCheckpointOperation(second),
+    createPopChangeCheckpointOperation()
+  ]).join('\n');
+
+  const loaded = replayTranscriptJournal(journal);
+
+  assert.deepEqual(loaded.session.changeHistory.map((checkpoint) => checkpoint.id), ['checkpoint-1']);
+});
+
+test('an invalid boundary reset replays as a single non-reversible checkpoint', () => {
+  const invalid = changeCheckpoint('checkpoint-invalid', {status: 'invalid', invalidReason: '写入型 bash 不可追踪'});
+  const journal = createJournalLines([
+    createPushChangeCheckpointOperation(changeCheckpoint('checkpoint-1')),
+    createSetChangeHistoryOperation([invalid])
+  ]).join('\n');
+
+  const loaded = replayTranscriptJournal(journal);
+
+  assert.deepEqual(loaded.session.changeHistory.map((checkpoint) => checkpoint.id), ['checkpoint-invalid']);
+  assert.equal(loaded.session.changeHistory[0].status, 'invalid');
+});
+
+test('popping an empty change history is unrecoverable even on the final line', () => {
+  const journal = createJournalLines([
+    createAppendRecordsOperation([{role: 'user', text: 'only'}]),
+    createPopChangeCheckpointOperation()
+  ]).join('\n');
+
+  // 结构有效但语义失败：不得按"可修复尾行"忽略，否则会把栈错位当成正常恢复。
+  assert.equal(replayTranscriptJournal(journal), null);
+  assert.equal(replayTranscriptJournal(`${journal}\n`), null);
+});
 
 test('replayTranscriptJournal replays records and keeps state updates independent', () => {
   const todoState = {

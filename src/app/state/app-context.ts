@@ -560,8 +560,13 @@ class AppContext {
    * 完成本轮文件变更 checkpoint，并把它放入 history。
    */
   finalizeChangeCheckpoint(): void {
-    this.changeHistoryContext.finalizeCheckpoint();
-    this.syncChangeHistory(true);
+    const delta = this.changeHistoryContext.finalizeCheckpoint();
+
+    if (delta) {
+      this.transcriptContext.stageChangeHistoryDelta(delta);
+    }
+
+    this.transcriptContext.persistCurrentSession();
   }
 
   /**
@@ -594,12 +599,9 @@ class AppContext {
     }
 
     try {
-      const nextChangeHistory = this.changeHistoryContext.getHistory();
-      nextChangeHistory.pop();
       this.transcriptContext.restoreToBoundary(
         result.checkpoint.transcriptStartIndex,
         result.checkpoint.compactionBefore,
-        nextChangeHistory,
         completeRecords
       );
       this.changeHistoryContext.markLastUsed();
@@ -611,17 +613,6 @@ class AppContext {
         reason: 'restore_failed',
         message: error instanceof Error && error.message.trim() !== '' ? error.message : 'transcript 回退失败'
       };
-    }
-  }
-
-  /**
-   * 把文件变更历史同步到当前 transcript session，用于 `/undo` 和 `/diff` fallback。
-   */
-  private syncChangeHistory(persist: boolean): void {
-    this.transcriptContext.setChangeHistory(this.changeHistoryContext.getHistory());
-
-    if (persist) {
-      this.transcriptContext.persistCurrentSession();
     }
   }
 

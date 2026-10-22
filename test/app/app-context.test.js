@@ -288,6 +288,10 @@ function applyOperation(session, operation) {
     session.records.length = operation.recordCount;
   } else if (operation.op === 'set_change_history') {
     session.changeHistory = structuredClone(operation.changeHistory);
+  } else if (operation.op === 'push_change_checkpoint') {
+    session.changeHistory = [...(session.changeHistory || []), structuredClone(operation.checkpoint)];
+  } else if (operation.op === 'pop_change_checkpoint') {
+    (session.changeHistory || []).pop();
   } else if (operation.op === 'set_compaction') {
     if (operation.compaction) {
       session.compaction = {...operation.compaction};
@@ -396,7 +400,7 @@ test('AppContext undo restores transcript records and compaction state', () => {
   assert.deepEqual(transcriptStore.operations.at(-1).operations.map((operation) => operation.op), [
     'truncate_records',
     'set_compaction',
-    'set_change_history'
+    'pop_change_checkpoint'
   ]);
 });
 
@@ -3186,4 +3190,44 @@ test('AppContext keeps stale assistant turn cleanup from clearing a newer turn',
 
   assert.equal(context.turnContext.isCurrentAssistantTurn(firstTurn), false);
   assert.equal(context.turnContext.isCurrentAssistantTurn(secondTurn), true);
+});
+
+test('AppContext change history writes stay constant per turn instead of growing with stack depth', (t) => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-history-growth-'));
+  t.after(() => fs.rmSync(rootDir, {recursive: true, force: true}));
+  const cwd = '/tmp/echo_tui/history-growth';
+  const store = createTranscriptStore({rootDir});
+  const context = createContext({transcriptStore: store, cwd});
+
+  context.transcriptContext.appendRecord({role: 'user', text: 'base'});
+  // 每个 checkpoint 都内联这份摘要，因此整份重写会让第 N 轮重写 N 份摘要。
+  context.transcriptContext.applyCompaction({
+    summaryText: 's'.repeat(20000),
+    activeStartIndex: 1,
+    createdAt: '2026-05-19T00:00:00.000Z'
+  });
+
+  for (let turn = 0; turn < 100; turn += 1) {
+    context.beginChangeCheckpoint();
+    context.transcriptContext.appendRecord({role: 'user', text: `turn ${turn}`});
+    context.finalizeChangeCheckpoint();
+  }
+
+  const journalPath = store.getSessionFilePath(cwd, context.transcriptContext.currentSessionId);
+  const entries = fs.readFileSync(journalPath, 'utf8').trim().split('\n')
+    .map((line) => ({line, entry: JSON.parse(line)}));
+  // 只测 push 行不足以证明没有整份重写：必须同时断言 journal 里不存在整份替换或弹出。
+  assert.equal(entries.filter(({entry}) => entry.op === 'set_change_history').length, 0);
+  assert.equal(entries.filter(({entry}) => entry.op === 'pop_change_checkpoint').length, 0);
+  const pushBytes = entries
+    .filter(({entry}) => entry.op === 'push_change_checkpoint')
+    .map(({line}) => Buffer.byteLength(line));
+
+  assert.equal(pushBytes.length, 100);
+  // 栈深 1 与栈深 100 的单次写入同阶：写入量不随栈深增长。
+  assert.ok(pushBytes.at(-1) < pushBytes[0] * 1.5, `first=${pushBytes[0]} last=${pushBytes.at(-1)}`);
+  // 线性度：100 轮的字节量约为前 10 轮的 10 倍；整份重写会是约 100 倍。
+  const firstTen = pushBytes.slice(0, 10).reduce((sum, bytes) => sum + bytes, 0);
+  const all = pushBytes.reduce((sum, bytes) => sum + bytes, 0);
+  assert.ok(all / firstTen < 20, `ratio=${all / firstTen}`);
 });
