@@ -54,6 +54,7 @@ function createSkillSnapshot(workspace) {
 function createConfigSnapshot(config) {
   return {
     revision: 1,
+    getMainAgentToolsConfig() { return {disabledTools: []}; },
     getAppSettings() {
       return {agentInstructionFileName: 'AGENTS.md', compactionThresholdRatio: 0.8, skillCatalogContextRatio: 0.02, toolApprovalMode: 'manual'};
     },

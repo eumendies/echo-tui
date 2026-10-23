@@ -23,7 +23,7 @@ import type {ToolHandler, ToolRegistry} from '../types/tool';
 import type {ToolResultStore} from './tool-result-offloading';
 
 type DefaultToolRegistryOptions = {
-  allowedToolNames?: ReadonlySet<string>; // 缺省暴露完整默认目录；存在时只创建明确允许的 handler。
+  allowedToolNames?: ReadonlySet<string>; // 缺省暴露完整默认目录；存在时只保留明确允许的 handler。
   executionMode?: AgentExecutionMode; // 本次运行执行模式;headless full-access 强制关闭沙箱包装。
   mcpManager?: McpManager; // 注入共享 MCP manager 时注册资源读取工具；缺省时不注册。
   sandboxModeOverride?: SandboxModeOverride; // 本次运行的沙箱收紧;非 off 配置收紧为 read-only。
@@ -55,46 +55,34 @@ function createToolRegistry(handlers: ToolHandler[] = []): ToolRegistry {
 }
 
 /**
- * 创建固定默认工具目录；Bash 在调用启动时读取运行级沙箱，其余工具沿用初始化快照。
+ * 创建包含双编辑工具的默认目录；主运行另行应用禁用名单，子运行按自身 allowlist 筛选。
+ * Bash 在调用启动时读取运行级沙箱，其余工具沿用初始化快照。
  */
 function createDefaultToolRegistry(config: LlmConfig, cwd: string | (() => string) = process.cwd, toolResultStore: ToolResultStore = createToolResultStore({cwd}), options: DefaultToolRegistryOptions = {}): ToolRegistry {
   const skillRegistry = options.skillRegistry || createSkillManager({cwd});
-  const fileEditHandler = config.tools.fileEditMode === 'edit_file'
-    ? createEditFileToolHandler({cwd})
-    : createApplyPatchToolHandler({cwd});
   const handlers = [
     createBashToolHandler({
       cwd,
+      toolResultStore,
       maxOutputBytes: config.tools.bash.maxOutputBytes,
       // 每个调用启动时固定自己的沙箱；后续引导不会改变已经执行中的命令。
       get sandbox() {
         const modeOverride = options.sandboxModeOverride;
         return resolveBashSandboxContext(config.tools.sandbox, options.executionMode, modeOverride ? {modeOverride} : {}) ?? undefined;
       },
-      toolResultStore,
       timeoutMs: config.tools.bash.timeoutMs
     }),
-    fileEditHandler,
+    createApplyPatchToolHandler({cwd}),
+    createEditFileToolHandler({cwd}),
     createAskUserQuestionsToolHandler(),
-    createGlobToolHandler({
-      cwd
-    }),
-    createGrepToolHandler({
-      cwd
-    }),
-    createReadFilesToolHandler({
-      autoCompressImages: config.tools.autoCompressImages,
-      cwd,
-      toolResultStore
-    }),
+    createGlobToolHandler({cwd}),
+    createGrepToolHandler({cwd}),
+    createReadFilesToolHandler({autoCompressImages: config.tools.autoCompressImages, cwd, toolResultStore}),
     ...createTodoToolHandlers(),
     createUseSkillToolHandler(skillRegistry),
-    createWebFetchToolHandler({
-      toolResultStore
-    }),
-    createWebSearchToolHandler({
-    }),
-    // 资源工具只在 MCP 真正在用（至少一个 server 初始化成功）时出现,未配置或全局关闭时保持仅内置工具行为。
+    createWebFetchToolHandler({toolResultStore}),
+    createWebSearchToolHandler({}),
+    // 资源工具只在 MCP 真正在用时注册；设置目录可独立展示其离线元数据。
     ...(options.mcpManager && options.mcpManager.listServerNames().length > 0
       ? createMcpResourceToolHandlers({manager: options.mcpManager, toolResultStore})
       : []),

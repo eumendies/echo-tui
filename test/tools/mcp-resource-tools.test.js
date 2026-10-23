@@ -52,7 +52,7 @@ test('default registry registers MCP resource tools only when a server is initia
     agentType: 'fake',
     apiKey: '',
     model: 'fake',
-    tools: {bash: {timeoutMs: null, maxOutputBytes: 65_536}, fileEditMode: 'apply_patch', sandbox: {mode: 'off', network: false, extraWritablePaths: []}}
+    tools: {bash: {timeoutMs: null, maxOutputBytes: 65_536}, sandbox: {mode: 'off', network: false, extraWritablePaths: []}}
   };
   const namesFor = (mcpManager) => createDefaultToolRegistry(config, '/tmp/echo-mcp-resource-registry', undefined, mcpManager ? {mcpManager} : {})
     .listDefinitions()

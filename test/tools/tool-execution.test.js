@@ -311,6 +311,7 @@ test('default tool registry exposes developed tools', () => {
 
   assert.equal(registry.getHandler(RUN_BASH_COMMAND_TOOL_NAME) !== undefined, true);
   assert.equal(registry.getHandler(APPLY_PATCH_TOOL_NAME) !== undefined, true);
+  assert.equal(registry.getHandler('edit_file') !== undefined, true);
   assert.equal(registry.getHandler(ASK_USER_QUESTIONS_TOOL_NAME) !== undefined, true);
   assert.equal(registry.getHandler(GLOB_TOOL_NAME) !== undefined, true);
   assert.equal(registry.getHandler(GREP_TOOL_NAME) !== undefined, true);
@@ -327,6 +328,7 @@ test('default tool registry exposes developed tools', () => {
   assert.deepEqual(registry.listDefinitions().map((definition) => definition.name), [
     RUN_BASH_COMMAND_TOOL_NAME,
     APPLY_PATCH_TOOL_NAME,
+    'edit_file',
     ASK_USER_QUESTIONS_TOOL_NAME,
     GLOB_TOOL_NAME,
     GREP_TOOL_NAME,

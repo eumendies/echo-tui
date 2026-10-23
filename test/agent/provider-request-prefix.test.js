@@ -15,9 +15,10 @@ const RUN_CONFIG = {
   }
 };
 
-/** 运行派生材料只读 registry 的 catalog 事实；这里给出最小投影。 */
+/** 运行派生材料使用 registry 的工具准入与 catalog 事实；这里给出最小投影。 */
 function createSkillRegistry(catalog = []) {
   return {
+    getHandler: (name) => name === 'use_skill' ? {definition: {name}} : undefined,
     listSkillCatalog: () => catalog
   };
 }
@@ -68,7 +69,7 @@ test('resolveRuntimeMaterials omits the sandbox note when the sandbox is disable
     config: RUN_CONFIG,
     executionMode: {kind: 'interactive'},
     // 无 listSkillCatalog 的 registry 按空目录投影，不视为配置错误。
-    registry: {},
+    registry: {getHandler: () => undefined},
     skillCatalogContextRatio: 0.02
   });
 

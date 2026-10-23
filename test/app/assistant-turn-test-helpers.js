@@ -178,7 +178,6 @@ function createConfigRootFromAppSettings(settings) {
     skills: {catalogContextRatio: settings.skillCatalogContextRatio},
     tools: {
       approval: {mode: settings.toolApprovalMode, ...(settings.toolApprovalModelProfileId ? {modelProfileId: settings.toolApprovalModelProfileId} : {})},
-      fileEdit: {mode: settings.fileEditMode},
       readFiles: {autoCompressImages: settings.autoCompressImages}
     },
     ui: {
@@ -196,7 +195,7 @@ function createUserConfigSnapshot(revision = 1) {
     apiKey: '',
     model: `fake-${revision}`,
     contextWindow: 128000,
-    tools: {bash: {timeoutMs: null, maxOutputBytes: 65536}, autoCompressImages: true, fileEditMode: 'apply_patch', sandbox: {mode: 'off', network: false, extraWritablePaths: []}}
+    tools: {bash: {timeoutMs: null, maxOutputBytes: 65536}, autoCompressImages: true, sandbox: {mode: 'off', network: false, extraWritablePaths: []}}
   };
   return {
     revision,
@@ -206,7 +205,6 @@ function createUserConfigSnapshot(revision = 1) {
         autoCompressImages: true,
         compactionThresholdRatio: 0.8,
         defaultInteractionMode: 'normal',
-        fileEditMode: 'apply_patch',
         skillCatalogContextRatio: 0.02,
         showReasoningSummary: true,
         slashSuggestionMaxVisible: 8,

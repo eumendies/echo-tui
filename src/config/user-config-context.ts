@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import {createHash} from 'node:crypto';
 
 import {applyAppSettingsDraft, normalizeAppSettings} from './app-settings-config';
+import {applyMainAgentToolsDraft, parseMainAgentToolsConfig} from './main-agent-tools-config';
 import {JsonConfigFile, JsonConfigFileError, isJsonConfigObject} from './json-config-file';
 import {
   LlmConfigError,
@@ -19,6 +20,7 @@ import {getDefaultUserConfigPath, watchUserConfig} from './user-config';
 import {applyLifecycleHookConfigDraft, parseLifecycleHookConfig, parseLifecycleHookConfigDraft} from '../hooks/config';
 
 import type {AppSettings} from './app-settings-config';
+import type {MainAgentToolsConfig} from './main-agent-tools-config';
 import type {JsonConfigFileOptions, JsonConfigObject, JsonConfigFileErrorKind} from './json-config-file';
 import type {LlmModelConfigInfo, ParsedLlmConfiguration, ResolveLlmConfigOptions} from './llm-config';
 import type {LlmConfig, SandboxToolConfig, ToolRuntimeConfig} from '../types/agent';
@@ -99,6 +101,7 @@ class UserConfigSnapshot {
   private mcpEditDraftCache?: McpConfigEditDraft;
   private mcpRuntimeCache?: McpConfig;
   private modelInfoCache?: LlmModelConfigInfo;
+  private mainAgentToolsCache?: MainAgentToolsConfig;
   private sandboxDraftCache?: SandboxConfigDraft;
   private readonly configPath: string;
   private readonly root: JsonConfigObject;
@@ -122,6 +125,18 @@ class UserConfigSnapshot {
     this.assertDraftReadable();
     this.appSettingsDraftCache ||= freezeValue(normalizeAppSettings(this.root));
     return structuredClone(this.appSettingsDraftCache);
+  }
+
+  /** 独立读取主 Agent 工具偏好，非法名单不影响其他配置域的 selector。 */
+  getMainAgentToolsConfig(): MainAgentToolsConfig {
+    this.assertDraftReadable();
+    this.mainAgentToolsCache ||= freezeValue(parseMainAgentToolsConfig(this.root));
+    return this.mainAgentToolsCache;
+  }
+
+  /** 返回隔离的主工具草稿；读取旧字段和归一化均不触发写盘。 */
+  getMainAgentToolsDraft(): MainAgentToolsConfig {
+    return structuredClone(this.getMainAgentToolsConfig());
   }
 
   /** 返回当前模型目录，不暴露 provider 凭据。 */
@@ -331,6 +346,11 @@ class UserConfigContext {
   /** 保存常规设置并立即发布安装后的 snapshot。 */
   saveAppSettingsDraft(draft: AppSettings): UserConfigRefreshResult {
     return this.updateRoot((root) => applyAppSettingsDraft(root, draft));
+  }
+
+  /** 基于最新磁盘根保存主工具名单，不提交其他配置域的草稿。 */
+  saveMainAgentToolsDraft(draft: MainAgentToolsConfig): UserConfigRefreshResult {
+    return this.updateRoot((root) => applyMainAgentToolsDraft(root, draft));
   }
 
   /** 保存 LLM provider/model 草稿；缺失文件时沿用草稿携带的未知根节点。 */

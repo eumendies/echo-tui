@@ -3,7 +3,6 @@
 ## Purpose
 定义 `echo_tui` skill 系统的外部行为，包括 skill 文件发现、元数据解析、短 catalog 常驻注入、完整内容按需加载、使用记录识别、skill 启用管理、按 skill 的模型策略，以及 slash command 边界。
 ## Requirements
-
 ### Requirement: Built-in skill 资源随应用版本发布
 系统 SHALL 将 built-in skill 的 `SKILL.md`、`reference/`（如有）和 `scripts/` 资源复制到编译产物并包含在 npm 发布包中。Built-in skill 的 source path SHALL 基于当前安装包位置解析，不得依赖固定 npm 前缀、当前工作目录或复制到用户目录的陈旧副本。
 
@@ -51,7 +50,7 @@
 - **THEN** 对该 skill 的显式加载 SHALL 返回明确失败信息
 
 ### Requirement: skill catalog 常驻注入
-系统 SHALL 在 provider system prompt 中注入短 skill catalog，使模型知道当前可用 skill 及其适用场景。catalog SHALL 只使用 skill 名称和 description 投影，不得包含完整 `SKILL.md` 正文。系统 SHALL 按当前模型 context window 和归一化配置比例限制 catalog 的估算 token 占用，并 SHALL 在一次 agent run 的全部 provider continuation 中复用同一 catalog 投影。
+系统 SHALL 仅在当前运行 registry 已注册 `use_skill` 时，在 provider system prompt 中自动注入短 skill catalog，使模型知道当前可用 skill 及其适用场景。下述目录预算与投影场景 SHALL 以该工具在当前运行可用为前提；未注册时 SHALL 不自动注入目录，不改变 enabled Skill snapshot、用户显式 Skill 命令或子运行独立 scope。catalog SHALL 只使用 skill 名称和 description 投影，不得包含完整 `SKILL.md` 正文。系统 SHALL 按当前模型 context window 和归一化配置比例限制 catalog 的估算 token 占用，并 SHALL 在一次 agent run 的全部 provider continuation 中复用同一 catalog 投影。
 
 #### Scenario: 存在 skill 且完整 catalog 未超过预算
 - **WHEN** 发起 provider 请求且 registry 中存在可用 skill
@@ -97,6 +96,12 @@
 - **WHEN** skill 的 `SKILL.md` 正文包含长工作流说明
 - **THEN** system prompt 中的 catalog SHALL NOT 包含该长正文
 - **THEN** 该正文 SHALL 只能通过 `use_skill` 工具加载
+
+#### Scenario: 禁用主 Agent Skill 工具不丢弃父快照
+- **WHEN** 主 Agent 禁用 `use_skill`，且仍允许委派具有该工具的子 Agent
+- **THEN** 主运行 SHALL 不自动注入 Skill catalog
+- **THEN** 父 enabled Skill snapshot SHALL 保留，子运行 SHALL 按自身 registry 与 allowlist 生成目录并加载 Skill
+- **THEN** `/skills` 管理与用户显式 Skill 命令 SHALL 保持既有语义且不得重新授予主运行的禁用工具
 
 ### Requirement: skill 内容按需加载
 系统 SHALL 通过 `use_skill` 工具按名称加载完整 skill 内容。加载结果 SHALL 包含 skill 名称、来源、可选参数和正文，并 SHALL 作为普通 tool result 进入 transcript。

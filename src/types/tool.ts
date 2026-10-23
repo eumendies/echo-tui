@@ -15,6 +15,13 @@ export type ToolDefinition = {
   parameters: Record<string, unknown>;
 };
 
+export type MainAgentToolCatalogEntry = {
+  name: string; // 与运行时注册及持久化偏好精确匹配的真实工具名。
+  available: boolean; // 当前依赖是否满足，与用户开启偏好无关。
+  serverName?: string; // 已发现 MCP 工具所属服务；未知离线项不推测归属。
+  unknown?: boolean; // 仅有持久化偏好、当前目录找不到工具定义，不与已知但依赖不可用的工具混淆。
+};
+
 export type ToolCall = {
   callId: string;
   toolName: string;

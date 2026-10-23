@@ -9,7 +9,7 @@ const {createHarness, createUserConfigSnapshot, createFakeTranscriptStore, creat
 test('runAssistantTurn keeps manual approval unchanged and does not call auto reviewer', async () => {
   const harness = createHarness({appSettings: {
     agentInstructionFileName: 'AGENTS.md', autoCompressImages: true, compactionThresholdRatio: 0.8,
-    defaultInteractionMode: 'normal', fileEditMode: 'apply_patch', skillCatalogContextRatio: 0.02,
+    defaultInteractionMode: 'normal', skillCatalogContextRatio: 0.02,
     showReasoningSummary: true, slashSuggestionMaxVisible: 8, toolApprovalMode: 'manual'
   }});
   let reviews = 0;
@@ -63,7 +63,7 @@ test('runAssistantTurn auto approval allows once for file, bash, and MCP calls w
   ]) {
     const harness = createHarness({appSettings: {
       agentInstructionFileName: 'AGENTS.md', autoCompressImages: true, compactionThresholdRatio: 0.8,
-      defaultInteractionMode: 'normal', fileEditMode: 'apply_patch', skillCatalogContextRatio: 0.02,
+      defaultInteractionMode: 'normal', skillCatalogContextRatio: 0.02,
       showReasoningSummary: true, slashSuggestionMaxVisible: 8, toolApprovalMode: 'auto', toolApprovalModelProfileId: 'reviewer'
     }});
     let reviews = 0;
@@ -118,7 +118,7 @@ test('runAssistantTurn gives the main agent and auto reviewer the exact same rev
 test('runAssistantTurn forwards explicit raw user request to auto reviewer', async () => {
   const harness = createHarness({appSettings: {
     agentInstructionFileName: 'AGENTS.md', autoCompressImages: true, compactionThresholdRatio: 0.8,
-    defaultInteractionMode: 'normal', fileEditMode: 'apply_patch', skillCatalogContextRatio: 0.02,
+    defaultInteractionMode: 'normal', skillCatalogContextRatio: 0.02,
     showReasoningSummary: true, slashSuggestionMaxVisible: 8, toolApprovalMode: 'auto', toolApprovalModelProfileId: 'reviewer'
   }});
   let reviewerInput;
@@ -143,7 +143,7 @@ test('runAssistantTurn forwards explicit raw user request to auto reviewer', asy
 test('runAssistantTurn auto no falls back to the existing manual surface and session cache bypasses review', async () => {
   const harness = createHarness({appSettings: {
     agentInstructionFileName: 'AGENTS.md', autoCompressImages: true, compactionThresholdRatio: 0.8,
-    defaultInteractionMode: 'normal', fileEditMode: 'apply_patch', skillCatalogContextRatio: 0.02,
+    defaultInteractionMode: 'normal', skillCatalogContextRatio: 0.02,
     showReasoningSummary: true, slashSuggestionMaxVisible: 8, toolApprovalMode: 'auto', toolApprovalModelProfileId: 'reviewer'
   }});
   let reviews = 0;
@@ -183,7 +183,7 @@ test('runAssistantTurn auto no falls back to the existing manual surface and ses
 test('runAssistantTurn propagates reviewer abort without opening a late manual surface', async () => {
   const harness = createHarness({appSettings: {
     agentInstructionFileName: 'AGENTS.md', autoCompressImages: true, compactionThresholdRatio: 0.8,
-    defaultInteractionMode: 'normal', fileEditMode: 'apply_patch', skillCatalogContextRatio: 0.02,
+    defaultInteractionMode: 'normal', skillCatalogContextRatio: 0.02,
     showReasoningSummary: true, slashSuggestionMaxVisible: 8, toolApprovalMode: 'auto', toolApprovalModelProfileId: 'reviewer'
   }});
 
@@ -206,7 +206,7 @@ test('runAssistantTurn propagates reviewer abort without opening a late manual s
 test('runAssistantTurn ignores a late auto no after the turn is interrupted', async () => {
   const harness = createHarness({appSettings: {
     agentInstructionFileName: 'AGENTS.md', autoCompressImages: true, compactionThresholdRatio: 0.8,
-    defaultInteractionMode: 'normal', fileEditMode: 'apply_patch', skillCatalogContextRatio: 0.02,
+    defaultInteractionMode: 'normal', skillCatalogContextRatio: 0.02,
     showReasoningSummary: true, slashSuggestionMaxVisible: 8, toolApprovalMode: 'auto', toolApprovalModelProfileId: 'reviewer'
   }});
   let resolveReview;
@@ -375,7 +375,7 @@ test('runAssistantTurn queues drafts for the app activity clock and redraws stru
 test('runAssistantTurn persists subagent events, restores pending after permission, and rejects late callbacks', async () => {
   const harness = createHarness({appSettings: {
     agentInstructionFileName: 'AGENTS.md', autoCompressImages: true, compactionThresholdRatio: 0.8,
-    defaultInteractionMode: 'normal', fileEditMode: 'apply_patch', skillCatalogContextRatio: 0.02,
+    defaultInteractionMode: 'normal', skillCatalogContextRatio: 0.02,
     showReasoningSummary: true, slashSuggestionMaxVisible: 8, toolApprovalMode: 'manual'
   }});
   let capturedCallbacks;

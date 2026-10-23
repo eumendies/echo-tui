@@ -20,7 +20,7 @@ const sandboxProvider = require('../../src/sandbox/provider');
 
 const config = {agentType: 'fake', apiKey: 'test', model: 'fake', contextWindow: 128000,
   tools: {bash: {timeoutMs: 1000, maxOutputBytes: 1024}, sandbox: {mode: 'off', network: false, extraWritablePaths: []}}};
-const snapshot = {getAppSettings: () => ({agentInstructionFileName: 'AGENTS.md', compactionThresholdRatio: 0.7, skillCatalogContextRatio: 0.02})};
+const snapshot = {getMainAgentToolsConfig: () => ({disabledTools: []}), getAppSettings: () => ({agentInstructionFileName: 'AGENTS.md', compactionThresholdRatio: 0.7, skillCatalogContextRatio: 0.02})};
 const done = {draft: 'done', toolCalls: []};
 const call = (id, name = 'exclusive') => ({callId: id, toolName: name, argumentsText: '{}'});
 const result = (toolCall) => ({callId: toolCall.callId, toolName: toolCall.toolName, ok: true, text: 'actual', details: {kind: 'generic'}});

@@ -16,8 +16,8 @@ const LIST_TRUNCATION_MESSAGE = '[MCP resource catalog truncated. Filter by serv
 const READ_TRUNCATION_MESSAGE = '[MCP resource result truncated. Read a narrower resource or split it into smaller requests.]';
 
 type McpResourceToolHandlersOptions = {
-  manager: McpManager;
-  toolResultStore?: ToolResultStore;
+  manager: McpManager; // 已初始化的共享资源连接目录。
+  toolResultStore?: ToolResultStore; // 资源正文超限时使用的运行级落盘存储。
 };
 
 /**

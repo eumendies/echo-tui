@@ -183,13 +183,13 @@ test('runOnce discovers and executes the same frozen custom subagent catalog as 
     tools: {
       autoCompressImages: true,
       bash: {timeoutMs: 1000, maxOutputBytes: 4096},
-      fileEditMode: 'apply_patch',
       sandbox: {mode: 'off', network: false, extraWritablePaths: []}
     }
   };
   const reviewerConfig = {...config, model: 'fake-reviewer', reasoningEffort: 'low'};
   const snapshot = {
     revision: 1,
+    getMainAgentToolsConfig() { return {disabledTools: []}; },
     getAppSettings() {
       return {
         agentInstructionFileName: 'AGENTS.md',

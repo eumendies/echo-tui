@@ -50,7 +50,6 @@ const DEFAULT_TOOLS = {
     timeoutMs: DEFAULT_BASH_TOOL_TIMEOUT_MS,
     maxOutputBytes: DEFAULT_BASH_TOOL_MAX_OUTPUT_BYTES
   },
-  fileEditMode: 'apply_patch',
   sandbox: {mode: 'workspace-write', network: true, extraWritablePaths: []}
 };
 
@@ -569,7 +568,6 @@ test('readLlmConfig reads explicit bash tool limits without the previous 30s tim
       timeoutMs: 120000,
       maxOutputBytes: 4096
     },
-    fileEditMode: 'apply_patch',
     sandbox: {mode: 'workspace-write', network: true, extraWritablePaths: []}
   });
 });
@@ -605,18 +603,20 @@ test('readLlmConfig rejects invalid sandbox tool config values', () => {
   assert.throws(() => readLlmConfig({readFile: readConfigFrom(JSON.stringify({...base, tools: {sandbox: 'off'}}))}), /tools.sandbox/);
 });
 
-test('readLlmConfig reads and normalizes file edit tool mode', () => {
+test('runtime LLM configs ignore legacy file edit mode and expose no derived field', () => {
   const base = {
     llm: {
       providers: {shared: {preset: OPENAI_PRESET, apiKey: 'key'}},
       models: [{id: 'fast', provider: 'shared', model: 'gpt-fast'}]
     }
   };
-  const selected = readLlmConfig({readFile: readConfigFrom(JSON.stringify({...base, tools: {fileEdit: {mode: 'edit_file'}}}))});
-  const invalid = readLlmConfig({readFile: readConfigFrom(JSON.stringify({...base, tools: {fileEdit: {mode: 'other'}}}))});
-
-  assert.equal(selected.tools.fileEditMode, 'edit_file');
-  assert.equal(invalid.tools.fileEditMode, 'apply_patch');
+  for (const mode of [undefined, null, 'apply_patch', 'edit_file', 'other', true, {}, []]) {
+    const options = {readFile: readConfigFrom(JSON.stringify({...base, tools: {fileEdit: {mode}}}))};
+    for (const config of [readLlmConfig(options), readLlmConfigForProfile('fast', options), readLlmConfigStrict('fast', undefined, options)]) {
+      assert.equal(Object.hasOwn(config.tools, 'fileEditMode'), false);
+      assert.deepEqual(config.tools, DEFAULT_TOOLS);
+    }
+  }
 });
 
 test('readLlmConfig reads and normalizes image auto compression', () => {

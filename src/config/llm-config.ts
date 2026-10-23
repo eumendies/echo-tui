@@ -53,6 +53,8 @@ const BUILTIN_MODEL_CONTEXT_WINDOWS: Readonly<Record<string, number>> = {
   'gpt-5.6-terra': 1_050_000,
   'gpt-5.6-luna': 1_050_000,
   'gpt-6-astra': 1_050_000,
+  'gpt-6-luna': 1_050_000,
+  'gpt-6.1-sol': 1_050_000,
   'o1': 200_000,
   'o1-mini': 128_000,
   'o1-preview': 128_000,
@@ -79,13 +81,16 @@ const BUILTIN_MODEL_CONTEXT_WINDOWS: Readonly<Record<string, number>> = {
   'claude-opus-5': 1_000_000,
   'claude-fable-5': 1_000_000,
   'claude-fable-5.1': 1_000_000,
+  'claude-opus-5-5': 1_000_000,
   'claude-sonnet-4-20250514': 1_000_000,
   'claude-sonnet-4-5': 200_000,
   'claude-sonnet-4-5-20250929': 200_000,
   'claude-sonnet-4-6': 1_000_000,
   'claude-sonnet-5': 1_000_000,
+  'claude-sonnet-5-5': 1_000_000,
   'claude-haiku-4-5': 200_000,
   'claude-haiku-4-5-20251001': 200_000,
+  'claude-haiku-5-5': 1_000_000,
   'gemini-3-pro-preview': 1_048_576,
   'gemini-3-flash-preview': 1_048_576,
   'gemini-3.1-pro-preview': 1_048_576,
@@ -98,6 +103,7 @@ const BUILTIN_MODEL_CONTEXT_WINDOWS: Readonly<Record<string, number>> = {
   'deepseek-v3.2': 163_840,
   'deepseek-v4-flash': 1_000_000,
   'deepseek-v4-pro': 1_000_000,
+  'deepseek-v4.1-flash': 1_048_576,
   'qwen3-coder-flash': 997_952,
   'qwen3-coder-plus': 997_952,
   'qwen3-max': 258_048,
@@ -125,6 +131,8 @@ const BUILTIN_MODEL_CONTEXT_WINDOWS: Readonly<Record<string, number>> = {
   'mimo-v2-flash': 262_144,
   'mimo-v2.5': 1_048_576,
   'mimo-v2.5-pro': 1_048_576,
+  'mimo-v2.6-flash': 1_048_576,
+  'mimo-v2.6-pro': 1_048_576,
   'doubao-seed-2-0-pro-260215': 256_000,
   'doubao-seed-2-0-lite-260215': 256_000,
   'doubao-seed-2-0-mini-260215': 256_000,
@@ -545,9 +553,6 @@ function parseToolRuntimeConfig(rootConfig: ConfigSource): ToolRuntimeConfig {
   const bashConfig = toolsConfig.bash && typeof toolsConfig.bash === 'object' && !Array.isArray(toolsConfig.bash)
     ? toolsConfig.bash as ConfigSource
     : {};
-  const fileEditConfig = toolsConfig.fileEdit && typeof toolsConfig.fileEdit === 'object' && !Array.isArray(toolsConfig.fileEdit)
-    ? toolsConfig.fileEdit as ConfigSource
-    : {};
   const readFilesConfig = toolsConfig.readFiles && typeof toolsConfig.readFiles === 'object' && !Array.isArray(toolsConfig.readFiles)
     ? toolsConfig.readFiles as ConfigSource
     : {};
@@ -563,7 +568,6 @@ function parseToolRuntimeConfig(rootConfig: ConfigSource): ToolRuntimeConfig {
       ? readFilesConfig.autoCompressImages
       : DEFAULT_APP_SETTINGS.autoCompressImages,
     bash: readBashToolConfig(bashConfig),
-    fileEditMode: fileEditConfig.mode === 'edit_file' ? 'edit_file' : 'apply_patch',
     sandbox: readSandboxToolConfig(sandboxConfig)
   };
 }
