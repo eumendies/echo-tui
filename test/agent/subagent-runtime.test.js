@@ -189,6 +189,7 @@ test('runtime synchronously delegates through an isolated explorer and commits p
         assert.equal(registry.getHandler('apply_patch'), undefined);
         if (childTurn === 1) {
           assert.match(records[0].text, /Explorer Subagent/);
+          assert.doesNotMatch(records[0].text, /only the read-only resource tools .* are available/u);
           assert.match(records[0].text, /Omit search narration, redundant excerpts/u);
           assert.match(records[0].text, /stable parent instructions/);
           assert.doesNotMatch(records[0].text, /changed after parent initialization/);
@@ -1299,6 +1300,72 @@ test('explorer reads MCP resources without receiving mcp__ tools or approval pro
     // 资源读取是只读观察:explorer 不拿到 mcp__ 工具,也不产生任何审批请求。
     assert.equal(approvals, 0);
     assert.deepEqual(resourceCalls, [{serverName: 'docs', uri: 'file:///guide.md'}]);
+  } finally {
+    fs.rmSync(cwd, {recursive: true, force: true});
+  }
+});
+
+test('explorer runtime supports local reads alongside an empty MCP resource catalog', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-explorer-empty-resources-'));
+  const snapshot = createConfigSnapshot();
+  let parentTurn = 0;
+  let childTurn = 0;
+  const manager = {
+    listTools() { return []; },
+    listReadonlyToolNames() { return new Set(); },
+    listResources() { return []; },
+    listResourceTemplates() { return []; },
+    listServerNames() { return ['docs']; }
+  };
+
+  try {
+    fs.writeFileSync(path.join(cwd, 'evidence.txt'), 'local evidence without MCP resources\n', 'utf8');
+    await withPatchedAgents(cwd, (kind, registry) => ({
+      async runTurn(records) {
+        if (kind === 'primary') {
+          parentTurn += 1;
+          if (parentTurn === 1) {
+            return {draft: '', toolCalls: [{callId: 'outer-local', toolName: 'run_subagent', argumentsText: JSON.stringify({agent: 'explorer', task: 'review local evidence.txt without modifying it'})}]};
+          }
+          const result = records.find((record) => record.role === 'tool_result' && record.toolCallId === 'outer-local');
+          assert.equal(result.ok, true);
+          assert.match(result.text, /local evidence without MCP resources/u);
+          return {draft: 'parent done', toolCalls: []};
+        }
+
+        childTurn += 1;
+        const names = new Set(registry.listDefinitions().map(({name}) => name));
+        for (const name of ['glob', 'grep', 'read_files', 'list_mcp_resources', 'read_mcp_resource']) {
+          assert.equal(names.has(name), true);
+        }
+        assert.equal([...names].some((name) => name.startsWith('mcp__')), false);
+
+        // 模拟 provider 输出只验证工具执行通路，不代表真实模型会选择相同的调用顺序。
+        if (childTurn === 1) {
+          return {draft: '', toolCalls: [{callId: 'inner-list', toolName: 'list_mcp_resources', argumentsText: '{"server":null}'}]};
+        }
+        if (childTurn === 2) {
+          const result = records.find((record) => record.role === 'tool_result' && record.toolCallId === 'inner-list');
+          assert.equal(result.ok, true);
+          assert.match(result.text, /no MCP resources available/u);
+          return {draft: '', toolCalls: [{callId: 'inner-local', toolName: 'read_files', argumentsText: JSON.stringify({files: [{path: 'evidence.txt'}]})}]};
+        }
+
+        const result = records.find((record) => record.role === 'tool_result' && record.toolCallId === 'inner-local');
+        assert.equal(result.ok, true);
+        assert.match(result.text, /local evidence without MCP resources/u);
+        return {draft: 'Read evidence.txt: local evidence without MCP resources.', toolCalls: []};
+      }
+    }), async () => {
+      const runAgent = createTestAgentLoopRuntime(cwd, {capture: () => snapshot}, manager);
+      assert.equal(await runAgent({records: [{role: 'user', text: 'delegate local review'}], userConfigSnapshot: snapshot}, {
+        onToolApprovalRequest() {
+          assert.fail('Read-only local and MCP resource tools must not request approval');
+        }
+      }), 'parent done');
+    });
+    assert.equal(childTurn, 3);
+    assert.equal(fs.readFileSync(path.join(cwd, 'evidence.txt'), 'utf8'), 'local evidence without MCP resources\n');
   } finally {
     fs.rmSync(cwd, {recursive: true, force: true});
   }
