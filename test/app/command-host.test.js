@@ -112,7 +112,6 @@ function createHostHarness(options = {}) {
         calls.settingsRefreshes += 1;
         return {
           agentInstructionFileChanged: false,
-          fileEditModeChanged: false,
           reasoningVisibilityChanged: false,
           skillCatalogContextRatioChanged: true,
           slashSuggestionLimitChanged: false
@@ -626,7 +625,6 @@ test('CommandHost config facade saves and refreshes skill catalog context ratio'
       checkUpdatesOnStartup: false,
       compactionThresholdRatio: 0.8,
       defaultInteractionMode: 'plan',
-      fileEditMode: 'edit_file',
       mouseInteractionEnabled: false,
       skillCatalogContextRatio: 0.03,
       slashSuggestionMaxVisible: 8,
@@ -639,7 +637,7 @@ test('CommandHost config facade saves and refreshes skill catalog context ratio'
     assert.equal(readConfig().skills.catalogContextRatio, 0.03);
     assert.equal(readConfig().ui.defaultInteractionMode, 'plan');
     assert.equal(readConfig().ui.mouseInteractionEnabled, false);
-    assert.equal(readConfig().tools.fileEdit.mode, 'edit_file');
+    assert.equal(readConfig().tools.fileEdit, undefined);
     assert.equal(readConfig().tools.readFiles.autoCompressImages, false);
     assert.equal(readConfig().updates.checkOnStartup, false);
     assert.deepEqual(readConfig().unknown, {kept: true});
@@ -886,4 +884,83 @@ test('createCopyableRecords only returns user and assistant original text', () =
     {id: 'message-1', role: 'user', text: 'hello', createdAt: '2026-01-01T00:00:00.000Z'},
     {id: 'message-3', role: 'assistant', text: 'answer', createdAt: undefined}
   ]);
+});
+
+test('CommandHost tools facade uses shared snapshots, preserves unrelated fields and refreshes usage once', () => {
+  withTemporaryUserConfig(JSON.stringify({
+    tools: {fileEdit: {mode: 'edit_file'}, bash: {timeoutMs: 12345}, mainAgent: {disabledTools: ['web_fetch', 'unknown_tool'], kept: true}},
+    unknown: {kept: true}
+  }), ({configPath, readConfig}) => {
+    let reads = 0;
+    const context = new UserConfigContext({
+      configPath,
+      readFile(filePath, encoding) {
+        reads += 1;
+        return fs.readFileSync(filePath, encoding);
+      }
+    });
+    const {host, calls} = createHostHarness({userConfigContext: context});
+    const initialReads = reads;
+    const draft = host.config.readToolsDraft();
+    assert.deepEqual(draft.disabledTools, ['web_fetch', 'unknown_tool']);
+    draft.disabledTools.push('edit_file');
+    assert.deepEqual(host.config.readToolsDraft().disabledTools, ['web_fetch', 'unknown_tool']);
+    assert.equal(reads, initialReads);
+    const result = host.config.saveToolsDraft({disabledTools: ['unknown_tool', 'complete_todo', 'run_bash_command']});
+    assert.deepEqual(result, {ok: true});
+    assert.deepEqual(new Set(readConfig().tools.mainAgent.disabledTools), new Set(['unknown_tool', 'create_todos', 'complete_todo']));
+    assert.deepEqual(readConfig().tools.fileEdit, {mode: 'edit_file'});
+    assert.deepEqual(readConfig().tools.bash, {timeoutMs: 12345});
+    assert.equal(readConfig().tools.mainAgent.kept, true);
+    assert.deepEqual(readConfig().unknown, {kept: true});
+    assert.equal(calls.contextUsageClears, 1);
+    assert.equal(calls.modelRefreshes, 0);
+    assert.equal(calls.settingsRefreshes, 0);
+    assert.equal(reads, initialReads + 1);
+  });
+});
+
+test('CommandHost tools facade returns save failures without revision or refresh', () => {
+  withTemporaryUserConfig('{}', () => {
+    const {host, calls} = createHostHarness();
+    const result = host.config.saveToolsDraft({disabledTools: ['']});
+    assert.equal(result.ok, false);
+    assert.match(result.error, /disabledTools/);
+    assert.equal(calls.contextUsageClears, 0);
+    assert.deepEqual(host.config.readToolsDraft(), {disabledTools: []});
+  });
+});
+
+test('CommandHost tool catalog reads current discovered MCP tools without provider reads or connecting', () => {
+  withTemporaryUserConfig(JSON.stringify({llm: {providers: 'invalid'}, tools: {mainAgent: {disabledTools: ['apply_patch', 'mcp__offline__search']}}}), ({configPath}) => {
+    let reads = 0;
+    const context = new UserConfigContext({
+      configPath,
+      readFile(filePath, encoding) {
+        reads += 1;
+        return fs.readFileSync(filePath, encoding);
+      }
+    });
+    let tools = [{serverName: 'docs', toolName: 'search', namespacedName: 'mcp__docs__search', description: '搜索文档', inputSchema: {type: 'object'}}];
+    const mcpManager = {
+      getDiagnostics: () => [],
+      listTools: () => tools,
+      listServerNames: () => ['docs'],
+      bootstrap() { assert.fail('catalog must not connect'); },
+      reload() { assert.fail('catalog must not reload'); }
+    };
+    const {host} = createHostHarness({userConfigContext: context, mcpManager});
+    const initialReads = reads;
+    const catalog = host.config.listToolCatalog();
+    assert.equal(reads, initialReads);
+    assert.ok(catalog.some((entry) => entry.name === 'apply_patch' && entry.available));
+    assert.ok(catalog.some((entry) => entry.name === 'edit_file'));
+    assert.ok(catalog.some((entry) => entry.name === 'create_todos'));
+    assert.ok(catalog.some((entry) => entry.name === 'complete_todo'));
+    assert.ok(catalog.some((entry) => entry.name === 'mcp__docs__search' && entry.serverName === 'docs' && entry.available));
+    assert.ok(catalog.some((entry) => entry.name === 'mcp__offline__search' && !entry.available));
+    tools = [];
+    assert.equal(host.config.listToolCatalog().some((entry) => entry.name === 'mcp__docs__search'), false);
+    assert.equal(reads, initialReads);
+  });
 });

@@ -21,12 +21,12 @@ function createCall(args, callId = 'call_edit') {
   return {callId, toolName: EDIT_FILE_TOOL_NAME, argumentsText: JSON.stringify(args)};
 }
 
-function createConfig(fileEditMode) {
+function createConfig() {
   return {
     agentType: 'fake',
     apiKey: '',
     model: 'fake',
-    tools: {bash: {timeoutMs: null, maxOutputBytes: 65_536}, fileEditMode, sandbox: {mode: 'off', network: false, extraWritablePaths: []}}
+    tools: {bash: {timeoutMs: null, maxOutputBytes: 65_536}, sandbox: {mode: 'off', network: false, extraWritablePaths: []}}
   };
 }
 
@@ -243,16 +243,19 @@ test('edit_file display projection includes both lines when deleting only a newl
   ]);
 });
 
-test('default registry exposes exactly the selected file edit tool', () => {
-  const patchNames = createDefaultToolRegistry(createConfig('apply_patch')).listDefinitions().map((item) => item.name);
-  const editNames = createDefaultToolRegistry(createConfig('edit_file')).listDefinitions().map((item) => item.name);
-  const fallbackNames = createDefaultToolRegistry(createConfig('invalid')).listDefinitions().map((item) => item.name);
-
-  assert.equal(patchNames.includes('apply_patch'), true);
-  assert.equal(patchNames.includes('edit_file'), false);
-  assert.equal(editNames.includes('apply_patch'), false);
-  assert.equal(editNames.includes('edit_file'), true);
-  assert.equal(fallbackNames.includes('apply_patch'), true);
+test('default registry exposes both editors and child allowlists can retain either, both or neither', () => {
+  const registry = createDefaultToolRegistry(createConfig());
+  for (const name of ['apply_patch', 'edit_file']) {
+    assert.ok(registry.getHandler(name));
+    assert.ok(registry.listDefinitions().some((item) => item.name === name));
+  }
+  for (const allowed of [[], ['apply_patch'], ['edit_file'], ['apply_patch', 'edit_file']]) {
+    const child = createDefaultToolRegistry(createConfig(), undefined, undefined, {allowedToolNames: new Set(allowed)});
+    assert.deepEqual(new Set(child.listDefinitions().map((item) => item.name)), new Set(allowed));
+    for (const name of ['apply_patch', 'edit_file']) {
+      assert.equal(Boolean(child.getHandler(name)), allowed.includes(name));
+    }
+  }
 });
 
 test('edit_file updates share the existing checkpoint and undo restores the first snapshot', () => {

@@ -1,5 +1,6 @@
 import {createMcpToolRegistry, mergeToolRegistries} from '../mcp/tool-adapter';
-import {createDefaultToolRegistry} from '../tools/tool-registry';
+import {createDefaultToolRegistry, createToolRegistry} from '../tools/tool-registry';
+import {normalizeDisabledTools} from '../config/main-agent-tools-config';
 import {createToolResultStore} from '../tools/tool-result-offloading';
 import {createAnthropicAgent} from './anthropic/agent';
 import {createCodexAgent} from './codex/agent';
@@ -12,6 +13,7 @@ import type {McpManager} from '../mcp/manager';
 import type {SandboxModeOverride} from '../sandbox/types';
 import type {SkillRegistry} from '../types/skill';
 import type {ToolRegistry} from '../types/tool';
+import type {MainAgentToolsConfig} from '../config/main-agent-tools-config';
 
 type PrepareAgentOptions = {
   config?: LlmConfig; // 调用方已经解析完成的 provider/tool 配置。
@@ -21,6 +23,7 @@ type PrepareAgentOptions = {
   sandboxModeOverride?: SandboxModeOverride; // 本次运行的沙箱收紧;只读 workflow 用它强制 bash 走 read-only 档。
   includeMcpTools?: boolean; // 是否合并共享 manager 的 MCP tools；缺省 true，资源读取工具不受该开关影响。
   mcpManager?: McpManager; // 可选共享 MCP 连接目录，不由本函数管理生命周期。
+  mainAgentTools?: MainAgentToolsConfig; // 存在时明确表示主运行：合并 MCP 后应用禁用名单，不影响子运行白名单。
   modelProfileId?: string; // 从 snapshot 解析本次 provider 时使用的模型 profile。
   reasoningEffortOverride?: ReasoningEffort; // 仅本次准备生效的推理强度覆盖。
   skillRegistry?: SkillRegistry; // 注入运行级 Skill 快照 scope；缺省时由默认装配重新创建 SkillManager。
@@ -91,9 +94,22 @@ function prepareAgent(options: PrepareAgentOptions): PreparedAgent {
     ...(options.skillRegistry ? {skillRegistry: options.skillRegistry} : {}),
     subagentPort: options.subagentPort
   });
-  const registry = options.mcpManager && options.includeMcpTools !== false
+  const mergedRegistry = options.mcpManager && options.includeMcpTools !== false
     ? mergeToolRegistries(baseRegistry, createMcpToolRegistry(options.mcpManager, toolResultStore))
     : baseRegistry;
+  // 工具偏好只在显式主入口应用；子运行继续沿用自身 allowlist。
+  // 每次装配复制为固定集合，后续配置刷新或名单数组变化不影响当前 continuation。
+  const disabledTools = options.mainAgentTools
+    ? new Set(normalizeDisabledTools(options.mainAgentTools.disabledTools))
+    : undefined;
+  const registry: ToolRegistry = disabledTools
+    ? {
+        ...createToolRegistry(mergedRegistry.listDefinitions()
+          .filter(({name}) => !disabledTools.has(name))
+          .map(({name}) => mergedRegistry.getHandler(name)!)),
+        listSkillCatalog: mergedRegistry.listSkillCatalog
+      }
+    : mergedRegistry;
   const agent = createConfiguredAgent(config, registry);
 
   return {agent, config, registry};

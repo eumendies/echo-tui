@@ -386,6 +386,7 @@ test('createDefaultToolRegistry enables the developed tools by default', () => {
   assert.deepEqual(request.tools.map((tool) => tool.name), [
     'run_bash_command',
     'apply_patch',
+    'edit_file',
     'ask_user_questions',
     'glob',
     'grep',

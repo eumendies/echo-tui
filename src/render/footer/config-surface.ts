@@ -8,7 +8,7 @@ import {getProviderPreset, listProviderPresets, providerRequiresApiKey} from '..
 import {getGeneralConfigRowIds, configProviderSupportsReasoningEffort, getConfigModelReasoningEffort, getSandboxConfigRowIds} from '../../commands/config/state';
 import type {SandboxMode} from '../../sandbox/types';
 import type {AppearanceConfigState, ConfigCommandState, ConfigCommandSurface, ConfigFormRow, ConfigSurfaceTab, ConfigTabId, GeneralConfigState} from '../../types/command';
-import type {SandboxConfigState} from '../../types/command';
+import type {SandboxConfigState, ToolsConfigState} from '../../types/command';
 import type {FooterLayout} from '../../types/render';
 
 type RenderConfigPanelOptions = {
@@ -18,8 +18,8 @@ type RenderConfigPanelOptions = {
 };
 
 type RenderConfigSurfaceOptions = {
-  maxLines?: number;
-  theme?: TuiTheme;
+  maxLines?: number; // footer 可用行预算，不含终端安全留白。
+  theme?: TuiTheme; // 当前主题；不在渲染期间读盘。
 };
 
 type ConfigListItem =
@@ -38,6 +38,8 @@ function renderConfigSurface(commandSurface: ConfigCommandSurface, width: number
     lines = renderGeneralView(commandSurface.state, commandSurface.tabs, commandSurface.activeTab, width, options.maxLines, theme);
   } else if (commandSurface.view === 'appearance') {
     lines = renderAppearanceView(commandSurface.state, commandSurface.tabs, commandSurface.activeTab, width, options.maxLines, theme);
+  } else if (commandSurface.view === 'tools') {
+    lines = renderToolsView(commandSurface.state, commandSurface.tabs, commandSurface.activeTab, width, options.maxLines, theme);
   } else if (commandSurface.view === 'sandbox') {
     lines = renderSandboxView(commandSurface.state, commandSurface.tabs, commandSurface.activeTab, width, options.maxLines, theme);
   } else if (commandSurface.view === 'models') {
@@ -84,7 +86,6 @@ function renderGeneralView(state: GeneralConfigState, tabs: ConfigSurfaceTab[], 
     if (rowId === 'defaultInteractionMode') return {label: '默认启动模式', value: state.draft.defaultInteractionMode};
     if (rowId === 'autoCompressImages') return {label: '超限图片自动压缩', value: state.draft.autoCompressImages ? '开' : '关'};
     if (rowId === 'checkUpdatesOnStartup') return {label: '启动时检查更新', value: state.draft.checkUpdatesOnStartup ? '开' : '关'};
-    if (rowId === 'fileEditMode') return {label: '文件编辑工具', value: state.draft.fileEditMode};
     if (rowId === 'toolApprovalMode') return {label: '工具审批模式', value: state.draft.toolApprovalMode};
     if (rowId === 'toolApprovalModel') {
       const profile = state.approvalModelProfiles.find((candidate) => candidate.id === state.draft.toolApprovalModelProfileId);
@@ -121,6 +122,67 @@ function renderGeneralView(state: GeneralConfigState, tabs: ConfigSurfaceTab[], 
   }
   lines.push(line(width, dimHint(width, 'Tab 切换 · ↑/↓ 移动 · ←/→ 调整 · Enter 执行 · Esc 关闭'), theme));
   lines.push(bottom(width, theme));
+  return lines;
+}
+
+type ToolsRenderRow =
+  | {
+      kind: 'section'; // 不可操作的分节标题，仍计入窗口高度。
+      label: string; // 内置或 MCP 服务的显示分组。
+    }
+  | {
+      kind: 'item'; // 工具开关或保存动作。
+      index: number; // 工具选择索引，items.length 为保存行。
+    };
+
+/**
+ * 在普通屏幕 footer 内投影主 Agent 工具；仅保留分组、双列短说明、操作提示及反馈，优先保留焦点。
+ * 中文用途说明与其他配置页共用右对齐双列；Todo 只占一行，未识别偏好不归入内置工具。
+ */
+function renderToolsView(state: ToolsConfigState, tabs: ConfigSurfaceTab[], activeTab: ConfigTabId, columns: number, maxLines: number | undefined, theme: FooterTheme): string[] {
+  const width = calculateBoxWidth(columns);
+  const rows: ToolsRenderRow[] = [];
+  let previousSection = '';
+  state.items.forEach((item, index) => {
+    const section = item.unknown ? '未识别工具' : item.serverName ? `MCP · ${item.serverName}` : '内置工具';
+    if (section !== previousSection) {
+      rows.push({kind: 'section', label: section});
+      previousSection = section;
+    }
+    rows.push({kind: 'item', index});
+  });
+  rows.push({kind: 'item', index: state.items.length});
+  const selectedRow = rows.findIndex((row) => row.kind === 'item' && row.index === state.selectedIndex);
+  const limit = Number.isFinite(maxLines) ? Math.max(1, Math.floor(Number(maxLines))) : Infinity;
+  // 极小高度先收起边框，不能让尾部裁剪吞掉当前焦点。
+  const showFrame = limit >= 5;
+  const showFeedback = Boolean(state.error || state.feedback) && limit >= 6;
+  const fixed = (showFrame ? 4 : 0) + (showFeedback ? 1 : 0);
+  const visibleRows = createSelectedWindowRows(rows, selectedRow, Math.max(1, limit - fixed));
+  const lines = showFrame
+    ? [top(width, ' 主 Agent 工具 ', 'accentStrong', theme), renderTabsLine(width, tabs, activeTab, theme)]
+    : [];
+  for (const row of visibleRows) {
+    if (row.kind === 'more') {
+      lines.push(moreRow(width, row.direction, row.count, theme));
+    } else if (row.item.kind === 'section') {
+      lines.push(sectionLine(width, row.item.label, theme));
+    } else {
+      const index = row.item.index;
+      const item = state.items[index];
+      if (!item) {
+        lines.push(actionRow(width, '保存主 Agent 工具', '写入 ~/.echo/config.json', index === state.selectedIndex, false, theme));
+      } else {
+        const enabled = item.names.includes('run_bash_command') || !item.names.some((name) => state.draft.disabledTools.includes(name));
+        const status = item.available ? item.description : `${item.description}（暂不可用）`;
+        lines.push(splitRow(width, `${enabled ? '●' : '○'} ${item.label}`, status, index === state.selectedIndex, theme));
+      }
+    }
+  }
+  if (showFeedback) lines.push(state.error ? errorLine(width, state.error, theme) : feedbackLine(width, state.feedback!, theme));
+  if (showFrame) {
+    lines.push(line(width, dimHint(width, 'Tab 切换 · ↑/↓ 移动 · Space/Enter 切换 · Enter 保存 · Esc 关闭'), theme), bottom(width, theme));
+  }
   return lines;
 }
 
@@ -245,15 +307,27 @@ function renderCenterDiscardConfirm(dirtyTabs: string[], selectedIndex: number, 
   ];
 }
 
+/** 窄终端优先保留当前 Tab，再向两侧扩展；非选中 Tab 可省略但不能挤掉当前页标签。 */
 function renderTabsLine(width: number, tabs: ConfigSurfaceTab[], activeTab: ConfigTabId, theme: FooterTheme): string {
-  const text = tabs.map((tab) => {
+  const labels = tabs.map((tab) => {
     const marker = tab.status === 'dirty' ? '● ' : tab.status === 'error' ? '! ' : '';
     const label = `[${marker}${tab.label}]`;
     return tab.id === activeTab
       ? tokenText(theme, 'accentStrong', ansi.bold(label))
       : tokenText(theme, tab.status === 'error' ? 'warning' : 'muted', label);
-  }).join(' ');
-  return line(width, clampInnerText(text, contentWidth(width)), theme);
+  });
+  let start = 0;
+  let end = tabs.length;
+  if (displayWidth(labels.join(' ')) > contentWidth(width)) {
+    start = Math.max(0, tabs.findIndex((tab) => tab.id === activeTab));
+    end = start + 1;
+    while (start > 0 || end < labels.length) {
+      if (start > 0 && displayWidth(labels.slice(start - 1, end).join(' ')) <= contentWidth(width)) start -= 1;
+      else if (end < labels.length && displayWidth(labels.slice(start, end + 1).join(' ')) <= contentWidth(width)) end += 1;
+      else break;
+    }
+  }
+  return line(width, clampInnerText(labels.slice(start, end).join(' '), contentWidth(width)), theme);
 }
 
 function errorLine(width: number, error: string, theme: FooterTheme): string {

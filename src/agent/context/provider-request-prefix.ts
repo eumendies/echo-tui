@@ -3,6 +3,7 @@ import {loadAgentInstructions} from '../agent-instructions';
 import {createBuiltInSystemPrompt, loadSystemPromptOverride} from './system-prompt';
 import {createSkillCatalogPromptProjection} from '../../skills/skill-catalog-prompt';
 import {createSandboxRuntimeNote} from '../../sandbox/provider';
+import {USE_SKILL_TOOL_NAME} from '../../tools/use-skill-tool-handler';
 
 import type {AgentExecutionMode, AgentInstruction, AgentInstructionFileName, LlmConfig} from '../../types/agent';
 import type {SandboxModeOverride} from '../../sandbox/types';
@@ -58,7 +59,12 @@ type ProviderRequestPrefixOptions = {
 function resolveRuntimeMaterials(options: ResolveRuntimeMaterialsOptions): RuntimeMaterials {
   const {config, executionMode, registry, sandboxModeOverride, skillCatalogContextRatio} = options;
   const contextWindow = resolveContextWindow(config);
-  const skillCatalogProjection = createSkillCatalogPromptProjection(registry.listSkillCatalog?.() || [], contextWindow, skillCatalogContextRatio);
+  // 只限制当前请求的自动目录，不修改父 enabled snapshot，子运行仍可派生自己的 Skill scope。
+  const skillCatalogProjection = createSkillCatalogPromptProjection(
+    registry.getHandler(USE_SKILL_TOOL_NAME) ? registry.listSkillCatalog?.() || [] : [],
+    contextWindow,
+    skillCatalogContextRatio
+  );
   const sandboxResolutionOptions = sandboxModeOverride ? {modeOverride: sandboxModeOverride} : {};
   const sandboxNote = createSandboxRuntimeNote(config.tools.sandbox, executionMode, sandboxResolutionOptions);
 
@@ -93,6 +99,7 @@ function resolveProviderPromptMaterials(options: ResolveProviderPromptMaterialsO
 /**
  * 构造 provider 请求前导记录：内置 system prompt，以及存在压缩状态时位置固定的摘要 user 记录。
  * 材料口径一致时，本函数输出与普通请求前导逐字一致，使压缩请求共享同一 token 前缀。
+ * 摘要只提示按需回读原始历史，不指定读取工具或把工具可用性作为回读前提。
  */
 function buildProviderRequestPrefix(options: ProviderRequestPrefixOptions): TranscriptRecord[] {
   const {agentInstructions = [], basePrompt, compaction, cwd, memoryPrompts = [], rolePrompt, sandboxNote, sessionJournalPath, skillCatalog = []} = options;
@@ -110,7 +117,7 @@ function buildProviderRequestPrefix(options: ProviderRequestPrefixOptions): Tran
             summaryText,
             '',
             `The full original history is preserved in source_file: ${sessionJournalPath}`,
-            'If exact details are needed, use the existing read_files tool to read source_file with pagination.',
+            'If more details are needed, read source_file with pagination.',
             'source_file is an append-only JSONL journal; later truncate or set operations can supersede earlier entries.'
           ].join('\n')
         : summaryText

@@ -174,7 +174,6 @@ test('config center renders general tabs, settings, and constrained width', () =
     checkUpdatesOnStartup: true,
     compactionThresholdRatio: 0.8,
     defaultInteractionMode: 'plan',
-    fileEditMode: 'edit_file',
     mouseInteractionEnabled: false,
     skillCatalogContextRatio: 0.02,
     showReasoningSummary: true,
@@ -204,10 +203,9 @@ test('config center renders general tabs, settings, and constrained width', () =
   assert.match(text, /默认启动模式/);
   assert.match(text, /plan/);
   assert.match(text, /启动时检查更新\s+开/);
-  assert.match(text, /文件编辑工具/);
-  assert.match(text, /edit_file/);
+  assert.doesNotMatch(text, /文件编辑工具|edit_file|apply_patch/);
   assert.match(text, /超限图片自动压缩/);
-  assert.match(text, /↓ 4 更多/);
+  assert.match(text, /↓ 3 更多/);
   assert.ok(layout.lines.every((line) => displayWidth(line) <= 38));
 });
 
@@ -240,7 +238,6 @@ test('config center highlights active tab with foreground color only', () => {
     checkUpdatesOnStartup: true,
     compactionThresholdRatio: 0.8,
     defaultInteractionMode: 'normal',
-    fileEditMode: 'apply_patch',
     mouseInteractionEnabled: false,
     skillCatalogContextRatio: 0.02,
     showReasoningSummary: true,
@@ -272,7 +269,6 @@ test('config center only renders approval model for auto draft', () => {
     checkUpdatesOnStartup: true,
     compactionThresholdRatio: 0.8,
     defaultInteractionMode: 'normal',
-    fileEditMode: 'apply_patch',
     mouseInteractionEnabled: true,
     skillCatalogContextRatio: 0.02,
     showReasoningSummary: true,
@@ -307,7 +303,6 @@ test('config center renders approval API model name and provider without the pro
     checkUpdatesOnStartup: true,
     compactionThresholdRatio: 0.8,
     defaultInteractionMode: 'normal',
-    fileEditMode: 'apply_patch',
     mouseInteractionEnabled: true,
     skillCatalogContextRatio: 0.02,
     showReasoningSummary: true,
@@ -336,7 +331,6 @@ test('config center separates a selected approval model from its label at constr
     checkUpdatesOnStartup: true,
     compactionThresholdRatio: 0.8,
     defaultInteractionMode: 'normal',
-    fileEditMode: 'apply_patch',
     mouseInteractionEnabled: true,
     skillCatalogContextRatio: 0.02,
     showReasoningSummary: true,
@@ -344,7 +338,7 @@ test('config center separates a selected approval model from its label at constr
     toolApprovalMode: 'auto',
     toolApprovalModelProfileId: 'deepseek-api-deepseek-v4-flash'
   }, [{id: 'deepseek-api-deepseek-v4-flash', model: 'deepseek-v4-flash', provider: 'deepseek-api'}]);
-  state.selectedIndex = 8;
+  state.selectedIndex = getGeneralConfigRowIds(state).indexOf('toolApprovalModel');
 
   const layout = renderConfigSurface({
     kind: 'config',
@@ -614,3 +608,140 @@ function assertFocusBarOutsideSelectionBackground(lines) {
     }
   }
 }
+
+const {CONFIG_TABS, createConfigSurface, createInitialToolsConfigState} = require('../../src/commands/config/state');
+const {createMainAgentToolCatalog} = require('../../src/tools/main-agent-tool-catalog');
+
+function toolsSurface(state) {
+  return {kind: 'config', view: 'tools', activeTab: 'tools', tabs: CONFIG_TABS.map((tab) => ({...tab})), state};
+}
+
+test('tools surface shows compact Chinese choices, one Todo, independent editors, Bash lock and availability', () => {
+  const catalog = [
+    ...['run_bash_command', 'apply_patch', 'edit_file', 'create_todos', 'complete_todo'].map((name) => ({name, available: true})),
+    {name: 'list_mcp_resources', available: false},
+    {name: 'mcp__docs__search', available: true, serverName: 'docs'},
+    {name: 'mcp__offline__search', available: false, serverName: 'offline'}
+  ];
+  const state = createInitialToolsConfigState({disabledTools: ['edit_file', 'mcp__offline__search']}, catalog);
+  const lines = renderConfigSurface(toolsSurface(state), 120).lines;
+  const text = lines.map(stripAnsi).join('\n');
+  assert.match(text, /主 Agent 工具/);
+  assert.doesNotMatch(text, /工具选择非权限限制|新工具默认开启|不影响子 Agent|当前可用|run_bash_command:/);
+  assert.match(text, /内置工具/);
+  assert.doesNotMatch(text, /未知项|未识别工具/);
+  assert.match(text, /● run_bash_command.*运行 Bash 命令（必选）/);
+  assert.equal((text.match(/run_bash_command/g) || []).length, 1);
+  assert.match(text, /● apply_patch.*应用文件补丁/);
+  assert.match(text, /○ edit_file.*替换文件内容/);
+  assert.equal((text.match(/[●○] Todo/g) || []).length, 1);
+  assert.doesNotMatch(text, /[●○] create_todos|[●○] complete_todo/);
+  assert.match(text, /Todo.*创建与完成任务/);
+  assert.doesNotMatch(text, /create_todos|complete_todo/);
+  assert.match(text, /MCP · docs/);
+  assert.match(text, /MCP · offline/);
+  assert.match(text, /● mcp__docs__search.*调用 MCP 工具/);
+  assert.match(text, /● list_mcp_resources.*暂不可用/);
+  assert.match(text, /○ mcp__offline__search.*暂不可用/);
+  assert.match(text, /Space\/Enter 切换/);
+  assert.match(text, /保存主 Agent 工具/);
+  assertUniformLineWidths(lines);
+});
+
+test('tools surface right-aligns short descriptions using the shared configuration row layout', () => {
+  const catalog = createMainAgentToolCatalog({disabledTools: []});
+  const initial = createInitialToolsConfigState({disabledTools: []}, catalog);
+  for (const columns of [80, 120]) {
+    for (const selectedIndex of [0, 1, initial.items.length]) {
+      const lines = renderConfigSurface(toolsSurface({...initial, selectedIndex}), columns).lines;
+      const plainLines = lines.map(stripAnsi);
+      for (const item of initial.items) {
+        const row = plainLines.find((line) => line.includes(` ${item.label} `));
+        assert.ok(row, item.label);
+        const description = item.available ? item.description : `${item.description}（暂不可用）`;
+        assert.ok(row.endsWith(`${description} │`), row);
+        assert.match(item.description, /[\u4e00-\u9fff]/);
+        assert.ok(displayWidth(item.description) <= 28, item.description);
+        assert.notEqual(item.description, '调用内置工具', item.label);
+      }
+      assertUniformLineWidths(lines);
+    }
+  }
+});
+
+test('tools surface separates unresolved preferences only when present, not known unavailable resources', () => {
+  const catalog = createMainAgentToolCatalog({disabledTools: ['obsolete_tool', 'mcp__offline__search']});
+  const state = createInitialToolsConfigState({disabledTools: ['obsolete_tool', 'mcp__offline__search']}, catalog);
+  const text = renderConfigSurface(toolsSurface(state), 120).lines.map(stripAnsi).join('\n');
+  assert.equal((text.match(/未识别工具/g) || []).length, 1);
+  assert.doesNotMatch(text, /内置工具 \/|未知项|Tool is unknown/);
+  assert.ok(text.indexOf('list_mcp_resources') < text.indexOf('未识别工具'));
+  assert.ok(text.indexOf('obsolete_tool') > text.indexOf('未识别工具'));
+  assert.ok(text.indexOf('mcp__offline__search') > text.indexOf('未识别工具'));
+  assert.match(text, /○ obsolete_tool.*未发现工具定义（暂不可用）/);
+  assertUniformLineWidths(renderConfigSurface(toolsSurface(state), 120).lines);
+});
+
+test('tools surface spends the removed hint rows on list entries rather than scrolling', () => {
+  const catalog = ['run_bash_command', 'apply_patch', 'edit_file'].map((name) => ({name, available: true}));
+  const state = createInitialToolsConfigState({disabledTools: []}, catalog);
+  const layout = renderConfigSurface(toolsSurface(state), 100, {maxLines: 9});
+  const text = layout.lines.map(stripAnsi).join('\n');
+  assert.equal(layout.lines.length, 9);
+  assert.doesNotMatch(text, /更多|run_bash_command:/);
+  assert.match(text, /run_bash_command/);
+  assert.match(text, /apply_patch/);
+  assert.match(text, /edit_file/);
+  assert.match(text, /保存主 Agent 工具/);
+});
+
+test('tools surface keeps every focus and save accessible within narrow and tiny height budgets', () => {
+  const catalog = Array.from({length: 36}, (_, index) => ({name: `mcp__docs__tool_${index}`, available: index % 2 === 0, serverName: 'docs'}));
+  const state = createInitialToolsConfigState({disabledTools: ['mcp__docs__tool_1']}, catalog);
+  for (const columns of [24, 42, 100]) {
+    for (const maxLines of [1, 2, 3, 4, 5, 6, 7, 8, 10, 12]) {
+      for (let index = 0; index <= state.items.length; index += 1) {
+        const layout = renderConfigSurface(toolsSurface({...state, selectedIndex: index}), columns, {maxLines});
+        const text = layout.lines.map(stripAnsi).join('\n');
+        assert.ok(layout.lines.length <= maxLines, `${columns}x${maxLines}, focus ${index}`);
+        assert.ok(layout.lines.every((line) => displayWidth(line) <= columns - 4));
+        const focusLine = layout.lines.map(stripAnsi).find((line) => line.includes('▌'));
+        assert.ok(focusLine, `${columns}x${maxLines}, focus ${index}\n${text}`);
+        if (columns >= 42) assert.match(focusLine, index === state.items.length ? /保存主 Agent/ : new RegExp(`tool_${index}(?:\\s|$)`));
+        if (maxLines >= 5) assert.match(layout.lines.map(stripAnsi)[1], /\[工具\]/);
+      }
+    }
+  }
+});
+
+test('tools surface budgets save feedback and errors without hiding the active row', () => {
+  const initial = createInitialToolsConfigState({disabledTools: []}, [{name: 'web_fetch', available: true}]);
+  for (const status of [{error: '工具保存失败'}, {feedback: '✓ 主 Agent 工具已保存，下轮生效'}]) {
+    const state = {...initial, ...status, selectedIndex: initial.items.length};
+    const layout = renderConfigSurface(toolsSurface(state), 100, {maxLines: 8});
+    const text = layout.lines.map(stripAnsi).join('\n');
+    assert.ok(layout.lines.length <= 8);
+    assert.match(text, /▌.*保存主 Agent 工具/);
+    assert.match(text, status.error ? /工具保存失败/ : /已保存，下轮生效/);
+    assertUniformLineWidths(layout.lines);
+  }
+});
+
+test('config surface reads each tab slot and projects its isolated error status', () => {
+  for (const tab of CONFIG_TABS) {
+    const error = `${tab.label}配置读取失败`;
+    const surface = createConfigSurface({activeTab: tab.id, [tab.id]: {error}});
+    assert.equal(surface.view, 'error');
+    assert.equal(surface.error, error);
+    assert.equal(surface.tabs.find(({id}) => id === tab.id).status, 'error');
+    assert.ok(surface.tabs.filter(({id}) => id !== tab.id).every(({status}) => status === undefined));
+  }
+});
+
+test('tools state copies the normalized snapshot draft without sharing mutable arrays', () => {
+  const draft = Object.freeze({disabledTools: Object.freeze(['create_todos', 'complete_todo'])});
+  const state = createInitialToolsConfigState(draft, createMainAgentToolCatalog({disabledTools: draft.disabledTools}));
+  assert.deepEqual(state.draft, draft);
+  state.draft.disabledTools.push('web_fetch');
+  assert.deepEqual(draft.disabledTools, ['create_todos', 'complete_todo']);
+});

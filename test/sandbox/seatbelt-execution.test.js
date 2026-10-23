@@ -175,7 +175,6 @@ test('registry forces sandbox off for headless full-access runs', SKIP_OPTIONS, 
     tools: {
       autoCompressImages: true,
       bash: {timeoutMs: null, maxOutputBytes: 65536},
-      fileEditMode: 'apply_patch',
       sandbox: {mode: 'workspace-write', network: false, extraWritablePaths: []}
     }
   };
@@ -209,7 +208,6 @@ test('registry applies the run-level read-only override to an enabled sandbox', 
     tools: {
       autoCompressImages: true,
       bash: {timeoutMs: null, maxOutputBytes: 65536},
-      fileEditMode: 'apply_patch',
       sandbox: {mode: 'workspace-write', network: false, extraWritablePaths: []}
     }
   };

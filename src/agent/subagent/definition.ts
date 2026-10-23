@@ -40,7 +40,6 @@ const GENERAL_SUBAGENT_TOOL_CEILING = Object.freeze([
 
 const WORKER_LOCAL_TOOL_NAMES = Object.freeze([
   'apply_patch',
-  'edit_file',
   'ask_user_questions',
   'complete_todo',
   'create_todos',

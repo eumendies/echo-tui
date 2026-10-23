@@ -63,6 +63,7 @@ function createFakeHost(options = {}) {
     renders: 0,
     savedConfigDrafts: [],
     savedSettingsDrafts: [],
+    savedToolsDrafts: [],
     savedSandboxDrafts: [],
     savedHookDrafts: [],
     hookTests: [],
@@ -213,7 +214,6 @@ function createFakeHost(options = {}) {
           checkUpdatesOnStartup: true,
           compactionThresholdRatio: 0.8,
           defaultInteractionMode: 'normal',
-          fileEditMode: 'apply_patch',
           mouseInteractionEnabled: false,
           skillCatalogContextRatio: 0.02,
           showReasoningSummary: true,
@@ -249,6 +249,17 @@ function createFakeHost(options = {}) {
       saveSettings(draft) {
         calls.savedSettingsDrafts.push(structuredClone(draft));
         return options.saveSettings ? options.saveSettings(draft) : {ok: true};
+      },
+      readToolsDraft() {
+        if (options.toolsReadError) throw new Error(options.toolsReadError);
+        return structuredClone(options.toolsDraft || {disabledTools: []});
+      },
+      listToolCatalog() {
+        return options.toolCatalog || [];
+      },
+      saveToolsDraft(draft) {
+        calls.savedToolsDrafts.push(structuredClone(draft));
+        return options.saveTools ? options.saveTools(draft) : {ok: true};
       },
       readSandboxDraft() {
         if (options.sandboxReadError) {
@@ -1476,11 +1487,9 @@ test('configCommandHandler opens general tab, saves independently, and lazily op
   assert.equal(host.session.getActive().surface.state.draft.checkUpdatesOnStartup, false);
   configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_LEFT}, host);
   assert.equal(host.session.getActive().surface.state.draft.checkUpdatesOnStartup, true);
-  configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
-  configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_RIGHT}, host);
-  assert.equal(host.session.getActive().surface.state.draft.fileEditMode, 'edit_file');
-  configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
-  configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
+  while (getGeneralConfigRowIds(host.session.getActive().surface.state)[host.session.getActive().surface.state.selectedIndex] !== 'instructionFile') {
+    configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
+  }
   configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_RIGHT}, host);
   assert.equal(host.session.getActive().surface.state.draft.agentInstructionFileName, 'CLAUDE.md');
   configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
@@ -1493,7 +1502,7 @@ test('configCommandHandler opens general tab, saves independently, and lazily op
   assert.equal(calls.savedSettingsDrafts[0].autoCompressImages, false);
   assert.equal(calls.savedSettingsDrafts[0].checkUpdatesOnStartup, true);
   assert.equal(calls.savedSettingsDrafts[0].mouseInteractionEnabled, false);
-  assert.equal(calls.savedSettingsDrafts[0].fileEditMode, 'edit_file');
+  assert.equal(Object.hasOwn(calls.savedSettingsDrafts[0], 'fileEditMode'), false);
   assert.equal(calls.savedSettingsDrafts[0].agentInstructionFileName, 'CLAUDE.md');
   assert.match(host.session.getActive().surface.state.feedback, /已保存/);
 
@@ -1716,7 +1725,9 @@ test('configCommandHandler edits sandbox draft, saves, and reaches discard confi
   const {calls, host} = createFakeHost();
   let session = startCommand(configCommandHandler, '/config', host);
 
-  // Tab 循环覆盖四个 Tab:general → models → sandbox。
+  // Tab 循环覆盖五个 Tab:general → models → tools → sandbox。
+  configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.TAB}, host);
+  session = host.session.getActive();
   configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.TAB}, host);
   session = host.session.getActive();
   configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.TAB}, host);
@@ -1823,7 +1834,9 @@ test('configCommandHandler rejects sandbox path input beyond the limit without d
   const {host} = createFakeHost();
   let session = startCommand(configCommandHandler, '/config', host);
 
-  // Tab 两次进入沙箱面板,再两次下移进入添加目录输入模式(空列表时无标题行)。
+  // Tab 三次进入沙箱面板,再两次下移进入添加目录输入模式(空列表时无标题行)。
+  configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.TAB}, host);
+  session = host.session.getActive();
   configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.TAB}, host);
   session = host.session.getActive();
   configCommandHandler.handleEvent(session, {type: INPUT_EVENTS.TAB}, host);
@@ -2014,7 +2027,7 @@ test('createSlashCommandDescriptors derives display metadata from handlers', () 
   assert.deepEqual(descriptors, [
     { name: 'help', description: '查看帮助', allowDuringAssistantTurn: true },
     { name: 'btw', description: '打开临时只读旁路会话', allowDuringAssistantTurn: true },
-    { name: 'config', description: '配置常规设置、指令文件、模型、沙箱和主题' },
+    { name: 'config', description: '配置常规设置、指令文件、模型、主 Agent 工具、沙箱和主题' },
     { name: 'model', description: '切换模型' },
     { name: 'effort', description: '调整推理等级' },
     { name: 'mode', description: '切换交互模式' },

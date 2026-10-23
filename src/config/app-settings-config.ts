@@ -1,5 +1,5 @@
 import type {UserConfigSource} from './user-config';
-import type {ActiveTurnMessagePolicy, AgentInstructionFileName, FileEditToolMode} from '../types/agent';
+import type {ActiveTurnMessagePolicy, AgentInstructionFileName} from '../types/agent';
 
 type AppSettings = {
   activeTurnMessagePolicy: ActiveTurnMessagePolicy; // 主 assistant turn 响应期间普通消息的处理策略；缺省排队，启动时固定。
@@ -8,7 +8,6 @@ type AppSettings = {
   checkUpdatesOnStartup: boolean; // 控制启动时是否检查 echo-tui 新版本，持久化为 updates.checkOnStartup。
   compactionThresholdRatio: number;
   defaultInteractionMode: DefaultInteractionMode;
-  fileEditMode: FileEditToolMode;
   mouseInteractionEnabled: boolean; // 控制 TUI 是否启用终端鼠标报告、hover 与点击交互。
   skillCatalogContextRatio: number;
   showReasoningSummary: boolean;
@@ -38,7 +37,6 @@ const DEFAULT_APP_SETTINGS: Readonly<AppSettings> = {
   checkUpdatesOnStartup: true,
   compactionThresholdRatio: 0.8,
   defaultInteractionMode: 'normal',
-  fileEditMode: 'apply_patch',
   mouseInteractionEnabled: false,
   skillCatalogContextRatio: 0.02,
   showReasoningSummary: true,
@@ -78,10 +76,6 @@ function validateAppSettingsDraft(draft: AppSettings, modelProfileIds?: Readonly
 
   if (!isDefaultInteractionMode(draft.defaultInteractionMode)) {
     return {ok: false, error: '默认启动模式必须是普通或规划'};
-  }
-
-  if (draft.fileEditMode !== 'apply_patch' && draft.fileEditMode !== 'edit_file') {
-    return {ok: false, error: '文件编辑工具必须是 apply_patch 或 edit_file'};
   }
 
   if (typeof draft.autoCompressImages !== 'boolean') {
@@ -139,7 +133,6 @@ function applyAppSettingsDraft(rootConfig: UserConfigSource, draft: AppSettings)
   const ui = isPlainObject(rootConfig.ui) ? {...rootConfig.ui} : {};
   const updates = isPlainObject(rootConfig.updates) ? {...rootConfig.updates} : {};
   const tools = isPlainObject(rootConfig.tools) ? {...rootConfig.tools} : {};
-  const fileEdit = isPlainObject(tools.fileEdit) ? {...tools.fileEdit} : {};
   const readFiles = isPlainObject(tools.readFiles) ? {...tools.readFiles} : {};
   const approval = isPlainObject(tools.approval) ? {...tools.approval} : {};
 
@@ -152,13 +145,11 @@ function applyAppSettingsDraft(rootConfig: UserConfigSource, draft: AppSettings)
   ui.slashSuggestionMaxVisible = draft.slashSuggestionMaxVisible;
   ui.showReasoningSummary = draft.showReasoningSummary;
   updates.checkOnStartup = draft.checkUpdatesOnStartup;
-  fileEdit.mode = draft.fileEditMode;
   readFiles.autoCompressImages = draft.autoCompressImages;
   approval.mode = draft.toolApprovalMode;
   if (draft.toolApprovalModelProfileId !== undefined) {
     approval.modelProfileId = draft.toolApprovalModelProfileId;
   }
-  tools.fileEdit = fileEdit;
   tools.readFiles = readFiles;
   tools.approval = approval;
   rootConfig.compaction = compaction;
@@ -176,7 +167,6 @@ function normalizeAppSettings(rootConfig: UserConfigSource): AppSettings {
   const ui = isPlainObject(rootConfig.ui) ? rootConfig.ui : {};
   const updates = isPlainObject(rootConfig.updates) ? rootConfig.updates : {};
   const tools = isPlainObject(rootConfig.tools) ? rootConfig.tools : {};
-  const fileEdit = isPlainObject(tools.fileEdit) ? tools.fileEdit : {};
   const readFiles = isPlainObject(tools.readFiles) ? tools.readFiles : {};
   const approval = isPlainObject(tools.approval) ? tools.approval : {};
   const thresholdRatio = compaction.thresholdRatio;
@@ -202,7 +192,6 @@ function normalizeAppSettings(rootConfig: UserConfigSource): AppSettings {
     defaultInteractionMode: isDefaultInteractionMode(ui.defaultInteractionMode)
       ? ui.defaultInteractionMode
       : DEFAULT_APP_SETTINGS.defaultInteractionMode,
-    fileEditMode: fileEdit.mode === 'edit_file' ? 'edit_file' : DEFAULT_APP_SETTINGS.fileEditMode,
     mouseInteractionEnabled: typeof ui.mouseInteractionEnabled === 'boolean'
       ? ui.mouseInteractionEnabled
       : DEFAULT_APP_SETTINGS.mouseInteractionEnabled,

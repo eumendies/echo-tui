@@ -15,8 +15,7 @@ const agentSetupModule = require('../../src/agent/agent-setup');
 const sandboxProviderModule = require('../../src/sandbox/provider');
 const {createUserMemory, updateUserMemory} = require('../../src/memory/memory-store');
 const {addAgentMemory, setAgentMemoryCatalogEnabled, updateAgentMemoryCatalog} = require('../../src/memory/agent-memory-store');
-const {createMcpToolRegistry, mergeToolRegistries} = require('../../src/mcp/tool-adapter');
-const {createDefaultToolRegistry, createToolRegistry} = require('../../src/tools/tool-registry');
+const {createToolRegistry} = require('../../src/tools/tool-registry');
 const {createToolCallTranscriptRecord, createToolResultTranscriptRecord} = require('../../src/tools/tool-transcript-record');
 
 const TEST_CWD = '/tmp/echo_tui';
@@ -46,12 +45,7 @@ async function withPatchedAgentRuntime(agentOrFactory, callback, config = TEST_C
     const resolvedConfig = typeof config === 'function'
       ? config({configSnapshot: options.configSnapshot, modelProfileId: options.modelProfileId, reasoningEffortOverride: options.reasoningEffortOverride})
       : config;
-    const baseRegistry = createDefaultToolRegistry(resolvedConfig, options.cwd, undefined, {
-      ...(options.mcpManager ? {mcpManager: options.mcpManager} : {})
-    });
-    const registry = options.mcpManager && options.includeMcpTools !== false
-      ? mergeToolRegistries(baseRegistry, createMcpToolRegistry(options.mcpManager))
-      : baseRegistry;
+    const {registry} = originalPrepareAgent({...options, config: resolvedConfig});
     const agent = typeof agentOrFactory === 'function'
       ? agentOrFactory(resolvedConfig, registry)
       : agentOrFactory;
@@ -99,9 +93,10 @@ function createDeferred() {
   return {promise, resolve, reject};
 }
 
-function createRuntimeSnapshot(revision) {
+function createRuntimeSnapshot(revision, disabledTools = []) {
   return {
     revision,
+    getMainAgentToolsConfig() { return {disabledTools}; },
     getAppSettings() {
       return {
         agentInstructionFileName: 'AGENTS.md',
@@ -211,12 +206,16 @@ test('buildProviderRecords injects sandbox boundary note into the transient syst
   assert.deepEqual(records.slice(1), [{ role: 'user', text: 'review this' }]);
 });
 
-test('BTW readonly metadata keeps system and tool cache materials unchanged', async () => {
+test('BTW readonly keeps system and ordinary tool schemas but omits delegation', async () => {
   const primaryDebug = createDebugRecorder();
   const btwDebug = createDebugRecorder();
+  const schemas = [];
   const agent = {async runTurn() { return {draft: 'done', toolCalls: []}; }};
 
-  await withPatchedAgentRuntime(agent, async () => {
+  await withPatchedAgentRuntime((config, registry) => {
+    schemas.push(registry.listDefinitions());
+    return agent;
+  }, async () => {
     await createAgentLoopRuntime(TEST_CWD, undefined, undefined, primaryDebug.context)({records: [{role: 'user', text: 'question'}]});
     await createAgentLoopRuntime(TEST_CWD, undefined, undefined, btwDebug.context)({
       records: [{role: 'user', text: '[BTW]\nquestion'}],
@@ -228,8 +227,11 @@ test('BTW readonly metadata keeps system and tool cache materials unchanged', as
   const primary = primaryDebug.events.find((event) => event.event === 'provider_request_built').payload;
   const btw = btwDebug.events.find((event) => event.event === 'provider_request_built').payload;
   assert.equal(btw.systemPromptHash, primary.systemPromptHash);
-  assert.equal(btw.toolSchemaHash, primary.toolSchemaHash);
-  assert.deepEqual(btw.toolNames, primary.toolNames);
+  assert.ok(primary.toolNames.includes('run_subagent'));
+  assert.equal(btw.toolNames.includes('run_subagent'), false);
+  assert.notEqual(btw.toolSchemaHash, primary.toolSchemaHash);
+  assert.deepEqual(btw.toolNames, primary.toolNames.filter((name) => name !== 'run_subagent'));
+  assert.deepEqual(schemas[1], schemas[0].filter(({name}) => name !== 'run_subagent'));
 });
 
 test('readonly runtime rejects write tools before approval and executor callbacks', async () => {
@@ -546,8 +548,8 @@ test('createAgentLoopRuntime snapshots a budgeted skill catalog across tool cont
 });
 
 test('createAgentLoopRuntime pins one revision across tool continuation and uses the next revision on the next run', async () => {
-  const oldSnapshot = createRuntimeSnapshot(1);
-  const newSnapshot = createRuntimeSnapshot(2);
+  const oldSnapshot = createRuntimeSnapshot(1, ['edit_file']);
+  const newSnapshot = createRuntimeSnapshot(2, ['apply_patch']);
   let currentSnapshot = oldSnapshot;
   const providerRuns = [];
   const initialized = [];
@@ -576,11 +578,7 @@ test('createAgentLoopRuntime pins one revision across tool continuation and uses
   }, ({configSnapshot}) => ({
     ...TEST_CONFIG,
     model: configSnapshot.revision === 1 ? 'old-model' : 'new-model',
-    reasoningEffort: configSnapshot.revision === 1 ? 'low' : 'high',
-    tools: {
-      ...TEST_CONFIG.tools,
-      fileEditMode: configSnapshot.revision === 1 ? 'apply_patch' : 'edit_file'
-    }
+    reasoningEffort: configSnapshot.revision === 1 ? 'low' : 'high'
   }));
 
   assert.deepEqual(providerRuns, ['old-model', 'old-model', 'new-model']);
@@ -963,7 +961,8 @@ test('buildProviderRecords injects source_file and read-back hint when source pa
   assert.deepEqual(records.map((record) => record.role), ['system', 'user', 'user']);
   assert.match(records[1].text, /Here is a structured summary of the earlier conversation:\nEarlier context\./);
   assert.match(records[1].text, /source_file: \/tmp\/echo_tui\/session\.jsonl/);
-  assert.match(records[1].text, /use the existing read_files tool to read source_file with pagination/);
+  assert.match(records[1].text, /If more details are needed, read source_file with pagination\./);
+  assert.doesNotMatch(records[1].text, /read_files|tool is available/);
   assert.match(records[1].text, /append-only JSONL journal/);
   assert.equal(records[2].text, 'next task');
 });
@@ -1819,9 +1818,13 @@ test('createAgentLoopRuntime applies edit_file approvals across tool continuatio
   };
 
   try {
-    const config = {...TEST_CONFIG, tools: {...TEST_CONFIG.tools, fileEditMode: 'edit_file'}};
-    const result = await withPatchedAgentRuntime(agent, () => createAgentLoopRuntime(cwd)(
-      {records: [{role: 'user', text: 'edit twice'}]},
+    const snapshot = createRuntimeSnapshot(1, ['apply_patch']);
+    const result = await withPatchedAgentRuntime((config, registry) => {
+      assert.ok(registry.getHandler('edit_file'));
+      assert.equal(registry.getHandler('apply_patch'), undefined);
+      return agent;
+    }, () => createAgentLoopRuntime(cwd)(
+      {records: [{role: 'user', text: 'edit twice'}], userConfigSnapshot: snapshot},
       {
         onToolApprovalRequest() {
           approvalCount += 1;
@@ -1829,7 +1832,7 @@ test('createAgentLoopRuntime applies edit_file approvals across tool continuatio
         },
         onToolResult(toolResult) { results.push(toolResult); }
       }
-    ), config);
+    ));
 
     assert.equal(result, 'done');
     assert.equal(approvalCount, 2);
@@ -1851,12 +1854,12 @@ test('createAgentLoopRuntime denies selected edit_file in headless deny mode', a
         : {draft: 'done', toolCalls: []};
     }
   };
-  const config = {...TEST_CONFIG, tools: {...TEST_CONFIG.tools, fileEditMode: 'edit_file'}};
+  const snapshot = createRuntimeSnapshot(1, ['apply_patch']);
 
   await withPatchedAgentRuntime(agent, () => createAgentLoopRuntime(TEST_CWD)(
-    {records: [{role: 'user', text: 'edit'}], executionMode: {kind: 'headless', approvalPolicy: 'deny'}},
+    {records: [{role: 'user', text: 'edit'}], userConfigSnapshot: snapshot, executionMode: {kind: 'headless', approvalPolicy: 'deny'}},
     {onToolResult(result) { results.push(result); }}
-  ), config);
+  ));
 
   assert.equal(results[0].toolName, 'edit_file');
   assert.equal(results[0].ok, false);
@@ -3020,8 +3023,6 @@ test('createAgentLoopRuntime emits debug provider and tool summaries without cha
     'provider_request_built',
     'provider_usage',
     'tool_call_start',
-    'tool_call_risk',
-    'tool_call_approval',
     'tool_call_end',
     'provider_request_built',
     'provider_usage'

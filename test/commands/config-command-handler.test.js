@@ -428,3 +428,261 @@ test('config command state returns validation error instead of saving invalid dr
   assert.equal(result.kind, 'continue');
   assert.match(driver.getState().error, /API key/);
 });
+
+const {ConfigCommandHandler} = require('../../src/commands/config/handler');
+const {createCommandRuntime} = require('../../src/app/command/command-runtime');
+const {DEFAULT_APP_SETTINGS} = require('../../src/config/app-settings-config');
+
+const {parseMainAgentToolsConfig} = require('../../src/config/main-agent-tools-config');
+
+function createToolsDriver(options = {}) {
+  let toolsDraft = parseMainAgentToolsConfig(options.draft ? {tools: {mainAgent: options.draft}} : {});
+  const savedTools = [];
+  const savedSettings = [];
+  const handler = new ConfigCommandHandler();
+  const catalog = options.catalog || [
+    ...['run_bash_command', 'apply_patch', 'edit_file', 'create_todos', 'complete_todo', 'web_fetch'].map((name) => ({name, available: true})),
+    {name: 'list_mcp_resources', available: false},
+    {name: 'mcp__docs__search', available: true, serverName: 'docs'},
+    {name: 'mcp__offline__search', available: false, serverName: 'offline'},
+    {name: 'unknown_future', available: false, unknown: true}
+  ];
+  const runtime = createCommandRuntime({
+    resolveSlashCommand: () => handler,
+    host: {
+      ui: {render() {}, exit() {}},
+      theme: {listThemes: () => []},
+      config: {
+        readSettings() {
+          if (options.settingsError) throw new Error(options.settingsError);
+          return structuredClone(DEFAULT_APP_SETTINGS);
+        },
+        listApprovalModelProfiles: () => [],
+        readDraft() {
+          if (options.modelsError) throw new Error(options.modelsError);
+          return createDraft();
+        },
+        readToolsDraft() {
+          if (options.readError) throw new Error(options.readError);
+          return structuredClone(toolsDraft);
+        },
+        listToolCatalog: () => catalog,
+        saveToolsDraft(draft) {
+          if (options.saveError) return {ok: false, error: options.saveError};
+          toolsDraft = structuredClone(draft);
+          savedTools.push(toolsDraft);
+          return {ok: true};
+        },
+        saveSettings(draft) {
+          savedSettings.push(structuredClone(draft));
+          return {ok: true};
+        },
+        readSandboxDraft: () => ({mode: 'off', network: false, extraWritablePaths: []})
+      }
+    }
+  });
+  runtime.startFromText('/config');
+  const surface = () => runtime.getSurface();
+  const send = (type, value) => runtime.handleEvent(value === undefined ? {type} : {type, value});
+  return {
+    runtime, surface, send, savedTools, savedSettings,
+    async tab(id) {
+      for (let count = 0; count < 5 && surface().activeTab !== id; count += 1) await send(INPUT_EVENTS.TAB);
+      assert.equal(surface().activeTab, id);
+    },
+    async select(label) {
+      await send(INPUT_EVENTS.MOVE_HOME);
+      const index = label === 'save' ? surface().state.items.length : surface().state.items.findIndex((item) => item.label === label);
+      assert.ok(index >= 0, label);
+      for (let count = 0; count < index; count += 1) await send(INPUT_EVENTS.MOVE_DOWN);
+      assert.equal(surface().state.selectedIndex, index);
+    }
+  };
+}
+
+test('tools tab locks Bash without dirty and independently toggles both editing tools', async () => {
+  const driver = createToolsDriver();
+  assert.deepEqual(driver.surface().tabs.map((tab) => tab.id), ['general', 'models', 'tools', 'sandbox', 'appearance']);
+  await driver.tab('tools');
+  assert.deepEqual(driver.surface().state.draft.disabledTools, []);
+  for (const name of ['apply_patch', 'edit_file']) {
+    assert.ok(driver.surface().state.items.some((item) => item.label === name));
+    assert.equal(driver.surface().state.draft.disabledTools.includes(name), false);
+  }
+  await driver.send(INPUT_EVENTS.SUBMIT);
+  await driver.send(INPUT_EVENTS.TEXT, ' ');
+  assert.equal(driver.surface().tabs.find((tab) => tab.id === 'tools').status, undefined);
+  assert.equal(driver.savedTools.length, 0);
+
+  await driver.select('edit_file');
+  await driver.send(INPUT_EVENTS.TEXT, ' ');
+  assert.equal(driver.surface().state.draft.disabledTools.includes('edit_file'), true);
+  await driver.select('apply_patch');
+  await driver.send(INPUT_EVENTS.SUBMIT);
+  assert.equal(driver.surface().state.draft.disabledTools.includes('apply_patch'), true);
+  assert.equal(driver.surface().state.draft.disabledTools.includes('edit_file'), true);
+  await driver.select('edit_file');
+  await driver.send(INPUT_EVENTS.SUBMIT);
+  assert.equal(driver.surface().state.draft.disabledTools.includes('edit_file'), false);
+  await driver.select('apply_patch');
+  await driver.send(INPUT_EVENTS.TEXT, ' ');
+  assert.equal(driver.surface().tabs.find((tab) => tab.id === 'tools').status, undefined);
+  assert.equal(driver.savedTools.length, 0);
+});
+
+test('tools tab projects normalized Todo snapshots, saves and re-enables both names', async () => {
+  for (const name of ['create_todos', 'complete_todo']) {
+    const driver = createToolsDriver({draft: {disabledTools: [name]}});
+    await driver.tab('tools');
+    assert.equal(driver.surface().state.items.filter((item) => item.label === 'Todo').length, 1);
+    assert.equal(driver.surface().state.items.some((item) => ['create_todos', 'complete_todo'].includes(item.label)), false);
+    assert.deepEqual(new Set(driver.surface().state.draft.disabledTools), new Set(['create_todos', 'complete_todo']));
+    assert.equal(driver.surface().tabs.find((tab) => tab.id === 'tools').status, undefined);
+    await driver.select('save');
+    await driver.send(INPUT_EVENTS.SUBMIT);
+    assert.deepEqual(new Set(driver.savedTools[0].disabledTools), new Set(['create_todos', 'complete_todo']));
+    await driver.select('Todo');
+    await driver.send(INPUT_EVENTS.TEXT, ' ');
+    assert.deepEqual(driver.surface().state.draft.disabledTools, []);
+    await driver.select('save');
+    await driver.send(INPUT_EVENTS.SUBMIT);
+    assert.deepEqual(driver.savedTools[1], {disabledTools: []});
+    await driver.send(INPUT_EVENTS.ESCAPE);
+    assert.equal(driver.runtime.hasActiveSession(), false);
+    driver.runtime.startFromText('/config');
+    await driver.tab('tools');
+    await driver.select('Todo');
+    await driver.send(INPUT_EVENTS.SUBMIT);
+    assert.deepEqual(new Set(driver.surface().state.draft.disabledTools), new Set(['create_todos', 'complete_todo']));
+    await driver.select('save');
+    await driver.send(INPUT_EVENTS.SUBMIT);
+    assert.deepEqual(new Set(driver.savedTools[2].disabledTools), new Set(['create_todos', 'complete_todo']));
+  }
+});
+
+test('tools draft, selection, unavailable preferences and unknown names survive tab changes and independent save', async () => {
+  const driver = createToolsDriver({draft: {disabledTools: ['unknown_future', 'mcp__offline__search']}});
+  await driver.send(INPUT_EVENTS.MOVE_RIGHT);
+  await driver.tab('tools');
+  await driver.select('list_mcp_resources');
+  await driver.send(INPUT_EVENTS.SUBMIT);
+  assert.equal(driver.surface().state.draft.disabledTools.includes('list_mcp_resources'), true);
+  await driver.select('mcp__offline__search');
+  await driver.send(INPUT_EVENTS.SUBMIT);
+  assert.equal(driver.surface().state.draft.disabledTools.includes('mcp__offline__search'), false);
+  const previous = driver.surface().state;
+  await driver.tab('appearance');
+  await driver.send(INPUT_EVENTS.ESCAPE);
+  assert.deepEqual(driver.surface().dirtyTabs, ['常规', '工具']);
+  await driver.send(INPUT_EVENTS.ESCAPE);
+  await driver.tab('tools');
+  assert.deepEqual(driver.surface().state, previous);
+  await driver.select('save');
+  await driver.send(INPUT_EVENTS.SUBMIT);
+  assert.equal(driver.savedSettings.length, 0);
+  assert.equal(driver.savedTools[0].disabledTools.includes('unknown_future'), true);
+  assert.equal(driver.surface().tabs.find((tab) => tab.id === 'tools').status, undefined);
+  assert.equal(driver.surface().tabs.find((tab) => tab.id === 'general').status, 'dirty');
+  assert.match(driver.surface().state.feedback, /已保存.*下轮生效/);
+  await driver.tab('general');
+  await driver.send(INPUT_EVENTS.ESCAPE);
+  assert.deepEqual(driver.surface().dirtyTabs, ['常规']);
+});
+
+test('tools read and save failures are isolated, preserve dirty state and protect discard', async () => {
+  const readFailure = createToolsDriver({readError: '非法 disabledTools'});
+  await readFailure.tab('tools');
+  assert.equal(readFailure.surface().view, 'error');
+  assert.match(readFailure.surface().error, /非法 disabledTools/);
+  await readFailure.tab('sandbox');
+  assert.equal(readFailure.surface().view, 'sandbox');
+  await readFailure.tab('appearance');
+  assert.equal(readFailure.surface().view, 'appearance');
+  await readFailure.tab('general');
+  assert.equal(readFailure.surface().view, 'general');
+
+  const independent = createToolsDriver({modelsError: '非法 provider', settingsError: '常规错误'});
+  await independent.tab('tools');
+  assert.equal(independent.surface().view, 'tools');
+  const failure = createToolsDriver({saveError: '不能写配置'});
+  await failure.tab('tools');
+  await failure.select('edit_file');
+  await failure.send(INPUT_EVENTS.SUBMIT);
+  await failure.select('save');
+  await failure.send(INPUT_EVENTS.SUBMIT);
+  assert.equal(failure.surface().state.error, '不能写配置');
+  assert.equal(failure.surface().tabs.find((tab) => tab.id === 'tools').status, 'dirty');
+  await failure.tab('general');
+  await failure.send(INPUT_EVENTS.ESCAPE);
+  assert.deepEqual(failure.surface().dirtyTabs, ['工具']);
+  await failure.send(INPUT_EVENTS.MOVE_DOWN);
+  await failure.send(INPUT_EVENTS.SUBMIT);
+  assert.equal(failure.runtime.hasActiveSession(), false);
+  assert.equal(failure.savedTools.length, 0);
+});
+
+test('tools keyboard navigation reaches every candidate and the explicit save action', async () => {
+  const catalog = Array.from({length: 80}, (_, index) => ({name: `mcp__many__tool_${index}`, available: true, serverName: 'many'}));
+  const driver = createToolsDriver({catalog, draft: {disabledTools: []}});
+  await driver.tab('tools');
+  for (let index = 0; index < 80; index += 1) {
+    assert.equal(driver.surface().state.selectedIndex, index);
+    await driver.send(INPUT_EVENTS.TEXT, ' ');
+    await driver.send(INPUT_EVENTS.MOVE_DOWN);
+  }
+  assert.equal(driver.surface().state.selectedIndex, 80);
+  assert.equal(driver.savedTools.length, 0);
+  await driver.send(INPUT_EVENTS.SUBMIT);
+  assert.equal(driver.savedTools[0].disabledTools.length, 80);
+  await driver.send(INPUT_EVENTS.MOVE_HOME);
+  assert.equal(driver.surface().state.selectedIndex, 0);
+  await driver.send(INPUT_EVENTS.MOVE_END);
+  assert.equal(driver.surface().state.selectedIndex, 80);
+});
+
+test('general save does not submit tools draft and tools dirty remains protected from other tabs', async () => {
+  const {getGeneralConfigRowIds} = require('../../src/commands/config/state');
+  const driver = createToolsDriver();
+  await driver.tab('tools');
+  await driver.select('edit_file');
+  await driver.send(INPUT_EVENTS.SUBMIT);
+  const toolsDraft = driver.surface().state;
+  await driver.tab('general');
+  await driver.send(INPUT_EVENTS.MOVE_RIGHT);
+  const saveIndex = getGeneralConfigRowIds(driver.surface().state).indexOf('save');
+  for (let index = 0; index < saveIndex; index += 1) await driver.send(INPUT_EVENTS.MOVE_DOWN);
+  await driver.send(INPUT_EVENTS.SUBMIT);
+  assert.equal(driver.savedSettings.length, 1);
+  assert.equal(driver.savedTools.length, 0);
+  assert.equal(driver.surface().tabs.find((tab) => tab.id === 'tools').status, 'dirty');
+  assert.equal(driver.surface().tabs.find((tab) => tab.id === 'general').status, undefined);
+  await driver.tab('tools');
+  assert.deepEqual(driver.surface().state, toolsDraft);
+  await driver.tab('models');
+  await driver.send(INPUT_EVENTS.ESCAPE);
+  assert.deepEqual(driver.surface().dirtyTabs, ['工具']);
+});
+
+test('model editor buffer and local Esc behavior survive switching through tools tab', async () => {
+  const driver = createToolsDriver();
+  await driver.tab('models');
+  await driver.send(INPUT_EVENTS.SUBMIT);
+  await driver.send(INPUT_EVENTS.MOVE_DOWN);
+  await driver.send(INPUT_EVENTS.SUBMIT);
+  await driver.send(INPUT_EVENTS.TEXT, 'Renamed provider');
+  const modelState = driver.surface().state;
+  assert.ok(modelState.editTarget);
+  await driver.tab('tools');
+  await driver.select('edit_file');
+  await driver.send(INPUT_EVENTS.SUBMIT);
+  await driver.tab('models');
+  assert.deepEqual(driver.surface().state, modelState);
+  await driver.send(INPUT_EVENTS.ESCAPE);
+  assert.equal(driver.surface().view, 'models');
+  assert.equal(driver.surface().state.editTarget, undefined);
+  assert.equal(driver.surface().state.mode, 'form');
+  await driver.send(INPUT_EVENTS.ESCAPE);
+  assert.equal(driver.surface().state.mode, 'list');
+  await driver.send(INPUT_EVENTS.ESCAPE);
+  assert.deepEqual(driver.surface().dirtyTabs, ['工具']);
+});

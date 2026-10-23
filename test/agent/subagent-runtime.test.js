@@ -14,7 +14,6 @@ const {UserConfigContext} = require('../../src/config/user-config-context');
 const {AgentAbortError} = require('../../src/types/agent');
 const {createDefaultToolRegistry} = require('../../src/tools/tool-registry');
 const {createToolCallTranscriptRecord, createToolResultTranscriptRecord} = require('../../src/tools/tool-transcript-record');
-const {createMcpToolRegistry, mergeToolRegistries} = require('../../src/mcp/tool-adapter');
 const {createAskUserQuestionsSuccessResult} = require('../../src/tools/ask-user-questions-tool-handler');
 
 const TEST_CONFIG = {
@@ -35,6 +34,7 @@ function createConfigSnapshot(overrides = {}) {
   };
   return {
     revision: overrides.revision || 7,
+    getMainAgentToolsConfig() { return {disabledTools: overrides.disabledTools || []}; },
     getAppSettings() {
       return {
         agentInstructionFileName: 'AGENTS.md',
@@ -123,15 +123,7 @@ async function withPatchedAgents(cwd, createAgent, callback) {
   const originalPrepareAgent = agentSetupModule.prepareAgent;
   const preparations = [];
   agentSetupModule.prepareAgent = (options) => {
-    const localRegistry = createDefaultToolRegistry(TEST_CONFIG, cwd, undefined, {
-      allowedToolNames: options.allowedToolNames,
-      ...(options.mcpManager ? {mcpManager: options.mcpManager} : {}),
-      ...(options.skillRegistry ? {skillRegistry: options.skillRegistry} : {}),
-      subagentPort: options.subagentPort
-    });
-    const registry = options.mcpManager && options.includeMcpTools !== false
-      ? mergeToolRegistries(localRegistry, createMcpToolRegistry(options.mcpManager))
-      : localRegistry;
+    const {registry} = originalPrepareAgent({...options, config: TEST_CONFIG});
     const kind = options.allowedToolNames ? 'subagent' : 'primary';
     preparations.push({kind, options, registry});
     return {agent: createAgent(kind, registry, preparations), config: TEST_CONFIG, registry};
@@ -187,6 +179,7 @@ test('runtime synchronously delegates through an isolated explorer and commits p
         assert.deepEqual(names, new Set(['read_files', 'glob', 'grep', 'run_bash_command', 'web_fetch', 'web_search', 'use_skill']));
         assert.equal(registry.getHandler('run_subagent'), undefined);
         assert.equal(registry.getHandler('apply_patch'), undefined);
+        assert.equal(registry.getHandler('edit_file'), undefined);
         if (childTurn === 1) {
           assert.match(records[0].text, /Explorer Subagent/);
           assert.doesNotMatch(records[0].text, /only the read-only resource tools .* are available/u);
@@ -879,9 +872,9 @@ test('custom readonly exposes only configured real handlers and rejects forged t
   }
 });
 
-test('custom general file_edit exposes only the configured edit handler and enables MCP by definition', async () => {
+test('custom general file_edit exposes both editors without inheriting main disables or broadening its allowlist', async () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-custom-general-'));
-  const snapshot = createConfigSnapshot();
+  const snapshot = createConfigSnapshot({disabledTools: ['apply_patch', 'edit_file', 'mcp__docs__read']});
   writeCustomAgent(cwd, 'custom-worker', {capability: 'general', tools: ['file_edit'], mcp: true});
   let parentTurn = 0;
   let childTurn = 0;
@@ -904,6 +897,9 @@ test('custom general file_edit exposes only the configured edit handler and enab
     await withPatchedAgents(cwd, (kind, registry) => ({
     async runTurn(records) {
       if (kind === 'primary') {
+        for (const name of ['apply_patch', 'edit_file', 'mcp__docs__read']) {
+          assert.equal(registry.getHandler(name), undefined);
+        }
         parentTurn += 1;
         return parentTurn === 1
           ? {draft: '', toolCalls: [{callId: 'outer-general', toolName: 'run_subagent', argumentsText: '{"agent":"custom-worker","task":"work"}'}]}
@@ -912,15 +908,17 @@ test('custom general file_edit exposes only the configured edit handler and enab
       childTurn += 1;
       const names = registry.listDefinitions().map(({name}) => name);
       assert.equal(names.includes('apply_patch'), true);
-      assert.equal(names.includes('edit_file'), false);
+      assert.equal(names.includes('edit_file'), true);
       assert.equal(names.includes('mcp__docs__read'), true);
+      assert.equal(names.includes('read_files'), false);
+      assert.equal(names.includes('run_bash_command'), false);
       if (childTurn === 1) {
-        return {draft: '', toolCalls: [{callId: 'forged-edit', toolName: 'edit_file', argumentsText: '{}'}]};
+        return {draft: '', toolCalls: [{callId: 'forged-read', toolName: 'read_files', argumentsText: '{}'}]};
       }
       if (childTurn === 2) {
-        const forged = records.find((record) => record.role === 'tool_result' && record.toolCallId === 'forged-edit');
+        const forged = records.find((record) => record.role === 'tool_result' && record.toolCallId === 'forged-read');
         assert.equal(forged.ok, false);
-        assert.match(forged.text, /Unknown tool: edit_file/u);
+        assert.match(forged.text, /Unknown tool: read_files/u);
         return {draft: '', toolCalls: [{callId: 'custom-mcp', toolName: 'mcp__docs__read', argumentsText: '{}'}]};
       }
       assert.match(records.find((record) => record.role === 'tool_result' && record.toolCallId === 'custom-mcp').text, /mcp result/u);
@@ -1170,8 +1168,8 @@ test('readonly run lets readonly subagent run arbitrary bash without approval wh
   }
 });
 
-test('Worker receives the full local registry, keeps Todo local, and rejects forged nested delegation', async () => {
-  const snapshot = createConfigSnapshot();
+test('Worker keeps apply_patch and local Todo but rejects edit_file and nested delegation', async () => {
+  const snapshot = createConfigSnapshot({disabledTools: ['apply_patch', 'edit_file', 'create_todos', 'read_files']});
   let parentTurn = 0;
   let childTurn = 0;
   let parentTodoUpdates = 0;
@@ -1180,6 +1178,9 @@ test('Worker receives the full local registry, keeps Todo local, and rejects for
   await withPatchedAgents('/tmp/echo-worker-todo', (kind, registry) => ({
     async runTurn(records) {
       if (kind === 'primary') {
+        for (const name of ['apply_patch', 'edit_file', 'create_todos', 'complete_todo', 'read_files']) {
+          assert.equal(registry.getHandler(name), undefined);
+        }
         parentTurn += 1;
         if (parentTurn === 1) {
           return {draft: '', toolCalls: [{callId: 'worker-outer', toolName: 'run_subagent', argumentsText: '{"agent":"worker","task":"implement isolated task"}'}]};
@@ -1194,6 +1195,8 @@ test('Worker receives the full local registry, keeps Todo local, and rejects for
         'apply_patch', 'ask_user_questions', 'complete_todo', 'create_todos', 'glob', 'grep',
         'read_files', 'run_bash_command', 'use_skill', 'web_fetch', 'web_search'
       ]));
+      assert.ok(registry.getHandler('apply_patch'));
+      assert.equal(registry.getHandler('edit_file'), undefined);
       assert.equal(registry.getHandler('run_subagent'), undefined);
       if (childTurn === 1) {
         assert.match(records[0].text, /Worker Subagent/u);
@@ -1206,6 +1209,13 @@ test('Worker receives the full local registry, keeps Todo local, and rejects for
       }
       if (childTurn === 3) {
         assert.equal(records.some((record) => record.text.includes('[todo_1] local worker todo') && record.text.includes('## Todos')), false);
+        return {draft: '', toolCalls: [{callId: 'forged-edit', toolName: 'edit_file', argumentsText: '{"path":"forged.txt","old_string":"before","new_string":"after"}'}]};
+      }
+      if (childTurn === 4) {
+        const edit = records.find((record) => record.role === 'tool_result' && record.toolCallId === 'forged-edit');
+        assert.equal(edit.toolName, 'edit_file');
+        assert.equal(edit.ok, false);
+        assert.match(edit.text, /Unknown tool: edit_file/u);
         return {draft: '', toolCalls: [{callId: 'nested', toolName: 'run_subagent', argumentsText: '{"agent":"worker","task":"nested"}'}]};
       }
       const nested = records.find((record) => record.role === 'tool_result' && record.toolCallId === 'nested');
@@ -1221,14 +1231,15 @@ test('Worker receives the full local registry, keeps Todo local, and rejects for
       userConfigSnapshot: snapshot
     }, {
       onSubagentRecords(records) { processRecords.push(...records); },
-      onTodoStateChange() { parentTodoUpdates += 1; }
+      onTodoStateChange() { parentTodoUpdates += 1; },
+      onToolApprovalRequest() { assert.fail('Unregistered Worker tools must not request approval'); }
     }), 'parent done');
   });
 
   assert.equal(parentTodoUpdates, 0);
-  assert.equal(childTurn, 4);
+  assert.equal(childTurn, 5);
   assert.deepEqual(processRecords.filter((record) => record.event.kind === 'tool_call').map((record) => record.event.toolName), [
-    'create_todos', 'complete_todo', 'run_subagent'
+    'create_todos', 'complete_todo', 'edit_file', 'run_subagent'
   ]);
 });
 
