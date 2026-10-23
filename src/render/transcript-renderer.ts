@@ -5,7 +5,8 @@
 import {DEFAULT_RENDER_PREFERENCES} from '../config/app-settings-config';
 import {DEFAULT_TUI_THEME} from '../config/theme-config';
 import {sanitizeTerminalText} from '../terminal/control-chars';
-import { renderAssistantBlock, renderCompactionNoticeBlock, renderConversationReferenceBlock, renderErrorBlock, renderLocalNoticeBlock, renderReasoningSummaryBlock, renderShellBlock, renderUserBlock } from './blocks/message-renderer';
+import {renderAssistantBlock, renderCompactionNoticeBlock, renderConversationReferenceBlock, renderErrorBlock, renderLocalNoticeBlock, renderReasoningSummaryBlock, renderShellBlock, renderUserBlock} from './blocks/message-renderer';
+import {projectCodeExecutionRecords, type CodeExecutionProjectionOptions} from './code-mode-renderer';
 import {renderSubagentInterruptedBlock, renderSubagentRunAppendBlock, renderSubagentRunBlock} from './subagent-renderer';
 import { renderToolPairBlock, renderToolRecordBlock } from './tool-message-renderer';
 
@@ -183,7 +184,7 @@ export function rebuildSubagentAppendState(state: SubagentAppendRenderState, rec
 
 /**
  * 把 transcript records 投影成当前宽度下的可见行。
- *
+ * 脚本恢复/resize 可携带分组状态和活动身份，避免把仍在执行的调用误标成中断。
  */
 export function renderTranscriptLines(
   records: TranscriptRecord[] = [],
@@ -191,11 +192,12 @@ export function renderTranscriptLines(
   theme: RenderState['theme'] = DEFAULT_TUI_THEME,
   renderPreferences: RenderState['renderPreferences'] = DEFAULT_RENDER_PREFERENCES,
   showUnexpectedSubagentInterruption = true,
-  activeSubagentRunId?: string
+  activeSubagentRunId?: string,
+  codeExecutionOptions?: CodeExecutionProjectionOptions
 ): string[] {
   const lines: string[] = [];
 
-  for (const block of renderTranscriptBlocks(records, width, theme, renderPreferences, showUnexpectedSubagentInterruption, undefined, activeSubagentRunId)) {
+  for (const block of renderTranscriptBlocks(records, width, theme, renderPreferences, showUnexpectedSubagentInterruption, undefined, activeSubagentRunId, codeExecutionOptions)) {
     lines.push(...splitRenderedBlock(block));
   }
 
@@ -204,6 +206,7 @@ export function renderTranscriptLines(
 
 /**
  * 把 transcript records 投影成完整 block 字符串，保留实时 append 所需的尾部换行。
+ * 脚本审计先经过独立分组状态；其余连续记录继续使用既有工具对和子 Agent 聚合。
  */
 export function renderTranscriptBlocks(
   records: TranscriptRecord[] = [],
@@ -212,7 +215,8 @@ export function renderTranscriptBlocks(
   renderPreferences: RenderState['renderPreferences'] = DEFAULT_RENDER_PREFERENCES,
   showUnexpectedSubagentInterruption = false,
   subagentAppendState?: SubagentAppendRenderState,
-  activeSubagentRunId?: string
+  activeSubagentRunId?: string,
+  codeExecutionOptions?: CodeExecutionProjectionOptions
 ): string[] {
   const visibleRecords = renderPreferences.showReasoningSummary
     ? records
@@ -220,9 +224,24 @@ export function renderTranscriptBlocks(
   const renderRecords = subagentAppendState
     ? prepareSubagentAppendRecords(visibleRecords, subagentAppendState)
     : visibleRecords;
-  return groupTranscriptRecords(renderRecords, showUnexpectedSubagentInterruption, subagentAppendState?.terminalCallIds, activeSubagentRunId, subagentAppendState?.parallelParentToolCallIds, subagentAppendState?.localParentToolCallIds)
-    .map((block) => renderTranscriptBlock(block, width, theme, subagentAppendState?.runIds))
-    .filter((block) => block.length > 0);
+  const blocks: string[] = [];
+  let ordinaryRecords: TranscriptRecord[] = [];
+  /** 在脚本分组边界提交普通记录，不改变既有 role renderer 的聚合规则。 */
+  const flushOrdinaryRecords = (): void => {
+    blocks.push(...groupTranscriptRecords(ordinaryRecords, showUnexpectedSubagentInterruption, subagentAppendState?.terminalCallIds, activeSubagentRunId, subagentAppendState?.parallelParentToolCallIds, subagentAppendState?.localParentToolCallIds)
+      .map((block) => renderTranscriptBlock(block, width, theme, subagentAppendState?.runIds)));
+    ordinaryRecords = [];
+  };
+  for (const item of projectCodeExecutionRecords(renderRecords, width, theme, codeExecutionOptions)) {
+    if (typeof item === 'string') {
+      flushOrdinaryRecords();
+      blocks.push(item);
+    } else {
+      ordinaryRecords.push(item);
+    }
+  }
+  flushOrdinaryRecords();
+  return blocks.filter((block) => block.length > 0);
 }
 
 /**
@@ -403,6 +422,7 @@ function renderTranscriptBlock(block: TranscriptBlock, width: number, theme: Ren
 /**
  * 按 record role 选择对应的 transcript block renderer。
  * user record 的 plan mode 颜色依赖提交时写入的 metadata，避免重绘时受当前 mode 影响。
+ * 本地脚本事件仅投影有界摘要；沿用普通历史区布局，不切换终端屏幕。
  *
  */
 function renderRecordBlock(record: TranscriptRecord, width: number, theme: RenderState['theme']): string {

@@ -5,8 +5,9 @@ import {readDirectory} from './directory-reader';
 import {readImageFile} from './image-reader';
 import {extractPdfText} from './pdf-reader';
 import {readTextFile} from './text-reader';
-import {isGitPath} from '../tool-handler-utils';
+import {capUtf8Text, isGitPath} from '../tool-handler-utils';
 
+import type {ScriptFileError, ScriptTextFile, ScriptToolErrorCode} from '../code-mode/contracts';
 import type {ToolResultAttachment} from '../../types/tool';
 import type {ImageReadOptions} from './image-reader';
 import type {Result} from '../tool-handler-utils';
@@ -14,38 +15,39 @@ import type {DirectoryEntry, DirectoryReadResult} from './directory-reader';
 import type {TextFileReadResult} from './text-reader';
 
 type ReadFilesLimits = {
-  maxFiles: number;
-  maxFileContentBytes: number;
-  maxDirectoryEntries: number;
-  maxPdfBytes: number;
-  maxPdfOutputBytes: number;
-  maxTotalImageBytes: number;
-  maxTotalOutputBytes: number;
+  maxFiles: number; // 单次文件请求数上限。
+  maxFileContentBytes: number; // 单文件内容字节预算。
+  maxDirectoryEntries: number; // 原生目录项数量上限。
+  maxPdfBytes: number; // 允许提取的 PDF 源文件上限。
+  maxPdfOutputBytes: number; // PDF 文本输出上限。
+  maxTotalImageBytes: number; // 图片附件总字节预算。
+  maxTotalOutputBytes: number; // 原生文本总输出预算。
 };
 
 type NormalizedFileRequest = {
-  path: string;
-  offset: number;
-  limit?: number;
+  path: string; // 保留请求的原始路径。
+  offset: number; // 跳过的源行数。
+  limit?: number; // 可选请求行数。
 };
 
 type FileReadResult = {
-  attachments?: ToolResultAttachment[];
-  ok: boolean;
-  pdfExtracted?: boolean;
-  text: string;
-  truncated: boolean;
+  attachments?: ToolResultAttachment[]; // 仅原生多媒体路径可产生的附件。
+  ok: boolean; // 当前路径读取是否成功。
+  pdfExtracted?: boolean; // 是否需要 PDF 专属输出预算。
+  text: string; // 原生展示正文。
+  truncated: boolean; // 内容或附件预算是否造成缺失。
 };
 
 type MediaInfo = {
-  kind: string;
-  mediaType: string;
+  kind: string; // 用于类型分派的资源种类。
+  mediaType: string; // 原生附件的媒体类型。
 };
 
 type ReadOneFileOptions = {
   cwd: string; // 作为相对路径解析基准的当前工作目录。
   imageOptions: ImageReadOptions; // 控制图片附件安全上限和超限压缩行为。
   limits: ReadFilesLimits; // 控制文本、目录、PDF 与总输出规模。
+  abortSignal?: AbortSignal; // 取消时关闭底层文本流。
   remainingImageAttachmentBytes: number; // 当前请求按顺序可使用的剩余图片附件聚合预算。
 };
 
@@ -90,7 +92,7 @@ async function readOneFile(request: NormalizedFileRequest, options: ReadOneFileO
       return createUnsupportedFile(request.path, media.kind, stat.size, `${media.kind} reading is not supported by this version`);
     }
 
-    const textCheck = await readTextFile(request, absolutePath, options.limits.maxFileContentBytes);
+    const textCheck = await readTextFile(request, absolutePath, options.limits.maxFileContentBytes, options.abortSignal);
 
     if (!textCheck.ok) {
       return createUnsupportedFile(request.path, 'binary', stat.size, textCheck.reason);
@@ -100,6 +102,57 @@ async function readOneFile(request: NormalizedFileRequest, options: ReadOneFileO
   } catch (error: unknown) {
     const message = error instanceof Error && error.message.trim() !== '' ? error.message : 'failed to read file';
     return createFileError(request.path, media.kind, message);
+  }
+}
+
+/** 文本机器入口在类型分派前拒绝目录、媒体与特殊文件，不创建附件或枚举目录。 */
+async function readOneTextFile(request: NormalizedFileRequest, options: {
+  cwd: string;
+  maxContentBytes: number;
+  abortSignal?: AbortSignal
+}): Promise<ScriptTextFile | ScriptFileError> {
+  const fail = (code: ScriptToolErrorCode, message: string): ScriptFileError => ({
+    path: request.path,
+    ok: false,
+    kind: 'error',
+    error: {
+      code,
+      message: capUtf8Text(message, 1024).text
+    }
+  });
+  if (options.abortSignal?.aborted) {
+    return fail('cancelled', 'Tool call cancelled');
+  }
+  const resolved = resolveFilePath(request.path, options.cwd);
+  if (!resolved.ok) {
+    return fail('invalid_arguments', resolved.reason);
+  }
+  try {
+    const stat = fs.statSync(resolved.value);
+    if (!stat.isFile() || guessMedia(request.path).kind !== 'text' || /\.(svg|ico|tiff?|avif|heic|heif|psd|mp3|wav|ogg|flac|aac|m4a|mp4|m4v|mov|webm|avi|mkv|mpeg|mpg|woff2?|ttf|otf)$/i.test(request.path)) {
+      return fail('unsupported_type', 'Only regular UTF-8 text files are supported');
+    }
+    const result = await readTextFile(request, resolved.value, options.maxContentBytes, options.abortSignal);
+    if (!result.ok) {
+      return fail(options.abortSignal?.aborted ? 'cancelled' : /UTF-8|binary/.test(result.reason) ? 'invalid_encoding' : 'read_failed', result.reason);
+    }
+    const text = result.value;
+    return {
+      path: request.path,
+      ok: true,
+      kind: 'text',
+      content: text.content,
+      offset: request.offset,
+      returned_lines: text.returnedLines,
+      start_line: text.startLine ?? null,
+      end_line: text.endLine ?? null,
+      has_more: text.hasMore,
+      content_truncated: text.contentTruncated,
+      next_offset: text.nextOffset,
+      ...(text.totalLines === undefined ? {} : {total_lines: text.totalLines})
+    };
+  } catch (error: unknown) {
+    return fail('read_failed', error instanceof Error ? error.message : 'failed to read file');
   }
 }
 
@@ -242,7 +295,7 @@ function createTextFileResult(request: NormalizedFileRequest, content: TextFileR
       body: [
         ...(content.hasMore ? ['has_more: true'] : []),
         ...(content.contentTruncated ? ['content_truncated: true'] : []),
-        ...(content.hasMore ? [`next_offset: ${content.endLine ?? request.offset}`, 'Use offset/limit to continue reading this file.'] : []),
+        ...(content.hasMore && content.nextOffset !== null ? [`next_offset: ${content.nextOffset}`, 'Use offset/limit to continue reading this file.'] : []),
         '',
         'content:',
         '```',
@@ -370,7 +423,8 @@ function guessMedia(filePath: string): MediaInfo {
 
 export {
   formatReadFilesFailure,
-  readOneFile
+  readOneFile,
+  readOneTextFile
 };
 
 export type {

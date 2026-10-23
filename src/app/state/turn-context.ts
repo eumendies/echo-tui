@@ -160,7 +160,7 @@ class TurnContext {
   }
 
   /**
-   * 返回当前 pending 预览。读取时根据当前时钟把 thinking 状态投影为 elapsedMs。
+   * 返回当前 pending 预览。读取时计算 thinking 耗时，单工具也保留 callId 供瞬时进度严格关联。
    */
   getPending(): PendingState | null {
     if (this.pendingKind === null) {
@@ -198,7 +198,7 @@ class TurnContext {
 
     if (this.pendingToolCalls.length === 1) {
       const [call] = this.pendingToolCalls;
-      return {kind: 'tool_call', toolName: call.toolName, argumentsText: call.argumentsText};
+      return {kind: 'tool_call', callId: call.callId, toolName: call.toolName, argumentsText: call.argumentsText};
     }
 
     return {

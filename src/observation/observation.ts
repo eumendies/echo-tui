@@ -12,7 +12,7 @@ import type {
 } from '../types/agent';
 import type {TerminalSize} from '../types/render';
 import type {SkillCatalogEntry} from '../types/skill';
-import type {AskUserQuestionsRequest, ToolApprovalRequest, ToolCall, ToolDefinition, ToolExecutionResult, ToolRiskAssessment} from '../types/tool';
+import type {AskUserQuestionsRequest, ToolApprovalRequest, ToolCall, ToolDefinition, ToolExecutionOrigin, ToolExecutionResult, ToolLifecycleStatus, ToolRiskAssessment} from '../types/tool';
 import type {CompactionState, TranscriptRecord} from '../types/transcript';
 import type {SubagentCatalogDiagnostic} from '../agent/subagent/catalog';
 
@@ -31,6 +31,7 @@ type AgentRunScope = {
   conversationKind: AgentConversationKind; // 当前运行是主对话、BTW 对话还是子 Agent。
   interactionMode: InteractionMode; // 父提交时固定的交互模式。
   subagent?: SubagentRunMetadata; // 子运行的稳定身份；主运行不设置。
+  toolOrigin?: ToolExecutionOrigin; // 仅内部工具生命周期携带的执行归因，不扩张 provider 或宿主能力。
 };
 
 type ProviderObservationConfig = {
@@ -101,7 +102,7 @@ type Observation = {
   subagentCatalogLoaded: (diagnostics: readonly Readonly<SubagentCatalogDiagnostic>[]) => void; // 发布主运行加载目录时形成的完整有界诊断快照。
   toolApprovalRequested: (input: {scope: AgentRunScope; call: Readonly<ToolCall>; approval?: Readonly<ToolApprovalRequest>}) => void; // 发布 runtime 拥有的审批请求事实。
   toolApprovalResolved: (input: {scope: AgentRunScope; call: Readonly<ToolCall>; approval: ToolApprovalObservation}) => void; // 发布 runtime 审批结果事实。
-  toolCompleted: (input: {scope: AgentRunScope; result: Readonly<ToolExecutionResult>}) => void; // 发布工具结果已提交事实。
+  toolCompleted: (input: {scope: AgentRunScope; result: Readonly<ToolExecutionResult>; status?: ToolLifecycleStatus}) => void; // 发布工具结束事实；内部调用显式区分拒绝、失败与取消。
   toolRiskAssessed: (input: {scope: AgentRunScope; call: Readonly<ToolCall>; assessment: Readonly<ToolRiskAssessment>}) => void; // 发布工具风险分类事实。
   toolStarted: (input: {scope: AgentRunScope; call: Readonly<ToolCall>}) => void; // 发布工具开始处理事实。
   userQuestionCompleted: (input: {scope: AgentRunScope; call: Readonly<ToolCall>; result: Readonly<ToolExecutionResult>}) => void; // 发布用户问题结束事实。

@@ -2,7 +2,7 @@ import {isAbsolute} from 'node:path';
 
 import {REASONING_EFFORTS, REASONING_SUMMARIES} from '../types/agent';
 import {getProviderPreset, providerRequiresApiKey} from './provider-presets';
-import {DEFAULT_APP_SETTINGS} from './app-settings-config';
+import {DEFAULT_APP_SETTINGS, normalizeAppSettings} from './app-settings-config';
 import type {SandboxMode} from '../sandbox/types';
 import type {AgentType, BashToolConfig, LlmConfig, ReasoningEffort, ReasoningSummary, SandboxToolConfig, ToolRuntimeConfig} from '../types/agent';
 import type {ProviderPreset} from './provider-presets';
@@ -562,6 +562,7 @@ function parseToolRuntimeConfig(rootConfig: ConfigSource): ToolRuntimeConfig {
     autoCompressImages: typeof readFilesConfig.autoCompressImages === 'boolean'
       ? readFilesConfig.autoCompressImages
       : DEFAULT_APP_SETTINGS.autoCompressImages,
+    codeMode: {enabled: normalizeAppSettings(rootConfig).codeModeEnabled},
     bash: readBashToolConfig(bashConfig),
     fileEditMode: fileEditConfig.mode === 'edit_file' ? 'edit_file' : 'apply_patch',
     sandbox: readSandboxToolConfig(sandboxConfig)

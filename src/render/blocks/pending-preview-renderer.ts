@@ -7,6 +7,7 @@ import {DEFAULT_TUI_THEME, type TuiTheme} from '../../config/theme-config';
 import {collapseToSingleLine, displayWidth, safeRenderWidth} from '../layout';
 import {renderMarkdownLinesWithOptions} from '../markdown';
 import {createCompactToolCallPreviewText, renderToolCallPreviewLines} from '../tool-message-renderer';
+import {renderRunCodeCallLines} from '../code-mode-renderer';
 import {createSubagentRunRowText, renderSubagentPendingLines} from '../subagent-renderer';
 import {clampToDisplayWidth, padToDisplayWidth, renderSymbolMessage} from './symbol-message-renderer';
 import {renderReasoningSummaryLines, renderShellMessageLines, withMarkdownRoleColor} from './message-renderer';
@@ -19,7 +20,7 @@ import type { PendingState, PendingToolCall, SubagentPendingState } from '../../
  * thinking状态：由 status line 展示，pending preview 不再占独立行
  * reasoning_streaming状态：展示有界的可读 reasoning preview
  * streaming状态：展示模型正文流式输出内容
- * tool_call状态：展示模型调用的工具
+ * tool_call状态：展示模型调用的工具，Run code 可使用身份匹配的有界瞬时进度
  *
  */
 export function renderPendingAssistantLines(
@@ -39,6 +40,14 @@ export function renderPendingAssistantLines(
   }
 
   if (pending.kind === 'tool_call') {
+    if (pending.toolName === 'run_code' && pending.codeExecution) {
+      return truncatePendingPreviewLines(
+        renderRunCodeCallLines(width, theme, undefined, pending.codeExecution),
+        width,
+        normalizedMaxLines,
+        theme
+      );
+    }
     return truncatePendingPreviewLines(renderToolCallPreviewLines(pending.toolName, pending.argumentsText, width, theme), width, normalizedMaxLines, theme);
   }
 
@@ -66,7 +75,7 @@ export function renderPendingAssistantLines(
 }
 
 /**
- * 将多个运行中工具投影为一个 compact 活动块；标题和隐藏数量都计入 footer 物理行预算。
+ * 将多个运行中工具投影为 compact 活动块；脚本显示瞬时计数，所有行均计入 footer 物理行预算。
  */
 function renderPendingToolCallsLines(calls: PendingToolCall[], width: number, maxLines: number, theme: TuiTheme): string[] {
   if (maxLines <= 0) {
@@ -84,7 +93,7 @@ function renderPendingToolCallsLines(calls: PendingToolCall[], width: number, ma
     return [
       header,
       ...calls.map((call, index) => renderCompactPendingToolRow(
-        createCompactToolCallPreviewText(call.toolName, call.argumentsText, theme),
+        createPendingToolPreviewText(call, theme),
         index === calls.length - 1 ? '└─ ' : '├─ ',
         safeWidth,
         theme
@@ -97,13 +106,24 @@ function renderPendingToolCallsLines(calls: PendingToolCall[], width: number, ma
   return [
     header,
     ...calls.slice(0, visibleCount).map((call) => renderCompactPendingToolRow(
-      createCompactToolCallPreviewText(call.toolName, call.argumentsText, theme),
+      createPendingToolPreviewText(call, theme),
       '├─ ',
       safeWidth,
       theme
     )),
     renderCompactPendingToolRow(`… +${hiddenCount} more`, '└─ ', safeWidth, theme, true)
   ];
+}
+
+/** 脚本使用审计事实生成瞬时摘要，其余工具继续使用真实参数的既有专属投影。 */
+function createPendingToolPreviewText(call: PendingToolCall, theme: TuiTheme): string {
+  if (call.toolName !== 'run_code' || !call.codeExecution) {
+    return createCompactToolCallPreviewText(call.toolName, call.argumentsText, theme);
+  }
+  const progress = call.codeExecution;
+  return [`Run code #${progress.ordinal}`, progress.status, progress.summary]
+    .filter(Boolean)
+    .join(' · ');
 }
 
 /** 渲染多工具 compact 块的共享标题，并让状态文本遵守 safe width。 */

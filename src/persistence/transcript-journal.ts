@@ -460,6 +460,15 @@ function isTranscriptRecord(value: unknown): value is TranscriptRecord {
         isToolResultDetails(value.details);
     case 'subagent':
       return isSubagentTranscriptRecord(value);
+    case 'code_execution':
+      return isNonEmptyString(value.toolCallId) &&
+        isNonEmptyString(value.executionId) &&
+        isNonNegativeInteger(value.sequence) &&
+        (value.event === 'start' || value.event === 'call_start' || value.event === 'call_end' || value.event === 'end') &&
+        (value.childCallId === undefined || isNonEmptyString(value.childCallId)) &&
+        (value.toolName === undefined || typeof value.toolName === 'string') &&
+        (value.status === undefined || typeof value.status === 'string') &&
+        (value.durationMs === undefined || (typeof value.durationMs === 'number' && Number.isFinite(value.durationMs) && value.durationMs >= 0));
     case 'extension':
       return isTranscriptExtension(value.extension);
     default:

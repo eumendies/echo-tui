@@ -1,0 +1,15 @@
+{
+  "mode": "real",
+  "configPath": "/absolute/path/to/.echo/config.json",
+  "modelProfileId": "REPLACE_WITH_PROFILE_ID",
+  "model": "REPLACE_WITH_EXACT_MODEL_VERSION",
+  "effort": "none",
+  "repeats": 1,
+  "groups": ["native", "optional"],
+  "budgets": {
+    "turns": 12,
+    "tools": 48,
+    "tokens": 64000,
+    "wallMs": 120000
+  }
+}

@@ -1,6 +1,7 @@
 import {DEFAULT_TUI_THEME, type TuiTheme} from '../config/theme-config';
 import {blockText} from './colors';
 import {stripAnsi} from './layout';
+import {projectCodeExecutionRecords, renderRunCodeCallLines} from './code-mode-renderer';
 import {
   ASK_USER_QUESTIONS_TOOL_NAME,
   renderAskUserQuestionsToolCallLines,
@@ -88,6 +89,10 @@ export function renderToolPairLines(call: ToolCallTranscriptRecord, result: Tool
  * 尝试使用同时依赖 call/result 的专属 renderer；解析失败时返回 null 交给分开渲染路径。
  */
 function renderPairAwareToolPairLines(call: ToolCallTranscriptRecord, result: ToolResultTranscriptRecord, width: number, theme: TuiTheme): string[] | null {
+  if (call.toolName === 'run_code' && result.toolName === 'run_code') {
+    return renderRunCodeResultLines([call, result], width, theme);
+  }
+
   if (call.toolName === BASH_TOOL_NAME && result.toolName === BASH_TOOL_NAME) {
     return renderBashToolPairLines(call, result, width, theme);
   }
@@ -185,8 +190,15 @@ export function renderToolRecordLines(record: ToolTranscriptRecord, width: numbe
   return renderToolRecordLinesWithTheme(record, width, options, theme);
 }
 
-/** 根据 toolName 选择工具专属投影，tone 统一在结构投影完成后覆盖。 */
+/** 根据 toolName 选择工具专属投影；脚本 pending 不展开源码，结果使用 rail 展示实际外层字段的有界预览。 */
 function renderToolRecordLinesWithTheme(record: ToolTranscriptRecord, width: number, options: ToolRecordRenderOptions, theme: TuiTheme): string[] {
+  if (record.toolName === 'run_code') {
+    if (record.role === 'tool_result') {
+      return renderRunCodeResultLines([record], width, theme);
+    }
+    return renderRunCodeCallLines(width, theme, options.callStatus);
+  }
+
   if (record.toolName === ASK_USER_QUESTIONS_TOOL_NAME && record.role === 'tool_call') {
     return renderAskUserQuestionsToolCallLines(record, options.callStatus, width, theme)
       ?? renderGenericToolRecordLines(record, width, options, theme);
@@ -275,6 +287,13 @@ function renderToolRecordLinesWithTheme(record: ToolTranscriptRecord, width: num
   }
 
   return renderGenericToolRecordLines(record, width, options, theme);
+}
+
+/** 工具对和独立结果共用脚本投影，避免专属 pending/审批预览回退到完整 JSON 正文。 */
+function renderRunCodeResultLines(records: ToolTranscriptRecord[], width: number, theme: TuiTheme): string[] {
+  return projectCodeExecutionRecords(records, width, theme)
+    .filter((block): block is string => typeof block === 'string')
+    .flatMap((block) => block.trimEnd().split('\n'));
 }
 
 /**

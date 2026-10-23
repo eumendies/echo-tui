@@ -183,6 +183,14 @@ Echo TUI 可以读取和搜索文件、访问公开网页、执行 shell 命令�
 
 这些工具不在沙箱中运行。授权前请检查操作内容，并确保你信任当前工作目录、模型服务和 MCP Server。
 
+### 本地 Code Mode（实验，默认关闭）
+
+在 `/config` →“常规”切换 Code Mode 后，需显式“保存常规设置”，下一次 assistant run 才生效；也可配置 `tools.codeMode.enabled: true`。开启后在主对话与 `--once` 中额外提供可选 `run_code`，保留原生工具，不新增交互模式。
+
+脚本只能编排 `glob`、`grep` 和 UTF-8 文本 `read_files`，不提供 Bash、编辑、MCP、直接网络或 Node API；隔离运行时不可用时不降级执行。读取路径仍沿用原生边界，并非普遍限制在 workspace 内。它不保证所有模型都更可靠或更省 token。
+
+配置、契约/分页、固定限额、错误修复及独立只读配对评测见 [docs/local-code-mode.md](docs/local-code-mode.md)。真实模型评测需另行确认预算并显式 opt-in；离线自测不请求 API。
+
 ## 会话与本地数据
 
 交互会话会按工作目录保存在 `~/.echo/echo_tui/` 下，方便通过 `/resume` 继续之前的对话。会话内容是本地明文，请不要在对话中输入不希望保存在磁盘上的敏感信息。

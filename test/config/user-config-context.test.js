@@ -239,6 +239,77 @@ test('UserConfigContext writers merge the latest disk root and install exactly o
   context.close();
 });
 
+test('Code Mode save and watcher publish one shared revision while captured runs remain frozen', () => {
+  let onChange;
+  const root = createConfigRoot({
+tools: {
+      codeMode: {
+        enabled: false,
+        future: {kept: true}
+      },
+      bash: {timeoutMs: 1234}
+    }
+});
+  const {context, state} = createMemoryContext(root, {
+    watchConfig(listener) {
+      onChange = listener;
+      return {close() {} };
+    }
+  });
+  try {
+    context.startWatching();
+    const changes = [];
+    context.subscribe((change) => changes.push(change));
+    const before = context.capture();
+    const activeConfig = before.resolveLlmConfig();
+    const save = context.saveAppSettingsDraft({
+      ...before.getAppSettingsDraft(),
+      codeModeEnabled: true
+    });
+    const readsAfterSave = state.reads;
+    assert.equal(save.snapshot, context.capture());
+    assert.equal(save.revision, before.revision + 1);
+    assert.equal(changes.length, 1);
+    assert.equal(changes[0].snapshot, save.snapshot);
+    assert.equal(changes[0].domains.appSettings, true);
+    assert.equal(changes[0].domains.tools, true);
+    assert.equal(save.snapshot.getAppSettings().codeModeEnabled, true);
+    assert.deepEqual(save.snapshot.resolveLlmConfig().tools.codeMode, {enabled: true});
+    assert.equal(Object.isFrozen(save.snapshot.resolveLlmConfig().tools.codeMode), true);
+    assert.deepEqual(activeConfig.tools.codeMode, {enabled: false});
+    assert.equal(before.getAppSettings().codeModeEnabled, false);
+    assert.deepEqual(JSON.parse(state.raw).tools.codeMode, {
+      enabled: true,
+      future: {kept: true}
+    });
+    assert.equal(save.snapshot.resolveLlmConfig().tools.bash.timeoutMs, 1234);
+    assert.equal(state.reads, readsAfterSave);
+    onChange();
+    assert.equal(changes.length, 1);
+    assert.equal(context.capture(), save.snapshot);
+
+    const enabledRun = context.capture().resolveLlmConfig();
+    state.raw = JSON.stringify({
+      ...root,
+      tools: {
+        ...root.tools,
+        codeMode: {enabled: false}
+      }
+    });
+    onChange();
+    const disabled = context.capture();
+    assert.equal(disabled.revision, save.revision + 1);
+    assert.equal(disabled.getAppSettings().codeModeEnabled, false);
+    assert.deepEqual(disabled.resolveLlmConfig().tools.codeMode, {enabled: false});
+    assert.deepEqual(enabledRun.tools.codeMode, {enabled: true});
+    assert.equal(changes.length, 2);
+    assert.equal(state.writes.length, 1);
+    assert.equal(state.renames.length, 1);
+  } finally {
+    context.close();
+  }
+});
+
 test('UserConfigContext validation, read, write, and rename failures never install a draft revision', () => {
   const cases = [
     {

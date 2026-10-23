@@ -172,6 +172,7 @@ test('config center renders general tabs, settings, and constrained width', () =
     agentInstructionFileName: 'CLAUDE.md',
     autoCompressImages: true,
     checkUpdatesOnStartup: true,
+    codeModeEnabled: false,
     compactionThresholdRatio: 0.8,
     defaultInteractionMode: 'plan',
     fileEditMode: 'edit_file',
@@ -207,7 +208,7 @@ test('config center renders general tabs, settings, and constrained width', () =
   assert.match(text, /文件编辑工具/);
   assert.match(text, /edit_file/);
   assert.match(text, /超限图片自动压缩/);
-  assert.match(text, /↓ 4 更多/);
+  assert.match(text, /↓ 5 更多/);
   assert.ok(layout.lines.every((line) => displayWidth(line) <= 38));
 });
 
@@ -232,12 +233,48 @@ test('config center renders Chinese message policies and bounded tool safety hin
   }
 });
 
+test('Code Mode renders configured intent and bounded next-run hint beside dynamic approval settings', () => {
+  for (const enabled of [false, true]) {
+    const state = createInitialGeneralConfigState({
+      ...DEFAULT_APP_SETTINGS,
+      codeModeEnabled: enabled,
+      toolApprovalMode: 'auto'
+    }, []);
+    state.selectedIndex = getGeneralConfigRowIds(state).indexOf('codeMode');
+    const surface = {
+      kind: 'config',
+      view: 'general',
+      activeTab: 'general',
+      tabs: [{
+        id: 'general',
+        label: '常规'
+      }],
+      state
+    };
+    const layout = renderConfigSurface(surface, 100, {maxLines: 12});
+    const text = layout.lines.map(stripAnsi).join('\n');
+    assert.match(text, enabled ? /Code Mode\s+开/ : /Code Mode\s+关/);
+    assert.match(text, /脚本编排本地只读工具/);
+    assert.match(text, /默认关，保存后下一轮生效/);
+    assert.doesNotMatch(text, /运行时已就绪/);
+    assert.ok(layout.lines.length <= 12);
+    for (const width of [22, 42]) {
+      const narrow = renderConfigSurface(surface, width, {maxLines: 9});
+      assert.match(narrow.lines.map(stripAnsi).join('\n'), /Code Mode/);
+      assert.ok(narrow.lines.length <= 9);
+      assert.ok(narrow.lines.every((line) => displayWidth(line) <= width));
+      assert.equal(narrow.hitRegions, undefined);
+    }
+  }
+});
+
 test('config center highlights active tab with foreground color only', () => {
   const state = createInitialGeneralConfigState({
     activeTurnMessagePolicy: 'pending',
     agentInstructionFileName: 'AGENTS.md',
     autoCompressImages: false,
     checkUpdatesOnStartup: true,
+    codeModeEnabled: false,
     compactionThresholdRatio: 0.8,
     defaultInteractionMode: 'normal',
     fileEditMode: 'apply_patch',
@@ -270,6 +307,7 @@ test('config center only renders approval model for auto draft', () => {
     agentInstructionFileName: 'AGENTS.md',
     autoCompressImages: true,
     checkUpdatesOnStartup: true,
+    codeModeEnabled: false,
     compactionThresholdRatio: 0.8,
     defaultInteractionMode: 'normal',
     fileEditMode: 'apply_patch',
@@ -305,6 +343,7 @@ test('config center renders approval API model name and provider without the pro
     agentInstructionFileName: 'AGENTS.md',
     autoCompressImages: true,
     checkUpdatesOnStartup: true,
+    codeModeEnabled: false,
     compactionThresholdRatio: 0.8,
     defaultInteractionMode: 'normal',
     fileEditMode: 'apply_patch',
@@ -334,6 +373,7 @@ test('config center separates a selected approval model from its label at constr
     agentInstructionFileName: 'AGENTS.md',
     autoCompressImages: true,
     checkUpdatesOnStartup: true,
+    codeModeEnabled: false,
     compactionThresholdRatio: 0.8,
     defaultInteractionMode: 'normal',
     fileEditMode: 'apply_patch',

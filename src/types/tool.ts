@@ -1,3 +1,6 @@
+import type {ScriptToolEnvelope} from '../tools/code-mode/contracts';
+import type {CodeToolDispatch} from '../tools/code-mode/protocol';
+import type {CodeExecutionTranscriptRecord} from './transcript';
 import type {SkillCatalogEntry} from './skill';
 import type {ChangeFileRecorder} from './change-history';
 
@@ -20,6 +23,15 @@ export type ToolCall = {
   toolName: string;
   argumentsText: string;
 };
+
+export type ToolExecutionOrigin = {
+  kind: 'code_execution'; // 区分脚本内部调用与 provider 直接调用，不能作为授权依据。
+  executionId: string; // 隔离运行时生成的本次执行 UUID，不从 guest 参数读取。
+  parentToolCallId: string; // 关联唯一外层 run_code 调用，沿用运行时的有界身份。
+  childCallId: string; // 执行 UUID 与递增调用序号组成的内部身份。
+};
+
+export type ToolLifecycleStatus = 'succeeded' | 'failed' | 'cancelled' | 'rejected';
 
 export type ToolApprovalRequest = {
   preview?: string; // 人工 surface 展示的受信任本地动作摘要。
@@ -78,6 +90,7 @@ type ToolExecutionResultBase = {
   ok: boolean;
   text: string;
   attachments?: ToolResultAttachment[];
+  scriptResult?: ScriptToolEnvelope; // 仅策略内脚本调用消费的机器通道，不进入 provider 或 transcript。
 };
 
 export type GenericToolExecutionResult = ToolExecutionResultBase & {
@@ -230,11 +243,15 @@ export type ToolExecutionOptions = {
   abortSignal?: AbortSignal;
   changeRecorder?: ChangeFileRecorder;
   subagentGroupSize?: number; // 并行只读段内 run_subagent 调用总数；仅父 loop 在 ≥2 时设置，供委派端口写入并行渲染事实。
+  script?: boolean; // 策略边界通过后选择机器采集入口，不生成原生展示投影。
+  codeDispatch?: CodeToolDispatch; // 当前运行策略感知的内部执行能力，禁止 handler 自行创建裸 executor。
+  onCodeAudit?: (record: CodeExecutionTranscriptRecord) => void; // 本地审计发布通道，不作为 provider 工具结果。
 };
 
 export type ToolHandler = {
   definition: ToolDefinition; // 暴露给 provider并用于 registry查找的工具 schema。
   execute: (args: Record<string, unknown>, call: ToolCall, options?: ToolExecutionOptions) => Promise<ToolExecutionResult> | ToolExecutionResult; // 在统一 executor 边界内执行已解析参数。
+  executeScript?: (args: Record<string, unknown>, call: ToolCall, options?: ToolExecutionOptions) => Promise<ScriptToolEnvelope>; // 已通过策略边界的内部调用使用独立机器通道，不解析展示结果。
   transcriptCommitMode?: 'call_before_execute' | 'pair_after_execute'; // 声明工具执行期间是否会先发布本地 transcript 记录。
 };
 

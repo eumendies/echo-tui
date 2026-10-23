@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
+import {sanitizeTerminalText} from '../terminal/control-chars';
 
 import {
   createTranscriptJournalEntry,
@@ -552,6 +553,12 @@ function createSubagentPreviewRecord(records: SubagentTranscriptRecord[]): impor
 }
 
 function createRecordPreviewText(record: TranscriptRecord): unknown {
+  if (record.role === 'code_execution') {
+    return ['Run code', record.event, record.toolName, record.status, record.text]
+      .filter((text): text is string => typeof text === 'string' && text !== '')
+      .map((text) => sanitizeTerminalText(text.slice(0, SESSION_PREVIEW_TEXT_LIMIT)))
+      .join(' · ');
+  }
   return record.role === 'user' && typeof record.displayText === 'string' ? record.displayText : record.text;
 }
 

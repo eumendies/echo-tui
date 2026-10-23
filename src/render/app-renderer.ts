@@ -6,6 +6,7 @@ import {renderCompactionNoticeBlock} from './blocks/message-renderer';
 import { createFooterRenderer, renderFooterLayout } from './footer';
 import {ShellLiveRenderer} from './live/shell-renderer';
 import {StreamingLiveRenderer} from './live/streaming-renderer';
+import {createCodeExecutionAppendState, projectCodeExecutionPending, pruneCodeExecutionAppendState, type CodeExecutionProjectionOptions} from './code-mode-renderer';
 import { createSubagentAppendRenderState, filterParallelSubagentRecords, filterPendingSubagentToolCallRecords, pruneSubagentAppendState, rebuildSubagentAppendState, renderTranscriptBlocks, renderTranscriptLines, splitRenderedBlock, trackParallelSubagentRecords } from './transcript-renderer';
 import type { TranscriptRecord } from '../types/transcript';
 import type {
@@ -82,6 +83,8 @@ class DefaultAppRenderer implements AppRenderer {
   private readonly shellLive = new ShellLiveRenderer();
   private readonly subagentAppendState = createSubagentAppendRenderState();
   private readonly mainSubagentAppendState = createSubagentAppendRenderState();
+  private readonly codeExecutionAppendState = createCodeExecutionAppendState();
+  private readonly mainCodeExecutionAppendState = createCodeExecutionAppendState();
   private mainBaseRecordIndex: number | null = null;
   private mainProjectionVisible = false;
 
@@ -90,23 +93,33 @@ class DefaultAppRenderer implements AppRenderer {
     this.footer = createFooterRenderer(output);
   }
 
-  /** 给 footer 注入已进入终端历史区的文本与 shell 未确定尾部起点，避免同一内容重复显示。 */
+  /** 给 footer 注入已确定文本、shell 尾部与脚本进度；审计计数只在临时区域重绘，不写进历史。 */
   private prepareRenderState(options: RenderState): RenderState {
-    return this.shellLive.injectHistory(this.streamingLive.injectHistory(options));
+    const state = options.mainTranscript
+      ? this.mainCodeExecutionAppendState
+      : this.codeExecutionAppendState;
+    return this.shellLive.injectHistory(this.streamingLive.injectHistory({
+      ...options,
+      pending: projectCodeExecutionPending(options.pending, state)
+    }));
   }
 
-  /** 驻留起点变化时清理主投影缓存；即使 BTW 接管终端，也不保留被逐出的原始工具调用，且不写终端。 */
+  /** 驻留起点变化时清理主投影缓存；即使 BTW 接管终端，也释放已逐出的工具和脚本展示事实，且不写终端。 */
   syncMainTranscript(snapshot: MainTranscriptRenderState, pending: PendingState | null): void {
-    if (this.mainBaseRecordIndex === snapshot.baseRecordIndex) return;
+    if (this.mainBaseRecordIndex === snapshot.baseRecordIndex) {
+      return;
+    }
     pruneSubagentAppendState(this.mainSubagentAppendState, snapshot.records, getActiveSubagentRunIds(pending));
+    pruneCodeExecutionAppendState(this.mainCodeExecutionAppendState, snapshot.records);
     this.mainBaseRecordIndex = snapshot.baseRecordIndex;
   }
 
-  /** 主窗口身份与历史窗口/BTW 分离；返回主窗口时释放历史投影的原始调用，且不抹掉活动主运行身份。 */
+  /** 主窗口身份与历史窗口/BTW 分离；返回主窗口时释放历史投影缓存，且不抹掉活动主运行身份。 */
   private getSubagentAppendState(options: RenderState) {
     const isMain = !!options.mainTranscript;
     if (isMain && !this.mainProjectionVisible) {
       rebuildSubagentAppendState(this.subagentAppendState, []);
+      this.codeExecutionAppendState.runs = [];
     }
     this.mainProjectionVisible = isMain;
     return isMain ? this.mainSubagentAppendState : this.subagentAppendState;
@@ -136,7 +149,7 @@ class DefaultAppRenderer implements AppRenderer {
     return this.footer.append(content, this.prepareRenderState(options));
   }
 
-  /** transcript 成组新增时一次性追加所有可见块并重绘 footer。 */
+  /** transcript 成组新增时一次性追加可见块；脚本审计仅推进 footer 进度，外层结果到达后提交完整 rail。 */
   renderRecords({records, ...rawState}: RenderRecordsOptions): FooterPointerSnapshot {
     const options = rawState.pending ? {...rawState, pending: sanitizePendingDisplayText(rawState.pending)} : rawState;
     const subagentAppendState = this.getSubagentAppendState(options);
@@ -156,11 +169,13 @@ class DefaultAppRenderer implements AppRenderer {
     // 并行子运行的 start 到达后登记身份，同 run 的后续批次持续被过滤，与快照投影保持一致。
     trackParallelSubagentRecords(subagentAppendState, records);
     const visibleRecords = filterParallelSubagentRecords(records, subagentAppendState.parallelRunIds);
-    const blocks = renderTranscriptBlocks(visibleRecords, options.width, options.theme, options.renderPreferences, false, subagentAppendState);
+    const blocks = renderTranscriptBlocks(visibleRecords, options.width, options.theme, options.renderPreferences, false, subagentAppendState, undefined, {
+      state: options.mainTranscript ? this.mainCodeExecutionAppendState : this.codeExecutionAppendState
+    });
     return this.footer.append(blocks.join(''), this.prepareRenderState(options));
   }
 
-  /** 破坏性恢复只投影 coordinator 按 owner 选定的 records；主会话补一条瞬时压缩提示并恢复 footer 和光标。 */
+  /** 破坏性恢复只投影 coordinator 选定的 records；重建脚本分组缓冲，保留活动调用并沿用清屏/footer/光标策略。 */
   renderDestructive({bannerContext, records, ...rawState}: RenderDestructiveOptions): FooterPointerSnapshot {
     const options = rawState.pending ? {...rawState, pending: sanitizePendingDisplayText(rawState.pending)} : rawState;
     const subagentAppendState = this.getSubagentAppendState(options);
@@ -169,8 +184,6 @@ class DefaultAppRenderer implements AppRenderer {
     const streamingLines = this.streamingLive.snapshotLines(options);
     const shellLines = this.shellLive.snapshotLines(options);
     rebuildSubagentAppendState(subagentAppendState, records, getActiveSubagentRunIds(options.pending), !!options.mainTranscript);
-    const prepared = this.prepareRenderState(options);
-    const footerLayout = renderFooterLayout(prepared);
     // 会话窗口 body 已由调用方按 runId 选定记录，跳过主窗口的并行过滤；主投影保持既有过滤语义。
     const viewProjectionRecords = options.skipParallelSubagentFilter
       ? records
@@ -184,7 +197,22 @@ class DefaultAppRenderer implements AppRenderer {
         `较早的 ${options.mainTranscript.baseRecordIndex} 条历史已压缩；完整记录保存在会话文件中。`, options.width, options.theme
       )));
     }
-    const transcriptLines = [...historyHintLines, ...renderTranscriptLines(projectedRecords, options.width, options.theme, options.renderPreferences, true, activeSubagentRunId)];
+    const codeExecutionOptions: CodeExecutionProjectionOptions = {
+      state: options.mainTranscript ? this.mainCodeExecutionAppendState : this.codeExecutionAppendState,
+      snapshot: true,
+      active: options.pending?.kind === 'tool_call'
+        && options.pending.toolName === 'run_code'
+        && !options.pending.callId,
+      activeToolCallIds: options.pending?.kind === 'tool_calls'
+        ? options.pending.calls.filter((call) => call.toolName === 'run_code').map((call) => call.callId)
+        : options.pending?.kind === 'tool_call' && options.pending.toolName === 'run_code' && options.pending.callId
+          ? [options.pending.callId]
+          : []
+    };
+    const transcriptLines = [...historyHintLines, ...renderTranscriptLines(projectedRecords, options.width, options.theme, options.renderPreferences, true, activeSubagentRunId, codeExecutionOptions)];
+    // 先从当前窗口 records 重建脚本事实，再生成 footer；resize 不借用旧窗口或旧宽度的进度快照。
+    const prepared = this.prepareRenderState(options);
+    const footerLayout = renderFooterLayout(prepared);
     const bannerLines = renderBannerLines(bannerContext, options.theme);
     const lines = [...bannerLines, ...transcriptLines, ...streamingLines, ...shellLines, ...footerLayout.lines];
     const cursorRow = bannerLines.length + transcriptLines.length + streamingLines.length + shellLines.length + footerLayout.cursorRow;

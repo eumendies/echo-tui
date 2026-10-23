@@ -14,6 +14,8 @@ import {createEditFileToolHandler} from './edit-file-tool-handler';
 import {createRunSubagentToolHandler} from './run-subagent-tool-handler';
 import {createMcpResourceToolHandlers} from './mcp-resource-tools';
 import {resolveBashSandboxContext} from '../sandbox/provider';
+import {createRunCodeToolHandler, RUN_CODE_TOOL_NAME} from './code-mode/tool-handler';
+import {isCodeRuntimeAvailable} from './code-mode/execution';
 
 import type {McpManager} from '../mcp/manager';
 import type {AgentExecutionMode, LlmConfig, SubagentToolPort} from '../types/agent';
@@ -63,6 +65,8 @@ function createDefaultToolRegistry(config: LlmConfig, cwd: string | (() => strin
     ? createEditFileToolHandler({cwd})
     : createApplyPatchToolHandler({cwd});
   const handlers = [
+    ...(config.tools.codeMode?.enabled === true && (!options.allowedToolNames || options.allowedToolNames.has(RUN_CODE_TOOL_NAME))
+      ? [createRunCodeToolHandler()] : []),
     createBashToolHandler({
       cwd,
       maxOutputBytes: config.tools.bash.maxOutputBytes,
@@ -106,6 +110,7 @@ function createDefaultToolRegistry(config: LlmConfig, cwd: string | (() => strin
 
   return {
     ...registry,
+    listDefinitions: () => registry.listDefinitions().filter((definition) => definition.name !== RUN_CODE_TOOL_NAME || isCodeRuntimeAvailable()),
     listSkillCatalog: skillRegistry.listCatalog
   };
 }

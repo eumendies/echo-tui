@@ -2,9 +2,12 @@ import {spawn} from 'node:child_process';
 import * as path from 'node:path';
 import {StringDecoder} from 'node:string_decoder';
 
+import {projectScriptList, scriptFailure, validateScriptInput} from './code-mode/contracts';
+import type {ScriptToolEnvelope} from './code-mode/contracts';
+
 import {DEFAULT_TOOL_RESULT_MAX_OUTPUT_BYTES, capUtf8Text, isGitPath, normalizePositiveInteger, resolveCwd} from './tool-handler-utils';
 
-import type {GlobDisplayMetadata, GlobToolExecutionResult, ToolCall, ToolHandler} from '../types/tool';
+import type {GlobDisplayMetadata, GlobToolExecutionResult, ToolCall, ToolExecutionOptions, ToolHandler} from '../types/tool';
 import type {Result} from './tool-handler-utils';
 
 const GLOB_TOOL_NAME = 'glob';
@@ -13,25 +16,25 @@ const MAX_PARSER_PENDING_BYTES = 256 * 1024;
 const MAX_STDERR_BYTES = 8 * 1024;
 
 type GlobToolHandlerOptions = {
-  cwd?: string | (() => string);
-  maxOutputBytes?: number;
-  maxPaths?: number;
-  rgPath?: string;
+  cwd?: string | (() => string); // 本次调用解析相对路径的基准目录。
+  maxOutputBytes?: number; // 原生结果和采集的字节上限。
+  maxPaths?: number; // 保留路径项数量上限。
+  rgPath?: string; // 受信任的 ripgrep 可执行文件路径。
 };
 
 type NormalizedGlobRequest = {
-  paths: string[];
-  pattern: string;
+  paths: string[]; // 按原生口径保留的有序路径。
+  pattern: string; // 不经 shell 展开的查询模式。
 };
 
 type GlobRunResult = {
-  error?: string;
-  exitCode: number | null;
-  hasMore: boolean;
-  limitReason?: 'bytes' | 'count';
-  paths: string[];
-  stderr: string;
-  truncated: boolean;
+  error?: string; // 采集失败的有界诊断。
+  exitCode: number | null; // 子进程的真实退出码或上限中止后的成功码。
+  hasMore: boolean; // 已知或可能存在未保留的结果。
+  limitReason?: 'bytes' | 'count'; // 决定原生截断提示的预算种类。
+  paths: string[]; // 按原生口径保留的有序路径。
+  stderr: string; // 有界标准错误输出。
+  truncated: boolean; // 采集预算是否导致信息缺失。
 };
 
 /**
@@ -64,12 +67,13 @@ function createGlobToolHandler(options: GlobToolHandlerOptions = {}): ToolHandle
         }
       }
     },
-    async execute(args: Record<string, unknown>, call: ToolCall): Promise<GlobToolExecutionResult> {
+    async execute(args: Record<string, unknown>, call: ToolCall, executionOptions?: ToolExecutionOptions): Promise<GlobToolExecutionResult> {
       const result = await glob(args, {
         cwd: resolveCwd(options.cwd),
         maxOutputBytes,
         maxPaths,
-        rgPath
+        rgPath,
+        abortSignal: executionOptions?.abortSignal
       });
 
       return {
@@ -84,11 +88,51 @@ function createGlobToolHandler(options: GlobToolHandlerOptions = {}): ToolHandle
           ...(result.display ? {display: result.display} : {})
         }
       };
+    },
+    async executeScript(args, _call, executionOptions): Promise<ScriptToolEnvelope> {
+      if (executionOptions?.abortSignal?.aborted) {
+        return scriptFailure('cancelled', 'Tool call cancelled');
+      }
+      const input = validateScriptInput('glob', args);
+      if (!input.ok) {
+        return scriptFailure('invalid_arguments', input.reason);
+      }
+      const cwd = resolveCwd(options.cwd);
+      const normalized = normalizeRequest(input.value, cwd);
+      if (!normalized.ok) {
+        return scriptFailure('invalid_arguments', normalized.reason);
+      }
+      const result = await runRipgrepFiles(normalized.value, {
+        cwd,
+        maxPaths,
+        maxOutputBytes,
+        rgPath,
+        abortSignal: executionOptions?.abortSignal
+      });
+      if (executionOptions?.abortSignal?.aborted) {
+        return scriptFailure('cancelled', 'Tool call cancelled');
+      }
+      if (result.error !== undefined || (result.exitCode !== 0 && result.exitCode !== 1)) {
+        return scriptFailure('tool_failed', result.error || cleanStderr(result.stderr) || 'ripgrep failed');
+      }
+      return projectScriptList('glob', result.paths, result.hasMore, result.truncated);
     }
   };
 }
 
-async function glob(args: Record<string, unknown>, options: {cwd: string; maxOutputBytes: number; maxPaths: number; rgPath: string}): Promise<{ok: boolean; text: string; display?: GlobDisplayMetadata; exitCode?: number | null; truncated: boolean}> {
+async function glob(args: Record<string, unknown>, options: {
+  cwd: string;
+  maxOutputBytes: number;
+  maxPaths: number;
+  rgPath: string;
+  abortSignal?: AbortSignal
+}): Promise<{
+  ok: boolean;
+  text: string;
+  display?: GlobDisplayMetadata;
+  exitCode?: number | null;
+  truncated: boolean
+}> {
   const normalized = normalizeRequest(args, options.cwd);
 
   if (!normalized.ok) {
@@ -187,7 +231,23 @@ function resolveSearchPath(searchPath: string, cwd: string): Result<string> {
   return {ok: true, value: absolutePath};
 }
 
-function runRipgrepFiles(request: NormalizedGlobRequest, options: {cwd: string; maxOutputBytes: number; maxPaths: number; rgPath: string}): Promise<GlobRunResult> {
+function runRipgrepFiles(request: NormalizedGlobRequest, options: {
+  cwd: string;
+  maxOutputBytes: number;
+  maxPaths: number;
+  rgPath: string;
+  abortSignal?: AbortSignal
+}): Promise<GlobRunResult> {
+  if (options.abortSignal?.aborted) {
+    return Promise.resolve({
+      error: 'Tool call cancelled',
+      exitCode: null,
+      hasMore: false,
+      paths: [],
+      stderr: '',
+      truncated: false
+    });
+  }
   return new Promise((resolve) => {
     // 文件发现仍通过参数数组调用 rg，避免把 pattern 或 paths 拼进 shell 命令。
     const child = spawn(options.rgPath, buildRipgrepArgs(request), {
@@ -211,7 +271,7 @@ function runRipgrepFiles(request: NormalizedGlobRequest, options: {cwd: string; 
         limitReason = 'count';
         truncated = true;
         limitReached = true;
-        child.kill('SIGTERM');
+        stop();
         return;
       }
 
@@ -223,7 +283,7 @@ function runRipgrepFiles(request: NormalizedGlobRequest, options: {cwd: string; 
         limitReason = 'bytes';
         truncated = true;
         limitReached = true;
-        child.kill('SIGTERM');
+        stop();
         return;
       }
 
@@ -233,7 +293,7 @@ function runRipgrepFiles(request: NormalizedGlobRequest, options: {cwd: string; 
       if (!limitReached) {
         parserError = `ripgrep NUL path exceeded ${MAX_PARSER_PENDING_BYTES} bytes without a delimiter`;
         limitReached = true;
-        child.kill('SIGTERM');
+        stop();
       }
     });
 
@@ -246,10 +306,31 @@ function runRipgrepFiles(request: NormalizedGlobRequest, options: {cwd: string; 
     let outputBytes = 0;
     let parserError: string | undefined;
     let truncated = false;
-    let settled = false;
+    let processError: string | undefined;
+    let closed = false;
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
+    // 取消和采集上限都等待 close；不让 Promise 先返回而遗留活跃 rg 或管道。
+    function stop(): void {
+      if (closed || killTimer) {
+        return;
+      }
+      child.kill('SIGTERM');
+      killTimer = setTimeout(() => child.kill('SIGKILL'), 500);
+    }
+    const onAbort = () => {
+      processError = 'Tool call cancelled';
+      limitReached = true;
+      stop();
+    };
+    options.abortSignal?.addEventListener('abort', onAbort, {once: true});
+    if (options.abortSignal?.aborted) {
+      onAbort();
+    }
 
     child.stdout.on('data', (chunk: Buffer | string) => {
-      parser.write(chunk);
+      if (!limitReached) {
+        parser.write(chunk);
+      }
     });
 
     child.stderr.on('data', (chunk: Buffer | string) => {
@@ -257,32 +338,22 @@ function runRipgrepFiles(request: NormalizedGlobRequest, options: {cwd: string; 
     });
 
     child.on('error', (error: NodeJS.ErrnoException) => {
-      if (settled) {
-        return;
-      }
-
-      settled = true;
-      resolve({
-        error: error.code === 'ENOENT' ? 'ripgrep executable not found' : error.message,
-        exitCode: null,
-        hasMore,
-        paths,
-        stderr: finishStderr(stderr, stderrDecoder),
-        truncated
-      });
+      processError = error.code === 'ENOENT' ? 'ripgrep executable not found' : error.message;
     });
 
     child.on('close', (code: number | null, signal: NodeJS.Signals | null) => {
-      if (settled) {
-        return;
+      closed = true;
+      options.abortSignal?.removeEventListener('abort', onAbort);
+      if (killTimer) {
+        clearTimeout(killTimer);
       }
-
-      settled = true;
-      parser.end();
+      if (!limitReached) {
+        parser.end();
+      }
       resolve({
         // 因命中上限主动终止时，保留已收集路径并把本次发现视为成功截断。
-        error: parserError,
-        exitCode: signal && hasMore ? 0 : code,
+        error: processError || parserError,
+        exitCode: child.pid === undefined ? null : signal && hasMore ? 0 : code,
         hasMore,
         ...(limitReason ? {limitReason} : {}),
         paths,
@@ -325,17 +396,21 @@ function createNullPathParser(onPath: (filePath: string) => void, maxPendingByte
       const paths = pending.split('\0');
       pending = paths.pop() || '';
 
+      for (const filePath of paths) {
+        if (Buffer.byteLength(filePath, 'utf8') > maxPendingBytes) {
+          pending = '';
+          overflowed = true;
+          onOverflow();
+          return;
+        }
+        if (filePath !== '') {
+          onPath(filePath);
+        }
+      }
       if (Buffer.byteLength(pending, 'utf8') > maxPendingBytes) {
         pending = '';
         overflowed = true;
         onOverflow();
-        return;
-      }
-
-      for (const filePath of paths) {
-        if (filePath !== '') {
-          onPath(filePath);
-        }
       }
     },
     end() {

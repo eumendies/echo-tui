@@ -8,9 +8,9 @@ import {
 import {createCompositeObservation, disabledObservation} from './observation';
 
 import type {DebugContext} from '../debug/debug-context';
-import type {LifecycleHookDispatcher} from '../types/hooks';
+import type {LifecycleHookDispatcher, LifecycleHookPayloadData} from '../types/hooks';
 import type {ProviderUsage} from '../types/agent';
-import type {ToolApprovalRequest, ToolExecutionResult} from '../types/tool';
+import type {ToolApprovalRequest, ToolExecutionOrigin, ToolExecutionResult} from '../types/tool';
 import type {AgentRunScope, Observation} from './observation';
 
 type ObservationOutput = Pick<NodeJS.WriteStream, 'write'>;
@@ -179,13 +179,14 @@ function createDebugObservation(debug: DebugContext, output?: ObservationOutput)
         toolName: call.toolName
       });
     },
-    toolCompleted({scope, result}) {
+    toolCompleted({scope, result, status}) {
       debug.emit('tool_call_end', {
         ...createDebugScopePayload(scope),
         ok: result.ok,
         resultText: summarizeText(result.text, 0),
         toolCallId: result.callId,
         toolName: result.toolName,
+        ...(status ? {status} : {}),
         truncated: isToolResultTruncated(result)
       });
     },
@@ -265,12 +266,13 @@ function createHookObservation(hooks: LifecycleHookDispatcher): Observation {
         });
       }
     },
-    toolCompleted({scope, result}) {
+    toolCompleted({scope, result, status}) {
       hooks.emit('tool_call_end', {
         ...createHookLoopScope(scope),
         toolCallId: result.callId,
         toolName: result.toolName,
-        ok: result.ok
+        ok: result.ok,
+        ...(status ? {status} : {})
       });
     },
     toolStarted({scope, call}) {
@@ -278,7 +280,8 @@ function createHookObservation(hooks: LifecycleHookDispatcher): Observation {
         ...createHookLoopScope(scope),
         toolCallId: call.callId,
         toolName: call.toolName,
-        argumentsText: call.argumentsText
+        // 内层参数可能包含文件正文或长查询；hooks 仅需身份，不复制机器通道的输入。
+        ...(scope.toolOrigin ? {} : {argumentsText: call.argumentsText})
       });
     },
     userQuestionCompleted({scope, call, result}) {
@@ -294,6 +297,7 @@ function createDebugScopePayload(scope: AgentRunScope): Record<string, unknown> 
   return {
     conversationKind: scope.conversationKind,
     interactionMode: scope.interactionMode,
+    ...(scope.toolOrigin ? {toolOrigin: projectToolOrigin(scope.toolOrigin)} : {}),
     ...(scope.subagent ? {
       agentName: scope.subagent.agentName,
       parentToolCallId: scope.subagent.parentToolCallId,
@@ -302,11 +306,22 @@ function createDebugScopePayload(scope: AgentRunScope): Record<string, unknown> 
   };
 }
 
-function createHookLoopScope(scope: AgentRunScope): {agentName?: string; conversationKind: AgentRunScope['conversationKind']; interactionMode: AgentRunScope['interactionMode']} {
+function createHookLoopScope(scope: AgentRunScope): Pick<LifecycleHookPayloadData, 'agentName' | 'conversationKind' | 'interactionMode' | 'toolOrigin'> {
   return {
     conversationKind: scope.conversationKind,
     interactionMode: scope.interactionMode,
+    ...(scope.toolOrigin ? {toolOrigin: projectToolOrigin(scope.toolOrigin)} : {}),
     ...(scope.subagent ? {agentName: scope.subagent.agentName} : {})
+  };
+}
+
+/** 只选择有界身份字段，防止未来 scope 扩展把宿主对象一并送入 hook/debug。 */
+function projectToolOrigin(origin: ToolExecutionOrigin): ToolExecutionOrigin {
+  return {
+    kind: origin.kind,
+    executionId: origin.executionId,
+    parentToolCallId: origin.parentToolCallId,
+    childCallId: origin.childCallId
   };
 }
 

@@ -211,6 +211,7 @@ function createFakeHost(options = {}) {
           agentInstructionFileName: 'AGENTS.md',
           autoCompressImages: true,
           checkUpdatesOnStartup: true,
+          codeModeEnabled: false,
           compactionThresholdRatio: 0.8,
           defaultInteractionMode: 'normal',
           fileEditMode: 'apply_patch',
@@ -1483,8 +1484,10 @@ test('configCommandHandler opens general tab, saves independently, and lazily op
   configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
   configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_RIGHT}, host);
   assert.equal(host.session.getActive().surface.state.draft.agentInstructionFileName, 'CLAUDE.md');
-  configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
-  configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
+  while (host.session.getActive().data.general.state.selectedIndex
+    < getGeneralConfigRowIds(host.session.getActive().data.general.state).indexOf('save')) {
+    configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
+  }
   configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
   assert.equal(calls.savedSettingsDrafts.length, 1);
   assert.equal(calls.savedSettingsDrafts[0].compactionThresholdRatio, 0.85);
@@ -1603,6 +1606,166 @@ test('configCommandHandler keeps invalid message policy save errors inline and d
   assert.match(surface.state.error, /响应期间发送消息/);
   assert.equal(surface.state.feedback, undefined);
   assert.equal(surface.tabs.find((tab) => tab.id === 'general').status, 'dirty');
+});
+
+async function moveGeneralToRow(handler, host, rowId) {
+  let state = host.session.getActive().data.general.state;
+  while (getGeneralConfigRowIds(state)[state.selectedIndex] !== rowId) {
+    const target = getGeneralConfigRowIds(state).indexOf(rowId);
+    assert.ok(target >= 0);
+    await handler.handleEvent(host.session.getActive(), {type: state.selectedIndex < target ? INPUT_EVENTS.MOVE_DOWN : INPUT_EVENTS.MOVE_UP}, host);
+    state = host.session.getActive().data.general.state;
+  }
+}
+
+test('Code Mode edits only draft, survives tabs and close cancellation, then discards without execution', async () => {
+  const handler = new ConfigCommandHandler();
+  const {calls, host} = createFakeHost({appSettings: DEFAULT_APP_SETTINGS});
+  startCommand(handler, '/config', host);
+  await moveGeneralToRow(handler, host, 'codeMode');
+  const fingerprint = host.session.getActive().data.general.state.initialDraftFingerprint;
+  for (const type of [INPUT_EVENTS.SUBMIT, INPUT_EVENTS.MOVE_LEFT, INPUT_EVENTS.MOVE_RIGHT]) {
+    await handler.handleEvent(host.session.getActive(), {type}, host);
+    assert.equal(host.session.getActive().surface.state.draft.codeModeEnabled, true);
+    assert.equal(host.session.getActive().surface.tabs[0].status, 'dirty');
+    assert.equal(host.session.getActive().data.general.state.initialDraftFingerprint, fingerprint);
+    assert.equal(host.config.readSettings().codeModeEnabled, false);
+    await handler.handleEvent(host.session.getActive(), {type}, host);
+    assert.equal(host.session.getActive().surface.state.draft.codeModeEnabled, false);
+    assert.equal(host.session.getActive().surface.tabs[0].status, undefined);
+  }
+  await handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
+  for (let index = 0; index < 4; index += 1) {
+    await handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.TAB}, host);
+  }
+  assert.equal(host.session.getActive().surface.state.draft.codeModeEnabled, true);
+  await handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.ESCAPE}, host);
+  assert.deepEqual(host.session.getActive().surface.dirtyTabs, ['常规']);
+  await handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
+  assert.equal(host.session.getActive().surface.state.draft.codeModeEnabled, true);
+  await handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.ESCAPE}, host);
+  await handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
+  await handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
+  assert.equal(host.session.getActive(), null);
+  assert.equal(calls.savedSettingsDrafts.length, 0);
+  assert.equal(calls.assistantCalls.length, 0);
+  assert.equal(calls.transcriptAppends.length, 0);
+  assert.equal(calls.resizeRecoveries, 0);
+  assert.equal(startCommand(handler, '/config', host).surface.state.draft.codeModeEnabled, false);
+});
+
+test('Code Mode save preserves model draft and unknown fields; dynamic approval rows keep focus aligned', async () => {
+  let raw = JSON.stringify({
+    tools: {
+      codeMode: {
+        enabled: false,
+        future: {kept: true}
+      },
+      other: {kept: true}
+    },
+    unknown: 42
+  });
+  let pending;
+  const context = new UserConfigContext({
+    configPath: '/tmp/echo-code-mode/config.json',
+    readFile() {return raw;},
+    mkdir() {},
+    writeFile(_path, value) {pending = value;},
+    rename() {raw = pending;}
+  });
+  try {
+    const handler = new ConfigCommandHandler();
+    const {calls, host} = createFakeHost({
+      appSettings: context.capture().getAppSettingsDraft(),
+      saveSettings(draft) {
+        context.saveAppSettingsDraft(draft);
+        return {ok: true};
+      }
+    });
+    startCommand(handler, '/config', host);
+    await moveGeneralToRow(handler, host, 'toolApprovalMode');
+    await handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_RIGHT}, host);
+    await moveGeneralToRow(handler, host, 'codeMode');
+    const autoIndex = host.session.getActive().surface.state.selectedIndex;
+    await handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
+    assert.equal(host.session.getActive().surface.state.draft.codeModeEnabled, true);
+    await moveGeneralToRow(handler, host, 'toolApprovalMode');
+    await handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_LEFT}, host);
+    await moveGeneralToRow(handler, host, 'codeMode');
+    assert.equal(host.session.getActive().surface.state.selectedIndex, autoIndex - 1);
+
+    // 模型 Tab 使用真实编辑事件产生独立草稿，常规保存不能顺便提交它。
+    await handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.TAB}, host);
+    for (const event of [
+      {type: INPUT_EVENTS.SUBMIT},
+      {type: INPUT_EVENTS.MOVE_DOWN},
+      {type: INPUT_EVENTS.SUBMIT},
+      {
+        type: INPUT_EVENTS.TEXT,
+        value: 'Unsaved provider'
+      },
+      {type: INPUT_EVENTS.SUBMIT}
+    ]) {
+      await handler.handleEvent(host.session.getActive(), event, host);
+    }
+    const modelDraft = structuredClone(host.session.getActive().data.models.state);
+    assert.equal(modelDraft.draft.providers[0].label, 'Unsaved provider');
+    for (let index = 0; index < 3; index += 1) {
+      await handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.TAB}, host);
+    }
+    await moveGeneralToRow(handler, host, 'save');
+    await handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
+    const session = host.session.getActive();
+    assert.equal(session.surface.view, 'general');
+    assert.match(session.surface.state.feedback, /常规设置已保存/);
+    assert.equal(session.surface.tabs[0].status, undefined);
+    assert.equal(session.surface.tabs.find((tab) => tab.id === 'models').status, 'dirty');
+    assert.deepEqual(session.data.models.state, modelDraft);
+    assert.deepEqual(JSON.parse(raw).tools.codeMode, {
+      enabled: true,
+      future: {kept: true}
+    });
+    assert.deepEqual(JSON.parse(raw).tools.other, {kept: true});
+    assert.equal(JSON.parse(raw).unknown, 42);
+    assert.equal(JSON.parse(raw).llm, undefined);
+    assert.equal(context.capture().getAppSettings().codeModeEnabled, true);
+    assert.equal(calls.sessionCloses, 0);
+    assert.equal(calls.savedConfigDrafts.length, 0);
+    assert.equal(calls.assistantCalls.length, 0);
+    assert.equal(calls.listedConfigProviders.length, 0);
+    assert.equal(calls.transcriptAppends.length, 0);
+    assert.equal(calls.resizeRecoveries, 0);
+    // 配置中心尚未声明鼠标能力；动态行不能意外开启指向其它行的点击入口。
+    assert.equal(handler.handlePointer, undefined);
+  } finally {
+    context.close();
+  }
+});
+
+test('Code Mode invalid drafts and failed saves stay open and retain dirty draft', async () => {
+  for (const [value, error] of [[true, 'rename failed'], ['true', 'Code Mode 设置必须是布尔值']]) {
+    const handler = new ConfigCommandHandler();
+    const {calls, host} = createFakeHost({
+      appSettings: DEFAULT_APP_SETTINGS,
+      saveSettings(draft) {
+        const validation = validateAppSettingsDraft(draft);
+        return validation.ok ? {
+          ok: false,
+          error
+        } : validation;
+      }
+    });
+    const session = startCommand(handler, '/config', host);
+    session.data.general.state.draft.codeModeEnabled = value;
+    await moveGeneralToRow(handler, host, 'save');
+    await handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
+    assert.equal(host.session.getActive().surface.state.draft.codeModeEnabled, value);
+    assert.equal(host.session.getActive().surface.state.error, error);
+    assert.equal(host.session.getActive().surface.tabs[0].status, 'dirty');
+    assert.equal(host.session.getActive().surface.state.feedback, undefined);
+    assert.equal(calls.sessionCloses, 0);
+    assert.equal(calls.assistantCalls.length, 0);
+  }
 });
 
 test('configCommandHandler dynamically shows auto approval model and cycles saved profiles', () => {

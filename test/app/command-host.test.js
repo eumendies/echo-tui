@@ -624,6 +624,7 @@ test('CommandHost config facade saves and refreshes skill catalog context ratio'
       agentInstructionFileName: 'CLAUDE.md',
       autoCompressImages: false,
       checkUpdatesOnStartup: false,
+      codeModeEnabled: false,
       compactionThresholdRatio: 0.8,
       defaultInteractionMode: 'plan',
       fileEditMode: 'edit_file',
@@ -655,6 +656,35 @@ test('CommandHost config facade does not refresh model cache when save fails', (
     assert.match(result.error, /至少需要配置一个 provider/);
     assert.equal(calls.modelRefreshes, 0);
     assert.equal(calls.contextUsageClears, 0);
+  });
+});
+
+test('CommandHost Code Mode saves shared intent and clears usage without transcript replay', () => {
+  withTemporaryUserConfig(JSON.stringify({
+tools: {
+      codeMode: {
+        enabled: false,
+        future: 42
+      },
+      other: {kept: true}
+    }
+}), ({readConfig}) => {
+    const {calls, host} = createHostHarness();
+    const result = host.config.saveSettings({
+      ...host.config.readSettings(),
+      codeModeEnabled: true
+    });
+    assert.deepEqual(result, {ok: true});
+    assert.equal(host.config.readSettings().codeModeEnabled, true);
+    assert.deepEqual(readConfig().tools.codeMode, {
+      enabled: true,
+      future: 42
+    });
+    assert.deepEqual(readConfig().tools.other, {kept: true});
+    assert.equal(calls.settingsRefreshes, 1);
+    assert.equal(calls.contextUsageClears, 1);
+    assert.equal(calls.resizeRecoveries, 0);
+    assert.equal(calls.modelRefreshes, 0);
   });
 });
 

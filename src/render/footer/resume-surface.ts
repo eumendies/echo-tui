@@ -312,6 +312,10 @@ function formatRole(role: string): string {
     return 'NOTICE';
   }
 
+  if (normalized === 'code_execution') {
+    return 'CODE';
+  }
+
   return normalized.slice(0, 9).toUpperCase();
 }
 

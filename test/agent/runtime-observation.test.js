@@ -302,3 +302,42 @@ test('agent runtime exposes only allowlisted provider facts to observation', asy
     agentSetupModule.prepareAgent = originalPrepareAgent;
   }
 });
+
+test('code execution origin is explicit and bounded in hook/debug payloads without extra host state', () => {
+  const debug = createDebugRecorder();
+  const hookEvents = [];
+  const observation = createObservation(debug.context, createHooks(hookEvents));
+  const executionId = '00000000-0000-4000-8000-000000000001';
+  const childCallId = `${executionId}:1`;
+  const origin = {
+    kind: 'code_execution',
+    executionId,
+    parentToolCallId: 'outer-code',
+    childCallId,
+    hostState: {apiKey: 'HOST_STATE_SECRET', environment: 'HOST_ENV_SECRET'}
+  };
+  const scope = createScope({toolOrigin: origin, environment: 'SCOPE_ENV_SECRET'});
+  const call = {
+    callId: childCallId,
+    toolName: 'grep',
+    argumentsText: JSON.stringify({pattern: 'PRIVATE_FILE_BODY'.repeat(1500)})
+  };
+  observation.toolStarted({scope, call});
+  observation.toolRiskAssessed({scope, call, assessment: {risk: 'safe'}});
+  observation.toolApprovalResolved({scope, call, approval: {required: false, emitLifecycleEvent: false}});
+  observation.toolCompleted({
+    scope,
+    status: 'cancelled',
+    result: {callId: childCallId, toolName: 'grep', ok: false, text: 'Internal script tool cancelled', details: {kind: 'generic'}}
+  });
+  const expectedOrigin = {kind: 'code_execution', executionId, parentToolCallId: 'outer-code', childCallId};
+  for (const {payload} of [...debug.events, ...hookEvents]) {
+    assert.deepEqual(payload.toolOrigin, expectedOrigin);
+    assert.ok(Buffer.byteLength(JSON.stringify(payload)) < 1024);
+    assert.doesNotMatch(JSON.stringify(payload), /PRIVATE_FILE_BODY|HOST_STATE_SECRET|HOST_ENV_SECRET|SCOPE_ENV_SECRET/);
+  }
+  assert.deepEqual(hookEvents.map(({event}) => event), ['tool_call_start', 'tool_call_end']);
+  assert.equal(hookEvents[0].payload.argumentsText, undefined);
+  assert.equal(hookEvents[1].payload.status, 'cancelled');
+  assert.equal(debug.events.at(-1).payload.status, 'cancelled');
+});

@@ -155,6 +155,8 @@ class ConfigCommandHandler implements CommandHandler<ConfigCommandData> {
         nextState.draft.autoCompressImages = !nextState.draft.autoCompressImages;
       } else if (selectedRow === 'checkUpdatesOnStartup') {
         nextState.draft.checkUpdatesOnStartup = !nextState.draft.checkUpdatesOnStartup;
+      } else if (selectedRow === 'codeMode') {
+        nextState.draft.codeModeEnabled = !nextState.draft.codeModeEnabled;
       } else if (selectedRow === 'activeTurnMessagePolicy') {
         nextState = adjustGeneralValue(nextState, 1);
       } else if (selectedRow === 'save') {
@@ -471,6 +473,8 @@ function adjustGeneralValue(state: GeneralConfigState, direction: number): Gener
     state.draft.autoCompressImages = !state.draft.autoCompressImages;
   } else if (selectedRow === 'checkUpdatesOnStartup') {
     state.draft.checkUpdatesOnStartup = !state.draft.checkUpdatesOnStartup;
+  } else if (selectedRow === 'codeMode') {
+    state.draft.codeModeEnabled = !state.draft.codeModeEnabled;
   } else if (selectedRow === 'fileEditMode') {
     state.draft.fileEditMode = state.draft.fileEditMode === 'apply_patch' ? 'edit_file' : 'apply_patch';
   } else if (selectedRow === 'toolApprovalMode') {

@@ -54,14 +54,23 @@ export type StreamingPendingState = {
  */
 export type ToolCallPendingState = {
   kind: 'tool_call';
+  callId?: string; // 单工具同样保留真实调用身份，避免运行期进度串到其他调用。
   toolName: string;
   argumentsText: string;
+  codeExecution?: CodeExecutionProgress; // renderer 从本地审计生成的瞬时脚本进度，不写入 provider 参数。
+};
+
+export type CodeExecutionProgress = {
+  ordinal: number; // 当前驻留窗口内的脚本展示序号，不展示原始 execution ID。
+  status: string; // running 或等待外层响应的 finishing，不作为稳定执行终态。
+  summary: string; // 从结构化审计计数生成的有界进度文字，无调用时为空。
 };
 
 export type PendingToolCall = {
   callId: string; // 当前 assistant turn 内用于关联稳定 result 的 provider call identity。
   toolName: string; // 选择专属 pending renderer 的 provider-neutral 工具名。
   argumentsText: string; // 交给工具 preview renderer 的原始 JSON 参数文本。
+  codeExecution?: CodeExecutionProgress; // 同一调用在临时 footer 中重绘的脚本进度。
 };
 
 export type ToolCallsPendingState = {

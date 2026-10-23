@@ -2,9 +2,12 @@ import {spawn} from 'node:child_process';
 import * as path from 'node:path';
 import {StringDecoder} from 'node:string_decoder';
 
+import {projectScriptList, scriptFailure, validateScriptInput} from './code-mode/contracts';
+import type {ScriptToolEnvelope} from './code-mode/contracts';
+
 import {DEFAULT_TOOL_RESULT_MAX_OUTPUT_BYTES, capUtf8Text, isGitPath, normalizePositiveInteger, resolveCwd} from './tool-handler-utils';
 
-import type {GrepDisplayMatch, GrepDisplayMetadata, GrepToolExecutionResult, ToolCall, ToolHandler} from '../types/tool';
+import type {GrepDisplayMatch, GrepDisplayMetadata, GrepToolExecutionResult, ToolCall, ToolExecutionOptions, ToolHandler} from '../types/tool';
 import type {Result} from './tool-handler-utils';
 
 const GREP_TOOL_NAME = 'grep';
@@ -13,28 +16,28 @@ const MAX_PARSER_PENDING_BYTES = 256 * 1024;
 const MAX_STDERR_BYTES = 8 * 1024;
 
 type GrepToolHandlerOptions = {
-  cwd?: string | (() => string);
-  maxMatches?: number;
-  maxOutputBytes?: number;
-  rgPath?: string;
+  cwd?: string | (() => string); // 本次调用解析相对路径的基准目录。
+  maxMatches?: number; // 保留匹配项数量上限。
+  maxOutputBytes?: number; // 原生结果和采集的字节上限。
+  rgPath?: string; // 受信任的 ripgrep 可执行文件路径。
 };
 
 type NormalizedGrepRequest = {
-  caseSensitive?: boolean;
-  glob?: string;
-  literal: boolean;
-  paths: string[];
-  pattern: string;
+  caseSensitive?: boolean; // 缺失时沿用 ripgrep 大小写规则。
+  glob?: string; // 可选路径过滤模式。
+  literal: boolean; // 是否按字面量而非正则查询。
+  paths: string[]; // 按原生口径保留的有序路径。
+  pattern: string; // 不经 shell 展开的查询模式。
 };
 
 type GrepRunResult = {
-  error?: string;
-  exitCode: number | null;
-  hasMore: boolean;
-  limitReason?: 'bytes' | 'count';
-  matches: GrepDisplayMatch[];
-  stderr: string;
-  truncated: boolean;
+  error?: string; // 采集失败的有界诊断。
+  exitCode: number | null; // 子进程的真实退出码或上限中止后的成功码。
+  hasMore: boolean; // 已知或可能存在未保留的结果。
+  limitReason?: 'bytes' | 'count'; // 决定原生截断提示的预算种类。
+  matches: GrepDisplayMatch[]; // 实际保留的原始源行匹配项。
+  stderr: string; // 有界标准错误输出。
+  truncated: boolean; // 采集预算是否导致信息缺失。
 };
 
 /**
@@ -77,12 +80,13 @@ function createGrepToolHandler(options: GrepToolHandlerOptions = {}): ToolHandle
         }
       }
     },
-    async execute(args: Record<string, unknown>, call: ToolCall): Promise<GrepToolExecutionResult> {
+    async execute(args: Record<string, unknown>, call: ToolCall, executionOptions?: ToolExecutionOptions): Promise<GrepToolExecutionResult> {
       const result = await grep(args, {
         cwd: resolveCwd(options.cwd),
         maxMatches,
         maxOutputBytes,
-        rgPath
+        rgPath,
+        abortSignal: executionOptions?.abortSignal
       });
 
       return {
@@ -97,11 +101,53 @@ function createGrepToolHandler(options: GrepToolHandlerOptions = {}): ToolHandle
           ...(result.display ? {display: result.display} : {})
         }
       };
+    },
+    async executeScript(args, _call, executionOptions): Promise<ScriptToolEnvelope> {
+      if (executionOptions?.abortSignal?.aborted) {
+        return scriptFailure('cancelled', 'Tool call cancelled');
+      }
+      const input = validateScriptInput('grep', args);
+      if (!input.ok) {
+        return scriptFailure('invalid_arguments', input.reason);
+      }
+      const cwd = resolveCwd(options.cwd);
+      const normalized = normalizeRequest(input.value, cwd);
+      if (!normalized.ok) {
+        return scriptFailure('invalid_arguments', normalized.reason);
+      }
+      const result = await runRipgrep(normalized.value, {
+        cwd,
+        maxMatches,
+        maxOutputBytes,
+        rgPath,
+        abortSignal: executionOptions?.abortSignal,
+        script: true
+      });
+      if (executionOptions?.abortSignal?.aborted) {
+        return scriptFailure('cancelled', 'Tool call cancelled');
+      }
+      if (result.error !== undefined || (result.exitCode !== 0 && result.exitCode !== 1)) {
+        return scriptFailure('tool_failed', result.error || cleanStderr(result.stderr) || 'ripgrep failed');
+      }
+      return projectScriptList('grep', result.matches, result.hasMore, result.truncated);
     }
   };
 }
 
-async function grep(args: Record<string, unknown>, options: {cwd: string; maxMatches: number; maxOutputBytes: number; rgPath: string}): Promise<{ok: boolean; text: string; display?: GrepDisplayMetadata; exitCode?: number | null; truncated: boolean}> {
+async function grep(args: Record<string, unknown>, options: {
+  cwd: string;
+  maxMatches: number;
+  maxOutputBytes: number;
+  rgPath: string;
+  abortSignal?: AbortSignal;
+  script?: boolean
+}): Promise<{
+  ok: boolean;
+  text: string;
+  display?: GrepDisplayMetadata;
+  exitCode?: number | null;
+  truncated: boolean
+}> {
   const normalized = normalizeRequest(args, options.cwd);
 
   if (!normalized.ok) {
@@ -131,6 +177,13 @@ function normalizeRequest(args: Record<string, unknown>, cwd: string): Result<No
     return {ok: false, reason: 'pattern must be a non-empty string'};
   }
 
+  if (pattern.includes('\0')) {
+    return {
+      ok: false,
+      reason: 'pattern must not contain NUL'
+    };
+  }
+
   const paths = normalizePaths(args.paths, cwd);
 
   if (!paths.ok) {
@@ -141,6 +194,13 @@ function normalizeRequest(args: Record<string, unknown>, cwd: string): Result<No
 
   if (glob !== undefined && glob !== null && (typeof glob !== 'string' || glob.trim() === '')) {
     return {ok: false, reason: 'glob must be a non-empty string or null'};
+  }
+
+  if (typeof glob === 'string' && glob.includes('\0')) {
+    return {
+      ok: false,
+      reason: 'glob must not contain NUL'
+    };
   }
 
   const literal = args.literal;
@@ -214,7 +274,24 @@ function resolveSearchPath(searchPath: string, cwd: string): Result<string> {
   return {ok: true, value: absolutePath};
 }
 
-function runRipgrep(request: NormalizedGrepRequest, options: {cwd: string; maxMatches: number; maxOutputBytes: number; rgPath: string}): Promise<GrepRunResult> {
+function runRipgrep(request: NormalizedGrepRequest, options: {
+  cwd: string;
+  maxMatches: number;
+  maxOutputBytes: number;
+  rgPath: string;
+  abortSignal?: AbortSignal;
+  script?: boolean
+}): Promise<GrepRunResult> {
+  if (options.abortSignal?.aborted) {
+    return Promise.resolve({
+      error: 'Tool call cancelled',
+      exitCode: null,
+      hasMore: false,
+      matches: [],
+      stderr: '',
+      truncated: false
+    });
+  }
   return new Promise((resolve) => {
     // 使用参数数组调用 ripgrep，避免把模型输入拼接进 shell 命令。
     const child = spawn(options.rgPath, buildRipgrepArgs(request), {
@@ -228,7 +305,7 @@ function runRipgrep(request: NormalizedGrepRequest, options: {cwd: string; maxMa
       }
       const match = parseRipgrepMatch(line);
 
-      if (!match) {
+      if (!match || isGitPath(path.resolve(options.cwd, match.path))) {
         return;
       }
 
@@ -238,7 +315,7 @@ function runRipgrep(request: NormalizedGrepRequest, options: {cwd: string; maxMa
         limitReason = 'count';
         truncated = true;
         limitReached = true;
-        child.kill('SIGTERM');
+        stop();
         return;
       }
 
@@ -258,7 +335,7 @@ function runRipgrep(request: NormalizedGrepRequest, options: {cwd: string; maxMa
       }
 
       const textBudget = availableLineBytes - Buffer.byteLength(prefix, 'utf8');
-      if (textBudget >= 0) {
+      if (textBudget >= 0 && !options.script) {
         const boundedText = capUtf8Text(match.text, textBudget).text;
         matches.push({...match, text: boundedText});
       }
@@ -266,12 +343,18 @@ function runRipgrep(request: NormalizedGrepRequest, options: {cwd: string; maxMa
       limitReason = 'bytes';
       truncated = true;
       limitReached = true;
-      child.kill('SIGTERM');
+      stop();
     }, MAX_PARSER_PENDING_BYTES, () => {
       if (!limitReached) {
-        parserError = `ripgrep JSON line exceeded ${MAX_PARSER_PENDING_BYTES} bytes without a delimiter`;
+        if (options.script) {
+          hasMore = true;
+          truncated = true;
+          limitReason = 'bytes';
+        } else {
+          parserError = `ripgrep JSON line exceeded ${MAX_PARSER_PENDING_BYTES} bytes without a delimiter`;
+        }
         limitReached = true;
-        child.kill('SIGTERM');
+        stop();
       }
     });
 
@@ -284,10 +367,31 @@ function runRipgrep(request: NormalizedGrepRequest, options: {cwd: string; maxMa
     let outputBytes = 0;
     let parserError: string | undefined;
     let truncated = false;
-    let settled = false;
+    let processError: string | undefined;
+    let closed = false;
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
+    // 取消和采集上限都等待 close；不让 Promise 先返回而遗留活跃 rg 或管道。
+    function stop(): void {
+      if (closed || killTimer) {
+        return;
+      }
+      child.kill('SIGTERM');
+      killTimer = setTimeout(() => child.kill('SIGKILL'), 500);
+    }
+    const onAbort = () => {
+      processError = 'Tool call cancelled';
+      limitReached = true;
+      stop();
+    };
+    options.abortSignal?.addEventListener('abort', onAbort, {once: true});
+    if (options.abortSignal?.aborted) {
+      onAbort();
+    }
 
     child.stdout.on('data', (chunk: Buffer | string) => {
-      parser.write(chunk);
+      if (!limitReached) {
+        parser.write(chunk);
+      }
     });
 
     child.stderr.on('data', (chunk: Buffer | string) => {
@@ -295,32 +399,22 @@ function runRipgrep(request: NormalizedGrepRequest, options: {cwd: string; maxMa
     });
 
     child.on('error', (error: NodeJS.ErrnoException) => {
-      if (settled) {
-        return;
-      }
-
-      settled = true;
-      resolve({
-        error: error.code === 'ENOENT' ? 'ripgrep executable not found' : error.message,
-        exitCode: null,
-        hasMore,
-        matches,
-        stderr: finishStderr(stderr, stderrDecoder),
-        truncated
-      });
+      processError = error.code === 'ENOENT' ? 'ripgrep executable not found' : error.message;
     });
-    
-    child.on('close', (code: number | null, signal: NodeJS.Signals | null) => {
-      if (settled) {
-        return;
-      }
 
-      settled = true;
-      parser.end();
+    child.on('close', (code: number | null, signal: NodeJS.Signals | null) => {
+      closed = true;
+      options.abortSignal?.removeEventListener('abort', onAbort);
+      if (killTimer) {
+        clearTimeout(killTimer);
+      }
+      if (!limitReached) {
+        parser.end();
+      }
       resolve({
         // 因命中上限主动终止时，保留已收集结果并把本次搜索视为成功截断。
-        error: parserError,
-        exitCode: signal && hasMore ? 0 : code,
+        error: processError || parserError,
+        exitCode: child.pid === undefined ? null : signal && hasMore ? 0 : code,
         hasMore,
         ...(limitReason ? {limitReason} : {}),
         matches,
@@ -367,17 +461,22 @@ function createJsonLineParser(onLine: (line: string) => void, maxPendingBytes: n
       const lines = pending.split(/\r?\n/);
       pending = lines.pop() || '';
 
+      // 已闭合的超长 JSON 行也受上限约束，且先保留它之前已完成的匹配。
+      for (const line of lines) {
+        if (Buffer.byteLength(line, 'utf8') > maxPendingBytes) {
+          pending = '';
+          overflowed = true;
+          onOverflow();
+          return;
+        }
+        if (line.trim() !== '') {
+          onLine(line);
+        }
+      }
       if (Buffer.byteLength(pending, 'utf8') > maxPendingBytes) {
         pending = '';
         overflowed = true;
         onOverflow();
-        return;
-      }
-
-      for (const line of lines) {
-        if (line.trim() !== '') {
-          onLine(line);
-        }
       }
     },
     end() {

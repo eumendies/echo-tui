@@ -59,6 +59,7 @@ test('readAppSettings reads valid fields and falls back invalid fields independe
     agentInstructionFileName: 'CLAUDE.md',
     autoCompressImages: false,
     checkUpdatesOnStartup: false,
+    codeModeEnabled: false,
     compactionThresholdRatio: 0.65,
     defaultInteractionMode: 'plan',
     fileEditMode: 'edit_file',
@@ -84,6 +85,7 @@ test('readAppSettings uses defaults for missing and malformed optional config', 
     agentInstructionFileName: 'AGENTS.md',
     autoCompressImages: true,
     checkUpdatesOnStartup: true,
+    codeModeEnabled: false,
     compactionThresholdRatio: 0.95,
     defaultInteractionMode: 'normal',
     fileEditMode: 'apply_patch',
@@ -98,6 +100,54 @@ test('readAppSettings uses defaults for missing and malformed optional config', 
 test('readAppSettingsDraft allows missing files but reports malformed files', () => {
   assert.deepEqual(readAppSettingsDraft({readFile() { throw Object.assign(new Error('missing'), {code: 'ENOENT'}); }}), DEFAULT_APP_SETTINGS);
   assert.throws(() => readAppSettingsDraft({readFile() { return '{broken'; }}), /配置文件不是有效 JSON/);
+});
+
+test('Code Mode normalizes only boolean intent and leaves other settings intact', () => {
+  for (const codeMode of [undefined, null, [], true, 'on', {}, {enabled: 'true'}, {enabled: 1}, {enabled: null}, {enabled: false}, {enabled: true}]) {
+    const settings = readAppSettings({
+      readFile() {
+        return JSON.stringify({
+          tools: {
+            codeMode,
+            fileEdit: {mode: 'edit_file'}
+          },
+          ui: {defaultInteractionMode: 'plan'}
+        });
+      }
+    });
+    assert.equal(settings.codeModeEnabled, codeMode?.enabled === true);
+    assert.equal(settings.fileEditMode, 'edit_file');
+    assert.equal(settings.defaultInteractionMode, 'plan');
+  }
+});
+
+test('invalid Code Mode drafts fail before mutation or atomic writes', () => {
+  for (const value of [undefined, null, 'true', 1, {}, []]) {
+    const draft = {
+      ...DEFAULT_APP_SETTINGS,
+      codeModeEnabled: value
+    };
+    assert.deepEqual(validateAppSettingsDraft(draft), {
+      ok: false,
+      error: 'Code Mode 设置必须是布尔值'
+    });
+    const root = {
+tools: {
+codeMode: {
+          enabled: true,
+          future: {kept: true}
+        }
+}
+};
+    const original = structuredClone(root);
+    assert.throws(() => applyAppSettingsDraft(root, draft), /Code Mode 设置必须是布尔值/);
+    assert.deepEqual(root, original);
+    assert.throws(() => saveAppSettingsDraft(draft, {
+      readFile() {return JSON.stringify(root);},
+      writeFile() {assert.fail('invalid draft must not write');},
+      rename() {assert.fail('invalid draft must not rename');}
+    }), /Code Mode 设置必须是布尔值/);
+  }
 });
 
 test('active turn message policy defaults independently for old and invalid config fields', () => {
@@ -145,6 +195,7 @@ test('saveAppSettingsDraft patches owned fields and writes atomically', () => {
     agentInstructionFileName: 'CLAUDE.md',
     autoCompressImages: false,
     checkUpdatesOnStartup: false,
+    codeModeEnabled: true,
     compactionThresholdRatio: 0.7,
     defaultInteractionMode: 'plan',
     fileEditMode: 'edit_file',
@@ -162,7 +213,15 @@ test('saveAppSettingsDraft patches owned fields and writes atomically', () => {
     readFile() {
       return JSON.stringify({
         llm: {selectedModel: 'fast'},
-        tools: {bash: {timeoutMs: 1000}, other: {kept: true}, readFiles: {other: 'kept'}},
+        tools: {
+          bash: {timeoutMs: 1000},
+          codeMode: {
+            enabled: false,
+            future: {kept: true}
+          },
+          other: {kept: true},
+          readFiles: {other: 'kept'}
+        },
         mcp: {enabled: true},
         hooks: {assistant_turn_end: ['echo done']},
         unknown: {kept: true},
@@ -194,6 +253,10 @@ test('saveAppSettingsDraft patches owned fields and writes atomically', () => {
   assert.equal(saved.llm.selectedModel, 'fast');
   assert.equal(saved.tools.bash.timeoutMs, 1000);
   assert.equal(saved.tools.fileEdit.mode, 'edit_file');
+  assert.deepEqual(saved.tools.codeMode, {
+    enabled: true,
+    future: {kept: true}
+  });
   assert.deepEqual(saved.tools.readFiles, {other: 'kept', autoCompressImages: false});
   assert.deepEqual(saved.tools.other, {kept: true});
   assert.equal(saved.mcp.enabled, true);
@@ -223,7 +286,12 @@ test('saveAppSettingsDraft creates missing config and rejects invalid drafts bef
     skills: {catalogContextRatio: 0.02},
     ui: {activeTurnMessagePolicy: 'pending', defaultInteractionMode: 'normal', mouseInteractionEnabled: false, slashSuggestionMaxVisible: 8, showReasoningSummary: true},
     updates: {checkOnStartup: true},
-    tools: {approval: {mode: 'manual'}, fileEdit: {mode: 'apply_patch'}, readFiles: {autoCompressImages: true}}
+    tools: {
+      approval: {mode: 'manual'},
+      codeMode: {enabled: false},
+      fileEdit: {mode: 'apply_patch'},
+      readFiles: {autoCompressImages: true}
+    }
   });
   assert.deepEqual(validateAppSettingsDraft({...DEFAULT_APP_SETTINGS, compactionThresholdRatio: 0.49}), {ok: false, error: '自动压缩阈值必须在 50% 到 95% 之间'});
   assert.deepEqual(validateAppSettingsDraft({...DEFAULT_APP_SETTINGS, skillCatalogContextRatio: 0.11}), {ok: false, error: '技能列表上下文占比上限必须在 1% 到 10% 之间'});

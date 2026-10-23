@@ -61,7 +61,7 @@ function buildProviderRecords(options: ProviderRecordOptions): TranscriptRecord[
 
   return [
     ...buildProviderRequestPrefix(prefixOptions),
-    ...activeRecords.filter((record) => record.role !== 'subagent' && record.role !== 'reasoning_summary'),
+    ...activeRecords.filter((record) => record.role !== 'subagent' && record.role !== 'code_execution' && record.role !== 'reasoning_summary'),
     ...createRuntimeContextSuffixRecords(todoState)
   ];
 }

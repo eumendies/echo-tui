@@ -358,6 +358,7 @@ test('runAssistantTurn queues drafts for the app activity clock and redraws stru
       assert.equal(renderedStates.length, renderCountBeforeToolCall + 1);
       assert.deepEqual(renderedStates.at(-1).pending, {
         kind: 'tool_call',
+        callId: 'call-1',
         toolName: 'grep',
         argumentsText: '{"pattern":"ab"}'
       });
@@ -944,6 +945,7 @@ test('runAssistantTurn keeps multiple pending calls and persists matching pairs 
       callbacks.onToolResult({callId: 'call-1', toolName: 'grep', ok: true, text: 'one', details: {kind: 'generic'}});
       assert.deepEqual(harness.appContext.turnContext.getPending(), {
         kind: 'tool_call',
+        callId: second.callId,
         toolName: second.toolName,
         argumentsText: second.argumentsText
       });

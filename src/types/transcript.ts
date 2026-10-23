@@ -7,7 +7,7 @@ export const OPENAI_REASONING_EXTENSION_KIND = 'openai_reasoning';
 export const OPENAI_CHAT_REASONING_EXTENSION_KIND = 'openai_chat_reasoning';
 export const ANTHROPIC_THINKING_EXTENSION_KIND = 'anthropic_thinking';
 
-export type KnownTranscriptRole = 'user' | 'assistant' | 'system' | 'error' | 'compaction_notice' | 'local_notice' | 'reasoning_summary' | 'shell' | 'tool_call' | 'tool_result' | 'subagent';
+export type KnownTranscriptRole = 'user' | 'assistant' | 'system' | 'error' | 'compaction_notice' | 'local_notice' | 'reasoning_summary' | 'shell' | 'tool_call' | 'tool_result' | 'subagent' | 'code_execution';
 
 export type TranscriptRole = KnownTranscriptRole | 'extension';
 
@@ -88,6 +88,19 @@ export type ToolCallTranscriptRecord = TranscriptRecordBase & {
   toolCallId: string;
   toolName: string;
   argumentsText: string;
+};
+
+export type CodeExecutionTranscriptRecord = TranscriptRecordBase & {
+  role: 'code_execution'; // 仅供本地审计与展示，不进入模型上下文。
+  text: string; // 有界操作或错误摘要，不保存文件正文、完整响应或 guest 对象。
+  toolCallId: string; // 关联外层 run_code 的 provider 调用身份。
+  executionId: string; // 区分每次独立脚本执行，恢复时不触发重跑。
+  sequence: number; // 同次执行内递增的事件序号，不代表完成顺序。
+  event: 'start' | 'call_start' | 'call_end' | 'end'; // 标识执行或子调用的生命周期边界。
+  childCallId?: string; // 子调用的稳定身份，开始与结束事件据此配对。
+  toolName?: string; // 子调用对应的有界本地工具名。
+  status?: string; // 执行或子调用状态，保留失败、拒绝及取消的区别。
+  durationMs?: number; // 执行或子调用的非负有限墙钟耗时。
 };
 
 type ToolResultTranscriptRecordBase = TranscriptRecordBase & {
@@ -238,6 +251,7 @@ export type TranscriptRecord =
   | ShellTranscriptRecord
   | ToolCallTranscriptRecord
   | ToolResultTranscriptRecord
+  | CodeExecutionTranscriptRecord
   | SubagentTranscriptRecord
   | TranscriptExtensionRecord;
 

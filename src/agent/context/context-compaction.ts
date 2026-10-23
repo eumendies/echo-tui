@@ -94,15 +94,17 @@ function computeCompactionBoundary(records: TranscriptRecord[], keepCount = COMP
 
   let boundary = initial;
 
-  // 三条吸附规则都只向前移动一步：边界落在 tool_result 上会切断它前面的 tool_call；
-  // 被压缩区间以 tool_call 结尾会把它与其后的 tool_result 切开；以 extension 结尾会把 reasoning 回传与其后续记录切开。
-  // 迭代到不再变化，保证与既有 tool 配对保护共同收敛到稳定边界。
+  // 吸附按 provider 可见的相邻记录判断，跨过 code_execution 等本地事件，避免审计记录切断外层工具对。
   while (boundary > 0) {
     const currentRecord = records[boundary];
-    const previousRecord = records[boundary - 1];
+    let previousIndex = boundary - 1;
+    while (previousIndex >= 0 && !shouldIncludeRecordInProviderContext(records[previousIndex])) {
+      previousIndex -= 1;
+    }
+    const previousRecord = records[previousIndex];
 
     if (currentRecord?.role === 'tool_result' || previousRecord?.role === 'tool_call' || previousRecord?.role === 'extension') {
-      boundary -= 1;
+      boundary = Math.max(0, previousIndex);
       continue;
     }
 

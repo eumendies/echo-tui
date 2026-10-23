@@ -15,6 +15,7 @@ const TOOL_DISPLAY_NAMES = new Map<string, string>([
   ['grep', 'Grep'],
   ['read_files', 'Read files'],
   ['run_bash_command', 'Bash'],
+  ['run_code', 'Run code'],
   ['run_subagent', 'Run subagent'],
   ['use_skill', 'Use skill'],
   ['web_fetch', 'Web fetch'],
@@ -210,7 +211,7 @@ function renderFirstPrefix(prefix: string, colorizeFirstSymbol?: (symbol: string
 }
 
 /**
- * 创建工具状态 rail 的 marker 与连续竖线；极窄终端退化为安全缩进。
+ * 创建工具状态 rail 的 marker 与连续竖线；降级时为正文至少预留两列，容纳宽字符。
  */
 function createToolRailPrefix(
   first: boolean,
@@ -220,11 +221,11 @@ function createToolRailPrefix(
   markerStyle: ToolRailStatusStyle
 ): string {
   const safeWidth = safeRenderWidth(width);
-  if (safeWidth >= 4) {
+  if (safeWidth >= 6) {
     const marker = first ? `${blockText(theme, markerStyle, '◆')} ` : '  ';
     return `${marker}${blockText(theme, railStyle, '▌')} `;
   }
-  if (safeWidth >= 2) {
+  if (safeWidth >= 4) {
     return first ? `${blockText(theme, markerStyle, '◆')} ` : '  ';
   }
   return '';
@@ -232,18 +233,19 @@ function createToolRailPrefix(
 
 /**
  * 渲染通用工具 rail 行：统一处理逻辑换行、窄宽度降级、首行 marker 与连续 rail。
- * 调用方只负责提供行语义和正文着色，不再复制 Bash 的终端布局算法。
+ * 调用方只负责提供行语义和正文着色，不再复制 Bash 的终端布局算法；无法容纳的单个字形安全省略。
  */
 function renderToolRailRows<Style extends string>(options: RenderToolRailRowsOptions<Style>): string[] {
   const safeWidth = safeRenderWidth(options.width);
-  const prefixWidth = safeWidth >= 4 ? 4 : safeWidth >= 2 ? 2 : 0;
+  const prefixWidth = safeWidth >= 6 ? 4 : safeWidth >= 4 ? 2 : 0;
   const rendered: string[] = [];
   let first = options.includeMarker;
 
   for (const row of options.rows) {
     for (const sourceLine of splitRenderableLines(row.text)) {
       for (const segment of wrapContentLine(sourceLine, safeWidth, prefixWidth)) {
-        rendered.push(`${createToolRailPrefix(first, safeWidth, options.theme, options.railStyle, options.markerStyle)}${options.colorizeContent(row.style, segment, options.theme)}`);
+        const visible = clampToDisplayWidth(segment, safeWidth - prefixWidth);
+        rendered.push(`${createToolRailPrefix(first, options.width, options.theme, options.railStyle, options.markerStyle)}${options.colorizeContent(row.style, visible, options.theme)}`);
         first = false;
       }
     }
@@ -251,7 +253,7 @@ function renderToolRailRows<Style extends string>(options: RenderToolRailRowsOpt
 
   return rendered.length > 0
     ? rendered
-    : [createToolRailPrefix(options.includeMarker, safeWidth, options.theme, options.railStyle, options.markerStyle)];
+    : [createToolRailPrefix(options.includeMarker, options.width, options.theme, options.railStyle, options.markerStyle)];
 }
 
 /**

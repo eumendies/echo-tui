@@ -44,7 +44,7 @@ function classifyReadonlyToolCall(call: ToolCall, readonlySubagentNames?: Readon
       : {risk: 'rejected', reason: 'readonly_policy', message: READONLY_MCP_TOOL_REJECTION};
   }
 
-  if (isTodoToolName(call.toolName) || READONLY_OBSERVATION_TOOL_NAMES.has(call.toolName)) {
+  if (call.toolName === 'run_code' || isTodoToolName(call.toolName) || READONLY_OBSERVATION_TOOL_NAMES.has(call.toolName)) {
     return {risk: 'safe'};
   }
 

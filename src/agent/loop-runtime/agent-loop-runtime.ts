@@ -6,6 +6,8 @@ import {classifyReadonlyToolCall, classifyToolCallRisk} from '../../tools/tool-r
 import {createToolExecutor} from '../../tools/tool-executor';
 import {classifyToolCallConcurrency} from '../../tools/tool-concurrency-classifier';
 import {RUN_SUBAGENT_TOOL_NAME} from '../../tools/run-subagent-tool-handler';
+import {SCRIPT_TOOL_NAMES, scriptFailure} from '../../tools/code-mode/contracts';
+import {RUN_CODE_TOOL_NAME} from '../../tools/code-mode/tool-handler';
 import {createToolCallTranscriptRecord, createToolResultTranscriptRecord} from '../../tools/tool-transcript-record';
 import {executeTodoToolCall, isTodoToolName} from '../../tools/todo-tool-handler';
 import {createSkillManager} from '../../skills/skill-manager';
@@ -39,7 +41,8 @@ import type {UsageStore} from '../../types/usage';
 import type {SkillCatalogEntry} from '../../types/skill';
 import type {SkillCatalogPromptProjection} from '../../skills/skill-catalog-prompt';
 import type {SkillSnapshot} from '../../skills/skill-snapshot';
-import type {ToolApprovalRequest, ToolCall, ToolDefinition, ToolExecutionResult, ToolExecutor, ToolRegistry, ToolRiskAssessment} from '../../types/tool';
+import type {ToolApprovalRequest, ToolCall, ToolDefinition, ToolExecutionOptions, ToolExecutionResult, ToolExecutor, ToolLifecycleStatus, ToolRegistry, ToolRiskAssessment} from '../../types/tool';
+import type {CodeToolDispatch} from '../../tools/code-mode/protocol';
 import type {CompactionState, SubagentTranscriptRecord, TodoState, TranscriptRecord} from '../../types/transcript';
 import type {McpManager} from '../../mcp/manager';
 import type {AgentRunScope, Observation, ProviderObservationConfig} from '../../observation/observation';
@@ -85,8 +88,16 @@ type ToolApprovalResolution = {
 /**
  * 执行单个 tool call；交互式工具在这里短路到 app callback，避免普通 executor 持有 UI 状态。
  */
-async function executeToolCall(toolCall: ToolCall, state: AgentLoopRunState, callbacks: AgentCallbacks, subagentGroupSize?: number): Promise<ToolExecutionResult> {
+async function executeToolCall(
+  toolCall: ToolCall,
+  state: AgentLoopRunState,
+  callbacks: AgentCallbacks,
+  subagentGroupSize?: number,
+  executionOptions: ToolExecutionOptions = {},
+  observationScope: AgentRunScope = state.observationScope
+): Promise<ToolExecutionResult> {
   throwIfAborted(state.abortSignal);
+  throwIfAborted(executionOptions.abortSignal);
 
   // 只读运行由 readonly classifier 一次性判定:rejected 立即短路,safe 直接沿用到执行链路,
   // 不再回落普通风险分类——否则 allowlist 内的只读命令会被启发式写风险规则二次误判为需要审批。
@@ -96,7 +107,7 @@ async function executeToolCall(toolCall: ToolCall, state: AgentLoopRunState, cal
     : null;
 
   if (readonlyAssessment !== null && readonlyAssessment.risk === 'rejected') {
-    state.observation.toolRiskAssessed({scope: state.observationScope, call: toolCall, assessment: readonlyAssessment});
+    state.observation.toolRiskAssessed({scope: observationScope, call: toolCall, assessment: readonlyAssessment});
     return createRejectedToolResult(toolCall, readonlyAssessment.message);
   }
 
@@ -115,8 +126,8 @@ async function executeToolCall(toolCall: ToolCall, state: AgentLoopRunState, cal
     return executeUserQuestionToolCall(toolCall, {
       abortSignal: state.abortSignal,
       executionMode: state.executionMode,
-      onRequest: (call, request) => state.observation.userQuestionRequested({scope: state.observationScope, call, request}),
-      onResponse: (call, result) => state.observation.userQuestionCompleted({scope: state.observationScope, call, result}),
+      onRequest: (call, request) => state.observation.userQuestionRequested({scope: observationScope, call, request}),
+      onResponse: (call, result) => state.observation.userQuestionCompleted({scope: observationScope, call, result}),
       request: callbacks.onUserQuestionRequest
     });
   }
@@ -125,7 +136,7 @@ async function executeToolCall(toolCall: ToolCall, state: AgentLoopRunState, cal
   // Bash 分层由 runtime 在初始化及引导应用边界解析，分类器不自行读取配置。
   const riskAssessment: ToolRiskAssessment = readonlyAssessment
     ?? classifyToolCallRisk(toolCall, state.interactionMode, state.readonlyMcpToolNames, state.planBashSandboxed);
-  state.observation.toolRiskAssessed({scope: state.observationScope, call: toolCall, assessment: riskAssessment});
+  state.observation.toolRiskAssessed({scope: observationScope, call: toolCall, assessment: riskAssessment});
 
   if (riskAssessment.risk === 'rejected') {
     return createRejectedToolResult(toolCall, riskAssessment.message);
@@ -133,11 +144,11 @@ async function executeToolCall(toolCall: ToolCall, state: AgentLoopRunState, cal
 
   const approval = riskAssessment.risk === 'approval_required' ? riskAssessment.approval : undefined;
   const approvalResolution = riskAssessment.risk === 'approval_required'
-    ? await resolveToolApprovalDecision(toolCall, approval, state, callbacks)
+    ? await resolveToolApprovalDecision(toolCall, approval, state, callbacks, observationScope)
     : undefined;
   const approvalDecision = approvalResolution?.decision;
   state.observation.toolApprovalResolved({
-    scope: state.observationScope,
+    scope: observationScope,
     call: toolCall,
     approval: {
       decision: approvalDecision,
@@ -146,18 +157,101 @@ async function executeToolCall(toolCall: ToolCall, state: AgentLoopRunState, cal
     }
   });
   throwIfAborted(state.abortSignal);
+  throwIfAborted(executionOptions.abortSignal);
 
   if (approvalDecision && !isToolExecutionAllowed(approvalDecision.kind)) {
     return createRejectedToolResultFromDecision(toolCall, approvalDecision);
   }
 
   const result = await state.executor.execute(toolCall, {
-    abortSignal: state.abortSignal,
+    ...executionOptions,
+    abortSignal: executionOptions.abortSignal ?? state.abortSignal,
     changeRecorder: callbacks.changeRecorder,
+    onCodeAudit: executionOptions.onCodeAudit,
+    codeDispatch: createCodeToolDispatch(toolCall, state, callbacks),
     ...(subagentGroupSize === undefined ? {} : {subagentGroupSize})
   });
   throwIfAborted(state.abortSignal);
+  throwIfAborted(executionOptions.abortSignal);
   return result;
+}
+
+/** 内部调用复用当前 run 的执行前策略，并只发布带稳定归因的开始/结束摘要。 */
+function createCodeToolDispatch(parentCall: ToolCall, state: AgentLoopRunState, callbacks: AgentCallbacks): CodeToolDispatch {
+  return async (name, args, childCallId, signal) => {
+    throwIfAborted(state.abortSignal);
+    throwIfAborted(signal);
+    // 身份由可信运行时按 UUID:序号生成；只接受该有界格式，绝不从脚本参数推断执行身份。
+    const identity = /^([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}):([1-9]|1[0-6])$/.exec(childCallId);
+    if (!identity) {
+      return scriptFailure('contract_error', 'Invalid internal call identity');
+    }
+    const scope: AgentRunScope = {
+      ...state.observationScope,
+      toolOrigin: {
+        kind: 'code_execution',
+        executionId: identity[1],
+        parentToolCallId: parentCall.callId,
+        childCallId
+      }
+    };
+    const childCall: ToolCall = {
+      toolName: name,
+      callId: childCallId,
+      argumentsText: JSON.stringify(args)
+    };
+    let status: ToolLifecycleStatus = 'failed';
+    let completed = false;
+    /** 取消时立即发布唯一结束事实，迟到 collector 的 finally 不再影响已关闭执行或下一轮 hooks。 */
+    function complete(finalStatus: ToolLifecycleStatus): void {
+      if (completed) {
+        return;
+      }
+      completed = true;
+      // 不能透传 handler 的错误正文、附件或机器数据，避免文件内容和额外宿主状态进入旁路。
+      state.observation.toolCompleted({
+        scope,
+        status: finalStatus,
+        result: {
+          callId: childCallId,
+          toolName: name,
+          ok: finalStatus === 'succeeded',
+          text: `Internal script tool ${finalStatus}`,
+          details: {kind: 'generic'}
+        }
+      });
+    }
+    const onAbort = () => complete('cancelled');
+    try {
+      state.observation.toolStarted({scope, call: childCall});
+      signal.addEventListener('abort', onAbort, {once: true});
+      throwIfAborted(state.abortSignal);
+      throwIfAborted(signal);
+      if (!SCRIPT_TOOL_NAMES.includes(name) || !state.registry.getHandler(name)?.executeScript) {
+        status = 'rejected';
+        return scriptFailure('invalid_arguments', 'Tool is not permitted in this run');
+      }
+      const result = await executeToolCall(childCall, state, callbacks, undefined, {
+        script: true,
+        abortSignal: signal
+      }, scope);
+      const errorCode = result.scriptResult?.error?.code;
+      if (result.ok) {
+        status = 'succeeded';
+      } else if (errorCode === 'cancelled') {
+        status = 'cancelled';
+      } else if (errorCode === 'invalid_arguments') {
+        status = 'rejected';
+      }
+      return result.scriptResult ?? scriptFailure('tool_failed', 'Internal tool execution failed');
+    } finally {
+      signal.removeEventListener('abort', onAbort);
+      if (signal.aborted || state.abortSignal?.aborted) {
+        status = 'cancelled';
+      }
+      complete(status);
+    }
+  };
 }
 
 /** 统计并行只读段内的 run_subagent 调用数量；达到两个才作为并行分组事实下行到委派端口。 */
@@ -191,9 +285,15 @@ async function executeConcurrentReadonlyCalls(toolCalls: ToolCall[], state: Agen
 /**
  * 根据 execution mode 决定是否等待 UI；headless 策略永远不会触碰交互 callback。
  */
-async function resolveToolApprovalDecision(toolCall: ToolCall, approval: ToolApprovalRequest | undefined, state: AgentLoopRunState, callbacks: AgentCallbacks): Promise<ToolApprovalResolution> {
+async function resolveToolApprovalDecision(
+  toolCall: ToolCall,
+  approval: ToolApprovalRequest | undefined,
+  state: AgentLoopRunState,
+  callbacks: AgentCallbacks,
+  observationScope: AgentRunScope = state.observationScope
+): Promise<ToolApprovalResolution> {
   if (state.executionMode.kind === 'headless') {
-    state.observation.toolApprovalRequested({scope: state.observationScope, call: toolCall, approval});
+    state.observation.toolApprovalRequested({scope: observationScope, call: toolCall, approval});
 
     if (state.executionMode.approvalPolicy === 'full-access') {
       return {decision: {kind: 'allow_once'}, emitLifecycleEvents: true};
@@ -254,6 +354,7 @@ type AgentLoopRunState = {
  */
 function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUserConfigSnapshot}, mcpManager?: McpManager, observation: Observation = disabledObservation, usageStore?: UsageStore): RunAgent {
   const cwdHash = createUsageCwdHash(cwd);
+  let codeRuntimeNoticeShown = false;
   if (!configContext) {
     throw new Error('Agent runtime 必须注入用户配置 Context');
   }
@@ -443,6 +544,16 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
       state = initializeRunState(interactionMode, abortSignal, executionMode, compactionThresholdRatio, skillCatalogContextRatio, appSettings.agentInstructionFileName, toolPolicy, () => sandboxModeOverride, conversationKind, configSnapshot, session.modelProfileId, session.reasoningEffortOverride, subagentPort, session.sessionId);
     } catch (error: unknown) {
       throw normalizeError(error, '无法加载 LLM 配置');
+    }
+    if (!codeRuntimeNoticeShown && state.registry.getHandler(RUN_CODE_TOOL_NAME)
+      && !state.toolDefinitions.some((definition) => definition.name === RUN_CODE_TOOL_NAME)) {
+      codeRuntimeNoticeShown = true;
+      const text = 'Code Mode 的 QuickJS/WASM 运行时不可用，已隐藏 run_code；原生工具仍可使用。';
+      recordRegion.push({
+        role: 'local_notice',
+        text
+      });
+      callbacks.onLocalNotice?.(text);
     }
 
     callbacks.onModelResolved?.({
@@ -711,7 +822,16 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
         }
         state.observation.toolStarted({scope: state.observationScope, call: toolCall});
 
-        const result = await executeToolCall(toolCall, state, callbacks);
+        const result = await executeToolCall(toolCall, state, callbacks, undefined, {
+          onCodeAudit(record) {
+            // 执行器关闭后只会补交已知调用与执行的终态；取消事实仍属于本轮本地记录。
+            if (abortSignal?.aborted && record.event !== 'call_end' && record.event !== 'end') {
+              return;
+            }
+            recordRegion.push(record);
+            callbacks.onCodeExecutionRecords?.([record]);
+          }
+        });
         throwIfAborted(abortSignal);
         const resultRecord = createToolResultTranscriptRecord(result);
         if (commitMode === 'pair_after_execute') {

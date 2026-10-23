@@ -926,6 +926,59 @@ test('AppContext refreshes image compression without clearing context usage or r
   }
 });
 
+test('AppContext Code Mode refresh invalidates usage without transcript redraw or changing captured runs', () => {
+  let raw = JSON.stringify({
+    llm: {
+      providers: {fake: {preset: 'fake-agent'}},
+      models: [{
+        id: 'fake',
+        provider: 'fake',
+        model: 'echo-fake'
+      }]
+    },
+    tools: {codeMode: {enabled: false}}
+  });
+  let reads = 0;
+  const userConfigContext = new UserConfigContext({
+readFile() {
+      reads += 1;
+      return raw;
+    }
+});
+  try {
+    const context = createContext({userConfigContext});
+    const originalRecords = context.getAgentSession().records;
+    for (const enabled of [true, false]) {
+      const activeSession = context.getAgentSession();
+      const activeSnapshot = activeSession.userConfigSnapshot;
+      const activeConfig = activeSnapshot.resolveLlmConfig();
+      context.setContextUsage({
+        usedTokens: 100,
+        contextWindow: 1000,
+        source: 'provider'
+      });
+      const root = JSON.parse(raw);
+      root.tools.codeMode.enabled = enabled;
+      raw = JSON.stringify(root);
+      const snapshot = userConfigContext.refresh().snapshot;
+      const readsAfterRefresh = reads;
+      const effects = context.applyAppSettingsSnapshot(snapshot);
+      assert.ok(Object.values(effects).every((effect) => effect === false));
+      assert.equal(context.getContextUsage(), null);
+      assert.equal(activeConfig.tools.codeMode.enabled, !enabled);
+      assert.equal(activeSnapshot.getAppSettings().codeModeEnabled, !enabled);
+      const nextSession = context.getAgentSession();
+      assert.equal(nextSession.userConfigSnapshot, snapshot);
+      assert.equal(nextSession.userConfigSnapshot.resolveLlmConfig().tools.codeMode.enabled, enabled);
+      assert.deepEqual(nextSession.records, originalRecords);
+      context.createRenderState();
+      assert.equal(reads, readsAfterRefresh);
+    }
+  } finally {
+    userConfigContext.close();
+  }
+});
+
 test('AppContext status line shows plan mode without exit hint', () => {
   const context = createContext();
 
@@ -1068,6 +1121,7 @@ test('TurnContext keeps multiple pending tool calls ordered and matches results 
   context.turnContext.setToolCallPending(first);
   assert.deepEqual(context.turnContext.getPending(), {
     kind: 'tool_call',
+    callId: first.callId,
     toolName: first.toolName,
     argumentsText: first.argumentsText
   });
@@ -1085,6 +1139,7 @@ test('TurnContext keeps multiple pending tool calls ordered and matches results 
   ]);
   assert.deepEqual(context.turnContext.getPending(), {
     kind: 'tool_call',
+    callId: first.callId,
     toolName: first.toolName,
     argumentsText: first.argumentsText
   });

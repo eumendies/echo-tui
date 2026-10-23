@@ -1,9 +1,12 @@
-import {formatReadFilesFailure, readOneFile} from './readers';
+import {formatReadFilesFailure, readOneFile, readOneTextFile} from './readers';
+import {SCRIPT_TOOL_MAX_RESPONSE_BYTES, checkedScriptEnvelope, scriptFailure, validateScriptInput} from '../code-mode/contracts';
+import type {ScriptFileError, ScriptTextFile, ScriptToolEnvelope} from '../code-mode/contracts';
+
 import {DEFAULT_TOOL_RESULT_MAX_OUTPUT_BYTES, capUtf8Text, normalizePositiveInteger, resolveCwd} from '../tool-handler-utils';
 import {createOffloadedTextPreview} from '../tool-result-offloading';
 import {DEFAULT_APP_SETTINGS} from '../../config/app-settings-config';
 
-import type {ReadFilesToolExecutionResult, ToolCall, ToolHandler, ToolResultAttachment} from '../../types/tool';
+import type {ReadFilesToolExecutionResult, ToolCall, ToolExecutionOptions, ToolHandler, ToolResultAttachment} from '../../types/tool';
 import type {Result} from '../tool-handler-utils';
 import type {ToolResultStore} from '../tool-result-offloading';
 import type {FileReadResult, NormalizedFileRequest, ReadFilesLimits} from './readers';
@@ -75,11 +78,12 @@ function createReadFilesToolHandler(options: ReadFilesToolHandlerOptions = {}): 
         }
       }
     },
-    async execute(args: Record<string, unknown>, call: ToolCall): Promise<ReadFilesToolExecutionResult> {
+    async execute(args: Record<string, unknown>, call: ToolCall, executionOptions?: ToolExecutionOptions): Promise<ReadFilesToolExecutionResult> {
       const result = await readFiles(args, {
         cwd: resolveCwd(options.cwd),
         imageOptions,
         limits,
+        abortSignal: executionOptions?.abortSignal,
         toolResultStore: options.toolResultStore
       });
 
@@ -91,6 +95,38 @@ function createReadFilesToolHandler(options: ReadFilesToolHandlerOptions = {}): 
         ...(result.attachments ? {attachments: result.attachments} : {}),
         details: {kind: 'read_files', truncated: result.truncated}
       };
+    },
+    async executeScript(args, _call, executionOptions): Promise<ScriptToolEnvelope> {
+      const abortSignal = executionOptions?.abortSignal;
+      if (abortSignal?.aborted) {
+        return scriptFailure('cancelled', 'Tool call cancelled');
+      }
+      const input = validateScriptInput('read_files', args);
+      if (!input.ok) {
+        return scriptFailure('invalid_arguments', input.reason);
+      }
+      const normalized = normalizeRequests(input.value.files, limits);
+      if (!normalized.ok) {
+        return scriptFailure('invalid_arguments', normalized.reason);
+      }
+      const cwd = resolveCwd(options.cwd);
+      const files: Array<ScriptTextFile | ScriptFileError> = [];
+      let remainingContentBytes = Math.min(limits.maxTotalOutputBytes, SCRIPT_TOOL_MAX_RESPONSE_BYTES);
+      for (const request of normalized.value) {
+        const file = await readOneTextFile(request, {
+          cwd,
+          abortSignal,
+          maxContentBytes: Math.min(limits.maxFileContentBytes, remainingContentBytes)
+        });
+        if (abortSignal?.aborted) {
+          return scriptFailure('cancelled', 'Tool call cancelled');
+        }
+        files.push(file);
+        if (file.ok) {
+          remainingContentBytes -= Buffer.byteLength(file.content, 'utf8');
+        }
+      }
+      return projectScriptFiles(files);
     }
   };
 }
@@ -98,7 +134,18 @@ function createReadFilesToolHandler(options: ReadFilesToolHandlerOptions = {}): 
 /**
  * 校验输入并按顺序读取文件；批量中单个失败不会隐藏其他成功结果。
  */
-async function readFiles(args: Record<string, unknown>, options: {cwd: string; imageOptions: ImageReadOptions; limits: ReadFilesLimits; toolResultStore?: ToolResultStore}): Promise<{attachments?: ToolResultAttachment[]; ok: boolean; text: string; truncated: boolean}> {
+async function readFiles(args: Record<string, unknown>, options: {
+  cwd: string;
+  imageOptions: ImageReadOptions;
+  limits: ReadFilesLimits;
+  abortSignal?: AbortSignal;
+  toolResultStore?: ToolResultStore
+}): Promise<{
+  attachments?: ToolResultAttachment[];
+  ok: boolean;
+  text: string;
+  truncated: boolean
+}> {
   const normalized = normalizeRequests(args.files, options.limits);
 
   if (!normalized.ok) {
@@ -115,6 +162,9 @@ async function readFiles(args: Record<string, unknown>, options: {cwd: string; i
   let imageAttachmentBytes = 0;
 
   for (const request of normalized.value) {
+    if (options.abortSignal?.aborted) {
+      break;
+    }
     const result = await readOneFile(request, {
       ...options,
       remainingImageAttachmentBytes: Math.max(0, options.limits.maxTotalImageBytes - imageAttachmentBytes)
@@ -123,9 +173,9 @@ async function readFiles(args: Record<string, unknown>, options: {cwd: string; i
     imageAttachmentBytes += (result.attachments || []).reduce((sum, attachment) => sum + attachment.sizeBytes, 0);
   }
 
-  const ok = fileResults.every((result) => result.ok);
+  const ok = !options.abortSignal?.aborted && fileResults.every((result) => result.ok);
   const attachments = fileResults.flatMap((result) => result.attachments || []);
-  const formatted = fileResults.map((result) => result.text).join('\n\n');
+  const formatted = options.abortSignal?.aborted ? formatReadFilesFailure('Tool call cancelled') : fileResults.map((result) => result.text).join('\n\n');
 
   const maxOutputBytes = fileResults.some((result) => result.pdfExtracted)
     ? Math.min(options.limits.maxPdfOutputBytes, options.limits.maxTotalOutputBytes)
@@ -144,6 +194,59 @@ async function readFiles(args: Record<string, unknown>, options: {cwd: string; i
     text: preview.text,
     truncated: preview.truncated || fileResults.some((result) => result.truncated)
   };
+}
+
+/** JSON 转义与 envelope 元数据也计入预算；按完整源行裁减，不制造跳行游标。 */
+function projectScriptFiles(files: Array<ScriptTextFile | ScriptFileError>): ScriptToolEnvelope {
+  const ok = files.every((file) => file.ok);
+  const envelope: ScriptToolEnvelope = {
+    schema_version: 1,
+    ok,
+    data: {files},
+    error: ok ? null : {
+      code: 'partial_failure',
+      message: 'One or more files failed'
+    },
+    truncated: files.some((file) => file.ok && file.content_truncated)
+  };
+  const size = () => Buffer.byteLength(JSON.stringify(envelope), 'utf8');
+  for (let index = files.length - 1; size() > SCRIPT_TOOL_MAX_RESPONSE_BYTES && index >= 0; index -= 1) {
+    const file = files[index];
+    if (!file.ok || file.returned_lines === 0) {
+      continue;
+    }
+    const lines = file.content.split('\n');
+    // 零行投影为安全的原 offset；保留的最后一行均完整，故可继续按行读取。
+    const project = (count: number): ScriptTextFile => ({
+      ...file,
+      content: lines.slice(0, count).join('\n'),
+      returned_lines: count,
+      start_line: count > 0 ? file.offset + 1 : null,
+      end_line: count > 0 ? file.offset + count : null,
+      has_more: true,
+      content_truncated: true,
+      next_offset: file.offset + count
+    });
+    envelope.truncated = true;
+    let low = 0;
+    // 至少移除一行，避免把原来不完整的末行当作完整行保留。
+    let high = file.returned_lines - 1;
+    files[index] = project(0);
+    while (low < high) {
+      const mid = Math.ceil((low + high) / 2);
+      files[index] = project(mid);
+      if (size() <= SCRIPT_TOOL_MAX_RESPONSE_BYTES) {
+        low = mid;
+      } else {
+        high = mid - 1;
+      }
+    }
+    files[index] = project(low);
+  }
+  if (size() > SCRIPT_TOOL_MAX_RESPONSE_BYTES) {
+    return scriptFailure('result_limit_exceeded', 'File result metadata exceeds the JSON envelope budget', true);
+  }
+  return checkedScriptEnvelope('read_files', envelope);
 }
 
 function normalizeRequests(files: unknown, limits: ReadFilesLimits): Result<NormalizedFileRequest[]> {
@@ -200,7 +303,7 @@ function normalizeNonNegativeInteger(value: unknown, fallback: number, fieldName
     return {ok: true, value: fallback};
   }
 
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
     return {ok: false, reason: `${fieldName} must be a non-negative integer`};
   }
 
@@ -212,7 +315,7 @@ function normalizeOptionalPositiveInteger(value: unknown, fieldName: string): Re
     return {ok: true, value: undefined};
   }
 
-  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
     return {ok: false, reason: `${fieldName} must be a positive integer`};
   }
 

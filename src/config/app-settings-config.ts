@@ -6,6 +6,7 @@ type AppSettings = {
   agentInstructionFileName: AgentInstructionFileName;
   autoCompressImages: boolean; // 控制本地图片超过最终附件上限时是否自动缩小。
   checkUpdatesOnStartup: boolean; // 控制启动时是否检查 echo-tui 新版本，持久化为 updates.checkOnStartup。
+  codeModeEnabled: boolean; // 保存本地只读工具脚本编排意图，仅影响下一次运行，不代表隔离运行时已就绪。
   compactionThresholdRatio: number;
   defaultInteractionMode: DefaultInteractionMode;
   fileEditMode: FileEditToolMode;
@@ -36,6 +37,7 @@ const DEFAULT_APP_SETTINGS: Readonly<AppSettings> = {
   agentInstructionFileName: 'AGENTS.md',
   autoCompressImages: true,
   checkUpdatesOnStartup: true,
+  codeModeEnabled: false,
   compactionThresholdRatio: 0.8,
   defaultInteractionMode: 'normal',
   fileEditMode: 'apply_patch',
@@ -92,6 +94,13 @@ function validateAppSettingsDraft(draft: AppSettings, modelProfileIds?: Readonly
     return {ok: false, error: '启动更新检查设置必须是布尔值'};
   }
 
+  if (typeof draft.codeModeEnabled !== 'boolean') {
+    return {
+      ok: false,
+      error: 'Code Mode 设置必须是布尔值'
+    };
+  }
+
   if (typeof draft.mouseInteractionEnabled !== 'boolean') {
     return {ok: false, error: 'UI 鼠标交互设置必须是布尔值'};
   }
@@ -139,6 +148,7 @@ function applyAppSettingsDraft(rootConfig: UserConfigSource, draft: AppSettings)
   const ui = isPlainObject(rootConfig.ui) ? {...rootConfig.ui} : {};
   const updates = isPlainObject(rootConfig.updates) ? {...rootConfig.updates} : {};
   const tools = isPlainObject(rootConfig.tools) ? {...rootConfig.tools} : {};
+  const codeMode = isPlainObject(tools.codeMode) ? {...tools.codeMode} : {};
   const fileEdit = isPlainObject(tools.fileEdit) ? {...tools.fileEdit} : {};
   const readFiles = isPlainObject(tools.readFiles) ? {...tools.readFiles} : {};
   const approval = isPlainObject(tools.approval) ? {...tools.approval} : {};
@@ -152,6 +162,7 @@ function applyAppSettingsDraft(rootConfig: UserConfigSource, draft: AppSettings)
   ui.slashSuggestionMaxVisible = draft.slashSuggestionMaxVisible;
   ui.showReasoningSummary = draft.showReasoningSummary;
   updates.checkOnStartup = draft.checkUpdatesOnStartup;
+  codeMode.enabled = draft.codeModeEnabled;
   fileEdit.mode = draft.fileEditMode;
   readFiles.autoCompressImages = draft.autoCompressImages;
   approval.mode = draft.toolApprovalMode;
@@ -159,6 +170,7 @@ function applyAppSettingsDraft(rootConfig: UserConfigSource, draft: AppSettings)
     approval.modelProfileId = draft.toolApprovalModelProfileId;
   }
   tools.fileEdit = fileEdit;
+  tools.codeMode = codeMode;
   tools.readFiles = readFiles;
   tools.approval = approval;
   rootConfig.compaction = compaction;
@@ -176,6 +188,7 @@ function normalizeAppSettings(rootConfig: UserConfigSource): AppSettings {
   const ui = isPlainObject(rootConfig.ui) ? rootConfig.ui : {};
   const updates = isPlainObject(rootConfig.updates) ? rootConfig.updates : {};
   const tools = isPlainObject(rootConfig.tools) ? rootConfig.tools : {};
+  const codeMode = isPlainObject(tools.codeMode) ? tools.codeMode : {};
   const fileEdit = isPlainObject(tools.fileEdit) ? tools.fileEdit : {};
   const readFiles = isPlainObject(tools.readFiles) ? tools.readFiles : {};
   const approval = isPlainObject(tools.approval) ? tools.approval : {};
@@ -196,6 +209,7 @@ function normalizeAppSettings(rootConfig: UserConfigSource): AppSettings {
     checkUpdatesOnStartup: typeof updates.checkOnStartup === 'boolean'
       ? updates.checkOnStartup
       : DEFAULT_APP_SETTINGS.checkUpdatesOnStartup,
+    codeModeEnabled: typeof codeMode.enabled === 'boolean' ? codeMode.enabled : DEFAULT_APP_SETTINGS.codeModeEnabled,
     compactionThresholdRatio: isFiniteNumberInRange(thresholdRatio, MIN_COMPACTION_THRESHOLD_RATIO, MAX_COMPACTION_THRESHOLD_RATIO)
       ? thresholdRatio
       : DEFAULT_APP_SETTINGS.compactionThresholdRatio,

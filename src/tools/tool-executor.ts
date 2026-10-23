@@ -1,5 +1,6 @@
 import type {ToolCall, ToolExecutionOptions, ToolExecutionResult, ToolExecutor, ToolRegistry} from '../types/tool';
 import {DEFAULT_TOOL_RESULT_MAX_OUTPUT_BYTES, capUtf8Text} from './tool-handler-utils';
+import {scriptFailure} from './code-mode/contracts';
 
 /**
  * 创建 provider-neutral 工具执行器，统一处理工具查找、参数解析和失败归一化。
@@ -20,6 +21,19 @@ function createToolExecutor(registry: ToolRegistry): ToolExecutor {
       }
 
       try {
+        if (options?.script) {
+          const envelope = handler.executeScript
+            ? await handler.executeScript(args.value, call, options)
+            : scriptFailure('invalid_arguments', 'Tool is not available through the script API');
+          return {
+            callId: call.callId,
+            toolName: call.toolName,
+            ok: envelope.ok,
+            details: {kind: 'generic'},
+            text: envelope.ok ? 'Internal script tool completed' : envelope.error?.code || 'Internal script tool failed',
+            scriptResult: envelope
+          };
+        }
         return await handler.execute(args.value, call, options);
       } catch (error: unknown) {
         const message = error instanceof Error && error.message.trim() !== '' ? error.message : 'Tool execution failed';

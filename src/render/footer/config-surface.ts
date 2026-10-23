@@ -70,7 +70,7 @@ function renderConfigSurface(commandSurface: ConfigCommandSurface, width: number
 }
 
 /**
- * 渲染常规设置 Tab；只投影归一化草稿，选中消息策略时显示工具安全边界说明并计入行预算。
+ * 渲染常规设置 Tab；只投影归一化草稿，选中消息策略或 Code Mode 时显示生效边界并计入行预算。
  * 使用普通屏幕 footer 的可用宽高，不读盘或改变草稿，状态转移由 command handler 负责。
  */
 function renderGeneralView(state: GeneralConfigState, tabs: ConfigSurfaceTab[], activeTab: ConfigTabId, columns: number, maxLines: number | undefined, theme: FooterTheme): string[] {
@@ -92,10 +92,17 @@ function renderGeneralView(state: GeneralConfigState, tabs: ConfigSurfaceTab[], 
     }
     if (rowId === 'instructionFile') return {label: '项目指令文件', value: state.draft.agentInstructionFileName};
     if (rowId === 'activeTurnMessagePolicy') return {label: '响应期间发送消息', value: state.draft.activeTurnMessagePolicy === 'steer' ? '即时引导' : '排队'};
+    if (rowId === 'codeMode') {
+      return {
+        label: 'Code Mode',
+        value: state.draft.codeModeEnabled ? '开' : '关'
+      };
+    }
     return {label: '保存常规设置', value: '写入 ~/.echo/config.json', action: true};
   });
   const showMessagePolicyHint = getGeneralConfigRowIds(state)[state.selectedIndex] === 'activeTurnMessagePolicy';
-  const fixedLines = 5 + (state.error || state.feedback ? 1 : 0) + (showMessagePolicyHint ? 1 : 0);
+  const showCodeModeHint = getGeneralConfigRowIds(state)[state.selectedIndex] === 'codeMode';
+  const fixedLines = 5 + (state.error || state.feedback ? 1 : 0) + (showMessagePolicyHint || showCodeModeHint ? 1 : 0);
   const visibleRows = Number.isFinite(maxLines)
     ? createSelectedWindowRows(rows, state.selectedIndex, calculateItemBudget(maxLines, fixedLines))
     : rows.map((item, index) => ({kind: 'item' as const, item, index}));
@@ -118,6 +125,9 @@ function renderGeneralView(state: GeneralConfigState, tabs: ConfigSurfaceTab[], 
   }
   if (showMessagePolicyHint) {
     lines.push(line(width, dimHint(width, '下一轮生效；即时引导不强停工具，等待其完成'), theme));
+  }
+  if (showCodeModeHint) {
+    lines.push(line(width, dimHint(width, '脚本编排本地只读工具；默认关，保存后下一轮生效'), theme));
   }
   lines.push(line(width, dimHint(width, 'Tab 切换 · ↑/↓ 移动 · ←/→ 调整 · Enter 执行 · Esc 关闭'), theme));
   lines.push(bottom(width, theme));

@@ -367,13 +367,14 @@ class AppContext {
   }
 
   /**
-   * 从用户配置刷新常规设置缓存，分类报告渲染影响，并使失效的 context usage 归零。
+   * 从共享 revision 刷新后续运行的常规设置；工具目录变化清理 usage，不修改活跃运行或请求 transcript 重绘。
    */
   applyAppSettingsSnapshot(snapshot: UserConfigSnapshot): AppSettingsApplyResult {
     const previous = this.appSettingsSnapshot.getAppSettings();
     const next = snapshot.getAppSettings();
     const agentInstructionFileChanged = next.agentInstructionFileName !== previous.agentInstructionFileName;
     const fileEditModeChanged = next.fileEditMode !== previous.fileEditMode;
+    const codeModeChanged = next.codeModeEnabled !== previous.codeModeEnabled;
     const reasoningVisibilityChanged = next.showReasoningSummary !== previous.showReasoningSummary;
     const skillCatalogContextRatioChanged = next.skillCatalogContextRatio !== previous.skillCatalogContextRatio;
     const slashSuggestionLimitChanged = next.slashSuggestionMaxVisible !== previous.slashSuggestionMaxVisible;
@@ -382,7 +383,7 @@ class AppContext {
       || next.toolApprovalModelProfileId !== previous.toolApprovalModelProfileId;
 
     this.appSettingsSnapshot = snapshot;
-    if (agentInstructionFileChanged || fileEditModeChanged || skillCatalogContextRatioChanged) {
+    if (agentInstructionFileChanged || fileEditModeChanged || codeModeChanged || skillCatalogContextRatioChanged) {
       this.clearContextUsage();
     }
     return {agentInstructionFileChanged, fileEditModeChanged, reasoningVisibilityChanged, skillCatalogContextRatioChanged, slashSuggestionLimitChanged, mouseInteractionChanged, toolApprovalChanged};

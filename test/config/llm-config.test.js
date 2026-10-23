@@ -6,6 +6,7 @@ const {
   DEFAULT_BASH_TOOL_TIMEOUT_MS,
   DEFAULT_CONTEXT_WINDOW,
   LlmConfigError,
+  parseToolRuntimeConfig,
   resolveContextWindow
 } = require('../../src/config/llm-config');
 const {UserConfigContext} = require('../../src/config/user-config-context');
@@ -46,6 +47,7 @@ function readLlmModelConfigInfo(options = {}) {
 
 const DEFAULT_TOOLS = {
   autoCompressImages: true,
+  codeMode: {enabled: false},
   bash: {
     timeoutMs: DEFAULT_BASH_TOOL_TIMEOUT_MS,
     maxOutputBytes: DEFAULT_BASH_TOOL_MAX_OUTPUT_BYTES
@@ -53,6 +55,14 @@ const DEFAULT_TOOLS = {
   fileEditMode: 'apply_patch',
   sandbox: {mode: 'workspace-write', network: true, extraWritablePaths: []}
 };
+
+test('tool runtime Code Mode uses the same normalization as General settings', () => {
+  const {normalizeAppSettings} = require('../../src/config/app-settings-config');
+  for (const tools of [undefined, null, [], {}, {codeMode: true}, {codeMode: []}, {codeMode: {enabled: 'true'}}, {codeMode: {enabled: false}}, {codeMode: {enabled: true}}]) {
+    const root = {tools};
+    assert.deepEqual(parseToolRuntimeConfig(root).codeMode, {enabled: normalizeAppSettings(root).codeModeEnabled});
+  }
+});
 
 const OPENAI_PRESET = 'openai-responses-api';
 const CODEX_OAUTH_PRESET = 'openai-codex-oauth';
@@ -565,6 +575,7 @@ test('readLlmConfig reads explicit bash tool limits without the previous 30s tim
 
   assert.deepEqual(config.tools, {
     autoCompressImages: true,
+    codeMode: {enabled: false},
     bash: {
       timeoutMs: 120000,
       maxOutputBytes: 4096

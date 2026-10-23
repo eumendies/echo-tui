@@ -1,4 +1,4 @@
-import type {CompactionState, SubagentTranscriptRecord, TodoState, TranscriptRecord} from './transcript';
+import type {CodeExecutionTranscriptRecord, CompactionState, SubagentTranscriptRecord, TodoState, TranscriptRecord} from './transcript';
 import type {AskUserQuestionsRequest, ToolApprovalRequest, ToolCall, ToolExecutionOptions, ToolExecutionResult} from './tool';
 import type {ChangeFileRecorder} from './change-history';
 import type {SandboxMode, SandboxModeOverride} from '../sandbox/types';
@@ -123,6 +123,8 @@ export type AgentCallbacks = {
   onUserQuestionRequest?: (call: ToolCall, request: AskUserQuestionsRequest) => Promise<ToolExecutionResult> | ToolExecutionResult;
   onToolResult?: (result: ToolExecutionResult) => void;
   onSubagentRecords?: (records: SubagentTranscriptRecord[]) => void; // 发布已进入父 runtime record region 的稳定子 Agent 过程。
+  onCodeExecutionRecords?: (records: CodeExecutionTranscriptRecord[]) => void; // 发布本地有界脚本审计，不作为 provider 过程消息。
+  onLocalNotice?: (text: string) => void; // 发布不进入模型上下文的运行能力说明。
   onSubagentActivity?: (activity: SubagentActivity | null) => void; // 更新或清空不持久化的子 Agent footer 活动。
   onSubagentUserQuestionRequest?: (metadata: SubagentRunMetadata, call: ToolCall, request: AskUserQuestionsRequest) => Promise<ToolExecutionResult> | ToolExecutionResult; // 把受 run identity 保护的子 Agent 问题桥接到共享交互 surface。
   onTodoStateChange?: (todoState: TodoState) => void;
@@ -285,6 +287,9 @@ export type LlmConfig = {
 
 export type ToolRuntimeConfig = {
   autoCompressImages: boolean; // 控制 read_files 是否把超限图片缩小到最终附件上限内。
+  codeMode?: { // 可选以兼容既有运行配置；用户配置归一化后始终填充，按单次运行冻结。
+    enabled: boolean; // 默认关闭的脚本编排意图，实际入口还须检查运行时就绪与工具准入。
+  };
   bash: BashToolConfig;
   fileEditMode: FileEditToolMode;
   sandbox: SandboxToolConfig; // run_bash_command 的沙箱策略;由 tools.sandbox 配置解析,macOS 默认 workspace-write 且网络开启。

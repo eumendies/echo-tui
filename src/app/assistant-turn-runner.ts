@@ -5,7 +5,7 @@ import type {AgentCallbacks, AgentToolPolicy, ReasoningEffort, RunAgent, ToolApp
 import type {SandboxModeOverride} from '../sandbox/types';
 import type {AssistantTurnScope, Observation} from '../observation/observation';
 import type {ToolApprovalRequest, ToolCall, ToolResultAttachment} from '../types/tool';
-import type {SubagentTranscriptRecord, TranscriptRecord, UserTranscriptMetadata} from '../types/transcript';
+import type {CodeExecutionTranscriptRecord, SubagentTranscriptRecord, TranscriptRecord, UserTranscriptMetadata} from '../types/transcript';
 import type {AppContext} from './state/app-context';
 import type {ToolApprovalContext} from './state/tool-approval-context';
 import type {ToolApprovalReviewer} from './tool-approval/resolver';
@@ -70,12 +70,60 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
   const messagePolicy = userConfigSnapshot.getAppSettings().activeTurnMessagePolicy ?? 'pending';
   const turn = appContext.beginAssistantTurn(modelProfileIdOverride, reasoningEffortOverride, messagePolicy);
   const steeringInput = messagePolicy === 'steer' ? appContext.pendingMessageContext.createSteeringInputPort(turn.id) : undefined;
-  const cancelQuestionOnAbort = () => {
-    userQuestion.cancelActiveRequest('User question was interrupted because the assistant turn ended.');
-  };
-  turn.abortSignal.addEventListener('abort', cancelQuestionOnAbort, {once: true});
-  const turnUserRecordIndex = appContext.transcriptContext.getRecordCount() - 1;
+  const codeExecutions = new Map<
+    string,
+    {
+      start: CodeExecutionTranscriptRecord; // 当前 turn 已接受的执行身份，不跨 turn 复用。
+      sequence: number; // 最近已持久化的序号，重复或逆序事件不可追加。
+      startedAt: number; // 从首个事件恢复的本地墙钟锚点，仅用于同步取消摘要。
+      children: Map<string, CodeExecutionTranscriptRecord>; // 尚未结束的子调用，取消时逐个封存。
+      ended: boolean; // 执行终态已提交，禁止重开或重复结束。
+    }
+  >();
   const isCurrentTurn = () => appContext.turnContext.isCurrentAssistantTurn(turn);
+  /** Esc 在释放 turn 身份前同步封存已知审计；异步清理完成后的 callback 不可重绘新 turn。 */
+  function cancelCodeExecutions(): void {
+    if (!isCurrentTurn()) {
+      return;
+    }
+    const records: CodeExecutionTranscriptRecord[] = [];
+    for (const execution of codeExecutions.values()) {
+      if (execution.ended) {
+        continue;
+      }
+      execution.ended = true;
+      const durationMs = Math.max(0, Date.now() - execution.startedAt);
+      for (const child of execution.children.values()) {
+        records.push({
+          ...child,
+          sequence: ++execution.sequence,
+          event: 'call_end',
+          status: 'cancelled',
+          text: `${child.toolName}: cancelled`,
+          durationMs: Math.max(0, durationMs - (child.durationMs ?? 0))
+        });
+      }
+      execution.children.clear();
+      records.push({
+        ...execution.start,
+        sequence: ++execution.sequence,
+        event: 'end',
+        status: 'cancelled',
+        text: 'runtime: cancelled',
+        durationMs
+      });
+    }
+    if (records.length > 0) {
+      renderRecords(appContext.transcriptContext.appendRecords(records));
+    }
+  }
+  /** 取消同步关闭交互和审计；不能等异步 guest 清理完再使用旧 turn 的渲染端口。 */
+  const cancelInteractionsOnAbort = () => {
+    userQuestion.cancelActiveRequest('User question was interrupted because the assistant turn ended.');
+    cancelCodeExecutions();
+  };
+  turn.abortSignal.addEventListener('abort', cancelInteractionsOnAbort, {once: true});
+  const turnUserRecordIndex = appContext.transcriptContext.getRecordCount() - 1;
   /** 只有创建人工审批 surface 时才发布交互式审批事实。 */
   async function requestManualApproval(call: ToolCall, request?: ToolApprovalRequest): Promise<ToolApprovalDecision> {
     const pendingDecision = toolApproval.requestManual(call, request);
@@ -309,6 +357,61 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
 
         renderRecords(appContext.transcriptContext.appendRecords(records));
       },
+      /** 只接受当前未取消 turn 的同序本地事实；已知执行由同步 abort 边界唯一补齐终态。 */
+      onCodeExecutionRecords(records) {
+        if (!isCurrentTurn() || turn.abortSignal.aborted || records.length === 0) {
+          return;
+        }
+        const accepted: CodeExecutionTranscriptRecord[] = [];
+        for (const record of records) {
+          let execution = codeExecutions.get(record.executionId);
+          if (record.event === 'start' && !execution) {
+            execution = {
+              start: record,
+              sequence: 0,
+              startedAt: Date.now() - (record.durationMs ?? 0),
+              children: new Map(),
+              ended: false
+            };
+            codeExecutions.set(record.executionId, execution);
+          } else if (record.event === 'start') {
+            continue;
+          }
+          if (
+            !execution || execution.ended || record.toolCallId !== execution.start.toolCallId ||
+            record.sequence !== execution.sequence + 1
+          ) {
+            continue;
+          }
+          if (record.event === 'call_start' && record.childCallId) {
+            if (execution.children.has(record.childCallId)) {
+              continue;
+            }
+            execution.children.set(record.childCallId, record);
+          } else if (record.event === 'call_end' && record.childCallId) {
+            if (!execution.children.delete(record.childCallId)) {
+              continue;
+            }
+          } else if (record.event === 'end') {
+            execution.ended = true;
+          }
+          execution.sequence = record.sequence;
+          accepted.push(record);
+        }
+        if (accepted.length > 0) {
+          renderRecords(appContext.transcriptContext.appendRecords(accepted));
+        }
+      },
+      /** 能力说明只追加本地 notice，不触发新的模型请求或工具审批。 */
+      onLocalNotice(text) {
+        if (!isCurrentTurn()) {
+          return;
+        }
+        renderRecords(appContext.transcriptContext.appendRecords([{
+          role: 'local_notice',
+          text
+        }]));
+      },
       onSubagentActivity(activity) {
         if (!isCurrentTurn() || !appContext.subagentRunContext.updateActivity(activity)) {
           return;
@@ -364,7 +467,7 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
     }
   } finally {
     appContext.pendingMessageContext.finishTurn(turn.id);
-    turn.abortSignal.removeEventListener('abort', cancelQuestionOnAbort);
+    turn.abortSignal.removeEventListener('abort', cancelInteractionsOnAbort);
     const wasCurrentTurn = isCurrentTurn();
 
     if (wasCurrentTurn) {

@@ -19,7 +19,9 @@
     "start": "npm run build && node dist/bin/echo-tui.js",
     "start:debug": "npm run build && ECHO_TUI_DEBUG=1 node dist/bin/echo-tui.js",
     "test": "npm run build && node --test dist/test",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "eval:local-code-mode": "node scripts/eval-local-code-mode.js",
+    "test:eval-local-code-mode": "node --test scripts/eval-local-code-mode.test.js"
   },
   "engines": {
     "node": ">=20.3.0"
@@ -30,6 +32,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "openai": "^6.38.0",
     "pdfjs-dist": "5.1.91",
+    "quickjs-emscripten": "0.32.0",
     "sharp": "^0.34.5"
   },
   "devDependencies": {
