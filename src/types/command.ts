@@ -1,3 +1,4 @@
+import type {MainAgentToolsConfig} from '../config/main-agent-tools-config';
 import type { InputEvent } from './input';
 import type { AgentInstructionFileName, AgentToolPolicy, AgentType, ContextUsage, InteractionMode, ReasoningEffort } from './agent';
 import type { SandboxMode, SandboxModeOverride } from '../sandbox/types';
@@ -16,6 +17,9 @@ import type {AgentsSettingsMutationResult, AgentsSettingsScopeReadResult, Builti
 import type {McpConfigEditDraft, McpConfigEditIssue, McpPromptArgument, McpPromptMessage} from './mcp';
 import type {FooterMouseTarget, FooterWheelPane} from './render';
 import type {MouseWheelDirection} from './input';
+import type {MainAgentToolCatalogEntry} from './tool';
+
+export type {MainAgentToolCatalogEntry} from './tool';
 
 export type CommandSurfaceOption = {
   label: string;
@@ -447,7 +451,7 @@ export type ConfigCommandState = {
   providerIndex: number;
 };
 
-export type ConfigTabId = 'general' | 'models' | 'sandbox' | 'appearance';
+export type ConfigTabId = 'general' | 'models' | 'tools' | 'sandbox' | 'appearance';
 
 export type ConfigSurfaceTab = {
   id: ConfigTabId;
@@ -468,6 +472,24 @@ export type ToolApprovalModelProfile = {
   id: string; // 持久化模型 profile 的稳定引用 id。
   model: string; // Provider 请求使用的 API model 展示名。
   provider: string; // 所属 provider id，仅用于帮助用户区分候选。
+};
+
+export type ToolsConfigItem = {
+  names: string[]; // 本行联动的真实工具名；只有 Todo 包含两个名称。
+  label: string; // 展示名称；Todo 不作为新的 provider 工具注册。
+  description: string; // 配置页专用的简短中文说明，不展开模型使用的原始工具描述。
+  available: boolean; // 当前运行依赖是否可用；离线仍允许编辑偏好。
+  serverName?: string; // 分节显示的 MCP 服务名。
+  unknown?: boolean; // 缺少工具定义的保留偏好，单独分组而非显示为内置工具。
+};
+
+export type ToolsConfigState = {
+  draft: MainAgentToolsConfig; // 工具页独立草稿，显式保存前不影响运行。
+  items: ToolsConfigItem[]; // 未应用禁用名单的候选投影，关闭后仍能重新开启。
+  error?: string; // 保存失败的就地错误，不阻断其他 Tab。
+  feedback?: string; // 保存成功及下一轮生效提示。
+  initialDraftFingerprint: string; // 最近读取或成功保存的禁用集合指纹。
+  selectedIndex: number; // 工具索引；items.length 表示保存动作。
 };
 
 export type SandboxConfigDraft = {
@@ -496,6 +518,13 @@ export type ConfigCommandSurface =
   | {kind: 'config'; view: 'general'; activeTab: ConfigTabId; tabs: ConfigSurfaceTab[]; state: GeneralConfigState}
   | {kind: 'config'; view: 'models'; activeTab: ConfigTabId; tabs: ConfigSurfaceTab[]; state: ConfigCommandState; rows: ConfigFormRow[]}
   | {kind: 'config'; view: 'appearance'; activeTab: ConfigTabId; tabs: ConfigSurfaceTab[]; state: AppearanceConfigState}
+  | {
+      kind: 'config'; // 使用配置中心 footer，不追加 transcript。
+      view: 'tools'; // 主 Agent 工具页独立视图。
+      activeTab: ConfigTabId; // Tab 循环中的当前页。
+      tabs: ConfigSurfaceTab[]; // 跨页脏状态和读取错误标记。
+      state: ToolsConfigState; // 当前工具草稿的只读渲染快照。
+    }
   | {kind: 'config'; view: 'sandbox'; activeTab: ConfigTabId; tabs: ConfigSurfaceTab[]; state: SandboxConfigState}
   | {kind: 'config'; view: 'error'; activeTab: ConfigTabId; tabs: ConfigSurfaceTab[]; error: string}
   | {kind: 'config'; view: 'discardConfirm'; activeTab: ConfigTabId; tabs: ConfigSurfaceTab[]; dirtyTabs: string[]; selectedIndex: number};
@@ -894,6 +923,9 @@ export type CommandHostApp = {
     listModels(provider: ConfigProviderDraft): Promise<CommandConfigListModelsResult>;
     saveSettings(draft: AppSettings): CommandConfigSaveResult;
     saveDraft(draft: LlmConfigDraft): CommandConfigSaveResult;
+    readToolsDraft(): MainAgentToolsConfig; // 读取主 Agent 工具偏好，不读取 provider 配置。
+    saveToolsDraft(draft: MainAgentToolsConfig): CommandConfigSaveResult; // 只提交本页禁用名单。
+    listToolCatalog(): MainAgentToolCatalogEntry[]; // 枚举现有候选，不主动建立 MCP 连接。
     readSandboxDraft(): SandboxConfigDraft;
     saveSandboxDraft(draft: SandboxConfigDraft): CommandConfigSaveResult;
   };

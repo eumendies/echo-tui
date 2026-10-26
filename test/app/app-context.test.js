@@ -50,7 +50,6 @@ function createConfigRootFromAppSettings(settings) {
     skills: {catalogContextRatio: settings.skillCatalogContextRatio},
     tools: {
       approval: {mode: settings.toolApprovalMode, ...(settings.toolApprovalModelProfileId ? {modelProfileId: settings.toolApprovalModelProfileId} : {})},
-      fileEdit: {mode: settings.fileEditMode},
       readFiles: {autoCompressImages: settings.autoCompressImages}
     },
     ui: {
@@ -61,6 +60,24 @@ function createConfigRootFromAppSettings(settings) {
     }
   };
 }
+
+test('main tool selection changes do not reset app settings or context usage', () => {
+  let root = {tools: {fileEdit: {mode: 'apply_patch'}}};
+  const userConfigContext = new UserConfigContext({readFile() { return JSON.stringify(root); }});
+  const context = createContext({userConfigContext});
+  assert.deepEqual(context.captureUserConfigSnapshot().getMainAgentToolsConfig(), {disabledTools: []});
+  const usage = {usedTokens: 100, contextWindow: 1000, source: 'provider'};
+  context.setContextUsage(usage);
+  root = {tools: {fileEdit: {mode: 'edit_file'}, mainAgent: {disabledTools: ['apply_patch']}}};
+  const refresh = userConfigContext.refresh();
+  assert.equal(refresh.domains.tools, true);
+  assert.equal(refresh.domains.appSettings, false);
+  const result = context.applyAppSettingsSnapshot(refresh.snapshot);
+  assert.equal(Object.hasOwn(result, 'fileEditModeChanged'), false);
+  assert.equal(context.getContextUsage().usedTokens, usage.usedTokens);
+  assert.deepEqual(context.captureUserConfigSnapshot().getMainAgentToolsConfig(), {disabledTools: ['apply_patch']});
+  userConfigContext.close();
+});
 
 function createModelContext(options = {}) {
   const userConfigContext = new UserConfigContext();
@@ -822,7 +839,6 @@ test('AppContext snapshots app settings into render state and agent sessions', (
       autoCompressImages: false,
       compactionThresholdRatio: 0.65,
       defaultInteractionMode: 'plan',
-      fileEditMode: 'apply_patch',
       mouseInteractionEnabled: true,
       skillCatalogContextRatio: 0.04,
       showReasoningSummary: false,
@@ -867,7 +883,6 @@ test('AppContext refreshes external app settings and classifies redraw impact', 
 
     assert.deepEqual(result, {
       agentInstructionFileChanged: true,
-      fileEditModeChanged: false,
       reasoningVisibilityChanged: true,
       skillCatalogContextRatioChanged: true,
       slashSuggestionLimitChanged: true,
@@ -909,7 +924,6 @@ test('AppContext refreshes image compression without clearing context usage or r
 
     assert.deepEqual(context.applyAppSettingsSnapshot(userConfigContext.refresh().snapshot), {
       agentInstructionFileChanged: false,
-      fileEditModeChanged: false,
       reasoningVisibilityChanged: false,
       skillCatalogContextRatioChanged: false,
       slashSuggestionLimitChanged: false,

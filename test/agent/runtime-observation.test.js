@@ -267,6 +267,7 @@ test('agent runtime exposes only allowlisted provider facts to observation', asy
   const providerRequests = [];
   const observation = {...disabledObservation, providerRequestBuilt(input) { providerRequests.push(input); }};
   const snapshot = {
+    getMainAgentToolsConfig() { return {disabledTools: []}; },
     getAppSettings() { return {agentInstructionFileName: 'AGENTS.md', compactionThresholdRatio: 0.8, skillCatalogContextRatio: 0.02}; }
   };
 
@@ -282,7 +283,6 @@ test('agent runtime exposes only allowlisted provider facts to observation', asy
       tools: {
         autoCompressImages: true,
         bash: {timeoutMs: null, maxOutputBytes: 65536},
-        fileEditMode: 'apply_patch',
         sandbox: {mode: 'off', network: false, extraWritablePaths: []}
       }
     },

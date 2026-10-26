@@ -19,7 +19,7 @@ function createSnapshot() {
     ],
     builtins: [
       {name: 'explorer', description: 'Explore safely.', capability: 'readonly', effort: 'inherit', includeMcpTools: false, localToolNames: ['read_files', 'grep'], policy: {fields: [], status: 'none'}},
-      {name: 'worker', description: 'Work generally.', capability: 'general', effort: 'inherit', includeMcpTools: true, localToolNames: ['apply_patch', 'edit_file', 'read_files'], policy: {fields: [], status: 'none'}}
+      {name: 'worker', description: 'Work generally.', capability: 'general', effort: 'inherit', includeMcpTools: true, localToolNames: ['apply_patch', 'read_files'], policy: {fields: [], status: 'none'}}
     ],
     items: [
       {name: 'explorer', sourceKind: 'builtin', status: 'active', diagnostics: []},

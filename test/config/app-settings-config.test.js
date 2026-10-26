@@ -61,7 +61,6 @@ test('readAppSettings reads valid fields and falls back invalid fields independe
     checkUpdatesOnStartup: false,
     compactionThresholdRatio: 0.65,
     defaultInteractionMode: 'plan',
-    fileEditMode: 'edit_file',
     mouseInteractionEnabled: true,
     skillCatalogContextRatio: 0.05,
     slashSuggestionMaxVisible: 12,
@@ -86,7 +85,6 @@ test('readAppSettings uses defaults for missing and malformed optional config', 
     checkUpdatesOnStartup: true,
     compactionThresholdRatio: 0.95,
     defaultInteractionMode: 'normal',
-    fileEditMode: 'apply_patch',
     mouseInteractionEnabled: false,
     skillCatalogContextRatio: 0.1,
     slashSuggestionMaxVisible: 20,
@@ -147,7 +145,6 @@ test('saveAppSettingsDraft patches owned fields and writes atomically', () => {
     checkUpdatesOnStartup: false,
     compactionThresholdRatio: 0.7,
     defaultInteractionMode: 'plan',
-    fileEditMode: 'edit_file',
     mouseInteractionEnabled: true,
     skillCatalogContextRatio: 0.04,
     slashSuggestionMaxVisible: 5,
@@ -162,7 +159,7 @@ test('saveAppSettingsDraft patches owned fields and writes atomically', () => {
     readFile() {
       return JSON.stringify({
         llm: {selectedModel: 'fast'},
-        tools: {bash: {timeoutMs: 1000}, other: {kept: true}, readFiles: {other: 'kept'}},
+        tools: {bash: {timeoutMs: 1000}, fileEdit: {mode: 'edit_file', kept: true}, mainAgent: {disabledTools: ['web_search']}, other: {kept: true}, readFiles: {other: 'kept'}},
         mcp: {enabled: true},
         hooks: {assistant_turn_end: ['echo done']},
         unknown: {kept: true},
@@ -193,7 +190,8 @@ test('saveAppSettingsDraft patches owned fields and writes atomically', () => {
   assert.deepEqual(saved.updates, {other: 'kept', checkOnStartup: false});
   assert.equal(saved.llm.selectedModel, 'fast');
   assert.equal(saved.tools.bash.timeoutMs, 1000);
-  assert.equal(saved.tools.fileEdit.mode, 'edit_file');
+  assert.deepEqual(saved.tools.fileEdit, {mode: 'edit_file', kept: true});
+  assert.deepEqual(saved.tools.mainAgent, {disabledTools: ['web_search']});
   assert.deepEqual(saved.tools.readFiles, {other: 'kept', autoCompressImages: false});
   assert.deepEqual(saved.tools.other, {kept: true});
   assert.equal(saved.mcp.enabled, true);
@@ -223,14 +221,13 @@ test('saveAppSettingsDraft creates missing config and rejects invalid drafts bef
     skills: {catalogContextRatio: 0.02},
     ui: {activeTurnMessagePolicy: 'pending', defaultInteractionMode: 'normal', mouseInteractionEnabled: false, slashSuggestionMaxVisible: 8, showReasoningSummary: true},
     updates: {checkOnStartup: true},
-    tools: {approval: {mode: 'manual'}, fileEdit: {mode: 'apply_patch'}, readFiles: {autoCompressImages: true}}
+    tools: {approval: {mode: 'manual'}, readFiles: {autoCompressImages: true}}
   });
   assert.deepEqual(validateAppSettingsDraft({...DEFAULT_APP_SETTINGS, compactionThresholdRatio: 0.49}), {ok: false, error: '自动压缩阈值必须在 50% 到 95% 之间'});
   assert.deepEqual(validateAppSettingsDraft({...DEFAULT_APP_SETTINGS, skillCatalogContextRatio: 0.11}), {ok: false, error: '技能列表上下文占比上限必须在 1% 到 10% 之间'});
   assert.deepEqual(validateAppSettingsDraft({...DEFAULT_APP_SETTINGS, defaultInteractionMode: 'shell'}), {ok: false, error: '默认启动模式必须是普通或规划'});
   assert.deepEqual(validateAppSettingsDraft({...DEFAULT_APP_SETTINGS, slashSuggestionMaxVisible: 21}), {ok: false, error: 'Slash suggestion 显示数量必须在 1 到 20 之间'});
   assert.deepEqual(validateAppSettingsDraft({...DEFAULT_APP_SETTINGS, agentInstructionFileName: 'OTHER.md'}), {ok: false, error: '项目指令文件必须是 AGENTS.md 或 CLAUDE.md'});
-  assert.deepEqual(validateAppSettingsDraft({...DEFAULT_APP_SETTINGS, fileEditMode: 'other'}), {ok: false, error: '文件编辑工具必须是 apply_patch 或 edit_file'});
   assert.deepEqual(validateAppSettingsDraft({...DEFAULT_APP_SETTINGS, autoCompressImages: 'yes'}), {ok: false, error: '超限图片自动压缩设置必须是布尔值'});
   assert.deepEqual(validateAppSettingsDraft({...DEFAULT_APP_SETTINGS, checkUpdatesOnStartup: 'yes'}), {ok: false, error: '启动更新检查设置必须是布尔值'});
   assert.deepEqual(validateAppSettingsDraft({...DEFAULT_APP_SETTINGS, mouseInteractionEnabled: 'yes'}), {ok: false, error: 'UI 鼠标交互设置必须是布尔值'});
@@ -265,4 +262,15 @@ test('auto approval settings require an existing model profile and preserve appr
 
   saveAppSettingsDraft({...DEFAULT_APP_SETTINGS, toolApprovalModelProfileId: 'deleted'}, options);
   assert.equal(writes[1].tools.approval.modelProfileId, 'deleted');
+});
+
+test('regular settings neither expose nor validate or overwrite legacy file edit mode', () => {
+  for (const mode of ['apply_patch', 'edit_file', 'invalid', null]) {
+    const root = {tools: {fileEdit: {mode, kept: true}}};
+    const draft = readAppSettingsDraft({readFile() { return JSON.stringify(root); }});
+    assert.equal(Object.hasOwn(draft, 'fileEditMode'), false);
+    assert.deepEqual(validateAppSettingsDraft({...draft, fileEditMode: 'stale-field'}), {ok: true});
+    applyAppSettingsDraft(root, {...draft, fileEditMode: 'stale-field'});
+    assert.deepEqual(root.tools.fileEdit, {mode, kept: true});
+  }
 });

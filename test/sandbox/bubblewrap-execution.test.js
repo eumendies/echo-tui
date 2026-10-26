@@ -340,7 +340,6 @@ test('registry forces sandbox off for headless full-access runs', SKIP_OPTIONS, 
     tools: {
       autoCompressImages: true,
       bash: {timeoutMs: null, maxOutputBytes: 65536},
-      fileEditMode: 'apply_patch',
       sandbox: {mode: 'workspace-write', network: false, extraWritablePaths: []}
     }
   };

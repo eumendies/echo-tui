@@ -83,10 +83,17 @@ type ToolApprovalResolution = {
 };
 
 /**
- * 执行单个 tool call；交互式工具在这里短路到 app callback，避免普通 executor 持有 UI 状态。
+ * 先验证单个 tool call 属于本轮 registry，再应用模式、特殊工具及授权边界。
+ * 交互式工具在这里短路到 app callback，避免普通 executor 持有 UI 状态；并行调用也复用本入口。
  */
 async function executeToolCall(toolCall: ToolCall, state: AgentLoopRunState, callbacks: AgentCallbacks, subagentGroupSize?: number): Promise<ToolExecutionResult> {
   throwIfAborted(state.abortSignal);
+
+  // provider 输出不可信；最终 registry 是普通、并行及特殊工具共同的执行准入边界。
+  // 必须先于 Todo、提问、委派和风险审批，授权与 full-access 不能恢复已禁用工具。
+  if (!state.registry.getHandler(toolCall.toolName)) {
+    return createRejectedToolResult(toolCall, `Unknown tool: ${toolCall.toolName}`);
+  }
 
   // 只读运行由 readonly classifier 一次性判定:rejected 立即短路,safe 直接沿用到执行链路,
   // 不再回落普通风险分类——否则 allowlist 内的只读命令会被启发式写风险规则二次误判为需要审批。
@@ -274,6 +281,7 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
     const skillSnapshot = captureSkillSnapshot(createSkillManager({cwd}));
     const {agent, config, registry} = prepareAgent({
       configSnapshot,
+      mainAgentTools: configSnapshot.getMainAgentToolsConfig(),
       cwd,
       executionMode,
       mcpManager,

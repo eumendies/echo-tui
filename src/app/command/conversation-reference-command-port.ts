@@ -79,7 +79,7 @@ function createConversationReferenceCommandPort(options: ConversationReferenceCo
         };
       }
     },
-    /** 发送前使用本轮生效模型生成最终引用；长引用在此发起可取消的总结请求。 */
+    /** 发送前使用本轮模型和主工具快照生成最终引用；长引用在此发起可取消的总结请求，不执行模型工具。 */
     async prepareForSubmission(submissionOptions = {}) {
       const pending = submissionOptions.reference || appContext.conversationReferenceContext.getPending();
 
@@ -96,8 +96,10 @@ function createConversationReferenceCommandPort(options: ConversationReferenceCo
           modelProfileIdOverride: submissionOptions.modelProfileIdOverride,
           reasoningEffortOverride: submissionOptions.reasoningEffortOverride
         });
+        const configSnapshot = selection.userConfigSnapshot || userConfigContext.capture();
         const prepared = prepareAgent({
-          configSnapshot: selection.userConfigSnapshot || userConfigContext.capture(),
+          configSnapshot,
+          mainAgentTools: configSnapshot.getMainAgentToolsConfig(),
           cwd: () => appContext.getCurrentCwd(),
           modelProfileId: selection.modelProfileId,
           reasoningEffortOverride: selection.reasoningEffortOverride,

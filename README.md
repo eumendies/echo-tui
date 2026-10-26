@@ -83,7 +83,7 @@ echo-tui --once --full-access "按要求修改文件并运行检查"
 | 命令 | 行为 |
 | --- | --- |
 | `/help` | 查看帮助 |
-| `/config` | 配置模型、常规偏好和主题 |
+| `/config` | 配置常规偏好、模型、主 Agent 工具、沙箱和主题 |
 | `/model` `/effort` | 切换当前会话的模型和推理等级 |
 | `/mode` | 切换交互模式 |
 | `/status` | 查看当前项目、模型和会话状态 |
@@ -162,6 +162,10 @@ Inspect only authentication-related code. Cite file paths and return prioritized
 ## 工具与授权
 
 Echo TUI 可以读取和搜索文件、访问公开网页、执行 shell 命令、修改文件，并调用已配置的 MCP 工具。涉及文件修改、高风险命令或未声明只读的 MCP 工具时，交互模式会先请求授权（声明 `readOnlyHint: true` 的 MCP 工具免审批）；`plan` 模式始终拒绝写操作。
+
+在 `/config` → **工具** 中选择主 Agent 可用的内置与 MCP 工具，显式保存后下一轮生效；TUI 与 `--once` 使用同一份 `tools.mainAgent.disabledTools` 配置，不影响 Subagent。`apply_patch` 与 `edit_file` 独立开关，可同时开启或关闭；名单缺失时默认 `[]`，两个编辑工具及其他可用工具默认开启，后续新工具也默认开启。常规页不再提供“文件编辑方式”二选一设置，旧 `tools.fileEdit.mode` 不再读取。Worker 的 definition 仅允许 `apply_patch`，不暴露或执行 `edit_file`，Explorer 仍无编辑工具，自定义 Agent 继续遵守自身白名单。详见[工具配置与旧字段处理](docs/configuration.md#主-agent-工具)。
+
+`run_bash_command` 必需且不可关闭；工具选择不是安全权限隔离，关闭编辑或网络工具仍不能阻止 Bash 执行相应操作，实际限制继续由模式、审批和沙箱负责。审批授权及 `--full-access` 不能重新启用禁用工具。
 
 工具审批策略独立于 interaction mode，配置在 `~/.echo/config.json` 的 `tools.approval`：
 

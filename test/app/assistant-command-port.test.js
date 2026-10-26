@@ -8,6 +8,8 @@ const {createAssistantCommandPort} = require('../../src/app/command/assistant-co
 const agentSetupModule = require('../../src/agent/agent-setup');
 const {UserConfigContext} = require('../../src/config/user-config-context');
 const {getConversationImageBytes} = require('../../src/agent/context/conversation-image-budget');
+const {createDefaultToolRegistry} = require('../../src/tools/tool-registry');
+const fakeAgentModule = require('../../src/agent/fake/agent');
 
 const TEST_CWD = '/tmp/echo_manual_compaction';
 const TEST_JOURNAL_PATH = '/tmp/echo_manual_compaction/session.jsonl';
@@ -26,6 +28,9 @@ const TEST_CONFIG = {
 function createConfigSnapshot() {
   return {
     revision: 1,
+    getMainAgentToolsConfig() {
+      return {disabledTools: ['edit_file']};
+    },
     getAppSettings() {
       return {
         agentInstructionFileName: 'AGENTS.md',
@@ -73,20 +78,13 @@ function createAppContext(session, interactionMode) {
 async function withPatchedPrepareAgent(agent, callback) {
   const originalPrepareAgent = agentSetupModule.prepareAgent;
   const preparations = [];
-  const registry = {
-    getHandler() {
-      return undefined;
-    },
-    isEmpty() {
-      return false;
-    },
-    listDefinitions() {
-      return [];
-    },
-    listSkillCatalog() {
-      return [{name: 'review', description: 'Review the current diff', sourceKind: 'builtin', sourcePath: '/tmp/skills/review'}];
+  const registry = createDefaultToolRegistry(TEST_CONFIG, TEST_CWD, undefined, {
+    skillRegistry: {
+      listCatalog() {
+        return [{name: 'review', description: 'Review the current diff', sourceKind: 'builtin', sourcePath: '/tmp/skills/review'}];
+      }
     }
-  };
+  });
 
   agentSetupModule.prepareAgent = (options = {}) => {
     preparations.push(options);
@@ -155,6 +153,7 @@ test('manual compaction sends the shared prefix and records summary usage', asyn
       assert.deepEqual(preparations[0].executionMode, {kind: 'interactive'});
       assert.equal(preparations[0].cwd, TEST_CWD);
       assert.equal(preparations[0].sessionId, 'session-1');
+      assert.deepEqual(preparations[0].mainAgentTools, {disabledTools: ['edit_file']});
       assert.equal(typeof preparations[0].mcpManager, 'object');
       assert.equal('sandboxModeOverride' in preparations[0], false);
       // 委派目录：schema-only 端口使压缩请求与主会话一致携带 run_subagent 定义。
@@ -218,6 +217,61 @@ test('manual compaction derives the plan-mode sandbox tightening', async () => {
       // plan 模式默认派生运行级 read-only 收紧，与 runAgentLoop 的默认工具策略组合一致。
       assert.equal(preparations[0].sandboxModeOverride, 'read-only');
     });
+  });
+});
+
+test('manual compaction uses the real main-tool selection for its registry and prompt', async () => {
+  await withTemporaryHome(async () => {
+    const cwd = path.join(os.homedir(), 'project');
+    const skillDir = path.join(cwd, '.echo', 'skills', 'review');
+    fs.mkdirSync(skillDir, {recursive: true});
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), '---\nname: review\ndescription: Review evidence\n---\nReview it.\n');
+    const originalPrepare = agentSetupModule.prepareAgent;
+    const originalFactory = fakeAgentModule.createFakeAgent;
+    try {
+      for (const disabledTools of [[], ['apply_patch', 'edit_file', 'create_todos', 'use_skill', 'run_subagent']]) {
+        const context = new UserConfigContext({
+          configPath: path.join(os.homedir(), 'config.json'),
+          readFile: () => JSON.stringify({
+            llm: {selectedModel: 'fake', providers: {fake: {preset: 'fake-agent'}}, models: [{id: 'fake', provider: 'fake', model: 'echo-fake'}]},
+            tools: {mainAgent: {disabledTools}, sandbox: {mode: 'off'}}
+          })
+        });
+        const session = {...createSession('normal'), modelProfileId: 'fake', userConfigSnapshot: context.capture()};
+        let registry;
+        let request;
+        agentSetupModule.prepareAgent = (options) => {
+          const result = originalPrepare(options);
+          registry = result.registry;
+          return result;
+        };
+        fakeAgentModule.createFakeAgent = () => ({async runTurn(records) {
+          request = records;
+          return {draft: 'summary', toolCalls: []};
+        }});
+        try {
+          const appContext = {...createAppContext(session, 'normal'), getCurrentCwd: () => cwd};
+          const port = createAssistantCommandPort({
+            appContext,
+            mcpManager: {listTools: () => [], listServerNames: () => []},
+            render() {}, renderRecords() {}, submitUserMessage: async () => true,
+            usageStore: {appendEvent: () => null, listDailyUsage: () => [], listModelUsage: () => []},
+            userConfigContext: context
+          });
+          assert.equal((await port.compactContext({force: true})).didCompact, true);
+          for (const name of ['apply_patch', 'edit_file', 'use_skill', 'run_subagent', 'create_todos', 'complete_todo']) {
+            assert.equal(Boolean(registry.getHandler(name)), disabledTools.length === 0, name);
+          }
+          assert.ok(registry.getHandler('run_bash_command'));
+          assert.equal(request[0].text.includes('Available Skills:'), disabledTools.length === 0);
+        } finally {
+          context.close();
+        }
+      }
+    } finally {
+      agentSetupModule.prepareAgent = originalPrepare;
+      fakeAgentModule.createFakeAgent = originalFactory;
+    }
   });
 });
 

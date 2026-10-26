@@ -32,11 +32,10 @@ import type {ToolApprovalContext} from './tool-approval-context';
 import type {AssistantTurnHandle, InterruptAssistantTurnResult} from './turn-context';
 
 type AppSettingsApplyResult = {
-  agentInstructionFileChanged: boolean;
-  fileEditModeChanged: boolean;
-  reasoningVisibilityChanged: boolean;
-  skillCatalogContextRatioChanged: boolean;
-  slashSuggestionLimitChanged: boolean;
+  agentInstructionFileChanged: boolean; // 项目指令来源变化，需要清除旧上下文用量。
+  reasoningVisibilityChanged: boolean; // 推理摘要可见性变化，需要更新渲染。
+  skillCatalogContextRatioChanged: boolean; // 技能目录预算变化，使旧上下文用量失效。
+  slashSuggestionLimitChanged: boolean; // slash 建议列表高度预算变化。
   mouseInteractionChanged: boolean; // 终端鼠标协议与可执行 hit region 是否需要重新投影。
   toolApprovalChanged: boolean; // 审批模式或 reviewer profile 是否变化，不代表需要 transcript 重绘。
 };
@@ -367,13 +366,12 @@ class AppContext {
   }
 
   /**
-   * 从用户配置刷新常规设置缓存，分类报告渲染影响，并使失效的 context usage 归零。
+   * 刷新常规设置缓存并报告渲染影响；工具 schema 的失效由共享 tools 域刷新链路处理。
    */
   applyAppSettingsSnapshot(snapshot: UserConfigSnapshot): AppSettingsApplyResult {
     const previous = this.appSettingsSnapshot.getAppSettings();
     const next = snapshot.getAppSettings();
     const agentInstructionFileChanged = next.agentInstructionFileName !== previous.agentInstructionFileName;
-    const fileEditModeChanged = next.fileEditMode !== previous.fileEditMode;
     const reasoningVisibilityChanged = next.showReasoningSummary !== previous.showReasoningSummary;
     const skillCatalogContextRatioChanged = next.skillCatalogContextRatio !== previous.skillCatalogContextRatio;
     const slashSuggestionLimitChanged = next.slashSuggestionMaxVisible !== previous.slashSuggestionMaxVisible;
@@ -382,10 +380,10 @@ class AppContext {
       || next.toolApprovalModelProfileId !== previous.toolApprovalModelProfileId;
 
     this.appSettingsSnapshot = snapshot;
-    if (agentInstructionFileChanged || fileEditModeChanged || skillCatalogContextRatioChanged) {
+    if (agentInstructionFileChanged || skillCatalogContextRatioChanged) {
       this.clearContextUsage();
     }
-    return {agentInstructionFileChanged, fileEditModeChanged, reasoningVisibilityChanged, skillCatalogContextRatioChanged, slashSuggestionLimitChanged, mouseInteractionChanged, toolApprovalChanged};
+    return {agentInstructionFileChanged, reasoningVisibilityChanged, skillCatalogContextRatioChanged, slashSuggestionLimitChanged, mouseInteractionChanged, toolApprovalChanged};
   }
 
   /**

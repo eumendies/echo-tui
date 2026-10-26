@@ -2,6 +2,7 @@ import type {CompactionState, SubagentTranscriptRecord, TodoState, TranscriptRec
 import type {AskUserQuestionsRequest, ToolApprovalRequest, ToolCall, ToolExecutionOptions, ToolExecutionResult} from './tool';
 import type {ChangeFileRecorder} from './change-history';
 import type {SandboxMode, SandboxModeOverride} from '../sandbox/types';
+import type {MainAgentToolsConfig} from '../config/main-agent-tools-config';
 
 export type InteractionMode = 'normal' | 'plan' | 'shell' | 'shell-local';
 
@@ -155,6 +156,7 @@ export type AgentSessionInput = {
 
 export type AgentUserConfigSnapshot = {
   revision: number; // 本回合使用的用户配置 revision，仅用于一致性与诊断。
+  getMainAgentToolsConfig(): MainAgentToolsConfig; // 主运行独立解析的工具选择，不自动应用到子运行。
   getAppSettings(): {
     activeTurnMessagePolicy?: ActiveTurnMessagePolicy; // 主 turn 启动时固定的消息策略；旧 snapshot 缺省仍按排队处理。
     agentInstructionFileName: AgentInstructionFileName; // 本回合加载项目指令时使用的文件名。
@@ -258,8 +260,6 @@ export function throwIfAborted(signal?: AbortSignal): void {
 
 export type AgentType = 'openai' | 'openai-chat' | 'anthropic' | 'codex' | 'fake';
 
-export type FileEditToolMode = 'apply_patch' | 'edit_file';
-
 export const REASONING_EFFORTS = ['none', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 
 export type ReasoningEffort = typeof REASONING_EFFORTS[number];
@@ -286,7 +286,6 @@ export type LlmConfig = {
 export type ToolRuntimeConfig = {
   autoCompressImages: boolean; // 控制 read_files 是否把超限图片缩小到最终附件上限内。
   bash: BashToolConfig;
-  fileEditMode: FileEditToolMode;
   sandbox: SandboxToolConfig; // run_bash_command 的沙箱策略;由 tools.sandbox 配置解析,macOS 默认 workspace-write 且网络开启。
 };
 

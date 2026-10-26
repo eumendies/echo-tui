@@ -48,6 +48,96 @@ function createMemoryContext(initialRoot, overrides = {}) {
   return {context, state};
 }
 
+test('main tools reads ignore legacy modes and normalize Todo preferences without writing', () => {
+  for (const tools of [undefined, ...[undefined, null, 'apply_patch', 'edit_file', 'invalid', true, {}, []].map((mode) => ({fileEdit: {mode}})), {mainAgent: {disabledTools: ['create_todos']}}, {mainAgent: {disabledTools: ['complete_todo']}}]) {
+    const {context, state} = createMemoryContext(createConfigRoot({tools}));
+    const original = state.raw;
+    const expected = {disabledTools: tools?.mainAgent ? ['create_todos', 'complete_todo'] : []};
+    assert.deepEqual(new Set(context.capture().getMainAgentToolsConfig().disabledTools), new Set(expected.disabledTools));
+    assert.deepEqual(new Set(context.capture().getMainAgentToolsDraft().disabledTools), new Set(expected.disabledTools));
+    assert.equal(state.reads, 1);
+    assert.equal(state.raw, original);
+    assert.equal(state.writes.length, 0);
+    assert.equal(state.renames.length, 0);
+    context.close();
+  }
+});
+
+test('main tools save atomically merges latest root and publishes only the tools domain', () => {
+  const root = createConfigRoot({
+    tools: {
+      mainAgent: {disabledTools: ['mcp__offline__read', 'unknown'], future: true},
+      fileEdit: {mode: 'edit_file', kept: true},
+      bash: {timeoutMs: 1234},
+      sandbox: {mode: 'off'},
+      approval: {mode: 'manual'},
+      readFiles: {autoCompressImages: false}
+    },
+    unknown: {kept: true}, hooks: {assistant_turn_end: ['echo done']}, mcp: {enabled: false}
+  });
+  const {context, state} = createMemoryContext(root);
+  const previous = context.capture();
+  const toolsDraft = previous.getMainAgentToolsDraft();
+  const appDraft = previous.getAppSettingsDraft();
+  appDraft.showReasoningSummary = false;
+  toolsDraft.disabledTools.push('create_todos', 'run_bash_command');
+  const latest = {...root, externallyAdded: {kept: true}};
+  state.raw = JSON.stringify(latest);
+  const changes = [];
+  context.subscribe((change) => changes.push(change));
+  const saved = context.saveMainAgentToolsDraft(toolsDraft);
+  const expected = structuredClone(latest);
+  expected.tools.mainAgent.disabledTools = ['mcp__offline__read', 'unknown', 'create_todos', 'complete_todo'];
+  assert.deepEqual(JSON.parse(state.writes[0][1]), expected);
+  assert.deepEqual(state.renames, [['/tmp/echo/config.json.tmp', '/tmp/echo/config.json']]);
+  assert.deepEqual(saved.domains, {appSettings: false, hooks: false, llm: false, mcp: false, tools: true});
+  assert.equal(saved.revision, previous.revision + 1);
+  assert.equal(saved.snapshot.getAppSettings().showReasoningSummary, true);
+  assert.equal(appDraft.showReasoningSummary, false);
+  assert.deepEqual(previous.getMainAgentToolsConfig().disabledTools, ['mcp__offline__read', 'unknown']);
+  assert.equal(changes.length, 1);
+  assert.equal(context.refresh().changed, false);
+  assert.equal(changes.length, 1);
+  context.close();
+});
+
+test('invalid main tools do not affect other config selectors or regular saves', () => {
+  const {context, state} = createMemoryContext(createConfigRoot({tools: {mainAgent: {disabledTools: null}, fileEdit: {mode: 'edit_file'}}}));
+  const snapshot = context.capture();
+  assert.throws(() => snapshot.getMainAgentToolsConfig(), /tools\.mainAgent\.disabledTools/);
+  assert.throws(() => snapshot.getMainAgentToolsDraft(), /tools\.mainAgent\.disabledTools/);
+  assert.equal(snapshot.getAppSettings().showReasoningSummary, true);
+  assert.equal(snapshot.getLlmConfigDraft().providers.length, 1);
+  assert.equal(Object.hasOwn(snapshot.resolveLlmConfig().tools, 'fileEditMode'), false);
+  assert.deepEqual(snapshot.getSandboxConfigDraft(), {mode: 'workspace-write', network: true, extraWritablePaths: []});
+  context.saveAppSettingsDraft({...snapshot.getAppSettingsDraft(), showReasoningSummary: false});
+  const saved = JSON.parse(state.writes.at(-1)[1]);
+  assert.equal(saved.tools.mainAgent.disabledTools, null);
+  assert.equal(saved.tools.fileEdit.mode, 'edit_file');
+  assert.equal(saved.ui.showReasoningSummary, false);
+  context.close();
+});
+
+test('main tools save creates missing config and failures never install a revision', () => {
+  const missing = createMemoryContext(Object.assign(new Error('missing'), {code: 'ENOENT'}));
+  assert.deepEqual(missing.context.capture().getMainAgentToolsDraft(), {disabledTools: []});
+  missing.context.saveMainAgentToolsDraft({disabledTools: []});
+  assert.deepEqual(JSON.parse(missing.state.writes[0][1]), {tools: {mainAgent: {disabledTools: []}}});
+  missing.context.close();
+
+  for (const failure of ['validation', 'write', 'rename']) {
+    const {context, state} = createMemoryContext(createConfigRoot(), {
+      ...(failure === 'write' ? {writeFile() { throw new Error('write failed'); }} : {}),
+      ...(failure === 'rename' ? {rename() { throw new Error('rename failed'); }} : {})
+    });
+    const before = context.capture();
+    assert.throws(() => context.saveMainAgentToolsDraft({disabledTools: failure === 'validation' ? [''] : []}), /disabledTools|failed/);
+    assert.equal(context.capture(), before);
+    if (failure === 'validation') assert.equal(state.writes.length, 0);
+    context.close();
+  }
+});
+
 test('UserConfigContext reads once and reuses one immutable revision across selectors', () => {
   const {context, state} = createMemoryContext(createConfigRoot({
     hooks: {assistant_turn_end: ['echo done']},
@@ -58,6 +148,12 @@ test('UserConfigContext reads once and reuses one immutable revision across sele
 
   assert.equal(state.reads, 1);
   assert.equal(snapshot.getAppSettings().compactionThresholdRatio, 0.8);
+  assert.deepEqual(snapshot.getMainAgentToolsConfig(), {disabledTools: []});
+  assert.equal(Object.isFrozen(snapshot.getMainAgentToolsConfig()), true);
+  assert.equal(Object.isFrozen(snapshot.getMainAgentToolsConfig().disabledTools), true);
+  const toolsDraft = snapshot.getMainAgentToolsDraft();
+  toolsDraft.disabledTools.push('web_search');
+  assert.deepEqual(snapshot.getMainAgentToolsDraft(), {disabledTools: []});
   assert.equal(snapshot.getLlmModelConfigInfo().selectedModelId, 'fast');
   assert.equal(snapshot.resolveLlmConfig().tools.bash.timeoutMs, 1000);
   assert.equal(snapshot.getMcpConfigDraft().servers[0].name, 'docs');
@@ -125,6 +221,8 @@ test('UserConfigContext installs invalid source states and recovers without last
   assert.deepEqual(invalid.getAppSettings(), DEFAULT_APP_SETTINGS);
   assert.throws(() => invalid.resolveLlmConfig(), /不是有效 JSON/);
   assert.throws(() => invalid.getAppSettingsDraft(), /不是有效 JSON/);
+  assert.throws(() => invalid.getMainAgentToolsDraft(), /不是有效 JSON/);
+  assert.throws(() => invalid.getMainAgentToolsConfig(), /不是有效 JSON/);
   assert.equal(validSnapshot.getAppSettings().showReasoningSummary, false);
 
   state.raw = JSON.stringify(createConfigRoot({ui: {showReasoningSummary: true}}));

@@ -9,6 +9,9 @@ import {
   createInitialConfigState,
   createInitialGeneralConfigState,
   createInitialSandboxConfigState,
+  createInitialToolsConfigState,
+  isToolsConfigDirty,
+  markToolsConfigSaved,
   getSandboxConfigRowIds,
   isGeneralConfigDirty,
   isModelConfigDirty,
@@ -29,7 +32,8 @@ import type {
   ConfigCommandState,
   ConfigTabId,
   GeneralConfigState,
-  SandboxConfigState
+  SandboxConfigState,
+  ToolsConfigState
 } from '../../types/command';
 import type {InputEvent} from '../../types/input';
 import type {ConfigCommandData} from './state';
@@ -59,7 +63,7 @@ function createModelListState(requestId: number, result: CommandConfigListModels
  */
 class ConfigCommandHandler implements CommandHandler<ConfigCommandData> {
   name = 'config';
-  description = '配置常规设置、指令文件、模型、沙箱和主题';
+  description = '配置常规设置、指令文件、模型、主 Agent 工具、沙箱和主题';
 
   match(text: string): boolean {
     return text.trimEnd() === '/config';
@@ -93,13 +97,7 @@ class ConfigCommandHandler implements CommandHandler<ConfigCommandData> {
       return;
     }
 
-    const activeSlot = data.activeTab === 'general'
-      ? data.general
-      : data.activeTab === 'models'
-        ? data.models
-        : data.activeTab === 'sandbox'
-          ? data.sandbox
-          : data.appearance;
+    const activeSlot = data[data.activeTab];
     if (activeSlot?.error) {
       if (event.type === INPUT_EVENTS.ESCAPE) {
         this.requestClose(data, host);
@@ -109,6 +107,11 @@ class ConfigCommandHandler implements CommandHandler<ConfigCommandData> {
 
     if (data.activeTab === 'general' && data.general?.state) {
       this.handleGeneralEvent(data, data.general.state, event, host);
+      return;
+    }
+
+    if (data.activeTab === 'tools' && data.tools?.state) {
+      this.handleToolsEvent(data, data.tools.state, event, host);
       return;
     }
 
@@ -168,6 +171,38 @@ class ConfigCommandHandler implements CommandHandler<ConfigCommandData> {
     nextState.selectedIndex = clamp(nextState.selectedIndex, 0, getGeneralConfigRowIds(nextState).length - 1);
 
     this.update({...data, general: {state: nextState}}, host);
+  }
+
+  /** 仅编辑工具页草稿；Bash 锁定、Todo 成对切换，离线工具不受可用性限制。 */
+  private handleToolsEvent(data: ConfigCommandData, state: ToolsConfigState, event: InputEvent, host: CommandHost): void {
+    if (event.type === INPUT_EVENTS.ESCAPE) {
+      this.requestClose(data, host);
+      return;
+    }
+    let nextState = structuredClone(state);
+    nextState.error = undefined;
+    nextState.feedback = undefined;
+    if (event.type === INPUT_EVENTS.MOVE_UP || event.type === INPUT_EVENTS.MOVE_DOWN) {
+      const up = event.type === INPUT_EVENTS.MOVE_UP;
+      nextState.selectedIndex = clamp(state.selectedIndex + (up ? -1 : 1), 0, state.items.length);
+    } else if (event.type === INPUT_EVENTS.MOVE_HOME || event.type === INPUT_EVENTS.MOVE_END) {
+      nextState.selectedIndex = event.type === INPUT_EVENTS.MOVE_HOME ? 0 : state.items.length;
+    } else if (event.type === INPUT_EVENTS.SUBMIT || (event.type === INPUT_EVENTS.TEXT && event.value === ' ')) {
+      const item = nextState.items[nextState.selectedIndex];
+      if (item && !item.names.includes('run_bash_command')) {
+        const disabled = new Set(nextState.draft.disabledTools);
+        const enable = item.names.some((name) => disabled.has(name));
+        for (const name of item.names) {
+          if (enable) disabled.delete(name);
+          else disabled.add(name);
+        }
+        nextState.draft.disabledTools = [...disabled];
+      } else if (!item && event.type === INPUT_EVENTS.SUBMIT) {
+        const result = host.config.saveToolsDraft(nextState.draft);
+        nextState = result.ok ? markToolsConfigSaved(nextState) : {...nextState, error: result.error || '无法保存主 Agent 工具设置'};
+      }
+    }
+    this.update({...data, tools: {state: nextState}}, host);
   }
 
   private handleSandboxEvent(data: ConfigCommandData, state: SandboxConfigState, event: InputEvent, host: CommandHost): void {
@@ -370,6 +405,7 @@ class ConfigCommandHandler implements CommandHandler<ConfigCommandData> {
     const dirtyTabs = [
       ...(isGeneralConfigDirty(data.general?.state) ? ['常规'] : []),
       ...(isModelConfigDirty(data.models?.state) ? ['模型与 Provider'] : []),
+      ...(isToolsConfigDirty(data.tools?.state) ? ['工具'] : []),
       ...(isSandboxConfigDirty(data.sandbox?.state) ? ['沙箱'] : [])
     ];
 
@@ -429,6 +465,14 @@ function initializeTab(data: ConfigCommandData, tab: ConfigTabId, host: CommandH
     }
   }
 
+  if (tab === 'tools' && !data.tools) {
+    try {
+      return {...data, tools: {state: createInitialToolsConfigState(host.config.readToolsDraft(), host.config.listToolCatalog())}};
+    } catch (error: unknown) {
+      return {...data, tools: {error: toErrorMessage(error)}};
+    }
+  }
+
   if (tab === 'sandbox' && !data.sandbox) {
     try {
       return {...data, sandbox: {state: createInitialSandboxConfigState(host.config.readSandboxDraft())}};
@@ -471,8 +515,6 @@ function adjustGeneralValue(state: GeneralConfigState, direction: number): Gener
     state.draft.autoCompressImages = !state.draft.autoCompressImages;
   } else if (selectedRow === 'checkUpdatesOnStartup') {
     state.draft.checkUpdatesOnStartup = !state.draft.checkUpdatesOnStartup;
-  } else if (selectedRow === 'fileEditMode') {
-    state.draft.fileEditMode = state.draft.fileEditMode === 'apply_patch' ? 'edit_file' : 'apply_patch';
   } else if (selectedRow === 'toolApprovalMode') {
     state.draft.toolApprovalMode = state.draft.toolApprovalMode === 'manual' ? 'auto' : 'manual';
     if (state.draft.toolApprovalMode === 'auto'

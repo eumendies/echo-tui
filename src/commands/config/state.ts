@@ -1,3 +1,4 @@
+import type {MainAgentToolsConfig} from '../../config/main-agent-tools-config';
 import {getProviderPreset, providerRequiresApiKey} from '../../config/provider-presets';
 import {normalizeConfigDraft} from '../../config/llm-config-editor';
 import {REASONING_EFFORTS} from '../../types/agent';
@@ -15,7 +16,9 @@ import type {
   LlmConfigDraft,
   SandboxConfigDraft,
   SandboxConfigState,
-  ToolApprovalModelProfile
+  ToolApprovalModelProfile,
+  MainAgentToolCatalogEntry,
+  ToolsConfigState
 } from '../../types/command';
 import type {AppSettings} from '../../config/app-settings-config';
 import type {ReasoningEffort} from '../../types/agent';
@@ -35,6 +38,7 @@ type ConfigCommandData = {
   general?: ConfigStateSlot<GeneralConfigState>;
   models?: ConfigStateSlot<ConfigCommandState>;
   sandbox?: ConfigStateSlot<SandboxConfigState>;
+  tools?: ConfigStateSlot<ToolsConfigState>; // 主 Agent 工具页的独立草稿或读取错误。
 };
 
 const GENERAL_CONFIG_BASE_ROW_IDS = [
@@ -46,7 +50,6 @@ const GENERAL_CONFIG_BASE_ROW_IDS = [
   'defaultInteractionMode',
   'autoCompressImages',
   'checkUpdatesOnStartup',
-  'fileEditMode',
   'toolApprovalMode',
   'instructionFile',
   'activeTurnMessagePolicy',
@@ -69,6 +72,7 @@ function getGeneralConfigRowIds(state: Pick<GeneralConfigState, 'draft'>): Gener
 const CONFIG_TABS: ReadonlyArray<{id: ConfigTabId; label: string}> = [
   {id: 'general', label: '常规'},
   {id: 'models', label: '模型与 Provider'},
+  {id: 'tools', label: '工具'},
   {id: 'sandbox', label: '沙箱'},
   {id: 'appearance', label: '外观'}
 ];
@@ -122,7 +126,7 @@ function createConfigSurface(data: ConfigCommandData): ConfigCommandSurface {
     };
   }
 
-  const slot = getActiveSlot(data);
+  const slot = data[data.activeTab];
   if (slot?.error) {
     return {kind: 'config', view: 'error', activeTab: data.activeTab, tabs, error: slot.error};
   }
@@ -144,6 +148,10 @@ function createConfigSurface(data: ConfigCommandData): ConfigCommandSurface {
 
   if (data.activeTab === 'appearance' && data.appearance?.state) {
     return {kind: 'config', view: 'appearance', activeTab: data.activeTab, tabs, state: structuredClone(data.appearance.state)};
+  }
+
+  if (data.activeTab === 'tools' && data.tools?.state) {
+    return {kind: 'config', view: 'tools', activeTab: data.activeTab, tabs, state: structuredClone(data.tools.state)};
   }
 
   if (data.activeTab === 'sandbox' && data.sandbox?.state) {
@@ -187,6 +195,67 @@ function createInitialAppearanceConfigState(themes: AppearanceConfigState['theme
     selectedIndex: Math.max(0, themes.findIndex((theme) => theme.selected)),
     themes: themes.map((theme) => ({...theme}))
   };
+}
+
+// 配置页只维护面向用户的短说明；候选名称来自轻量目录，模型完整描述仍由 handler 提供。
+const TOOL_CONFIG_DESCRIPTIONS: Readonly<Record<string, string>> = {
+  run_bash_command: '运行 Bash 命令（必选）',
+  apply_patch: '应用文件补丁',
+  edit_file: '替换文件内容',
+  ask_user_questions: '向用户提问',
+  glob: '查找文件路径',
+  grep: '搜索文件内容',
+  read_files: '读取文件与目录',
+  use_skill: '加载技能说明',
+  web_fetch: '获取网页内容',
+  web_search: '搜索网页',
+  run_subagent: '委派子 Agent',
+  list_mcp_resources: '列出 MCP 资源',
+  read_mcp_resource: '读取 MCP 资源'
+};
+
+/** 复制已归一化的 snapshot 草稿并投影中文配置行；Todo 只占一项，离线及未知偏好仍保留。 */
+function createInitialToolsConfigState(initialDraft: MainAgentToolsConfig, catalog: MainAgentToolCatalogEntry[]): ToolsConfigState {
+  const draft = structuredClone(initialDraft);
+  const todoNames = ['create_todos', 'complete_todo'];
+  const items: ToolsConfigState['items'] = [];
+  for (const entry of catalog) {
+    if (todoNames.includes(entry.name)) {
+      if (!items.some((item) => item.names.includes('create_todos'))) {
+        items.push({
+          names: todoNames,
+          label: 'Todo',
+          description: '创建与完成任务',
+          available: todoNames.every((name) => catalog.some((tool) => tool.name === name && tool.available))
+        });
+      }
+    } else {
+      items.push({
+        names: [entry.name], label: entry.name,
+        description: entry.unknown ? '未发现工具定义' : entry.serverName ? '调用 MCP 工具' : TOOL_CONFIG_DESCRIPTIONS[entry.name] || '调用内置工具',
+        available: entry.available,
+        ...(entry.serverName ? {serverName: entry.serverName} : {}),
+        ...(entry.unknown ? {unknown: true} : {})
+      });
+    }
+  }
+  items.sort((left, right) => (left.serverName || '').localeCompare(right.serverName || ''));
+  return {draft, items, selectedIndex: 0, initialDraftFingerprint: createToolsDraftFingerprint(draft)};
+}
+
+/** 禁用名单按集合比较，反复切换后不因插入顺序产生虚假的 dirty。 */
+function createToolsDraftFingerprint(draft: MainAgentToolsConfig): string {
+  return JSON.stringify([...draft.disabledTools].sort());
+}
+
+/** 工具页的脏跟踪不依赖其他 Tab 草稿或当前 MCP 可用性。 */
+function isToolsConfigDirty(state: ToolsConfigState | undefined): boolean {
+  return Boolean(state && createToolsDraftFingerprint(state.draft) !== state.initialDraftFingerprint);
+}
+
+/** 成功保存后只重置工具页的基线，保留焦点并明确运行快照边界。 */
+function markToolsConfigSaved(state: ToolsConfigState): ToolsConfigState {
+  return {...structuredClone(state), error: undefined, feedback: '✓ 主 Agent 工具已保存，下轮生效', initialDraftFingerprint: createToolsDraftFingerprint(state.draft)};
 }
 
 const SANDBOX_MODE_CYCLE: readonly SandboxConfigDraft['mode'][] = ['off', 'read-only', 'workspace-write'];
@@ -310,38 +379,21 @@ function getConfigRows(state: ConfigCommandState): ConfigFormRow[] {
 
 function createConfigTabs(data: ConfigCommandData): ConfigSurfaceTab[] {
   return CONFIG_TABS.map((tab) => {
-    const slot = tab.id === 'general'
-      ? data.general
-      : tab.id === 'models'
-        ? data.models
-        : tab.id === 'sandbox'
-          ? data.sandbox
-          : data.appearance;
+    const slot = data[tab.id];
     const dirty = tab.id === 'general'
       ? isGeneralConfigDirty(data.general?.state)
       : tab.id === 'models'
         ? isModelConfigDirty(data.models?.state)
-        : tab.id === 'sandbox'
-          ? isSandboxConfigDirty(data.sandbox?.state)
-          : false;
+        : tab.id === 'tools'
+          ? isToolsConfigDirty(data.tools?.state)
+          : tab.id === 'sandbox'
+            ? isSandboxConfigDirty(data.sandbox?.state)
+            : false;
     return {
       ...tab,
       ...(slot?.error ? {status: 'error' as const} : dirty ? {status: 'dirty' as const} : {})
     };
   });
-}
-
-function getActiveSlot(data: ConfigCommandData): ConfigStateSlot<unknown> | undefined {
-  if (data.activeTab === 'general') {
-    return data.general;
-  }
-  if (data.activeTab === 'models') {
-    return data.models;
-  }
-  if (data.activeTab === 'sandbox') {
-    return data.sandbox;
-  }
-  return data.appearance;
 }
 
 export {
@@ -357,6 +409,9 @@ export {
   createInitialConfigState,
   createInitialGeneralConfigState,
   createInitialSandboxConfigState,
+  createInitialToolsConfigState,
+  isToolsConfigDirty,
+  markToolsConfigSaved,
   getConfigRows,
   getConfigModelReasoningEffort,
   getSandboxConfigRowIds,
