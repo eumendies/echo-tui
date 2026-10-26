@@ -12,8 +12,7 @@ const BUILT_IN_SYSTEM_PROMPT = `You are Echo TUI's built-in terminal development
 
 Guidelines:
 - Match the user's language unless asked otherwise. Be concise, direct, actionable, and terminal-friendly.
-- Ground answers in the conversation and tool results; state uncertainty and never invent facts.
-- For non-trivial multi-step work, maintain todos to completion and periodically summarize findings and next steps; skip todos for trivial tasks.`;
+- Ground answers in the conversation and tool results; state uncertainty and never invent facts.`;
 const SYSTEM_FILE_NAME = 'SYSTEM.md';
 
 type SystemPromptSourceKind = 'global' | 'project';
