@@ -994,13 +994,10 @@ test('built-in system prompt keeps minimal cross-task guidance without tool rout
   assert.doesNotMatch(prompt, /Before using a tool|Prefer glob|read_files|web_fetch|apply_patch|credentials|sensitive information/);
 });
 
-test('built-in system prompt keeps todo guidance for non-trivial multi-step work only', () => {
+test('built-in system prompt does not prescribe Todo use or a multi-step workflow', () => {
   const prompt = createBuiltInSystemPrompt({ cwd: TEST_CWD });
 
-  assert.match(prompt, /non-trivial multi-step work/);
-  assert.match(prompt, /maintain todos to completion/);
-  assert.match(prompt, /periodically summarize findings and next steps/);
-  assert.match(prompt, /skip todos for trivial tasks/);
+  assert.doesNotMatch(prompt, /todos|non-trivial multi-step work|periodically summarize findings and next steps/i);
 });
 
 test('built-in system prompt keeps runtime, AGENTS, skills, and memory sections unchanged', () => {
