@@ -322,6 +322,7 @@ test('default tool registry exposes developed tools', () => {
   assert.equal(registry.getHandler('remove_memory'), undefined);
   assert.equal(registry.getHandler(CREATE_TODOS_TOOL_NAME) !== undefined, true);
   assert.equal(registry.getHandler(COMPLETE_TODO_TOOL_NAME) !== undefined, true);
+  assert.match(registry.getHandler(CREATE_TODOS_TOOL_NAME).definition.description, /Use this for multi-step work/);
   assert.equal(registry.getHandler(USE_SKILL_TOOL_NAME) !== undefined, true);
   assert.equal(registry.getHandler(WEB_FETCH_TOOL_NAME) !== undefined, true);
   assert.equal(registry.getHandler(WEB_SEARCH_TOOL_NAME) !== undefined, true);
