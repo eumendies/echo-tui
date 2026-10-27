@@ -33,6 +33,7 @@ import type {AssistantTurnHandle, InterruptAssistantTurnResult} from './turn-con
 
 type AppSettingsApplyResult = {
   agentInstructionFileChanged: boolean; // 项目指令来源变化，需要清除旧上下文用量。
+  historyRenderLineLimitChanged: boolean; // 主会话稳定历史软预算变化，仅在主投影可见时恢复历史。
   reasoningVisibilityChanged: boolean; // 推理摘要可见性变化，需要更新渲染。
   skillCatalogContextRatioChanged: boolean; // 技能目录预算变化，使旧上下文用量失效。
   slashSuggestionLimitChanged: boolean; // slash 建议列表高度预算变化。
@@ -255,6 +256,7 @@ class AppContext {
       model,
       pendingMessage: this.pendingMessageContext.getRenderState(),
       renderPreferences: {
+        historyRenderLineLimit: appSettings.historyRenderLineLimit,
         showReasoningSummary: appSettings.showReasoningSummary,
         slashSuggestionMaxVisible: appSettings.slashSuggestionMaxVisible
       },
@@ -372,6 +374,7 @@ class AppContext {
     const previous = this.appSettingsSnapshot.getAppSettings();
     const next = snapshot.getAppSettings();
     const agentInstructionFileChanged = next.agentInstructionFileName !== previous.agentInstructionFileName;
+    const historyRenderLineLimitChanged = next.historyRenderLineLimit !== previous.historyRenderLineLimit;
     const reasoningVisibilityChanged = next.showReasoningSummary !== previous.showReasoningSummary;
     const skillCatalogContextRatioChanged = next.skillCatalogContextRatio !== previous.skillCatalogContextRatio;
     const slashSuggestionLimitChanged = next.slashSuggestionMaxVisible !== previous.slashSuggestionMaxVisible;
@@ -383,7 +386,7 @@ class AppContext {
     if (agentInstructionFileChanged || skillCatalogContextRatioChanged) {
       this.clearContextUsage();
     }
-    return {agentInstructionFileChanged, reasoningVisibilityChanged, skillCatalogContextRatioChanged, slashSuggestionLimitChanged, mouseInteractionChanged, toolApprovalChanged};
+    return {agentInstructionFileChanged, historyRenderLineLimitChanged, reasoningVisibilityChanged, skillCatalogContextRatioChanged, slashSuggestionLimitChanged, mouseInteractionChanged, toolApprovalChanged};
   }
 
   /**

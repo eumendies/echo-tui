@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const { INPUT_EVENTS } = require('../../src/input/event-types');
 const { displayWidth, stripAnsi } = require('../../src/render/layout');
 const { createInitialAppearanceConfigState, createInitialConfigState, createInitialGeneralConfigState, getConfigRows, getGeneralConfigRowIds } = require('../../src/commands/config/state');
-const {DEFAULT_APP_SETTINGS} = require('../../src/config/app-settings-config');
+const {DEFAULT_APP_SETTINGS, HISTORY_RENDER_LINE_LIMIT_OPTIONS} = require('../../src/config/app-settings-config');
 const { handleConfigPanelEvent } = require('../../src/commands/config/panel-state');
 const { listProviderPresets } = require('../../src/config/provider-presets');
 const { renderConfigSurface } = require('../../src/render/footer/config-surface');
@@ -168,6 +168,7 @@ function nextState(state, event) {
 
 test('config center renders general tabs, settings, and constrained width', () => {
   const state = createInitialGeneralConfigState({
+    ...DEFAULT_APP_SETTINGS,
     activeTurnMessagePolicy: 'pending',
     agentInstructionFileName: 'CLAUDE.md',
     autoCompressImages: true,
@@ -230,8 +231,84 @@ test('config center renders Chinese message policies and bounded tool safety hin
   }
 });
 
+test('config center renders history budget presets with one concise recovery hint without mutating drafts', () => {
+  for (const historyRenderLineLimit of HISTORY_RENDER_LINE_LIMIT_OPTIONS) {
+    const state = createInitialGeneralConfigState({...DEFAULT_APP_SETTINGS, historyRenderLineLimit});
+    state.selectedIndex = getGeneralConfigRowIds(state).indexOf('historyRenderLineLimit');
+    const original = structuredClone(state);
+    const surface = {kind: 'config', view: 'general', activeTab: 'general', tabs: [{id: 'general', label: '常规'}], state};
+    const layout = renderConfigSurface(surface, 100, {maxLines: 12});
+    const text = layout.lines.map(stripAnsi).join('\n');
+    assert.match(text, historyRenderLineLimit === 0
+      ? /历史重绘预算\s+不限/
+      : new RegExp(`历史重绘预算\\s+约 ${historyRenderLineLimit.toLocaleString('en-US')} 行`));
+    const hintLines = layout.lines.map(stripAnsi).filter((line) => line.includes('控制恢复会话时'));
+    assert.equal(hintLines.length, 1);
+    assert.match(hintLines[0], /控制恢复会话时渲染的消息行数，不影响模型上下文；回看受终端滚动历史上限限制/);
+    assert.doesNotMatch(text, /软预算|完整消息块|大历史可能较慢/);
+    assert.ok(layout.lines.length <= 12);
+    assert.ok(layout.lines.every((line) => displayWidth(line) <= 92));
+    assert.deepEqual(state, original);
+    state.selectedIndex = getGeneralConfigRowIds(state).indexOf('reasoningSummary');
+    const otherText = renderConfigSurface(surface, 100).lines.map(stripAnsi).join('\n');
+    assert.doesNotMatch(otherText, /软预算|不影响模型上下文|终端滚动历史|大历史可能较慢/);
+  }
+});
+
+test('general config windows preserve every selected row at tiny heights with history hints and feedback', () => {
+  const labels = {
+    compactionThreshold: '自动压缩阈值', skillCatalogRatio: '技能列表上下文占比上限',
+    slashSuggestionLimit: 'Slash 建议最多显示', reasoningSummary: '显示推理摘要',
+    historyRenderLineLimit: '历史重绘预算', mouseInteraction: 'UI 鼠标交互',
+    defaultInteractionMode: '默认启动模式', autoCompressImages: '超限图片自动压缩',
+    checkUpdatesOnStartup: '启动时检查更新', toolApprovalMode: '工具审批模式',
+    toolApprovalModel: '自动审批模型', instructionFile: '项目指令文件',
+    activeTurnMessagePolicy: '响应期间发送消息', save: '保存常规设置'
+  };
+  for (const toolApprovalMode of ['manual', 'auto']) {
+    const state = createInitialGeneralConfigState({...DEFAULT_APP_SETTINGS, historyRenderLineLimit: 0, toolApprovalMode});
+    for (const feedback of [{}, {error: '预算草稿无效'}, {feedback: '✓ 常规设置已保存'}]) {
+      Object.assign(state, {error: undefined, feedback: undefined}, feedback);
+      for (const [index, rowId] of getGeneralConfigRowIds(state).entries()) {
+        state.selectedIndex = index;
+        const surface = {kind: 'config', view: 'general', activeTab: 'general', tabs: [{id: 'general', label: '常规'}], state};
+        for (const maxLines of [1, 2, 3, 4, 5, 6, 7, 8, 10]) {
+          const layout = renderConfigSurface(surface, 70, {maxLines});
+          const focusLines = layout.lines.map(stripAnsi).filter((line) => line.includes('▌'));
+          // errorLine 也有弱化竖线；真实焦点必须对应选中设置，不把它误认成错误提示。
+          assert.equal(focusLines.filter((line) => line.includes(labels[rowId])).length, 1, `${rowId}, height=${maxLines}`);
+          assert.ok(layout.lines.length <= maxLines);
+          assert.ok(layout.lines.every((line) => displayWidth(line) <= 66));
+          assert.equal(layout.hitRegions, undefined);
+          const feedbackText = state.error || state.feedback;
+          if (feedbackText) {
+            assert.equal(layout.lines.some((line) => stripAnsi(line).includes(feedbackText)), maxLines >= 6);
+          }
+          const hasHint = rowId === 'historyRenderLineLimit' || rowId === 'activeTurnMessagePolicy';
+          const minimumHintHeight = state.error || state.feedback ? 7 : 6;
+          const hintLines = layout.lines.map(stripAnsi).filter((line) => /控制恢复会话时|下一轮生效/.test(line));
+          assert.equal(hintLines.length, hasHint && maxLines >= minimumHintHeight ? 1 : 0, `${rowId}, height=${maxLines}`);
+        }
+      }
+    }
+  }
+});
+
+test('history budget selected row stays visible at narrow widths and bounded height', () => {
+  const state = createInitialGeneralConfigState({...DEFAULT_APP_SETTINGS, historyRenderLineLimit: 0});
+  state.selectedIndex = getGeneralConfigRowIds(state).indexOf('historyRenderLineLimit');
+  const surface = {kind: 'config', view: 'general', activeTab: 'general', tabs: [{id: 'general', label: '常规'}], state};
+  for (const columns of [24, 42, 70]) {
+    const layout = renderConfigSurface(surface, columns, {maxLines: 10});
+    assert.match(layout.lines.map(stripAnsi).join('\n'), /▌.*历史重绘预算/);
+    assert.ok(layout.lines.length <= 10);
+    assert.ok(layout.lines.every((line) => displayWidth(line) <= columns - 4));
+  }
+});
+
 test('config center highlights active tab with foreground color only', () => {
   const state = createInitialGeneralConfigState({
+    ...DEFAULT_APP_SETTINGS,
     activeTurnMessagePolicy: 'pending',
     agentInstructionFileName: 'AGENTS.md',
     autoCompressImages: false,
@@ -263,6 +340,7 @@ test('config center highlights active tab with foreground color only', () => {
 
 test('config center only renders approval model for auto draft', () => {
   const settings = {
+    ...DEFAULT_APP_SETTINGS,
     activeTurnMessagePolicy: 'pending',
     agentInstructionFileName: 'AGENTS.md',
     autoCompressImages: true,
@@ -298,6 +376,7 @@ test('config center only renders approval model for auto draft', () => {
 
 test('config center renders approval API model name and provider without the profile id', () => {
   const state = createInitialGeneralConfigState({
+    ...DEFAULT_APP_SETTINGS,
     agentInstructionFileName: 'AGENTS.md',
     autoCompressImages: true,
     checkUpdatesOnStartup: true,
@@ -326,6 +405,7 @@ test('config center renders approval API model name and provider without the pro
 
 test('config center separates a selected approval model from its label at constrained width', () => {
   const state = createInitialGeneralConfigState({
+    ...DEFAULT_APP_SETTINGS,
     agentInstructionFileName: 'AGENTS.md',
     autoCompressImages: true,
     checkUpdatesOnStartup: true,

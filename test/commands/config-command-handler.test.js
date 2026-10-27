@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const { INPUT_EVENTS } = require('../../src/input/event-types');
-const { createInitialConfigState, getConfigRows } = require('../../src/commands/config/state');
+const { createInitialConfigState, getConfigRows, getGeneralConfigRowIds } = require('../../src/commands/config/state');
 const { handleConfigPanelEvent } = require('../../src/commands/config/panel-state');
 const { listProviderPresets } = require('../../src/config/provider-presets');
 
@@ -431,7 +431,10 @@ test('config command state returns validation error instead of saving invalid dr
 
 const {ConfigCommandHandler} = require('../../src/commands/config/handler');
 const {createCommandRuntime} = require('../../src/app/command/command-runtime');
-const {DEFAULT_APP_SETTINGS} = require('../../src/config/app-settings-config');
+const {DEFAULT_APP_SETTINGS, HISTORY_RENDER_LINE_LIMIT_OPTIONS} = require('../../src/config/app-settings-config');
+const {UserConfigContext} = require('../../src/config/user-config-context');
+const {renderConfigSurface} = require('../../src/render/footer/config-surface');
+const {stripAnsi} = require('../../src/render/layout');
 
 const {parseMainAgentToolsConfig} = require('../../src/config/main-agent-tools-config');
 
@@ -685,4 +688,219 @@ test('model editor buffer and local Esc behavior survive switching through tools
   assert.equal(driver.surface().state.mode, 'list');
   await driver.send(INPUT_EVENTS.ESCAPE);
   assert.deepEqual(driver.surface().dirtyTabs, ['工具']);
+});
+
+function createHistoryBudgetDriver(options = {}) {
+  const storage = {raw: JSON.stringify({ui: {future: 'kept'}, unknown: {kept: true}}), writes: [], renames: []};
+  const context = new UserConfigContext({
+    configPath: '/tmp/echo-history-budget/config.json',
+    createTempPath: (target) => `${target}.tmp`,
+    mkdir() {},
+    readFile() { return storage.raw; },
+    writeFile(filePath, value) {
+      if (options.failure === 'write') throw new Error('不能写入配置');
+      storage.writes.push([filePath, value]);
+    },
+    rename(from, to) {
+      if (options.failure === 'rename') throw new Error('不能替换配置');
+      storage.renames.push([from, to]);
+      storage.raw = storage.writes.at(-1)[1];
+    }
+  });
+  const handler = new ConfigCommandHandler();
+  const runtime = createCommandRuntime({
+    resolveSlashCommand: () => handler,
+    host: {
+      ui: {render() {}, exit() {}},
+      theme: {listThemes: () => []},
+      config: {
+        readSettings: () => context.capture().getAppSettingsDraft(),
+        listApprovalModelProfiles: () => [],
+        readDraft: createDraft,
+        readToolsDraft: () => ({disabledTools: []}),
+        listToolCatalog: () => [],
+        readSandboxDraft: () => ({mode: 'off', network: false, extraWritablePaths: []}),
+        saveSettings(draft) {
+          try {
+            context.saveAppSettingsDraft(draft);
+            return {ok: true};
+          } catch (error) {
+            return {ok: false, error: error.message};
+          }
+        }
+      }
+    }
+  });
+  runtime.startFromText('/config');
+  const surface = () => runtime.getSurface();
+  const send = (type, value) => runtime.handleEvent(value === undefined ? {type} : {type, value});
+  return {
+    context, storage, runtime, surface, send,
+    async select(rowId) {
+      assert.equal(surface().view, 'general');
+      const target = getGeneralConfigRowIds(surface().state).indexOf(rowId);
+      assert.ok(target >= 0, rowId);
+      const distance = target - surface().state.selectedIndex;
+      for (let index = 0; index < Math.abs(distance); index += 1) {
+        await send(distance < 0 ? INPUT_EVENTS.MOVE_UP : INPUT_EVENTS.MOVE_DOWN);
+      }
+      assert.equal(surface().state.selectedIndex, target);
+    },
+    async tab(id) {
+      for (let count = 0; count < 5 && surface().activeTab !== id; count += 1) await send(INPUT_EVENTS.TAB);
+      assert.equal(surface().activeTab, id);
+    }
+  };
+}
+
+test('history budget moves between ordered draft presets without wrapping or applying before save', async (t) => {
+  const driver = createHistoryBudgetDriver();
+  t.after(() => driver.context.close());
+  const snapshot = driver.context.capture();
+  await driver.select('historyRenderLineLimit');
+  const baseline = driver.surface().state.initialDraftFingerprint;
+  await driver.send(INPUT_EVENTS.MOVE_LEFT);
+  assert.equal(driver.surface().state.draft.historyRenderLineLimit, 500);
+  await driver.send(INPUT_EVENTS.MOVE_LEFT);
+  assert.equal(driver.surface().state.draft.historyRenderLineLimit, 500);
+  for (const value of HISTORY_RENDER_LINE_LIMIT_OPTIONS.slice(1)) {
+    await driver.send(INPUT_EVENTS.MOVE_RIGHT);
+    assert.equal(driver.surface().state.draft.historyRenderLineLimit, value);
+    assert.equal(driver.surface().tabs.find((tab) => tab.id === 'general').status, value === 1000 ? undefined : 'dirty');
+    assert.equal(driver.surface().state.initialDraftFingerprint, baseline);
+    assert.equal(driver.context.capture(), snapshot);
+  }
+  await driver.send(INPUT_EVENTS.MOVE_RIGHT);
+  await driver.send(INPUT_EVENTS.SUBMIT);
+  assert.equal(driver.surface().state.draft.historyRenderLineLimit, 0);
+  assert.equal(driver.storage.writes.length, 0);
+  for (const value of [...HISTORY_RENDER_LINE_LIMIT_OPTIONS].reverse().slice(1)) {
+    await driver.send(INPUT_EVENTS.MOVE_LEFT);
+    assert.equal(driver.surface().state.draft.historyRenderLineLimit, value);
+  }
+  assert.equal(snapshot.getAppSettings().historyRenderLineLimit, 1000);
+});
+
+test('history budget draft survives tabs and explicit save merges latest root without saving other tabs', async (t) => {
+  const driver = createHistoryBudgetDriver();
+  t.after(() => driver.context.close());
+  const snapshot = driver.context.capture();
+  await driver.select('historyRenderLineLimit');
+  for (let index = 0; index < 4; index += 1) await driver.send(INPUT_EVENTS.MOVE_RIGHT);
+  const general = driver.surface().state;
+  assert.equal(general.draft.historyRenderLineLimit, 0);
+  await driver.tab('models');
+  await driver.send(INPUT_EVENTS.SUBMIT);
+  await driver.send(INPUT_EVENTS.MOVE_DOWN);
+  await driver.send(INPUT_EVENTS.SUBMIT);
+  await driver.send(INPUT_EVENTS.TEXT, 'unsaved provider');
+  await driver.send(INPUT_EVENTS.SUBMIT);
+  const models = driver.surface().state;
+  await driver.tab('tools');
+  await driver.tab('sandbox');
+  await driver.tab('appearance');
+  await driver.tab('general');
+  assert.deepEqual(driver.surface().state, general);
+  assert.equal(driver.storage.writes.length, 0);
+  assert.equal(driver.context.capture(), snapshot);
+  driver.storage.raw = JSON.stringify({ui: {future: 'external', sibling: 42}, unknown: {kept: true}, tools: {future: true}});
+  await driver.select('save');
+  const saveIndex = driver.surface().state.selectedIndex;
+  await driver.send(INPUT_EVENTS.SUBMIT);
+  assert.equal(driver.runtime.hasActiveSession(), true);
+  assert.equal(driver.surface().view, 'general');
+  assert.equal(driver.surface().state.selectedIndex, saveIndex);
+  assert.match(driver.surface().state.feedback, /常规设置已保存/);
+  assert.equal(driver.surface().state.initialDraftFingerprint, JSON.stringify(driver.surface().state.draft));
+  assert.equal(driver.surface().tabs.find((tab) => tab.id === 'general').status, undefined);
+  assert.equal(driver.surface().tabs.find((tab) => tab.id === 'models').status, 'dirty');
+  assert.equal(driver.context.capture().getAppSettings().historyRenderLineLimit, 0);
+  assert.equal(snapshot.getAppSettings().historyRenderLineLimit, 1000);
+  assert.equal(driver.storage.writes.length, 1);
+  assert.deepEqual(driver.storage.renames, [['/tmp/echo-history-budget/config.json.tmp', '/tmp/echo-history-budget/config.json']]);
+  const saved = JSON.parse(driver.storage.raw);
+  assert.equal(saved.ui.historyRenderLineLimit, 0);
+  assert.equal(saved.ui.future, 'external');
+  assert.equal(saved.ui.sibling, 42);
+  assert.deepEqual(saved.unknown, {kept: true});
+  assert.deepEqual(saved.tools.future, true);
+  assert.equal(saved.llm, undefined);
+  await driver.tab('models');
+  assert.deepEqual(driver.surface().state, models);
+});
+
+test('history budget dirty guard returns to editing or discards without changing runtime or disk', async (t) => {
+  const driver = createHistoryBudgetDriver();
+  t.after(() => driver.context.close());
+  const raw = driver.storage.raw;
+  const snapshot = driver.context.capture();
+  await driver.select('historyRenderLineLimit');
+  await driver.send(INPUT_EVENTS.MOVE_RIGHT);
+  const general = driver.surface().state;
+  await driver.tab('appearance');
+  await driver.send(INPUT_EVENTS.ESCAPE);
+  assert.equal(driver.surface().view, 'discardConfirm');
+  assert.deepEqual(driver.surface().dirtyTabs, ['常规']);
+  await driver.send(INPUT_EVENTS.SUBMIT);
+  await driver.tab('general');
+  assert.deepEqual(driver.surface().state, general);
+  await driver.send(INPUT_EVENTS.ESCAPE);
+  await driver.send(INPUT_EVENTS.ESCAPE);
+  assert.deepEqual(driver.surface().state, general);
+  await driver.send(INPUT_EVENTS.ESCAPE);
+  await driver.send(INPUT_EVENTS.MOVE_DOWN);
+  await driver.send(INPUT_EVENTS.SUBMIT);
+  assert.equal(driver.runtime.hasActiveSession(), false);
+  assert.equal(driver.storage.writes.length, 0);
+  assert.equal(driver.storage.raw, raw);
+  assert.equal(driver.context.capture(), snapshot);
+  driver.runtime.startFromText('/config');
+  assert.equal(driver.surface().state.draft.historyRenderLineLimit, 1000);
+  assert.equal(driver.surface().tabs.find((tab) => tab.id === 'general').status, undefined);
+});
+
+test('history budget save failures stay inline and dirty without installing a snapshot', async (t) => {
+  for (const failure of ['write', 'rename']) {
+    const driver = createHistoryBudgetDriver({failure});
+    t.after(() => driver.context.close());
+    const snapshot = driver.context.capture();
+    const raw = driver.storage.raw;
+    await driver.select('historyRenderLineLimit');
+    await driver.send(INPUT_EVENTS.MOVE_RIGHT);
+    const baseline = driver.surface().state.initialDraftFingerprint;
+    await driver.select('save');
+    await driver.send(INPUT_EVENTS.SUBMIT);
+    assert.match(driver.surface().state.error, /不能.*配置/);
+    assert.equal(driver.surface().state.feedback, undefined);
+    assert.equal(driver.surface().state.draft.historyRenderLineLimit, 2000);
+    assert.equal(driver.surface().state.initialDraftFingerprint, baseline);
+    assert.equal(driver.surface().tabs.find((tab) => tab.id === 'general').status, 'dirty');
+    assert.equal(driver.context.capture(), snapshot);
+    assert.equal(driver.storage.raw, raw);
+    assert.equal(driver.storage.renames.length, 0);
+    await driver.send(INPUT_EVENTS.ESCAPE);
+    assert.deepEqual(driver.surface().dirtyTabs, ['常规']);
+  }
+});
+
+test('history budget preserves keyboard focus on small surfaces and ignores unsupported pointer targets', async (t) => {
+  const driver = createHistoryBudgetDriver();
+  t.after(() => driver.context.close());
+  await driver.select('historyRenderLineLimit');
+  await driver.send(INPUT_EVENTS.MOVE_RIGHT);
+  const surface = driver.surface();
+  for (const maxLines of [1, 3, 5, 8, 12]) {
+    const layout = renderConfigSurface(surface, 42, {maxLines});
+    const selectedLines = layout.lines.map(stripAnsi).filter((line) => line.includes('▌'));
+    assert.equal(selectedLines.length, 1);
+    assert.match(selectedLines[0], /历史重绘预算.*2,000/);
+    assert.equal(layout.hitRegions, undefined);
+  }
+  assert.equal(driver.runtime.hasPointerHandler(), false);
+  await driver.runtime.handlePointer({kind: 'command_select_option', index: getGeneralConfigRowIds(surface.state).indexOf('save')}, true);
+  assert.deepEqual(driver.surface(), surface);
+  assert.equal(driver.storage.writes.length, 0);
+  await driver.send(INPUT_EVENTS.MOVE_DOWN);
+  assert.equal(getGeneralConfigRowIds(driver.surface().state)[driver.surface().state.selectedIndex], 'mouseInteraction');
+  assert.equal(driver.surface().state.draft.historyRenderLineLimit, 2000);
 });

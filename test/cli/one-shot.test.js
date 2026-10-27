@@ -120,6 +120,30 @@ test('runOnce defaults to headless denial without supplying an interactive quest
   assert.deepEqual(output, ['safe\n']);
 });
 
+test('runOnce ignores the main history display budget and emits the entire response', async () => {
+  const answer = Array.from({length: 1500}, (_, index) => `headless line ${index}`).join('\n');
+  for (const historyRenderLineLimit of [500, 1000, 0]) {
+    const resources = createResources();
+    const output = [];
+    const context = new UserConfigContext({readFile: () => JSON.stringify({ui: {historyRenderLineLimit}})});
+    try {
+      await runOnce({
+        cwd: '/tmp/project', debug: resources.debug, hooks: resources.hooks,
+        mcpManager: resources.mcpManager, process: resources.process,
+        userConfigContext: context, prompt: 'full answer', stdout: {write: (text) => output.push(text)},
+        runAgent: async (session) => {
+          assert.deepEqual(session.records, [{role: 'user', text: 'full answer'}]);
+          assert.deepEqual(session.executionMode, {kind: 'headless', approvalPolicy: 'deny'});
+          return answer;
+        }
+      });
+      assert.deepEqual(output, [`${answer}\n`]);
+    } finally {
+      context.close();
+    }
+  }
+});
+
 test('runOnce shares one non-watching config revision across MCP, hooks, and agent', async () => {
   const resources = createResources();
   let reads = 0;

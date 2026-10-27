@@ -1,6 +1,6 @@
 /**
  * 把稳定 transcript records 投影为终端历史区的 block 与行：tool pair 聚合、subagent run 分组、
- * role dispatch 与展示净化，并维护子 Agent 增量 append 状态；对 app 层暴露渲染函数与状态工厂。
+ * role dispatch、预算后缀选择与展示净化，并维护子 Agent 增量 append 状态；对 app 层暴露渲染函数与状态工厂。
  */
 import {DEFAULT_RENDER_PREFERENCES} from '../config/app-settings-config';
 import {DEFAULT_TUI_THEME} from '../config/theme-config';
@@ -32,9 +32,16 @@ type TranscriptSubagentRunBlock = {
 
 type TranscriptSubagentInterruptedBlock = {
   kind: 'subagent_interrupted'; // 已有过程栏但没有稳定终态的单委派，续写 Esc 合成的取消状态。
+  parentToolCallId: string; // 标识取消状态所续接的过程栏，预算选择时不能把两者拆开。
 };
 
 type TranscriptBlock = TranscriptRecordBlock | TranscriptToolPairBlock | TranscriptSubagentRunBlock | TranscriptSubagentInterruptedBlock;
+
+export type BudgetedTranscriptProjection = {
+  lines: string[]; // 按原始历史顺序输出的完整块后缀，包含块自身的空行。
+  omittedVisibleHistory: boolean; // 仅在预算确实排除了更早可见块时为真，不统计未排版前缀的行数。
+  renderedSubagentRunIds: Set<string>; // 本次实际写出过程栏标题的 run，用于恢复后续 append 的 continuation 状态。
+};
 
 export type SubagentAppendRenderState = {
   parentToolCallIdsByRun: Map<string, string>; // 子运行与外层 call 的轻量关联，逐出时保留活动运行身份而不保留原始记录。
@@ -150,6 +157,7 @@ export function pruneSubagentAppendState(state: SubagentAppendRenderState, recor
 /**
  * 快照/重放路径按 records 重建子 Agent 增量 append 状态：run 身份、终态与单委派/并行集合，
  * 以及当前活跃 run 的 pending 内部调用；主会话可保留仍驻留或活动的并行身份，防止 start 被逐出后泄漏过程栏。
+ * 标题暂按全部记录恢复；预算投影完成后，调用方用实际输出集合替换 runIds，避免把预算外 run 误记为已输出。
  */
 export function rebuildSubagentAppendState(state: SubagentAppendRenderState, records: TranscriptRecord[], activeSubagentRunIds: readonly string[] = [], preserveRunIdentity = false): void {
   if (preserveRunIdentity) {
@@ -200,6 +208,87 @@ export function renderTranscriptLines(
   }
 
   return lines;
+}
+
+/**
+ * 在既有可见性与分组之上从尾部按当前宽度排版，按 render preferences 的预算保留完整边界单元；零表示不限。
+ * 主窗口的并行过程及 footer pending 仍由调用方先过滤；这里只访问选中单元的正文，不排版被省略的旧前缀。
+ * 返回的标题集合只描述本帧实际输出，不替代从全量驻留元数据恢复的 run 身份与终态。
+ */
+export function renderBudgetedTranscriptLines(
+  records: TranscriptRecord[] = [],
+  width = 80,
+  theme: RenderState['theme'] = DEFAULT_TUI_THEME,
+  renderPreferences: RenderState['renderPreferences'] = DEFAULT_RENDER_PREFERENCES,
+  activeSubagentRunId?: string
+): BudgetedTranscriptProjection {
+  const {historyRenderLineLimit, showReasoningSummary} = renderPreferences;
+  const visibleRecords = showReasoningSummary
+    ? records
+    : records.filter((record) => record.role !== 'reasoning_summary');
+  const blocks = groupTranscriptRecords(visibleRecords, true, undefined, activeSubagentRunId);
+  const units = createTranscriptSelectionUnits(blocks);
+  const selectedLines: string[][] = [];
+  const renderedSubagentRunIds = new Set<string>();
+  let lineCount = 0;
+  let firstSelectedUnit = units.length;
+
+  for (let index = units.length - 1; index >= 0; index -= 1) {
+    if (historyRenderLineLimit > 0 && lineCount >= historyRenderLineLimit) break;
+    const unitLines: string[] = [];
+    for (const block of units[index]) {
+      const rendered = renderTranscriptBlock(block, width, theme);
+      if (rendered.length === 0) continue;
+      unitLines.push(...splitRenderedBlock(rendered));
+      if (block.kind === 'subagent_run') renderedSubagentRunIds.add(block.records[0].runId);
+    }
+    lineCount += unitLines.length;
+    selectedLines.push(unitLines);
+    firstSelectedUnit = index;
+  }
+
+  return {
+    lines: selectedLines.reverse().flat(),
+    omittedVisibleHistory: firstSelectedUnit > 0,
+    renderedSubagentRunIds
+  };
+}
+
+/**
+ * 折叠外层结果与合成取消状态依赖既有过程栏；将两端及中间块合为连续选择单元，重叠区间自动并合。
+ * 仅检查驻留块的身份，不读取报告正文，也不改变原分组器的工具配对、终态或并行规则。
+ */
+function createTranscriptSelectionUnits(blocks: TranscriptBlock[]): TranscriptBlock[][] {
+  const firstRailByCallId = new Map<string, number>();
+  const dependencyEnds = blocks.map((_, index) => index);
+  for (let index = 0; index < blocks.length; index += 1) {
+    const block = blocks[index];
+    if (block.kind !== 'subagent_run') continue;
+    const callId = block.records[0].parentToolCallId;
+    if (!firstRailByCallId.has(callId)) firstRailByCallId.set(callId, index);
+  }
+  for (let index = 0; index < blocks.length; index += 1) {
+    const block = blocks[index];
+    const callId = block.kind === 'subagent_interrupted'
+      ? block.parentToolCallId
+      : block.kind === 'tool_pair' && block.compactSubagentResult && block.result.toolName === 'run_subagent'
+        ? block.call.toolCallId
+        : undefined;
+    if (callId === undefined) continue;
+    const railIndex = firstRailByCallId.get(callId);
+    if (railIndex === undefined) continue;
+    const start = Math.min(railIndex, index);
+    dependencyEnds[start] = Math.max(dependencyEnds[start], railIndex, index);
+  }
+
+  const units: TranscriptBlock[][] = [];
+  for (let start = 0; start < blocks.length;) {
+    let end = dependencyEnds[start];
+    for (let index = start + 1; index <= end; index += 1) end = Math.max(end, dependencyEnds[index]);
+    units.push(blocks.slice(start, end + 1));
+    start = end + 1;
+  }
+  return units;
 }
 
 /**
@@ -293,6 +382,7 @@ export function filterPendingSubagentToolCallRecords(records: TranscriptRecord[]
 /**
  * 顺序扫描 transcript，把相邻且同 call id 的工具调用和结果聚合为一个渲染块；
  * 单委派已出现 start 且结果为合成中断时，以过程栏取消终态代替外层工具对。
+ * 不可见 role 不输出候选块，但其物理位置仍可隔开相邻工具对与 run 分组。
  */
 function groupTranscriptRecords(records: TranscriptRecord[], showUnexpectedSubagentInterruption = false, knownTerminalCallIds?: Set<string>, activeSubagentRunId?: string, knownParallelToolCallIds?: Set<string>, knownLocalToolCallIds?: Set<string>): TranscriptBlock[] {
   const blocks: TranscriptBlock[] = [];
@@ -353,7 +443,7 @@ function groupTranscriptRecords(records: TranscriptRecord[], showUnexpectedSubag
       if (interruptedLocalCallIds.has(record.toolCallId)) {
         // 收到真实取消终态的路径已有 rail 状态；否则只补一条同栏状态，避免伪造运行耗时。
         if (!subagentTerminalCallIds.has(record.toolCallId)) {
-          blocks.push({kind: 'subagent_interrupted'});
+          blocks.push({kind: 'subagent_interrupted', parentToolCallId: record.toolCallId});
         }
         index += 1;
         continue;
@@ -369,7 +459,8 @@ function groupTranscriptRecords(records: TranscriptRecord[], showUnexpectedSubag
       continue;
     }
 
-    blocks.push({ kind: 'record', record });
+    // 不可见记录仍参与相邻边界判断，但不成为预算候选，也无需净化或排版正文。
+    if (record.role !== 'system' && record.role !== 'extension') blocks.push({ kind: 'record', record });
   }
 
   return blocks;

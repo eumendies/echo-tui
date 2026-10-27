@@ -480,7 +480,8 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
         if (!initialRenderComplete) {
           return;
         }
-        if (settingsRefresh?.reasoningVisibilityChanged) {
+        if (settingsRefresh?.reasoningVisibilityChanged
+          || (settingsRefresh?.historyRenderLineLimitChanged && renderCoordinator.currentOwner() === 'main')) {
           renderCoordinator.renderResizeRecovery();
         } else if (modelChanged || settingsRefresh?.slashSuggestionLimitChanged || settingsRefresh?.mouseInteractionChanged) {
           renderCoordinator.render();

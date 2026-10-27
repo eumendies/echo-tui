@@ -8,6 +8,7 @@ type AppSettings = {
   checkUpdatesOnStartup: boolean; // 控制启动时是否检查 echo-tui 新版本，持久化为 updates.checkOnStartup。
   compactionThresholdRatio: number;
   defaultInteractionMode: DefaultInteractionMode;
+  historyRenderLineLimit: number; // 主会话破坏性重绘的历史行数软预算；0 表示不限，完整消息块可超限。
   mouseInteractionEnabled: boolean; // 控制 TUI 是否启用终端鼠标报告、hover 与点击交互。
   skillCatalogContextRatio: number;
   showReasoningSummary: boolean;
@@ -24,7 +25,7 @@ type ToolApprovalSettings = {
   modelProfileId?: string; // auto 模式使用的本地模型 profile id。
 };
 
-type AppRenderPreferences = Pick<AppSettings, 'showReasoningSummary' | 'slashSuggestionMaxVisible'>;
+type AppRenderPreferences = Pick<AppSettings, 'historyRenderLineLimit' | 'showReasoningSummary' | 'slashSuggestionMaxVisible'>;
 
 type AppSettingsValidationResult =
   | {ok: true}
@@ -37,6 +38,7 @@ const DEFAULT_APP_SETTINGS: Readonly<AppSettings> = {
   checkUpdatesOnStartup: true,
   compactionThresholdRatio: 0.8,
   defaultInteractionMode: 'normal',
+  historyRenderLineLimit: 1000,
   mouseInteractionEnabled: false,
   skillCatalogContextRatio: 0.02,
   showReasoningSummary: true,
@@ -44,6 +46,7 @@ const DEFAULT_APP_SETTINGS: Readonly<AppSettings> = {
   toolApprovalMode: 'manual'
 };
 const DEFAULT_RENDER_PREFERENCES: Readonly<AppRenderPreferences> = {
+  historyRenderLineLimit: DEFAULT_APP_SETTINGS.historyRenderLineLimit,
   showReasoningSummary: DEFAULT_APP_SETTINGS.showReasoningSummary,
   slashSuggestionMaxVisible: DEFAULT_APP_SETTINGS.slashSuggestionMaxVisible
 };
@@ -53,6 +56,7 @@ const MIN_SKILL_CATALOG_CONTEXT_RATIO = 0.01;
 const MAX_SKILL_CATALOG_CONTEXT_RATIO = 0.1;
 const MIN_SLASH_SUGGESTION_MAX_VISIBLE = 1;
 const MAX_SLASH_SUGGESTION_MAX_VISIBLE = 20;
+const HISTORY_RENDER_LINE_LIMIT_OPTIONS: readonly number[] = Object.freeze([500, 1000, 2000, 5000, 10000, 0]);
 
 /**
  * 校验面板草稿范围，确保写入后的值能被运行时无损读取。
@@ -100,6 +104,10 @@ function validateAppSettingsDraft(draft: AppSettings, modelProfileIds?: Readonly
     return {ok: false, error: 'Reasoning summary 显示设置必须是布尔值'};
   }
 
+  if (!isHistoryRenderLineLimit(draft.historyRenderLineLimit)) {
+    return {ok: false, error: '历史重绘预算必须是 500、1000、2000、5000、10000 行或 0（不限）'};
+  }
+
   if (!isToolApprovalMode(draft.toolApprovalMode)) {
     return {ok: false, error: '工具审批模式必须是 manual 或 auto'};
   }
@@ -141,6 +149,7 @@ function applyAppSettingsDraft(rootConfig: UserConfigSource, draft: AppSettings)
   skills.catalogContextRatio = draft.skillCatalogContextRatio;
   ui.activeTurnMessagePolicy = draft.activeTurnMessagePolicy;
   ui.defaultInteractionMode = draft.defaultInteractionMode;
+  ui.historyRenderLineLimit = draft.historyRenderLineLimit;
   ui.mouseInteractionEnabled = draft.mouseInteractionEnabled;
   ui.slashSuggestionMaxVisible = draft.slashSuggestionMaxVisible;
   ui.showReasoningSummary = draft.showReasoningSummary;
@@ -192,6 +201,9 @@ function normalizeAppSettings(rootConfig: UserConfigSource): AppSettings {
     defaultInteractionMode: isDefaultInteractionMode(ui.defaultInteractionMode)
       ? ui.defaultInteractionMode
       : DEFAULT_APP_SETTINGS.defaultInteractionMode,
+    historyRenderLineLimit: isHistoryRenderLineLimit(ui.historyRenderLineLimit)
+      ? ui.historyRenderLineLimit
+      : DEFAULT_APP_SETTINGS.historyRenderLineLimit,
     mouseInteractionEnabled: typeof ui.mouseInteractionEnabled === 'boolean'
       ? ui.mouseInteractionEnabled
       : DEFAULT_APP_SETTINGS.mouseInteractionEnabled,
@@ -229,6 +241,10 @@ function isToolApprovalMode(value: unknown): value is ToolApprovalMode {
   return value === 'manual' || value === 'auto';
 }
 
+function isHistoryRenderLineLimit(value: unknown): value is number {
+  return typeof value === 'number' && HISTORY_RENDER_LINE_LIMIT_OPTIONS.includes(value);
+}
+
 /**
  * 从同一份持久化配置提取可引用的模型 id，避免 auto 设置在保存时接受陈旧草稿。
  */
@@ -249,6 +265,7 @@ function isPlainObject(value: unknown): value is UserConfigSource {
 export {
   DEFAULT_APP_SETTINGS,
   DEFAULT_RENDER_PREFERENCES,
+  HISTORY_RENDER_LINE_LIMIT_OPTIONS,
   MAX_COMPACTION_THRESHOLD_RATIO,
   MAX_SKILL_CATALOG_CONTEXT_RATIO,
   MAX_SLASH_SUGGESTION_MAX_VISIBLE,
