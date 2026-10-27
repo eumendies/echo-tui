@@ -55,6 +55,7 @@ function createConfigRootFromAppSettings(settings) {
     ui: {
       defaultInteractionMode: settings.defaultInteractionMode,
       mouseInteractionEnabled: settings.mouseInteractionEnabled,
+      historyRenderLineLimit: settings.historyRenderLineLimit,
       showReasoningSummary: settings.showReasoningSummary,
       slashSuggestionMaxVisible: settings.slashSuggestionMaxVisible
     }
@@ -839,6 +840,7 @@ test('AppContext snapshots app settings into render state and agent sessions', (
       autoCompressImages: false,
       compactionThresholdRatio: 0.65,
       defaultInteractionMode: 'plan',
+      historyRenderLineLimit: 500,
       mouseInteractionEnabled: true,
       skillCatalogContextRatio: 0.04,
       showReasoningSummary: false,
@@ -849,6 +851,7 @@ test('AppContext snapshots app settings into render state and agent sessions', (
   });
 
   assert.deepEqual(context.createRenderState().renderPreferences, {
+    historyRenderLineLimit: 500,
     showReasoningSummary: false,
     slashSuggestionMaxVisible: 3
   });
@@ -883,6 +886,7 @@ test('AppContext refreshes external app settings and classifies redraw impact', 
 
     assert.deepEqual(result, {
       agentInstructionFileChanged: true,
+      historyRenderLineLimitChanged: false,
       reasoningVisibilityChanged: true,
       skillCatalogContextRatioChanged: true,
       slashSuggestionLimitChanged: true,
@@ -896,6 +900,7 @@ test('AppContext refreshes external app settings and classifies redraw impact', 
     assert.equal(context.isMouseInteractionEnabled(), true);
     assert.equal(context.getContextUsage(), null);
     assert.deepEqual(context.createRenderState().renderPreferences, {
+      historyRenderLineLimit: 1000,
       showReasoningSummary: false,
       slashSuggestionMaxVisible: 4
     });
@@ -924,6 +929,7 @@ test('AppContext refreshes image compression without clearing context usage or r
 
     assert.deepEqual(context.applyAppSettingsSnapshot(userConfigContext.refresh().snapshot), {
       agentInstructionFileChanged: false,
+      historyRenderLineLimitChanged: false,
       reasoningVisibilityChanged: false,
       skillCatalogContextRatioChanged: false,
       slashSuggestionLimitChanged: false,
@@ -937,6 +943,117 @@ test('AppContext refreshes image compression without clearing context usage or r
   } finally {
     os.homedir = originalHomedir;
     fs.rmSync(homeDir, {recursive: true, force: true});
+  }
+});
+
+test('AppContext budget snapshots change display only and preserve active session boundaries without hot-path reads', () => {
+  let root = {ui: {historyRenderLineLimit: 1000}};
+  let configReads = 0;
+  const userConfigContext = new UserConfigContext({readFile() {
+    configReads += 1;
+    return JSON.stringify(root);
+  }});
+  const transcriptStore = createFakeTranscriptStore();
+  const context = createContext({userConfigContext, transcriptStore});
+  context.transcriptContext.appendRecord({role: 'user', text: 'archived request'});
+  context.transcriptContext.applyCompaction({summaryText: 'archived summary', activeStartIndex: 1, createdAt: '2026-05-19T00:00:00.000Z'});
+  context.beginChangeCheckpoint();
+  context.beginUserTurn('active request');
+  context.composerContext.recordInput('active request');
+  context.composerContext.setText('unsent draft');
+  context.transcriptContext.updateTodoState({items: [{id: 'todo_1', text: 'keep task', status: 'open'}], updatedAt: '2026-05-19T00:00:01.000Z'});
+  const turn = context.beginAssistantTurn();
+  context.turnContext.setStreamingPending('in-flight answer');
+  context.setContextUsage({usedTokens: 1200, contextWindow: 128000, source: 'provider'});
+
+  const {userConfigSnapshot: _snapshot, ...sessionBefore} = context.getAgentSession();
+  const recordsBefore = context.transcriptContext.getResidentRecords();
+  const recordsCopy = structuredClone(recordsBefore);
+  const usageBefore = context.getContextUsage();
+  const journalBefore = structuredClone(transcriptStore.operations);
+  const checkpointBefore = context.changeHistoryContext.getSummary();
+  const countBefore = context.transcriptContext.getRecordCount();
+  const sessionId = context.transcriptContext.getCurrentSessionId();
+  const loadReadOnly = transcriptStore.loadSessionReadOnly;
+  transcriptStore.loadSessionReadOnly = () => { throw new Error('display must not reload archived history'); };
+
+  try {
+    for (const limit of [500, 0, 2000, 1000]) {
+      root = {ui: {historyRenderLineLimit: limit}};
+      const refresh = userConfigContext.refresh();
+      const readsAfterRefresh = configReads;
+      assert.deepEqual(context.applyAppSettingsSnapshot(refresh.snapshot), {
+        agentInstructionFileChanged: false,
+        historyRenderLineLimitChanged: true,
+        reasoningVisibilityChanged: false,
+        skillCatalogContextRatioChanged: false,
+        slashSuggestionLimitChanged: false,
+        mouseInteractionChanged: false,
+        toolApprovalChanged: false
+      });
+      for (let tick = 0; tick < 3; tick += 1) {
+        const state = context.createRenderState();
+        assert.equal(state.renderPreferences.historyRenderLineLimit, limit);
+        assert.deepEqual(state.pending, {kind: 'streaming', text: 'in-flight answer'});
+        const {userConfigSnapshot, ...session} = context.getAgentSession();
+        assert.equal(userConfigSnapshot.revision, refresh.snapshot.revision);
+        assert.deepEqual(session, sessionBefore);
+      }
+      assert.equal(configReads, readsAfterRefresh);
+      assert.strictEqual(context.transcriptContext.getResidentRecords(), recordsBefore);
+      assert.deepEqual(recordsBefore, recordsCopy);
+      assert.equal(context.transcriptContext.baseRecordIndex, 1);
+      assert.equal(context.transcriptContext.getRecordCount(), countBefore);
+      assert.equal(context.transcriptContext.getCurrentSessionId(), sessionId);
+      assert.deepEqual(context.getContextUsage(), usageBefore);
+      assert.deepEqual(context.composerContext.getInputHistory(), ['active request']);
+      assert.equal(context.composerContext.getText(), 'unsent draft');
+      assert.equal(turn.abortSignal.aborted, false);
+      assert.deepEqual(context.changeHistoryContext.getSummary(), checkpointBefore);
+      assert.deepEqual(transcriptStore.operations, journalBefore);
+    }
+  } finally {
+    transcriptStore.loadSessionReadOnly = loadReadOnly;
+    userConfigContext.close();
+  }
+
+  assert.equal(context.transcriptContext.getCompleteRecords()[0].text, 'archived request');
+  context.turnContext.finishAssistantTurn('finished answer');
+  context.finalizeChangeCheckpoint();
+  const completeBeforeFork = context.transcriptContext.getCompleteRecords();
+  const fork = context.forkTranscriptSession();
+  assert.equal(fork.ok, true);
+  assert.deepEqual(transcriptStore.loadSession('/tmp/echo_tui', fork.sessionId).session.records, completeBeforeFork);
+  assert.equal(context.executeUndo().ok, true);
+  assert.deepEqual(context.transcriptContext.getCompleteRecords().map((record) => record.role), ['user', 'compaction_notice']);
+  assert.equal(context.transcriptContext.getRecordCount(), 2);
+});
+
+test('AppContext compares normalized budgets and does not classify invalid same-value snapshots as display changes', () => {
+  let root = {ui: {historyRenderLineLimit: 1000, slashSuggestionMaxVisible: 4}};
+  const userConfigContext = new UserConfigContext({readFile: () => JSON.stringify(root)});
+  const context = createContext({userConfigContext});
+  try {
+    for (const invalid of ['1000', 750, -1, 1.5, null, undefined]) {
+      root = {ui: {historyRenderLineLimit: invalid, slashSuggestionMaxVisible: 4}};
+      const refresh = userConfigContext.refresh();
+      assert.equal(refresh.domains.appSettings, false);
+      const result = context.applyAppSettingsSnapshot(refresh.snapshot);
+      assert.equal(result.historyRenderLineLimitChanged, false);
+      assert.equal(Object.values(result).some(Boolean), false);
+      assert.deepEqual(context.createRenderState().renderPreferences, {
+        historyRenderLineLimit: 1000, showReasoningSummary: true, slashSuggestionMaxVisible: 4
+      });
+    }
+    root = {ui: {historyRenderLineLimit: 0, slashSuggestionMaxVisible: 4}};
+    assert.equal(context.applyAppSettingsSnapshot(userConfigContext.refresh().snapshot).historyRenderLineLimitChanged, true);
+    assert.equal(context.createRenderState().renderPreferences.historyRenderLineLimit, 0);
+    assert.equal(context.applyAppSettingsSnapshot(userConfigContext.capture()).historyRenderLineLimitChanged, false);
+    root.ui.historyRenderLineLimit = '0';
+    assert.equal(context.applyAppSettingsSnapshot(userConfigContext.refresh().snapshot).historyRenderLineLimitChanged, true);
+    assert.equal(context.createRenderState().renderPreferences.historyRenderLineLimit, 1000);
+  } finally {
+    userConfigContext.close();
   }
 });
 

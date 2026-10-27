@@ -46,6 +46,7 @@ const GENERAL_CONFIG_BASE_ROW_IDS = [
   'skillCatalogRatio',
   'slashSuggestionLimit',
   'reasoningSummary',
+  'historyRenderLineLimit',
   'mouseInteraction',
   'defaultInteractionMode',
   'autoCompressImages',

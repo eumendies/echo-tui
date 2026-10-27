@@ -207,19 +207,7 @@ function createFakeHost(options = {}) {
         if (options.settingsReadError) {
           throw new Error(options.settingsReadError);
         }
-        return structuredClone(options.appSettings || {
-          activeTurnMessagePolicy: 'pending',
-          agentInstructionFileName: 'AGENTS.md',
-          autoCompressImages: true,
-          checkUpdatesOnStartup: true,
-          compactionThresholdRatio: 0.8,
-          defaultInteractionMode: 'normal',
-          mouseInteractionEnabled: false,
-          skillCatalogContextRatio: 0.02,
-          showReasoningSummary: true,
-          slashSuggestionMaxVisible: 8,
-          toolApprovalMode: 'manual'
-        });
+        return structuredClone(options.appSettings || DEFAULT_APP_SETTINGS);
       },
       readDraft() {
         if (options.configReadError) {
@@ -1463,7 +1451,7 @@ test('configCommandHandler opens general tab, saves independently, and lazily op
   configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_RIGHT}, host);
   assert.equal(host.session.getActive().surface.state.draft.skillCatalogContextRatio, 0.03);
   assert.equal(calls.savedSettingsDrafts.length, 0);
-  for (let index = 0; index < 3; index += 1) {
+  while (getGeneralConfigRowIds(host.session.getActive().surface.state)[host.session.getActive().surface.state.selectedIndex] !== 'mouseInteraction') {
     configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
   }
   configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_RIGHT}, host);
@@ -1612,6 +1600,27 @@ test('configCommandHandler keeps invalid message policy save errors inline and d
   assert.match(surface.state.error, /响应期间发送消息/);
   assert.equal(surface.state.feedback, undefined);
   assert.equal(surface.tabs.find((tab) => tab.id === 'general').status, 'dirty');
+});
+
+test('configCommandHandler reports invalid history budget drafts without clearing dirty state', async () => {
+  const handler = new ConfigCommandHandler();
+  const {calls, host} = createFakeHost({saveSettings: validateAppSettingsDraft});
+  const session = startCommand(handler, '/config', host);
+  const baseline = session.data.general.state.initialDraftFingerprint;
+  session.data.general.state.draft.historyRenderLineLimit = 750;
+  const saveIndex = getGeneralConfigRowIds(session.data.general.state).indexOf('save');
+  for (let index = 0; index < saveIndex; index += 1) {
+    await handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
+  }
+  await handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
+  const surface = host.session.getActive().surface;
+  assert.match(surface.state.error, /历史重绘预算.*0（不限）/);
+  assert.equal(surface.state.feedback, undefined);
+  assert.equal(surface.state.draft.historyRenderLineLimit, 750);
+  assert.equal(surface.state.initialDraftFingerprint, baseline);
+  assert.equal(surface.state.selectedIndex, saveIndex);
+  assert.equal(surface.tabs.find((tab) => tab.id === 'general').status, 'dirty');
+  assert.equal(calls.sessionCloses, 0);
 });
 
 test('configCommandHandler dynamically shows auto approval model and cycles saved profiles', () => {

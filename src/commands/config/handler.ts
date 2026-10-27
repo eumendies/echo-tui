@@ -1,6 +1,7 @@
 import {isAbsolute} from 'node:path';
 
 import {INPUT_EVENTS} from '../../input/event-types';
+import {HISTORY_RENDER_LINE_LIMIT_OPTIONS} from '../../config/app-settings-config';
 import {
   CONFIG_TABS,
   getGeneralConfigRowIds,
@@ -505,6 +506,10 @@ function adjustGeneralValue(state: GeneralConfigState, direction: number): Gener
     state.draft.slashSuggestionMaxVisible = clamp(state.draft.slashSuggestionMaxVisible + direction, 1, 20);
   } else if (selectedRow === 'reasoningSummary') {
     state.draft.showReasoningSummary = !state.draft.showReasoningSummary;
+  } else if (selectedRow === 'historyRenderLineLimit') {
+    const current = HISTORY_RENDER_LINE_LIMIT_OPTIONS.indexOf(state.draft.historyRenderLineLimit);
+    const next = clamp(current + direction, 0, HISTORY_RENDER_LINE_LIMIT_OPTIONS.length - 1);
+    state.draft.historyRenderLineLimit = HISTORY_RENDER_LINE_LIMIT_OPTIONS[next];
   } else if (selectedRow === 'mouseInteraction') {
     state.draft.mouseInteractionEnabled = !state.draft.mouseInteractionEnabled;
   } else if (selectedRow === 'defaultInteractionMode') {
