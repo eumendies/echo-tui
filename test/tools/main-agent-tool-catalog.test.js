@@ -58,7 +58,10 @@ test('catalog consumes only discovered MCP metadata and exactly matches real reg
   const catalog = createMainAgentToolCatalog({mcpManager, disabledTools: ['mcp__docs__search']});
   const all = prepareAgent({
     config, mcpManager, mainAgentTools: {disabledTools: []},
-    subagentPort: {listDefinitions: () => [], run() { assert.fail('catalog must not delegate'); }}
+    subagentPort: {
+      listDefinitions: () => [{name: 'explorer', description: 'Read-only investigation', executionPolicy: 'readonly_investigation'}],
+      run() { assert.fail('catalog must not delegate'); }
+    }
   });
   assert.deepEqual(new Set(catalog.map(({name}) => name)), new Set(all.registry.listDefinitions().map(({name}) => name)));
   for (const {name} of all.registry.listDefinitions()) {

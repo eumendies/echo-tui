@@ -59,13 +59,23 @@ export function renderAgentsSurface(
   const lineLimit = normalizeLineLimit(maxLines, 1);
   // 预算过小时优先保留正文：不渲染边框、标签页与提示，避免 chrome 挤掉全部内容。
   const showChrome = !Number.isFinite(lineLimit) || lineLimit >= 5;
-  const showTabs = showChrome && surface.mode === 'list';
-  const messageCount = showChrome ? Number(Boolean(surface.error)) + Number(Boolean(surface.feedback)) : 0;
-  // 确认页必须同时显示取消与待确认动作；预算不足时让出 dismiss hint 行，而不是隐藏任一选项。
-  const dropHint = showChrome && surface.mode === 'confirm' && Number.isFinite(lineLimit) && lineLimit < messageCount + 5;
-  const fixedRows = showChrome ? 3 + Number(showTabs) + messageCount - Number(dropHint) : 0;
-  // 不渲染 chrome 的极低预算下只保证选中行可见；有边框时确认页至少保留两个选项。
+  let showTabs = showChrome && surface.mode === 'list';
+  let showHint = showChrome;
   const minimumBodyRows = surface.mode === 'confirm' && showChrome ? 2 : 1;
+  const messages = [
+    ...(surface.notice ? [{text: surface.notice, token: 'warning' as const}] : []),
+    ...(surface.error ? [{text: surface.error, token: 'danger' as const}] : []),
+    ...(surface.feedback ? [{text: surface.feedback, token: 'success' as const}] : [])
+  ];
+  // 极低高度先让出提示与标签页，再裁剪消息；始终给当前焦点（确认页两个动作）保留预算。
+  if (Number.isFinite(lineLimit)) {
+    if (2 + Number(showTabs) + 1 + messages.length + minimumBodyRows > lineLimit) showHint = false;
+    if (2 + Number(showTabs) + Number(showHint) + messages.length + minimumBodyRows > lineLimit) showTabs = false;
+  }
+  const visibleMessages = showChrome
+    ? messages.slice(0, Math.max(0, lineLimit - 2 - Number(showTabs) - Number(showHint) - minimumBodyRows))
+    : [];
+  const fixedRows = showChrome ? 2 + Number(showHint) + Number(showTabs) + visibleMessages.length : 0;
   const bodyBudget = Number.isFinite(lineLimit)
     ? Math.max(minimumBodyRows, lineLimit - fixedRows)
     : AGENTS_DEFAULT_BODY_ROWS;
@@ -73,10 +83,10 @@ export function renderAgentsSurface(
   const lines = [
     ...(showChrome ? [renderTop(boxWidth, normalizeSingleLineText(surface.title), theme, surface.mode === 'list' ? formatStats(surface) : '')] : []),
     ...(showTabs ? [renderTabs(surface, contentWidth, theme)] : []),
+    ...visibleMessages.filter((message) => message.token === 'warning').map((message) => renderMessage(normalizeSingleLineText(message.text), message.token, contentWidth, theme)),
     ...body.rows,
-    ...(showChrome && surface.error ? [renderMessage(normalizeSingleLineText(surface.error), 'danger', contentWidth, theme)] : []),
-    ...(showChrome && surface.feedback ? [renderMessage(normalizeSingleLineText(surface.feedback), 'success', contentWidth, theme)] : []),
-    ...(showChrome && !dropHint ? [renderLine(ansi.dim(clampPlainText(normalizeSingleLineText(surface.dismissHint), contentWidth)), contentWidth, theme)] : []),
+    ...visibleMessages.filter((message) => message.token !== 'warning').map((message) => renderMessage(normalizeSingleLineText(message.text), message.token, contentWidth, theme)),
+    ...(showHint ? [renderLine(ansi.dim(clampPlainText(normalizeSingleLineText(surface.dismissHint), contentWidth)), contentWidth, theme)] : []),
     ...(showChrome ? [renderBottom(boxWidth, theme)] : [])
   ];
 
@@ -87,7 +97,7 @@ export function renderAgentsSurface(
   return {
     lines,
     cursorColumn: body.cursorColumn,
-    cursorRow: Number(showChrome) + Number(showTabs) + body.cursorRow,
+    cursorRow: Number(showChrome) + Number(showTabs) + visibleMessages.filter((message) => message.token === 'warning').length + body.cursorRow,
     showCursor: true
   };
 }
@@ -231,11 +241,12 @@ function renderTabs(surface: AgentsCommandSurface, contentWidth: number, theme: 
   return renderLine(clampStyledParts(labels, '  ', contentWidth), contentWidth, theme);
 }
 
-/** 把当前范围统计压缩到顶栏右侧；空范围仍明确显示 0 Agent。 */
+/** 顶栏统计只描述启用候选而非当前可调用；配置异常时不发布有效启停数量。 */
 function formatStats(surface: AgentsCommandSurface): string {
   const stats = surface.stats;
   if (!stats) return '';
-  return `${stats.agentCount} Agent${stats.issueCount > 0 ? ` · ${stats.issueCount} 异常` : ''}`;
+  if (stats.unavailable) return `配置异常 · 委派不可用 · ${stats.issueCount} 异常`;
+  return `${stats.enabledCount !== undefined ? `${stats.enabledCount} 启用候选 · ${stats.disabledCount ?? 0} 停用` : `${stats.agentCount} Agent`}${stats.issueCount > 0 ? ` · ${stats.issueCount} 异常` : ''}`;
 }
 
 /** 创建包含焦点的紧凑列表窗口；返回未加外框的固定宽度单元格。 */
@@ -250,13 +261,14 @@ function renderListWindowCells(rows: AgentsCommandRow[], selectedIndex: number, 
   });
 }
 
-/** 列表行仅承载身份、状态、来源和 capability，完整运行策略由选中项摘要展示。 */
+/** 列表行独立表达定义选择与启停，完整策略和来源由选中项摘要展示。 */
 function renderListCell(row: AgentsCommandRow, active: boolean, width: number, theme: FooterTheme): string {
   if (row.kind === 'agent') {
     const status = resolveStatus(row.status);
     const source = formatSource(row.sourceKind);
     const capability = formatCapability(row.capability);
-    const detail = `${status.marker} ${status.label} · ${source}${capability ? ` · ${capability}` : ''}`;
+    const enablement = row.enablement ? row.enablement.enabled === undefined ? '启停不可用' : row.enablement.enabled ? '启用' : '停用' : '';
+    const detail = `${status.marker} ${status.label}${enablement ? ` · ${enablement}` : ''} · ${source}${capability ? ` · ${capability}` : ''}`;
     return renderSelectableCell(row.label, detail, active, width, theme, status.token);
   }
   if (row.kind === 'action') {
@@ -585,7 +597,8 @@ function clampCellText(text: string, width: number): string {
   return `${result}…`;
 }
 
-function renderMessage(message: string, token: 'danger' | 'success', contentWidth: number, theme: FooterTheme): string {
+/** 渲染单行结果或全局委派诊断，先清理并裁剪文本以保持卡片宽度。 */
+function renderMessage(message: string, token: 'danger' | 'success' | 'warning', contentWidth: number, theme: FooterTheme): string {
   return renderLine(tokenText(theme, token, clampPlainText(message, contentWidth)), contentWidth, theme);
 }
 

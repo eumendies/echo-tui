@@ -13,6 +13,7 @@ const {disabledObservation} = require('../../src/observation/observation');
 const {UserConfigContext} = require('../../src/config/user-config-context');
 const {AgentAbortError} = require('../../src/types/agent');
 const {createDefaultToolRegistry} = require('../../src/tools/tool-registry');
+const {createToolExecutor} = require('../../src/tools/tool-executor');
 const {createToolCallTranscriptRecord, createToolResultTranscriptRecord} = require('../../src/tools/tool-transcript-record');
 const {createAskUserQuestionsSuccessResult} = require('../../src/tools/ask-user-questions-tool-handler');
 
@@ -499,8 +500,14 @@ test('runtime keeps exclusive delegations as barriers and omits parallelSize for
   }
 });
 
-test('runtime aborts all running parallel delegations when the parent turn is cancelled', async () => {
+test('external disablement keeps parallel tasks active until parent cancellation still aborts all delegates', async () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-subagent-parallel-abort-'));
+  const originalHomedir = os.homedir;
+  const home = path.join(cwd, 'home');
+  fs.mkdirSync(path.join(home, '.echo'), {recursive: true});
+  os.homedir = () => home;
+  const settingsPath = path.join(home, '.echo', 'agents.settings.json');
+  fs.writeFileSync(settingsPath, JSON.stringify({schemaVersion: 3, enabled: {explorer: true}, overrides: {}}));
   const controller = new AbortController();
   const childSignals = [];
   const allStarted = createDeferred();
@@ -549,6 +556,9 @@ test('runtime aborts all running parallel delegations when the parent turn is ca
       });
 
       await allStarted.promise;
+      fs.writeFileSync(settingsPath, JSON.stringify({schemaVersion: 3, enabled: {explorer: false}, overrides: {}}));
+      assert.equal(childSignals.every((signal) => !signal.aborted), true);
+      assert.equal(persisted.some((record) => record.event.kind === 'cancelled'), false);
       controller.abort();
       await assert.rejects(runPromise, AgentAbortError);
 
@@ -557,6 +567,7 @@ test('runtime aborts all running parallel delegations when the parent turn is ca
       assert.equal(persisted.filter((record) => record.event.kind === 'cancelled').length, 2);
     });
   } finally {
+    os.homedir = originalHomedir;
     fs.rmSync(cwd, {recursive: true, force: true});
   }
 });
@@ -1761,6 +1772,185 @@ test('schema-only subagent port projects the same run_subagent definition as the
   });
   assert.equal(result.ok, false);
   assert.match(result.text, /unavailable/u);
+});
+
+test('global false rejects project policy targets before runtime, model resolution, activity or approval even in full-access', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-subagent-enablement-boundary-'));
+  const originalHomedir = os.homedir;
+  const home = path.join(cwd, 'home');
+  fs.mkdirSync(path.join(home, '.echo'), {recursive: true});
+  fs.mkdirSync(path.join(cwd, '.echo'));
+  writeCustomAgent(cwd, 'reviewer');
+  fs.writeFileSync(path.join(home, '.echo', 'agents.settings.json'), JSON.stringify({
+    schemaVersion: 3, enabled: {worker: false, reviewer: false}, overrides: {}
+  }));
+  fs.writeFileSync(path.join(cwd, '.echo', 'agents.settings.json'), JSON.stringify({
+    schemaVersion: 2, overrides: {worker: {effort: 'high'}}
+  }));
+  const effects = [];
+  try {
+    os.homedir = () => home;
+    for (const executionMode of [{kind: 'interactive'}, {kind: 'headless', approvalPolicy: 'deny'}, {kind: 'headless', approvalPolicy: 'full-access'}]) {
+      const port = createSubagentToolPort({
+        callbacks: {
+          onSubagentActivity() { effects.push('activity'); },
+          onToolApprovalRequest() { effects.push('approval'); return {kind: 'approve'}; }
+        },
+        configSnapshot: createConfigSnapshot({onStrictResolve() { effects.push('resolve'); }}),
+        createRuntime() { effects.push('runtime'); throw new Error('must not create a disabled runtime'); },
+        cwd,
+        executionMode,
+        interactionMode: 'normal',
+        getInheritedContext() { effects.push('context'); return {}; },
+        observation: disabledObservation,
+        publishRecords() { effects.push('records'); }
+      });
+      assert.deepEqual(port.listDefinitions().map(({name}) => name), ['explorer']);
+      const registry = createDefaultToolRegistry(TEST_CONFIG, cwd, undefined, {executionMode, subagentPort: port});
+      assert.deepEqual(registry.getHandler('run_subagent').definition.parameters.properties.agent.enum, ['explorer']);
+      for (const agent of ['worker', 'reviewer']) {
+        const call = {callId: `disabled-${agent}`, toolName: 'run_subagent', argumentsText: JSON.stringify({agent, task: 'work'})};
+        assert.equal((await port.run(agent, 'work', call)).ok, false);
+        const forged = await createToolExecutor(registry).execute(call);
+        assert.equal(forged.ok, false);
+        assert.equal(forged.callId, call.callId);
+        assert.equal(forged.toolName, call.toolName);
+        assert.equal(forged.details.kind, 'generic');
+      }
+      assert.deepEqual(effects, []);
+    }
+  } finally {
+    os.homedir = originalHomedir;
+    fs.rmSync(cwd, {recursive: true, force: true});
+  }
+});
+
+test('runtime and schema-only registries omit delegation for empty or invalid settings catalogs', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-subagent-empty-schema-'));
+  const originalHomedir = os.homedir;
+  const home = path.join(cwd, 'home');
+  fs.mkdirSync(path.join(home, '.echo'), {recursive: true});
+  os.homedir = () => home;
+  writeCustomAgent(cwd, 'reviewer');
+  const filePath = path.join(home, '.echo', 'agents.settings.json');
+  const snapshot = createConfigSnapshot();
+  try {
+    for (const content of [
+      JSON.stringify({schemaVersion: 3, enabled: {explorer: false, worker: false, reviewer: false}, overrides: {}}),
+      '{BROKEN_SECRET'
+    ]) {
+      fs.writeFileSync(filePath, content);
+      const runtimePort = createSubagentToolPort({
+        callbacks: {}, configSnapshot: snapshot,
+        createRuntime() { assert.fail('empty catalog must not create child runtime'); },
+        cwd, executionMode: {kind: 'headless', approvalPolicy: 'full-access'}, interactionMode: 'normal',
+        getInheritedContext() { assert.fail('empty catalog must not read inherited context'); },
+        observation: disabledObservation,
+        publishRecords() { assert.fail('empty catalog must not publish start'); }
+      });
+      const schemaPort = createSubagentSchemaPort({configSnapshot: snapshot, cwd});
+      for (const subagentPort of [runtimePort, schemaPort]) {
+        assert.deepEqual(subagentPort.listDefinitions(), []);
+        const registry = createDefaultToolRegistry(TEST_CONFIG, cwd, undefined, {subagentPort});
+        assert.equal(registry.getHandler('run_subagent'), undefined);
+        assert.equal(registry.listDefinitions().some(({name}) => name === 'run_subagent'), false);
+        assert.ok(registry.getHandler('read_files'));
+        const call = {callId: 'empty-catalog', toolName: 'run_subagent', argumentsText: '{"agent":"worker","task":"work"}'};
+        const result = await createToolExecutor(registry).execute(call);
+        assert.equal(result.ok, false);
+        assert.equal(result.callId, call.callId);
+        assert.equal(result.toolName, call.toolName);
+        assert.match(result.text, /Unknown tool: run_subagent/);
+      }
+      assert.equal((await runtimePort.run('worker', 'work', {callId: 'direct', toolName: 'run_subagent'})).ok, false);
+    }
+  } finally {
+    os.homedir = originalHomedir;
+    fs.rmSync(cwd, {recursive: true, force: true});
+  }
+});
+
+test('external enablement edits affect only the next port and do not cancel active or later current-port delegates', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-subagent-enablement-freeze-'));
+  const originalHomedir = os.homedir;
+  const home = path.join(cwd, 'home');
+  fs.mkdirSync(path.join(home, '.echo'), {recursive: true});
+  os.homedir = () => home;
+  const filePath = path.join(home, '.echo', 'agents.settings.json');
+  fs.writeFileSync(filePath, JSON.stringify({schemaVersion: 3, enabled: {worker: true}, overrides: {}}));
+  const started = createDeferred();
+  const finish = createDeferred();
+  const runs = [];
+  const events = [];
+  const options = {
+    callbacks: {}, configSnapshot: createConfigSnapshot(), cwd,
+    executionMode: {kind: 'headless', approvalPolicy: 'deny'}, interactionMode: 'normal',
+    getInheritedContext() { return {}; }, observation: disabledObservation,
+    createRuntime(_context, definition) {
+      return async () => {
+        runs.push(definition.name);
+        started.resolve();
+        await finish.promise;
+        return 'finished';
+      };
+    },
+    publishRecords(records) { events.push(...records); }
+  };
+  try {
+    const port = createSubagentToolPort(options);
+    const call = {callId: 'active-worker', toolName: 'run_subagent', argumentsText: '{"agent":"worker","task":"work"}'};
+    const pending = port.run('worker', 'work', call);
+    await started.promise;
+    fs.writeFileSync(filePath, JSON.stringify({schemaVersion: 3, enabled: {worker: false}, overrides: {}}));
+    const next = createSubagentToolPort(options);
+    assert.equal(next.listDefinitions().some(({name}) => name === 'worker'), false);
+    assert.equal((await next.run('worker', 'work', call)).ok, false);
+    finish.resolve();
+    assert.deepEqual(await pending, {ok: true, text: 'finished'});
+    assert.deepEqual(await port.run('worker', 'again', {...call, callId: 'later-worker'}), {ok: true, text: 'finished'});
+    assert.deepEqual(runs, ['worker', 'worker']);
+    assert.deepEqual(events.map(({event}) => event.kind), ['start', 'completed', 'start', 'completed']);
+    assert.equal(port.listDefinitions().some(({name}) => name === 'worker'), true);
+  } finally {
+    finish.resolve();
+    os.homedir = originalHomedir;
+    fs.rmSync(cwd, {recursive: true, force: true});
+  }
+});
+
+test('main tool disablement still rejects delegation when agents default to enabled', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-subagent-enablement-main-disabled-'));
+  fs.mkdirSync(path.join(cwd, '.echo'));
+  fs.writeFileSync(path.join(cwd, '.echo', 'agents.settings.json'), JSON.stringify({
+    schemaVersion: 2, overrides: {}
+  }));
+  const snapshot = createConfigSnapshot({disabledTools: ['run_subagent']});
+  let turn = 0;
+  try {
+    await withPatchedAgents(cwd, (kind, registry) => ({
+      async runTurn(records) {
+        assert.equal(kind, 'primary');
+        assert.equal(registry.getHandler('run_subagent'), undefined);
+        turn += 1;
+        if (turn === 1) {
+          return {draft: '', toolCalls: [{callId: 'main-disabled', toolName: 'run_subagent', argumentsText: '{"agent":"worker","task":"work"}'}]};
+        }
+        const result = records.find((record) => record.role === 'tool_result' && record.toolCallId === 'main-disabled');
+        assert.equal(result.ok, false);
+        assert.match(result.text, /Unknown tool: run_subagent/);
+        return {draft: 'primary continued', toolCalls: []};
+      }
+    }), async (preparations) => {
+      const run = createAgentLoopRuntime(cwd, {capture: () => snapshot});
+      assert.equal(await run({
+        records: [{role: 'user', text: 'delegate'}], userConfigSnapshot: snapshot,
+        executionMode: {kind: 'headless', approvalPolicy: 'full-access'}
+      }), 'primary continued');
+      assert.deepEqual(preparations.map(({kind}) => kind), ['primary']);
+    });
+  } finally {
+    fs.rmSync(cwd, {recursive: true, force: true});
+  }
 });
 
 test('readonly run delegates only to readonly subagents and lets the child inherit the sandbox override', async () => {
