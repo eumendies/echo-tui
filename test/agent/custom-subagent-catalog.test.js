@@ -322,7 +322,7 @@ test('definition exports preserve built-ins and expose readonly general ceilings
   assert.equal(builtins[1].skillNames, undefined);
 });
 
-test('agents settings version 2 normalizes to version 2 on the next serialized write', () => {
+test('agents settings version 1 normalizes to version 2 on the next serialized write', () => {
   const parsed = parseAgentsSettings(JSON.stringify({
     schemaVersion: 1,
     overrides: {explorer: {modelProfileId: 'fast', effort: 'low'}}
@@ -434,6 +434,144 @@ test('catalog discovers both scopes in deterministic order', () => {
     assert.equal(catalog.get('doc-writer').name, 'doc-writer');
     assert.equal(catalog.get('security-reviewer').name, 'security-reviewer');
     assert.deepEqual(catalog.diagnostics, []);
+  } finally {
+    fs.rmSync(workspace.root, {recursive: true, force: true});
+  }
+});
+
+test('catalog filters built-in and custom names after scope selection without revealing shadowed definitions', () => {
+  const workspace = createWorkspace();
+  try {
+    writeAgent(workspace.home, 'reviewer', createManifest({description: 'user definition'}));
+    const projectPath = writeAgent(workspace.project, 'reviewer', createManifest({description: 'project definition'}));
+    writeAgentsSettings(workspace.home, {
+      schemaVersion: 3, enabled: {explorer: false, worker: false, reviewer: false, 'not-discovered': true}, overrides: {}
+    });
+    writeAgentsSettings(workspace.project, {
+      schemaVersion: 2, overrides: {worker: {effort: 'high'}}
+    });
+    const options = {cwd: workspace.project, homedir: workspace.home};
+    const disabled = loadSubagentCatalog(options);
+    assert.deepEqual(disabled.listDescriptors(), []);
+    for (const name of ['explorer', 'worker', 'reviewer', 'not-discovered']) {
+      assert.equal(disabled.get(name), undefined);
+    }
+    assert.equal(disabled.diagnostics.length, 0);
+    writeAgentsSettings(workspace.home, {
+      schemaVersion: 3, enabled: {explorer: false, worker: false, reviewer: true}, overrides: {}
+    });
+    const enabled = loadSubagentCatalog(options);
+    assert.deepEqual(enabled.listDescriptors().map(({name}) => name), ['reviewer']);
+    assert.equal(enabled.get('reviewer').description, 'project definition');
+    assert.equal(Object.isFrozen(enabled.get('reviewer')), true);
+    assert.equal(Object.isFrozen(enabled.listDescriptors()), true);
+    assert.equal(Object.isFrozen(enabled.listDescriptors()[0]), true);
+    fs.unlinkSync(projectPath);
+    writeAgentsSettings(workspace.project, {schemaVersion: 2, overrides: {}});
+    assert.equal(loadSubagentCatalog(options).get('reviewer').description, 'user definition');
+  } finally {
+    fs.rmSync(workspace.root, {recursive: true, force: true});
+  }
+});
+
+test('valid missing model references do not override independent enablement', () => {
+  const workspace = createWorkspace();
+  try {
+    writeAgentsSettings(workspace.home, {schemaVersion: 3, enabled: {worker: false}, overrides: {}});
+    writeAgentsSettings(workspace.project, {
+      schemaVersion: 2, overrides: {worker: {modelProfileId: 'deleted', effort: 'high'}}
+    });
+    const options = {cwd: workspace.project, homedir: workspace.home, configSnapshot: createConfigSnapshot()};
+    const catalog = loadSubagentCatalog(options);
+    assert.equal(catalog.get('worker'), undefined);
+    assert.deepEqual(catalog.listDescriptors().map(({name}) => name), ['explorer']);
+    assert.equal(catalog.diagnostics.some(({code}) => code === 'builtin_model_profile_not_found'), true);
+    writeAgentsSettings(workspace.home, {schemaVersion: 3, enabled: {worker: true}, overrides: {}});
+    const enabled = loadSubagentCatalog(options);
+    assert.equal(enabled.get('worker').effortPolicy, 'inherit');
+    assert.equal(enabled.get('worker').modelProfileId, undefined);
+  } finally {
+    fs.rmSync(workspace.root, {recursive: true, force: true});
+  }
+});
+
+test('one global switch consistently controls the same name across separate project roots', () => {
+  const workspace = createWorkspace();
+  try {
+    const other = path.join(workspace.root, 'other-project');
+    fs.mkdirSync(path.join(other, '.git'), {recursive: true});
+    for (const project of [workspace.project, other]) writeAgent(project, 'reviewer');
+    writeAgentsSettings(workspace.project, {schemaVersion: 2, overrides: {worker: {effort: 'high'}}});
+    writeAgentsSettings(other, {schemaVersion: 2, overrides: {worker: {effort: 'low'}}});
+    for (const enabled of [false, true]) {
+      writeAgentsSettings(workspace.home, {schemaVersion: 3, enabled: {reviewer: enabled}, overrides: {}});
+      for (const cwd of [workspace.project, other]) {
+        assert.equal(Boolean(loadSubagentCatalog({cwd, homedir: workspace.home}).get('reviewer')), enabled);
+      }
+    }
+  } finally {
+    fs.rmSync(workspace.root, {recursive: true, force: true});
+  }
+});
+
+test('global invalid settings close delegation while invalid project policy only reports diagnostics', () => {
+  const workspace = createWorkspace();
+  try {
+    writeAgent(workspace.project, 'reviewer');
+    const options = {cwd: workspace.project, homedir: workspace.home};
+    for (const source of [workspace.home, workspace.project]) {
+      for (const content of ['{PRIVATE_SECRET', {schemaVersion: 99, overrides: {}}, {schemaVersion: 2, overrides: {worker: {effort: 'invalid'}}}]) {
+        const settingsPath = writeAgentsSettings(source, content);
+        const catalog = loadSubagentCatalog(options);
+        assert.deepEqual(catalog.listDescriptors().map(({name}) => name), source === workspace.home ? [] : ['explorer', 'worker', 'reviewer']);
+        assert.equal(catalog.diagnostics.some(({sourcePath}) => sourcePath === settingsPath), true);
+        assert.ok(catalog.diagnostics.length <= 64);
+        assert.doesNotMatch(JSON.stringify(catalog.diagnostics), /PRIVATE_SECRET/);
+        fs.unlinkSync(settingsPath);
+      }
+    }
+  } finally {
+    fs.rmSync(workspace.root, {recursive: true, force: true});
+  }
+});
+
+test('settings failure diagnostics remain visible when invalid filenames exhaust the diagnostic budget', () => {
+  const workspace = createWorkspace();
+  try {
+    for (let index = 0; index < 70; index += 1) writeAgent(workspace.project, `Invalid-${index}`);
+    const settingsPath = writeAgentsSettings(workspace.home, '{BROKEN_SECRET');
+    const catalog = loadSubagentCatalog({cwd: workspace.project, homedir: workspace.home});
+    assert.deepEqual(catalog.listDescriptors(), []);
+    assert.equal(catalog.diagnostics.length, 64);
+    assert.equal(catalog.diagnostics.some(({code, sourcePath}) => code === 'invalid_settings_json' && sourcePath === settingsPath), true);
+    assert.doesNotMatch(JSON.stringify(catalog.diagnostics), /BROKEN_SECRET/);
+  } finally {
+    fs.rmSync(workspace.root, {recursive: true, force: true});
+  }
+});
+
+test('disabled names still consume sorted candidate capacity and frozen catalogs do not reload settings', () => {
+  const workspace = createWorkspace();
+  try {
+    const enabled = {};
+    for (let index = 0; index <= MAX_CUSTOM_SUBAGENTS; index += 1) {
+      const name = `agent-${String(index).padStart(2, '0')}`;
+      writeAgent(workspace.project, name);
+      if (index < MAX_CUSTOM_SUBAGENTS) enabled[name] = false;
+    }
+    writeAgentsSettings(workspace.home, {schemaVersion: 3, enabled, overrides: {}});
+    const options = {cwd: workspace.project, homedir: workspace.home};
+    const frozen = loadSubagentCatalog(options);
+    assert.deepEqual(frozen.listDescriptors().map(({name}) => name), ['explorer', 'worker']);
+    assert.equal(frozen.get(`agent-${MAX_CUSTOM_SUBAGENTS}`), undefined);
+    assert.equal(frozen.diagnostics.filter(({code}) => code === 'custom_limit_exceeded').length, 1);
+    writeAgentsSettings(workspace.home, {schemaVersion: 3, enabled: {explorer: false, worker: false}, overrides: {}});
+    assert.equal(frozen.get('agent-00'), undefined);
+    assert.ok(frozen.get('worker'));
+    const next = loadSubagentCatalog(options);
+    assert.equal(next.get('worker'), undefined);
+    assert.ok(next.get('agent-00'));
+    assert.equal(next.listDescriptors().length, MAX_CUSTOM_SUBAGENTS);
   } finally {
     fs.rmSync(workspace.root, {recursive: true, force: true});
   }
@@ -582,7 +720,9 @@ test('invalid higher-priority built-in settings fail closed without user fallbac
       cwd: workspace.project,
       homedir: workspace.home
     });
-    assert.equal(catalog.get('explorer'), BUILTIN_SUBAGENT_DEFINITIONS[0]);
+    assert.equal(catalog.get('explorer').modelProfileId, undefined);
+    assert.equal(catalog.get('explorer').effortPolicy, 'inherit');
+    assert.deepEqual(catalog.listDescriptors().map(({name}) => name), ['explorer', 'worker']);
     assert.equal(catalog.diagnostics.some(({code, sourcePath}) => code === 'invalid_settings_json' && sourcePath === projectPath), true);
 
     writeAgentsSettings(workspace.project, {
@@ -618,7 +758,8 @@ test('runtime settings loading rejects symbolic links like the management store'
       cwd: workspace.project,
       homedir: workspace.home
     });
-    assert.equal(catalog.get('explorer'), BUILTIN_SUBAGENT_DEFINITIONS[0]);
+    assert.equal(catalog.get('explorer').effortPolicy, 'inherit');
+    assert.deepEqual(catalog.listDescriptors().map(({name}) => name), ['explorer', 'worker']);
     assert.equal(catalog.diagnostics.some(({code, sourcePath}) => code === 'symbolic_link' && sourcePath === settingsPath), true);
   } finally {
     fs.rmSync(workspace.root, {recursive: true, force: true});

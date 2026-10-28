@@ -2478,6 +2478,53 @@ test('AppContext forks into a self-contained real journal', () => {
   assert.deepEqual(transcriptStore.loadSession(cwd, result.sessionId).session.records, childBeforeSourceRemoval.records);
 });
 
+test('resume and fork preserve disabled subagent history while a new catalog applies current enablement', (t) => {
+  const {loadSubagentCatalog} = require('../../src/agent/subagent/catalog');
+  const {renderTranscriptLines} = require('../../src/render/transcript-renderer');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-disabled-agent-history-'));
+  const cwd = path.join(root, 'project');
+  const homedir = path.join(root, 'home');
+  fs.mkdirSync(path.join(cwd, '.git'), {recursive: true});
+  fs.mkdirSync(path.join(cwd, '.echo'));
+  fs.mkdirSync(path.join(homedir, '.echo'), {recursive: true});
+  const userConfigContext = new UserConfigContext({readFile: () => '{}'});
+  t.after(() => {
+    userConfigContext.close();
+    fs.rmSync(root, {recursive: true, force: true});
+  });
+  const transcriptStore = createTranscriptStore({rootDir: path.join(root, 'sessions')});
+  const context = createContext({cwd, transcriptStore, userConfigContext});
+  const base = {role: 'subagent', agentName: 'worker', runId: 'worker-history', parentToolCallId: 'delegate-history'};
+  context.beginUserTurn('delegate historical task');
+  for (const record of [
+    {...base, text: 'historical task', event: {kind: 'start', task: 'historical task'}},
+    {...base, text: 'preserved worker report', event: {kind: 'assistant'}},
+    {...base, text: '', event: {kind: 'completed', durationMs: 42}}
+  ]) context.transcriptContext.appendRecord(record);
+  context.turnContext.finishAssistantTurn('historical parent answer');
+  const sourceId = context.transcriptContext.getCurrentSessionId();
+  const before = transcriptStore.loadSession(cwd, sourceId).session.records;
+  const sourcePath = transcriptStore.getSessionFilePath(cwd, sourceId);
+  const journalBefore = fs.readFileSync(sourcePath, 'utf8');
+
+  fs.writeFileSync(path.join(homedir, '.echo', 'agents.settings.json'), JSON.stringify({
+    schemaVersion: 3, enabled: {worker: false}, overrides: {}
+  }));
+  assert.equal(context.loadTranscriptSession(sourceId), true);
+  const fork = context.forkTranscriptSession();
+  assert.equal(fork.ok, true);
+  for (const sessionId of [sourceId, fork.sessionId]) {
+    assert.equal(context.loadTranscriptSession(sessionId), true);
+    const records = transcriptStore.loadSession(cwd, sessionId).session.records;
+    assert.deepEqual(records, before);
+    assert.match(renderTranscriptLines(records, 100).join('\n'), /preserved worker report/u);
+    const catalog = loadSubagentCatalog({cwd, homedir, configSnapshot: userConfigContext.capture()});
+    assert.equal(catalog.get('worker'), undefined);
+    assert.equal(catalog.get('explorer').name, 'explorer');
+  }
+  assert.equal(fs.readFileSync(sourcePath, 'utf8'), journalBefore);
+});
+
 test('AppContext deletes a historical session and its settings sidecar without changing the current session', () => {
   const historicalSession = {
     sessionId: 'history-session',

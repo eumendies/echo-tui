@@ -86,7 +86,9 @@ function createDefaultToolRegistry(config: LlmConfig, cwd: string | (() => strin
     ...(options.mcpManager && options.mcpManager.listServerNames().length > 0
       ? createMcpResourceToolHandlers({manager: options.mcpManager, toolResultStore})
       : []),
-    ...(options.subagentPort ? [createRunSubagentToolHandler(options.subagentPort, toolResultStore)] : [])
+    ...(options.subagentPort && options.subagentPort.listDefinitions().length > 0
+      ? [createRunSubagentToolHandler(options.subagentPort, toolResultStore)]
+      : [])
   ];
   const registry = createToolRegistry(options.allowedToolNames
     ? handlers.filter((handler) => options.allowedToolNames!.has(handler.definition.name))

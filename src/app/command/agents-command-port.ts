@@ -10,6 +10,8 @@ import {
   deleteBuiltinSubagentOverride,
   readAgentsSettingsScope,
   selectBuiltinSubagentOverride,
+  selectSubagentEnablement,
+  writeSubagentEnablement,
   writeBuiltinSubagentOverride
 } from '../../agent/subagent/settings';
 
@@ -90,6 +92,7 @@ function createAgentsCommandPort(options: AgentsCommandPortOptions): CommandHost
   }
 
   return {
+    /** 保留全部物理定义并投影全局启停；主工具配置不可读时返回未知委派状态与固定诊断，不阻断管理。 */
     list() {
       const context = createOperationContext();
       const management = context.store.list();
@@ -110,10 +113,20 @@ function createAgentsCommandPort(options: AgentsCommandPortOptions): CommandHost
         ...overrides.flatMap((source) => source.status === 'invalid' && source.error ? [source.error] : []),
         ...builtinProjection.diagnostics
       ];
+      let delegationToolEnabled: boolean | undefined;
+      try {
+        delegationToolEnabled = !context.configSnapshot.getMainAgentToolsConfig().disabledTools.includes('run_subagent');
+      } catch {
+        diagnostics.push({
+          code: 'main_agent_tools_config_invalid',
+          message: 'Main agent tools configuration could not be read; delegation availability is unknown.'
+        });
+      }
       return {
         builtins: builtinProjection.builtins,
         diagnostics,
-        items: [...management.items],
+        items: management.items.map((item) => ({...item, enablement: selectSubagentEnablement(item.name, overrides)})),
+        delegationToolEnabled,
         models,
         overrides,
         skills: listSkillInfos()
@@ -130,6 +143,11 @@ function createAgentsCommandPort(options: AgentsCommandPortOptions): CommandHost
     },
     delete(scope, name, expectedFingerprint) {
       return createOperationContext().store.remove(scope, name, expectedFingerprint);
+    },
+    /** 以打开一级详情时的整文件指纹写入全局名称启停，异常或冲突由共享存储结构化返回。 */
+    writeEnablement(name, enabled, expectedFingerprint) {
+      const context = createOperationContext();
+      return writeSubagentEnablement(name, enabled, expectedFingerprint, context.storeOptions);
     },
     writeBuiltinOverride(scope, name, override, expectedFingerprint) {
       const context = createOperationContext();
