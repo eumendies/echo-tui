@@ -14,6 +14,7 @@ function createHarness(options = {}) {
   const submissions = [];
   const commandTexts = [];
   const errors = [];
+  const shellCommands = [];
   let renders = 0;
   const controller = new ComposerSubmissionController({
     appContext,
@@ -31,7 +32,7 @@ function createHarness(options = {}) {
     startAssistantTurn: options.startAssistantTurn || (async (submission) => {
       submissions.push(submission);
     }),
-    submitShellCommand: async () => {},
+    submitShellCommand: async (text) => { shellCommands.push(text); },
     showReferenceError(error) {
       errors.push(error);
     },
@@ -40,7 +41,22 @@ function createHarness(options = {}) {
     }
   });
 
-  return {appContext, commandTexts, controller, errors, getRenders: () => renders, submissions};
+  return {appContext, commandTexts, controller, errors, getRenders: () => renders, shellCommands, submissions};
+}
+
+function tempDir(t) {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-controller-'));
+  t.after(() => fs.rmSync(cwd, {recursive: true, force: true}));
+  return cwd;
+}
+
+function setFileDraft(harness, prefix, filePath) {
+  const context = harness.appContext.composerContext;
+  context.setText(prefix);
+  const composer = context.composer;
+  composerOps.replaceWithFileMentions(composer, composer.cursor, composer.cursor, [filePath]);
+  composerOps.backspace(composer);
+  return composerOps.captureSnapshot(composer);
 }
 
 test('ComposerSubmissionController consumes one live draft and preserves a later draft', async () => {
@@ -142,27 +158,46 @@ test('ComposerSubmissionController locks pending dispatch while asynchronous pre
   assert.equal(starts, 1);
 });
 
-test('ComposerSubmissionController expands pending file mentions at dispatch time', async () => {
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-controller-'));
+test('ComposerSubmissionController expands only pending A at dispatch time without borrowing live B', async (t) => {
+  const cwd = tempDir(t);
   const harness = createHarness({cwd});
-  harness.appContext.pendingMessageContext.enqueue('read @note.txt');
+  harness.appContext.setMcpBootstrapStatus('ready');
+  fs.writeFileSync(path.join(cwd, 'note.txt'), 'old contents');
+  fs.writeFileSync(path.join(cwd, 'other.txt'), 'LIVE B CONTENTS');
+  harness.appContext.turnContext.beginUserTurn('running');
+  const turn = harness.appContext.turnContext.beginAssistantTurn(undefined, 'pending');
+  t.after(() => harness.appContext.turnContext.stopSpinner());
+  const original = setFileDraft(harness, 'read ', 'note.txt');
+  await harness.controller.submitComposer();
+  assert.equal(harness.appContext.pendingMessageContext.getPending(), original.text);
+  assert.equal(harness.submissions.length, 0);
+  const later = setFileDraft(harness, 'later ', 'other.txt');
   fs.writeFileSync(path.join(cwd, 'note.txt'), 'latest contents');
+  harness.appContext.turnContext.finishAssistantTurn('done');
+  harness.appContext.turnContext.clearAssistantTurnIfCurrent(turn);
 
   await harness.controller.dispatchPendingMessage();
 
+  assert.equal(harness.submissions.length, 1);
   assert.match(harness.submissions[0].userText, /latest contents/);
+  assert.doesNotMatch(harness.submissions[0].userText, /old contents|LIVE B CONTENTS/);
   assert.equal(harness.submissions[0].displayText, 'read @note.txt');
   assert.equal(harness.submissions[0].userRequestText, 'read @note.txt');
+  assert.deepEqual(composerOps.captureSnapshot(harness.appContext.composerContext.composer), later);
+  harness.appContext.composerContext.reset();
+  assert.equal(harness.appContext.composerContext.browseHistory(-1), true);
+  assert.deepEqual(harness.appContext.composerContext.composer.fileMentions, original.fileMentions);
 });
 
-test('ComposerSubmissionController forwards image mention attachments', async () => {
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-controller-image-'));
+test('ComposerSubmissionController forwards confirmed image mention attachments', async (t) => {
+  const cwd = tempDir(t);
   const image = await sharp({create: {width: 2, height: 2, channels: 3, background: '#112233'}}).png().toBuffer();
   fs.writeFileSync(path.join(cwd, 'image.png'), image);
   const harness = createHarness({cwd});
-  harness.appContext.pendingMessageContext.enqueue('inspect @image.png');
+  harness.appContext.setMcpBootstrapStatus('ready');
+  setFileDraft(harness, 'inspect ', 'image.png');
 
-  await harness.controller.dispatchPendingMessage();
+  await harness.controller.submitComposer();
 
   assert.equal(harness.submissions[0].attachments.length, 1);
   assert.match(harness.submissions[0].userText, /\[image attached\]/);
@@ -251,3 +286,156 @@ test('ComposerSubmissionController restores composer and reports failed referenc
   assert.deepEqual(harness.errors, ['summary failed']);
   assert.equal(harness.getRenders(), 1);
 });
+
+test('ComposerSubmissionController leaves typed existing @ paths as ordinary text', async (t) => {
+  const cwd = tempDir(t);
+  fs.writeFileSync(path.join(cwd, 'note.txt'), 'PRIVATE FILE CONTENTS');
+  const harness = createHarness({cwd});
+  harness.appContext.setMcpBootstrapStatus('ready');
+  const text = 'email @note.txt and @missing.txt';
+  harness.appContext.composerContext.setText(text);
+
+  await harness.controller.submitComposer();
+
+  assert.equal(harness.submissions[0].userText, text);
+  assert.equal(harness.submissions[0].userRequestText, text);
+  assert.equal(harness.submissions[0].attachments, undefined);
+  assert.deepEqual(harness.appContext.composerContext.getInputHistory(), [text]);
+});
+
+test('ComposerSubmissionController pending plain A never borrows confirmed live B', async (t) => {
+  const cwd = tempDir(t);
+  fs.writeFileSync(path.join(cwd, 'note.txt'), 'MUST NOT LEAK');
+  const harness = createHarness({cwd});
+  harness.appContext.setMcpBootstrapStatus('ready');
+  harness.appContext.turnContext.beginUserTurn('running');
+  const turn = harness.appContext.turnContext.beginAssistantTurn(undefined, 'pending');
+  t.after(() => harness.appContext.turnContext.stopSpinner());
+  harness.appContext.composerContext.setText('read @note.txt');
+  await harness.controller.submitComposer();
+  const later = setFileDraft(harness, 'read ', 'note.txt');
+  harness.appContext.turnContext.finishAssistantTurn('done');
+  harness.appContext.turnContext.clearAssistantTurnIfCurrent(turn);
+
+  await harness.controller.dispatchPendingMessage();
+
+  assert.equal(harness.submissions[0].userText, 'read @note.txt');
+  assert.deepEqual(composerOps.captureSnapshot(harness.appContext.composerContext.composer), later);
+});
+
+test('ComposerSubmissionController pending slot refusal preserves confirmed draft and cursor', async (t) => {
+  const harness = createHarness();
+  harness.appContext.setMcpBootstrapStatus('ready');
+  harness.appContext.turnContext.beginUserTurn('running');
+  harness.appContext.turnContext.beginAssistantTurn(undefined, 'pending');
+  t.after(() => harness.appContext.turnContext.stopSpinner());
+  setFileDraft(harness, 'first ', 'first.txt');
+  await harness.controller.submitComposer();
+  setFileDraft(harness, 'second 👩‍💻 ', 'second.txt');
+  harness.appContext.composerContext.composer.cursor = 2;
+  const later = composerOps.captureSnapshot(harness.appContext.composerContext.composer);
+
+  await harness.controller.submitComposer();
+
+  assert.equal(harness.appContext.pendingMessageContext.getPending(), 'first @first.txt');
+  assert.deepEqual(composerOps.captureSnapshot(harness.appContext.composerContext.composer), later);
+  assert.deepEqual(harness.appContext.composerContext.getInputHistory(), ['first @first.txt']);
+});
+
+for (const reason of ['failed', 'cancelled']) {
+  for (const liveState of ['empty', 'later', 'reset']) {
+    test(`ComposerSubmissionController ${reason} reference preserves snapshot with ${liveState} live draft`, async (t) => {
+      const cwd = tempDir(t);
+      fs.writeFileSync(path.join(cwd, 'original.txt'), 'ORIGINAL');
+      let release;
+      let started;
+      const preparing = new Promise((resolve) => { started = resolve; });
+      const result = new Promise((resolve) => { release = resolve; });
+      const harness = createHarness({cwd, prepareForSubmission() { started(); return result; }});
+      harness.appContext.setMcpBootstrapStatus('ready');
+      harness.appContext.conversationReferenceContext.setPending({
+        projectionMode: 'full', sourcePath: '/tmp/old.jsonl', sourceSessionId: 'old', title: 'old', materialSegments: []
+      });
+      setFileDraft(harness, 'original 👩‍💻 ', 'original.txt');
+      harness.appContext.composerContext.composer.cursor = 3;
+      const original = composerOps.captureSnapshot(harness.appContext.composerContext.composer);
+      const submitting = harness.controller.submitComposer();
+      await preparing;
+      let later;
+      if (liveState !== 'empty') {
+        setFileDraft(harness, 'later ', 'later.txt');
+        harness.appContext.composerContext.composer.cursor = 1;
+        later = composerOps.captureSnapshot(harness.appContext.composerContext.composer);
+        if (liveState === 'reset') harness.appContext.composerContext.reset();
+      }
+      release({ok: false, reason, error: 'reference failed'});
+      await submitting;
+
+      assert.deepEqual(composerOps.captureSnapshot(harness.appContext.composerContext.composer), liveState === 'later' ? later : original);
+      assert.deepEqual(harness.appContext.composerContext.getInputHistory(), [original.text]);
+      assert.deepEqual(harness.appContext.composerContext.inputHistory, [original]);
+      assert.equal(harness.submissions.length, 0);
+      assert.deepEqual(harness.errors, reason === 'failed' ? ['reference failed'] : []);
+    });
+  }
+}
+
+for (const command of ['/review', '/skill']) {
+  for (const confirmed of [false, true]) {
+    test(`ComposerSubmissionController ${command} transformed text keeps only original confirmed refs (${confirmed})`, async (t) => {
+      const cwd = tempDir(t);
+      fs.writeFileSync(path.join(cwd, 'original.txt'), 'ORIGINAL MATERIAL');
+      fs.writeFileSync(path.join(cwd, 'injected.txt'), 'INJECTED MATERIAL');
+      const harness = createHarness({cwd, startFromText(text) {
+        return {kind: 'submit_user_message', text: 'internal prompt @injected.txt', displayText: text};
+      }});
+      harness.appContext.setMcpBootstrapStatus('ready');
+      if (confirmed) setFileDraft(harness, `${command} `, 'original.txt');
+      else harness.appContext.composerContext.setText(`${command} @original.txt`);
+
+      await harness.controller.submitComposer();
+
+      const submission = harness.submissions[0];
+      assert.equal(submission.userRequestText, `${command} @original.txt`);
+      assert.equal(submission.displayText, `${command} @original.txt`);
+      assert.doesNotMatch(submission.userText, /INJECTED MATERIAL/);
+      if (confirmed) {
+        assert.match(submission.userText, /ORIGINAL MATERIAL/);
+        assert.match(submission.userText, /^internal prompt @injected.txt/);
+      } else {
+        assert.equal(submission.userText, 'internal prompt @injected.txt');
+      }
+    });
+  }
+}
+
+test('ComposerSubmissionController submitCommandMessage never borrows live confirmed refs', async (t) => {
+  const cwd = tempDir(t);
+  fs.writeFileSync(path.join(cwd, 'note.txt'), 'MUST NOT LEAK');
+  const harness = createHarness({cwd});
+  const live = setFileDraft(harness, 'draft ', 'note.txt');
+
+  assert.equal(await harness.controller.submitCommandMessage({text: 'generated @note.txt', displayText: '/generated'}), true);
+
+  assert.equal(harness.submissions[0].userText, 'generated @note.txt');
+  assert.deepEqual(composerOps.captureSnapshot(harness.appContext.composerContext.composer), live);
+  assert.deepEqual(harness.appContext.composerContext.getInputHistory(), []);
+});
+
+for (const route of ['shell', 'shell-local', 'handled']) {
+  test(`ComposerSubmissionController ${route} skips confirmed file expansion`, async () => {
+    const harness = createHarness({startFromText: () => ({kind: route === 'handled' ? 'handled' : 'not_matched'})});
+    harness.appContext.setMcpBootstrapStatus('ready');
+    if (route !== 'handled') harness.appContext.setInteractionMode(route);
+    const original = setFileDraft(harness, route === 'handled' ? '/status ' : 'cat ', 'missing.txt');
+
+    await harness.controller.submitComposer();
+
+    assert.equal(harness.submissions.length, 0);
+    assert.deepEqual(harness.errors, []);
+    assert.deepEqual(harness.shellCommands, route === 'handled' ? [] : [original.text]);
+    assert.equal(harness.appContext.composerContext.getText(), '');
+    assert.equal(harness.appContext.composerContext.browseHistory(-1), true);
+    assert.deepEqual(harness.appContext.composerContext.composer.fileMentions, original.fileMentions);
+  });
+}

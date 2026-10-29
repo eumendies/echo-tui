@@ -97,6 +97,28 @@ test('runOnce executes without TTY and writes only final plain text', async () =
   ]);
 });
 
+test('runOnce keeps existing @ paths literal without confirmed composer metadata', async (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-once-mention-'));
+  t.after(() => fs.rmSync(cwd, {recursive: true, force: true}));
+  fs.writeFileSync(path.join(cwd, 'note.txt'), 'PRIVATE FILE CONTENTS');
+  const resources = createResources();
+  const prompt = 'explain @note.txt @missing.txt user@example.com';
+  await runOnce({
+    cwd,
+    debug: resources.debug,
+    hooks: resources.hooks,
+    mcpManager: resources.mcpManager,
+    process: resources.process,
+    prompt,
+    runAgent: async (session) => {
+      assert.deepEqual(session.records, [{role: 'user', text: prompt}]);
+      assert.deepEqual(session.executionMode, {kind: 'headless', approvalPolicy: 'deny'});
+      return 'literal input';
+    },
+    stdout: {write() {}}
+  });
+});
+
 test('runOnce defaults to headless denial without supplying an interactive question callback', async () => {
   const resources = createResources();
   const output = [];

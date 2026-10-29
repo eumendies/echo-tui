@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const composerOps = require('../../src/input/composer');
-const { formatFileMention, parseFileMentions } = require('../../src/input/file-mentions');
+const { formatFileMention } = require('../../src/input/file-mentions');
 
 function snapshot(composer) {
   return {
@@ -18,6 +18,7 @@ test('createComposer seeds text and cursor from the initial value', () => {
     text: '你好ab',
     cursor: 4
   });
+  assert.deepEqual(composer.fileMentions, []);
 });
 
 test('insertText, backspace, and deleteForward mutate around the cursor', () => {
@@ -45,13 +46,11 @@ test('replaceRange replaces character ranges and moves cursor after replacement'
   });
 });
 
-test('file mentions parse plain and quoted paths', () => {
-  assert.deepEqual(parseFileMentions('看 @src/app.ts 和 @"docs/my note.md"'), [
-    {start: 2, end: 13, path: 'src/app.ts', quoted: false},
-    {start: 16, end: 34, path: 'docs/my note.md', quoted: true}
-  ]);
+test('file mention formatting retains plain, quoted, escaped and normalized paths', () => {
   assert.equal(formatFileMention('src/app.ts'), '@src/app.ts');
   assert.equal(formatFileMention('docs/my note.md'), '@"docs/my note.md"');
+  assert.equal(formatFileMention('docs/a "note"@work.md'), '@"docs/a \\"note\\"@work.md"');
+  assert.equal(formatFileMention('src\\app.ts'), '@src/app.ts');
 });
 
 test('moveHome and moveEnd stay within the current logical line', () => {

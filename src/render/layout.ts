@@ -1,5 +1,4 @@
 import * as ansi from '../terminal/ansi';
-import {parseFileMentions} from '../input/file-mentions';
 import {splitGraphemes} from '../input/graphemes';
 import {
   EMOJI_BASE_RANGES,
@@ -230,7 +229,7 @@ export function wrapText(text: string, width: number, prefix = ''): string[] {
 
 /**
  * 把 composer 的字符数组投影成可见行，并同时计算光标应回到的行列。
- *
+ * 高亮只投影已确认引用的 grapheme 范围，不解析路径或读取文件；ANSI 不参与终端列宽计算。
  */
 export function renderComposer(composer: ComposerState, width: number, prompt = '> ', options: {highlightFileMentions?: boolean; startColumn?: number} = {}): ComposerLayout {
   // 同时生成 composer 可见行和光标坐标，footer 重绘后需要用它恢复光标。
@@ -238,7 +237,7 @@ export function renderComposer(composer: ComposerState, width: number, prompt = 
   const continuation = ' '.repeat(Math.max(1, displayWidth(prompt)));
   const safeWidth = safeRenderWidth(width);
   const lines: string[] = [prompt];
-  const mentionRanges = options.highlightFileMentions ? parseFileMentions(composer.chars.join('')) : [];
+  const mentionRanges = options.highlightFileMentions ? composer.fileMentions : [];
   let row = 0;
   let column = startColumn + displayWidth(prompt);
   let cursorRow = 0;

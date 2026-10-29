@@ -121,8 +121,8 @@ function normalizeData(data: MemoryData): MemoryData {
     agentItems: data.agentItems.map((item) => ({...item})),
     itemCounts: {...data.itemCounts},
     cache: cloneCache(data.cache),
-    ...(data.draft ? {draft: {chars: [...data.draft.chars], cursor: data.draft.cursor}} : {})
-    ,...(data.catalogDrafts ? {catalogDrafts: data.catalogDrafts.map((draft) => ({chars: [...draft.chars], cursor: draft.cursor}))} : {})
+    ...(data.draft ? {draft: structuredClone(data.draft)} : {}),
+    ...(data.catalogDrafts ? {catalogDrafts: data.catalogDrafts.map((draft) => structuredClone(draft))} : {})
   };
 }
 

@@ -9,6 +9,7 @@ import type {CommandHostApp, CommandStartOptions, CommandStartResult} from '../t
 import type {ToolResultAttachment} from '../types/tool';
 import type {PendingConversationReference, UserTranscriptMetadata, UserTranscriptRecord} from '../types/transcript';
 import type {AppContext} from './state/app-context';
+import type {ComposerSnapshot} from '../types/composer';
 
 type AssistantTurnSubmission = {
   userText: string; // 最终发送给 agent 的用户文本，已包含文件和会话引用展开结果。
@@ -29,6 +30,7 @@ type SubmissionCommandPort = {
 };
 
 type SubmitDraftOptions = {
+  filePaths?: readonly string[]; // 原始草稿明确确认的路径，不在命令转换后的文本中重新推断。
   interactionMode?: InteractionMode; // 已接收的普通排队输入保留接收时选择，不读取后来界面值。
   conversationReference?: PendingConversationReference; // 本次提交捕获的历史会话引用。
   commandResult?: Extract<CommandStartResult, {kind: 'submit_user_message'}>; // 命令 handler 已解析的提交结果，跳过 slash 再解析。
@@ -106,7 +108,8 @@ class ComposerSubmissionController {
       return;
     }
 
-    const userInput = composerOps.getText(this.appContext.composerContext.composer);
+    const draft = composerOps.captureSnapshot(this.appContext.composerContext.composer);
+    const userInput = draft.text;
     const interactionMode = this.appContext.getInteractionMode();
 
     // assistant turn 运行期间先尝试响应期命令，未处理的输入才进入 pending 单槽。
@@ -115,7 +118,7 @@ class ComposerSubmissionController {
 
       // 已允许的响应期命令已立即启动，只消费本次 composer，不改动已有 pending。
       if (commandResult.kind === 'handled') {
-        this.consumeComposerInput(userInput);
+        this.consumeComposerInput(draft);
         this.render();
         return;
       }
@@ -130,21 +133,21 @@ class ComposerSubmissionController {
           this.render();
           return;
         }
-        this.consumeComposerInput(userInput);
+        this.consumeComposerInput(draft);
         this.render();
-        await this.prepareSteeringMessage(messageId, userInput, interactionMode);
+        await this.prepareSteeringMessage(messageId, draft, interactionMode);
         return;
       }
     }
 
     // active turn 的 pending 单槽已被占用时，保留当前 composer 草稿，避免覆盖旧消息。
     const pendingMode = !userInput.trimStart().startsWith('/') && !isShellInteractionMode(interactionMode) ? interactionMode : undefined;
-    if (hasActiveAssistantTurn && !this.appContext.pendingMessageContext.enqueue(userInput, pendingMode)) {
+    if (hasActiveAssistantTurn && !this.appContext.pendingMessageContext.enqueue(userInput, pendingMode, draft.fileMentions.map((mention) => mention.path))) {
       this.render();
       return;
     }
 
-    this.consumeComposerInput(userInput);
+    this.consumeComposerInput(draft);
 
     // active turn 中的普通输入已成功排队，本次不启动新的 assistant turn。
     if (hasActiveAssistantTurn) {
@@ -154,10 +157,14 @@ class ComposerSubmissionController {
 
     const conversationReference = this.appContext.conversationReferenceContext.getPending();
     // 空闲提交在引用准备失败或取消时恢复尚未被新输入占用的 composer。
-    if (!await this.submitDraft(userInput, {interactionMode: pendingMode, conversationReference: conversationReference || undefined})) {
+    if (!await this.submitDraft(userInput, {
+      filePaths: draft.fileMentions.map((mention) => mention.path),
+      interactionMode: pendingMode,
+      conversationReference: conversationReference || undefined
+    })) {
       // 用户已在异步准备期间输入新草稿时，不用旧输入覆盖它。
       if (composerOps.isEmpty(this.appContext.composerContext.composer)) {
-        this.appContext.composerContext.setText(userInput);
+        composerOps.restoreSnapshot(this.appContext.composerContext.composer, draft);
       }
       return;
     }
@@ -204,6 +211,7 @@ class ComposerSubmissionController {
         }
 
         await this.submitDraft(pendingMessage.text, {
+          filePaths: pendingMessage.filePaths,
           interactionMode: pendingMessage.interactionMode,
           onAssistantTurnStarted: () => {
             this.startingPendingTurn = false;
@@ -215,17 +223,18 @@ class ComposerSubmissionController {
     }
   }
 
-  /** 消费一次已接受的 live composer 输入，并保证 history 只记录一次。 */
-  private consumeComposerInput(userInput: string): void {
+  /** 消费一次已接受的草稿，将文本与确认引用一起写入历史而不共享 live 状态。 */
+  private consumeComposerInput(draft: ComposerSnapshot): void {
     this.appContext.composerContext.leaveHistoryBrowsing();
-    this.appContext.composerContext.recordInput(userInput);
+    this.appContext.composerContext.recordInput(draft);
     this.appContext.composerContext.reset();
   }
 
-  /** 准备素材前捕获提交模式；引导拒绝失败读取，普通提交保留既有 unavailable 诊断。 */
-  private async prepareUserRecord(userText: string, displayText?: string, metadata?: UserTranscriptMetadata, rejectFileErrors = false): Promise<UserTranscriptRecord> {
+  /** 仅准备显式确认路径并捕获提交模式；引导拒绝读取失败，普通提交保留 unavailable 诊断。 */
+  private async prepareUserRecord(userText: string, paths: readonly string[], displayText?: string, metadata?: UserTranscriptMetadata, rejectFileErrors = false): Promise<UserTranscriptRecord> {
     const interactionMode = metadata?.interactionMode ?? this.appContext.getInteractionMode();
     const expanded = await expandFileMentionsForUserText(userText, this.appContext.getCurrentCwd(), {
+      paths,
       autoCompressImages: this.appContext.getAutoCompressImages()
     });
     if (rejectFileErrors && expanded.errors?.length) throw new Error(expanded.errors.join('; '));
@@ -238,11 +247,11 @@ class ComposerSubmissionController {
     };
   }
 
-  /** 槽位身份隔离准备完成；只有素材成功才通知抢占，失效 turn 则交给空闲 dispatcher。 */
-  private async prepareSteeringMessage(messageId: number, userInput: string, interactionMode: InteractionMode): Promise<void> {
+  /** 按接收快照准备素材；槽位身份隔离迟到结果，只有素材成功才通知抢占。 */
+  private async prepareSteeringMessage(messageId: number, draft: ComposerSnapshot, interactionMode: InteractionMode): Promise<void> {
     let record: UserTranscriptRecord;
     try {
-      record = await this.prepareUserRecord(userInput, undefined, {interactionMode}, true);
+      record = await this.prepareUserRecord(draft.text, draft.fileMentions.map((mention) => mention.path), undefined, {interactionMode}, true);
     } catch (error: unknown) {
       if (this.appContext.pendingMessageContext.failPreparation(messageId, error instanceof Error ? error.message : String(error))) this.render();
       return;
@@ -257,7 +266,7 @@ class ComposerSubmissionController {
 
   /**
    * 处理已从 composer 消费的文本，依次执行命令、shell、文件 mention、引用和 assistant 路由。
-   * 返回 false 时调用方应恢复原始 composer 文本。
+   * 显式路径始终来自原草稿，命令转换不会新增引用；返回 false 时调用方恢复原始快照。
    */
   private async submitDraft(userInput: string, options: SubmitDraftOptions = {}): Promise<boolean> {
     const conversationReference = options.conversationReference;
@@ -296,7 +305,7 @@ class ComposerSubmissionController {
     }
 
     // file mention 在真正发送时读取文件
-    const userRecord = await this.prepareUserRecord(userText, displayText, {
+    const userRecord = await this.prepareUserRecord(userText, options.filePaths ?? [], displayText, {
       ...userMetadata,
       ...(options.interactionMode ? {interactionMode: options.interactionMode} : {})
     });

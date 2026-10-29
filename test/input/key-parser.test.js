@@ -66,14 +66,14 @@ test('parseKeyChunk maps line feed and ctrl-d to newline and exit', () => {
 
 test('parseKeyChunk parses bracketed paste as one text event and normalizes newlines', () => {
   assert.deepEqual(parseKeyChunk('\x1b[200~hello\r\nworld\ragain\x1b[201~'), [
-    { type: INPUT_EVENTS.TEXT, value: 'hello\nworld\nagain' }
+    { type: INPUT_EVENTS.TEXT, value: 'hello\nworld\nagain', source: 'paste' }
   ]);
 });
 
 test('parseKeyChunk keeps submit outside bracketed paste', () => {
   assert.deepEqual(parseKeyChunk('a\x1b[200~b\rc\x1b[201~\r'), [
     { type: INPUT_EVENTS.TEXT, value: 'a' },
-    { type: INPUT_EVENTS.TEXT, value: 'b\nc' },
+    { type: INPUT_EVENTS.TEXT, value: 'b\nc', source: 'paste' },
     { type: INPUT_EVENTS.SUBMIT }
   ]);
 });
@@ -94,7 +94,7 @@ test('createKeyParser keeps bracketed paste state across chunks', () => {
   ]);
   assert.deepEqual(parser.parse('\nworld\r'), []);
   assert.deepEqual(parser.parse('again\x1b[201~\r'), [
-    { type: INPUT_EVENTS.TEXT, value: 'hello\nworld\nagain' },
+    { type: INPUT_EVENTS.TEXT, value: 'hello\nworld\nagain', source: 'paste' },
     { type: INPUT_EVENTS.SUBMIT }
   ]);
 });
@@ -106,9 +106,48 @@ test('createKeyParser handles split bracketed paste markers', () => {
   assert.deepEqual(parser.parse('0~hello\rwor'), []);
   assert.deepEqual(parser.parse('ld\x1b[20'), []);
   assert.deepEqual(parser.parse('1~x'), [
-    { type: INPUT_EVENTS.TEXT, value: 'hello\nworld' },
+    { type: INPUT_EVENTS.TEXT, value: 'hello\nworld', source: 'paste' },
     { type: INPUT_EVENTS.TEXT, value: 'x' }
   ]);
+});
+
+test('both parsers distinguish a pasted single @ from a typed @', () => {
+  const parser = createKeyParser();
+  for (const parse of [parseKeyChunk, (chunk) => parser.parse(chunk)]) {
+    assert.deepEqual(parse('\x1b[200~@\x1b[201~@'), [
+      {type: INPUT_EVENTS.TEXT, value: '@', source: 'paste'},
+      {type: INPUT_EVENTS.TEXT, value: '@'}
+    ]);
+  }
+});
+
+test('createKeyParser preserves single @ paste origin across split start, payload and end chunks', () => {
+  const start = '\x1b[200~';
+  const end = '\x1b[201~';
+
+  for (let startSplit = 1; startSplit < start.length; startSplit += 1) {
+    for (let endSplit = 1; endSplit < end.length; endSplit += 1) {
+      const parser = createKeyParser();
+      assert.deepEqual(parser.parse(start.slice(0, startSplit)), []);
+      assert.deepEqual(parser.parse(start.slice(startSplit)), []);
+      assert.deepEqual(parser.parse('@'), []);
+      assert.deepEqual(parser.parse(end.slice(0, endSplit)), []);
+      assert.deepEqual(parser.parse(`${end.slice(endSplit)}\r`), [
+        {type: INPUT_EVENTS.TEXT, value: '@', source: 'paste'},
+        {type: INPUT_EVENTS.SUBMIT}
+      ]);
+    }
+  }
+});
+
+test('createKeyParser releases a standalone Escape after the caller finishes the sequence wait', () => {
+  const parser = createKeyParser();
+  assert.deepEqual(parser.parse('\x1b'), []);
+  assert.equal(parser.hasPendingEscape(), true);
+  assert.deepEqual(parser.flushPendingEscape(), {type: INPUT_EVENTS.ESCAPE});
+  assert.equal(parser.hasPendingEscape(), false);
+  assert.equal(parser.flushPendingEscape(), null);
+  assert.deepEqual(parser.parse('@'), [{type: INPUT_EVENTS.TEXT, value: '@'}]);
 });
 
 test('createKeyParser parses split SGR mouse reports without leaking bytes into text', () => {

@@ -1,12 +1,13 @@
 import * as composerOps from '../input/composer';
 import {INPUT_EVENTS} from '../input/event-types';
 import {createKeyParser} from '../input/key-parser';
-import {isShellInteractionMode} from '../types/agent';
 
 import type {InputEvent} from '../types/input';
 import {ActiveInputResolver} from './active-input-resolver';
 import type {AppContext} from './state/app-context';
 import type {FooterPointerController} from './footer-pointer-controller';
+
+const ESCAPE_SEQUENCE_WAIT_MS = 30;
 
 type InputEventControllerOptions = {
   appContext: AppContext; // 提供普通 composer fallback 所需的状态与语义方法。
@@ -39,6 +40,10 @@ class InputEventController {
   private readonly pointer: Pick<FooterPointerController, 'handleEvent'> | null;
   private readonly keyParser = createKeyParser();
   private lastInputAt = 0;
+  private pendingEscape: {
+    timer: ReturnType<typeof setTimeout>; // 为孤立 ESC 留出终端序列后续字节的短暂到达窗口。
+    finish: () => void; // 后续 chunk 或退出接管时释放等待中的 handleChunk。
+  } | null = null;
 
   constructor(options: InputEventControllerOptions) {
     this.appContext = options.appContext;
@@ -55,10 +60,11 @@ class InputEventController {
   }
 
   /**
-   * 解析一个 stdin chunk，并等待该 chunk 中所有异步 command/submit 处理完成。
+   * 解析 stdin 并等待异步路由；孤立 ESC 短暂等待，避免被拆包的粘贴标记误触发取消。
    */
   readonly handleChunk = (chunk: string | Buffer): Promise<void> => {
     this.lastInputAt = Date.now();
+    this.cancelEscapeWait();
     const pendingWork: Array<Promise<void>> = [];
 
     for (const event of this.keyParser.parse(chunk)) {
@@ -69,8 +75,32 @@ class InputEventController {
       }
     }
 
+    if (this.keyParser.hasPendingEscape()) {
+      pendingWork.push(new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(async () => {
+          this.pendingEscape = null;
+          try {
+            const event = this.keyParser.flushPendingEscape();
+            if (event) await this.handleEvent(event);
+            resolve();
+          } catch (error) {
+            reject(error);
+          }
+        }, ESCAPE_SEQUENCE_WAIT_MS);
+        this.pendingEscape = {timer, finish: resolve};
+      }));
+    }
+
     return Promise.all(pendingWork).then(() => undefined);
   };
+
+  /** 停止待定 Esc 的计时交付；下一包继续解析，退出时不再触碰已交还的终端。 */
+  cancelEscapeWait(): void {
+    if (!this.pendingEscape) return;
+    clearTimeout(this.pendingEscape.timer);
+    this.pendingEscape.finish();
+    this.pendingEscape = null;
+  }
 
   /**
    * 优先消费终端协议事件，再把语义事件交给 resolver 的当前消费者；只有明确放行时才进入 composer fallback。
@@ -102,6 +132,7 @@ class InputEventController {
 
   /**
    * 处理未被 surface 消费的 composer 事件；主响应期 Tab 只选择后续提交模式，其他响应锁仍阻止切换。
+   * 普通/计划模式仅在空白边界键入 @ 时打开选择器；粘贴与引用内部编辑保留普通文本语义。
    */
   private handleComposerFallback(event: InputEvent): Promise<void> | void {
     if (event.type === INPUT_EVENTS.OPEN_SUBAGENT_VIEW) {
@@ -120,11 +151,18 @@ class InputEventController {
       return undefined;
     }
 
-    if (event.type === INPUT_EVENTS.TEXT && event.value === '@' && !isShellInteractionMode(this.appContext.getInteractionMode())) {
-      this.appContext.composerContext.leaveHistoryBrowsing();
-      composerOps.insertText(this.appContext.composerContext.composer, '@');
-      this.openFilePicker(this.appContext.composerContext.composer.cursor - 1);
-      return undefined;
+    if (event.type === INPUT_EVENTS.TEXT && event.value === '@' && event.source !== 'paste') {
+      const composer = this.appContext.composerContext.composer;
+      const mode = this.appContext.getInteractionMode();
+      const atBoundary = composer.cursor === 0 || /^\s+$/u.test(composer.chars[composer.cursor - 1]);
+      const insideMention = composer.fileMentions.some((mention) => mention.start < composer.cursor && composer.cursor < mention.end);
+
+      if ((mode === 'normal' || mode === 'plan') && atBoundary && !insideMention) {
+        this.appContext.composerContext.leaveHistoryBrowsing();
+        composerOps.insertText(composer, '@');
+        this.openFilePicker(composer.cursor - 1);
+        return undefined;
+      }
     }
 
     if (event.type === INPUT_EVENTS.TAB) {

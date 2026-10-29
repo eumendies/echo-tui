@@ -1,13 +1,13 @@
 import * as composerOps from '../../input/composer';
 
-import type {ComposerState} from '../../types/composer';
+import type {ComposerSnapshot, ComposerState} from '../../types/composer';
 
 /**
  * 管理 composer 草稿、输入历史和历史浏览态。
  */
 class ComposerContext {
   composer: ComposerState;
-  inputHistory: string[];
+  inputHistory: ComposerSnapshot[];
   historyIndex: number | null;
   isResponding: () => boolean;
 
@@ -26,12 +26,17 @@ class ComposerContext {
     composerOps.setText(this.composer, text);
   }
 
+  /** 将快照历史投影为供命令等只读消费者使用的文本列表。 */
   getInputHistory(): string[] {
-    return [...this.inputHistory];
+    return this.inputHistory.map((input) => input.text);
   }
 
-  recordInput(text: string): void {
-    this.inputHistory.push(text);
+  /** 保存已接受输入的独立快照，文本相同的条目仍保有各自的确认引用。 */
+  recordInput(input: ComposerSnapshot): void {
+    this.inputHistory.push({
+      ...input,
+      fileMentions: input.fileMentions.map((mention) => ({...mention}))
+    });
   }
 
   leaveHistoryBrowsing(): void {
@@ -56,7 +61,7 @@ class ComposerContext {
       }
 
       this.historyIndex = this.inputHistory.length - 1;
-      composerOps.setText(this.composer, this.inputHistory[this.historyIndex]);
+      this.restoreHistoryInput();
       return true;
     }
 
@@ -72,8 +77,15 @@ class ComposerContext {
       this.historyIndex = nextIndex;
     }
 
-    composerOps.setText(this.composer, this.inputHistory[this.historyIndex]);
+    this.restoreHistoryInput();
     return true;
+  }
+
+  /** 按条目恢复确认资格，不通过相同文本匹配；浏览历史时光标仍置于末尾。 */
+  private restoreHistoryInput(): void {
+    const input = this.inputHistory[this.historyIndex!];
+    composerOps.restoreSnapshot(this.composer, input);
+    this.composer.cursor = this.composer.chars.length;
   }
 }
 
