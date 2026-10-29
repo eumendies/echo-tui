@@ -5,6 +5,7 @@ import type {TranscriptRecord} from '../../types/transcript';
 type PendingMessage = {
   id: number; // 单槽条目的身份，用于拒绝移除后的迟到准备结果。
   text: string; // 接收时的原始输入；pending 在真正发送时才展开。
+  filePaths?: string[]; // 普通排队输入已确认的路径副本；引导素材由准备好的 record 独占。
   kind: 'pending' | 'steer'; // 决定走下一轮普通路由还是当前运行的安全边界。
   interactionMode?: InteractionMode; // 普通排队消息接收时的选择；命令和 shell 保留原路由契约。
   targetTurnId?: number; // 引导绑定的主 turn；结束后由 idle dispatcher 唯一接管。
@@ -14,6 +15,7 @@ type PendingMessage = {
 
 type PendingMessageDispatch = {
   text: string; // 保留输入历史与观测使用的原文。
+  filePaths?: string[]; // 普通排队消息独有的路径，不再保留仅编辑时需要的文本范围。
   interactionMode?: InteractionMode; // 普通消息下一轮实际发送时仍沿用该条消息的选择。
   record?: Extract<TranscriptRecord, {role: 'user'}>; // 有该字段时禁止再次展开已准备素材。
 };
@@ -46,13 +48,16 @@ class PendingMessageContext {
     return {preview: normalizePreview(message.text), ...(status ? {status} : {}), ...(message.error ? {error: message.error} : {})};
   }
 
-  /** 槽位为空且文本非空时入队；已有消息时拒绝覆盖。 */
-  enqueue(text: string, interactionMode?: InteractionMode): boolean {
+  /** 槽位为空且文本非空时复制确认路径入队；已有消息时拒绝覆盖。 */
+  enqueue(text: string, interactionMode?: InteractionMode, filePaths: readonly string[] = []): boolean {
     if (this.pending !== null || text === '') {
       return false;
     }
 
-    this.pending = {id: this.nextId++, text, kind: 'pending', ...(interactionMode ? {interactionMode} : {})};
+    this.pending = {
+      id: this.nextId++, text, kind: 'pending', ...(interactionMode ? {interactionMode} : {}),
+      filePaths: [...filePaths]
+    };
     return true;
   }
 
@@ -61,10 +66,13 @@ class PendingMessageContext {
     const message = this.pending;
     if (!message || message.kind === 'steer' && !message.record) return null;
     this.pending = null;
-    return {text: message.text, ...(message.interactionMode ? {interactionMode: message.interactionMode} : {}), ...(message.record ? {record: message.record} : {})};
+    return {text: message.text,
+      ...(message.filePaths ? {filePaths: message.filePaths} : {}),
+      ...(message.interactionMode ? {interactionMode: message.interactionMode} : {}),
+      ...(message.record ? {record: message.record} : {})};
   }
 
-  /** 为活动 turn 预留引导槽位；调用方成功后才消费 composer。 */
+  /** 为活动 turn 预留引导槽位；调用方持有草稿并准备素材，槽位只接收最终记录。 */
   beginSteer(text: string, targetTurnId: number): number | null {
     if (this.pending || text === '') return null;
     const id = this.nextId++;

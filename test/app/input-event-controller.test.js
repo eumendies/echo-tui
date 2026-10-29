@@ -358,6 +358,135 @@ test('InputEventController keeps parser state across split bracketed paste chunk
   assert.equal(composerOps.getText(harness.appContext.composerContext.composer), 'hello world');
 });
 
+test('InputEventController only opens the picker at whitespace boundaries in normal and plan modes', () => {
+  for (const mode of ['normal', 'plan']) {
+    for (const prefix of ['', '请看 ', '🙂\t', 'e\u0301\n', '正文　']) {
+      const harness = createHarness();
+      harness.appContext.setInteractionMode(mode);
+      harness.appContext.composerContext.setText(`${prefix}tail`);
+      const composer = harness.appContext.composerContext.composer;
+      composer.cursor = composerOps.createComposer(prefix).chars.length;
+      const triggerStart = composer.cursor;
+
+      harness.controller.handleEvent({type: INPUT_EVENTS.TEXT, value: '@'});
+
+      assert.equal(composerOps.getText(composer), `${prefix}@tail`);
+      assert.deepEqual(harness.calls, [`picker-open:${triggerStart}`]);
+      assert.deepEqual(composer.fileMentions, []);
+    }
+  }
+});
+
+test('InputEventController treats email, version and unseparated Chinese @ as literal input', async () => {
+  for (const text of ['user@example.com', 'pkg@version', '请看@这里']) {
+    const harness = createHarness();
+    await harness.controller.handleChunk(text);
+    assert.equal(composerOps.getText(harness.appContext.composerContext.composer), text);
+    assert.equal(harness.calls.some((call) => call.startsWith('picker-open:')), false);
+    assert.deepEqual(harness.appContext.composerContext.composer.fileMentions, []);
+  }
+});
+
+test('InputEventController leaves @ literal in shell and shell-local modes', () => {
+  for (const mode of ['shell', 'shell-local']) {
+    const harness = createHarness();
+    harness.appContext.setInteractionMode(mode);
+    harness.controller.handleEvent({type: INPUT_EVENTS.TEXT, value: '@'});
+    assert.equal(composerOps.getText(harness.appContext.composerContext.composer), '@');
+    assert.deepEqual(harness.calls, ['render']);
+    assert.deepEqual(harness.appContext.composerContext.composer.fileMentions, []);
+  }
+});
+
+test('InputEventController never opens a picker for bracketed paste, including a split single @', async () => {
+  for (const text of ['@', '@README.md', '@"my note.md"', '请看 @README.md\nnext']) {
+    const harness = createHarness();
+    await harness.controller.handleChunk('\x1b[20');
+    await harness.controller.handleChunk(`0~${text}\x1b[2`);
+    assert.equal(composerOps.getText(harness.appContext.composerContext.composer), '');
+    await harness.controller.handleChunk('01~');
+    assert.equal(composerOps.getText(harness.appContext.composerContext.composer), text);
+    assert.deepEqual(harness.calls, ['render']);
+    assert.deepEqual(harness.appContext.composerContext.composer.fileMentions, []);
+  }
+});
+
+test('InputEventController disambiguates a first-byte split paste marker from standalone Escape', async () => {
+  const pasted = createHarness({localSurfaceActive: true});
+  const first = pasted.controller.handleChunk('\x1b');
+  assert.deepEqual(pasted.calls, []);
+  await pasted.controller.handleChunk('[200~@\x1b[201~');
+  await first;
+  assert.deepEqual(pasted.calls, []);
+
+  const escaped = createHarness({localSurfaceActive: true});
+  await escaped.controller.handleChunk('\x1b');
+  assert.deepEqual(escaped.calls, ['dismiss-local', 'render']);
+});
+
+test('InputEventController cancels deferred Escape delivery when detached', async () => {
+  const harness = createHarness({localSurfaceActive: true});
+  const pending = harness.controller.handleChunk('\x1b');
+  harness.controller.cancelEscapeWait();
+  await pending;
+  await new Promise((resolve) => setTimeout(resolve, 45));
+  assert.deepEqual(harness.calls, []);
+});
+
+for (const asynchronous of [false, true]) {
+  test(`InputEventController propagates ${asynchronous ? 'asynchronous' : 'synchronous'} deferred Escape failures`, async () => {
+    const error = new Error('Escape handler failed');
+    const fail = () => { throw error; };
+    const harness = createHarness({command: {
+      hasActiveSession: () => true,
+      handleEvent: asynchronous ? async () => fail() : fail
+    }});
+    await assert.rejects(harness.controller.handleChunk('\x1b'), error);
+  });
+}
+
+test('InputEventController does not open a picker inside a confirmed quoted path even after whitespace', () => {
+  const harness = createHarness();
+  const composer = harness.appContext.composerContext.composer;
+  composerOps.replaceWithFileMentions(composer, 0, 0, ['my note.md']);
+  composer.cursor = composer.chars.indexOf(' ') + 1;
+  harness.controller.handleEvent({type: INPUT_EVENTS.TEXT, value: '@'});
+
+  assert.equal(composerOps.getText(composer), '@"my @note.md" ');
+  assert.deepEqual(composer.fileMentions, []);
+  assert.deepEqual(harness.calls, ['render']);
+});
+
+test('InputEventController permits @ at a confirmed reference start boundary without revoking the reference', () => {
+  const harness = createHarness();
+  const composer = harness.appContext.composerContext.composer;
+  composerOps.insertText(composer, ' ');
+  composerOps.replaceWithFileMentions(composer, 1, 1, ['my note.md']);
+  const mention = {...composer.fileMentions[0]};
+  composer.cursor = mention.start;
+  harness.controller.handleEvent({type: INPUT_EVENTS.TEXT, value: '@'});
+
+  assert.equal(composerOps.getText(composer), ' @@"my note.md" ');
+  assert.deepEqual(composer.fileMentions, [{...mention, start: mention.start + 1, end: mention.end + 1}]);
+  assert.deepEqual(harness.calls, ['picker-open:1']);
+});
+
+test('InputEventController routes @ to active surfaces before considering a picker', () => {
+  for (const surface of ['userQuestion', 'toolApproval', 'filePicker', 'autoUpdate', 'command', 'localSurfaceActive']) {
+    const harness = createHarness(surface === 'localSurfaceActive' ? {[surface]: true} : {
+      [surface]: {
+        hasActiveRequest: () => true,
+        hasActiveSession: () => true,
+        handleEvent: () => { harness.calls.push('surface'); },
+        open: () => harness.calls.push('picker-open')
+      }
+    });
+    harness.controller.handleEvent({type: INPUT_EVENTS.TEXT, value: '@'});
+    assert.equal(composerOps.getText(harness.appContext.composerContext.composer), '');
+    assert.equal(harness.calls.some((call) => call.startsWith('picker-open')), false);
+  }
+});
+
 test('InputEventController handles tuning, approval shortcut, slash completion, and history browsing', () => {
   const harness = createHarness();
   harness.controller.handleEvent({type: INPUT_EVENTS.TOGGLE_MODEL_TUNING});
@@ -378,7 +507,7 @@ test('InputEventController handles tuning, approval shortcut, slash completion, 
   assert.equal(harness.calls.includes('submit'), true);
 
   harness.appContext.composerContext.reset();
-  harness.appContext.composerContext.recordInput('previous input');
+  harness.appContext.composerContext.recordInput(composerOps.captureSnapshot(composerOps.createComposer('previous input')));
   harness.controller.handleEvent({type: INPUT_EVENTS.MOVE_UP});
   assert.equal(composerOps.getText(harness.appContext.composerContext.composer), 'previous input');
 });

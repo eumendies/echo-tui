@@ -959,7 +959,7 @@ test('AppContext budget snapshots change display only and preserve active sessio
   context.transcriptContext.applyCompaction({summaryText: 'archived summary', activeStartIndex: 1, createdAt: '2026-05-19T00:00:00.000Z'});
   context.beginChangeCheckpoint();
   context.beginUserTurn('active request');
-  context.composerContext.recordInput('active request');
+  context.composerContext.recordInput(composerOps.captureSnapshot(composerOps.createComposer('active request')));
   context.composerContext.setText('unsent draft');
   context.transcriptContext.updateTodoState({items: [{id: 'todo_1', text: 'keep task', status: 'open'}], updatedAt: '2026-05-19T00:00:01.000Z'});
   const turn = context.beginAssistantTurn();
@@ -1821,7 +1821,7 @@ test('AppContext tunes model and effort without changing composer draft or histo
     const context = createContext();
     context.configureSlashSuggestions([{name: 'model', description: '切换模型'}], () => false);
     context.composerContext.setText('/mo');
-    context.composerContext.inputHistory.push('older prompt');
+    context.composerContext.recordInput(composerOps.captureSnapshot(composerOps.createComposer('older prompt')));
     context.setContextUsage({usedTokens: 10, contextWindow: 100, source: 'provider'});
     const originalComposer = structuredClone(context.composerContext.composer);
 
@@ -1847,7 +1847,7 @@ test('AppContext tunes model and effort without changing composer draft or histo
     assert.equal(readConfig().llm.selectedModel, 'fast');
     assert.equal(readConfig().llm.models[1].reasoning.effort, 'high');
     assert.deepEqual(context.modelContext.getAgentSelection(), {modelProfileId: 'deep', reasoningEffortOverride: 'xhigh'});
-    assert.deepEqual(context.composerContext.inputHistory, ['older prompt']);
+    assert.deepEqual(context.composerContext.inputHistory, [composerOps.captureSnapshot(composerOps.createComposer('older prompt'))]);
     assert.deepEqual(context.composerContext.composer, originalComposer);
     assert.equal(context.getContextUsage(), null);
     assert.equal(context.createRenderState().statusLine.model.label, 'gpt-deep');
@@ -2741,7 +2741,7 @@ test('AppContext exposes semantic subcontexts for resume sessions and composer s
   const context = createContext({ transcriptStore });
 
   composerOps.setText(context.composerContext.composer, 'draft question');
-  context.composerContext.inputHistory.push('previous input');
+  context.composerContext.recordInput(composerOps.captureSnapshot(composerOps.createComposer('previous input')));
   context.turnContext.responding = true;
 
   assert.equal(context.composerContext.getText(), 'draft question');
@@ -2832,7 +2832,8 @@ test('AppContext projects only the pending message preview and updates the Esc s
 test('AppContext browseHistory only enters history mode from an empty idle composer', () => {
   const context = createContext();
 
-  context.composerContext.inputHistory.push('first', 'second');
+  context.composerContext.recordInput(composerOps.captureSnapshot(composerOps.createComposer('first')));
+  context.composerContext.recordInput(composerOps.captureSnapshot(composerOps.createComposer('second')));
   assert.equal(context.composerContext.browseHistory(1), false);
 
   composerOps.setText(context.composerContext.composer, 'draft');

@@ -4,7 +4,6 @@ import * as path from 'node:path';
 import * as composerOps from '../../input/composer';
 import {INPUT_EVENTS} from '../../input/event-types';
 import {formatFileMention} from '../../input/file-mentions';
-import {splitGraphemes} from '../../input/graphemes';
 import {capUtf8Text} from '../../tools/tool-handler-utils';
 import {calculateCommandSurfaceMaxLines} from '../../render/footer';
 import {calculateFilePickerPreviewMaxScroll} from '../../render/footer/file-picker-surface';
@@ -265,6 +264,7 @@ class FilePickerContext {
     };
   }
 
+  /** 追加查询后使用 composer 实际边界，避免组合字符跨输入事件合并时吞掉后文。 */
   private handleText(value: string): void {
     if (!this.state) {
       return;
@@ -282,12 +282,13 @@ class FilePickerContext {
       index: 0,
       notice: undefined,
       previewScroll: 0,
-      query: this.state.query + value,
-      triggerEnd: this.state.triggerEnd + splitGraphemes(value).length
+      query: this.composer.chars.slice(this.state.triggerStart + 1, this.composer.cursor).join(''),
+      triggerEnd: this.composer.cursor
     };
     this.options.onChange();
   }
 
+  /** 按 grapheme 删除查询；同步实际范围与过滤文本，删除 @ 时关闭选择器。 */
   private handleBackspace(): void {
     if (!this.state) {
       return;
@@ -300,7 +301,7 @@ class FilePickerContext {
 
     composerOps.replaceRange(this.composer, this.state.triggerEnd - 1, this.state.triggerEnd, '');
 
-    if (this.state.triggerEnd - 1 <= this.state.triggerStart) {
+    if (this.composer.cursor <= this.state.triggerStart) {
       this.close();
       return;
     }
@@ -311,8 +312,8 @@ class FilePickerContext {
       index: 0,
       notice: undefined,
       previewScroll: 0,
-      query: this.state.query.slice(0, -1),
-      triggerEnd: this.state.triggerEnd - 1
+      query: this.composer.chars.slice(this.state.triggerStart + 1, this.composer.cursor).join(''),
+      triggerEnd: this.composer.cursor
     };
     this.options.onChange();
   }
@@ -432,6 +433,10 @@ class FilePickerContext {
     this.options.onChange();
   }
 
+  /**
+   * Enter 确认当前项或已选路径，原子替换查询并建立引用范围；无可选项时保留面板与普通查询。
+   * 引用及光标使用 composer 的 grapheme 索引，选择和浏览本身不建立引用。
+   */
   private confirm(): void {
     const entry = this.currentEntry();
 
@@ -448,8 +453,7 @@ class FilePickerContext {
       return;
     }
 
-    const replacement = `${paths.map(formatFileMention).join(' ')} `;
-    composerOps.replaceRange(this.composer, this.state.triggerStart, this.state.triggerEnd, replacement);
+    composerOps.replaceWithFileMentions(this.composer, this.state.triggerStart, this.state.triggerEnd, paths);
     this.state = null;
     this.options.onChange();
   }

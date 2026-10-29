@@ -2,6 +2,14 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {PendingMessageContext} = require('../../src/app/state/pending-message-context');
+const composerOps = require('../../src/input/composer');
+
+function fileSnapshot(filePath) {
+  const composer = composerOps.createComposer('read ');
+  composerOps.replaceWithFileMentions(composer, composer.cursor, composer.cursor, [filePath]);
+  composerOps.backspace(composer);
+  return composerOps.captureSnapshot(composer);
+}
 
 test('PendingMessageContext stores one text value and rejects replacement', () => {
   const context = new PendingMessageContext();
@@ -17,7 +25,7 @@ test('PendingMessageContext claims once and clears', () => {
 
   assert.equal(context.enqueue('queued'), true);
   const claimed = context.claimForDispatch();
-  assert.deepEqual(claimed, {text: 'queued'});
+  assert.deepEqual(claimed, {text: 'queued', filePaths: []});
   assert.equal(context.claimForDispatch(), null);
   assert.equal(context.getRenderState(), null);
 
@@ -100,4 +108,56 @@ test('preparation crossing final stays owned by idle dispatch and never notifies
   assert.equal(next.claim(), null);
   assert.deepEqual(context.claimForDispatch(), {text: 'file mention', record});
   assert.equal(context.getPending(), null);
+});
+
+test('PendingMessageContext clones confirmed pending paths and rejects another draft without replacing them', () => {
+  const context = new PendingMessageContext();
+  const first = fileSnapshot('first.txt');
+  const paths = first.fileMentions.map((mention) => mention.path);
+  const expected = [...paths];
+  const second = fileSnapshot('second.txt');
+  assert.equal(context.enqueue(first.text, 'plan', paths), true);
+  paths[0] = 'changed-path.txt';
+  paths.push('extra.txt');
+  first.fileMentions[0].path = 'mutated.txt';
+  first.fileMentions.length = 0;
+  assert.equal(context.enqueue(second.text, 'normal', second.fileMentions.map((mention) => mention.path)), false);
+  assert.deepEqual(context.claimForDispatch(), {text: first.text, interactionMode: 'plan', filePaths: expected});
+  assert.equal(context.claimForDispatch(), null);
+  assert.deepEqual(second.fileMentions, fileSnapshot('second.txt').fileMentions);
+});
+
+test('PendingMessageContext prepared steering dispatch owns material only in its record, without refs', () => {
+  const context = new PendingMessageContext();
+  context.createSteeringInputPort(1);
+  const input = fileSnapshot('note.txt');
+  const id = context.beginSteer(input.text, 1);
+  input.fileMentions[0].path = 'later.txt';
+  input.fileMentions.length = 0;
+  const second = fileSnapshot('second.txt');
+  assert.equal(context.beginSteer(second.text, 1), null);
+  assert.equal(context.claimForDispatch(), null);
+  context.finishTurn(1);
+  const record = {...userRecord('prepared material'), attachments: [{kind: 'image', mediaType: 'image/png', dataBase64: 'prepared', path: 'note.png', sizeBytes: 6}]};
+  assert.equal(context.completePreparation(id, record), true);
+  const dispatched = context.claimForDispatch();
+  assert.deepEqual(dispatched, {text: input.text, record});
+  assert.equal(dispatched.record, record);
+  assert.equal(Object.hasOwn(dispatched, 'filePaths'), false);
+  assert.equal(Object.hasOwn(dispatched, 'fileMentions'), false);
+  assert.equal(context.claimForDispatch(), null);
+});
+
+test('PendingMessageContext clearing releases previous paths and plain pending retains an empty path list', () => {
+  const context = new PendingMessageContext();
+  const input = fileSnapshot('note.txt');
+  context.enqueue(input.text, undefined, input.fileMentions.map((mention) => mention.path));
+  context.clear();
+  context.enqueue(input.text, undefined, []);
+  assert.deepEqual(context.claimForDispatch(), {text: input.text, filePaths: []});
+  const id = context.beginSteer(input.text, 1);
+  const record = userRecord(input.text);
+  context.completePreparation(id, record);
+  context.finishTurn(1);
+  assert.deepEqual(context.claimForDispatch(), {text: input.text, record});
 });

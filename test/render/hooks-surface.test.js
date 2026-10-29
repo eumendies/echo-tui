@@ -317,6 +317,16 @@ test('renderHooksSurface uses the same focus bar for selected rows and feedback 
   assert.doesNotMatch(lines[testIndex], /▌/);
 });
 
+test('renderHooksSurface positions the editing cursor at grapheme boundaries', () => {
+  const text = stripAnsi(renderHooksSurface(createHooksSurface({
+    mode: 'entryDetail',
+    editTarget: 'command',
+    editBuffer: 'echo 👩‍💻e\u0301x',
+    editCursor: 7
+  }), 100).lines.join('\n'));
+  assert.match(text, /echo 👩‍💻e\u0301█x/u);
+});
+
 test('renderHooksSurface renders timeout test status', () => {
   const layout = renderHooksSurface(createHooksSurface({
     mode: 'entries',

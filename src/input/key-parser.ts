@@ -7,7 +7,9 @@ type SequenceMatch = {
 };
 
 type KeyParser = {
-  parse: (chunk: string | Buffer) => InputEvent[];
+  parse: (chunk: string | Buffer) => InputEvent[]; // 按输入流边界解析，保留未完整到达的终端序列。
+  hasPendingEscape: () => boolean; // 末尾孤立 ESC 尚可能是下一包控制序列的起始。
+  flushPendingEscape: () => InputEvent | null; // 判别等待结束后交付单个取消事件，没有待定 ESC 则返回空值。
 };
 
 const BRACKETED_PASTE_START = '\x1b[200~';
@@ -79,6 +81,18 @@ class StatefulKeyParser {
 
   private pasting = false;
 
+  /** 仅孤立 ESC 需要由调用方定时判别；已有完整前缀继续等待下一包。 */
+  hasPendingEscape(): boolean {
+    return this.normalPending === '\x1b';
+  }
+
+  /** 等待窗口结束时释放真正的 Esc，不能把它与之后独立输入的字符拼接。 */
+  flushPendingEscape(): InputEvent | null {
+    if (!this.hasPendingEscape()) return null;
+    this.normalPending = '';
+    return {type: INPUT_EVENTS.ESCAPE};
+  }
+
   /**
    * 解析一个 stdin chunk，并在 bracketed paste 结束前缓存粘贴内容。
    */
@@ -139,7 +153,8 @@ class StatefulKeyParser {
       this.pasteBuffer += incoming.slice(0, pasteEnd);
       events.push({
         type: INPUT_EVENTS.TEXT,
-        value: normalizePastedText(this.pasteBuffer)
+        value: normalizePastedText(this.pasteBuffer),
+        source: 'paste'
       });
       this.pasteBuffer = '';
       this.pasting = false;
@@ -169,7 +184,8 @@ export function parseKeyChunk(chunk: string | Buffer): InputEvent[] {
     if (paste) {
       events.push({
         type: INPUT_EVENTS.TEXT,
-        value: normalizePastedText(paste.payload)
+        value: normalizePastedText(paste.payload),
+        source: 'paste'
       });
       index = paste.endIndex;
       continue;
@@ -358,7 +374,7 @@ function splitTrailingPrefix(text: string, target: string, minLength: number): {
  * 保留尾部尚未结束的 paste、SGR 鼠标或 CPR 序列，避免拆包残片被无状态 parser 误认为普通文本。
  */
 function splitTrailingControlPrefix(text: string): {discard: boolean; ready: string; pending: string} {
-  const paste = splitTrailingPrefix(text, BRACKETED_PASTE_START, 2);
+  const paste = splitTrailingPrefix(text, BRACKETED_PASTE_START, 1);
 
   if (paste.pending !== '') {
     return {...paste, discard: false};

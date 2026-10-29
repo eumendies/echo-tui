@@ -356,15 +356,13 @@ function projectCommandText(text: string): string {
     .join('');
 }
 
-/** 将编辑光标从 code point 索引映射到单行 grapheme 投影。 */
+/** 按编辑模型的 grapheme 光标生成安全单行投影，空白替换不改变 cluster 边界。 */
 function projectCommandTextWithCursor(text: string, cursor: number | undefined): {chars: string[]; cursor: number} {
-  const codePoints = Array.from(text);
-  const codePointCursor = Math.min(Math.max(0, Number.isInteger(cursor) ? Number(cursor) : codePoints.length), codePoints.length);
-  const chars = splitGraphemes(projectCommandText(text));
-  const projectedPrefix = projectCommandText(codePoints.slice(0, codePointCursor).join(''));
+  const graphemes = splitGraphemes(text);
+  const chars = graphemes.map((grapheme) => /[\t\r\n]/u.test(grapheme) ? ' ' : grapheme);
   return {
     chars,
-    cursor: Math.min(splitGraphemes(projectedPrefix).length, chars.length)
+    cursor: Math.min(Math.max(0, Number.isInteger(cursor) ? Number(cursor) : chars.length), chars.length)
   };
 }
 

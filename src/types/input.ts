@@ -8,8 +8,9 @@ export type ControlInputEventType = Exclude<
 >;
 
 export type TextInputEvent = {
-  type: typeof INPUT_EVENTS.TEXT;
-  value: string;
+  type: typeof INPUT_EVENTS.TEXT; // 交给当前输入消费者的普通文本事件。
+  value: string; // 原始文本内容；粘贴换行已统一为 LF。
+  source?: 'paste'; // bracketed paste 的明确来源；缺省不推测终端是否粘贴。
 };
 
 export type UnknownInputEvent = {

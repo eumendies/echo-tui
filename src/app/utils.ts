@@ -1,4 +1,3 @@
-import {parseFileMentions} from '../input/file-mentions';
 import {
   DEFAULT_MAX_DIRECTORY_ENTRIES,
   DEFAULT_MAX_FILE_CONTENT_BYTES,
@@ -23,6 +22,7 @@ type ExpandedFileContext = {
 
 type ExpandFileMentionsOptions = {
   autoCompressImages: boolean; // 控制 mention 图片超过最终附件上限时是否自动缩小。
+  paths?: readonly string[]; // 本次提交明确确认的实际路径；缺省或为空时不读取文件。
 };
 
 /**
@@ -37,16 +37,15 @@ function moveWrappedIndex(index: number, direction: number, length: number): num
 }
 
 /**
- * 展开用户输入中的路径 mention，生成模型可见的文件、目录上下文和图片附件。
+ * 仅展开本次提交显式确认的路径，按 cwd 解析并去重生成模型上下文和图片附件。
+ * 不解析用户文本；路径缺省或为空时原样返回，不读取文件或生成路径错误，与终端状态无关。
  */
 async function expandFileMentionsForUserText(userText: string, cwd: string, options: ExpandFileMentionsOptions = {autoCompressImages: true}): Promise<ExpandedFileContext> {
-  const mentions = parseFileMentions(userText);
-
-  if (mentions.length === 0) {
+  if (!options.paths?.length) {
     return {text: userText};
   }
 
-  const uniquePaths = Array.from(new Set(mentions.map((mention) => mention.path)));
+  const uniquePaths = Array.from(new Set(options.paths));
   const sections: string[] = [];
   const attachments: ToolResultAttachment[] = [];
   const errors: string[] = [];
