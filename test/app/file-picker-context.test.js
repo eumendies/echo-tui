@@ -18,6 +18,27 @@ function createProject() {
   return cwd;
 }
 
+test('FilePickerContext query resegmentation and backspace never consume the existing suffix', (t) => {
+  const cwd = createProject();
+  t.after(() => fs.rmSync(cwd, {recursive: true, force: true}));
+  const name = 'e\u0301👩‍💻.txt';
+  fs.writeFileSync(path.join(cwd, name), 'contents');
+  const composer = composerOps.createComposer('@ 保留后文');
+  const picker = new FilePickerContext(composer, {columns: () => 80, cwd: () => cwd, onChange() {}});
+  picker.open(0);
+  for (const char of Array.from('e\u0301👩‍💻')) {
+    picker.handleEvent({type: INPUT_EVENTS.TEXT, value: char});
+  }
+  assert.equal(picker.getSurface().query, 'e\u0301👩‍💻');
+  assert.equal(composerOps.getText(composer), '@e\u0301👩‍💻 保留后文');
+  picker.handleEvent({type: INPUT_EVENTS.BACKSPACE});
+  assert.equal(picker.getSurface().query, 'e\u0301');
+  assert.equal(composerOps.getText(composer), '@e\u0301 保留后文');
+  picker.handleEvent({type: INPUT_EVENTS.SUBMIT});
+  assert.equal(composerOps.getText(composer), `@${name}  保留后文`);
+  assert.equal(composer.fileMentions[0].path, name);
+});
+
 test('FilePickerContext uses Enter to insert directories without entering them', () => {
   const cwd = createProject();
   const composer = composerOps.createComposer('@');
@@ -32,6 +53,7 @@ test('FilePickerContext uses Enter to insert directories without entering them',
 
   assert.equal(picker.getSurface(), null);
   assert.equal(composerOps.getText(composer), '@app ');
+  assert.deepEqual(composer.fileMentions, [{start: 0, end: 4, path: 'app'}]);
 });
 
 test('FilePickerContext uses Right to enter directories and updates absolute cwd', () => {
@@ -105,6 +127,8 @@ test('FilePickerContext inserts trailing space after file mention', () => {
   picker.handleEvent({type: INPUT_EVENTS.SUBMIT});
 
   assert.equal(composerOps.getText(composer), '@README.md ');
+  assert.deepEqual(composer.fileMentions, [{start: 0, end: 10, path: 'README.md'}]);
+  assert.equal(composer.cursor, composer.chars.length);
 });
 
 test('FilePickerContext supports selecting directories with files', () => {
@@ -116,9 +140,14 @@ test('FilePickerContext supports selecting directories with files', () => {
   picker.handleEvent({type: INPUT_EVENTS.TEXT, value: ' '});
   picker.handleEvent({type: INPUT_EVENTS.MOVE_DOWN});
   picker.handleEvent({type: INPUT_EVENTS.TEXT, value: ' '});
+  assert.deepEqual(composer.fileMentions, []);
   picker.handleEvent({type: INPUT_EVENTS.SUBMIT});
 
   assert.equal(composerOps.getText(composer), '@app @README.md ');
+  assert.deepEqual(composer.fileMentions, [
+    {start: 0, end: 4, path: 'app'},
+    {start: 5, end: 15, path: 'README.md'}
+  ]);
 });
 
 test('FilePickerContext lazy loads direct children without recursive descendants', () => {
@@ -205,6 +234,7 @@ test('FilePickerContext consumes Esc by closing the picker surface', () => {
   assert.equal(picker.getSurface(), null);
   assert.equal(composerOps.getText(composer), '@');
   assert.equal(updates, 2);
+  assert.deepEqual(composer.fileMentions, []);
 });
 
 test('FilePickerContext mouse entry handling focuses entries, enters directories, and never inserts mentions directly', () => {
@@ -220,10 +250,111 @@ test('FilePickerContext mouse entry handling focuses entries, enters directories
   picker.handlePointerEntry(1, true);
   assert.deepEqual(picker.getSurface().selectedPaths, ['README.md']);
   assert.equal(composerOps.getText(composer), '@');
+  assert.deepEqual(composer.fileMentions, []);
 
   picker.handlePointerEntry(0, true);
   assert.equal(picker.getSurface().currentDir, path.join(cwd, 'app'));
   assert.equal(composerOps.getText(composer), '@');
+  assert.deepEqual(composer.fileMentions, []);
+});
+
+test('FilePickerContext confirms quoted Unicode paths and preserves existing references outside the query', (t) => {
+  const cwd = createProject();
+  t.after(() => fs.rmSync(cwd, {recursive: true, force: true}));
+  const selectedPath = '笔记 e\u0301👩‍💻.md';
+  fs.writeFileSync(path.join(cwd, selectedPath), 'note');
+  const composer = composerOps.createComposer('🙂 e\u0301 ');
+  composerOps.replaceWithFileMentions(composer, composer.cursor, composer.cursor, ['README.md']);
+  const firstMention = {...composer.fileMentions[0]};
+  const triggerStart = composer.cursor;
+  composerOps.insertText(composer, '@后文');
+  const picker = new FilePickerContext(composer, {columns: () => 80, cwd: () => cwd, onChange: () => {}});
+
+  picker.open(triggerStart);
+  picker.handleEvent({type: INPUT_EVENTS.TEXT, value: '笔记', source: 'paste'});
+  assert.deepEqual(composer.fileMentions, [firstMention]);
+  assert.equal(picker.getSurface().entries.length, 1);
+  picker.handleEvent({type: INPUT_EVENTS.SUBMIT});
+
+  const display = '@"笔记 e\u0301👩‍💻.md"';
+  const mentionEnd = triggerStart + composerOps.createComposer(display).chars.length;
+  assert.equal(composerOps.getText(composer), `🙂 e\u0301 @README.md ${display} 后文`);
+  assert.deepEqual(composer.fileMentions, [firstMention, {start: triggerStart, end: mentionEnd, path: selectedPath}]);
+  assert.equal(composer.cursor, mentionEnd + 1);
+  assert.equal(picker.hasActiveRequest(), false);
+});
+
+test('FilePickerContext query matches, Space selection and Esc cancellation never establish references', (t) => {
+  const cwd = createProject();
+  t.after(() => fs.rmSync(cwd, {recursive: true, force: true}));
+  const composer = composerOps.createComposer('@');
+  const picker = new FilePickerContext(composer, {columns: () => 80, cwd: () => cwd, onChange: () => {}});
+
+  picker.open(0);
+  picker.handleEvent({type: INPUT_EVENTS.TEXT, value: 'README.md', source: 'paste'});
+  assert.equal(picker.getSurface().entries.length, 1);
+  assert.deepEqual(composer.fileMentions, []);
+  picker.handleEvent({type: INPUT_EVENTS.TEXT, value: ' '});
+  assert.deepEqual(picker.getSurface().selectedPaths, ['README.md']);
+  assert.deepEqual(composer.fileMentions, []);
+  picker.handleEvent({type: INPUT_EVENTS.ESCAPE});
+
+  assert.equal(composerOps.getText(composer), '@README.md');
+  assert.deepEqual(composer.fileMentions, []);
+  assert.equal(picker.hasActiveRequest(), false);
+});
+
+test('FilePickerContext confirms mouse-selected directory and quoted file as separate references only on Enter', (t) => {
+  const cwd = createProject();
+  t.after(() => fs.rmSync(cwd, {recursive: true, force: true}));
+  fs.writeFileSync(path.join(cwd, 'my note.md'), 'note');
+  const composer = composerOps.createComposer('@');
+  const picker = new FilePickerContext(composer, {columns: () => 80, cwd: () => cwd, onChange: () => {}});
+  picker.open(0);
+  picker.handleEvent({type: INPUT_EVENTS.TEXT, value: ' '});
+  const fileIndex = picker.getSurface().entries.findIndex((entry) => entry.path === 'my note.md');
+  picker.handlePointerEntry(fileIndex, true);
+  assert.deepEqual(picker.getSurface().selectedPaths, ['app', 'my note.md']);
+  assert.deepEqual(composer.fileMentions, []);
+  assert.equal(composerOps.getText(composer), '@');
+
+  picker.handleEvent({type: INPUT_EVENTS.SUBMIT});
+
+  assert.equal(composerOps.getText(composer), '@app @"my note.md" ');
+  assert.deepEqual(composer.fileMentions, [
+    {start: 0, end: 4, path: 'app'},
+    {start: 5, end: 18, path: 'my note.md'}
+  ]);
+  assert.equal(composer.cursor, 19);
+});
+
+test('FilePickerContext cannot confirm empty, unmatched or unsupported entries', (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-file-picker-no-confirm-'));
+  t.after(() => fs.rmSync(cwd, {recursive: true, force: true}));
+  const composer = composerOps.createComposer('@');
+  const picker = new FilePickerContext(composer, {columns: () => 80, cwd: () => cwd, onChange: () => {}});
+  picker.open(0);
+  picker.handleEvent({type: INPUT_EVENTS.SUBMIT});
+  assert.equal(picker.hasActiveRequest(), true);
+  assert.deepEqual(composer.fileMentions, []);
+  assert.equal(composerOps.getText(composer), '@');
+
+  fs.writeFileSync(path.join(cwd, 'binary.bin'), Buffer.from([0, 1, 2]));
+  picker.close();
+  picker.open(0);
+  picker.handleEvent({type: INPUT_EVENTS.TEXT, value: ' '});
+  picker.handleEvent({type: INPUT_EVENTS.SUBMIT});
+  assert.match(picker.getSurface().notice, /不支持选择/);
+  assert.deepEqual(picker.getSurface().selectedPaths, []);
+  assert.deepEqual(composer.fileMentions, []);
+  assert.equal(composerOps.getText(composer), '@');
+
+  picker.handleEvent({type: INPUT_EVENTS.TEXT, value: 'missing'});
+  picker.handleEvent({type: INPUT_EVENTS.SUBMIT});
+  assert.deepEqual(picker.getSurface().entries, []);
+  assert.match(picker.getSurface().notice, /没有可插入路径/);
+  assert.deepEqual(composer.fileMentions, []);
+  assert.equal(composerOps.getText(composer), '@missing');
 });
 
 test('FilePickerContext ignores unavailable previews without changing selection or composer', () => {

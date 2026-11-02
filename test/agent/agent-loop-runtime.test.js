@@ -1381,8 +1381,9 @@ test('createAgentLoopRuntime keeps provider-visible tool definitions stable acro
 
   await withPatchedAgentRuntime(createAgent, async () => {
     const runAgent = createAgentLoopRuntime(TEST_CWD, mcpManager);
-    await runAgent({records: [{role: 'user', text: 'normal'}], interactionMode: 'normal'});
-    await runAgent({records: [{role: 'user', text: 'plan'}], interactionMode: 'plan'});
+    const userConfigSnapshot = createRuntimeSnapshot(1);
+    await runAgent({records: [{role: 'user', text: 'normal'}], interactionMode: 'normal', userConfigSnapshot});
+    await runAgent({records: [{role: 'user', text: 'plan'}], interactionMode: 'plan', userConfigSnapshot});
   });
 
   assert.equal(captured.length, 2);
@@ -1937,7 +1938,7 @@ test('createAgentLoopRuntime creates todos, persists state, and injects suffix o
 
   const result = await withPatchedAgentRuntime(agent, () => {
     const runAgent = createAgentLoopRuntime(TEST_CWD);
-    return runAgent({records: [{role: 'user', text: 'work'}], interactionMode: 'plan'}, {
+    return runAgent({records: [{role: 'user', text: 'work'}], interactionMode: 'plan', userConfigSnapshot: createRuntimeSnapshot(1)}, {
       onTodoStateChange(todoState) {
         todoStates.push(todoState);
       },
@@ -1995,6 +1996,7 @@ test('createAgentLoopRuntime completes todos with partial not-found result and o
     const runAgent = createAgentLoopRuntime(TEST_CWD);
     return runAgent({
       records: [{role: 'user', text: 'finish'}],
+      userConfigSnapshot: createRuntimeSnapshot(1),
       todoState: {
         updatedAt: '2026-06-30T00:00:00.000Z',
         items: [{id: 'todo_1', text: 'only task', status: 'open'}]

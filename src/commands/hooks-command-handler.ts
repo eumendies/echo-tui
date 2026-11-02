@@ -1,6 +1,7 @@
 import {DEFAULT_HOOK_TIMEOUT_MS, validateLifecycleHookCommand, validateLifecycleHookTimeoutMs} from '../hooks/config';
 import {INPUT_EVENTS} from '../input/event-types';
-import {applyComposerEditEvent, getText} from '../input/composer';
+import {applyComposerEditEvent, createComposer, getText} from '../input/composer';
+import {splitGraphemes} from '../input/graphemes';
 
 import type {
   CommandHandler,
@@ -328,7 +329,7 @@ export class HooksCommandHandler implements CommandHandler<HooksManageData> {
     }
 
     const editBuffer = target === 'timeoutMs' ? String(entry.timeoutMs) : entry.command;
-    this.updateSession(host, {...data, commandScroll: target === 'command' ? 0 : data.commandScroll, editBuffer, editCursor: Array.from(editBuffer).length, editTarget: target, detailIndex: target === 'timeoutMs' ? 1 : 0, error: undefined, mode: 'entryDetail'});
+    this.updateSession(host, {...data, commandScroll: target === 'command' ? 0 : data.commandScroll, editBuffer, editCursor: splitGraphemes(editBuffer).length, editTarget: target, detailIndex: target === 'timeoutMs' ? 1 : 0, error: undefined, mode: 'entryDetail'});
   }
 
   private commitFieldEdit(data: HooksManageData, host: CommandHost): void {
@@ -514,11 +515,8 @@ function createHooksDismissHint(data: HooksManageData): string {
 }
 
 function applyInlineEdit(text: string, cursor: number | undefined, event: InputEvent): {cursor: number; text: string} | null {
-  const chars = Array.from(text);
-  const composer = {
-    chars,
-    cursor: Math.min(Math.max(0, Number.isInteger(cursor) ? Number(cursor) : chars.length), chars.length)
-  };
+  const composer = createComposer(text);
+  composer.cursor = Math.min(Math.max(0, Number.isInteger(cursor) ? Number(cursor) : composer.chars.length), composer.chars.length);
 
   if (!applyComposerEditEvent(composer, event)) {
     return null;
@@ -538,7 +536,7 @@ function normalizeHooksManageData(source: HooksManageData): HooksManageData {
   const editTarget = mode === 'entryDetail' ? source.editTarget : undefined;
   const commandScroll = mode === 'entryDetail' && !editTarget ? Math.max(0, Math.floor(source.commandScroll || 0)) : 0;
   const editBuffer = editTarget ? source.editBuffer || '' : undefined;
-  const editLength = Array.from(editBuffer || '').length;
+  const editLength = splitGraphemes(editBuffer || '').length;
   const editCursor = editTarget
     ? Math.min(Math.max(0, Number.isInteger(source.editCursor) ? Number(source.editCursor) : editLength), editLength)
     : undefined;

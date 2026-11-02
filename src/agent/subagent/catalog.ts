@@ -14,7 +14,7 @@ import {parseCustomSubagentManifest} from './manifest';
 import {MAX_CUSTOM_SUBAGENT_FILE_BYTES} from './manifest';
 import {isBuiltinSubagentName, isValidSubagentName} from './name';
 import {inspectSafeDirectory} from './safe-storage';
-import {loadAgentsSettingsSources, selectBuiltinSubagentOverride} from './settings';
+import {loadAgentsSettingsSources, selectBuiltinSubagentOverride, selectSubagentEnablement} from './settings';
 
 import type {AgentUserConfigSnapshot, SubagentExecutionPolicy} from '../../types/agent';
 import type {BuiltinSubagentName, SelectedBuiltinSubagentOverride} from './settings';
@@ -70,7 +70,7 @@ type CustomSubagentManifestValidationResult =
 
 /**
  * 扫描用户级和项目级目录并形成一次性的冻结 Subagent 目录。
- * 项目候选覆盖同名用户候选；高层候选解析失败时不会回退低层定义。
+ * 项目候选覆盖同名用户候选；校验和限额之后按同次全局开关过滤，全局异常关闭全部委派。
  */
 function loadSubagentCatalog(options: SubagentCatalogLoadOptions = {}): Readonly<SubagentCatalog> {
   const cwd = path.resolve(options.cwd || process.cwd());
@@ -83,13 +83,14 @@ function loadSubagentCatalog(options: SubagentCatalogLoadOptions = {}): Readonly
   const modelProfileIds = readModelProfileIds(options.configSnapshot);
   const userScan = scanCandidateDirectory(homedir, 'user', readDir);
   const projectScan = scanCandidateDirectory(projectRoot, 'project', readDir);
+  const settingsSources = loadAgentsSettingsSources({homedir, projectRoot});
   const diagnostics: SubagentCatalogDiagnostic[] = [];
+  // 全局异常会关闭委派；设置诊断优先占用预算，避免被大量候选错误淹没。
+  appendSettingsSourceDiagnostics(diagnostics, settingsSources);
   appendDiagnostics(diagnostics, userScan.diagnostics);
   appendDiagnostics(diagnostics, projectScan.diagnostics);
 
-  const settingsSources = loadAgentsSettingsSources({homedir, projectRoot});
   const definitionsByName = new Map<string, Readonly<SubagentDefinition>>();
-  appendSettingsSourceDiagnostics(diagnostics, settingsSources);
   for (const builtin of BUILTIN_SUBAGENT_DEFINITIONS) {
     definitionsByName.set(builtin.name, applyBuiltinOverride(
       builtin,
@@ -136,6 +137,11 @@ function loadSubagentCatalog(options: SubagentCatalogLoadOptions = {}): Readonly
     definitionsByName.set(name, loaded.definition);
   }
 
+  for (const name of definitionsByName.keys()) {
+    if (selectSubagentEnablement(name, settingsSources).enabled !== true) {
+      definitionsByName.delete(name);
+    }
+  }
   const definitions = Object.freeze(Array.from(definitionsByName.values()));
   const descriptors = Object.freeze(definitions.map((definition) => Object.freeze({
     description: definition.description,

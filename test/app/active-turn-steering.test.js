@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const composerOps = require('../../src/input/composer');
 const {ComposerSubmissionController} = require('../../src/app/composer-submission-controller');
 const {InputEventController} = require('../../src/app/input-event-controller');
 const {ActiveInputResolver} = require('../../src/app/active-input-resolver');
@@ -61,8 +62,19 @@ async function submitText(harness, submit, text) {
   harness.appContext.composerContext.setText(text);
   await submit.submitComposer();
 }
+function setFileDraft(harness, prefix, filePath) {
+  const context = harness.appContext.composerContext;
+  context.setText(prefix);
+  const composer = context.composer;
+  composerOps.replaceWithFileMentions(composer, composer.cursor, composer.cursor, [filePath]);
+  composerOps.backspace(composer);
+}
+async function submitFileText(harness, submit, prefix, filePath) {
+  setFileDraft(harness, prefix, filePath);
+  await submit.submitComposer();
+}
 function liveDraft(harness) {
-  harness.appContext.composerContext.setText('后来草稿 👩‍💻');
+  setFileDraft(harness, '后来草稿 👩‍💻 ', 'later-draft.txt');
   harness.appContext.composerContext.composer.cursor = 2;
   return structuredClone(harness.appContext.composerContext.composer);
 }
@@ -97,7 +109,7 @@ test('controller rejects failed steering preparation without abort, history dupl
   let notices = 0;
   port.subscribe(() => { notices += 1; });
   const submit = controller(harness);
-  harness.appContext.composerContext.setText('read @missing.txt');
+  setFileDraft(harness, 'read ', 'missing.txt');
   const preparing = submit.submitComposer();
   assert.equal(harness.appContext.pendingMessageContext.getRenderState().status, 'preparing');
   const draft = liveDraft(harness);
@@ -114,6 +126,24 @@ test('controller rejects failed steering preparation without abort, history dupl
   assert.deepEqual(harness.appContext.transcriptContext.getResidentRecords().map((r) => r.text), ['original']);
   inputController(harness, submit).handleEvent({type: 'escape'});
   assert.equal(harness.appContext.pendingMessageContext.getPending(), null);
+  assert.equal(turn.abortSignal.aborted, false);
+  assert.deepEqual(harness.appContext.composerContext.composer, draft);
+});
+
+test('plain @ paths in steering never expand or borrow later confirmed draft refs', async (t) => {
+  const cwd = tempDir(t);
+  fs.writeFileSync(path.join(cwd, 'note.txt'), 'MUST NOT LEAK');
+  const harness = createHarness();
+  harness.appContext.getCurrentCwd = () => cwd;
+  const {turn, port} = beginSteer(harness);
+  t.after(() => harness.appContext.turnContext.stopSpinner());
+  const preparing = submitText(harness, controller(harness), 'read @note.txt and @missing.txt');
+  const draft = liveDraft(harness);
+  await preparing;
+
+  assert.equal(port.hasReady(), true);
+  assert.equal(port.claim().text, 'read @note.txt and @missing.txt');
+  assert.equal(port.claim(), null);
   assert.equal(turn.abortSignal.aborted, false);
   assert.deepEqual(harness.appContext.composerContext.composer, draft);
 });
@@ -180,7 +210,7 @@ test('steering preparation and idle handoff preserve the submitted mode despite 
   const submissions = [];
   const submit = controller(harness, {startAssistantTurn: async (s) => { submissions.push(s); }});
   app.setInteractionMode('plan');
-  const preparing = submitText(harness, submit, 'inspect @mode.txt');
+  const preparing = submitFileText(harness, submit, 'inspect ', 'mode.txt');
   app.setInteractionMode('normal');
   app.turnContext.finishAssistantTurn('done');
   app.turnContext.clearAssistantTurnIfCurrent(turn);
@@ -238,7 +268,7 @@ test('ordinary missing-file submit retains unavailable diagnostic instead of ado
   const harness = createHarness();
   harness.appContext.getCurrentCwd = () => tempDir(t);
   const submissions = [];
-  await submitText(harness, controller(harness, {startAssistantTurn: async (s) => { submissions.push(s); }}), 'read @missing.txt');
+  await submitFileText(harness, controller(harness, {startAssistantTurn: async (s) => { submissions.push(s); }}), 'read ', 'missing.txt');
   assert.equal(submissions.length, 1);
   assert.match(submissions[0].userText, /unavailable/);
   assert.equal(harness.appContext.pendingMessageContext.getPending(), null);
@@ -252,7 +282,7 @@ test('prepared steering crossing final dispatches original file material once an
   const {turn} = beginSteer(harness);
   const submissions = [];
   const submit = controller(harness, {startAssistantTurn: async (s) => { submissions.push(s); }});
-  harness.appContext.composerContext.setText('read @note.txt');
+  setFileDraft(harness, 'read ', 'note.txt');
   const preparing = submit.submitComposer();
   const draft = liveDraft(harness);
   harness.appContext.turnContext.finishAssistantTurn('original final');
@@ -278,7 +308,7 @@ test('ready material handed off after final never rereads deleted attachment', a
   const {turn} = beginSteer(harness);
   const submissions = [];
   const submit = controller(harness, {startAssistantTurn: async (s) => { submissions.push(s); }});
-  await submitText(harness, submit, 'read @note.txt');
+  await submitFileText(harness, submit, 'read ', 'note.txt');
   assert.equal(submissions.length, 0);
   fs.rmSync(path.join(cwd, 'note.txt'));
   harness.appContext.turnContext.finishAssistantTurn('final');
@@ -666,7 +696,7 @@ for (const action of ['clear', 'resume']) {
     harness.appContext.getCurrentCwd = () => cwd;
     beginSteer(harness);
     const submit = controller(harness);
-    harness.appContext.composerContext.setText('read @note.txt');
+    setFileDraft(harness, 'read ', 'note.txt');
     const preparing = submit.submitComposer();
     if (action === 'clear') harness.appContext.clearTranscriptRecords();
     else assert.ok(harness.appContext.loadTranscriptSession(harness.appContext.transcriptContext.currentSessionId));

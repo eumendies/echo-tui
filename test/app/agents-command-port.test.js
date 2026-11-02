@@ -20,6 +20,7 @@ function createDraft(overrides = {}) {
 
 function createSnapshot() {
   return {
+    getMainAgentToolsConfig() { return {disabledTools: []}; },
     getLlmModelConfigInfo() {
       return {
         kind: 'profiles',
@@ -190,4 +191,138 @@ test('AgentsCommandPort exposes the current skill catalog and builtin skill poli
   } finally {
     fs.rmSync(root, {recursive: true, force: true});
   }
+});
+
+function createEnablementFixture(t, disabledTools = []) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-agents-enablement-port-'));
+  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const home = path.join(root, 'home');
+  const project = path.join(root, 'project');
+  fs.mkdirSync(home, {recursive: true});
+  fs.mkdirSync(path.join(project, '.git'), {recursive: true});
+  const port = createAgentsCommandPort({
+    captureUserConfigSnapshot: () => ({...createSnapshot(), getMainAgentToolsConfig: () => ({disabledTools})}),
+    cwd: () => project,
+    homedir: () => home
+  });
+  return {home, project, port};
+}
+
+test('AgentsCommandPort uses only the global switch independently from project model policies', (t) => {
+  for (const globalEnabled of [undefined, false, true]) {
+    for (const effort of ['low', 'high']) {
+      const {port, project} = createEnablementFixture(t);
+      assert.equal(port.create('project', 'reviewer', createDraft()).ok, true);
+      if (globalEnabled !== undefined) assert.equal(port.writeEnablement('reviewer', globalEnabled, null).ok, true);
+      const file = path.join(project, '.echo', 'agents.settings.json');
+      fs.writeFileSync(file, JSON.stringify({schemaVersion: 2, overrides: {worker: {effort}}}));
+      assert.equal(port.list().items.find((item) => item.name === 'reviewer').enablement.enabled, globalEnabled ?? true);
+      assert.equal(port.list().overrides.find((source) => source.sourceKind === 'project').status, 'valid');
+    }
+  }
+});
+
+test('AgentsCommandPort keeps disabled and shadowed physical definitions with independent name enablement', (t) => {
+  const {port, project} = createEnablementFixture(t, ['run_subagent']);
+  assert.equal(port.create('user', 'reviewer', createDraft()).ok, true);
+  assert.equal(port.create('project', 'reviewer', createDraft()).ok, true);
+  assert.equal(port.writeEnablement('reviewer', false, null).ok, true);
+  let snapshot = port.list();
+  const reviewers = snapshot.items.filter((item) => item.name === 'reviewer');
+  assert.deepEqual(reviewers.map((item) => item.status), ['shadowed', 'active']);
+  assert.deepEqual(reviewers.map((item) => item.enablement), [
+    {enabled: false},
+    {enabled: false}
+  ]);
+  assert.equal(snapshot.delegationToolEnabled, false);
+  assert.equal(port.writeBuiltinOverride('project', 'worker', {effort: 'high'}, null).ok, true);
+  const projectSettings = path.join(project, '.echo', 'agents.settings.json');
+  assert.equal(port.list().items.find((item) => item.name === 'reviewer').enablement.enabled, false);
+  assert.deepEqual(JSON.parse(fs.readFileSync(projectSettings, 'utf8')).overrides, {worker: {effort: 'high'}});
+  const selected = port.list().items.find((item) => item.name === 'reviewer' && item.sourceKind === 'project');
+  assert.equal(port.delete('project', 'reviewer', selected.fingerprint).ok, true);
+  snapshot = port.list();
+  const remaining = snapshot.items.find((item) => item.name === 'reviewer');
+  assert.equal(remaining.status, 'active');
+  assert.equal(remaining.enablement.enabled, false);
+  assert.equal(port.delete('user', 'reviewer', remaining.fingerprint).ok, true);
+  assert.equal(port.create('project', 'reviewer', createDraft()).ok, true);
+  assert.equal(port.list().items.find((item) => item.name === 'reviewer').enablement.enabled, false);
+});
+
+test('AgentsCommandPort keeps management available with unknown delegation state when tools configuration is invalid', (t) => {
+  const {port: setupPort, home, project} = createEnablementFixture(t);
+  assert.equal(setupPort.create('project', 'reviewer', createDraft()).ok, true);
+  assert.equal(setupPort.list().delegationToolEnabled, true);
+  const secret = 'secret-config-value\u001b[31m' + 'x'.repeat(10000);
+  const port = createAgentsCommandPort({
+    captureUserConfigSnapshot: () => ({
+      ...createSnapshot(),
+      getMainAgentToolsConfig() { throw new Error(secret); }
+    }),
+    cwd: () => project,
+    homedir: () => home
+  });
+  let snapshot = port.list();
+  assert.deepEqual(snapshot.items.map((item) => item.name).sort(), ['explorer', 'reviewer', 'worker']);
+  let fingerprint = null;
+  for (const enabled of [false, true]) {
+    assert.equal(snapshot.delegationToolEnabled, undefined);
+    assert.deepEqual(snapshot.diagnostics, [{
+      code: 'main_agent_tools_config_invalid',
+      message: 'Main agent tools configuration could not be read; delegation availability is unknown.'
+    }]);
+    assert.doesNotMatch(JSON.stringify(snapshot), /secret-config-value|\\u001b/);
+    const result = port.writeEnablement('reviewer', enabled, fingerprint);
+    assert.equal(result.ok, true);
+    fingerprint = result.fingerprint;
+    snapshot = port.list();
+    assert.equal(snapshot.items.find((item) => item.name === 'reviewer').enablement.enabled, enabled);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(home, '.echo', 'agents.settings.json'), 'utf8')).enabled, {reviewer: enabled});
+  }
+  assert.equal(snapshot.delegationToolEnabled, undefined);
+});
+
+test('AgentsCommandPort separates invalid definitions, bad settings and missing model references from enablement', (t) => {
+  const {port, home, project} = createEnablementFixture(t);
+  assert.equal(port.create('project', 'reviewer', createDraft()).ok, true);
+  fs.writeFileSync(path.join(project, '.echo', 'agents', 'broken.md'), 'not a manifest', 'utf8');
+  assert.equal(port.writeEnablement('reviewer', false, null).ok, true);
+  const settingsPath = path.join(home, '.echo', 'agents.settings.json');
+  fs.writeFileSync(settingsPath, JSON.stringify({schemaVersion: 3, enabled: {reviewer: false, broken: true, worker: false}, overrides: {worker: {modelProfileId: 'gone'}}}));
+  let snapshot = port.list();
+  assert.equal(snapshot.items.find((item) => item.name === 'broken').status, 'invalid');
+  assert.equal(snapshot.items.find((item) => item.name === 'broken').enablement.enabled, true);
+  assert.equal(snapshot.items.find((item) => item.name === 'reviewer').status, 'active');
+  assert.equal(snapshot.items.find((item) => item.name === 'worker').enablement.enabled, false);
+  assert.equal(snapshot.builtins.find((item) => item.name === 'worker').policy.status, 'ignored');
+  const oldFingerprint = snapshot.overrides.find((source) => source.sourceKind === 'user').fingerprint;
+  fs.writeFileSync(settingsPath, '{bad json');
+  snapshot = port.list();
+  assert.equal(snapshot.items.length, 4);
+  for (const item of snapshot.items) assert.deepEqual(item.enablement, {enabled: undefined});
+  assert.equal(snapshot.overrides[0].status, 'invalid');
+  assert.ok(snapshot.diagnostics.some((item) => item.code === 'invalid_settings_json'));
+  const conflict = port.writeEnablement('worker', true, oldFingerprint);
+  assert.equal(conflict.ok, false);
+  assert.equal(conflict.kind, 'conflict');
+  const invalidSave = port.writeEnablement('worker', true, snapshot.overrides[0].fingerprint);
+  assert.equal(invalidSave.ok, false);
+  assert.equal(invalidSave.kind, 'validation');
+  assert.equal(fs.readFileSync(settingsPath, 'utf8'), '{bad json');
+});
+
+test('AgentsCommandPort returns structured enablement conflicts without discarding other policy values', (t) => {
+  const {port, home} = createEnablementFixture(t);
+  const original = port.writeBuiltinOverride('user', 'explorer', {effort: 'high', skillNames: []}, null);
+  const changed = port.writeEnablement('worker', false, original.fingerprint);
+  assert.equal(changed.ok, true);
+  const conflict = port.writeEnablement('explorer', false, original.fingerprint);
+  assert.equal(conflict.ok, false);
+  assert.equal(conflict.kind, 'conflict');
+  const content = JSON.parse(fs.readFileSync(path.join(home, '.echo', 'agents.settings.json'), 'utf8'));
+  assert.deepEqual(content.enabled, {worker: false});
+  assert.deepEqual(content.overrides, {explorer: {effort: 'high', skills: []}});
+  assert.equal(port.writeEnablement('worker', null, changed.fingerprint).ok, true);
+  assert.equal(port.list().items.find((item) => item.name === 'worker').enablement.enabled, true);
 });

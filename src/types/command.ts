@@ -13,7 +13,7 @@ import type {AppSettings} from '../config/app-settings-config';
 import type {CustomSubagentCapability, SubagentEffortPolicy} from '../agent/subagent/definition';
 import type {CustomSubagentManifest} from '../agent/subagent/manifest';
 import type {AgentDefinitionMutationResult, AgentManagementDiagnostic, AgentManagementItem, AgentManagementScope} from '../agent/subagent/management-store';
-import type {AgentsSettingsMutationResult, AgentsSettingsScopeReadResult, BuiltinSubagentName, BuiltinSubagentOverride} from '../agent/subagent/settings';
+import type {AgentsSettingsMutationResult, AgentsSettingsScopeReadResult, BuiltinSubagentName, BuiltinSubagentOverride, SelectedSubagentEnablement} from '../agent/subagent/settings';
 import type {McpConfigEditDraft, McpConfigEditIssue, McpPromptArgument, McpPromptMessage} from './mcp';
 import type {FooterMouseTarget, FooterWheelPane} from './render';
 import type {MouseWheelDirection} from './input';
@@ -229,6 +229,7 @@ export type AgentsCommandRow = {
   capability?: CustomSubagentCapability; // Agent 列表行的权限模板摘要；普通字段和动作行缺省。
   description?: string; // Agent 摘要、字段当前值或动作补充说明。
   effort?: SubagentEffortPolicy; // Agent 列表行的 effective effort 策略。
+  enablement?: Readonly<SelectedSubagentEnablement>; // 与定义状态独立的名称有效启停；enabled 缺省表示配置异常。
   id: string; // handler 与 renderer 共享的稳定行标识。
   kind: 'agent' | 'action' | 'field' | 'tool' | 'confirm'; // 行的领域角色，决定 Enter 或 Space 语义。
   label: string; // 当前行的主要可见文案。
@@ -260,6 +261,9 @@ export type AgentsCommandSummary = {
 
 export type AgentsCommandStats = {
   agentCount: number; // 当前范围内可见的 Agent 物理项或 effective 项数量。
+  enabledCount?: number; // 启用且定义胜出的候选数量，不代表主工具可调用；异常时缺省。
+  disabledCount?: number; // 当前范围中有效停用的物理项数量；异常时缺省。
+  unavailable?: boolean; // 全局配置异常时禁止报告有效启停数量。
   issueCount: number; // 当前范围内无效、保留或独立诊断的数量。
 };
 
@@ -285,6 +289,7 @@ export type AgentsCommandSurface = {
   feedback?: string; // 成功刷新后的下一 assistant turn 生效提示。
   kind: 'agents'; // 独立 footer surface 分派标识。
   mode: AgentsCommandMode; // 当前列表、详情、表单或嵌套 modal 层级。
+  notice?: string; // 所有层级共享的配置异常或主委派工具独立关闭提示。
   rows: AgentsCommandRow[]; // Agent 与动作混合的可聚焦行快照。
   selectedIndex: number; // 当前 rows 中已钳制的焦点索引。
   stats?: AgentsCommandStats; // 列表模式当前范围的简短计数；其他模式缺省。
@@ -322,7 +327,10 @@ export type CommandAgentSkillInfo = {
 export type CommandAgentsSnapshot = {
   builtins: CommandAgentBuiltinInfo[]; // 固定内置定义及其当前有效模型策略。
   diagnostics: Readonly<AgentManagementDiagnostic>[]; // 无法归属单个定义的目录级诊断。
-  items: Readonly<AgentManagementItem>[]; // Built-in、User 与 Project 物理项及覆盖状态。
+  items: Readonly<AgentManagementItem & {
+    enablement: Readonly<SelectedSubagentEnablement>; // 同名物理项共用的有效启停；全局原始声明位于 user overrides。
+  }>[]; // Built-in、User 与 Project 物理项及独立启停投影。
+  delegationToolEnabled: boolean | undefined; // 主工具设置是否允许 run_subagent；undefined 表示配置不可读，与候选启停正交。
   models: Array<{id: string}>; // 当前用户配置 snapshot 中可供表单选择的模型 profile ID。
   overrides: readonly Readonly<AgentsSettingsScopeReadResult>[]; // 两个固定 sidecar 的物理读取状态和冲突指纹。
   skills: CommandAgentSkillInfo[]; // 管理会话捕获的当前 Skill 目录，供 Skills 多选层展示与选择。
@@ -972,6 +980,7 @@ export type CommandHostApp = {
     create(scope: AgentManagementScope, name: string, draft: Readonly<CustomSubagentManifest>): AgentDefinitionMutationResult; // 排他创建规范化定义。
     update(scope: AgentManagementScope, name: string, draft: Readonly<CustomSubagentManifest>, expectedFingerprint: string): AgentDefinitionMutationResult; // 指纹匹配时更新定义。
     delete(scope: AgentManagementScope, name: string, expectedFingerprint: string): AgentDefinitionMutationResult; // 指纹匹配时删除定义。
+    writeEnablement(name: string, enabled: boolean | null, expectedFingerprint: string | null): AgentsSettingsMutationResult; // null 仅移除全局名称键，整文件指纹保护其他配置。
     writeBuiltinOverride(scope: AgentManagementScope, name: BuiltinSubagentName, override: Readonly<BuiltinSubagentOverride>, expectedFingerprint: string | null): AgentsSettingsMutationResult; // 乐观写入单个内置策略。
     deleteBuiltinOverride(scope: AgentManagementScope, name: BuiltinSubagentName, expectedFingerprint: string): AgentsSettingsMutationResult; // 乐观删除单个内置策略。
   };

@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 
 const {runAssistantTurn} = require('../../src/app/assistant-turn-runner');
 const {AgentAbortError} = require('../../src/types/agent');
+const composerOps = require('../../src/input/composer');
 
 const {createHarness, createUserConfigSnapshot, createFakeTranscriptStore, createFakeSessionModelSettingsStore} = require('./assistant-turn-test-helpers');
 
@@ -310,7 +311,7 @@ test('runAssistantTurn emits start and end hooks without adding hook records', a
 test('runAssistantTurn does not own live composer consumption', async () => {
   const harness = createHarness();
   harness.appContext.composerContext.setText('later draft');
-  harness.appContext.composerContext.inputHistory.push('queued message');
+  harness.appContext.composerContext.recordInput(composerOps.captureSnapshot(composerOps.createComposer('queued message')));
 
   await runAssistantTurn({
     ...harness.input,

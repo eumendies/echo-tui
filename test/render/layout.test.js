@@ -2,12 +2,13 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const ansi = require('../../src/terminal/ansi');
-const { createComposer } = require('../../src/input/composer');
+const { createComposer, replaceWithFileMentions, insertText, replaceRange, captureSnapshot } = require('../../src/input/composer');
 const {
   charWidth,
   displayWidth,
   renderComposer,
   safeRenderWidth,
+  stripAnsi,
   tabWidthAt,
   wrapText
 } = require('../../src/render/layout');
@@ -135,8 +136,10 @@ test('renderComposer expands tabs without changing the composer state', () => {
   });
 });
 
-test('renderComposer highlights file mentions without moving cursor', () => {
-  const composer = createComposer('see @src/app.ts now');
+test('renderComposer highlights only confirmed file mentions without moving cursor', () => {
+  const composer = createComposer('see ');
+  replaceWithFileMentions(composer, composer.cursor, composer.cursor, ['src/app.ts']);
+  insertText(composer, 'now');
   const plain = renderComposer(composer, 80);
   const highlighted = renderComposer(composer, 80, '> ', {highlightFileMentions: true});
 
@@ -144,4 +147,71 @@ test('renderComposer highlights file mentions without moving cursor', () => {
   assert.equal(highlighted.cursorColumn, plain.cursorColumn);
   assert.match(highlighted.lines.join('\n'), /\x1b\[36m@\x1b\[39m/);
   assert.equal(displayWidth(highlighted.lines.join('')), displayWidth(plain.lines.join('')));
+});
+
+test('renderComposer never highlights plain @ text, including existing paths and quoted paths', () => {
+  const text = '@src/render/layout.ts @"docs/my note.md" user@example.com pkg@version 请看@这里';
+  const composer = createComposer(text);
+  const layout = renderComposer(composer, 120, '> ', {highlightFileMentions: true});
+
+  assert.equal(layout.lines.join(''), `> ${text}`);
+  assert.deepEqual(composer.fileMentions, []);
+});
+
+test('renderComposer highlights confirmed quoted paths but not identical unconfirmed text', () => {
+  const composer = createComposer('@"docs/my note.md" ');
+  const confirmedStart = composer.cursor;
+  replaceWithFileMentions(composer, confirmedStart, confirmedStart, ['docs/my note.md']);
+  const layout = renderComposer(composer, 120, '> ', {highlightFileMentions: true});
+  const highlightedPath = Array.from('@"docs/my note.md"', (char) => ansi.cyan(char)).join('');
+
+  assert.equal(layout.lines[0], `> @"docs/my note.md" ${highlightedPath} `);
+  assert.equal(layout.cursorColumn, displayWidth(stripAnsi(layout.lines[0])));
+});
+
+test('renderComposer keeps confirmed highlight at exact boundaries next to Chinese and punctuation', () => {
+  const composer = createComposer('');
+  replaceWithFileMentions(composer, 0, 0, ['missing-file.ts']);
+  replaceRange(composer, composer.chars.length - 1, composer.chars.length, '');
+  insertText(composer, '请检查，尤其这里');
+  composer.cursor = 0;
+  insertText(composer, '🙂e\u0301，');
+  const snapshot = captureSnapshot(composer);
+  const layout = renderComposer(composer, 120, '> ', {highlightFileMentions: true});
+  const colored = composer.chars.slice(composer.fileMentions[0].start, composer.fileMentions[0].end).map(ansi.cyan).join('');
+
+  assert.equal(layout.lines[0], `> 🙂e\u0301，${colored}请检查，尤其这里`);
+  assert.deepEqual(captureSnapshot(composer), snapshot);
+});
+
+test('renderComposer keeps Unicode ranges and cursor aligned through narrow boxed widths and resize', () => {
+  const composer = createComposer('🙂e\u0301 ');
+  replaceWithFileMentions(composer, composer.cursor, composer.cursor, ['笔记 e\u0301👩‍💻.md']);
+  insertText(composer, '正文');
+  const snapshot = captureSnapshot(composer);
+
+  for (const width of [12, 18, 80, 12]) {
+    for (const cursor of [0, 1, ...composer.fileMentions.flatMap(({start, end}) => [start, start + 1, end]), composer.chars.length]) {
+      composer.cursor = cursor;
+      const plain = renderComposer(composer, width, '> ', {startColumn: 2});
+      const highlighted = renderComposer(composer, width, '> ', {highlightFileMentions: true, startColumn: 2});
+      assert.deepEqual(highlighted.lines.map(stripAnsi), plain.lines);
+      assert.equal(highlighted.cursorRow, plain.cursorRow);
+      assert.equal(highlighted.cursorColumn, plain.cursorColumn);
+      assert.ok(highlighted.lines.every((line) => displayWidth(line) <= safeRenderWidth(width)));
+      assert.deepEqual(composer.fileMentions, snapshot.fileMentions);
+      assert.equal(composer.chars.join(''), snapshot.text);
+    }
+  }
+});
+
+test('renderComposer stops highlighting a reference after internal editing even if its text is restored', () => {
+  const composer = createComposer('');
+  replaceWithFileMentions(composer, 0, 0, ['src/app.ts']);
+  replaceRange(composer, 3, 3, 'x');
+  replaceRange(composer, 3, 4, '');
+
+  const highlighted = renderComposer(composer, 80, '> ', {highlightFileMentions: true});
+  assert.equal(highlighted.lines[0], '> @src/app.ts ');
+  assert.deepEqual(composer.fileMentions, []);
 });

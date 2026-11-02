@@ -1,7 +1,8 @@
 import {INPUT_EVENTS} from './event-types';
+import {formatFileMention} from './file-mentions';
 import {splitGraphemes} from './graphemes';
 
-import type { ComposerState } from '../types/composer';
+import type { ComposerSnapshot, ComposerState } from '../types/composer';
 import type { InputEvent } from '../types/input';
 
 /**
@@ -14,7 +15,8 @@ export function createComposer(initialValue = ''): ComposerState {
 
   return {
     chars,
-    cursor: chars.length
+    cursor: chars.length,
+    fileMentions: []
   };
 }
 
@@ -80,22 +82,78 @@ export function applyComposerEditEvent(composer: ComposerState, event: InputEven
  *
  */
 export function insertText(composer: ComposerState, text: string): void {
-  // grapheme 切分让中文和复合 emoji 都按一个编辑单元插入和移动。
-  const incoming = splitGraphemes(text);
-  composer.chars.splice(composer.cursor, 0, ...incoming);
-  composer.cursor += incoming.length;
+  replaceRange(composer, composer.cursor, composer.cursor, text);
 }
 
 /**
- * 替换 composer 中的一段编辑单元，并把光标移动到替换内容之后。
- *
+ * 替换编辑区间并维护确认引用；无引用时只从编辑前一个 cluster 重分段后缀，避免全文坐标换算。
  */
 export function replaceRange(composer: ComposerState, start: number, end: number, text: string): void {
   const normalizedStart = Math.min(Math.max(0, Math.floor(start)), composer.chars.length);
   const normalizedEnd = Math.min(Math.max(normalizedStart, Math.floor(end)), composer.chars.length);
-  const incoming = splitGraphemes(text);
-  composer.chars.splice(normalizedStart, normalizedEnd - normalizedStart, ...incoming);
-  composer.cursor = normalizedStart + incoming.length;
+
+  if (composer.fileMentions.length === 0) {
+    // 左侧已完整分段，只有紧邻编辑的最后一个 cluster 可能与新增文本或剩余后缀合并。
+    const stableEnd = Math.max(0, normalizedStart - 1);
+    const prefix = composer.chars.slice(stableEnd, normalizedStart).join('') + text;
+    const tail = splitGraphemes(prefix + composer.chars.slice(normalizedEnd).join(''));
+    composer.chars.length = stableEnd;
+    for (const char of tail) composer.chars.push(char);
+    composer.cursor = stableEnd + splitGraphemes(prefix).length;
+    return;
+  }
+
+  const oldOffsets = graphemeOffsets(composer.chars);
+  const startOffset = oldOffsets[normalizedStart];
+  const endOffset = oldOffsets[normalizedEnd];
+  const currentText = getText(composer);
+  const nextChars = splitGraphemes(currentText.slice(0, startOffset) + text + currentText.slice(endOffset));
+  const nextOffsets = graphemeOffsets(nextChars);
+  const offsetDelta = text.length - (endOffset - startOffset);
+
+  // 先按原编辑区间判定资格，再按完整重分段后的边界映射；不能直接加 incoming.length。
+  composer.fileMentions = composer.fileMentions.flatMap((mention) => {
+    const overlaps = normalizedStart < mention.end && normalizedEnd > mention.start;
+    const insertsInside = normalizedStart === normalizedEnd
+      && normalizedStart > mention.start && normalizedStart < mention.end && text !== '';
+
+    if ((normalizedStart !== normalizedEnd && overlaps) || insertsInside) {
+      return [];
+    }
+
+    const shift = normalizedEnd <= mention.start ? offsetDelta : 0;
+    return [{
+      ...mention,
+      start: graphemeIndex(nextOffsets, oldOffsets[mention.start] + shift, false),
+      end: graphemeIndex(nextOffsets, oldOffsets[mention.end] + shift, true)
+    }];
+  });
+  composer.chars = nextChars;
+  composer.cursor = graphemeIndex(nextOffsets, startOffset + text.length, true);
+}
+
+/**
+ * 原子替换选择器查询文本，为每个路径建立独立引用，并保留尾随输入空格。
+ */
+export function replaceWithFileMentions(composer: ComposerState, start: number, end: number, paths: readonly string[]): void {
+  const normalizedStart = Math.min(Math.max(0, Math.floor(start)), composer.chars.length);
+  let offset = graphemeOffsets(composer.chars)[normalizedStart];
+  const formatted = paths.map(formatFileMention);
+  replaceRange(composer, start, end, formatted.length > 0 ? `${formatted.join(' ')} ` : '');
+  const offsets = graphemeOffsets(composer.chars);
+
+  const mentions = paths.map((path, index) => {
+    const startOffset = offset;
+    offset += formatted[index].length;
+    const mention = {
+      start: graphemeIndex(offsets, startOffset, false),
+      end: graphemeIndex(offsets, offset, true),
+      path
+    };
+    offset += 1;
+    return mention;
+  });
+  composer.fileMentions = [...composer.fileMentions, ...mentions].sort((a, b) => a.start - b.start);
 }
 
 /**
@@ -115,8 +173,7 @@ export function backspace(composer: ComposerState): void {
     return;
   }
 
-  composer.chars.splice(composer.cursor - 1, 1);
-  composer.cursor -= 1;
+  replaceRange(composer, composer.cursor - 1, composer.cursor, '');
 }
 
 /**
@@ -128,7 +185,7 @@ export function deleteForward(composer: ComposerState): void {
     return;
   }
 
-  composer.chars.splice(composer.cursor, 1);
+  replaceRange(composer, composer.cursor, composer.cursor + 1, '');
 }
 
 /**
@@ -142,8 +199,7 @@ export function deleteToLineStart(composer: ComposerState): void {
     return;
   }
 
-  composer.chars.splice(lineStart, composer.cursor - lineStart);
-  composer.cursor = lineStart;
+  replaceRange(composer, lineStart, composer.cursor, '');
 }
 
 /**
@@ -157,7 +213,7 @@ export function deleteToLineEnd(composer: ComposerState): void {
     return;
   }
 
-  composer.chars.splice(composer.cursor, lineEnd - composer.cursor);
+  replaceRange(composer, composer.cursor, lineEnd, '');
 }
 
 /**
@@ -179,8 +235,7 @@ export function deletePreviousWord(composer: ComposerState): void {
     return;
   }
 
-  composer.chars.splice(start, composer.cursor - start);
-  composer.cursor = start;
+  replaceRange(composer, start, composer.cursor, '');
 }
 
 /**
@@ -257,6 +312,27 @@ export function moveEnd(composer: ComposerState): void {
 export function setText(composer: ComposerState, text: string): void {
   composer.chars = splitGraphemes(text);
   composer.cursor = composer.chars.length;
+  composer.fileMentions = [];
+}
+
+/**
+ * 捕获可独立保存的草稿；数组及每项引用均不与当前编辑状态共享。
+ */
+export function captureSnapshot(composer: ComposerState): ComposerSnapshot {
+  return {
+    text: getText(composer),
+    cursor: composer.cursor,
+    fileMentions: composer.fileMentions.map((mention) => ({...mention}))
+  };
+}
+
+/**
+ * 恢复可信内部快照；后续编辑不会修改历史或 pending 保存的引用。
+ */
+export function restoreSnapshot(composer: ComposerState, snapshot: ComposerSnapshot): void {
+  composer.chars = splitGraphemes(snapshot.text);
+  composer.cursor = snapshot.cursor;
+  composer.fileMentions = snapshot.fileMentions.map((mention) => ({...mention}));
 }
 
 /**
@@ -266,6 +342,26 @@ export function setText(composer: ComposerState, text: string): void {
 export function reset(composer: ComposerState): void {
   composer.chars = [];
   composer.cursor = 0;
+  composer.fileMentions = [];
+}
+
+/**
+ * 建立 grapheme 边界到字符串偏移的映射，仅用于重分段前后的坐标换算。
+ */
+function graphemeOffsets(chars: string[]): number[] {
+  const offsets = [0];
+  for (const char of chars) {
+    offsets.push(offsets[offsets.length - 1] + char.length);
+  }
+  return offsets;
+}
+
+/**
+ * 字符串偏移落在合并后的 cluster 内时，光标取后边界，范围覆盖完整 cluster。
+ */
+function graphemeIndex(offsets: number[], offset: number, roundUp: boolean): number {
+  const index = offsets.findIndex((boundary) => boundary >= offset);
+  return offsets[index] === offset || roundUp ? index : index - 1;
 }
 
 /**

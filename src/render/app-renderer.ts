@@ -2,11 +2,11 @@ import * as ansi from '../terminal/ansi';
 import {sanitizeTerminalText} from '../terminal/control-chars';
 import {isCompactionSummaryNotice} from '../agent/context/context-compaction';
 import {renderBanner} from './blocks/banner-renderer';
-import {renderCompactionNoticeBlock} from './blocks/message-renderer';
+import {renderCompactionNoticeBlock, renderLocalNoticeBlock} from './blocks/message-renderer';
 import { createFooterRenderer, renderFooterLayout } from './footer';
 import {ShellLiveRenderer} from './live/shell-renderer';
 import {StreamingLiveRenderer} from './live/streaming-renderer';
-import { createSubagentAppendRenderState, filterParallelSubagentRecords, filterPendingSubagentToolCallRecords, pruneSubagentAppendState, rebuildSubagentAppendState, renderTranscriptBlocks, renderTranscriptLines, splitRenderedBlock, trackParallelSubagentRecords } from './transcript-renderer';
+import { createSubagentAppendRenderState, filterParallelSubagentRecords, filterPendingSubagentToolCallRecords, pruneSubagentAppendState, rebuildSubagentAppendState, renderBudgetedTranscriptLines, renderTranscriptBlocks, renderTranscriptLines, splitRenderedBlock, trackParallelSubagentRecords } from './transcript-renderer';
 import type { TranscriptRecord } from '../types/transcript';
 import type {
   RenderRecordsOptions,
@@ -160,7 +160,10 @@ class DefaultAppRenderer implements AppRenderer {
     return this.footer.append(blocks.join(''), this.prepareRenderState(options));
   }
 
-  /** 破坏性恢复只投影 coordinator 按 owner 选定的 records；主会话补一条瞬时压缩提示并恢复 footer 和光标。 */
+  /**
+   * 在普通屏幕按 owner 清屏重绘；主会话按 render preferences 从驻留记录选择预算后缀。
+   * 瞬时提示不入会话事实，实时内容、footer 与光标完整恢复。
+   */
   renderDestructive({bannerContext, records, ...rawState}: RenderDestructiveOptions): FooterPointerSnapshot {
     const options = rawState.pending ? {...rawState, pending: sanitizePendingDisplayText(rawState.pending)} : rawState;
     const subagentAppendState = this.getSubagentAppendState(options);
@@ -184,7 +187,24 @@ class DefaultAppRenderer implements AppRenderer {
         `较早的 ${options.mainTranscript.baseRecordIndex} 条历史已压缩；完整记录保存在会话文件中。`, options.width, options.theme
       )));
     }
-    const transcriptLines = [...historyHintLines, ...renderTranscriptLines(projectedRecords, options.width, options.theme, options.renderPreferences, true, activeSubagentRunId)];
+    let historyLines: string[];
+    if (options.mainTranscript) {
+      const projection = renderBudgetedTranscriptLines(
+        projectedRecords, options.width, options.theme, options.renderPreferences, activeSubagentRunId
+      );
+      // 全局身份与终态仍来自全部驻留记录，只有实际投影的标题才能让后续事件走 continuation。
+      subagentAppendState.runIds = projection.renderedSubagentRunIds;
+      if (projection.omittedVisibleHistory) {
+        historyHintLines.push(...splitRenderedBlock(renderLocalNoticeBlock(
+          '较早的部分历史未展开，未删除记录且不影响模型上下文；可在 /config → 常规 调整历史重绘预算或选择不限。',
+          options.width, options.theme
+        )));
+      }
+      historyLines = projection.lines;
+    } else {
+      historyLines = renderTranscriptLines(projectedRecords, options.width, options.theme, options.renderPreferences, true, activeSubagentRunId);
+    }
+    const transcriptLines = [...historyHintLines, ...historyLines];
     const bannerLines = renderBannerLines(bannerContext, options.theme);
     const lines = [...bannerLines, ...transcriptLines, ...streamingLines, ...shellLines, ...footerLayout.lines];
     const cursorRow = bannerLines.length + transcriptLines.length + streamingLines.length + shellLines.length + footerLayout.cursorRow;

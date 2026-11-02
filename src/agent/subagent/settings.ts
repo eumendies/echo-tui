@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import {SUBAGENT_EFFORT_POLICIES, validateSkillAllowlist} from './manifest';
+import {isValidSubagentName} from './name';
 import {atomicWriteFile, createContentFingerprint, ensureSafeDirectory, inspectSafeDirectory, readRegularFile} from './safe-storage';
 
 import type {AgentUserConfigSnapshot} from '../../types/agent';
@@ -9,6 +10,7 @@ import type {SubagentEffortPolicy} from './definition';
 import type {SafeStorageOperations} from './safe-storage';
 
 const AGENTS_SETTINGS_SCHEMA_VERSION = 2;
+const GLOBAL_AGENTS_SETTINGS_SCHEMA_VERSION = 3;
 const MAX_AGENTS_SETTINGS_FILE_BYTES = 16 * 1024;
 
 type BuiltinSubagentName = 'explorer' | 'worker';
@@ -20,8 +22,9 @@ type BuiltinSubagentOverride = {
 };
 
 type ParsedAgentsSettings = {
+  enabled?: Readonly<Record<string, boolean>>; // version 3 提供冻结的全局名称启停偏好。
   overrides: Readonly<Partial<Record<BuiltinSubagentName, Readonly<BuiltinSubagentOverride>>>>; // 当前物理文件声明的内置策略条目。
-  schemaVersion: 1 | 2; // 已验证的读取版本；version 1 归一化缺省 Skill 策略，写入端固定输出 version 2。
+  schemaVersion: 1 | 2 | 3; // 已验证的读取版本；模型策略写入 version 2，全局配置写入 version 3。
 };
 
 type AgentsSettingsError = {
@@ -61,8 +64,12 @@ type SelectedBuiltinSubagentOverride = {
   sourcePath: string; // 胜出策略所在 sidecar 的固定绝对路径。
 };
 
-/** 严格解析版本化内置策略文件，不允许 schema 外字段或隐式类型转换。 */
-function parseAgentsSettings(rawContent: string): AgentsSettingsParseResult {
+type SelectedSubagentEnablement = {
+  enabled: boolean | undefined; // 全局来源可解析时的有效开关；全局异常时不可用。
+};
+
+/** 严格解析版本化模型策略；显式允许 version 3 时可读取全局配置。 */
+function parseAgentsSettings(rawContent: string, maxSchemaVersion: 2 | 3 = AGENTS_SETTINGS_SCHEMA_VERSION): AgentsSettingsParseResult {
   if (typeof rawContent !== 'string') {
     return settingsFailure('invalid_file', 'Agents settings must be UTF-8 text.');
   }
@@ -79,15 +86,28 @@ function parseAgentsSettings(rawContent: string): AgentsSettingsParseResult {
   if (!isPlainObject(root)) {
     return settingsFailure('invalid_settings_root', 'Agents settings root must be an object.');
   }
-  if (!hasOnlyKeys(root, ['schemaVersion', 'overrides'])) {
-    return settingsFailure('unknown_settings_field', 'Agents settings contains an unknown root field.');
-  }
   const schemaVersion = root.schemaVersion;
-  if (schemaVersion !== 1 && schemaVersion !== 2) {
-    return settingsFailure('unsupported_settings_version', 'Agents settings schemaVersion must be 1 or 2.');
+  if ((schemaVersion !== 1 && schemaVersion !== 2 && schemaVersion !== 3) || schemaVersion > maxSchemaVersion) {
+    return settingsFailure('unsupported_settings_version', `Agents settings schemaVersion must be ${maxSchemaVersion === 3 ? '1, 2 or 3' : '1 or 2'}.`);
+  }
+  if (!hasOnlyKeys(root, schemaVersion === 3 ? ['schemaVersion', 'enabled', 'overrides'] : ['schemaVersion', 'overrides'])) {
+    return settingsFailure('unknown_settings_field', 'Agents settings contains an unknown root field.');
   }
   if (!isPlainObject(root.overrides) || !hasOnlyKeys(root.overrides, ['explorer', 'worker'])) {
     return settingsFailure('invalid_settings_overrides', 'Agents settings overrides must contain only explorer or worker objects.');
+  }
+
+  const enabled: Record<string, boolean> = {};
+  if (Object.hasOwn(root, 'enabled')) {
+    if (!isPlainObject(root.enabled)) {
+      return settingsFailure('invalid_settings_enabled', 'Agents settings enabled must be an object of agent name booleans.');
+    }
+    for (const [name, value] of Object.entries(root.enabled)) {
+      if (!isValidSubagentName(name) || typeof value !== 'boolean') {
+        return settingsFailure('invalid_settings_enabled', 'Agents settings enabled requires valid agent names and boolean values.');
+      }
+      enabled[name] = value;
+    }
   }
 
   const overrides: Partial<Record<BuiltinSubagentName, Readonly<BuiltinSubagentOverride>>> = {};
@@ -105,13 +125,14 @@ function parseAgentsSettings(rawContent: string): AgentsSettingsParseResult {
   return {
     ok: true,
     settings: Object.freeze({
+      ...(schemaVersion === 3 ? {enabled: Object.freeze(enabled)} : {}),
       overrides: Object.freeze(overrides),
       schemaVersion
     })
   };
 }
 
-/** 按固定字段顺序序列化已解析 settings，并通过共享 parser 复核输出。 */
+/** 按固定字段顺序序列化全局配置或模型策略，并以对应版本复核 schema。 */
 function serializeAgentsSettings(settings: Readonly<ParsedAgentsSettings>): string {
   const overrides: Partial<Record<BuiltinSubagentName, BuiltinSubagentOverride>> = {};
   for (const name of ['explorer', 'worker'] as const) {
@@ -126,8 +147,13 @@ function serializeAgentsSettings(settings: Readonly<ParsedAgentsSettings>): stri
       ...(override.skillNames !== undefined ? {skills: [...override.skillNames]} : {})
     };
   }
-  const serialized = `${JSON.stringify({schemaVersion: AGENTS_SETTINGS_SCHEMA_VERSION, overrides}, null, 2)}\n`;
-  const parsed = parseAgentsSettings(serialized);
+  const schemaVersion = settings.schemaVersion === 3 ? GLOBAL_AGENTS_SETTINGS_SCHEMA_VERSION : AGENTS_SETTINGS_SCHEMA_VERSION;
+  const serialized = `${JSON.stringify({
+    schemaVersion,
+    ...(schemaVersion === 3 ? {enabled: Object.fromEntries(Object.entries(settings.enabled || {}).sort(([left], [right]) => left.localeCompare(right, 'en')))} : {}),
+    overrides
+  }, null, 2)}\n`;
+  const parsed = parseAgentsSettings(serialized, schemaVersion);
   if (!parsed.ok) {
     throw new Error(`Cannot serialize invalid agents settings: ${parsed.error.message}`);
   }
@@ -165,6 +191,19 @@ function selectBuiltinSubagentOverride(
     : undefined;
 }
 
+/** 读取全局名称开关；缺省开启，配置失效时返回不可用状态。 */
+function selectSubagentEnablement(
+  name: string,
+  sources: readonly AgentsSettingsScopeReadResult[]
+): Readonly<SelectedSubagentEnablement> {
+  const source = sources.find((entry) => entry.sourceKind === 'user');
+  if (source?.status === 'invalid') return Object.freeze({enabled: undefined});
+  const enabled = source?.settings?.enabled;
+  return source?.status === 'valid' && enabled && Object.hasOwn(enabled, name)
+    ? Object.freeze({enabled: enabled[name]})
+    : Object.freeze({enabled: true});
+}
+
 /** 安全读取单个 scope 的固定 sidecar，并返回用于后续乐观写入的内容指纹。 */
 function readAgentsSettingsScope(scope: AgentsSettingsScope, options: AgentsSettingsStoreOptions): Readonly<AgentsSettingsScopeReadResult> {
   const sourcePath = settingsPath(scope, options);
@@ -195,7 +234,7 @@ function readAgentsSettingsScope(scope: AgentsSettingsScope, options: AgentsSett
       status: 'invalid'
     });
   }
-  const parsed = parseAgentsSettings(read.content);
+  const parsed = parseAgentsSettings(read.content, scope === 'user' ? GLOBAL_AGENTS_SETTINGS_SCHEMA_VERSION : AGENTS_SETTINGS_SCHEMA_VERSION);
   return parsed.ok
     ? Object.freeze({fingerprint: read.fingerprint, settings: parsed.settings, sourceKind: scope, sourcePath, status: 'valid'})
     : Object.freeze({error: parsed.error, fingerprint: read.fingerprint, sourceKind: scope, sourcePath, status: 'invalid'});
@@ -235,7 +274,14 @@ function writeBuiltinSubagentOverride(
   }
   const overrides = current.settings ? {...current.settings.overrides} : {};
   overrides[name] = Object.freeze(normalized.override);
-  const content = serializeAgentsSettings({schemaVersion: AGENTS_SETTINGS_SCHEMA_VERSION, overrides});
+  const content = serializeSettingsForMutation({
+    ...current.settings,
+    schemaVersion: scope === 'user' ? GLOBAL_AGENTS_SETTINGS_SCHEMA_VERSION : AGENTS_SETTINGS_SCHEMA_VERSION,
+    overrides
+  }, sourcePath);
+  if (typeof content !== 'string') {
+    return content;
+  }
 
   try {
     ensureSafeDirectory(scopeRoot(scope, options), ['.echo'], options.operations);
@@ -248,7 +294,7 @@ function writeBuiltinSubagentOverride(
   }
 }
 
-/** 删除指纹仍匹配的单个内置 override；最后一项删除时移除空 sidecar。 */
+/** 删除指纹仍匹配的内置 override；模型策略和全局名称开关均为空时移除 sidecar。 */
 function deleteBuiltinSubagentOverride(
   scope: AgentsSettingsScope,
   name: BuiltinSubagentName,
@@ -272,13 +318,21 @@ function deleteBuiltinSubagentOverride(
   }
   const overrides = {...current.settings.overrides};
   delete overrides[name];
+  const empty = Object.keys(overrides).length === 0 && Object.keys(current.settings.enabled || {}).length === 0;
+  const content = empty ? '' : serializeSettingsForMutation({
+    ...current.settings,
+    schemaVersion: scope === 'user' ? GLOBAL_AGENTS_SETTINGS_SCHEMA_VERSION : AGENTS_SETTINGS_SCHEMA_VERSION,
+    overrides
+  }, sourcePath);
+  if (typeof content !== 'string') {
+    return content;
+  }
 
   try {
-    if (Object.keys(overrides).length === 0) {
+    if (empty) {
       (options.operations?.unlink || fs.unlinkSync)(sourcePath);
       return {ok: true, sourcePath};
     }
-    const content = serializeAgentsSettings({schemaVersion: AGENTS_SETTINGS_SCHEMA_VERSION, overrides});
     atomicWriteFile(sourcePath, content, false, options.operations);
     return {ok: true, sourcePath, fingerprint: createContentFingerprint(content)};
   } catch {
@@ -286,8 +340,68 @@ function deleteBuiltinSubagentOverride(
   }
 }
 
+/** 按整文件指纹设置全局名称开关；null 恢复默认开启，不清理其他名称。 */
+function writeSubagentEnablement(
+  name: string,
+  enabled: boolean | null,
+  expectedFingerprint: string | null,
+  options: AgentsSettingsStoreOptions
+): AgentsSettingsMutationResult {
+  const sourcePath = settingsPath('user', options);
+  if (!isValidSubagentName(name)) {
+    return settingsMutationFailure('validation', 'invalid_name', 'Agent name must match [a-z0-9][a-z0-9_-]{0,63}.', sourcePath);
+  }
+  if (enabled !== null && typeof enabled !== 'boolean') {
+    return settingsMutationFailure('validation', 'invalid_settings_enabled', 'Agent enablement must be a boolean or null for the default enabled state.', sourcePath);
+  }
+  const current = readAgentsSettingsScope('user', options);
+  const conflict = checkSettingsFingerprint(current, expectedFingerprint);
+  if (conflict) {
+    return conflict;
+  }
+  if (current.status === 'invalid') {
+    return settingsMutationFailure('validation', current.error?.code || 'invalid_settings', current.error?.message || 'Agents settings is invalid.', sourcePath);
+  }
+  const values = {...current.settings?.enabled};
+  if (enabled === null) {
+    delete values[name];
+  } else {
+    values[name] = enabled;
+  }
+  const overrides = current.settings?.overrides || {};
+  const empty = Object.keys(values).length === 0 && Object.keys(overrides).length === 0;
+  const content = empty ? '' : serializeSettingsForMutation({schemaVersion: GLOBAL_AGENTS_SETTINGS_SCHEMA_VERSION, enabled: values, overrides}, sourcePath);
+  if (typeof content !== 'string') {
+    return content;
+  }
+  try {
+    if (empty) {
+      if (current.status !== 'missing') {
+        (options.operations?.unlink || fs.unlinkSync)(sourcePath);
+      }
+      return {ok: true, sourcePath};
+    }
+    ensureSafeDirectory(scopeRoot('user', options), ['.echo'], options.operations);
+    atomicWriteFile(sourcePath, content, current.status === 'missing', options.operations);
+    return {ok: true, sourcePath, fingerprint: createContentFingerprint(content)};
+  } catch (error: unknown) {
+    return isNodeErrorCode(error, 'EEXIST')
+      ? settingsMutationFailure('conflict', 'content_conflict', 'Agents settings changed since it was read.', sourcePath)
+      : settingsMutationFailure('io', 'settings_write_failed', 'Agents settings could not be written.', sourcePath);
+  }
+}
+
+/** 序列化设置，将容量或 schema 失败转为结构化校验错误，避免写删入口抛出异常。 */
+function serializeSettingsForMutation(settings: Readonly<ParsedAgentsSettings>, sourcePath: string): string | Extract<AgentsSettingsMutationResult, {ok: false}> {
+  try {
+    return serializeAgentsSettings(settings);
+  } catch {
+    return settingsMutationFailure('validation', 'invalid_settings', 'Agents settings cannot be serialized within the supported schema and size limits.', sourcePath);
+  }
+}
+
 /** 校验单个内置条目；字段缺省只代表继承父策略，version 1 不允许携带 Skill allowlist。 */
-function parseBuiltinOverride(value: unknown, name: BuiltinSubagentName, schemaVersion: 1 | 2):
+function parseBuiltinOverride(value: unknown, name: BuiltinSubagentName, schemaVersion: 1 | 2 | 3):
   | {ok: true; override: BuiltinSubagentOverride}
   | {ok: false; error: Readonly<AgentsSettingsError>} {
   if (!isPlainObject(value) || !hasOnlyKeys(value, ['modelProfileId', 'effort', 'skills'])) {
@@ -389,13 +503,16 @@ function settingsMutationFailure(kind: 'validation' | 'conflict' | 'io', code: s
 
 export {
   AGENTS_SETTINGS_SCHEMA_VERSION,
+  GLOBAL_AGENTS_SETTINGS_SCHEMA_VERSION,
   MAX_AGENTS_SETTINGS_FILE_BYTES,
   loadAgentsSettingsSources,
   parseAgentsSettings,
   readAgentsSettingsScope,
   selectBuiltinSubagentOverride,
+  selectSubagentEnablement,
   serializeAgentsSettings,
   writeBuiltinSubagentOverride,
+  writeSubagentEnablement,
   deleteBuiltinSubagentOverride
 };
 
@@ -409,5 +526,6 @@ export type {
   BuiltinSubagentName,
   BuiltinSubagentOverride,
   ParsedAgentsSettings,
-  SelectedBuiltinSubagentOverride
+  SelectedBuiltinSubagentOverride,
+  SelectedSubagentEnablement
 };

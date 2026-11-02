@@ -3,7 +3,7 @@ import {displayWidth, safeRenderWidth} from '../layout';
 import {resolveFooterTheme, tokenText, type FooterTheme, type TuiTheme} from '../colors';
 import {clampPlainText, padVisibleText} from './text';
 import {actionRow, activeBodyWidth, bottom, calculateItemBudget, clampInnerText, contentWidth, dimHint, kvRow, line, moreRow, renderSelectableBody, sectionLine, splitRow, top} from './config-panel-rows';
-import {constrainLayoutTail, createSelectedWindowRows} from './window';
+import {constrainLayoutTail, createSelectedWindowRows, normalizeLineLimit} from './window';
 import {getProviderPreset, listProviderPresets, providerRequiresApiKey} from '../../config/provider-presets';
 import {getGeneralConfigRowIds, configProviderSupportsReasoningEffort, getConfigModelReasoningEffort, getSandboxConfigRowIds} from '../../commands/config/state';
 import type {SandboxMode} from '../../sandbox/types';
@@ -72,16 +72,18 @@ function renderConfigSurface(commandSurface: ConfigCommandSurface, width: number
 }
 
 /**
- * 渲染常规设置 Tab；只投影归一化草稿，选中消息策略时显示工具安全边界说明并计入行预算。
+ * 渲染常规设置 Tab；只投影归一化草稿，选中显示预算或消息策略时按可用高度展示单行说明。
  * 使用普通屏幕 footer 的可用宽高，不读盘或改变草稿，状态转移由 command handler 负责。
  */
 function renderGeneralView(state: GeneralConfigState, tabs: ConfigSurfaceTab[], activeTab: ConfigTabId, columns: number, maxLines: number | undefined, theme: FooterTheme): string[] {
   const width = calculateBoxWidth(columns);
-  const rows = getGeneralConfigRowIds(state).map((rowId) => {
+  const rowIds = getGeneralConfigRowIds(state);
+  const rows = rowIds.map((rowId) => {
     if (rowId === 'compactionThreshold') return {label: '自动压缩阈值', value: `${Math.round(state.draft.compactionThresholdRatio * 100)}%`};
     if (rowId === 'skillCatalogRatio') return {label: '技能列表上下文占比上限', value: `${Math.round(state.draft.skillCatalogContextRatio * 100)}%`};
     if (rowId === 'slashSuggestionLimit') return {label: 'Slash 建议最多显示', value: `${state.draft.slashSuggestionMaxVisible} 条`};
     if (rowId === 'reasoningSummary') return {label: '显示推理摘要', value: state.draft.showReasoningSummary ? '开' : '关'};
+    if (rowId === 'historyRenderLineLimit') return {label: '历史重绘预算', value: state.draft.historyRenderLineLimit === 0 ? '不限' : `约 ${state.draft.historyRenderLineLimit.toLocaleString('en-US')} 行`};
     if (rowId === 'mouseInteraction') return {label: 'UI 鼠标交互', value: state.draft.mouseInteractionEnabled ? '开' : '关'};
     if (rowId === 'defaultInteractionMode') return {label: '默认启动模式', value: state.draft.defaultInteractionMode};
     if (rowId === 'autoCompressImages') return {label: '超限图片自动压缩', value: state.draft.autoCompressImages ? '开' : '关'};
@@ -95,12 +97,22 @@ function renderGeneralView(state: GeneralConfigState, tabs: ConfigSurfaceTab[], 
     if (rowId === 'activeTurnMessagePolicy') return {label: '响应期间发送消息', value: state.draft.activeTurnMessagePolicy === 'steer' ? '即时引导' : '排队'};
     return {label: '保存常规设置', value: '写入 ~/.echo/config.json', action: true};
   });
-  const showMessagePolicyHint = getGeneralConfigRowIds(state)[state.selectedIndex] === 'activeTurnMessagePolicy';
-  const fixedLines = 5 + (state.error || state.feedback ? 1 : 0) + (showMessagePolicyHint ? 1 : 0);
-  const visibleRows = Number.isFinite(maxLines)
-    ? createSelectedWindowRows(rows, state.selectedIndex, calculateItemBudget(maxLines, fixedLines))
-    : rows.map((item, index) => ({kind: 'item' as const, item, index}));
-  const lines = [top(width, ' CONFIG ', 'accentStrong', theme, ansi.dim('常规')), renderTabsLine(width, tabs, activeTab, theme)];
+  const selectedRow = rowIds[state.selectedIndex];
+  const hint = selectedRow === 'historyRenderLineLimit'
+    ? '控制恢复会话时渲染的消息行数，不影响模型上下文；回看受终端滚动历史上限限制'
+    : selectedRow === 'activeTurnMessagePolicy'
+      ? '下一轮生效；即时引导不强停工具，等待其完成'
+      : undefined;
+  const limit = normalizeLineLimit(maxLines);
+  // 极小高度优先保留真实焦点；说明、反馈和边框不能挤掉唯一可操作行。
+  const showFrame = limit >= 5;
+  const showFeedback = Boolean(state.error || state.feedback) && limit >= 6;
+  const frameLines = (showFrame ? 4 : 0) + (showFeedback ? 1 : 0);
+  const showHint = hint !== undefined && showFrame && limit > frameLines + 1;
+  const visibleRows = createSelectedWindowRows(rows, state.selectedIndex, Math.max(1, limit - frameLines - (showHint ? 1 : 0)));
+  const lines = showFrame
+    ? [top(width, ' CONFIG ', 'accentStrong', theme, ansi.dim('常规')), renderTabsLine(width, tabs, activeTab, theme)]
+    : [];
 
   for (const row of visibleRows) {
     if (row.kind === 'more') {
@@ -112,16 +124,16 @@ function renderGeneralView(state: GeneralConfigState, tabs: ConfigSurfaceTab[], 
     }
   }
 
-  if (state.error) {
-    lines.push(errorLine(width, state.error, theme));
-  } else if (state.feedback) {
-    lines.push(feedbackLine(width, state.feedback, theme));
+  if (showFeedback) {
+    lines.push(state.error ? errorLine(width, state.error, theme) : feedbackLine(width, state.feedback!, theme));
   }
-  if (showMessagePolicyHint) {
-    lines.push(line(width, dimHint(width, '下一轮生效；即时引导不强停工具，等待其完成'), theme));
+  if (showHint) {
+    lines.push(line(width, dimHint(width, hint), theme));
   }
-  lines.push(line(width, dimHint(width, 'Tab 切换 · ↑/↓ 移动 · ←/→ 调整 · Enter 执行 · Esc 关闭'), theme));
-  lines.push(bottom(width, theme));
+  if (showFrame) {
+    lines.push(line(width, dimHint(width, 'Tab 切换 · ↑/↓ 移动 · ←/→ 调整 · Enter 执行 · Esc 关闭'), theme));
+    lines.push(bottom(width, theme));
+  }
   return lines;
 }
 

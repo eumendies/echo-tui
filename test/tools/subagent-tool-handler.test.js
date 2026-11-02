@@ -140,6 +140,31 @@ test('default registry only exposes run_subagent when a parent Port is injected 
   assert.equal(child.getHandler(RUN_SUBAGENT_TOOL_NAME), undefined);
 });
 
+test('default registry omits run_subagent for an empty catalog even when allowlisted or full-access', async () => {
+  for (const options of [
+    {},
+    {allowedToolNames: new Set(['read_files', 'run_subagent'])},
+    {executionMode: {kind: 'headless', approvalPolicy: 'full-access'}}
+  ]) {
+    const registry = createDefaultToolRegistry(TEST_CONFIG, '/tmp/echo-empty-subagent-registry', undefined, {
+      ...options,
+      subagentPort: {
+        listDefinitions() { return Object.freeze([]); },
+        async run() { assert.fail('empty catalog cannot be invoked'); }
+      }
+    });
+    assert.equal(registry.getHandler('run_subagent'), undefined);
+    assert.equal(registry.listDefinitions().some(({name}) => name === 'run_subagent'), false);
+    assert.ok(registry.getHandler('read_files'));
+    const call = {callId: 'forged-empty', toolName: 'run_subagent', argumentsText: '{"agent":"worker","task":"work"}'};
+    const result = await createToolExecutor(registry).execute(call);
+    assert.equal(result.ok, false);
+    assert.equal(result.callId, call.callId);
+    assert.equal(result.toolName, call.toolName);
+    assert.match(result.text, /Unknown tool: run_subagent/);
+  }
+});
+
 test('run_subagent bounds success and failure handoffs with head previews and optional artifacts', async () => {
   const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-subagent-result-'));
   const store = createToolResultStore({cwd: process.cwd(), rootDir});

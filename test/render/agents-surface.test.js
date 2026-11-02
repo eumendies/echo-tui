@@ -449,3 +449,165 @@ test('renderAgentsSurface displays unknown statuses without misreporting them as
   assert.match(text, /\? future-state/u);
   assert.doesNotMatch(text, /future.*生效/u);
 });
+
+test('renderAgentsSurface separates definition selection from name enablement and candidate statistics', () => {
+  const surface = createSurface();
+  surface.stats = {agentCount: 3, enabledCount: 1, disabledCount: 2, issueCount: 0};
+  surface.rows[0].enablement = {enabled: false};
+  surface.rows[1].enablement = {enabled: true};
+  surface.rows[2].enablement = {enabled: false};
+  surface.notice = '委派工具已关闭（run_subagent）；启用候选不会开启主工具';
+  const text = stripAnsi(renderAgentsSurface(surface, 160, 16).lines.join('\n'));
+  assert.match(text, /1 启用候选 · 2 停用/);
+  assert.match(text, /生效 · 停用/);
+  assert.match(text, /被覆盖 · 停用/);
+  assert.doesNotMatch(text, /有效启停/);
+  assert.match(text, /委派工具已关闭/);
+  assert.equal(text.includes('当前可调用'), false);
+});
+
+test('renderAgentsSurface does not report effective enabled counts under invalid settings and respects all line budgets', () => {
+  const surface = createSurface({notice: '配置异常，委派不可用；有效值/来源不可用', error: '冲突：文件已被外部修改', feedback: '先前操作反馈'});
+  surface.stats = {agentCount: 3, issueCount: 1, unavailable: true};
+  surface.rows = surface.rows.map((row) => ({...row, enablement: {enabled: undefined}}));
+  const text = stripAnsi(renderAgentsSurface(surface, 160, 16).lines.join('\n'));
+  assert.match(text, /配置异常 · 委派不可用 · 1 异常/);
+  assert.match(text, /生效 · 启停不可用/);
+  assert.equal(/\d+ 启用候选|\d+ 停用/u.test(text), false);
+  for (const width of [12, 32, 60, 80, 100, 160]) {
+    for (const budget of [1, 2, 3, 4, 5, 6, 8, 12]) {
+      const layout = renderAgentsSurface(surface, width, budget);
+      assert.ok(layout.lines.length <= budget, `width=${width}, budget=${budget}, got=${layout.lines.length}`);
+      for (const line of layout.lines) assert.ok(displayWidth(line) <= width);
+      if (width >= 36) assert.ok(stripAnsi(layout.lines.join('\n')).includes('explorer'));
+      else assert.match(stripAnsi(layout.lines.join('\n')), /▌/);
+      if (budget >= 5 && width >= 60) assert.match(stripAnsi(layout.lines.join('\n')), /配置异常，委派不可用/);
+    }
+  }
+});
+
+function createEnablementData() {
+  const draft = {capability: 'readonly', description: 'Review files', effort: 'inherit', instructions: 'Inspect safely', mcp: false, tools: ['read_files']};
+  return {
+    activeTab: 'user', mode: 'detail', selected: {name: 'reviewer', sourceKind: 'user'}, selectedIndex: 4,
+    enablement: {value: false, original: false, fingerprint: 'user-settings-fp'},
+    snapshot: {
+      builtins: [], models: [], skills: [], diagnostics: [], delegationToolEnabled: true,
+      items: [{name: 'reviewer', sourceKind: 'user', status: 'shadowed', diagnostics: [], draft}],
+      overrides: [
+        {sourceKind: 'user', sourcePath: '/home/.echo/agents.settings.json', status: 'valid', fingerprint: 'user-settings-fp', settings: {schemaVersion: 3, enabled: {reviewer: false}, overrides: {}}},
+        {sourceKind: 'project', sourcePath: '/repo/.echo/agents.settings.json', status: 'valid', fingerprint: 'project-settings-fp', settings: {schemaVersion: 2, overrides: {}}}
+      ]
+    }
+  };
+}
+
+test('renderAgentsSurface keeps the first-level global toggle and save/cancel accessible across all budgets', () => {
+  const {createAgentsSurface} = require('../../src/commands/agents-command-handler');
+  for (const builtin of [false, true]) {
+    const data = createEnablementData();
+    if (builtin) {
+      data.selected = {name: 'explorer', sourceKind: 'builtin'};
+      data.snapshot.items = [{name: 'explorer', sourceKind: 'builtin', status: 'active', diagnostics: []}];
+      data.snapshot.builtins = [{name: 'explorer', description: 'Explore safely', capability: 'readonly', effort: 'inherit', includeMcpTools: false, localToolNames: ['read_files'], policy: {fields: [], status: 'none'}}];
+      data.snapshot.overrides[0].settings.enabled.explorer = false;
+      data.selectedIndex = 2;
+    }
+    const initial = structuredClone(data);
+    const surface = createAgentsSurface(data);
+    const toggles = surface.rows.filter((row) => row.id === 'enablement:toggle');
+    assert.deepEqual(toggles.map((row) => [row.label, row.selected]), [['全局启用', false]]);
+    for (const width of [24, 36, 60, 80, 100, 160]) {
+      for (const budget of [1, 2, 4, 5, 6, 9, 12, 18]) {
+        for (const id of ['enablement:toggle', 'enablement:save', 'enablement:cancel']) {
+          const selectedIndex = surface.rows.findIndex((row) => row.id === id);
+          const layout = renderAgentsSurface({...surface, selectedIndex}, width, budget);
+          const text = stripAnsi(layout.lines.join('\n'));
+          assert.ok(layout.lines.length <= budget, `width=${width}, budget=${budget}`);
+          assert.equal(layout.showCursor, false);
+          for (const line of layout.lines) assert.ok(displayWidth(line) <= width);
+          assert.match(text, new RegExp(surface.rows[selectedIndex].label));
+          assert.equal(layout.lines.join('\n').includes('\u001b[?1049h'), false);
+        }
+      }
+    }
+    assert.deepEqual(data, initial);
+    const fullText = stripAnsi(renderAgentsSurface(surface, 160, 30).lines.join('\n'));
+    assert.match(fullText, /○ 全局启用.*停用/);
+    assert.doesNotMatch(fullText, /有效启停/);
+    assert.match(fullText, /取消/);
+    assert.equal(/保存启停|按名称控制|保存后预期|被项目覆盖/.test(fullText), false);
+  }
+});
+
+test('renderAgentsSurface renders malformed first-level toggle as unavailable, not as a false default', () => {
+  const {createAgentsSurface} = require('../../src/commands/agents-command-handler');
+  const data = createEnablementData();
+  data.snapshot.overrides[0].status = 'invalid';
+  delete data.snapshot.overrides[0].settings;
+  data.snapshot.overrides[0].error = {code: 'invalid_settings_json', message: 'Invalid JSON'};
+  data.enablement.value = undefined;
+  data.enablement.original = undefined;
+  const surface = createAgentsSurface(data);
+  assert.equal(surface.rows.find((row) => row.id === 'enablement:toggle').readonly, true);
+  assert.equal(surface.rows.find((row) => row.id === 'enablement:toggle').selected, undefined);
+  const text = stripAnsi(renderAgentsSurface(surface, 160, 30).lines.join('\n'));
+  assert.match(text, /配置异常，委派不可用/);
+  assert.match(text, /全局启用.*不可用.*只读/);
+  assert.equal(/○ 全局启用|● 全局启用/.test(text), false);
+});
+
+test('renderAgentsSurface marks unsaved drafts in hints without an effective enablement row', () => {
+  const {createAgentsSurface} = require('../../src/commands/agents-command-handler');
+  const data = createEnablementData();
+  data.enablement.original = true;
+  data.snapshot.overrides[0].sourcePath = `/home/${'very-long-directory/'.repeat(10)}.echo/agents.settings.json`;
+  const surface = createAgentsSurface(data);
+  surface.selectedIndex = surface.rows.findIndex((row) => row.id === 'enablement:toggle');
+  const text = stripAnsi(renderAgentsSurface(surface, 80, 6).lines.join('\n'));
+  assert.match(text, /未保存/);
+  assert.doesNotMatch(text, /有效启停/);
+});
+
+test('renderAgentsSurface keeps deletion confirmation to two actions with constraints in the delete hint', () => {
+  const {createAgentsSurface} = require('../../src/commands/agents-command-handler');
+  const data = createEnablementData();
+  data.mode = 'confirm';
+  data.customForm = undefined;
+  data.confirm = {kind: 'delete', selectedIndex: 0, sourcePath: '/repo/.echo/agents/reviewer.md'};
+  data.selectedIndex = 0;
+  data.selected.sourceKind = 'project';
+  data.snapshot.items.push({name: 'reviewer', sourceKind: 'project', status: 'active', diagnostics: []});
+  data.snapshot.items[0].draft = {};
+  const surface = createAgentsSurface(data);
+  assert.deepEqual(surface.rows.map((row) => row.id), ['confirm:cancel', 'confirm:execute']);
+  assert.equal(surface.rows[1].description, '/repo/.echo/agents/reviewer.md；用户定义接替·停用');
+  const text = stripAnsi(renderAgentsSurface(surface, 120, 16).lines.join('\n'));
+  assert.match(text, /删除 reviewer.*停用/);
+  assert.doesNotMatch(text, /目标路径|下一主运行|启停执行约束|名称启停偏好/);
+  for (const width of [36, 80, 120]) {
+    for (const budget of [5, 6, 7]) {
+      const constrained = renderAgentsSurface(surface, width, budget);
+      const content = stripAnsi(constrained.lines.join('\n'));
+      assert.ok(constrained.lines.length <= budget);
+      for (const line of constrained.lines) assert.ok(displayWidth(line) <= width);
+      assert.match(content, /取消/);
+      assert.match(content, width >= 80 ? /删除 reviewer/ : /删除/);
+      if (width >= 80) {
+        assert.match(content, /\/repo\/\.echo\/agents\/reviewer.md/);
+        assert.match(content, /用户定义接替·停用/);
+      }
+    }
+  }
+});
+
+test('renderAgentsSurface reports unknown delegation tool availability without disabling the global toggle', () => {
+  const {createAgentsSurface} = require('../../src/commands/agents-command-handler');
+  const data = createEnablementData();
+  data.snapshot.delegationToolEnabled = undefined;
+  const surface = createAgentsSurface(data);
+  const text = stripAnsi(renderAgentsSurface(surface, 120, 12).lines.join('\n'));
+  assert.match(text, /主工具配置异常，委派工具状态不可用/);
+  assert.doesNotMatch(text, /委派工具已关闭/);
+  assert.notEqual(surface.rows.find((row) => row.id === 'enablement:toggle').readonly, true);
+});

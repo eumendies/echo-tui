@@ -121,6 +121,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
    * 父进程必须让出输入，也避免 resize 触发对 npm 输出或重启进程画面的破坏性重绘。
    */
   function detachTerminalListeners(): void {
+    inputController.cancelEscapeWait();
     if (typeof input.off === 'function') {
       input.off('data', inputController.handleChunk);
     }
@@ -480,7 +481,8 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
         if (!initialRenderComplete) {
           return;
         }
-        if (settingsRefresh?.reasoningVisibilityChanged) {
+        if (settingsRefresh?.reasoningVisibilityChanged
+          || (settingsRefresh?.historyRenderLineLimitChanged && renderCoordinator.currentOwner() === 'main')) {
           renderCoordinator.renderResizeRecovery();
         } else if (modelChanged || settingsRefresh?.slashSuggestionLimitChanged || settingsRefresh?.mouseInteractionChanged) {
           renderCoordinator.render();

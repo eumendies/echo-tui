@@ -1,3 +1,5 @@
+import {isDeepStrictEqual} from 'node:util';
+
 import {INPUT_EVENTS} from '../input/event-types';
 import * as composer from '../input/composer';
 import {
@@ -5,6 +7,7 @@ import {
   READONLY_SUBAGENT_TOOL_CEILING
 } from '../agent/subagent/definition';
 import {SUBAGENT_EFFORT_POLICIES} from '../agent/subagent/manifest';
+import {selectSubagentEnablement} from '../agent/subagent/settings';
 
 import type {ComposerState} from '../types/composer';
 import type {
@@ -32,6 +35,7 @@ type AgentsSelection = {
 
 type AgentsCustomForm = {
   draft: AgentsCommandDraft; // 与已加载文件隔离的完整可编辑草稿。
+  original: AgentsCommandDraft; // 最近成功保存的定义，用于避免未修改定义时重写 Markdown。
   fieldIndex: number; // 自定义表单当前可聚焦字段或动作行。
   fingerprint?: string; // 编辑已有定义时打开文件取得的乐观冲突指纹。
   kind: 'create' | 'edit'; // 当前表单是排他创建还是指纹更新。
@@ -40,11 +44,17 @@ type AgentsCustomForm = {
 };
 
 type AgentsBuiltinForm = {
-  draft: Readonly<BuiltinSubagentOverride>; // 仅包含 model 与 effort 的内置策略草稿。
+  draft: Readonly<BuiltinSubagentOverride>; // 内置模型、effort 与 Skills 策略草稿。
   fieldIndex: number; // 内置策略表单当前字段或动作焦点。
   fingerprint: string | null; // 打开 sidecar 时的完整文件指纹；null 表示预期缺失。
   name: BuiltinSubagentName; // Explorer 或 Worker 固定名称。
   scope: AgentManagementScope; // 当前编辑的用户级或项目级 sidecar。
+};
+
+type AgentsEnablement = {
+  value: boolean | undefined; // 当前二态草稿；undefined 表示来源异常，只读且不可伪默认启用。
+  original: boolean | undefined; // 打开或最近成功保存的全局值；合法来源缺省为 true。
+  fingerprint: string | null; // 整个 sidecar 最近成功写入的指纹。
 };
 
 type AgentsFieldEdit = {
@@ -65,6 +75,7 @@ type AgentsManageData = {
   confirm?: AgentsConfirmation; // 当前默认取消的二次确认状态。
   customForm?: AgentsCustomForm; // 自定义定义创建或编辑草稿。
   edit?: AgentsFieldEdit; // 最内层行内字段编辑状态。
+  enablement?: AgentsEnablement; // 一级详情持有的全局开关草稿，策略与定义子表单不重复持有。
   error?: string; // 最近一次校验、冲突或 I/O 失败提示。
   feedback?: string; // 成功刷新后的下一 turn 生效提示。
   instructionsComposer?: ComposerState; // instructions 独立多行 composer 状态。
@@ -91,6 +102,7 @@ function createAgentsSurface(data: AgentsManageData): AgentsCommandSurface {
   const selectedRow = rows[selectedIndex];
   const editText = data.edit ? composer.getText(data.edit.composer) : data.instructionsComposer ? composer.getText(data.instructionsComposer) : undefined;
   const editCursor = data.edit?.composer.cursor ?? data.instructionsComposer?.cursor;
+  const notice = createNotice(data);
   return {
     activeTab: data.activeTab,
     dismissHint: createDismissHint(data),
@@ -101,9 +113,10 @@ function createAgentsSurface(data: AgentsManageData): AgentsCommandSurface {
     ...(data.feedback ? {feedback: data.feedback} : {}),
     kind: 'agents',
     mode: data.mode,
+    ...(notice ? {notice} : {}),
     rows,
     selectedIndex,
-    ...(data.mode === 'list' ? {stats: createListStats(rows)} : {}),
+    ...(data.mode === 'list' ? {stats: createListStats(data, rows)} : {}),
     ...(data.mode === 'list' && selectedRow ? {summary: createListSummary(data, selectedRow)} : {}),
     tabs: AGENTS_TABS.map((tab) => ({...tab})),
     title: createTitle(data, editText)
@@ -121,14 +134,15 @@ function createTitle(data: AgentsManageData, editText?: string): string {
   return `AGENTS · ${AGENTS_TABS.find((tab) => tab.id === data.activeTab)?.label || 'Overview'}`;
 }
 
+/** 按当前页面提示操作；详情草稿变化直接标在底部提示中，不另占状态行。 */
 function createDismissHint(data: AgentsManageData): string {
   if (data.edit) return '输入字段 · Enter 应用 · Esc 取消字段编辑';
   if (data.mode === 'instructions') return '编辑 instructions · Ctrl+J 换行 · Enter/Esc 返回表单';
   if (data.mode === 'tools') return '↑/↓ 选择 · Space 多选 · Enter 激活可见选项 · Esc 返回表单';
   if (data.mode === 'skills') return '↑/↓ 选择 · Space 多选 · Enter 激活可见选项 · Esc 返回表单';
   if (data.mode === 'confirm') return '↑/↓ 选择 · Enter 激活 · Esc 取消并保留草稿';
-  if (data.mode === 'form') return '↑/↓ 选择 · ←/→ 调整策略 · Enter 激活可见选项 · Esc 返回';
-  if (data.mode === 'detail') return '↑/↓ 选择 · Enter 激活可见选项 · Esc 返回列表';
+  if (data.mode === 'form') return '↑/↓ 选择 · Enter 激活 · ←/→ 调整策略 · Esc 取消不保存';
+  if (data.mode === 'detail') return `${data.enablement && data.enablement.value !== data.enablement.original ? '未保存 · ' : ''}↑/↓ 选择 · Enter/Space/←/→ 切换开关 · 保存后生效 · Esc 取消返回`;
   return 'Tab/Shift+Tab 切换范围 · ↑/↓ 选择 · Enter 打开 · Esc 关闭';
 }
 
@@ -145,7 +159,7 @@ function getRows(data: AgentsManageData): AgentsCommandRow[] {
 
 function createListRows(data: AgentsManageData): AgentsCommandRow[] {
   const source = data.activeTab;
-  let items: Readonly<AgentManagementItem>[];
+  let items: CommandAgentsSnapshot['items'];
   if (source === 'overview') {
     items = data.snapshot.items.filter((item) => item.status === 'active');
   } else if (source === 'builtin') {
@@ -161,6 +175,7 @@ function createListRows(data: AgentsManageData): AgentsCommandRow[] {
     return {
       ...(builtin || draft ? {capability: builtin?.capability || draft?.capability} : {}),
       description: draft?.description || builtin?.description,
+      enablement: item.enablement,
       ...(builtin || draft ? {effort: builtin?.effort || draft?.effort} : {}),
       id: `agent:${item.sourceKind}:${item.name}`,
       kind: 'agent',
@@ -188,15 +203,31 @@ function createListRows(data: AgentsManageData): AgentsCommandRow[] {
   return rows;
 }
 
-/** 统计当前范围的 Agent 与异常数量；动作行不计入任何计数。 */
-function createListStats(rows: AgentsCommandRow[]): NonNullable<AgentsCommandSurface['stats']> {
+/** 统计定义胜出且启用的候选；配置异常时不发布有效启停计数，停用不算异常。 */
+function createListStats(data: AgentsManageData, rows: AgentsCommandRow[]): NonNullable<AgentsCommandSurface['stats']> {
+  const unavailable = data.snapshot.overrides.some((source) => source.sourceKind === 'user' && source.status === 'invalid');
   return {
     agentCount: rows.filter((row) => row.kind === 'agent').length,
     issueCount: rows.filter((row) => row.status === 'invalid' || row.status === 'reserved' || row.status === 'diagnostic').length
+      + (data.activeTab === 'overview' ? 0 : data.snapshot.overrides.filter((source) => source.status === 'invalid').length),
+    ...(unavailable ? {unavailable: true} : {
+      enabledCount: rows.filter((row) => row.kind === 'agent' && row.status === 'active' && row.enablement?.enabled === true).length,
+      disabledCount: rows.filter((row) => row.kind === 'agent' && (row.status === 'active' || row.status === 'shadowed') && row.enablement?.enabled === false).length
+    })
   };
 }
 
-/** 为当前焦点创建稳定摘要；每次 surface 投影都重算，避免动作或诊断沿用上一 Agent 内容。 */
+/** 所有层级均暴露委派不可用原因；候选统计不等同于主工具可调用状态。 */
+function createNotice(data: AgentsManageData): string {
+  return [
+    data.snapshot.overrides.some((source) => source.sourceKind === 'user' && source.status === 'invalid') ? `配置异常，委派不可用；有效值/来源不可用 · ${data.snapshot.overrides.filter((source) => source.status === 'invalid').map((source) => `${policyScopeLabel(source)} ${source.error?.code || 'invalid_settings'}`).join('；')}` : '',
+    data.snapshot.overrides.some((source) => source.sourceKind === 'project' && source.status === 'invalid') ? '项目策略配置异常' : '',
+    data.snapshot.delegationToolEnabled === false ? '委派工具已关闭（run_subagent）；启用候选不会开启主工具' : '',
+    data.snapshot.delegationToolEnabled === undefined ? '主工具配置异常，委派工具状态不可用' : ''
+  ].filter(Boolean).join(' · ');
+}
+
+/** 为当前焦点重算策略摘要；启停由列表状态表达，动作或诊断不沿用上一 Agent 内容。 */
 function createListSummary(data: AgentsManageData, row: AgentsCommandRow): AgentsCommandSummary {
   if (row.kind === 'agent') {
     const item = findItemForAgentRow(data, row);
@@ -260,15 +291,21 @@ function findItemForDiagnosticRow(data: AgentsManageData, row: AgentsCommandRow)
   return data.snapshot.items.find((item) => item.sourceKind === sourceKind && item.name === name);
 }
 
+/** 一级详情统一呈现名称开关与现有策略/定义入口，子菜单不重复提供开关。 */
 function createDetailRows(data: AgentsManageData): AgentsCommandRow[] {
   const item = getSelectedItem(data);
   if (!item) return [];
+  const enablementActions: AgentsCommandRow[] = item.sourceKind === 'builtin' || item.draft ? [
+    {id: 'enablement:save', kind: 'action', label: '保存更改', section: 'actions'},
+    {id: 'enablement:cancel', kind: 'action', label: '取消', section: 'actions'}
+  ] : [];
   if (item.sourceKind === 'builtin') {
     const builtin = data.snapshot.builtins.find((candidate) => candidate.name === item.name);
     if (!builtin) return [];
     const name = builtin.name;
     return [
       {id: 'builtin:description', kind: 'field', label: 'description', description: builtin.description, readonly: true, section: 'identity'},
+      ...createEnablementDetailRows(data, item),
       {id: 'builtin:policy', kind: 'field', label: 'policy', description: formatBuiltinPolicy(data, name), readonly: true, section: 'policy'},
       {id: 'builtin:model', kind: 'field', label: 'model', description: `${builtin.modelProfileId || '继承父模型'}${formatPolicyOrigin(builtin.policy, 'model')}`, readonly: true, section: 'policy'},
       {id: 'builtin:effort', kind: 'field', label: 'effort', description: builtin.effort === 'inherit' ? 'inherit（继承父 effort）' : `${builtin.effort}${formatPolicyOrigin(builtin.policy, 'effort')}`, readonly: true, section: 'policy'},
@@ -276,6 +313,7 @@ function createDetailRows(data: AgentsManageData): AgentsCommandRow[] {
       {id: 'builtin:tools', kind: 'field', label: 'tools', description: `${builtin.localToolNames.length} 个（只读）`, readonly: true, section: 'capability'},
       {id: 'builtin:skills', kind: 'field', label: 'skills', description: `${formatSkillSummary(builtin.skillNames, data.snapshot.skills)}${formatPolicyOrigin(builtin.policy, 'skills')}`, readonly: true, section: 'capability'},
       {id: 'builtin:mcp', kind: 'field', label: 'MCP', description: builtin.includeMcpTools ? '启用（固定）' : '关闭（固定）', readonly: true, section: 'capability'},
+      ...enablementActions,
       {id: 'builtin:project', kind: 'action', label: '配置项目级策略', description: formatBuiltinScopeStatus(data, name, 'project'), section: 'actions'},
       {id: 'builtin:user', kind: 'action', label: '配置用户级策略', description: formatBuiltinScopeStatus(data, name, 'user'), section: 'actions'}
     ];
@@ -286,11 +324,33 @@ function createDetailRows(data: AgentsManageData): AgentsCommandRow[] {
     ...item.diagnostics.map((diagnostic, index) => ({id: `diagnostic:${index}`, kind: 'field' as const, label: diagnostic.code, description: diagnostic.message, readonly: true, section: 'identity' as const, tone: 'warning' as const})),
     ...(item.draft ? [{id: 'custom:skills', kind: 'field' as const, label: 'skills', description: formatSkillSummary(item.draft.skillNames, data.snapshot.skills), readonly: true, section: 'policy' as const}] : [])
   ];
+  rows.push(...createEnablementDetailRows(data, item));
   if (item.draft) {
     rows.push({id: 'custom:edit', kind: 'action', label: '编辑配置', section: 'actions'});
   }
   rows.push({id: 'custom:delete', kind: 'action', label: '删除 Agent', section: 'actions', tone: 'danger'});
+  rows.push(...enablementActions);
   return rows;
+}
+
+/** 一级详情仅用全局开关表达启停；无合法定义不提供开关，全局异常时只读。 */
+function createEnablementDetailRows(data: AgentsManageData, item: Readonly<AgentManagementItem>): AgentsCommandRow[] {
+  if (item.sourceKind !== 'builtin' && !item.draft) return [];
+  const entry = data.enablement || loadEnablement(data, item.name);
+  const source = data.snapshot.overrides.find((candidate) => candidate.sourceKind === 'user');
+  const unavailable = entry.value === undefined || source?.status === 'invalid';
+  return [{
+    id: 'enablement:toggle', kind: unavailable ? 'field' : 'tool', label: '全局启用',
+    description: unavailable ? '不可用（全局配置异常，只读）' : entry.value ? '启用' : '停用',
+    ...(unavailable ? {readonly: true, tone: 'warning' as const} : {selected: entry.value}), section: 'policy'
+  }];
+}
+
+/** 全局名称未配置时默认开启；全局配置异常保持只读。 */
+function loadEnablement(data: AgentsManageData, name: string): AgentsEnablement {
+  const source = data.snapshot.overrides.find((entry) => entry.sourceKind === 'user');
+  const value = selectSubagentEnablement(name, data.snapshot.overrides).enabled;
+  return {value, original: value, fingerprint: source?.fingerprint ?? null};
 }
 
 function createCustomFormRows(data: AgentsManageData): AgentsCommandRow[] {
@@ -313,6 +373,7 @@ function createCustomFormRows(data: AgentsManageData): AgentsCommandRow[] {
   ];
 }
 
+/** 策略表单仅针对可读取的来源；显式保存继承策略也会建立该来源的整体覆盖。 */
 function createBuiltinFormRows(data: AgentsManageData): AgentsCommandRow[] {
   const form = data.builtinForm!;
   const hasOverride = Boolean(getScopeOverride(data, form.scope, form.name));
@@ -439,6 +500,7 @@ function createToolRows(draft: AgentsCommandDraft): AgentsCommandRow[] {
   ];
 }
 
+/** 确认页只保留取消与执行两项；删除提示优先目标路径，仅补充用户定义接替的后果。 */
 function createConfirmRows(data: AgentsManageData): AgentsCommandRow[] {
   const confirm = data.confirm!;
   const actionLabel = confirm.kind === 'create'
@@ -446,15 +508,22 @@ function createConfirmRows(data: AgentsManageData): AgentsCommandRow[] {
     : confirm.kind === 'delete'
       ? `删除 ${data.selected?.name || 'Agent'}`
       : `移除 ${data.builtinForm?.name || 'Agent'} override`;
-  const lowerPriority = confirm.kind === 'delete' && data.selected?.sourceKind === 'project'
-    && data.snapshot.items.some((item) => item.sourceKind === 'user' && item.name === data.selected?.name && item.draft)
-    ? '；删除后同名用户级定义将在下一 turn 重新生效'
-    : confirm.kind === 'removeOverride' && data.builtinForm?.scope === 'project'
-      ? '；移除后用户级策略可能在下一 turn 重新生效'
-      : '';
+  let description = confirm.sourcePath;
+  if (confirm.kind === 'delete') {
+    const item = getSelectedItem(data)!;
+    const userDefinition = item.sourceKind === 'project'
+      ? data.snapshot.items.find((candidate) => candidate.sourceKind === 'user' && candidate.name === item.name && candidate.draft)
+      : undefined;
+    if (userDefinition) {
+      const enabled = selectSubagentEnablement(item.name, data.snapshot.overrides).enabled;
+      description += `；用户定义接替·${enabled === undefined ? '不可执行' : enabled ? '启用' : '停用'}`;
+    }
+  } else if (confirm.kind === 'removeOverride' && data.builtinForm?.scope === 'project') {
+    description += '；移除后用户级策略可能在下一 turn 重新生效';
+  }
   return [
     {description: '默认安全选项', id: 'confirm:cancel', kind: 'confirm', label: '取消'},
-    {description: `${confirm.sourcePath}${lowerPriority}`, id: 'confirm:execute', kind: 'confirm', label: actionLabel, tone: 'danger'}
+    {description, id: 'confirm:execute', kind: 'confirm', label: actionLabel, tone: 'danger'}
   ];
 }
 
@@ -530,7 +599,7 @@ export class AgentsCommandHandler implements CommandHandler<AgentsManageData> {
       return;
     }
     if (data.mode === 'detail') {
-      this.update(host, {...data, mode: 'list', selected: undefined, selectedIndex: 0, error: undefined});
+      this.update(host, {...data, mode: 'list', selected: undefined, enablement: undefined, selectedIndex: 0, error: undefined, snapshot: host.agents.list()});
       return;
     }
     host.session.close();
@@ -557,20 +626,36 @@ export class AgentsCommandHandler implements CommandHandler<AgentsManageData> {
       return;
     }
     if (row.kind === 'agent' && row.sourceKind) {
-      this.update(host, {...data, mode: 'detail', selected: {name: row.label, sourceKind: row.sourceKind}, selectedIndex: 0, error: undefined, feedback: undefined});
+      this.update(host, {...data, mode: 'detail', enablement: loadEnablement(data, row.label), selected: {name: row.label, sourceKind: row.sourceKind}, selectedIndex: 0, error: undefined, feedback: undefined});
     }
   }
 
+  /** 详情中的开关只改草稿；策略和定义入口与它们同层，保存/取消不进入新页面。 */
   private handleDetail(data: AgentsManageData, event: InputEvent, host: CommandHost): void {
     if (isMove(event)) {
       this.update(host, {...data, selectedIndex: data.selectedIndex + moveDirection(event), error: undefined});
       return;
     }
-    if (event.type !== INPUT_EVENTS.SUBMIT) return;
     const rows = getRows(data);
     const row = rows[clampIndex(data.selectedIndex, rows.length)];
     const item = getSelectedItem(data);
-    if (!row || !item) return;
+    if (!row || !item || row.readonly) return;
+    if (row.id === 'enablement:toggle' &&
+      (event.type === INPUT_EVENTS.SUBMIT || (event.type === INPUT_EVENTS.TEXT && event.value === ' ') ||
+        event.type === INPUT_EVENTS.MOVE_LEFT || event.type === INPUT_EVENTS.MOVE_RIGHT)) {
+      const entry = data.enablement || loadEnablement(data, item.name);
+      this.update(host, {...data, enablement: {...entry, value: !entry.value}, error: undefined, feedback: undefined});
+      return;
+    }
+    if (event.type !== INPUT_EVENTS.SUBMIT) return;
+    if (row.id === 'enablement:save') {
+      this.saveEnablement(data, host);
+      return;
+    }
+    if (row.id === 'enablement:cancel') {
+      this.handleEscape(data, host);
+      return;
+    }
     if (row.id === 'custom:edit' && item.draft && item.sourceKind !== 'builtin') {
       this.beginCustomForm(data, item.sourceKind, 'edit', fromManifest(item.name, item.draft), 'detail', host, item.fingerprint);
     } else if (row.id === 'custom:delete') {
@@ -580,6 +665,7 @@ export class AgentsCommandHandler implements CommandHandler<AgentsManageData> {
     }
   }
 
+  /** 子表单只编辑模型策略或定义，一级详情的开关草稿不参与表单提交。 */
   private handleForm(data: AgentsManageData, event: InputEvent, host: CommandHost): void {
     const form = data.customForm || data.builtinForm;
     if (!form) return;
@@ -616,7 +702,7 @@ export class AgentsCommandHandler implements CommandHandler<AgentsManageData> {
     } else if (rowId === 'instructions') {
       this.update(host, {...data, instructionsComposer: composer.createComposer(form.draft.instructions), mode: 'instructions', selectedIndex: 0, error: undefined});
     } else if (rowId === 'save') {
-      if (form.kind === 'edit') this.saveCustomEdit(data, host);
+      if (form.kind === 'edit') this.saveForm(data, host);
       else this.beginCreateConfirmation(data, host);
     } else if (rowId === 'cancel') {
       this.handleEscape(data, host);
@@ -631,9 +717,7 @@ export class AgentsCommandHandler implements CommandHandler<AgentsManageData> {
     } else if (rowId === 'skills') {
       this.update(host, {...data, mode: 'skills', selectedIndex: 0, error: undefined});
     } else if (rowId === 'save') {
-      const result = host.agents.writeBuiltinOverride(form.scope, form.name, form.draft, form.fingerprint);
-      if (result.ok) this.finishSuccess(data, host);
-      else this.update(host, {...data, error: formatMutationError(result)});
+      this.saveForm(data, host);
     } else if (rowId === 'remove') {
       const source = data.snapshot.overrides.find((candidate) => candidate.sourceKind === form.scope);
       if (!getScopeOverride(data, form.scope, form.name) || !source?.fingerprint) {
@@ -769,6 +853,7 @@ export class AgentsCommandHandler implements CommandHandler<AgentsManageData> {
     this.update(host, {...data, builtinForm: {...data.builtinForm, draft}, error: undefined});
   }
 
+  /** 确认页仅在取消与执行两项间移动；默认取消，显式提交执行项才写盘。 */
   private handleConfirm(data: AgentsManageData, event: InputEvent, host: CommandHost): void {
     if (isMove(event)) {
       const selectedIndex = clampIndex(data.confirm!.selectedIndex + moveDirection(event), 2);
@@ -781,10 +866,7 @@ export class AgentsCommandHandler implements CommandHandler<AgentsManageData> {
       return;
     }
     if (data.confirm!.kind === 'create') {
-      const form = data.customForm!;
-      const result = host.agents.create(form.scope, form.draft.name, toManifest(form.draft));
-      if (result.ok) this.finishSuccess(data, host);
-      else this.update(host, {...data, confirm: undefined, mode: 'form', selectedIndex: form.fieldIndex, error: formatMutationError(result)});
+      this.saveForm(data, host);
     } else if (data.confirm!.kind === 'delete') {
       const item = getSelectedItem(data);
       if (!item || item.sourceKind === 'builtin' || !item.fingerprint) return;
@@ -796,15 +878,16 @@ export class AgentsCommandHandler implements CommandHandler<AgentsManageData> {
       const source = data.snapshot.overrides.find((candidate) => candidate.sourceKind === form.scope);
       if (!source?.fingerprint) return;
       const result = host.agents.deleteBuiltinOverride(form.scope, form.name, source.fingerprint);
-      if (result.ok) this.finishSuccess(data, host);
+      if (result.ok) this.finishSuccess(data, host, {scope: form.scope, expectedFingerprint: form.fingerprint, fingerprint: result.fingerprint ?? null});
       else this.update(host, {...data, confirm: undefined, mode: 'form', selectedIndex: form.fieldIndex, error: formatMutationError(result)});
     }
   }
 
   private beginCustomForm(data: AgentsManageData, scope: AgentManagementScope, kind: AgentsCustomForm['kind'], draft: AgentsCommandDraft, returnMode: AgentsCustomForm['returnMode'], host: CommandHost, fingerprint?: string): void {
-    this.update(host, {...data, customForm: {draft: cloneDraft(draft), fieldIndex: 0, fingerprint, kind, returnMode, scope}, builtinForm: undefined, mode: 'form', selectedIndex: 0, error: undefined, feedback: undefined});
+    this.update(host, {...data, customForm: {draft: cloneDraft(draft), original: cloneDraft(draft), fieldIndex: 0, fingerprint, kind, returnMode, scope}, builtinForm: undefined, mode: 'form', selectedIndex: 0, error: undefined, feedback: undefined});
   }
 
+  /** 来源异常时留在详情并报告原因，不进入无法保存或修复的只读表单。 */
   private beginBuiltinForm(data: AgentsManageData, scope: AgentManagementScope, name: BuiltinSubagentName, host: CommandHost): void {
     const source = data.snapshot.overrides.find((candidate) => candidate.sourceKind === scope);
     if (source?.status === 'invalid') {
@@ -812,7 +895,8 @@ export class AgentsCommandHandler implements CommandHandler<AgentsManageData> {
       return;
     }
     const existing = getScopeOverride(data, scope, name);
-    this.update(host, {...data, builtinForm: {draft: existing ? {...existing} : {effort: 'inherit'}, fieldIndex: 0, fingerprint: source?.fingerprint || null, name, scope}, customForm: undefined, mode: 'form', selectedIndex: 0, error: undefined, feedback: undefined});
+    const draft = existing ? {...existing} : {effort: 'inherit' as const};
+    this.update(host, {...data, builtinForm: {draft, fieldIndex: 0, fingerprint: source?.fingerprint || null, name, scope}, customForm: undefined, mode: 'form', selectedIndex: 0, error: undefined, feedback: undefined});
   }
 
   private beginCreateConfirmation(data: AgentsManageData, host: CommandHost): void {
@@ -834,23 +918,60 @@ export class AgentsCommandHandler implements CommandHandler<AgentsManageData> {
     this.update(host, {...data, confirm: {kind: 'delete', selectedIndex: 0, sourcePath: item.sourcePath}, mode: 'confirm', selectedIndex: 0, error: undefined});
   }
 
-  private saveCustomEdit(data: AgentsManageData, host: CommandHost): void {
-    const form = data.customForm!;
-    if (!form.fingerprint) {
-      this.update(host, {...data, error: '缺少打开文件时的内容指纹，请返回列表刷新。'});
-      return;
-    }
-    const result = host.agents.update(form.scope, form.draft.name, toManifest(form.draft), form.fingerprint);
-    if (result.ok) this.finishSuccess(data, host);
-    else this.update(host, {...data, error: formatMutationError(result)});
+  /** 全局开关只写一个 sidecar；失败保留草稿与原指纹供重试，不存在跨文件部分成功。 */
+  private saveEnablement(data: AgentsManageData, host: CommandHost): void {
+    const entry = data.enablement;
+    if (!entry || entry.value === undefined || entry.value === entry.original) return;
+    const result = host.agents.writeEnablement(data.selected!.name, entry.value, entry.fingerprint);
+    if (result.ok) {
+      const next = {...data, snapshot: host.agents.list()};
+      this.update(host, {...next, enablement: loadEnablement(next, data.selected!.name), error: undefined, feedback: NEXT_TURN_FEEDBACK});
+    } else this.update(host, {...data, error: formatMutationError(result)});
   }
 
-  private finishSuccess(data: AgentsManageData, host: CommandHost): void {
-    this.update(host, {...data, builtinForm: undefined, confirm: undefined, customForm: undefined, edit: undefined, error: undefined, feedback: NEXT_TURN_FEEDBACK, instructionsComposer: undefined, mode: 'list', selected: undefined, selectedIndex: 0, snapshot: host.agents.list()});
+  /** 未修改定义不重写文件；显式保存模型策略始终提交，不顺带保存详情的全局开关。 */
+  private saveForm(data: AgentsManageData, host: CommandHost): void {
+    const custom = data.customForm;
+    const builtin = data.builtinForm;
+    if (custom) {
+      if (custom.kind === 'edit' && isDeepStrictEqual(custom.draft, custom.original)) {
+        this.handleEscape(data, host);
+        return;
+      }
+      if (custom.kind === 'edit' && !custom.fingerprint) {
+        this.update(host, {...data, error: '缺少打开文件时的内容指纹，请返回列表刷新。'});
+        return;
+      }
+      const result = custom.kind === 'create'
+        ? host.agents.create(custom.scope, custom.draft.name, toManifest(custom.draft))
+        : host.agents.update(custom.scope, custom.draft.name, toManifest(custom.draft), custom.fingerprint!);
+      if (result.ok) this.finishSuccess(data, host);
+      else this.update(host, {...data, confirm: undefined, mode: 'form', selectedIndex: custom.fieldIndex, error: formatMutationError(result)});
+    } else if (builtin) {
+      const result = host.agents.writeBuiltinOverride(builtin.scope, builtin.name, builtin.draft, builtin.fingerprint);
+      if (result.ok) this.finishSuccess(data, host, {scope: builtin.scope, expectedFingerprint: builtin.fingerprint, fingerprint: result.fingerprint ?? null});
+      else this.update(host, {...data, mode: 'form', selectedIndex: builtin.fieldIndex, error: formatMutationError(result)});
+    }
+  }
+
+  /** 保存子表单后回到一级详情并保留开关草稿；只推进自身写入的 sidecar 指纹，不掩盖其他来源冲突。 */
+  private finishSuccess(data: AgentsManageData, host: CommandHost, settingsWrite?: {
+    scope: AgentManagementScope; // 本次实际写入的 sidecar 来源。
+    expectedFingerprint: string | null; // 自身写入之前的指纹，必须与详情基线一致才可推进。
+    fingerprint: string | null; // 自身写入后的指纹；删除文件时为空。
+  }): void {
+    const detail = Boolean(data.selected && data.confirm?.kind !== 'delete');
+    const entry = data.enablement;
+    const enablement = detail && entry ? settingsWrite?.scope === 'user' && entry.fingerprint === settingsWrite.expectedFingerprint
+      ? {...entry, fingerprint: settingsWrite.fingerprint} : entry : undefined;
+    this.update(host, {...data, enablement, builtinForm: undefined, confirm: undefined, customForm: undefined, edit: undefined, error: undefined,
+      feedback: NEXT_TURN_FEEDBACK, instructionsComposer: undefined, mode: detail ? 'detail' : 'list', selected: detail ? data.selected : undefined,
+      selectedIndex: 0, snapshot: host.agents.list()});
   }
 
   private updateCustomDraft(data: AgentsManageData, draft: AgentsCommandDraft, host: CommandHost, patch: Partial<AgentsManageData> = {}): void {
-    this.update(host, {...data, ...patch, customForm: {...data.customForm!, draft: cloneDraft(draft)}, error: undefined});
+    const form = data.customForm!;
+    this.update(host, {...data, ...patch, customForm: {...form, draft: cloneDraft(draft)}, error: undefined});
   }
 
   private update(host: CommandHost, data: AgentsManageData): void {

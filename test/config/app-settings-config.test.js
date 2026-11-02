@@ -3,7 +3,10 @@ const assert = require('node:assert/strict');
 
 const {
   DEFAULT_APP_SETTINGS,
+  DEFAULT_RENDER_PREFERENCES,
+  HISTORY_RENDER_LINE_LIMIT_OPTIONS,
   applyAppSettingsDraft,
+  normalizeAppSettings,
   validateAppSettingsDraft
 } = require('../../src/config/app-settings-config');
 const {UserConfigContext} = require('../../src/config/user-config-context');
@@ -37,7 +40,7 @@ test('readAppSettings reads valid fields and falls back invalid fields independe
         instructions: {fileName: 'CLAUDE.md'},
         skills: {catalogContextRatio: 0.05},
         tools: {approval: {mode: 'auto', modelProfileId: 'reviewer'}, fileEdit: {mode: 'edit_file'}, readFiles: {autoCompressImages: false}},
-        ui: {activeTurnMessagePolicy: 'steer', defaultInteractionMode: 'plan', mouseInteractionEnabled: true, slashSuggestionMaxVisible: 12, showReasoningSummary: false},
+        ui: {activeTurnMessagePolicy: 'steer', defaultInteractionMode: 'plan', historyRenderLineLimit: 5000, mouseInteractionEnabled: true, slashSuggestionMaxVisible: 12, showReasoningSummary: false},
         updates: {checkOnStartup: false}
       });
     }
@@ -61,6 +64,7 @@ test('readAppSettings reads valid fields and falls back invalid fields independe
     checkUpdatesOnStartup: false,
     compactionThresholdRatio: 0.65,
     defaultInteractionMode: 'plan',
+    historyRenderLineLimit: 5000,
     mouseInteractionEnabled: true,
     skillCatalogContextRatio: 0.05,
     slashSuggestionMaxVisible: 12,
@@ -85,6 +89,7 @@ test('readAppSettings uses defaults for missing and malformed optional config', 
     checkUpdatesOnStartup: true,
     compactionThresholdRatio: 0.95,
     defaultInteractionMode: 'normal',
+    historyRenderLineLimit: 1000,
     mouseInteractionEnabled: false,
     skillCatalogContextRatio: 0.1,
     slashSuggestionMaxVisible: 20,
@@ -96,6 +101,44 @@ test('readAppSettings uses defaults for missing and malformed optional config', 
 test('readAppSettingsDraft allows missing files but reports malformed files', () => {
   assert.deepEqual(readAppSettingsDraft({readFile() { throw Object.assign(new Error('missing'), {code: 'ENOENT'}); }}), DEFAULT_APP_SETTINGS);
   assert.throws(() => readAppSettingsDraft({readFile() { return '{broken'; }}), /配置文件不是有效 JSON/);
+});
+
+test('history render budget defaults independently and accepts only numeric presets including zero', () => {
+  assert.equal(DEFAULT_APP_SETTINGS.historyRenderLineLimit, 1000);
+  assert.equal(DEFAULT_RENDER_PREFERENCES.historyRenderLineLimit, 1000);
+  assert.deepEqual(HISTORY_RENDER_LINE_LIMIT_OPTIONS, [500, 1000, 2000, 5000, 10000, 0]);
+  for (const value of [undefined, null, true, false, '1000', 750, -1, 500.5, NaN, Infinity, {}, []]) {
+    const ui = {historyRenderLineLimit: value, defaultInteractionMode: 'plan', slashSuggestionMaxVisible: 12, showReasoningSummary: false};
+    const expected = {...DEFAULT_APP_SETTINGS, defaultInteractionMode: 'plan', slashSuggestionMaxVisible: 12, showReasoningSummary: false};
+    assert.deepEqual(normalizeAppSettings({ui}), expected);
+    const options = {readFile() { return JSON.stringify({ui}); }};
+    assert.deepEqual(readAppSettings(options), expected);
+    assert.deepEqual(readAppSettingsDraft(options), expected);
+  }
+  for (const historyRenderLineLimit of HISTORY_RENDER_LINE_LIMIT_OPTIONS) {
+    const options = {readFile() { return JSON.stringify({ui: {historyRenderLineLimit, slashSuggestionMaxVisible: -1}}); }};
+    assert.deepEqual(readAppSettings(options), {...DEFAULT_APP_SETTINGS, historyRenderLineLimit});
+    assert.deepEqual(readAppSettingsDraft(options), {...DEFAULT_APP_SETTINGS, historyRenderLineLimit});
+    assert.deepEqual(validateAppSettingsDraft({...DEFAULT_APP_SETTINGS, historyRenderLineLimit}), {ok: true});
+  }
+});
+
+test('invalid history render budget drafts cannot mutate or write config', () => {
+  for (const value of [undefined, null, true, false, '1000', 750, -1, 1000.5, NaN, Infinity, {}, []]) {
+    const draft = {...DEFAULT_APP_SETTINGS, historyRenderLineLimit: value};
+    const validation = validateAppSettingsDraft(draft);
+    assert.equal(validation.ok, false);
+    assert.match(validation.error, /历史重绘预算.*0（不限）/);
+    const root = {ui: {historyRenderLineLimit: 0, kept: true}, unknown: 42};
+    const original = structuredClone(root);
+    assert.throws(() => applyAppSettingsDraft(root, draft), /历史重绘预算/);
+    assert.deepEqual(root, original);
+    assert.throws(() => saveAppSettingsDraft(draft, {
+      readFile() { return JSON.stringify(root); },
+      writeFile() { assert.fail('invalid draft must not write'); },
+      rename() { assert.fail('invalid draft must not rename'); }
+    }), /历史重绘预算/);
+  }
 });
 
 test('active turn message policy defaults independently for old and invalid config fields', () => {
@@ -145,6 +188,7 @@ test('saveAppSettingsDraft patches owned fields and writes atomically', () => {
     checkUpdatesOnStartup: false,
     compactionThresholdRatio: 0.7,
     defaultInteractionMode: 'plan',
+    historyRenderLineLimit: 0,
     mouseInteractionEnabled: true,
     skillCatalogContextRatio: 0.04,
     slashSuggestionMaxVisible: 5,
@@ -186,7 +230,8 @@ test('saveAppSettingsDraft patches owned fields and writes atomically', () => {
   assert.equal(saved.compaction.keepCount, 20);
   assert.deepEqual(saved.instructions, {other: 'kept', fileName: 'CLAUDE.md'});
   assert.deepEqual(saved.skills, {other: 'kept', catalogContextRatio: 0.04});
-  assert.deepEqual(saved.ui, {other: 'kept', activeTurnMessagePolicy: 'steer', defaultInteractionMode: 'plan', mouseInteractionEnabled: true, slashSuggestionMaxVisible: 5, showReasoningSummary: false});
+  assert.deepEqual(saved.ui, {other: 'kept', activeTurnMessagePolicy: 'steer', defaultInteractionMode: 'plan', historyRenderLineLimit: 0, mouseInteractionEnabled: true, slashSuggestionMaxVisible: 5, showReasoningSummary: false});
+  assert.equal(readAppSettings({readFile() { return writes[0][1]; }}).historyRenderLineLimit, 0);
   assert.deepEqual(saved.updates, {other: 'kept', checkOnStartup: false});
   assert.equal(saved.llm.selectedModel, 'fast');
   assert.equal(saved.tools.bash.timeoutMs, 1000);
@@ -219,7 +264,7 @@ test('saveAppSettingsDraft creates missing config and rejects invalid drafts bef
     compaction: {thresholdRatio: 0.8},
     instructions: {fileName: 'AGENTS.md'},
     skills: {catalogContextRatio: 0.02},
-    ui: {activeTurnMessagePolicy: 'pending', defaultInteractionMode: 'normal', mouseInteractionEnabled: false, slashSuggestionMaxVisible: 8, showReasoningSummary: true},
+    ui: {activeTurnMessagePolicy: 'pending', defaultInteractionMode: 'normal', historyRenderLineLimit: 1000, mouseInteractionEnabled: false, slashSuggestionMaxVisible: 8, showReasoningSummary: true},
     updates: {checkOnStartup: true},
     tools: {approval: {mode: 'manual'}, readFiles: {autoCompressImages: true}}
   });
