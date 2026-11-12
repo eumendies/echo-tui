@@ -239,6 +239,7 @@ test('createCommandHost composes the complete command protocol from domain ports
   assert.deepEqual(Object.keys(host), [
     'btw',
     'transcript',
+    'background',
     'reference',
     'clipboard',
     'model',

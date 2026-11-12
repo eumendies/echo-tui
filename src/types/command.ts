@@ -1,5 +1,6 @@
 import type {MainAgentToolsConfig} from '../config/main-agent-tools-config';
 import type { InputEvent } from './input';
+import type {BackgroundTaskReference, BackgroundTaskView} from './background-task';
 import type { AgentInstructionFileName, AgentToolPolicy, AgentType, ContextUsage, InteractionMode, ReasoningEffort } from './agent';
 import type { SandboxMode, SandboxModeOverride } from '../sandbox/types';
 import type {DiffFile, DiffSourceInfo, DiffSourceResult} from './diff';
@@ -181,6 +182,21 @@ export type MemoryCommandSurface = {
 };
 
 export type HooksCommandSurfaceMode = 'events' | 'entries' | 'entryDetail';
+
+export type TasksCommandSurfaceMode = 'list' | 'detail' | 'confirmStop';
+
+export type TasksCommandSurface = {
+  kind: 'tasks'; // footer 独立 surface 分派标识。
+  title: string; // 当前层级标题,含可见任务数。
+  mode: TasksCommandSurfaceMode; // 列表、详情或停止确认。
+  tasks: BackgroundTaskView[]; // 进入或刷新时取得的快照,不随运行态自动更新。
+  selectedIndex: number; // 列表焦点在快照中的绝对索引。
+  logLines?: string[]; // 详情层展示的有界日志尾部。
+  logTruncated?: boolean; // 日志尾部被预算截断,不是完整输出。
+  logUnavailable?: string; // 日志不可读取时的中文原因。
+  error?: string; // 停止等操作失败的中文说明。
+  dismissHint: string; // 当前层级的键位提示。
+};
 
 export type HooksCommandEditTarget = 'command' | 'timeoutMs';
 
@@ -724,7 +740,7 @@ export type BtwCommandSurface = {
   dismissHint: string; // BTW surface 意外直接渲染时的退出提示。
 };
 
-export type CommandSurface = InfoCommandSurface | SelectCommandSurface | ResumeCommandSurface | SkillsCommandSurface | McpCommandSurface | MemoryCommandSurface | HooksCommandSurface | AgentsCommandSurface | ScaleCommandSurface | ChoiceCommandSurface | ConfirmCommandSurface | ConfigCommandSurface | ContextUsageCommandSurface | UsageCommandSurface | StatusCommandSurface | CopyCommandSurface | FilePickerCommandSurface | DiffCommandSurface | BtwCommandSurface;
+export type CommandSurface = InfoCommandSurface | SelectCommandSurface | ResumeCommandSurface | SkillsCommandSurface | McpCommandSurface | MemoryCommandSurface | HooksCommandSurface | AgentsCommandSurface | TasksCommandSurface | ScaleCommandSurface | ChoiceCommandSurface | ConfirmCommandSurface | ConfigCommandSurface | ContextUsageCommandSurface | UsageCommandSurface | StatusCommandSurface | CopyCommandSurface | FilePickerCommandSurface | DiffCommandSurface | BtwCommandSurface;
 
 export type CommandModelProfile = {
   id: string;
@@ -902,11 +918,19 @@ export type CommandHostApp = {
     forkSession(): TranscriptForkResult;
     getCurrentSessionId(): string | null; // 当前 app 持有写入 reference 的 session；未首次持久化时为空。
     loadSession(sessionId: string): boolean;
+    stopSessionTasks(sessionId: string | null): Promise<void>; // 停止离开会话的后台任务;无管理器或身份时立即返回。
     deleteSession(sessionId: string): TranscriptSessionDeleteResult; // 请求删除当前 cwd 中的非当前历史 session。
     append(record: TranscriptRecord): void;
     listCopyableRecords(): CopyableMessageRecord[] | null; // 完整有效历史的可复制消息；历史读取失败时为 null。
     listSessionSummaries(): TranscriptSessionSummary[];
     loadSessionPreview(candidate: TranscriptSessionSummary): Promise<TranscriptSessionPreview | null>;
+  };
+  background: {
+    list(): BackgroundTaskView[]; // 当前会话的管理器条目 ∪ transcript 引用,按三元身份去重且受管条目优先。
+    hasSessionTasks(sessionId: string): boolean; // 该会话是否仍有受管任务;会话切换与 fork 据此决定是否需要等待清理。
+    stop(taskId: string): Promise<boolean>; // 按任务身份查找当前实例句柄;历史条目返回 false。
+    readLog(taskId: string, maxBytes: number): string | null; // 读取受管任务的有界日志尾部。
+    readReferenceLog(reference: BackgroundTaskReference, maxBytes: number): string | null; // 读取仅有文件引用的历史日志尾部。
   };
   reference: {
     cancelPreparation(): boolean; // 取消正在运行的引用总结，同时保留 pending 素材。
@@ -1013,7 +1037,7 @@ export type CommandHostApp = {
   };
   undo: {
     getSummary(): UndoSummary;
-    execute(): UndoExecuteResult;
+    execute(): Promise<UndoExecuteResult>; // 回退可能先停止本轮关联的后台只读任务,因此是异步的。
   };
   assistant: {
     beginManualCompaction(): boolean;

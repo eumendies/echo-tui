@@ -57,9 +57,11 @@ export class ClearCommandHandler implements CommandHandler {
    * /clear 活跃时消费 Enter/Esc；确认后只清空 transcript，不清空输入历史。
    *
    */
-  handleEvent(_session: CommandSession, event: InputEvent, host: CommandHost): void {
+  async handleEvent(_session: CommandSession, event: InputEvent, host: CommandHost): Promise<void> {
     if (event.type === INPUT_EVENTS.SUBMIT) {
       host.session.close();
+      // 先停止离开会话的运行任务,再交接空白会话身份。
+      await host.transcript.stopSessionTasks(host.transcript.getCurrentSessionId());
       host.transcript.clear();
       return;
     }

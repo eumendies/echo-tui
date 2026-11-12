@@ -82,7 +82,7 @@ class UndoCommandHandler implements CommandHandler<UndoCommandData> {
     });
   }
 
-  handleEvent(session: CommandSession<UndoCommandData>, event: InputEvent, host: CommandHost): void {
+  async handleEvent(session: CommandSession<UndoCommandData>, event: InputEvent, host: CommandHost): Promise<void> {
     if (event.type === INPUT_EVENTS.ESCAPE) {
       host.session.close();
       return;
@@ -97,7 +97,7 @@ class UndoCommandHandler implements CommandHandler<UndoCommandData> {
       return;
     }
 
-    const result = host.undo.execute();
+    const result = await host.undo.execute();
 
     if (!result.ok) {
       host.session.update({surface: createUndoFailureSurface(result), data: {mode: 'info'}});

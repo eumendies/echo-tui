@@ -116,7 +116,7 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
   observation.assistantTurnStarted({scope: observationScope, userText, recordCount: appContext.transcriptContext.getRecordCount()});
 
   try {
-    const session = appContext.getAgentSession({modelProfileIdOverride, reasoningEffortOverride}, userConfigSnapshot);
+    const session = appContext.getAgentSession({modelProfileIdOverride, reasoningEffortOverride}, userConfigSnapshot, toolPolicy);
     await runAgent({
       ...session,
       interactionMode,

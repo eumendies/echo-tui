@@ -10,6 +10,7 @@ import {createObservation} from '../observation/observation-projector';
 import {McpManager, sanitizeMcpError} from '../mcp/manager';
 import {createAppRenderer} from '../render/app-renderer';
 import {runBashCommand} from '../tools/bash-command-runner';
+import {createBackgroundTaskManager, formatBackgroundTaskNotice} from '../tools/background-bash';
 import {createToolResultStore} from '../tools/tool-result-offloading';
 import {getText} from '../input/composer';
 import {checkForUpdate} from '../update/update-check';
@@ -33,6 +34,7 @@ import {AutoUpdateController} from './auto-update-controller';
 import {createActiveInputRouting} from './active-input-resolver';
 import {FooterPointerController} from './footer-pointer-controller';
 import {createRenderCoordinator} from './render-coordinator';
+import {createLocalNoticeEmitter} from './local-notice-emitter';
 
 import type {RunAgent} from '../types/agent';
 import type {AppController} from '../types/app';
@@ -42,6 +44,7 @@ import type {AssistantTurnScope, Observation} from '../observation/observation';
 import type {UsageStore} from '../types/usage';
 import type {UpdateCheckResult} from '../update/update-check';
 import type {AssistantTurnSubmission} from './composer-submission-controller';
+import type {BackgroundTaskView} from '../types/background-task';
 
 const ACTIVITY_REDRAW_INTERVAL_MS = 100;
 // 自动弹出的提示要求最近没有输入，避免与"刚按下 Enter / 正在打字"的用户竞争。
@@ -67,10 +70,23 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
   const transcriptStore = createTranscriptStore();
   const theme = readTuiTheme();
 
+  // 终态通知与故障提示需要 renderCoordinator,先以可变引用占位,组装完成后接管。
+  let notifyBackgroundTaskSettled: (view: BackgroundTaskView) => void = () => {};
+  let notifyBackgroundTaskRuntimeError: (message: string, sessionId: string) => void = () => {};
+  const backgroundTasks = createBackgroundTaskManager({
+    onRuntimeError(message: string, sessionId: string): void {
+      notifyBackgroundTaskRuntimeError(message, sessionId);
+    },
+    onSettled(view: BackgroundTaskView): void {
+      notifyBackgroundTaskSettled(view);
+    }
+  });
+
   // AppContext 只组合语义 context，具体状态由子 context 持有。
-  const appContext = new AppContext(terminal, transcriptStore, process.cwd, process.version, theme, undefined, userConfigContext);
+  const appContext = new AppContext(terminal, transcriptStore, process.cwd, process.version, theme, undefined, userConfigContext, backgroundTasks);
   const toolResultStore = createToolResultStore({cwd: () => appContext.getCurrentCwd()});
   let lifecycle: 'created' | 'running' | 'stopped' = 'created';
+  let shutdownPromise: Promise<void> | null = null;
   let initialRenderComplete = false;
   let activityTimer: NodeJS.Timeout | null = null;
   let unsubscribeConfig: (() => void) | null = null;
@@ -116,6 +132,27 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     toolApproval
   });
 
+  // 终态通知只在当前会话身份下写入,清理期间与迟到回调都不得污染新会话。
+  const localNotices = createLocalNoticeEmitter({
+    appContext,
+    renderRecords: (records) => renderCoordinator.renderRecords(records, 'main')
+  });
+
+  notifyBackgroundTaskSettled = (view: BackgroundTaskView): void => {
+    if (lifecycle === 'stopped') return;
+    if (view.reference.sessionId !== appContext.transcriptContext.getCurrentSessionId()) return;
+
+    // 子进程退出是任意时刻的异步事件:turn 进行中排队,到安全边界再落盘。
+    localNotices.emit(formatBackgroundTaskNotice(view));
+  };
+  notifyBackgroundTaskRuntimeError = (message: string, sessionId: string): void => {
+    if (lifecycle === 'stopped') return;
+    // 归属会话来自任务本身:切换到新会话后,旧会话的故障不得写进新会话。
+    if (sessionId !== appContext.transcriptContext.getCurrentSessionId()) return;
+
+    localNotices.emit(message, 'error');
+  };
+
   /**
    * 停止消费 stdin 与 resize 事件并暂停 stdin；更新流程收尾后终端要交给前台子进程，
    * 父进程必须让出输入，也避免 resize 触发对 npm 输出或重启进程画面的破坏性重绘。
@@ -135,14 +172,24 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
   }
 
   /**
-   * 将 app 标记为不可重启后清理监听、周期任务、异步连接与终端；重复调用不再次释放资源。
+   * 异步幂等收尾：多个退出入口共享同一在途 Promise，后台任务清理有界，失败也恢复终端。
+   */
+  function shutdown(): Promise<void> {
+    shutdownPromise = shutdownPromise || performShutdown();
+    return shutdownPromise;
+  }
+
+  /**
+   * 先同步使所有回调失效，再有界停止后台任务，最后在 finally 恢复终端并释放观察边界。
    * exit 与前台更新流程共用，不在此终止进程。
    */
-  function shutdown(): void {
+  async function performShutdown(): Promise<void> {
     if (lifecycle === 'stopped') return;
     // 先使所有回调失效，再释放资源；异步 bootstrap 完成时也不得重新投影已交还的终端。
     lifecycle = 'stopped';
     observation.appExiting({cwd: appContext.getCurrentCwd(), interactionMode: appContext.getInteractionMode()});
+    // 先取消仍在运行的主 turn,避免它在清理期间继续发起工具调用。
+    appContext.interruptActiveAssistantTurn();
     activeShellController?.abort();
     appContext.pendingMessageContext.clear();
     if (activityTimer) clearInterval(activityTimer);
@@ -159,23 +206,32 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     if (mcpBootstrapTask) void mcpBootstrapTask.then(() => mcpManager.close());
     appContext.turnContext.stopSpinner();
     footerPointer?.dispose();
-    renderer.clearFooter();
-    terminal.cleanup();
-    output.write('\n');
-    observation.close();
+
+    try {
+      await backgroundTasks.shutdown();
+    } finally {
+      renderer.clearFooter();
+      terminal.cleanup();
+      output.write('\n');
+      observation.close();
+    }
   }
 
   /**
    * 停止 spinner、渲染最终 transcript，并在退出前恢复终端状态。
    */
   function exit(): void {
-    shutdown();
-    process.exit(0);
+    void shutdown().then(
+      () => process.exit(0),
+      () => process.exit(1)
+    );
   }
 
   /** 先推进自动更新的空闲提示，再由渲染协调器决定当前 owner 是否需要计时重绘。 */
   function tickActivity(): void {
     if (lifecycle === 'stopped') return;
+    // 响应占用结束后统一提交积压的异步通知;drain 自身在忙碌时保持排队。
+    localNotices.drain();
     autoUpdate.tick();
     renderCoordinator.renderTimedActivity();
   }
@@ -267,7 +323,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     exit: (code) => process.exit(code),
     persistIgnoredVersion,
     render: () => renderCoordinator.render(),
-    shutdown
+    shutdown: () => shutdown()
   });
 
   // 输入优先级、鼠标命中和 key parser 最后接线；只有 start() 完成组装后才注册终端监听。
@@ -338,6 +394,8 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
       });
     } finally {
       if (activeTurnObservationScope === turnObservationScope) activeTurnObservationScope = null;
+      // 正常完成、失败与中断都在此收尾:派发下一条消息前先提交积压通知。
+      localNotices.drain();
     }
   }
 
@@ -371,6 +429,8 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
       if (activeShellController === shellController) {
         activeShellController = null;
       }
+      // shell 已释放响应锁:在回到 composer 之前提交积压通知。
+      localNotices.drain();
     }
   }
 
@@ -413,6 +473,8 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     }
     if (activeTurnObservationScope) observation.assistantTurnCancelled({scope: activeTurnObservationScope});
     activeTurnObservationScope = null;
+    // Esc 已释放响应锁:在下一条消息派发前提交,避免被下一轮挤到更晚的安全边界。
+    localNotices.drain();
     void submissionController.dispatchPendingMessage();
 
     return true;

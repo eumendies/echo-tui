@@ -13,6 +13,7 @@ import { renderMemorySurface } from './memory-surface';
 import { renderResumeSurface } from './resume-surface';
 import { renderScaleSurface } from './scale-surface';
 import { renderSkillsSurface } from './skills-surface';
+import { renderTasksSurface } from './tasks-surface';
 import { renderStatusSurface } from './status-surface';
 import { renderUsageSurface } from './usage-surface';
 import { activeBackground, renderFocusBar, resolveFooterTheme, tokenText, type TuiTheme, type FooterTheme } from '../colors';
@@ -67,6 +68,10 @@ export function renderCommandSurface(commandSurface: CommandSurface, width: numb
 
   if (commandSurface.kind === 'agents') {
     return renderAgentsSurface(commandSurface, width, options.maxLines, theme);
+  }
+
+  if (commandSurface.kind === 'tasks') {
+    return constrainLayoutTail(renderTasksSurface(commandSurface, width, theme), options.maxLines);
   }
 
   if (commandSurface.kind === 'scale') {

@@ -1,4 +1,5 @@
 import {createAssistantCommandPort} from './assistant-command-port';
+import {createBackgroundCommandPort} from './background-command-port';
 import {writeClipboardText} from '../clipboard';
 import {createConversationReferenceCommandPort} from './conversation-reference-command-port';
 import {createAgentsCommandPort} from './agents-command-port';
@@ -60,6 +61,7 @@ function createCommandHost(options: CommandHostOptions): CommandHostApp {
   return {
     btw,
     transcript: createTranscriptCommandPort({appContext, renderRecords, renderResizeRecovery}),
+    background: createBackgroundCommandPort(appContext),
     reference: createConversationReferenceCommandPort({appContext, render, usageStore, userConfigContext}),
     clipboard: {writeText: writeClipboardText},
     model: modelPorts.model,

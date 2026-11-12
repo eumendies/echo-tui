@@ -1,6 +1,6 @@
 import {RUN_BASH_COMMAND_TOOL_NAME, isPlanReadonlyBashCommand} from './bash-tool-handler';
 import {RUN_SUBAGENT_TOOL_NAME} from './run-subagent-tool-handler';
-import {READONLY_OBSERVATION_TOOL_NAMES, parseBashCommand, parseRunSubagentAgentName} from './tool-risk-classifier';
+import {READONLY_OBSERVATION_TOOL_NAMES, parseBashBackgroundFlag, parseBashCommand, parseRunSubagentAgentName} from './tool-risk-classifier';
 
 import type {ToolCall} from '../types/tool';
 
@@ -16,6 +16,11 @@ function classifyToolCallConcurrency(call: ToolCall, readonlySubagentNames?: Rea
   }
 
   if (call.toolName === RUN_BASH_COMMAND_TOOL_NAME) {
+    // 后台启动在交接完成后立即返回;分类仍为独占,屏障只覆盖启动交接,不等待任务结束。
+    if (parseBashBackgroundFlag(call.argumentsText)) {
+      return 'exclusive';
+    }
+
     const command = parseBashCommand(call.argumentsText);
     return command && isPlanReadonlyBashCommand(command) ? 'parallel_read' : 'exclusive';
   }

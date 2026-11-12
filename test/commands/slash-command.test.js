@@ -27,6 +27,7 @@ const { SkillsCommandHandler } = require('../../src/commands/skills-command-hand
 const { SkillInvocationCommandHandler } = require('../../src/commands/skill-invocation-command-handler');
 const { StatusCommandHandler } = require('../../src/commands/status-command-handler');
 const { UndoCommandHandler } = require('../../src/commands/undo-command-handler');
+const { TasksCommandHandler } = require('../../src/commands/tasks-command-handler');
 const { UsageCommandHandler } = require('../../src/commands/usage-command-handler');
 const {
   createDefaultSlashCommandHandlers,
@@ -100,9 +101,29 @@ function createFakeHost(options = {}) {
         calls.btwCloses += 1;
       }
     },
+    background: {
+      list() {
+        return [];
+      },
+      hasSessionTasks() {
+        return false;
+      },
+      stop() {
+        return Promise.resolve(false);
+      },
+      readLog() {
+        return null;
+      },
+      readReferenceLog() {
+        return null;
+      }
+    },
     transcript: {
       clear() {
         calls.clears += 1;
+      },
+      stopSessionTasks() {
+        return Promise.resolve();
       },
       forkSession() {
         calls.forkCalls += 1;
@@ -539,7 +560,7 @@ test('resolveSlashCommand asks handlers in order and returns the first match', (
 test('createDefaultSlashCommandHandlers wires handlers in order', () => {
   const handlers = createDefaultHandlersForTest();
 
-  assert.equal(handlers.length, 25);
+  assert.equal(handlers.length, 26);
   assert.equal(handlers.some((handler) => handler.name === 'skill'), false);
   assert.equal(handlers[0].name, 'help');
   assert.equal(handlers[1].name, 'btw');
@@ -550,22 +571,22 @@ test('createDefaultSlashCommandHandlers wires handlers in order', () => {
   assert.equal(handlers[6].name, 'status');
   assert.equal(handlers[7].name, 'context');
   assert.equal(handlers[8].name, 'usage');
-  assert.equal(handlers[9].name, 'copy');
-  assert.equal(handlers[10].name, 'clear');
-  assert.equal(handlers[11].name, 'compact');
-  assert.equal(handlers[12].name, 'diff');
-  assert.equal(handlers[13].name, 'undo');
-  assert.equal(handlers[14].name, 'fork');
-  assert.equal(handlers[15].name, 'resume');
-  assert.equal(handlers[16].name, 'reference');
-  assert.equal(handlers[17].name, 'mcp');
-  assert.equal(handlers[18].name, 'memory');
-  assert.equal(handlers[19].name, 'agents');
-  assert.equal(handlers[20].name, 'hooks');
-  assert.equal(handlers[21].name, 'skills');
-  assert.equal(handlers[22].name, 'init');
-  assert.equal(handlers[23].name, 'review');
-  assert.equal(handlers[24].name, undefined);
+  assert.equal(handlers[10].name, 'copy');
+  assert.equal(handlers[11].name, 'clear');
+  assert.equal(handlers[12].name, 'compact');
+  assert.equal(handlers[13].name, 'diff');
+  assert.equal(handlers[14].name, 'undo');
+  assert.equal(handlers[15].name, 'fork');
+  assert.equal(handlers[16].name, 'resume');
+  assert.equal(handlers[17].name, 'reference');
+  assert.equal(handlers[18].name, 'mcp');
+  assert.equal(handlers[19].name, 'memory');
+  assert.equal(handlers[20].name, 'agents');
+  assert.equal(handlers[21].name, 'hooks');
+  assert.equal(handlers[22].name, 'skills');
+  assert.equal(handlers[23].name, 'init');
+  assert.equal(handlers[24].name, 'review');
+  assert.equal(handlers[25].name, undefined);
   assert.equal(handlers[0] instanceof HelpCommandHandler, true);
   assert.equal(handlers[1] instanceof BtwCommandHandler, true);
   assert.equal(handlers[2] instanceof ConfigCommandHandler, true);
@@ -575,22 +596,22 @@ test('createDefaultSlashCommandHandlers wires handlers in order', () => {
   assert.equal(handlers[6] instanceof StatusCommandHandler, true);
   assert.equal(handlers[7] instanceof ContextCommandHandler, true);
   assert.equal(handlers[8] instanceof UsageCommandHandler, true);
-  assert.equal(handlers[9] instanceof CopyCommandHandler, true);
-  assert.equal(handlers[10] instanceof ClearCommandHandler, true);
-  assert.equal(handlers[11] instanceof CompactCommandHandler, true);
-  assert.equal(handlers[12] instanceof DiffCommandHandler, true);
-  assert.equal(handlers[13] instanceof UndoCommandHandler, true);
-  assert.equal(handlers[14] instanceof ForkCommandHandler, true);
-  assert.equal(handlers[15] instanceof ResumeCommandHandler, true);
-  assert.equal(handlers[16] instanceof ReferenceCommandHandler, true);
-  assert.equal(handlers[17] instanceof McpCommandHandler, true);
-  assert.equal(handlers[18] instanceof MemoryCommandHandler, true);
-  assert.equal(handlers[19] instanceof AgentsCommandHandler, true);
-  assert.equal(handlers[20] instanceof HooksCommandHandler, true);
-  assert.equal(handlers[21] instanceof SkillsCommandHandler, true);
-  assert.equal(handlers[22] instanceof AgentWorkflowCommandHandler, true);
+  assert.equal(handlers[10] instanceof CopyCommandHandler, true);
+  assert.equal(handlers[11] instanceof ClearCommandHandler, true);
+  assert.equal(handlers[12] instanceof CompactCommandHandler, true);
+  assert.equal(handlers[13] instanceof DiffCommandHandler, true);
+  assert.equal(handlers[14] instanceof UndoCommandHandler, true);
+  assert.equal(handlers[15] instanceof ForkCommandHandler, true);
+  assert.equal(handlers[16] instanceof ResumeCommandHandler, true);
+  assert.equal(handlers[17] instanceof ReferenceCommandHandler, true);
+  assert.equal(handlers[18] instanceof McpCommandHandler, true);
+  assert.equal(handlers[19] instanceof MemoryCommandHandler, true);
+  assert.equal(handlers[20] instanceof AgentsCommandHandler, true);
+  assert.equal(handlers[21] instanceof HooksCommandHandler, true);
+  assert.equal(handlers[22] instanceof SkillsCommandHandler, true);
   assert.equal(handlers[23] instanceof AgentWorkflowCommandHandler, true);
-  assert.equal(handlers[24] instanceof SkillInvocationCommandHandler, true);
+  assert.equal(handlers[24] instanceof AgentWorkflowCommandHandler, true);
+  assert.equal(handlers[25] instanceof SkillInvocationCommandHandler, true);
 });
 
 test('statusCommandHandler navigates session details and refreshes only the local snapshot', () => {
@@ -1253,7 +1274,7 @@ test('direct skill invocation returns typed per-turn model and effort overrides'
   });
 });
 
-test('undoCommandHandler reports unavailable, invalid, cancel, success, and failure states', () => {
+test('undoCommandHandler reports unavailable, invalid, cancel, success, and failure states', async () => {
   const unavailable = createFakeHost();
   const undoCommandHandler = new UndoCommandHandler();
 
@@ -1264,7 +1285,7 @@ test('undoCommandHandler reports unavailable, invalid, cancel, success, and fail
   let session = startCommand(undoCommandHandler, '/undo', unavailable.host);
   assert.equal(session.surface.kind, 'info');
   assert.match(session.surface.lines.join('\n'), /暂无可回退/);
-  undoCommandHandler.handleEvent(session, {type: INPUT_EVENTS.SUBMIT}, unavailable.host);
+  await undoCommandHandler.handleEvent(session, {type: INPUT_EVENTS.SUBMIT}, unavailable.host);
   assert.equal(unavailable.calls.sessionCloses, 1);
 
   const invalid = createFakeHost({undoSummary: {status: 'invalid', reason: '写入型 bash 不可追踪'}});
@@ -1288,7 +1309,7 @@ test('undoCommandHandler reports unavailable, invalid, cancel, success, and fail
     '回退 1 个文件修改，删除 1 个新增文件。',
     '注意：会覆盖期间的手动修改'
   ]);
-  undoCommandHandler.handleEvent(session, {type: INPUT_EVENTS.ESCAPE}, cancel.host);
+  await undoCommandHandler.handleEvent(session, {type: INPUT_EVENTS.ESCAPE}, cancel.host);
   assert.equal(cancel.calls.undoExecutes, 0);
   assert.equal(cancel.calls.sessionCloses, 1);
 
@@ -1302,7 +1323,7 @@ test('undoCommandHandler reports unavailable, invalid, cancel, success, and fail
     }
   });
   session = startCommand(undoCommandHandler, '/undo', success.host);
-  undoCommandHandler.handleEvent(session, {type: INPUT_EVENTS.SUBMIT}, success.host);
+  await undoCommandHandler.handleEvent(session, {type: INPUT_EVENTS.SUBMIT}, success.host);
   assert.equal(success.calls.undoExecutes, 1);
   assert.equal(success.calls.sessionCloses, 1);
   assert.equal(success.calls.resizeRecoveries, 1);
@@ -1322,7 +1343,7 @@ test('undoCommandHandler reports unavailable, invalid, cancel, success, and fail
     }
   });
   session = startCommand(undoCommandHandler, '/undo', failure.host);
-  undoCommandHandler.handleEvent(session, {type: INPUT_EVENTS.SUBMIT}, failure.host);
+  await undoCommandHandler.handleEvent(session, {type: INPUT_EVENTS.SUBMIT}, failure.host);
   assert.equal(failure.calls.sessionCloses, 0);
   assert.equal(failure.host.session.getActive().surface.kind, 'info');
   assert.match(failure.host.session.getActive().surface.lines.join('\n'), /文件恢复失败/);
@@ -2043,6 +2064,7 @@ test('createSlashCommandDescriptors derives display metadata from handlers', () 
     { name: 'status', description: '查看运行状态、账户用量与会话计划', allowDuringAssistantTurn: true },
     { name: 'context', description: '查看 context 占用详情', allowDuringAssistantTurn: true },
     { name: 'usage', description: '查看每日 token 用量与当日模型明细', allowDuringAssistantTurn: true },
+    { name: 'tasks', description: '查看后台任务' },
     { name: 'copy', description: '复制会话消息', allowDuringAssistantTurn: true },
     { name: 'clear', description: '清空当前会话' },
     { name: 'compact', description: '手动压缩当前会话上下文' },
@@ -2917,7 +2939,7 @@ test('hooksCommandHandler blocks invalid save, reports save failure, and runs sy
   assert.equal(session.surface.test, undefined);
 });
 
-test('clearCommandHandler opens confirm session, confirms, and cancels through host', () => {
+test('clearCommandHandler opens confirm session, confirms, and cancels through host', async () => {
   const clearCommandHandler = new ClearCommandHandler();
   const { calls, host } = createFakeHost();
 
@@ -2932,7 +2954,8 @@ test('clearCommandHandler opens confirm session, confirms, and cancels through h
   assert.equal(session.surface.title, '/clear 清空会话');
   assert.equal(session.surface.confirmLabel, '清空');
 
-  clearCommandHandler.handleEvent(session, { type: INPUT_EVENTS.SUBMIT }, host);
+  // 确认清空会先停止离开会话的后台任务,因此必须等待异步 handler。
+  await clearCommandHandler.handleEvent(session, { type: INPUT_EVENTS.SUBMIT }, host);
   assert.equal(calls.sessionCloses, 1);
   assert.equal(calls.clears, 1);
 

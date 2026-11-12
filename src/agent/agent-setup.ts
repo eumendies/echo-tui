@@ -9,6 +9,7 @@ import {createOpenAiChatAgent} from './openai-chat/agent';
 import {createOpenAiAgent} from './openai-responses/agent';
 
 import type {AgentExecutionMode, AgentUserConfigSnapshot, LlmConfig, ProviderAgent, ReasoningEffort, SubagentToolPort} from '../types/agent';
+import type {BackgroundTaskManager} from '../types/background-task';
 import type {McpManager} from '../mcp/manager';
 import type {SandboxModeOverride} from '../sandbox/types';
 import type {SkillRegistry} from '../types/skill';
@@ -16,6 +17,7 @@ import type {ToolRegistry} from '../types/tool';
 import type {MainAgentToolsConfig} from '../config/main-agent-tools-config';
 
 type PrepareAgentOptions = {
+  backgroundTaskManager?: BackgroundTaskManager; // 后台 bash 能力;仅交互式主会话传入,子运行与 headless 缺省不传。
   config?: LlmConfig; // 调用方已经解析完成的 provider/tool 配置。
   configSnapshot?: AgentUserConfigSnapshot; // 未直接传 config 时用于同 revision 解析配置的快照。
   cwd?: string | (() => string); // 本地工具解析相对路径时使用的当前工作目录。
@@ -87,10 +89,12 @@ function prepareAgent(options: PrepareAgentOptions): PreparedAgent {
   const toolResultStore = createToolResultStore({cwd: options.cwd});
   const baseRegistry = createDefaultToolRegistry(config, options.cwd, toolResultStore, {
     allowedToolNames: options.allowedToolNames,
+    backgroundTaskManager: options.backgroundTaskManager,
     executionMode: options.executionMode,
     ...(options.mcpManager ? {mcpManager: options.mcpManager} : {}),
     // 引导在安全边界更新运行模式；handler 执行时读取最新派生收紧，不重建固定工具目录。
     get sandboxModeOverride() { return options.sandboxModeOverride; },
+    sessionId: options.sessionId,
     ...(options.skillRegistry ? {skillRegistry: options.skillRegistry} : {}),
     subagentPort: options.subagentPort
   });
