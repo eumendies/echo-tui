@@ -39,6 +39,87 @@ test('parseKeyChunk parses control editing shortcuts', () => {
   ]);
 });
 
+test('parseKeyChunk parses modifier-arrow and modifier-delete word editing keys', () => {
+  assert.deepEqual(parseKeyChunk('\x1b[1;5D\x1b[1;3D\x1b[1;5C\x1b[1;3C\x1b[3;5~\x1b[3;3~'), [
+    { type: INPUT_EVENTS.MOVE_PREVIOUS_WORD },
+    { type: INPUT_EVENTS.MOVE_PREVIOUS_WORD },
+    { type: INPUT_EVENTS.MOVE_NEXT_WORD },
+    { type: INPUT_EVENTS.MOVE_NEXT_WORD },
+    { type: INPUT_EVENTS.DELETE_NEXT_WORD },
+    { type: INPUT_EVENTS.DELETE_NEXT_WORD }
+  ]);
+});
+
+test('parseKeyChunk keeps terminal reports intact next to word editing keys', () => {
+  // 已注册序列先行匹配后，CPR、SGR 鼠标与未注册 CSI 的语义必须保持原样。
+  assert.deepEqual(parseKeyChunk('\x1b[1;5D'), [{ type: INPUT_EVENTS.MOVE_PREVIOUS_WORD }]);
+  assert.deepEqual(parseKeyChunk('\x1b[12;40R'), [
+    { type: INPUT_EVENTS.CURSOR_POSITION, row: 12, column: 40 }
+  ]);
+  assert.deepEqual(parseKeyChunk('\x1b[<0;5;6M'), [
+    { type: INPUT_EVENTS.MOUSE, phase: 'down', button: 'left', column: 5, row: 6, shift: false, alt: false, ctrl: false }
+  ]);
+  assert.deepEqual(parseKeyChunk('\x1b[1;9D'), []);
+  assert.deepEqual(parseKeyChunk('\x1b[3~'), [{ type: INPUT_EVENTS.DELETE_FORWARD }]);
+  assert.deepEqual(parseKeyChunk('\x1b[D'), [{ type: INPUT_EVENTS.MOVE_LEFT }]);
+});
+
+test('parseKeyChunk still resolves bare escape and single-byte control keys', () => {
+  // 裸 ESC 不再参与多字节序列匹配，必须由单字符路径按同一张表还原。
+  assert.deepEqual(parseKeyChunk('\x1b'), [{ type: INPUT_EVENTS.ESCAPE }]);
+  assert.deepEqual(parseKeyChunk('\x17\x0b\x1b[Z'), [
+    { type: INPUT_EVENTS.DELETE_PREVIOUS_WORD },
+    { type: INPUT_EVENTS.DELETE_TO_LINE_END },
+    { type: INPUT_EVENTS.SHIFT_TAB }
+  ]);
+});
+
+test('parseKeyChunk parses ESC-prefixed word editing keys', () => {
+  // iTerm2 与 Terminal.app 默认把 Option+方向键映射成 readline 风格的 ESC b/f。
+  assert.deepEqual(parseKeyChunk('\x1bb\x1bf\x1bd\x1b\x7f'), [
+    { type: INPUT_EVENTS.MOVE_PREVIOUS_WORD },
+    { type: INPUT_EVENTS.MOVE_NEXT_WORD },
+    { type: INPUT_EVENTS.DELETE_NEXT_WORD },
+    { type: INPUT_EVENTS.DELETE_PREVIOUS_WORD }
+  ]);
+});
+
+test('parseKeyChunk keeps ESC-prefixed keys from leaking letters into the composer', () => {
+  // 这是修复前的主要症状：ESC 先中断，再把 b/f/d 当普通文本插入。
+  const events = parseKeyChunk('\x1bb');
+  assert.deepEqual(events, [{ type: INPUT_EVENTS.MOVE_PREVIOUS_WORD }]);
+  assert.equal(events.some((event) => event.type === INPUT_EVENTS.TEXT), false);
+  assert.equal(events.some((event) => event.type === INPUT_EVENTS.ESCAPE), false);
+});
+
+test('parseKeyChunk leaves unregistered ESC prefixes and arrow keys unchanged', () => {
+  assert.deepEqual(parseKeyChunk('\x1ba'), [
+    { type: INPUT_EVENTS.ESCAPE },
+    { type: INPUT_EVENTS.TEXT, value: 'a' }
+  ]);
+  assert.deepEqual(parseKeyChunk('\x1b[A'), [{ type: INPUT_EVENTS.MOVE_UP }]);
+  assert.deepEqual(parseKeyChunk('\x1b'), [{ type: INPUT_EVENTS.ESCAPE }]);
+});
+
+test('createKeyParser merges a split ESC prefix into one word editing event', () => {
+  const parser = createKeyParser();
+
+  // 终端把 Alt/Option 组合拆成两包时，仍要合并成单个事件。
+  assert.deepEqual(parser.parse('\x1b'), []);
+  assert.equal(parser.hasPendingEscape(), true);
+  assert.deepEqual(parser.parse('b'), [{ type: INPUT_EVENTS.MOVE_PREVIOUS_WORD }]);
+  assert.equal(parser.hasPendingEscape(), false);
+});
+
+test('createKeyParser flushes an isolated ESC as escape when no suffix arrives', () => {
+  const parser = createKeyParser();
+
+  assert.deepEqual(parser.parse('\x1b'), []);
+  assert.equal(parser.hasPendingEscape(), true);
+  assert.deepEqual(parser.flushPendingEscape(), { type: INPUT_EVENTS.ESCAPE });
+  assert.equal(parser.hasPendingEscape(), false);
+});
+
 test('parseKeyChunk parses ctrl-t model tuning shortcut in plain and mixed chunks', () => {
   assert.deepEqual(parseKeyChunk('\x14'), [
     { type: INPUT_EVENTS.TOGGLE_MODEL_TUNING }

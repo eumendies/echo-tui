@@ -60,11 +60,20 @@ export function applyComposerEditEvent(composer: ComposerState, event: InputEven
     case INPUT_EVENTS.DELETE_PREVIOUS_WORD:
       deletePreviousWord(composer);
       return true;
+    case INPUT_EVENTS.DELETE_NEXT_WORD:
+      deleteNextWord(composer);
+      return true;
     case INPUT_EVENTS.MOVE_LEFT:
       moveLeft(composer);
       return true;
     case INPUT_EVENTS.MOVE_RIGHT:
       moveRight(composer);
+      return true;
+    case INPUT_EVENTS.MOVE_PREVIOUS_WORD:
+      movePreviousWord(composer);
+      return true;
+    case INPUT_EVENTS.MOVE_NEXT_WORD:
+      moveNextWord(composer);
       return true;
     case INPUT_EVENTS.MOVE_HOME:
       moveHome(composer);
@@ -221,21 +230,27 @@ export function deleteToLineEnd(composer: ComposerState): void {
  *
  */
 export function deletePreviousWord(composer: ComposerState): void {
-  let start = composer.cursor;
-
-  while (start > 0 && isWhitespace(composer.chars[start - 1])) {
-    start -= 1;
-  }
-
-  while (start > 0 && !isWhitespace(composer.chars[start - 1])) {
-    start -= 1;
-  }
+  const start = findPreviousWordStart(composer.chars, composer.cursor);
 
   if (start === composer.cursor) {
     return;
   }
 
   replaceRange(composer, start, composer.cursor, '');
+}
+
+/**
+ * 删除光标后的后一个词；光标保持在原位，由 replaceRange 维护引用坐标。
+ *
+ */
+export function deleteNextWord(composer: ComposerState): void {
+  const end = findNextWordEnd(composer.chars, composer.cursor);
+
+  if (end === composer.cursor) {
+    return;
+  }
+
+  replaceRange(composer, composer.cursor, end, '');
 }
 
 /**
@@ -252,6 +267,22 @@ export function moveLeft(composer: Pick<ComposerState, 'cursor'>): void {
  */
 export function moveRight(composer: ComposerState): void {
   composer.cursor = Math.min(composer.chars.length, composer.cursor + 1);
+}
+
+/**
+ * 把光标移动到前一个词的起始位置；已在内容开头时不再移动。
+ *
+ */
+export function movePreviousWord(composer: ComposerState): void {
+  composer.cursor = findPreviousWordStart(composer.chars, composer.cursor);
+}
+
+/**
+ * 把光标移动到后一个词的结束位置；已在内容末尾时不再移动。
+ *
+ */
+export function moveNextWord(composer: ComposerState): void {
+  composer.cursor = findNextWordEnd(composer.chars, composer.cursor);
 }
 
 /**
@@ -398,4 +429,40 @@ function findLineEnd(chars: string[], cursor: number): number {
  */
 function isWhitespace(char: string): boolean {
   return /\s/u.test(char);
+}
+
+/**
+ * 定位光标前一个词的起点：先跳过连续空白，再回退到非空白片段的开头。
+ *
+ */
+function findPreviousWordStart(chars: string[], cursor: number): number {
+  let start = cursor;
+
+  while (start > 0 && isWhitespace(chars[start - 1])) {
+    start -= 1;
+  }
+
+  while (start > 0 && !isWhitespace(chars[start - 1])) {
+    start -= 1;
+  }
+
+  return start;
+}
+
+/**
+ * 定位光标后一个词的终点：先跳过连续空白，再前进到非空白片段的末尾。
+ *
+ */
+function findNextWordEnd(chars: string[], cursor: number): number {
+  let end = cursor;
+
+  while (end < chars.length && isWhitespace(chars[end])) {
+    end += 1;
+  }
+
+  while (end < chars.length && !isWhitespace(chars[end])) {
+    end += 1;
+  }
+
+  return end;
 }

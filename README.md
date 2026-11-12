@@ -75,6 +75,12 @@ echo-tui --once --full-access "按要求修改文件并运行检查"
 | `@` | 在普通/计划模式的开头或空白后键入，打开文件/目录选择器 |
 | Esc | 关闭当前面板或中断正在执行的任务 |
 | Ctrl+C / Ctrl+D | 退出 |
+| Ctrl+A / Ctrl+E | 光标移到当前逻辑行首 / 行尾 |
+| Ctrl+U / Ctrl+K / Ctrl+W | 删除到行首 / 删除到行尾 / 删除前一个词 |
+| Ctrl+← / → 或 Alt+← / → | 光标按词向前 / 向后移动 |
+| Ctrl+Delete 或 Alt+Delete | 删除后一个词 |
+
+macOS 上 `Option` 即 `Alt`：iTerm2 与 Terminal.app 默认把 `Option+←/→` 发送成 readline 风格的 `ESC b`/`ESC f`，这两类编码都已支持，无需改动终端设置。`Command`（⌘）默认被终端自身占用，不参与上述快捷键。
 
 文件选择器中可查询、浏览目录，用 Space 或鼠标多选；只有 **Enter 确认**才建立文件引用并高亮，支持目录、文本、PDF 和图片。Esc 取消并保留 `@query` 普通文本。邮箱、版本号、紧邻中文的 `@` 不打开选择器，中文描述可写成 `请看 @`；shell 模式保持字面输入。
 

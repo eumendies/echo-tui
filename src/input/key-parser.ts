@@ -38,6 +38,19 @@ const KEY_SEQUENCES = new Map<string, ControlInputEventType>([
   ['\x1bOD', INPUT_EVENTS.MOVE_LEFT], // Left Arrow (application mode)
   ['\x1b[C', INPUT_EVENTS.MOVE_RIGHT], // Right Arrow
   ['\x1bOC', INPUT_EVENTS.MOVE_RIGHT], // Right Arrow (application mode)
+  // 带修饰键的方向键与 Delete 只在 xterm 风格 CSI 下可区分；Alt 变体是 macOS 上不受 Mission Control 抢占的可用路径。
+  ['\x1b[1;5D', INPUT_EVENTS.MOVE_PREVIOUS_WORD], // Ctrl+Left
+  ['\x1b[1;3D', INPUT_EVENTS.MOVE_PREVIOUS_WORD], // Alt+Left
+  ['\x1b[1;5C', INPUT_EVENTS.MOVE_NEXT_WORD], // Ctrl+Right
+  ['\x1b[1;3C', INPUT_EVENTS.MOVE_NEXT_WORD], // Alt+Right
+  ['\x1b[3;5~', INPUT_EVENTS.DELETE_NEXT_WORD], // Ctrl+Delete
+  ['\x1b[3;3~', INPUT_EVENTS.DELETE_NEXT_WORD], // Alt+Delete
+  // ESC 前缀形式：iTerm2 与 Terminal.app 默认把 Option+方向键映射为 readline 的 ESC b/f，
+  // 不注册这些会让 Option 键先触发 Esc 中断、再把字母插进 composer。
+  ['\x1bb', INPUT_EVENTS.MOVE_PREVIOUS_WORD], // Option+Left / Alt+B
+  ['\x1bf', INPUT_EVENTS.MOVE_NEXT_WORD], // Option+Right / Alt+F
+  ['\x1bd', INPUT_EVENTS.DELETE_NEXT_WORD], // Option+D
+  ['\x1b\x7f', INPUT_EVENTS.DELETE_PREVIOUS_WORD], // Option+Backspace
   ['\x01', INPUT_EVENTS.MOVE_HOME], // Ctrl+A
   ['\x1b[H', INPUT_EVENTS.MOVE_HOME], // Home
   ['\x1b[1~', INPUT_EVENTS.MOVE_HOME], // Home (alternate sequence)
@@ -191,19 +204,21 @@ export function parseKeyChunk(chunk: string | Buffer): InputEvent[] {
       continue;
     }
 
-    const terminalReport = parseTerminalReportAt(text, index);
-
-    if (terminalReport) {
-      events.push(...terminalReport.events);
-      index = terminalReport.endIndex;
-      continue;
-    }
-
+    // 已注册序列必须先于终端报告解析：CPR 用前缀探测，会把 "\x1b[1;5D" 一类带修饰键的
+    // CSI 按键当成 cursor position report 吞掉。按键表是精确整串匹配，不会误伤未注册序列。
     const matched = findSequenceAt(text, index);
 
     if (matched) {
       events.push({ type: matched.type });
       index += matched.sequence.length;
+      continue;
+    }
+
+    const terminalReport = parseTerminalReportAt(text, index);
+
+    if (terminalReport) {
+      events.push(...terminalReport.events);
+      index = terminalReport.endIndex;
       continue;
     }
 
@@ -406,8 +421,10 @@ function splitTrailingControlPrefix(text: string): {discard: boolean; ready: str
  */
 function findSequenceAt(text: string, index: number): SequenceMatch | null {
   // 先匹配长序列，避免 "\x1b[3~" 被短前缀提前吞掉。
+  // 只匹配多字节序列：裸 ESC 在表里长度为 1，优先匹配会抢走 "\x1b[12;40R" 一类终端报告的首字节，
+  // 让 CPR 与 SGR 鼠标退化成逐字符文本。单字节控制键由 parseCharacter 查同一张表兜底，语义不变。
   for (const [sequence, type] of ORDERED_KEY_SEQUENCES) {
-    if (text.startsWith(sequence, index)) {
+    if (sequence.length > 1 && text.startsWith(sequence, index)) {
       return { sequence, type };
     }
   }

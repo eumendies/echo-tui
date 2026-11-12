@@ -95,6 +95,67 @@ test('deleteToLineStart, deleteToLineEnd, and deletePreviousWord remove expected
   assert.deepEqual(snapshot(composer), { text: 'alpha   beta ', cursor: 13 });
 });
 
+test('movePreviousWord and moveNextWord cross whitespace to word boundaries', () => {
+  const composer = composerOps.createComposer('hello brave new world');
+
+  composer.cursor = 18;
+  composerOps.movePreviousWord(composer);
+  assert.equal(composer.cursor, 16);
+
+  composerOps.movePreviousWord(composer);
+  assert.equal(composer.cursor, 12);
+
+  composerOps.moveNextWord(composer);
+  assert.equal(composer.cursor, 15);
+
+  composerOps.moveNextWord(composer);
+  composer.cursor = 21;
+  composerOps.movePreviousWord(composer);
+  assert.equal(composer.cursor, 16);
+});
+
+test('movePreviousWord and moveNextWord stay inside content boundaries', () => {
+  const composer = composerOps.createComposer('one two');
+
+  composer.cursor = 0;
+  composerOps.movePreviousWord(composer);
+  assert.equal(composer.cursor, 0);
+
+  composer.cursor = composer.chars.length;
+  composerOps.moveNextWord(composer);
+  assert.equal(composer.cursor, composer.chars.length);
+
+  composerOps.movePreviousWord(composer);
+  assert.equal(composer.cursor, 4);
+});
+
+test('deleteNextWord skips following whitespace then removes the next word', () => {
+  const composer = composerOps.createComposer('alpha   beta gamma');
+
+  composer.cursor = 8;
+  composerOps.deleteNextWord(composer);
+  assert.deepEqual(snapshot(composer), { text: 'alpha    gamma', cursor: 8 });
+
+  composerOps.deleteNextWord(composer);
+  assert.deepEqual(snapshot(composer), { text: 'alpha   ', cursor: 8 });
+
+  // 已在内容末尾时是空操作，不产生编辑。
+  composerOps.deleteNextWord(composer);
+  assert.deepEqual(snapshot(composer), { text: 'alpha   ', cursor: 8 });
+});
+
+test('word-wise editing treats unsegmented CJK text as one word', () => {
+  // 词边界规则沿用纯空白切分，本次不变更；该用例锁定当前语义。
+  const composer = composerOps.createComposer('你好世界 test');
+
+  composerOps.movePreviousWord(composer);
+  assert.equal(composer.cursor, 5);
+  composerOps.movePreviousWord(composer);
+  assert.equal(composer.cursor, 0);
+  composerOps.deleteNextWord(composer);
+  assert.deepEqual(snapshot(composer), { text: ' test', cursor: 0 });
+});
+
 test('insertNewline and reset update the composer shape', () => {
   const composer = composerOps.createComposer('hi');
 
