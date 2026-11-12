@@ -1,16 +1,16 @@
 import path from 'node:path';
 
 /**
- * 共享只读 bash 命令判定：对外暴露 plan mode 与 undo 失效保护两个具体判定函数，
+ * 共享只读 bash 命令判定：对外暴露 plan mode 与 undo 追踪范围判定两个具体判定函数，
  * 两者共享单命令只读判定核心 isReadonlySingleArgv，仅通过各自阈值配置区分。
  * plan mode 只放行明确的只读检查命令与纯只读组合命令，任何未知命令一律拒绝；
- * undo 失效保护额外放行内置 agent-memory 脚本，find 拦截集合更窄，
- * 且不拆解组合命令，保持既有"不可追踪变更 → undo 失效"语义。
+ * undo 追踪范围判定额外放行内置 agent-memory 脚本，find 拦截集合更窄，
+ * 同样拆解组合命令；未知命令只标记有限恢复范围，不直接使 checkpoint 失效。
  */
 
 // 两档共用的只读文件检查命令；需要参数级约束的 rg/printf 在判定函数中单独处理。
 const READONLY_FILE_COMMANDS = new Set(['ls', 'cat', 'head', 'tail', 'wc', 'grep', 'echo']);
-// 宽松模式（undo 失效保护）拦截的 find 写选项。
+// 宽松模式（undo 追踪范围判定）拦截的 find 写选项。
 const CHANGE_HISTORY_BLOCKED_FIND_OPTIONS = new Set(['-delete', '-exec', '-execdir', '-ok', '-okdir']);
 // 严格模式额外拦截 GNU find 的写文件选项，避免 plan mode 漏网写操作。
 const PLAN_BLOCKED_FIND_OPTIONS = new Set([...CHANGE_HISTORY_BLOCKED_FIND_OPTIONS, '-fprint', '-fprint0', '-fprintf', '-fls']);
@@ -33,7 +33,7 @@ type ReadonlySingleCommandOptions = {
 };
 // plan mode 单命令判定阈值：find 拦截全部写选项、pwd 仅无参放行。
 const PLAN_SINGLE_COMMAND_OPTIONS: ReadonlySingleCommandOptions = {findBlockedOptions: PLAN_BLOCKED_FIND_OPTIONS, pwdStrict: true};
-// undo 失效保护单命令判定阈值：find 沿用既有拦截集合、pwd 任意参数。
+// undo 追踪范围判定单命令判定阈值：find 沿用既有拦截集合、pwd 任意参数。
 const CHANGE_HISTORY_SINGLE_COMMAND_OPTIONS: ReadonlySingleCommandOptions = {findBlockedOptions: CHANGE_HISTORY_BLOCKED_FIND_OPTIONS, pwdStrict: false};
 
 /**
@@ -60,7 +60,7 @@ function isPlanReadonlyBashCommand(command: string): boolean {
 }
 
 /**
- * undo 失效保护判定：命令可能修改工作区文件时返回 false，使 change history 失效。
+ * undo 追踪范围判定：命令可能修改工作区文件时返回 false，需要标记未追踪操作。
  * 与 plan 档相同地拆解组合命令，逐段按宽松阈值判定；memory 脚本整条优先判定，
  * 因为其专用 tokenizer 支持引号拼接（如 `'a'\''b'`），拆段器不支持，必须先于拆段检查。
  */
@@ -375,7 +375,7 @@ function splitCommandSegments(command: string): string[] | null {
 }
 
 /**
- * 只识别当前安装包内的固定 memory 脚本；拒绝 shell 组合与命令替换，避免任意 Node 命令绕过 workspace history 失效保护。
+ * 只识别当前安装包内的固定 memory 脚本；拒绝 shell 组合与命令替换，避免任意 Node 命令绕过 workspace 未追踪操作标记。
  */
 function isBuiltinAgentMemoryScriptCommand(command: string): boolean {
   const argv = parseTrustedScriptCommand(command);

@@ -1462,6 +1462,7 @@ test('normal Worker uses shared approval callbacks with Worker origin', async ()
   let childTurn = 0;
   let approval;
   let invalidations = 0;
+  let untracked = 0;
   try {
     await withPatchedAgents(cwd, (kind) => ({
       async runTurn(records) {
@@ -1484,7 +1485,8 @@ test('normal Worker uses shared approval callbacks with Worker origin', async ()
         changeRecorder: {
           captureFileBefore() {},
           captureFileAfter() {},
-          invalidate() { invalidations += 1; }
+          invalidate() { invalidations += 1; },
+          markUntracked() { untracked += 1; }
         },
         onToolApprovalRequest(_call, request) {
           approval = request;
@@ -1495,7 +1497,8 @@ test('normal Worker uses shared approval callbacks with Worker origin', async ()
     assert.equal(fs.readFileSync(path.join(cwd, 'approved.txt'), 'utf8'), 'worker');
     assert.equal(approval.origin.agentName, 'worker');
     assert.equal(approval.origin.task, delegatedTask);
-    assert.equal(invalidations, 1);
+    assert.equal(invalidations, 0);
+    assert.equal(untracked, 1);
   } finally {
     fs.rmSync(cwd, {recursive: true, force: true});
   }

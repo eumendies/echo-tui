@@ -36,6 +36,7 @@ type ManagedTask = {
   mayWrite: boolean; // 启动时判定可能写入工作区。
   stopRequested: boolean; // 是否已由管理器请求终止。
   settled: boolean; // 是否已发布唯一终态。
+  processFinished: boolean; // 只有真实 close 或未分配 PID 的启动失败才确认进程不再写入。
   log: BackgroundLogSink; // 增量日志写入器。
   files: Pick<BackgroundTaskFiles, 'outputPath' | 'statusPath'>; // 文件位置。
   handle: BashProcessHandle | null; // 子进程句柄;文件准备或 spawn 失败时为空。
@@ -72,7 +73,7 @@ function createBackgroundTaskManager(options: BackgroundTaskManagerOptions = {})
     let count = 0;
 
     for (const task of tasks.values()) {
-      if (task.reference.sessionId === sessionId && !task.settled) {
+      if (task.reference.sessionId === sessionId && !task.processFinished) {
         count += 1;
       }
     }
@@ -184,6 +185,7 @@ function createBackgroundTaskManager(options: BackgroundTaskManagerOptions = {})
 
   /** 把进程真实结局映射为唯一终态,区分管理器主动终止与自然退出。 */
   function settleFromProcess(task: ManagedTask, result: BashCommandRunResult): void {
+    task.processFinished = true;
     if (task.settled) {
       return;
     }
@@ -221,6 +223,10 @@ function createBackgroundTaskManager(options: BackgroundTaskManagerOptions = {})
     }
 
     if (countActive(startOptions.sessionId) >= MAX_CONCURRENT_BACKGROUND_TASKS) {
+      const hasUnknownProcess = [...tasks.values()].some((task) => task.reference.sessionId === startOptions.sessionId && task.settled && !task.processFinished);
+      if (hasUnknownProcess) {
+        return {ok: false, message: `当前会话已达到 ${MAX_CONCURRENT_BACKGROUND_TASKS} 个后台进程上限，其中有进程尚未确认结束；请等待实际退出后再启动。`};
+      }
       return {ok: false, message: `当前会话已有 ${MAX_CONCURRENT_BACKGROUND_TASKS} 个后台任务在运行，请先停止一个再启动。`};
     }
 
@@ -266,6 +272,7 @@ function createBackgroundTaskManager(options: BackgroundTaskManagerOptions = {})
       mayWrite: !isEffectivelyReadonlySandbox(startOptions.sandbox) && !isChangeHistoryReadonlyBashCommand(startOptions.command),
       stopRequested: false,
       settled: false,
+      processFinished: false,
       log: files.value.log,
       files: {outputPath: files.value.outputPath, statusPath: files.value.statusPath},
       handle: null,
@@ -311,8 +318,19 @@ function createBackgroundTaskManager(options: BackgroundTaskManagerOptions = {})
       await handle.started;
     } catch (error: unknown) {
       const message = error instanceof Error && error.message.trim() !== '' ? error.message : '无法启动后台命令';
-      finalize(task, {state: 'failed', exitCode: null, reason: 'runtime_error', signal: null});
-      return {ok: false, message};
+      const mayHaveExecuted = handle.pid !== undefined;
+      if (mayHaveExecuted) {
+        requestStop(task, 'runtime_error');
+        await task.settledPromise;
+      } else {
+        task.processFinished = true;
+        finalize(task, {state: 'failed', exitCode: null, reason: 'runtime_error', signal: null});
+      }
+      return {
+        ok: false,
+        message: `后台命令启动交接失败：${message}${task.processFinished ? '' : '；尚未确认进程结束，请在 /tasks 查看，期间不能回退。'}`,
+        mayHaveExecuted
+      };
     }
 
     // 交接完成:此后 turn 取消不再影响该任务。
@@ -321,7 +339,7 @@ function createBackgroundTaskManager(options: BackgroundTaskManagerOptions = {})
     if (startOptions.abortSignal?.aborted) {
       requestStop(task, 'user_stop');
       await task.settledPromise;
-      return {ok: false, message: '后台任务在完成启动交接前被取消。'};
+      return {ok: false, message: '后台任务在完成启动交接前被取消。', mayHaveExecuted: handle.pid !== undefined};
     }
 
     return {ok: true, reference: {...reference}, state: task.state};
@@ -357,8 +375,8 @@ function createBackgroundTaskManager(options: BackgroundTaskManagerOptions = {})
           continue;
         }
 
-        // 保护只看进程是否已有确定结果:磁盘快照过期属于展示问题,不改变已确认的执行事实。
-        if (!task.settled || task.reason === 'cleanup_timeout') {
+        // 清理超期或信号错误不能证明进程结束；真实 close 到达后才释放保护。
+        if (!task.processFinished) {
           return true;
         }
       }

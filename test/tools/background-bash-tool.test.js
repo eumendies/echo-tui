@@ -165,13 +165,15 @@ test('plan mode still rejects write-like commands that ask for background', () =
   assert.equal(assessment.reason, 'plan_mode');
 });
 
-test('background start invalidates the change checkpoint for untraceable writes', async () => {
+test('a successful background start marks untracked writes without invalidating the checkpoint', async () => {
   const harness = createHarness();
   const invalidations = [];
+  const untracked = [];
   const changeRecorder = {
     captureFileAfter: () => {},
     captureFileBefore: () => {},
-    invalidate: (reason) => invalidations.push(reason)
+    invalidate: (reason) => invalidations.push(reason),
+    markUntracked: (reason) => untracked.push(reason)
   };
 
   const result = await harness.executor.execute(
@@ -180,8 +182,28 @@ test('background start invalidates the change checkpoint for untraceable writes'
   );
 
   assert.equal(result.ok, true);
-  assert.equal(invalidations.length, 1);
+  assert.equal(invalidations.length, 0);
+  assert.equal(untracked.length, 1);
   await waitForTerminal(harness.manager, result.details.background.taskId);
+});
+
+test('background requests without capability or a spawned process do not mark untracked writes', async () => {
+  const untracked = [];
+  const changeRecorder = {
+    captureFileAfter() {},
+    captureFileBefore() {},
+    invalidate() { assert.fail('a failed start must not invalidate history'); },
+    markUntracked(reason) { untracked.push(reason); }
+  };
+  const harness = createHarness();
+  const withoutManager = createBashToolHandler({cwd: harness.workDir});
+  const invalidShell = createBashToolHandler({background: harness.manager, cwd: harness.workDir, sessionId: 'session-a', shell: path.join(harness.workDir, 'missing-shell')});
+  const args = {background: true, command: 'node -e "console.log(1)"'};
+  const call = createCall(JSON.stringify(args));
+
+  assert.equal((await withoutManager.execute(args, call, {changeRecorder})).ok, false);
+  assert.equal((await invalidShell.execute(args, call, {changeRecorder})).ok, false);
+  assert.deepEqual(untracked, []);
 });
 
 test('background support does not change the exposed tool name set', () => {

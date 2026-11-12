@@ -1291,7 +1291,7 @@ test('undoCommandHandler reports unavailable, invalid, cancel, success, and fail
   const invalid = createFakeHost({undoSummary: {status: 'invalid', reason: '写入型 bash 不可追踪'}});
   session = startCommand(undoCommandHandler, '/undo', invalid.host);
   assert.equal(session.surface.kind, 'info');
-  assert.match(session.surface.lines.join('\n'), /写入型 bash 不可追踪/);
+  assert.deepEqual(session.surface.lines, ['写入型 bash 不可追踪']);
 
   const cancel = createFakeHost({
     undoSummary: {
@@ -1304,11 +1304,7 @@ test('undoCommandHandler reports unavailable, invalid, cancel, success, and fail
   });
   session = startCommand(undoCommandHandler, '/undo', cancel.host);
   assert.equal(session.surface.kind, 'confirm');
-  assert.deepEqual(session.surface.bodyLines, [
-    '回退这轮对话与文件变更',
-    '回退 1 个文件修改，删除 1 个新增文件。',
-    '注意：会覆盖期间的手动修改'
-  ]);
+  assert.deepEqual(session.surface.bodyLines, ['撤回本轮对话，恢复 1 个文件，删除 1 个新增文件。']);
   await undoCommandHandler.handleEvent(session, {type: INPUT_EVENTS.ESCAPE}, cancel.host);
   assert.equal(cancel.calls.undoExecutes, 0);
   assert.equal(cancel.calls.sessionCloses, 1);
@@ -1347,6 +1343,96 @@ test('undoCommandHandler reports unavailable, invalid, cancel, success, and fail
   assert.equal(failure.calls.sessionCloses, 0);
   assert.equal(failure.host.session.getActive().surface.kind, 'info');
   assert.match(failure.host.session.getActive().surface.lines.join('\n'), /文件恢复失败/);
+});
+
+for (const ok of [true, false]) {
+  test(`undo consumes duplicate confirmation and cancellation until execution completes (${ok ? 'success' : 'failure'})`, async () => {
+    const {host, calls} = createFakeHost({undoSummary: {
+      status: 'ready', checkpointId: 'partial', fileCount: 1, restoreFileCount: 1, deleteFileCount: 0
+    }});
+    let finish;
+    host.undo.execute = () => {
+      calls.undoExecutes += 1;
+      return new Promise((resolve) => { finish = resolve; });
+    };
+    const handler = new UndoCommandHandler();
+    const session = startCommand(handler, '/undo', host);
+    const pending = handler.handleEvent(session, {type: INPUT_EVENTS.SUBMIT}, host);
+    await handler.handleEvent(session, {type: INPUT_EVENTS.SUBMIT}, host);
+    await handler.handleEvent(session, {type: INPUT_EVENTS.ESCAPE}, host);
+    assert.equal(calls.undoExecutes, 1);
+    assert.equal(calls.sessionCloses, 0);
+    assert.equal(host.session.getActive().data.mode, 'executing');
+    assert.equal(host.session.getActive().surface.title, '/undo 正在回退');
+    assert.deepEqual(host.session.getActive().surface.lines, []);
+    assert.equal(host.session.getActive().surface.dismissHint, '请稍候');
+    finish(ok ? {ok: true, checkpoint: {id: 'partial'}} : {ok: false, reason: 'conflict', message: 'file changed'});
+    await pending;
+    assert.equal(calls.undoExecutes, 1);
+    if (ok) {
+      assert.equal(calls.sessionCloses, 1);
+      assert.equal(calls.resizeRecoveries, 1);
+    } else {
+      assert.equal(host.session.getActive().data.mode, 'info');
+      assert.match(host.session.getActive().surface.lines.join('\n'), /file changed/);
+    }
+  });
+}
+
+test('undo confirmation keeps shell and overwrite risks without internal explanations', () => {
+  const {host} = createFakeHost({undoSummary: {
+    status: 'ready', checkpointId: 'partial', fileCount: 2, restoreFileCount: 1, deleteFileCount: 1,
+    untrackedReason: '本轮执行过不可追踪的 bash 命令', uncheckedFileCount: 1
+  }});
+  const session = startCommand(new UndoCommandHandler(), '/undo', host);
+  assert.equal(session.surface.title, '/undo 回退上一轮');
+  assert.deepEqual(session.surface.bodyLines, [
+    '撤回本轮对话，恢复 1 个文件，删除 1 个新增文件。',
+    'Shell 操作不会完整撤销。',
+    '1 个文件无法检查后续修改，回退将覆盖当前内容。'
+  ]);
+});
+
+test('shell-only undo shows no zero counts and carried shell effects use one short notice', () => {
+  const onlyShell = createFakeHost({undoSummary: {
+    status: 'ready', checkpointId: 'shell', fileCount: 0, restoreFileCount: 0, deleteFileCount: 0, untrackedReason: '本轮 shell'
+  }});
+  const shellSession = startCommand(new UndoCommandHandler(), '/undo', onlyShell.host);
+  assert.deepEqual(shellSession.surface.bodyLines, ['撤回本轮对话。', 'Shell 操作不会完整撤销。']);
+  const carried = createFakeHost({undoSummary: {
+    status: 'ready', checkpointId: 'earlier', fileCount: 1, restoreFileCount: 1, deleteFileCount: 0, undoneUntrackedNotice: '此前 Shell 操作的影响仍可能保留。'
+  }});
+  const earlierSession = startCommand(new UndoCommandHandler(), '/undo', carried.host);
+  assert.equal(earlierSession.surface.title, '/undo 回退上一轮');
+  assert.deepEqual(earlierSession.surface.bodyLines, ['撤回本轮对话，恢复 1 个文件。', '此前 Shell 操作的影响仍可能保留。']);
+});
+
+test('undo confirmation merges current and carried shell warnings', () => {
+  const {host} = createFakeHost({undoSummary: {
+    status: 'ready', checkpointId: 'both', fileCount: 1, restoreFileCount: 0, deleteFileCount: 1,
+    untrackedReason: '内部未追踪原因', undoneUntrackedNotice: '此前 Shell 操作的影响仍可能保留。'
+  }});
+  const session = startCommand(new UndoCommandHandler(), '/undo', host);
+  assert.deepEqual(session.surface.bodyLines, ['撤回本轮对话，删除 1 个新增文件。', 'Shell 操作不会完整撤销。']);
+});
+
+test('undo with no file changes only confirms the conversation', () => {
+  const {host} = createFakeHost({undoSummary: {
+    status: 'ready', checkpointId: 'conversation', fileCount: 0, restoreFileCount: 0, deleteFileCount: 0
+  }});
+  const session = startCommand(new UndoCommandHandler(), '/undo', host);
+  assert.deepEqual(session.surface.bodyLines, ['撤回本轮对话。']);
+});
+
+test('undo legacy overwrite warning stays visible without shell effects', () => {
+  const {host} = createFakeHost({undoSummary: {
+    status: 'ready', checkpointId: 'legacy', fileCount: 2, restoreFileCount: 2, deleteFileCount: 0, uncheckedFileCount: 2
+  }});
+  const session = startCommand(new UndoCommandHandler(), '/undo', host);
+  assert.deepEqual(session.surface.bodyLines, [
+    '撤回本轮对话，恢复 2 个文件。',
+    '2 个文件无法检查后续修改，回退将覆盖当前内容。'
+  ]);
 });
 
 test('diffCommandHandler opens diff surface, handles focus and scroll, and closes', () => {

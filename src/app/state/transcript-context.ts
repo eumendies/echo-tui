@@ -9,7 +9,7 @@ import {
   createTruncateRecordsOperation
 } from '../../persistence/transcript-journal';
 import {createCompactionNoticeRecord} from '../../agent/context/context-compaction';
-import {cloneChangeHistory} from './change-history-context';
+import {cloneChangeHistory, createUndoContinuation} from './change-history-context';
 import {createSessionTitle} from '../../persistence/transcript-store';
 
 import type {ChangeCheckpoint, ChangeHistoryDelta} from '../../types/change-history';
@@ -285,7 +285,7 @@ class TranscriptContext {
   /**
    * 按完整历史位置回退；目标后缀仍驻留时直接截取，跨边界时只使用调用方在恢复文件前预读的完整历史。
    * 跨边界却缺少完整历史时抛错，不隐式回读，也不把与起点不一致的后缀安装进状态。
-   * change history 固定按"弹出栈顶一个 checkpoint"回退：唯一调用方 /undo 每次只回退一轮。
+   * 每次弹出栈顶 checkpoint；未追踪影响提示向剩余栈顶传递，与截断操作处于同一个 batch。
    */
   restoreToBoundary(recordCount: number, compaction: CompactionState | undefined, completeRecords?: TranscriptRecord[]): void {
     const nextCount = Math.min(Math.max(0, Math.floor(recordCount)), this.getRecordCount());
@@ -313,6 +313,9 @@ class TranscriptContext {
     const nextTitle = nextFirstUserIndex === null ? '未命名对话' : needsHistory ? createSessionTitle(sourceRecords) : this.sessionTitle;
     // 栈为空时"弹出栈顶"没有可回退的 checkpoint：内存上是空操作，写进 journal 却会让重放判定不可恢复。
     const popsChangeCheckpoint = this.changeHistory.length > 0;
+    const continuation = popsChangeCheckpoint
+      ? createUndoContinuation(this.changeHistory[this.changeHistory.length - 1], this.changeHistory[this.changeHistory.length - 2])
+      : undefined;
     const nextOperations: TranscriptJournalSubOperation[] = [
       createTruncateRecordsOperation(nextCount),
       createSetCompactionOperation(nextCompaction)
@@ -325,6 +328,10 @@ class TranscriptContext {
 
     if (popsChangeCheckpoint) {
       nextOperations.push(createPopChangeCheckpointOperation());
+      if (continuation) {
+        // 前一个 pop 撤销本轮；这里的 pop + push 只替换剩余栈顶的提示/核验元数据。
+        nextOperations.push(createPopChangeCheckpointOperation(), createPushChangeCheckpointOperation(continuation));
+      }
     }
 
     const operation = createBatchOperation(nextOperations);
@@ -343,6 +350,9 @@ class TranscriptContext {
 
     if (popsChangeCheckpoint) {
       this.changeHistory.pop();
+      if (continuation) {
+        this.changeHistory[this.changeHistory.length - 1] = continuation;
+      }
     }
 
     this.pendingChangeHistoryDeltas = [];

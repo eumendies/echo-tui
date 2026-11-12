@@ -71,7 +71,8 @@ function createRecordingChangeRecorder() {
   const calls = {
     after: [],
     before: [],
-    invalidations: []
+    invalidations: [],
+    untracked: []
   };
 
   return {
@@ -85,6 +86,9 @@ function createRecordingChangeRecorder() {
       },
       invalidate(reason) {
         calls.invalidations.push(reason);
+      },
+      markUntracked(reason) {
+        calls.untracked.push(reason);
       }
     }
   };
@@ -1005,7 +1009,7 @@ test('bash tool executes successful non-interactive commands', async () => {
   assert.equal(result.text, 'hello');
 });
 
-test('bash tool invalidates change history only for commands outside readonly inspection allowlist', async () => {
+test('bash tool marks untracked commands without invalidating controlled edit history', async () => {
   const executor = createToolExecutor(createToolRegistry([createBashToolHandler({ cwd: process.cwd() })]));
   const readonlyCommands = ['pwd', 'ls', 'cat package.json', 'find . -maxdepth 0 -type d', 'printf hello'];
 
@@ -1015,17 +1019,19 @@ test('bash tool invalidates change history only for commands outside readonly in
 
     assert.equal(readonlyResult.ok, true, command);
     assert.deepEqual(readonlyChange.calls.invalidations, [], command);
+    assert.deepEqual(readonlyChange.calls.untracked, [], command);
   }
 
   const writeLikeChange = createRecordingChangeRecorder();
   const writeLikeResult = await executor.execute(createCall({ argumentsText: JSON.stringify({ command: 'node -e "console.log(1)"' }) }), {changeRecorder: writeLikeChange.recorder});
 
   assert.equal(writeLikeResult.ok, true);
-  assert.equal(writeLikeChange.calls.invalidations.length, 1);
-  assert.match(writeLikeChange.calls.invalidations[0], /不可追踪/);
+  assert.deepEqual(writeLikeChange.calls.invalidations, []);
+  assert.equal(writeLikeChange.calls.untracked.length, 1);
+  assert.match(writeLikeChange.calls.untracked[0], /不可追踪/);
 });
 
-test('bash tool skips change history invalidation when the command runs in an effective read-only sandbox', async () => {
+test('bash tool skips untracked markers only inside an effective read-only sandbox', async () => {
   const createSandbox = (mode, isAvailable) => ({
     policy: {mode, network: mode === 'workspace-write', extraWritablePaths: []},
     provider: {
@@ -1037,8 +1043,8 @@ test('bash tool skips change history invalidation when the command runs in an ef
   });
   const command = 'node -e "console.log(1)"';
 
-  // 只在命令实际由生效只读沙箱执行时豁免失效:档位或可用性不满足时保持既有文本失效语义。
-  for (const [sandbox, expectedInvalidations, label] of [
+  // 生效只读沙箱排除工作区写入；其余模式仍明确标记未追踪范围。
+  for (const [sandbox, expectedUntracked, label] of [
     [createSandbox('read-only', true), 0, 'effective read-only'],
     [createSandbox('read-only', false), 1, 'unavailable read-only'],
     [createSandbox('workspace-write', true), 1, 'workspace-write']
@@ -1048,7 +1054,8 @@ test('bash tool skips change history invalidation when the command runs in an ef
     const result = await executor.execute(createCall({ argumentsText: JSON.stringify({ command }) }), {changeRecorder: change.recorder});
 
     assert.equal(result.ok, true, label);
-    assert.equal(change.calls.invalidations.length, expectedInvalidations, label);
+    assert.deepEqual(change.calls.invalidations, [], label);
+    assert.equal(change.calls.untracked.length, expectedUntracked, label);
   }
 });
 

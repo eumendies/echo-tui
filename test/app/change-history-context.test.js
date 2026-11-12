@@ -103,7 +103,7 @@ test('ChangeHistoryContext reports invalid checkpoints and refuses file changes'
   fs.rmSync(cwd, {recursive: true, force: true});
 });
 
-test('ChangeHistoryContext restores checkpoint even when file changed after the loop', () => {
+test('ChangeHistoryContext refuses a checkpoint when a file changed after the controlled edit', () => {
   const cwd = createTempDir();
   const target = path.join(cwd, 'file.txt');
   fs.writeFileSync(target, 'before\n', 'utf8');
@@ -119,8 +119,11 @@ test('ChangeHistoryContext restores checkpoint even when file changed after the 
 
   const result = context.executeUndo();
 
-  assert.equal(result.ok, true);
-  assert.equal(fs.readFileSync(target, 'utf8'), 'before\n');
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'conflict');
+  assert.match(result.message, /file\.txt/);
+  assert.equal(fs.readFileSync(target, 'utf8'), 'external\n');
+  assert.equal(context.getSummary().status, 'ready');
 
   fs.rmSync(cwd, {recursive: true, force: true});
 });
@@ -288,4 +291,253 @@ test('ChangeHistoryContext reports the stack delta for every mutation path', () 
   assert.equal(context.finalizeCheckpoint(), null);
 
   fs.rmSync(cwd, {recursive: true, force: true});
+});
+
+for (const change of ['content', 'removed', 'permissions', 'symlink', 'directory', 'recreated']) {
+  test(`ChangeHistoryContext checks all files before restoring any on ${change} conflicts`, (t) => {
+    const cwd = createTempDir();
+    t.after(() => fs.rmSync(cwd, {recursive: true, force: true}));
+    const first = path.join(cwd, 'first.txt');
+    const conflict = path.join(cwd, 'conflict.txt');
+    const context = new ChangeHistoryContext();
+    context.beginCheckpoint({cwd, transcriptStartIndex: 0});
+    const recorder = context.createRecorder();
+    for (const target of [first, conflict]) {
+      fs.writeFileSync(target, 'before');
+      recorder.captureFileBefore(target);
+      fs.writeFileSync(target, 'after');
+      recorder.captureFileAfter(target);
+    }
+    if (change === 'recreated') {
+      fs.unlinkSync(conflict);
+      recorder.captureFileAfter(conflict);
+    }
+    context.finalizeCheckpoint();
+
+    if (change === 'content' || change === 'recreated') fs.writeFileSync(conflict, 'external');
+    if (change === 'removed') fs.unlinkSync(conflict);
+    if (change === 'permissions') fs.chmodSync(conflict, 0o700);
+    if (change === 'symlink' || change === 'directory') {
+      fs.unlinkSync(conflict);
+      if (change === 'symlink') fs.symlinkSync(first, conflict);
+      else fs.mkdirSync(conflict);
+    }
+
+    const result = context.executeUndo();
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'conflict');
+    assert.ok(result.message.includes(conflict));
+    assert.equal(fs.readFileSync(first, 'utf8'), 'after');
+    assert.equal(context.getSummary().status, 'ready');
+  });
+}
+
+test('ChangeHistoryContext preserves a modified newly created file on undo conflict', (t) => {
+  const cwd = createTempDir();
+  t.after(() => fs.rmSync(cwd, {recursive: true, force: true}));
+  const target = path.join(cwd, 'created.txt');
+  const context = new ChangeHistoryContext();
+  context.beginCheckpoint({cwd, transcriptStartIndex: 0});
+  const recorder = context.createRecorder();
+  recorder.captureFileBefore(target);
+  fs.writeFileSync(target, 'created');
+  recorder.captureFileAfter(target);
+  context.finalizeCheckpoint();
+  fs.writeFileSync(target, 'manual');
+  assert.equal(context.executeUndo().reason, 'conflict');
+  assert.equal(fs.readFileSync(target, 'utf8'), 'manual');
+});
+
+test('ChangeHistoryContext warns for legacy files without fingerprints and preserves their restore behavior', (t) => {
+  const cwd = createTempDir();
+  t.after(() => fs.rmSync(cwd, {recursive: true, force: true}));
+  const target = path.join(cwd, 'legacy.txt');
+  fs.writeFileSync(target, 'external');
+  const context = new ChangeHistoryContext();
+  context.restoreHistory([{
+    id: 'legacy', createdAt: new Date().toISOString(), cwd, transcriptStartIndex: 0, status: 'ready',
+    files: [{path: target, snapshot: {exists: true, content: 'before'}, state: 'updated'}]
+  }]);
+  assert.equal(context.getSummary().uncheckedFileCount, 1);
+  assert.equal(context.executeUndo().ok, true);
+  assert.equal(fs.readFileSync(target, 'utf8'), 'before');
+});
+
+test('ChangeHistoryContext separates the next undo notice from new turns and older safety metadata', (t) => {
+  const cwd = createTempDir();
+  t.after(() => fs.rmSync(cwd, {recursive: true, force: true}));
+  const context = new ChangeHistoryContext();
+  context.beginCheckpoint({cwd, transcriptStartIndex: 0});
+  context.finalizeCheckpoint();
+  const oldest = context.last.id;
+  context.beginCheckpoint({cwd, transcriptStartIndex: 1});
+  context.finalizeCheckpoint();
+  const earlier = context.last.id;
+  context.beginCheckpoint({cwd, transcriptStartIndex: 1});
+  context.createRecorder().markUntracked('untracked bash');
+  assert.equal(context.history.length, 2);
+  assert.equal(context.finalizeCheckpoint().kind, 'push');
+  assert.equal(context.getSummary().untrackedReason, 'untracked bash');
+  assert.equal(context.executeUndo().ok, true);
+  context.markLastUsed();
+  assert.equal(context.history.length, 2);
+  assert.equal(context.last.id, earlier);
+  assert.equal(context.getSummary().status, 'ready');
+  assert.equal(context.getSummary().untrackedReason, undefined);
+  assert.equal(context.getSummary().undoneUntrackedNotice, '此前 Shell 操作的影响仍可能保留。');
+  assert.deepEqual(context.last.files, []);
+
+  const restored = new ChangeHistoryContext();
+  restored.restoreHistory(context.getHistory());
+  assert.equal(restored.getSummary().status, 'ready');
+  restored.beginCheckpoint({cwd, transcriptStartIndex: 1});
+  restored.finalizeCheckpoint();
+  assert.equal(restored.getSummary().untrackedReason, undefined);
+  assert.equal(restored.getSummary().undoneUntrackedNotice, undefined);
+  assert.equal(restored.executeUndo().ok, true);
+  restored.markLastUsed();
+  assert.equal(restored.getSummary().status, 'ready');
+  assert.ok(restored.getSummary().undoneUntrackedNotice);
+  assert.equal(restored.executeUndo().ok, true);
+  restored.markLastUsed();
+  assert.equal(restored.last.id, oldest);
+  assert.equal(restored.last.untrackedEffects, 'retained');
+  assert.equal(restored.getSummary().untrackedReason, undefined);
+  assert.equal(restored.getSummary().undoneUntrackedNotice, undefined);
+  assert.equal(restored.executeUndo().ok, true);
+  restored.markLastUsed();
+  assert.equal(restored.getSummary().status, 'none');
+});
+
+test('ChangeHistoryContext blocks legacy files without fingerprints after passing untracked operations', (t) => {
+  const cwd = createTempDir();
+  t.after(() => fs.rmSync(cwd, {recursive: true, force: true}));
+  const target = path.join(cwd, 'legacy.txt');
+  fs.writeFileSync(target, 'shell');
+  const context = new ChangeHistoryContext();
+  context.restoreHistory([{
+    id: 'legacy', createdAt: new Date().toISOString(), cwd, transcriptStartIndex: 0, status: 'ready',
+    files: [{path: target, snapshot: {exists: true, content: 'before'}, state: 'updated'}]
+  }]);
+  context.beginCheckpoint({cwd, transcriptStartIndex: 1});
+  context.finalizeCheckpoint();
+  context.beginCheckpoint({cwd, transcriptStartIndex: 1});
+  context.markUntracked('untracked bash');
+  context.finalizeCheckpoint();
+  assert.equal(context.executeUndo().ok, true);
+  context.markLastUsed();
+  assert.ok(context.getSummary().undoneUntrackedNotice);
+  assert.equal(context.executeUndo().ok, true);
+  context.markLastUsed();
+  assert.equal(context.last.id, 'legacy');
+  assert.equal(context.last.untrackedEffects, 'retained');
+  assert.equal(context.getSummary().status, 'invalid');
+  assert.match(context.getSummary().reason, /旧记录无法检查/);
+  assert.equal(context.executeUndo().reason, 'invalid');
+  assert.equal(fs.readFileSync(target, 'utf8'), 'shell');
+  const restored = new ChangeHistoryContext();
+  restored.restoreHistory(context.getHistory());
+  assert.equal(restored.getSummary().status, 'invalid');
+});
+
+test('ChangeHistoryContext does not copy a previous round shell fact into a new checkpoint', (t) => {
+  const cwd = createTempDir();
+  t.after(() => fs.rmSync(cwd, {recursive: true, force: true}));
+  const context = new ChangeHistoryContext();
+  context.beginCheckpoint({cwd, transcriptStartIndex: 0});
+  context.markUntracked('本轮执行 shell');
+  context.finalizeCheckpoint();
+  for (let round = 1; round <= 3; round += 1) {
+    context.beginCheckpoint({cwd, transcriptStartIndex: round});
+    context.finalizeCheckpoint();
+    assert.equal(context.getSummary().untrackedReason, undefined);
+    assert.equal(context.getSummary().undoneUntrackedNotice, undefined);
+    assert.equal(context.last.untrackedEffects, undefined);
+  }
+});
+
+test('ChangeHistoryContext bounds conflict paths and reports the omitted count', (t) => {
+  const cwd = createTempDir();
+  t.after(() => fs.rmSync(cwd, {recursive: true, force: true}));
+  const context = new ChangeHistoryContext();
+  context.beginCheckpoint({cwd, transcriptStartIndex: 0});
+  const recorder = context.createRecorder();
+  for (let index = 0; index < 12; index += 1) {
+    const target = path.join(cwd, `conflict-${index}.txt`);
+    recorder.captureFileBefore(target);
+    fs.writeFileSync(target, 'controlled');
+    recorder.captureFileAfter(target);
+    fs.writeFileSync(target, 'external');
+  }
+  context.finalizeCheckpoint();
+  const result = context.executeUndo();
+  assert.equal(result.reason, 'conflict');
+  assert.match(result.message, /12 个文件已变化，未执行回退.*前 5 个.*另有 7 个/);
+  assert.equal(result.message.split('\n').length, 6);
+  for (const file of fs.readdirSync(cwd)) assert.equal(fs.readFileSync(path.join(cwd, file), 'utf8'), 'external');
+});
+
+test('independent shell undo sequences can leave two adjacent pending notices', () => {
+  const context = new ChangeHistoryContext();
+  const append = (shell) => {
+    context.beginCheckpoint({cwd: '/tmp', transcriptStartIndex: 0});
+    if (shell) context.markUntracked('shell');
+    context.finalizeCheckpoint();
+  };
+  const undo = () => {
+    assert.equal(context.executeUndo().ok, true);
+    context.markLastUsed();
+  };
+  append(false);
+  append(true);
+  undo();
+  append(false);
+  append(true);
+  undo();
+  assert.deepEqual(context.getHistory().map((checkpoint) => checkpoint.untrackedEffects), ['notice', 'notice']);
+  undo();
+  assert.equal(context.last.untrackedEffects, 'notice');
+  assert.ok(context.getSummary().undoneUntrackedNotice);
+});
+
+test('development journals with an after fingerprint but no baseline fingerprint can retry a restore', (t) => {
+  const cwd = createTempDir();
+  t.after(() => fs.rmSync(cwd, {recursive: true, force: true}));
+  const target = path.join(cwd, 'intermediate.txt');
+  fs.writeFileSync(target, 'before');
+  const context = new ChangeHistoryContext();
+  context.beginCheckpoint({cwd, transcriptStartIndex: 0});
+  const recorder = context.createRecorder();
+  recorder.captureFileBefore(target);
+  fs.writeFileSync(target, 'after');
+  recorder.captureFileAfter(target);
+  context.finalizeCheckpoint();
+  const intermediate = context.getHistory();
+  delete intermediate[0].files[0].beforeFingerprint;
+  fs.writeFileSync(target, 'before');
+  context.restoreHistory(intermediate);
+  assert.equal(context.executeUndo().ok, true);
+  assert.equal(fs.readFileSync(target, 'utf8'), 'before');
+});
+
+test('undo reuses the conflict check file read as its rollback backup', (t) => {
+  const cwd = createTempDir();
+  t.after(() => fs.rmSync(cwd, {recursive: true, force: true}));
+  const target = path.join(cwd, 'single-read.txt');
+  fs.writeFileSync(target, 'before');
+  const context = new ChangeHistoryContext();
+  context.beginCheckpoint({cwd, transcriptStartIndex: 0});
+  const recorder = context.createRecorder();
+  recorder.captureFileBefore(target);
+  fs.writeFileSync(target, 'after');
+  recorder.captureFileAfter(target);
+  context.finalizeCheckpoint();
+  let reads = 0;
+  const original = fs.readFileSync;
+  t.mock.method(fs, 'readFileSync', (file, ...args) => {
+    if (file === target) reads += 1;
+    return original(file, ...args);
+  });
+  assert.equal(context.executeUndo().ok, true);
+  assert.equal(reads, 1);
 });

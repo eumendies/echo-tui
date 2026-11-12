@@ -12,6 +12,7 @@ import type {ToolResultStore} from './tool-result-offloading';
 import type {SandboxRuntimeContext} from '../sandbox/types';
 
 const RUN_BASH_COMMAND_TOOL_NAME = 'run_bash_command';
+const UNTRACKED_BASH_REASON = '存在不可追踪的 bash 操作，仅能恢复已记录的受控文件。';
 const BACKGROUND_UNSUPPORTED_MESSAGE = 'Background execution is only available in the interactive main session. Re-run this in the foreground.';
 const PLAN_READONLY_BASH_REJECTION = 'In plan mode, run_bash_command may only run readonly inspection commands: pwd; file inspection commands such as ls, cat, head, tail, wc, grep, rg, echo, printf, and find without write options; readonly git inspection commands such as git status, git diff, git log, git show, git branch -a, git grep, git config --get, and git stash list; and combinations of readonly commands with |, &&, ;, ||, or newlines. This command may modify the workspace or system state, so it was rejected. To run it, exit plan mode first.';
 
@@ -29,7 +30,7 @@ type BashToolHandlerOptions = {
 type ExecuteBashCommandOptions = {
   abortSignal?: AbortSignal; // turn 级取消;只在启动交接前影响后台任务。
   background?: BackgroundTaskManager; // 后台任务能力;唯一后台可用性判据。
-  changeRecorder?: ChangeFileRecorder; // 不可追踪写入时使本轮 checkpoint 失效。
+  changeRecorder?: ChangeFileRecorder; // 未追踪命令保留受控编辑记录，并提示有限恢复范围。
   cwd: string;
   maxOutputBytes: number;
   sandbox?: SandboxRuntimeContext;
@@ -108,13 +109,14 @@ async function executeBashCommand(
   const sandboxedReadonly = options.sandbox !== undefined
     && options.sandbox.policy.mode === 'read-only'
     && options.sandbox.provider.isAvailable();
-
-  if (!sandboxedReadonly && !isChangeHistoryReadonlyBashCommand(command)) {
-    options.changeRecorder?.invalidate('上一轮执行过不可追踪的 bash 命令，无法安全回退文件修改');
-  }
+  const mayWrite = !sandboxedReadonly && !isChangeHistoryReadonlyBashCommand(command);
 
   if (backgroundRequested === true) {
-    return executeBackgroundCommand(command, call, options);
+    return executeBackgroundCommand(command, call, options, mayWrite);
+  }
+
+  if (mayWrite) {
+    options.changeRecorder?.markUntracked(UNTRACKED_BASH_REASON);
   }
 
   const result = await runBashCommand({
@@ -150,7 +152,8 @@ async function executeBashCommand(
 async function executeBackgroundCommand(
   command: string,
   call: ToolCall,
-  options: ExecuteBashCommandOptions
+  options: ExecuteBashCommandOptions,
+  mayWrite: boolean
 ): Promise<BashToolExecutionResult> {
   const manager = options.background;
   const sessionId = options.sessionId;
@@ -168,6 +171,11 @@ async function executeBackgroundCommand(
     timeoutMs: options.timeoutMs,
     ...(options.abortSignal ? {abortSignal: options.abortSignal} : {})
   });
+
+  // 交接前取消也可能已经执行了 shell；不能把失败结果误当成没有副作用。
+  if (mayWrite && (started.ok || started.mayHaveExecuted)) {
+    options.changeRecorder?.markUntracked(UNTRACKED_BASH_REASON);
+  }
 
   if (!started.ok) {
     return createBashFailureResult(call, started.message, options.maxOutputBytes);

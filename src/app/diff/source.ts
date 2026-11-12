@@ -167,8 +167,13 @@ function aggregateHistoryEntries(history: ChangeCheckpoint[]): ChangeFileEntry[]
   return Array.from(byPath.values());
 }
 
+/** 将受控文本快照投影为 diff；原始字节快照只给说明，避免把缺失文本误画成空文件。 */
 function createHistoryEntryDiff(entry: ChangeFileEntry, cwd: string, notices: string[]): DiffFile | null {
   const displayPath = displayPathFor(cwd, entry.path);
+  if (entry.snapshot.contentBase64 !== undefined) {
+    notices.push(`${displayPath}: 原快照不是 UTF-8 文本，无法显示文本 diff。`);
+    return null;
+  }
   const current = readTextSnapshot(entry.path);
 
   if (!current.ok) {
