@@ -3,11 +3,24 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const {spawnSync} = require('node:child_process');
 
 const { AppContext } = require('../../src/app/state/app-context');
 const { createHistoryCommandPorts } = require('../../src/app/command/history-command-ports');
 const { UserConfigContext } = require('../../src/config/user-config-context');
 const { createBackgroundTaskManager } = require('../../src/tools/background-bash');
+
+// 与 manager 测试同源：实际探测 Node 的进程组信号能力，避免把受限沙箱的 EPERM 当成回归。
+function canSignalChildProcesses() {
+  const probe = spawnSync(process.execPath, ['-e', `
+    const {spawn} = require('node:child_process');
+    const child = spawn('/bin/bash', ['-c', 'sleep 2'], {detached: true, stdio: 'ignore'});
+    try { process.kill(-child.pid, 'SIGTERM'); } catch { process.exit(1); }
+    child.on('close', () => process.exit(0));
+  `], {stdio: 'ignore', timeout: 5000});
+  return probe.status === 0;
+}
+const SIGNAL_SKIP = canSignalChildProcesses() ? false : 'requires the ability to signal subprocesses (process-group probe denied)';
 
 function createFakeTranscriptStore() {
   return {
@@ -105,7 +118,7 @@ test('an active write task blocks undo at both the summary and execute entries',
 
   const summary = harness.ports.undo.getSummary();
   assert.equal(summary.status, 'invalid');
-  assert.match(summary.reason, /后台任务/u);
+  assert.match(summary.reason, /后台命令.*稍后重试/u);
 
   const executed = await harness.ports.undo.execute();
   assert.equal(executed.ok, false);
@@ -198,7 +211,7 @@ test('each task settles exactly once and emits a single notice', async () => {
   assert.equal(harness.settled.length, 1);
 });
 
-test('session cleanup leaves other sessions untouched', async () => {
+test('session cleanup leaves other sessions untouched', {skip: SIGNAL_SKIP}, async () => {
   const harness = createHarness();
   const leaving = await harness.startTask('sleep 5');
   const keeping = await harness.startTask('sleep 5', { sessionId: 'session-other' });

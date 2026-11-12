@@ -73,7 +73,11 @@ type BackgroundTaskStartResult =
       reference: BackgroundTaskReference; // 回填 tool_result.details 的引用。
       state: BackgroundTaskState; // 交接时刻的状态,快速命令可能已是终态。
     }
-  | {ok: false; message: string}; // 未留下任何运行中进程。
+  | {
+      ok: false; // 启动未完成交接，调用方不能将任务视为可用。
+      message: string; // 启动失败或取消的用户说明。
+      mayHaveExecuted?: boolean; // 按实际 PID 判断是否可能已执行；失败或取消也可能留下写入。
+    };
 
 /** 管理器对外能力;由 app 持有,只注入交互式主会话的运行。 */
 type BackgroundTaskManager = {

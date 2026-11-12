@@ -16,6 +16,7 @@ import type {UserConfigContext, UserConfigSnapshot} from '../../config/user-conf
 import {createSessionModelSettingsStore} from '../../persistence/session-model-settings-store';
 import {isShellInteractionMode} from '../../types/agent';
 import {createModeTransitionUserMessage} from '../../agent/context/interaction-mode';
+import {hasUnconfirmedBashCommands, UNCONFIRMED_BASH_UNDO_REASON} from '../../tools/bash-command-runner';
 
 import type {TerminalController} from '../../types/app';
 import type {ActiveTurnMessagePolicy, AgentSessionInput, AgentUserConfigSnapshot, ContextUsage, InteractionMode, ReasoningEffort} from '../../types/agent';
@@ -31,7 +32,7 @@ import type {TranscriptForkResult, TranscriptRecord, TranscriptSessionDeleteResu
 import type {SessionModelSettingsStore} from '../../types/session-model-settings';
 import type {ChangeCheckpoint, UndoExecuteResult} from '../../types/change-history';
 
-const BACKGROUND_WRITE_UNDO_REASON = '后台任务仍在运行，可能修改文件，暂时无法回退。';
+const BACKGROUND_WRITE_UNDO_REASON = '仍有后台命令可能写入文件，请稍后重试。';
 import type {ToolApprovalContext} from './tool-approval-context';
 import type {AssistantTurnHandle, InterruptAssistantTurnResult} from './turn-context';
 
@@ -569,6 +570,9 @@ class AppContext {
     if (sessionId && this.backgroundTasks?.hasActiveWriteTask(sessionId)) {
       this.changeHistoryContext.invalidate(BACKGROUND_WRITE_UNDO_REASON);
     }
+    if (hasUnconfirmedBashCommands(this.getCurrentCwd())) {
+      this.changeHistoryContext.markUntracked(UNCONFIRMED_BASH_UNDO_REASON);
+    }
   }
 
   /**
@@ -600,6 +604,10 @@ class AppContext {
   async executeUndo(): Promise<UndoExecuteResult> {
     const sessionId = this.transcriptContext.getCurrentSessionId();
 
+    if (hasUnconfirmedBashCommands(this.getCurrentCwd())) {
+      return {ok: false, reason: 'invalid', message: UNCONFIRMED_BASH_UNDO_REASON};
+    }
+
     // 摘要入口与执行入口各自查询保护态,覆盖确认面板打开期间的状态变化。
     if (sessionId && this.backgroundTasks?.hasActiveWriteTask(sessionId)) {
       return {ok: false, reason: 'invalid', message: BACKGROUND_WRITE_UNDO_REASON};
@@ -623,6 +631,10 @@ class AppContext {
 
     if (this.changeHistoryContext.last?.id !== target?.id) {
       return {ok: false, reason: 'invalid', message: '回退目标已发生变化，请重新执行 /undo。'};
+    }
+
+    if (hasUnconfirmedBashCommands(this.getCurrentCwd())) {
+      return {ok: false, reason: 'invalid', message: UNCONFIRMED_BASH_UNDO_REASON};
     }
 
     if (sessionId && this.backgroundTasks?.hasActiveWriteTask(sessionId)) {

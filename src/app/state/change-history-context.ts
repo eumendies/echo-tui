@@ -1,22 +1,29 @@
-import fs from 'node:fs';
 import path from 'node:path';
+import {getSnapshotFingerprint, readChangeFileState, restoreChangeFileSnapshot} from './change-file-state';
 
 import type {CompactionState} from '../../types/transcript';
 import type {
   ChangeCheckpoint,
-  ChangeFileEntry,
   ChangeFileRecorder,
   ChangeFileSnapshot,
   ChangeHistoryDelta,
   UndoExecuteResult,
-  UndoSummary
+  UndoSummary,
+  UndoUnavailableSummary
 } from '../../types/change-history';
 
 type BeginChangeCheckpointOptions = {
-  compactionBefore?: CompactionState;
-  cwd: string;
-  transcriptStartIndex: number;
+  compactionBefore?: CompactionState; // 本轮开始前的上下文压缩位置。
+  cwd: string; // 受控编辑所属工作目录。
+  transcriptStartIndex: number; // 本轮 user record 之前的完整历史边界。
 };
+
+type UndoAvailability = UndoUnavailableSummary | {
+  status: 'ready'; // 栈顶符合恢复策略，展示投影和执行入口共用此资格。
+  checkpoint: ChangeCheckpoint; // 通过策略核验的真实恢复目标。
+};
+
+const MAX_UNDO_CONFLICT_PATHS = 5;
 
 /**
  * 管理 assistant loop 的文件变更 checkpoint；同一份 history 服务 `/undo` 和 `/diff` fallback。
@@ -103,13 +110,23 @@ class ChangeHistoryContext {
   }
 
   /**
-   * 创建受控工具使用的记录器，只暴露 snapshot 快照、写入成功标记和失效入口。
+   * 标记本轮存在范围外操作；继续收集受控编辑，后续回退按各轮文件指纹检查。
+   */
+  markUntracked(reason: string): void {
+    if (this.current?.status === 'recording') {
+      this.current.untrackedReason ??= reason;
+    }
+  }
+
+  /**
+   * 创建工具使用的记录器，区分快照失败与仍允许有限恢复的范围外操作。
    */
   createRecorder(): ChangeFileRecorder {
     return {
       captureFileBefore: (filePath: string) => this.captureFileBefore(filePath),
       captureFileAfter: (filePath: string) => this.captureFileAfter(filePath),
-      invalidate: (reason: string) => this.invalidate(reason)
+      invalidate: (reason: string) => this.invalidate(reason),
+      markUntracked: (reason: string) => this.markUntracked(reason)
     };
   }
 
@@ -129,9 +146,9 @@ class ChangeHistoryContext {
   }
 
   /**
-   * 返回栈顶 checkpoint 的展示摘要；invalid 边界会直接阻止继续回退。
+   * 统一判断恢复资格；只有真实失效或未追踪影响下的旧记录缺失指纹时拒绝，不依赖展示字段。
    */
-  getSummary(): UndoSummary {
+  private describeUndoAvailability(): UndoAvailability {
     const checkpoint = this.last;
 
     if (!checkpoint || checkpoint.status === 'used') {
@@ -146,40 +163,87 @@ class ChangeHistoryContext {
       return {status: 'none'};
     }
 
-    const files = checkpoint.files.filter((file) => file.state !== 'pending');
+    if ((checkpoint.untrackedReason || checkpoint.untrackedEffects) && checkpoint.files.some((file) => file.state !== 'pending' && file.afterFingerprint === undefined)) {
+      return {status: 'invalid', reason: '旧记录无法检查 Shell 操作后的文件变化，无法回退。'};
+    }
+    return {status: 'ready', checkpoint};
+  }
+
+  /** 将恢复资格投影为确认面板摘要；不读文件系统，也不让文案参与执行策略。 */
+  getSummary(): UndoSummary {
+    const available = this.describeUndoAvailability();
+    if (available.status !== 'ready') return available;
+    const checkpoint = available.checkpoint;
+    let fileCount = 0;
+    let restoreFileCount = 0;
+    let deleteFileCount = 0;
+    let uncheckedFileCount = 0;
+    for (const file of checkpoint.files) {
+      if (file.state === 'pending') continue;
+      fileCount += 1;
+      if (file.state === 'created') deleteFileCount += 1;
+      else restoreFileCount += 1;
+      if (file.afterFingerprint === undefined) uncheckedFileCount += 1;
+    }
     return {
       status: 'ready',
       checkpointId: checkpoint.id,
-      deleteFileCount: files.filter((file) => file.state === 'created').length,
-      fileCount: files.length,
-      restoreFileCount: files.filter((file) => file.state === 'updated').length
+      deleteFileCount,
+      fileCount,
+      restoreFileCount,
+      ...(checkpoint.untrackedReason ? {untrackedReason: checkpoint.untrackedReason} : {}),
+      ...(checkpoint.untrackedEffects === 'notice' ? {undoneUntrackedNotice: '此前 Shell 操作的影响仍可能保留。'} : {}),
+      ...(uncheckedFileCount > 0 ? {uncheckedFileCount} : {})
     };
   }
 
   /**
-   * 恢复栈顶 ready checkpoint 的文件状态；transcript 回退由 AppContext 串联执行。
+   * 先统一核验最后一次受控编辑后的指纹，再同步恢复文件；冲突时不写入任何路径。
+   * 不依赖终端状态，transcript 回退由 AppContext 在文件恢复成功后串联执行。
    */
   executeUndo(): UndoExecuteResult {
-    const checkpoint = this.last;
-
-    if (!checkpoint || checkpoint.status === 'used') {
+    const available = this.describeUndoAvailability();
+    if (available.status === 'invalid') {
+      return {ok: false, reason: 'invalid', message: available.reason};
+    }
+    if (available.status === 'none') {
       return {ok: false, reason: 'none', message: '暂无可回退的上一轮修改'};
     }
-
-    if (checkpoint.status === 'invalid') {
-      return {ok: false, reason: 'invalid', message: checkpoint.invalidReason || '上一轮包含不可安全回退的操作'};
-    }
-
-    if (checkpoint.status !== 'ready') {
-      return {ok: false, reason: 'none', message: '暂无可回退的上一轮修改'};
-    }
+    const checkpoint = available.checkpoint;
 
     const entries = checkpoint.files.filter((entry) => entry.state !== 'pending');
-    const restoreBackup = entries.map((entry) => ({path: entry.path, snapshot: readFileSnapshot(entry.path)}));
+    let restoreBackup: Array<{path: string; snapshot: ChangeFileSnapshot}>;
+
+    try {
+      const currentStates = entries.map((entry) => readChangeFileState(entry.path));
+      const conflicts = entries.filter((entry, index) => {
+        if (entry.afterFingerprint === undefined) {
+          return false;
+        }
+        const current = currentStates[index].fingerprint;
+        // 文件已回到恢复基线时无需覆盖新内容，也允许 journal 提交失败后重试。
+        const before = entry.beforeFingerprint ?? getSnapshotFingerprint(entry.snapshot);
+        return current !== entry.afterFingerprint && current !== before;
+      });
+      if (conflicts.length > 0) {
+        return {
+          ok: false,
+          reason: 'conflict',
+          message: `${conflicts.length} 个文件已变化，未执行回退${conflicts.length > MAX_UNDO_CONFLICT_PATHS ? `（列出前 ${MAX_UNDO_CONFLICT_PATHS} 个，另有 ${conflicts.length - MAX_UNDO_CONFLICT_PATHS} 个）` : ''}。\n${conflicts.slice(0, MAX_UNDO_CONFLICT_PATHS).map((entry) => entry.path).join('\n')}`
+        };
+      }
+      restoreBackup = entries.map((entry, index) => {
+        const snapshot = currentStates[index].snapshot;
+        if (!snapshot) throw new Error(`无法回退非普通文件：${entry.path}`);
+        return {path: entry.path, snapshot};
+      });
+    } catch (error: unknown) {
+      return {ok: false, reason: 'restore_failed', message: error instanceof Error ? error.message : '无法检查文件当前状态'};
+    }
 
     try {
       for (const entry of entries) {
-        restoreEntry(entry);
+        restoreChangeFileSnapshot(entry.path, entry.snapshot);
       }
     } catch (error: unknown) {
       restoreSnapshots(restoreBackup);
@@ -194,18 +258,23 @@ class ChangeHistoryContext {
   }
 
   /**
-   * 在 transcript 回退成功后移除已使用的栈顶 checkpoint。
-   * 不产生增量：undo 的栈弹出由回退 batch 里的 pop 操作表达，见 AppContext.executeUndo。
+   * 在 transcript 回退成功后移除栈顶，并向剩余历史传递仍存在的未追踪影响提示。
+   * 对应 journal 操作由 transcript 回退 batch 一并提交，此处只同步内存栈。
    */
   markLastUsed(): void {
     const checkpoint = this.last;
 
     if (checkpoint) {
+      const continuation = createUndoContinuation(checkpoint, this.history[this.history.length - 2]);
       checkpoint.status = 'used';
       this.history.pop();
+      if (continuation) {
+        this.history[this.history.length - 1] = continuation;
+      }
     }
   }
 
+  /** 受控工具写盘前保留本轮首次快照；失败会中止恢复，以免生成缺少基线的记录。 */
   private captureFileBefore(filePath: string): void {
     const checkpoint = this.current;
 
@@ -220,9 +289,15 @@ class ChangeHistoryContext {
     }
 
     try {
+      const state = readChangeFileState(absolutePath);
+      if (!state.snapshot) {
+        this.invalidate(`无法记录非普通文件的回退快照：${absolutePath}`);
+        return;
+      }
       checkpoint.files.push({
         path: absolutePath,
-        snapshot: readFileSnapshot(absolutePath),
+        snapshot: state.snapshot,
+        beforeFingerprint: state.fingerprint,
         state: 'pending'
       });
     } catch (error: unknown) {
@@ -230,6 +305,7 @@ class ChangeHistoryContext {
     }
   }
 
+  /** 成功写盘后保存存在性、内容和权限指纹；同路径后续编辑更新指纹但保留首次基线。 */
   private captureFileAfter(filePath: string): void {
     const checkpoint = this.current;
 
@@ -244,9 +320,33 @@ class ChangeHistoryContext {
       return;
     }
 
-    entry.state = entry.snapshot.exists ? 'updated' : 'created';
+    try {
+      const state = readChangeFileState(absolutePath);
+      if (!state.snapshot) {
+        this.invalidate(`无法记录非普通文件的编辑后状态：${absolutePath}`);
+        return;
+      }
+      entry.afterFingerprint = state.fingerprint;
+      entry.state = entry.snapshot.exists ? 'updated' : 'created';
+    } catch (error: unknown) {
+      this.invalidate(error instanceof Error ? error.message : '无法记录编辑后的文件状态');
+    }
   }
 
+}
+
+/**
+ * 只提醒紧接有限恢复的历史目标；后续保留旧记录核验标记。
+ * 独立撤销序列可留下相邻 notice，不能覆盖剩余栈顶尚未展示的另一条提醒。
+ */
+function createUndoContinuation(checkpoint: ChangeCheckpoint, previous: ChangeCheckpoint | undefined): ChangeCheckpoint | undefined {
+  if ((!checkpoint.untrackedReason && !checkpoint.untrackedEffects) || !previous) {
+    return undefined;
+  }
+  return {
+    ...previous,
+    untrackedEffects: checkpoint.untrackedReason ? 'notice' : previous.untrackedEffects ?? 'retained'
+  };
 }
 
 function cloneChangeHistory(history: ChangeCheckpoint[] | null | undefined): ChangeCheckpoint[] {
@@ -260,55 +360,11 @@ function cloneChangeHistory(history: ChangeCheckpoint[] | null | undefined): Cha
   }));
 }
 
-function readFileSnapshot(filePath: string): ChangeFileSnapshot {
-  if (!fs.existsSync(filePath)) {
-    return {exists: false};
-  }
-
-  const stat = fs.statSync(filePath);
-
-  if (!stat.isFile()) {
-    throw new Error(`无法回退非普通文件：${filePath}`);
-  }
-
-  const content = fs.readFileSync(filePath, 'utf8');
-  return {
-    exists: true,
-    content,
-    mode: stat.mode & 0o777
-  };
-}
-
-function restoreEntry(entry: ChangeFileEntry): void {
-  if (!entry.snapshot.exists) {
-    if (fs.existsSync(entry.path)) {
-      fs.unlinkSync(entry.path);
-    }
-    return;
-  }
-
-  fs.mkdirSync(path.dirname(entry.path), {recursive: true});
-  fs.writeFileSync(entry.path, entry.snapshot.content || '', 'utf8');
-
-  if (typeof entry.snapshot.mode === 'number') {
-    fs.chmodSync(entry.path, entry.snapshot.mode);
-  }
-}
-
+/** 恢复中途写盘失败时尽力还原进入恢复前的全部路径；错误仍由执行入口报告。 */
 function restoreSnapshots(snapshots: Array<{path: string; snapshot: ChangeFileSnapshot}>): void {
   for (const item of snapshots) {
     try {
-      if (!item.snapshot.exists) {
-        if (fs.existsSync(item.path)) {
-          fs.unlinkSync(item.path);
-        }
-      } else {
-        fs.mkdirSync(path.dirname(item.path), {recursive: true});
-        fs.writeFileSync(item.path, item.snapshot.content || '', 'utf8');
-        if (typeof item.snapshot.mode === 'number') {
-          fs.chmodSync(item.path, item.snapshot.mode);
-        }
-      }
+      restoreChangeFileSnapshot(item.path, item.snapshot);
     } catch (_error: unknown) {
       // 尽力回滚恢复过程中的部分写入；最终错误由 executeUndo() 返回。
     }
@@ -318,7 +374,7 @@ function restoreSnapshots(snapshots: Array<{path: string; snapshot: ChangeFileSn
 export {
   ChangeHistoryContext,
   cloneChangeHistory,
-  readFileSnapshot
+  createUndoContinuation
 };
 
 export type {
