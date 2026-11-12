@@ -391,7 +391,7 @@ test('AppContext creates isolated runtime state per app instance', () => {
   assert.equal(composerOps.getText(secondContext.composerContext.composer), '');
 });
 
-test('AppContext undo restores transcript records and compaction state', () => {
+test('AppContext undo restores transcript records and compaction state', async () => {
   const transcriptStore = createFakeTranscriptStore();
   const context = createContext({transcriptStore});
   const compaction = {summaryText: 'old summary', activeStartIndex: 1, createdAt: '2026-05-19T00:00:00.000Z'};
@@ -406,7 +406,7 @@ test('AppContext undo restores transcript records and compaction state', () => {
   context.transcriptContext.appendRecord({role: 'assistant', text: 'done'});
   context.finalizeChangeCheckpoint();
 
-  const result = context.executeUndo();
+  const result = (await context.executeUndo());
 
   assert.equal(result.ok, true);
   assert.deepEqual(context.transcriptContext.getResidentRecords(), [notice]);
@@ -461,7 +461,7 @@ test('AppContext does not retain records whose journal append fails', () => {
   ]);
 });
 
-test('AppContext keeps the undo checkpoint when journal truncation fails', () => {
+test('AppContext keeps the undo checkpoint when journal truncation fails', async () => {
   const transcriptStore = createFakeTranscriptStore();
   const context = createContext({transcriptStore});
   const appendSession = transcriptStore.appendSession;
@@ -478,7 +478,7 @@ test('AppContext keeps the undo checkpoint when journal truncation fails', () =>
     return appendSession(_cwd, _reference, operation);
   };
 
-  const result = context.executeUndo();
+  const result = (await context.executeUndo());
 
   assert.equal(result.ok, false);
   assert.equal(result.reason, 'restore_failed');
@@ -489,7 +489,7 @@ test('AppContext keeps the undo checkpoint when journal truncation fails', () =>
   ]);
 });
 
-test('AppContext undo can remove interrupted turn records without appending a success notice', () => {
+test('AppContext undo can remove interrupted turn records without appending a success notice', async () => {
   const context = createContext();
 
   context.beginChangeCheckpoint();
@@ -498,13 +498,13 @@ test('AppContext undo can remove interrupted turn records without appending a su
   context.transcriptContext.appendRecord({role: 'local_notice', text: '已中断模型回答'});
   context.finalizeChangeCheckpoint();
 
-  const result = context.executeUndo();
+  const result = (await context.executeUndo());
 
   assert.equal(result.ok, true);
   assert.deepEqual(context.transcriptContext.getResidentRecords(), []);
 });
 
-test('AppContext undo can step through multiple ready checkpoints', () => {
+test('AppContext undo can step through multiple ready checkpoints', async () => {
   const context = createContext();
 
   context.beginChangeCheckpoint();
@@ -517,7 +517,7 @@ test('AppContext undo can step through multiple ready checkpoints', () => {
   context.transcriptContext.appendRecord({role: 'assistant', text: 'second done'});
   context.finalizeChangeCheckpoint();
 
-  let result = context.executeUndo();
+  let result = (await context.executeUndo());
 
   assert.equal(result.ok, true);
   assert.deepEqual(context.transcriptContext.getResidentRecords(), [
@@ -525,14 +525,14 @@ test('AppContext undo can step through multiple ready checkpoints', () => {
     {role: 'assistant', text: 'first done'}
   ]);
 
-  result = context.executeUndo();
+  result = (await context.executeUndo());
 
   assert.equal(result.ok, true);
   assert.deepEqual(context.transcriptContext.getResidentRecords(), []);
   assert.deepEqual(context.changeHistoryContext.getSummary(), {status: 'none'});
 });
 
-test('AppContext invalid change checkpoint blocks older history', () => {
+test('AppContext invalid change checkpoint blocks older history', async () => {
   const context = createContext();
 
   context.beginChangeCheckpoint();
@@ -545,7 +545,7 @@ test('AppContext invalid change checkpoint blocks older history', () => {
   context.changeHistoryContext.invalidate('写入型 bash 不可追踪');
   context.finalizeChangeCheckpoint();
 
-  const result = context.executeUndo();
+  const result = (await context.executeUndo());
 
   assert.equal(result.ok, false);
   assert.equal(result.reason, 'invalid');
@@ -946,7 +946,7 @@ test('AppContext refreshes image compression without clearing context usage or r
   }
 });
 
-test('AppContext budget snapshots change display only and preserve active session boundaries without hot-path reads', () => {
+test('AppContext budget snapshots change display only and preserve active session boundaries without hot-path reads', async () => {
   let root = {ui: {historyRenderLineLimit: 1000}};
   let configReads = 0;
   const userConfigContext = new UserConfigContext({readFile() {
@@ -1024,7 +1024,7 @@ test('AppContext budget snapshots change display only and preserve active sessio
   const fork = context.forkTranscriptSession();
   assert.equal(fork.ok, true);
   assert.deepEqual(transcriptStore.loadSession('/tmp/echo_tui', fork.sessionId).session.records, completeBeforeFork);
-  assert.equal(context.executeUndo().ok, true);
+  assert.equal((await context.executeUndo()).ok, true);
   assert.deepEqual(context.transcriptContext.getCompleteRecords().map((record) => record.role), ['user', 'compaction_notice']);
   assert.equal(context.transcriptContext.getRecordCount(), 2);
 });
@@ -1361,7 +1361,7 @@ test('AppContext rebuilds model-visible mode after resume and clear', () => {
   assert.deepEqual(afterClear.metadata?.modeTransition, {from: 'normal', to: 'plan'});
 });
 
-test('AppContext rebuilds model-visible mode after undo truncates a transition', () => {
+test('AppContext rebuilds model-visible mode after undo truncates a transition', async () => {
   const transcriptStore = createFakeTranscriptStore([{
     sessionId: 'undo-mode-session',
     cwd: '/tmp/echo_tui',
@@ -1386,7 +1386,7 @@ test('AppContext rebuilds model-visible mode after undo truncates a transition',
 
   assert.ok(context.loadTranscriptSession('undo-mode-session'));
   context.setInteractionMode('plan');
-  assert.equal(context.executeUndo().ok, true);
+  assert.equal((await context.executeUndo()).ok, true);
   const afterUndo = context.beginUserTurn('plan again');
 
   assert.deepEqual(afterUndo.metadata?.modeTransition, {from: 'normal', to: 'plan'});
@@ -2661,7 +2661,7 @@ test('AppContext falls back for a legacy session and backfills its settings afte
   });
 });
 
-test('AppContext restores persisted change history for diff and undo', () => {
+test('AppContext restores persisted change history for diff and undo', async () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-diff-context-'));
   const target = path.join(cwd, 'file.txt');
   fs.writeFileSync(target, 'after\n', 'utf8');
@@ -2694,14 +2694,14 @@ test('AppContext restores persisted change history for diff and undo', () => {
   assert.equal(diff.source.kind, 'history');
   assert.equal(diff.files[0].path, 'file.txt');
 
-  const undo = context.executeUndo();
+  const undo = (await context.executeUndo());
   assert.equal(undo.ok, true);
   assert.equal(fs.readFileSync(target, 'utf8'), 'before\n');
 
   fs.rmSync(cwd, {recursive: true, force: true});
 });
 
-test('AppContext resumes persisted edit_file history through a new store instance', () => {
+test('AppContext resumes persisted edit_file history through a new store instance', async () => {
   const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-edit-resume-store-'));
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-edit-resume-workspace-'));
   const target = path.join(cwd, 'file.txt');
@@ -2722,7 +2722,7 @@ test('AppContext resumes persisted edit_file history through a new store instanc
   assert.equal(result.ok, true);
   assert.ok(resumed.loadTranscriptSession(sessionId));
   assert.equal(resumed.createDiffSourceResult().files[0].path, 'file.txt');
-  assert.equal(resumed.executeUndo().ok, true);
+  assert.equal((await resumed.executeUndo()).ok, true);
   assert.equal(fs.readFileSync(target, 'utf8'), 'before\n');
 
   fs.rmSync(rootDir, {recursive: true, force: true});

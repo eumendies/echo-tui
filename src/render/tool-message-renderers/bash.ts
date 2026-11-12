@@ -55,6 +55,11 @@ function renderBashToolPairLines(call: ToolCallTranscriptRecord, result: ToolRes
     return null;
   }
 
+  // 后台启动只陈述已落盘的启动事实:标题不得声称 complete/exit,正文也不解析 stdout/stderr。
+  if (result.details.kind === 'bash' && result.details.background) {
+    return renderBackgroundBashLines(command, result.details.background, width, theme);
+  }
+
   return renderBashRailLines(command, createBashResultTitle(result), result, width, theme, resolveBashMarkerStyle(result));
 }
 
@@ -62,6 +67,11 @@ function renderBashToolPairLines(call: ToolCallTranscriptRecord, result: ToolRes
  * 单独出现的 bash result 仍使用紧凑输出投影，避免缺少命令时构造不完整 rail 块。
  */
 function renderBashToolResultLines(record: ToolResultTranscriptRecord, width: number, theme: TuiTheme): string[] {
+  if (record.details.kind === 'bash' && record.details.background) {
+    const background = record.details.background;
+    return renderBackgroundBashLines(background.command || '', background, width, theme);
+  }
+
   const displayText = resolveBashDisplayText(record);
 
   return renderPrefixedLines({
@@ -71,6 +81,37 @@ function renderBashToolResultLines(record: ToolResultTranscriptRecord, width: nu
     continuationPrefix: '    ',
     colorizeLine: (line) => blockText(theme, 'toolOutput', line)
   });
+}
+
+/**
+ * 后台启动的紧凑投影:标题只标明后台执行,正文只给命令摘要与文件短名。
+ * 该投影不读取 stdout/stderr 分段,也不依赖管理器句柄,历史重放与实时渲染走同一路径。
+ */
+function renderBackgroundBashLines(
+  command: string,
+  background: {outputPath: string; statusPath: string},
+  width: number,
+  theme: TuiTheme
+): string[] {
+  const rows: BashRailRow[] = [
+    {style: 'title', text: 'Bash · background'},
+    {style: 'command', text: formatBackgroundCommandSummary(command)},
+    // 完整路径留给模型可见文本与 /tasks 详情,transcript 只保留可辨识的文件短名。
+    {style: 'muted', text: `log: ${resolveFileShortName(background.outputPath)} · status: ${resolveFileShortName(background.statusPath)}`}
+  ];
+
+  return renderRailRows(rows, width, theme, 'tool', true, 'toolOutput');
+}
+
+/** 把多行命令压成单行摘要,避免后台投影占满多行 rail。 */
+function formatBackgroundCommandSummary(command: string): string {
+  const normalized = normalizeLineBreaks(command).replace(/\s+/gu, ' ').trim();
+  return normalized === '' ? '(unknown command)' : normalized;
+}
+
+function resolveFileShortName(filePath: string): string {
+  const segments = normalizeLineBreaks(filePath).split('/').filter((segment) => segment !== '');
+  return segments.length > 0 ? segments[segments.length - 1] : filePath;
 }
 
 /**

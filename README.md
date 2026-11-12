@@ -96,6 +96,7 @@ echo-tui --once --full-access "按要求修改文件并运行检查"
 | `/fork` | 从当前会话创建一个独立的对话分支 |
 | `/reference` | 把一个历史会话作为下一条消息的参考 |
 | `/diff` `/undo` | 查看文件改动、回退上一轮改动 |
+| `/tasks` | 查看后台任务 |
 | `/mcp` `/hooks` `/skills` | `/mcp` 启停、编辑 MCP Server 配置并浏览其 tools/resources/prompts，管理 Hooks 和 Skills |
 | `/agents` | 查看和管理内置、用户级与项目级 Subagent |
 | `/init` `/review` | 初始化项目指令、审查当前 Git 改动 |

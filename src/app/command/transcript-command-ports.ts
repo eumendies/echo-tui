@@ -3,6 +3,7 @@ import type {TranscriptRecord} from '../../types/transcript';
 import type {AppContext} from '../state/app-context';
 
 type TranscriptCommandContext = Pick<AppContext,
+  'backgroundTasks' |
   'clearContextUsage' |
   'clearTranscriptRecords' |
   'deleteTranscriptSession' |
@@ -16,6 +17,15 @@ type TranscriptCommandPortOptions = {
   renderRecords: (records: TranscriptRecord[]) => void;
   renderResizeRecovery: () => void;
 };
+
+/** 停止离开会话的后台任务;没有管理器或没有会话身份时无事可做。 */
+async function stopLeavingSessionTasks(appContext: TranscriptCommandContext, sessionId: string | null): Promise<void> {
+  if (!appContext.backgroundTasks || !sessionId) {
+    return;
+  }
+
+  await appContext.backgroundTasks.stopSessionTasks(sessionId);
+}
 
 /**
  * 创建 transcript 查询、追加、清理和恢复端口。
@@ -44,6 +54,9 @@ function createTranscriptCommandPort(options: TranscriptCommandPortOptions): Com
       }
 
       return didLoad;
+    },
+    stopSessionTasks(sessionId: string | null) {
+      return stopLeavingSessionTasks(appContext, sessionId);
     },
     deleteSession(sessionId: string) {
       return appContext.deleteTranscriptSession(sessionId);

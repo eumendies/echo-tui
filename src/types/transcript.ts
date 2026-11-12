@@ -1,4 +1,4 @@
-import type {ApplyPatchDisplayMetadata, EditFileDisplayMetadata, GlobDisplayMetadata, GrepDisplayMetadata, ToolResultAttachment} from './tool';
+import type {ApplyPatchDisplayMetadata, BashBackgroundTaskDetails, EditFileDisplayMetadata, GlobDisplayMetadata, GrepDisplayMetadata, ToolResultAttachment} from './tool';
 import type {ChangeCheckpoint} from './change-history';
 import type {InteractionMode, ReasoningEffort} from './agent';
 import type {SkillSourceKind} from './skill';
@@ -106,6 +106,7 @@ export type ToolResultTranscriptDetails =
       timedOut?: boolean;
       truncated?: boolean;
       durationMs?: number;
+      background?: BashBackgroundTaskDetails; // 存在时表示这是一次后台启动记录,不代表命令已执行完成。
     }
   | {
       kind: 'glob';

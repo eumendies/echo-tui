@@ -1,5 +1,6 @@
 import type {CompactionState, SubagentTranscriptRecord, TodoState, TranscriptRecord} from './transcript';
 import type {AskUserQuestionsRequest, ToolApprovalRequest, ToolCall, ToolExecutionOptions, ToolExecutionResult} from './tool';
+import type {BackgroundTaskManager} from './background-task';
 import type {ChangeFileRecorder} from './change-history';
 import type {SandboxMode, SandboxModeOverride} from '../sandbox/types';
 import type {MainAgentToolsConfig} from '../config/main-agent-tools-config';
@@ -133,6 +134,7 @@ export type AgentCallbacks = {
 };
 
 export type AgentSessionInput = {
+  backgroundTaskManager?: BackgroundTaskManager; // 注入即表示本次运行允许后台 bash;只有交互式主会话携带,BTW/子运行/headless 必须缺省。
   steeringInput?: AgentSteeringInputPort; // 仅交互式主运行使用的有界引导输入端口，子运行与 headless 不继承。
   records: TranscriptRecord[]; // 当前回合的连续驻留后缀；缺省不修改调用方数组。
   baseRecordIndex?: number; // records 首条在完整历史中的位置；旧版完整快照缺省为 0，不写入 journal。

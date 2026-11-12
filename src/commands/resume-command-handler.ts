@@ -80,20 +80,25 @@ function createEmptyResumeSurface(): InfoCommandSurface {
   };
 }
 
-function confirmResumeSelection(session: CommandSession<ResumeData>, host: CommandHost): void {
+async function confirmResumeSelection(session: CommandSession<ResumeData>, host: CommandHost): Promise<void> {
   const data = normalizeSessionBrowserData(session.data);
-  confirmResumeData(data, host);
+  await confirmResumeData(data, host);
 }
 
-function confirmResumeData(data: ResumeData, host: CommandHost): void {
+async function confirmResumeData(data: ResumeData, host: CommandHost): Promise<void> {
   const selectedSession = data.sessions[data.selectedIndex];
 
   if (!selectedSession) {
     return;
   }
 
+  const leavingSessionId = host.transcript.getCurrentSessionId();
   host.session.close();
-  host.transcript.loadSession(selectedSession.sessionId);
+
+  // 加载失败时保持原会话与原任务;成功后才停止离开会话的运行任务。
+  if (host.transcript.loadSession(selectedSession.sessionId)) {
+    await host.transcript.stopSessionTasks(leavingSessionId);
+  }
 }
 
 /** 复制存储摘要，避免命令 session 持有 store 或 host 暴露的可变对象。 */
@@ -167,7 +172,7 @@ export class ResumeCommandHandler implements CommandHandler<ResumeData> {
   /**
    * 复用共享浏览控制器处理导航、恢复和删除确认；该方法运行在 raw-mode 命令 surface，文本 d 不会写入 composer。
    */
-  handleEvent(session: CommandSession<ResumeData>, event: InputEvent, host: CommandHost): void {
+  async handleEvent(session: CommandSession<ResumeData>, event: InputEvent, host: CommandHost): Promise<void> {
     const current = normalizeResumeData(session.data);
 
     if (current.deleteTarget) {
@@ -197,7 +202,7 @@ export class ResumeCommandHandler implements CommandHandler<ResumeData> {
 
     if (event.type === INPUT_EVENTS.SUBMIT) {
       this.previewController.invalidate();
-      confirmResumeSelection(session, host);
+      await confirmResumeSelection(session, host);
       return;
     }
 

@@ -101,7 +101,8 @@ class BtwConversationController {
   open(initialQuestion?: string): void {
     if (this.state) return;
     const parent = this.dependencies.getParentSession();
-    const {records, baseRecordIndex = 0, recordsOwnership: _recordsOwnership, compaction, todoState: _todoState, sessionJournalPath: _journalPath, abortSignal: _abortSignal, interactionMode, toolPolicy: _toolPolicy, conversationKind: _conversationKind, userConfigSnapshot: _userConfigSnapshot, ...agentOptions} = parent;
+    // 后台任务能力属于主会话进程,BTW 不能继承:缺省即表示该旁路运行拒绝 background 启动。
+    const {records, baseRecordIndex = 0, recordsOwnership: _recordsOwnership, compaction, todoState: _todoState, sessionJournalPath: _journalPath, abortSignal: _abortSignal, interactionMode, toolPolicy: _toolPolicy, conversationKind: _conversationKind, userConfigSnapshot: _userConfigSnapshot, backgroundTaskManager: _backgroundTaskManager, ...agentOptions} = parent;
     this.state = {
       conversationId: this.nextConversationId++,
       baseRecords: records,
