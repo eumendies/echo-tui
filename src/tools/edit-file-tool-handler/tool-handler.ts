@@ -4,9 +4,12 @@ import * as path from 'node:path';
 import {
   DEFAULT_TOOL_RESULT_MAX_OUTPUT_BYTES,
   capUtf8Text,
+  detectMainEol,
   isGitPath,
+  normalizeEolText,
   normalizePositiveInteger,
-  resolveCwd
+  resolveCwd,
+  unsupportedLineEndingReason
 } from '../tool-handler-utils';
 import {createEditFileDisplayFile} from './display';
 
@@ -33,6 +36,9 @@ type EditFileArguments = {
 
 type EditFileSimulation = {
   content: string;
+  // 归一化后的原文与结果，供 display 用同一坐标系计算行级投影。
+  normalizedBefore: string;
+  normalizedAfter: string;
   replacementCount: number;
   spans: ReplacementSpan[];
 };
@@ -95,7 +101,12 @@ function createEditFileToolHandler(options: EditFileToolHandlerOptions = {}): To
 
       const display: NonNullable<EditFileToolExecutionResult['details']['display']> = {
         kind: EDIT_FILE_TOOL_NAME,
-        files: [createEditFileDisplayFile(parsed.value.path, loaded.value, simulated.value.content, simulated.value.spans)]
+        files: [createEditFileDisplayFile(
+          parsed.value.path,
+          simulated.value.normalizedBefore,
+          simulated.value.normalizedAfter,
+          simulated.value.spans
+        )]
       };
 
       try {
@@ -123,7 +134,8 @@ function parseArguments(args: Record<string, unknown>): {ok: true; value: EditFi
   if (typeof args.new_string !== 'string') return {ok: false, reason: 'new_string must be a string'};
   if (args.replace_all !== undefined && typeof args.replace_all !== 'boolean') return {ok: false, reason: 'replace_all must be a boolean'};
   if (args.old_string === '') return {ok: false, reason: 'old_string must be non-empty'};
-  if (args.old_string === args.new_string) return {ok: false, reason: 'old_string and new_string must be different'};
+  // 与 simulateEdit 的归一化后判定保持同一提示，避免模型收到两种口径的失败信息。
+  if (args.old_string === args.new_string) return {ok: false, reason: 'old_string and new_string must be different', hint: 'Change the replacement text or its line endings.'};
   return {
     ok: true,
     value: {path: args.path, oldString: args.old_string, newString: args.new_string, replaceAll: args.replace_all === true}
@@ -147,37 +159,94 @@ function readTargetFile(filePath: string, absolutePath: string, maxFileBytes: nu
   const content = buffer.toString('utf8');
   if (!Buffer.from(content, 'utf8').equals(buffer)) return {ok: false, reason: `target file is not valid UTF-8: ${filePath}`};
   if (content.includes('\0')) return {ok: false, reason: `target file appears to be binary: ${filePath}`};
+  const lineEndingReason = unsupportedLineEndingReason(content);
+  if (lineEndingReason) return {ok: false, reason: `${lineEndingReason}: ${filePath}`};
   return {ok: true, value: content};
 }
 
+/**
+ * 建立 CRLF 归一化文本与原文字符偏移的映射；归一化后每个位置都能换回原文位置。
+ *
+ * 调用方读取文件时已由 unsupportedLineEndingReason 拒绝裸 CR，因此未构成 CRLF 的字符一律原样保留。
+ */
+function normalizeWithOffsetMap(content: string): {normalized: string; offsetMap: number[]} {
+  const chars: string[] = [];
+  const offsetMap: number[] = [0];
+  let index = 0;
+
+  while (index < content.length) {
+    if (content[index] === '\r' && content[index + 1] === '\n') {
+      chars.push('\n');
+      index += 2;
+    } else {
+      chars.push(content[index]);
+      index += 1;
+    }
+
+    offsetMap.push(index);
+  }
+
+  return {normalized: chars.join(''), offsetMap};
+}
+
 function simulateEdit(content: string, args: EditFileArguments): {ok: true; value: EditFileSimulation} | {ok: false; reason: string; hint?: string} {
+  // 匹配与 span 统一在归一化视图上进行，写回时再按原文切片保留未命中区域的字节。
+  const {normalized: normalizedBefore, offsetMap} = normalizeWithOffsetMap(content);
+  const normalizedOld = normalizeEolText(args.oldString);
+  const normalizedNew = normalizeEolText(args.newString);
+
+  // 归一化后相同说明只差行尾风格，不构成实际编辑。
+  if (normalizedOld === normalizedNew) {
+    return {ok: false, reason: 'old_string and new_string must be different', hint: 'Change the replacement text or its line endings.'};
+  }
+
   const matches: number[] = [];
   let cursor = 0;
-  while (cursor <= content.length - args.oldString.length) {
-    const match = content.indexOf(args.oldString, cursor);
+  while (cursor <= normalizedBefore.length - normalizedOld.length) {
+    const match = normalizedBefore.indexOf(normalizedOld, cursor);
     if (match < 0) break;
     matches.push(match);
-    cursor = match + args.oldString.length;
+    cursor = match + normalizedOld.length;
   }
 
   if (matches.length === 0) return {ok: false, reason: 'old_string matched 0 locations', hint: 'Read the file again and use the exact current text.'};
   if (!args.replaceAll && matches.length > 1) return {ok: false, reason: `old_string matched ${matches.length} locations`, hint: 'Include more surrounding context for a unique match or set replace_all to true.'};
 
   const selected = args.replaceAll ? matches : matches.slice(0, 1);
-  const chunks: string[] = [];
+  const normalizedChunks: string[] = [];
+  const contentChunks: string[] = [];
   const spans: ReplacementSpan[] = [];
-  let sourceCursor = 0;
+  let normalizedCursor = 0;
+  let originalCursor = 0;
   let postLength = 0;
+  const convertedNew = normalizedNew.replace(/\n/g, detectMainEol(content));
+
   for (const oldStart of selected) {
-    const unchanged = content.slice(sourceCursor, oldStart);
-    chunks.push(unchanged, args.newString);
+    const oldEnd = oldStart + normalizedOld.length;
+    const unchanged = normalizedBefore.slice(normalizedCursor, oldStart);
+    const originalStart = offsetMap[oldStart];
+    normalizedChunks.push(unchanged, normalizedNew);
+    contentChunks.push(content.slice(originalCursor, originalStart), convertedNew);
     postLength += unchanged.length;
-    spans.push({oldStart, oldEnd: oldStart + args.oldString.length, postStart: postLength, postEnd: postLength + args.newString.length});
-    postLength += args.newString.length;
-    sourceCursor = oldStart + args.oldString.length;
+    spans.push({oldStart, oldEnd, postStart: postLength, postEnd: postLength + normalizedNew.length});
+    postLength += normalizedNew.length;
+    normalizedCursor = oldEnd;
+    originalCursor = offsetMap[oldEnd];
   }
-  chunks.push(content.slice(sourceCursor));
-  return {ok: true, value: {content: chunks.join(''), replacementCount: selected.length, spans}};
+
+  normalizedChunks.push(normalizedBefore.slice(normalizedCursor));
+  contentChunks.push(content.slice(originalCursor));
+
+  return {
+    ok: true,
+    value: {
+      content: contentChunks.join(''),
+      normalizedBefore,
+      normalizedAfter: normalizedChunks.join(''),
+      replacementCount: selected.length,
+      spans
+    }
+  };
 }
 
 function formatSuccess(replacementCount: number, filePath: string, maxOutputBytes: number): string {
