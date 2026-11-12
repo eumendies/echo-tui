@@ -7,7 +7,7 @@ const HELP_SURFACE: InfoCommandSurface & { title: string; lines: string[]; dismi
   title: '/help',
   lines: [
     '输入：Enter 发送 · Ctrl+J 换行 · Up/Down 历史/垂直移动',
-    '编辑：Ctrl+A/E 行首/行尾 · Ctrl+U/K/W 快速删除',
+    '编辑：Ctrl+A/E 行首/行尾 · Ctrl+U/K/W 快速删除 · Ctrl/Alt+←/→ 按词移动 · Ctrl/Alt+Delete 删后一词',
     '控制：Ctrl+T 调节 model/effort · Shift+Tab 工具授权 · Esc 中断 response 或关闭当前面板 · Ctrl+C/Ctrl+D 退出',
     '提示：输入 / 显示命令/skill 候选 · Tab 补全 · Up/Down 选择',
     '工作流：/init 生成或评审当前指令文件 · /review 审查当前代码变更',

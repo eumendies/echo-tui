@@ -147,7 +147,7 @@ test('outside replacements shift only later references and deleting a separator 
   assert.deepEqual(displayedMentions(composer), ['@one', '@two']);
 });
 
-for (const operation of ['backspace', 'deleteForward', 'deletePreviousWord', 'deleteToLineStart', 'deleteToLineEnd']) {
+for (const operation of ['backspace', 'deleteForward', 'deletePreviousWord', 'deleteNextWord', 'deleteToLineStart', 'deleteToLineEnd']) {
   test(`${operation} invalidates intersected references and keeps remaining text editable`, () => {
     const composer = confirmed(['one']);
     composer.cursor = 2;
@@ -185,6 +185,26 @@ for (const operation of ['backspace', 'deleteForward', 'deletePreviousWord', 'de
   });
 }
 
+test('deleteNextWord keeps a following reference intact when only leading text is removed', () => {
+  const composer = composerOps.createComposer('ab\n@query');
+  composerOps.replaceWithFileMentions(composer, 3, composer.chars.length, ['one']);
+  composer.cursor = 0;
+  composerOps.deleteNextWord(composer);
+  assert.equal(composerOps.getText(composer), '\n@one ');
+  assert.deepEqual(composer.fileMentions, [{start: 1, end: 5, path: 'one'}]);
+  assert.deepEqual(displayedMentions(composer), ['@one']);
+});
+
+test('deleteNextWord invalidates a reference it consumes and shifts the rest', () => {
+  const composer = confirmed(['one', 'two']);
+  composer.cursor = 0;
+  composerOps.deleteNextWord(composer);
+  assert.equal(composerOps.getText(composer), ' @two ');
+  assert.deepEqual(composer.fileMentions, [{start: 1, end: 5, path: 'two'}]);
+  assert.deepEqual(displayedMentions(composer), ['@two']);
+  assertGraphemes(composer);
+});
+
 test('newlines shift outside references but invalidate an internally edited reference', () => {
   const composer = confirmed(['one', 'two']);
   composer.cursor = 0;
@@ -210,7 +230,7 @@ test('empty edits, no-op deletions and cursor movement do not revoke references'
   composerOps.insertText(composer, '');
   composerOps.replaceRange(composer, 2, 2, '');
   assert.equal(composer.cursor, 2);
-  for (const operation of ['moveLeft', 'moveRight', 'moveHome', 'moveEnd', 'moveUp', 'moveDown']) {
+  for (const operation of ['moveLeft', 'moveRight', 'movePreviousWord', 'moveNextWord', 'moveHome', 'moveEnd', 'moveUp', 'moveDown']) {
     composerOps[operation](composer);
   }
   assert.deepEqual(composer.fileMentions, references);
