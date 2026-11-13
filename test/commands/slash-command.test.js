@@ -2188,7 +2188,9 @@ test('default slash command handlers accept tab-completed trailing whitespace', 
     assert.equal(resolveSlashCommand(`/${descriptor.name} `, handlers)?.name, descriptor.name);
   }
 
-  assert.equal(resolveSlashCommand('/model more', handlers)?.name, undefined);
+  // 带参数输入由命令自身接管，不再落到 skill fallback。
+  assert.equal(resolveSlashCommand('/model more', handlers)?.name, 'model');
+  assert.equal(resolveSlashCommand('/effort high', handlers)?.name, 'effort');
 });
 
 test('/themes is no longer a local command', () => {
@@ -2250,13 +2252,105 @@ test('btwCommandHandler opens a response-time side session and delegates all sid
   assert.deepEqual(empty.calls.btwOpens, [undefined]);
 });
 
+test('modelCommandHandler applies a model name argument without opening a surface', () => {
+  const modelCommandHandler = new ModelCommandHandler();
+  const { calls, host } = createFakeHost({
+    modelCommandInfo: {
+      selectedIndex: 0,
+      models: [
+        { id: 'fast', model: 'gpt-fast', provider: 'openai' },
+        { id: 'deep', model: 'gpt-deep', provider: 'openai' }
+      ]
+    }
+  });
+
+  modelCommandHandler.start('/model gpt-deep', host);
+
+  assert.deepEqual(calls.modelSelections, ['deep']);
+  assert.equal(host.session.getActive(), null);
+
+  // 大小写不敏感，且参数不进入 profile id 命名空间。
+  modelCommandHandler.start('/model GPT-FAST', host);
+  assert.deepEqual(calls.modelSelections, ['deep', 'fast']);
+
+  modelCommandHandler.start('/model fast', host);
+  assert.deepEqual(calls.modelSelections, ['deep', 'fast']);
+});
+
+test('modelCommandHandler lists candidates when a model name does not match exactly one profile', () => {
+  const modelCommandHandler = new ModelCommandHandler();
+  const { calls, host } = createFakeHost({
+    modelCommandInfo: {
+      selectedIndex: 1,
+      models: [
+        { id: 'fast', model: 'gpt-fast', provider: 'openai' },
+        { id: 'deep', model: 'gpt-deep', provider: 'openai' }
+      ]
+    }
+  });
+
+  modelCommandHandler.start('/model gpt', host);
+  const unmatched = host.session.getActive();
+
+  assert.equal(unmatched.surface.kind, 'info');
+  assert.equal(unmatched.surface.title, '/model');
+  assert.ok(unmatched.surface.lines.some((line) => line.includes('无法匹配模型：gpt')));
+  assert.ok(unmatched.surface.lines.some((line) => line.includes('gpt-fast')));
+  // 当前生效项以 `*` 标记，便于用户发现现状。
+  assert.ok(unmatched.surface.lines.some((line) => line.startsWith('* gpt-deep')));
+  assert.deepEqual(calls.modelSelections, []);
+
+  const ambiguousHost = createFakeHost({
+    modelCommandInfo: {
+      selectedIndex: 0,
+      models: [
+        { id: 'a', model: 'shared', provider: 'openai' },
+        { id: 'b', model: 'shared', provider: 'azure' }
+      ]
+    }
+  });
+  modelCommandHandler.start('/model shared', ambiguousHost.host);
+
+  const ambiguous = ambiguousHost.host.session.getActive();
+  assert.ok(ambiguous.surface.lines.some((line) => line.includes('匹配到 2 个模型：shared')));
+  assert.deepEqual(ambiguousHost.calls.modelSelections, []);
+});
+
+test('modelCommandHandler keeps config error and save failure surfaces for arguments', () => {
+  const modelCommandHandler = new ModelCommandHandler();
+  const configError = createFakeHost({ modelCommandInfo: { error: 'LLM 配置缺少 models' } });
+
+  modelCommandHandler.start('/model gpt-fast', configError.host);
+  const errorSession = configError.host.session.getActive();
+
+  assert.ok(errorSession.surface.lines.some((line) => line.includes('当前未读取到模型配置。')));
+  assert.deepEqual(configError.calls.modelSelections, []);
+
+  const failing = createFakeHost({
+    modelCommandInfo: {
+      selectedIndex: 0,
+      models: [{ id: 'fast', model: 'gpt-fast', provider: 'openai' }]
+    },
+    selectModel() {
+      return { ok: false, error: 'cannot write <redacted>' };
+    }
+  });
+
+  modelCommandHandler.start('/model gpt-fast', failing.host);
+  const failureSession = failing.host.session.getActive();
+
+  assert.ok(failureSession.surface.lines.some((line) => line.includes('无法保存当前模型选择。')));
+  assert.ok(failureSession.surface.lines.some((line) => line.includes('cannot write')));
+});
+
 test('modelCommandHandler opens info session for config errors', () => {
   const modelCommandHandler = new ModelCommandHandler();
   const { host } = createFakeHost({ modelCommandInfo: { error: 'LLM 配置缺少 models' } });
 
-  assert.equal(modelCommandHandler.match('/model more'), false);
+  assert.equal(modelCommandHandler.match('/model more'), true);
   assert.equal(modelCommandHandler.match('model'), false);
   assert.equal(modelCommandHandler.match('/model'), true);
+  assert.equal(modelCommandHandler.match('/modelx'), false);
   assert.equal(resolveSlashCommand('/model', createDefaultHandlersForTest()).name, 'model');
 
   const session = startCommand(modelCommandHandler, '/model', host);
@@ -2351,13 +2445,84 @@ test('modelCommandHandler config error submit is a no-op and escape closes', () 
   assert.equal(calls.sessionCloses, 1);
 });
 
+test('effortCommandHandler applies an effort argument without opening a surface', () => {
+  const effortCommandHandler = new EffortCommandHandler();
+  const { calls, host } = createFakeHost({
+    effortCommandInfo: {
+      currentModelLabel: 'gpt-deep',
+      efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
+      selectedIndex: 2
+    }
+  });
+
+  effortCommandHandler.start('/effort high', host);
+
+  assert.deepEqual(calls.effortSelections, ['high']);
+  assert.equal(host.session.getActive(), null);
+
+  // 大小写不敏感，`none` 按既有语义作为显式禁用保存。
+  effortCommandHandler.start('/effort HIGH', host);
+  effortCommandHandler.start('/effort None', host);
+  assert.deepEqual(calls.effortSelections, ['high', 'high', 'none']);
+});
+
+test('effortCommandHandler lists valid levels for an invalid argument', () => {
+  const effortCommandHandler = new EffortCommandHandler();
+  const { calls, host } = createFakeHost({
+    effortCommandInfo: {
+      currentModelLabel: 'gpt-deep',
+      efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
+      selectedIndex: 2
+    }
+  });
+
+  effortCommandHandler.start('/effort med', host);
+  const session = host.session.getActive();
+
+  assert.equal(session.surface.kind, 'info');
+  assert.equal(session.surface.title, '/effort');
+  assert.ok(session.surface.lines.some((line) => line.includes('无法匹配推理等级：med')));
+  assert.ok(session.surface.lines.some((line) => line.includes('可用级别：none · low · medium · high · xhigh · max')));
+  assert.ok(session.surface.lines.some((line) => line.includes('当前：gpt-deep · medium')));
+  assert.deepEqual(calls.effortSelections, []);
+});
+
+test('effortCommandHandler keeps config error and save failure surfaces for arguments', () => {
+  const effortCommandHandler = new EffortCommandHandler();
+  const configError = createFakeHost({ effortCommandInfo: { error: 'LLM 配置缺少 models' } });
+
+  effortCommandHandler.start('/effort high', configError.host);
+  const errorSession = configError.host.session.getActive();
+
+  assert.ok(errorSession.surface.lines.some((line) => line.includes('当前未读取到推理等级配置。')));
+  assert.deepEqual(configError.calls.effortSelections, []);
+
+  const failing = createFakeHost({
+    effortCommandInfo: {
+      currentModelLabel: 'gpt-deep',
+      efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
+      selectedIndex: 2
+    },
+    selectEffort() {
+      return { ok: false, error: 'cannot write <redacted>' };
+    }
+  });
+
+  effortCommandHandler.start('/effort high', failing.host);
+  const failureSession = failing.host.session.getActive();
+
+  assert.ok(failureSession.surface.lines.some((line) => line.includes('无法保存当前推理等级。')));
+  assert.ok(failureSession.surface.lines.some((line) => line.includes('cannot write')));
+});
+
 test('effortCommandHandler opens info session for config errors', () => {
   const effortCommandHandler = new EffortCommandHandler();
   const { host } = createFakeHost({ effortCommandInfo: { error: 'LLM 配置缺少 models' } });
 
-  assert.equal(effortCommandHandler.match('/effort more'), false);
+  assert.equal(effortCommandHandler.match('/effort more'), true);
   assert.equal(effortCommandHandler.match('effort'), false);
   assert.equal(effortCommandHandler.match('/effort'), true);
+  assert.equal(effortCommandHandler.match('/effortx'), false);
   assert.equal(resolveSlashCommand('/effort', createDefaultHandlersForTest()).name, 'effort');
 
   const session = startCommand(effortCommandHandler, '/effort', host);

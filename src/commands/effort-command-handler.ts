@@ -9,9 +9,11 @@ import type {
   ScaleCommandSurface
 } from '../types/command';
 import type { InputEvent } from '../types/input';
+import { REASONING_EFFORTS } from '../types/agent';
 import type { ReasoningEffort } from '../types/agent';
 
 const EFFORT_CONFIG_PATH_HINT = '~/.echo/config.json';
+const EFFORT_COMMAND_PREFIX = '/effort';
 const EFFORT_DISPLAY_LABELS: Record<ReasoningEffort, string> = {
   none: 'NONE',
   low: 'LOW',
@@ -23,6 +25,40 @@ const EFFORT_DISPLAY_LABELS: Record<ReasoningEffort, string> = {
 
 type EffortCommandInfo = HostEffortInfo;
 type EffortCommandInfoResult = HostEffortInfoResult;
+
+/**
+ * 提取 `/effort` 之后的参数；无参数返回 null。
+ */
+function parseEffortArgument(text: string): string | null {
+  const trimmed = text.trim();
+
+  if (!trimmed.startsWith(EFFORT_COMMAND_PREFIX)) {
+    return null;
+  }
+
+  const rest = trimmed.slice(EFFORT_COMMAND_PREFIX.length).trim();
+  return rest === '' ? null : rest;
+}
+
+function isReasoningEffort(value: string): value is ReasoningEffort {
+  return (REASONING_EFFORTS as readonly string[]).includes(value);
+}
+
+/** 为非法 `/effort` 参数创建 info surface，列出全部合法级别与当前状态。 */
+function createEffortQuerySurface(data: EffortCommandInfo, argument: string): InfoCommandSurface {
+  const currentEffort = data.efforts[data.selectedIndex] ?? 'medium';
+
+  return {
+    kind: 'info',
+    title: '/effort',
+    lines: [
+      `无法匹配推理等级：${argument}`,
+      `可用级别：${data.efforts.join(' · ')}`,
+      `当前：${data.currentModelLabel} · ${currentEffort}`
+    ],
+    dismissHint: 'Esc 关闭'
+  };
+}
 
 export function createEffortSurface(effortCommandInfo: EffortCommandInfoResult): InfoCommandSurface {
   const error = 'error' in effortCommandInfo ? effortCommandInfo.error : undefined;
@@ -113,10 +149,21 @@ export class EffortCommandHandler implements CommandHandler<EffortCommandInfo> {
   description = '调整推理等级';
 
   match(text: string): boolean {
-    return text.trimEnd() === '/effort';
+    return /^\/effort(?:\s+[\s\S]*)?$/.test(text);
   }
 
-  start(_text: string, host: CommandHost): void {
+  /**
+   * 无参数打开 scale 面板；带参数时按级别直接设置，
+   * 非法级别展示合法值，配置错误与保存失败复用既有 surface。
+   */
+  start(text: string, host: CommandHost): void {
+    const argument = parseEffortArgument(text);
+
+    if (argument !== null) {
+      this.startWithArgument(argument, host);
+      return;
+    }
+
     const effortCommandInfo = host.model.createEffortCommandInfo();
     const data = 'efforts' in effortCommandInfo && effortCommandInfo.efforts.length > 0
       ? effortCommandInfo
@@ -127,6 +174,43 @@ export class EffortCommandHandler implements CommandHandler<EffortCommandInfo> {
       surface: data ? createEffortScaleSurface(data) : createEffortSurface(effortCommandInfo),
       data
     });
+  }
+
+  private startWithArgument(argument: string, host: CommandHost): void {
+    const effortCommandInfo = host.model.createEffortCommandInfo();
+
+    if (!('efforts' in effortCommandInfo) || effortCommandInfo.efforts.length === 0) {
+      host.session.open({
+        commandName: 'effort',
+        handler: this,
+        surface: createEffortSurface(effortCommandInfo),
+        data: null
+      });
+      return;
+    }
+
+    const normalized = argument.toLowerCase();
+
+    if (!isReasoningEffort(normalized)) {
+      host.session.open({
+        commandName: 'effort',
+        handler: this,
+        surface: createEffortQuerySurface(effortCommandInfo, argument),
+        data: null
+      });
+      return;
+    }
+
+    const result = host.model.selectEffort(normalized);
+
+    if (!result.ok) {
+      host.session.open({
+        commandName: 'effort',
+        handler: this,
+        surface: createEffortErrorSurface(result.error),
+        data: null
+      });
+    }
   }
 
   handleEvent(session: CommandSession<EffortCommandInfo>, event: InputEvent, host: CommandHost): void {
@@ -150,3 +234,5 @@ export class EffortCommandHandler implements CommandHandler<EffortCommandInfo> {
     }
   }
 }
+
+export {createEffortQuerySurface, parseEffortArgument};

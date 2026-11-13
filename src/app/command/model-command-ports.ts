@@ -11,6 +11,7 @@ type ModelCommandPortOptions = {
   appContext: ModelCommandContext; // 共享模型状态与上下文用量失效入口。
   userConfigContext: UserConfigContext; // 配置 snapshot 与分域原子保存入口。
   mcpManager?: McpManager; // 只读取已发现目录，不为配置页建立新连接。
+  render: () => void; // provider 切换后重绘 footer 状态行；命令面板路径与静默参数路径共用。
 };
 
 /**
@@ -18,6 +19,7 @@ type ModelCommandPortOptions = {
  */
 function createModelCommandPorts(options: ModelCommandPortOptions): Pick<CommandHostApp, 'model' | 'config'> {
   const {appContext} = options;
+  const render = options.render;
   const userConfigContext = options.userConfigContext;
 
   return {
@@ -33,6 +35,8 @@ function createModelCommandPorts(options: ModelCommandPortOptions): Pick<Command
 
         if (result.ok) {
           appContext.clearContextUsage();
+          // 带参数的命令不会打开 session，必须在这里重绘，否则用户看不到切换结果。
+          render();
         }
 
         return result;
@@ -42,6 +46,8 @@ function createModelCommandPorts(options: ModelCommandPortOptions): Pick<Command
 
         if (result.ok) {
           appContext.clearContextUsage();
+          // 同 selectModel：静默应用需要自行触发一次重绘。
+          render();
         }
 
         return result;
