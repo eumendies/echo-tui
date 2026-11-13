@@ -1,6 +1,8 @@
 import Anthropic from '@anthropic-ai/sdk';
 
 import {LlmAgentError, normalizeError, redactSensitiveText} from '../agent-errors';
+import {ProviderError, classifyProviderError, createProviderError} from '../provider-error';
+import {runProviderStreamWithRetry} from '../provider-stream-retry';
 import {convertToolDefinitionsToAnthropicTools} from './tool-converter';
 import {convertTranscriptToAnthropicMessages, createAnthropicThinkingRecord} from './transcript-converter';
 
@@ -11,6 +13,7 @@ import type {ToolCall, ToolRegistry} from '../../types/tool';
 import type {TranscriptRecord} from '../../types/transcript';
 import type {AnthropicTool} from './tool-converter';
 import type {AnthropicMessage, AnthropicProviderThinkingBlock} from './transcript-converter';
+import type {ProviderStreamAttemptObserver} from '../provider-stream-retry';
 
 type AnthropicCreateRequest = {
   cache_control: {
@@ -60,7 +63,7 @@ type AnthropicStreamEvent = {
     thinking?: unknown;
     type?: unknown;
   };
-  error?: {message?: unknown};
+  error?: {message?: unknown; type?: unknown};
   index?: unknown;
   message?: {usage?: AnthropicUsage};
   type?: unknown;
@@ -154,6 +157,15 @@ function summarizeFailureEvent(event: unknown): string {
   }
 
   return event.error.message;
+}
+
+function readEventErrorType(event: unknown): string | undefined {
+  if (!isAnthropicEvent(event)) {
+    return undefined;
+  }
+
+  const type = event.error?.type;
+  return typeof type === 'string' && type !== '' ? type : undefined;
 }
 
 function extractProviderUsage(event: unknown): ProviderUsage | undefined {
@@ -298,17 +310,16 @@ function mergeContentBlockDelta(state: AnthropicStreamState, event: AnthropicStr
   current.argumentsText += event.delta.partial_json;
 }
 
-function completeThinkingBlock(state: AnthropicStreamState, event: AnthropicStreamEvent, callbacks: AgentTurnCallbacks): void {
-  const current = state.thinkingParts.get(getEventIndex(event));
+/**
+ * content block 结束只做 attempt 级事实记录：thinking block 结束时不再发出 reasoning 完成通知，
+ * 否则后续正文中断重试会导致同一段摘要被重复落盘。
+ */
+function completeContentBlock(state: AnthropicStreamState, event: AnthropicStreamEvent, observer?: ProviderStreamAttemptObserver): void {
+  const toolCall = state.toolCallParts.get(getEventIndex(event));
 
-  if (current?.type !== 'thinking') {
-    return;
-  }
-
-  const reasoningSummary = readReasoningSummaryFromMap(state.thinkingParts);
-
-  if (reasoningSummary) {
-    callbacks.onReasoningUpdate?.({kind: 'complete', text: reasoningSummary});
+  if (toolCall?.callId && toolCall.toolName) {
+    // tool_use block 已完整，重试会丢弃已解析的调用。
+    observer?.markToolCall();
   }
 }
 
@@ -394,7 +405,12 @@ function finalizeThinkingRecords(parts: PartialThinkingBlock[]): TranscriptRecor
 /**
  * 消费一次 Anthropic stream：累积 assistant 文本，同时聚合 tool_use 输入分片。
  */
-async function readAnthropicStream(stream: AnthropicStream, callbacks: AgentTurnCallbacks = {}, options: AgentTurnOptions = {}): Promise<AgentTurnResult> {
+async function readAnthropicStream(
+  stream: AnthropicStream,
+  callbacks: AgentTurnCallbacks = {},
+  options: AgentTurnOptions = {},
+  observer?: ProviderStreamAttemptObserver
+): Promise<AgentTurnResult> {
   let completed = false;
   let usage: ProviderUsage | undefined;
   let usageInputTokens: number | undefined;
@@ -411,7 +427,10 @@ async function readAnthropicStream(stream: AnthropicStream, callbacks: AgentTurn
       throwIfAborted(options.abortSignal);
 
       if (isAnthropicEvent(event) && event.error) {
-        throw new LlmAgentError(`模型服务响应失败：${redactSensitiveText(summarizeFailureEvent(event))}`);
+        throw createProviderError({
+          message: `模型服务响应失败：${redactSensitiveText(summarizeFailureEvent(event))}`,
+          code: readEventErrorType(event)
+        });
       }
 
       const eventUsage = extractProviderUsage(event);
@@ -437,7 +456,7 @@ async function readAnthropicStream(stream: AnthropicStream, callbacks: AgentTurn
       }
 
       if (event.type === 'content_block_stop') {
-        completeThinkingBlock(state, event, callbacks);
+        completeContentBlock(state, event, observer);
         continue;
       }
 
@@ -454,13 +473,20 @@ async function readAnthropicStream(stream: AnthropicStream, callbacks: AgentTurn
     if (isAbortError(error) || error instanceof Anthropic.APIUserAbortError) {
       if (!completed) throw new AgentAbortError();
     } else {
-      throw normalizeError(error, '模型响应流异常');
+      throw classifyProviderError(error);
     }
   }
 
   if (!completed) {
     throwIfAborted(options.abortSignal);
-    throw new LlmAgentError('模型响应流未完成');
+    throw new ProviderError({kind: 'stream_incomplete', message: '模型响应流未完成'});
+  }
+
+  // 只有 message_stop 确认整个 provider turn 完成后，才提交一次可持久化的 reasoning 摘要。
+  const reasoningSummary = readReasoningSummaryFromMap(state.thinkingParts);
+
+  if (reasoningSummary) {
+    callbacks.onReasoningUpdate?.({kind: 'complete', text: reasoningSummary});
   }
 
   assertSupportedStopReason(state);
@@ -500,10 +526,17 @@ class AnthropicAgent implements ProviderAgent {
    * 执行一次 Anthropic provider turn；工具循环由外层 runtime 继续编排。
    */
   async runTurn(records: TranscriptRecord[], callbacks: AgentTurnCallbacks = {}, options: AgentTurnOptions = {}): Promise<AgentTurnResult> {
-    let stream: AnthropicStream;
-
     try {
-      stream = await this.client.messages.create(createAnthropicRequest(records, this.config, this.registry, options), {signal: options.abortSignal});
+      const request = createAnthropicRequest(records, this.config, this.registry, options);
+
+      return await runProviderStreamWithRetry({
+        createStream: (signal) => this.client.messages.create(request, {signal}),
+        readStream: (stream, attemptCallbacks, attemptOptions, observer) => readAnthropicStream(stream, attemptCallbacks, attemptOptions, observer),
+        callbacks,
+        options,
+        maxRetries: this.config.streamMaxRetries,
+        idleTimeoutMs: this.config.streamIdleTimeoutMs
+      });
     } catch (error: unknown) {
       if (isAbortError(error) || error instanceof Anthropic.APIUserAbortError) {
         throw new AgentAbortError();
@@ -511,8 +544,6 @@ class AnthropicAgent implements ProviderAgent {
 
       throw normalizeError(error, '无法启动模型响应');
     }
-
-    return readAnthropicStream(stream, callbacks, options);
   }
 }
 

@@ -2,6 +2,8 @@ import OpenAI from 'openai';
 
 import {LlmAgentError, normalizeError, redactSensitiveText} from '../agent-errors';
 import {createPromptCacheKey} from '../prompt-cache';
+import {ProviderError, classifyProviderError, createProviderError} from '../provider-error';
+import {runProviderStreamWithRetry} from '../provider-stream-retry';
 import {convertTranscriptToOpenAiChatMessages, createOpenAiChatReasoningRecord} from './transcript-converter';
 import {convertToolDefinitionsToOpenAiChatTools} from './tool-converter';
 
@@ -11,6 +13,7 @@ import type {ToolCall, ToolRegistry} from '../../types/tool';
 import type {TranscriptRecord} from '../../types/transcript';
 import type {OpenAiChatMessage} from './transcript-converter';
 import type {OpenAiChatFunctionTool} from './tool-converter';
+import type {ProviderStreamAttemptObserver} from '../provider-stream-retry';
 
 type ChatCreateRequest = {
   messages: OpenAiChatMessage[];
@@ -44,7 +47,7 @@ type ChatStreamChunk = {
     };
     finish_reason?: unknown;
   }>;
-  error?: {message?: unknown};
+  error?: {code?: unknown; message?: unknown; type?: unknown};
   usage?: {
     completion_tokens?: unknown;
     prompt_tokens?: unknown;
@@ -136,6 +139,15 @@ function summarizeFailureChunk(chunk: unknown): string {
   return chunk.error.message;
 }
 
+function readChunkErrorCode(chunk: unknown): string | undefined {
+  if (!isChatChunk(chunk)) {
+    return undefined;
+  }
+
+  const candidates = [chunk.error?.code, chunk.error?.type].filter((value): value is string => typeof value === 'string' && value !== '');
+  return candidates[0];
+}
+
 function extractProviderUsage(chunk: unknown): ProviderUsage | undefined {
   if (!isChatChunk(chunk)) {
     return undefined;
@@ -200,7 +212,8 @@ function finalizeToolCalls(parts: Map<number, PartialToolCall>): ToolCall[] {
 async function readChatCompletionStream(
   stream: ChatStream,
   callbacks: AgentTurnCallbacks = {},
-  options: AgentTurnOptions = {}
+  options: AgentTurnOptions = {},
+  observer?: ProviderStreamAttemptObserver
 ): Promise<AgentTurnResult> {
   let completed = false;
   let draft = '';
@@ -223,7 +236,10 @@ async function readChatCompletionStream(
       throwIfAborted(options.abortSignal);
 
       if (isChatChunk(chunk) && chunk.error) {
-        throw new LlmAgentError(`模型服务响应失败：${redactSensitiveText(summarizeFailureChunk(chunk))}`);
+        throw createProviderError({
+          message: `模型服务响应失败：${redactSensitiveText(summarizeFailureChunk(chunk))}`,
+          code: readChunkErrorCode(chunk)
+        });
       }
 
       const chunkUsage = extractProviderUsage(chunk);
@@ -268,6 +284,11 @@ async function readChatCompletionStream(
         }
 
         if (choice.finish_reason === 'stop' || choice.finish_reason === 'tool_calls') {
+          if (choice.finish_reason === 'tool_calls') {
+            // finish_reason 已确认工具调用完整，后续失败不得自动重试。
+            observer?.markToolCall();
+          }
+
           if (draft === '' && toolCallParts.size === 0) {
             completeReasoning();
           }
@@ -279,13 +300,13 @@ async function readChatCompletionStream(
     if (isAbortError(error) || error instanceof OpenAI.APIUserAbortError) {
       if (!completed) throw new AgentAbortError();
     } else {
-      throw normalizeError(error, '模型响应流异常');
+      throw classifyProviderError(error);
     }
   }
 
   if (!completed) {
     throwIfAborted(options.abortSignal);
-    throw new LlmAgentError('模型响应流未完成');
+    throw new ProviderError({kind: 'stream_incomplete', message: '模型响应流未完成'});
   }
 
   const normalizedReasoningSummary = reasoningSummary.trim();
@@ -322,10 +343,17 @@ class OpenAiChatAgent implements ProviderAgent {
    * 执行一次 Chat Completions provider turn；工具循环由外层 runtime 继续编排。
    */
   async runTurn(records: TranscriptRecord[], callbacks: AgentTurnCallbacks = {}, options: AgentTurnOptions = {}): Promise<AgentTurnResult> {
-    let stream: ChatStream;
-
     try {
-      stream = await this.client.chat.completions.create(createChatRequest(records, this.config, this.registry, options), {signal: options.abortSignal});
+      const request = createChatRequest(records, this.config, this.registry, options);
+
+      return await runProviderStreamWithRetry({
+        createStream: (signal) => this.client.chat.completions.create(request, {signal}),
+        readStream: (stream, attemptCallbacks, attemptOptions, observer) => readChatCompletionStream(stream, attemptCallbacks, attemptOptions, observer),
+        callbacks,
+        options,
+        maxRetries: this.config.streamMaxRetries,
+        idleTimeoutMs: this.config.streamIdleTimeoutMs
+      });
     } catch (error: unknown) {
       if (isAbortError(error) || error instanceof OpenAI.APIUserAbortError) {
         throw new AgentAbortError();
@@ -333,8 +361,6 @@ class OpenAiChatAgent implements ProviderAgent {
 
       throw normalizeError(error, '无法启动模型响应');
     }
-
-    return readChatCompletionStream(stream, callbacks, options);
   }
 }
 

@@ -335,6 +335,27 @@ test('BTW flushes retry and compaction notices through activity rendering', asyn
   controller.close();
 });
 
+test('BTW clears the reasoning preview when the provider retries', async () => {
+  const pendingSnapshots = [];
+  const {controller} = createHarness(async (_session, callbacks) => {
+    callbacks.onReasoningUpdate?.({kind: 'draft', text: 'first attempt'});
+    pendingSnapshots.push(controller.createRenderState(createBaseRenderState()).pending);
+
+    // 执行器在重试前发出空 draft，app 必须丢弃上一 attempt 的预览。
+    callbacks.onReasoningUpdate?.({kind: 'draft', text: ''});
+    pendingSnapshots.push(controller.createRenderState(createBaseRenderState()).pending);
+
+    callbacks.onComplete?.('');
+  });
+
+  controller.open('stream');
+  await flush();
+  controller.close();
+
+  assert.deepEqual(pendingSnapshots[0], {kind: 'reasoning_streaming', text: 'first attempt'});
+  assert.equal(pendingSnapshots[1], null);
+});
+
 test('BTW queues side activity for the shared app clock and discards late callbacks after close', async () => {
   let capturedCallbacks;
   const {controller, calls} = createHarness(async (_session, callbacks) => {

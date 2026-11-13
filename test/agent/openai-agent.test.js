@@ -1,7 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { mock } = test;
 const { LlmAgentError, redactSensitiveText } = require('../../src/agent/agent-errors');
 const { createOpenAiAgent, createRequest } = require('../../src/agent/openai-responses/agent');
 const { createPromptCacheKey } = require('../../src/agent/prompt-cache');
@@ -9,6 +8,7 @@ const { convertToolDefinitionsToOpenAiTools, extractFunctionToolCall } = require
 const { convertTranscriptToOpenAiInput } = require('../../src/agent/openai-responses/transcript-converter');
 const { createBuiltInSystemPrompt } = require('../../src/agent/context/system-prompt');
 const { createDefaultToolRegistry } = require('../../src/tools/tool-registry');
+const { runWithMockedRetryTimers } = require('./retry-test-helpers');
 
 const TEST_CWD = '/tmp/echo_tui';
 const TEST_SYSTEM_PROMPT = createBuiltInSystemPrompt({ cwd: TEST_CWD });
@@ -32,31 +32,11 @@ const TEST_CONFIG = {
 };
 const RETRYABLE_PROCESSING_ERROR = 'An error occurred while processing your request. You can retry your request';
 const RETRYABLE_OVERLOADED_ERROR = 'Our servers are currently overloaded. Please try again later.';
-const RESPONSE_STREAM_RETRY_TEST_DELAYS_MS = [1000, 2000];
-const RESPONSE_STREAM_ALL_RETRY_TEST_DELAYS_MS = [1000, 2000, 4000, 8000, 16000, 32000, 64000, 128000, 256000, 256000];
-
-async function flushPendingAsyncWork() {
-  for (let index = 0; index < 20; index += 1) {
-    await Promise.resolve();
-  }
-}
-
-async function runWithMockedRetryTimers(action, retryDelaysMs) {
-  mock.timers.enable({apis: ['setTimeout']});
-
-  try {
-    const promise = action();
-
-    for (const delayMs of retryDelaysMs) {
-      await flushPendingAsyncWork();
-      mock.timers.tick(delayMs);
-    }
-
-    return await promise;
-  } finally {
-    mock.timers.reset();
-  }
-}
+// 退避范围与预算的期望值与 src/agent/provider-error.ts 中的策略常量保持一致。
+const TRANSIENT_RETRY_DELAY_RANGE_MS = [400, 600];
+const OVERLOADED_RETRY_DELAY_RANGE_MS = [1600, 2400];
+const DEFAULT_RETRY_BUDGET = 5;
+const MAX_BACKOFF_DELAY_MS = 60_000;
 
 async function* streamFrom(events) {
   for (const event of events) {
@@ -169,13 +149,15 @@ test('createOpenAiAgent streams one provider turn and returns draft with no tool
   ]);
 });
 
-test('createOpenAiAgent passes abort signal to SDK request options', async () => {
+test('createOpenAiAgent passes a cancellable attempt signal to SDK request options', async () => {
   const harness = createHarness([{ type: 'response.completed' }]);
   const controller = new AbortController();
 
   await harness.runTurn([{ role: 'user', text: 'hello' }], {}, { abortSignal: controller.signal });
 
-  assert.equal(harness.requestOptions[0].signal, controller.signal);
+  // 每个 attempt 使用派生的可取消信号，以便空闲超时单独中断本次连接。
+  assert.ok(harness.requestOptions[0].signal instanceof AbortSignal);
+  assert.equal(harness.requestOptions[0].signal.aborted, false);
 });
 
 test('createOpenAiAgent configures SDK retry count', async () => {
@@ -227,7 +209,7 @@ test('createOpenAiAgent treats abort as user interruption instead of service fai
       return {
         responses: {
           async create(_request, options) {
-            assert.equal(options.signal, controller.signal);
+            assert.ok(options.signal instanceof AbortSignal);
             controller.abort();
             const error = new Error('The operation was aborted');
             error.name = 'AbortError';
@@ -431,8 +413,7 @@ test('createOpenAiAgent retries a transient stream processing error before outpu
   });
 
   const result = await runWithMockedRetryTimers(
-    () => harness.runTurn([{role: 'user', text: 'hello'}], {}),
-    [RESPONSE_STREAM_RETRY_TEST_DELAYS_MS[0]]
+    () => harness.runTurn([{role: 'user', text: 'hello'}], {})
   );
 
   assert.deepEqual(result, {draft: 'recovered', toolCalls: [], usageInputTokens: undefined});
@@ -455,16 +436,18 @@ test('createOpenAiAgent retries an overloaded stream error before output', async
       onProviderRetry(retry) {
         retries.push(retry);
       }
-    }),
-    [RESPONSE_STREAM_RETRY_TEST_DELAYS_MS[0]]
+    })
   );
 
   assert.deepEqual(result, {draft: 'recovered', toolCalls: [], usageInputTokens: undefined});
   assert.equal(harness.requests.length, 2);
   assert.equal(retries.length, 1);
   assert.equal(retries[0].retryCount, 1);
-  assert.equal(retries[0].delayMs, RESPONSE_STREAM_RETRY_TEST_DELAYS_MS[0]);
-  assert.equal(retries[0].message, `模型响应临时失败，正在重试第 1/${retries[0].maxRetries} 次。`);
+  assert.equal(retries[0].maxRetries, DEFAULT_RETRY_BUDGET);
+  assert.equal(retries[0].kind, 'overloaded');
+  assert.ok(retries[0].delayMs >= OVERLOADED_RETRY_DELAY_RANGE_MS[0] && retries[0].delayMs <= OVERLOADED_RETRY_DELAY_RANGE_MS[1], `unexpected delay ${retries[0].delayMs}`);
+  assert.match(retries[0].message, /服务过载/);
+  assert.match(retries[0].message, /重试第 1\/5 次/);
 });
 
 test('createOpenAiAgent retries reasoning-only stream failures when no preview callback consumes them', async () => {
@@ -480,35 +463,39 @@ test('createOpenAiAgent retries reasoning-only stream failures when no preview c
   });
 
   await runWithMockedRetryTimers(
-    () => harness.runTurn([{role: 'user', text: 'hello'}], {}),
-    [RESPONSE_STREAM_RETRY_TEST_DELAYS_MS[0]]
+    () => harness.runTurn([{role: 'user', text: 'hello'}], {})
   );
 
   assert.equal(harness.requests.length, 2);
 });
 
-test('createOpenAiAgent does not retry after exposing a reasoning preview', async () => {
+test('createOpenAiAgent retries after exposing a reasoning preview and clears the preview first', async () => {
   let attempts = 0;
   const updates = [];
   const harness = createHarness(() => {
     attempts += 1;
-    return [
-      {type: 'response.reasoning_summary_text.delta', item_id: 'rs_1', output_index: 0, summary_index: 0, delta: 'partial'},
-      createRetryableStreamError('reasoning-request')
-    ];
+    return attempts === 1
+      ? [
+          {type: 'response.reasoning_summary_text.delta', item_id: 'rs_1', output_index: 0, summary_index: 0, delta: 'partial'},
+          createRetryableStreamError('reasoning-request')
+        ]
+      : [{type: 'response.output_text.delta', delta: 'recovered'}, {type: 'response.completed'}];
   });
 
-  await assert.rejects(
+  const result = await runWithMockedRetryTimers(
     () => harness.runTurn([{role: 'user', text: 'hello'}], {
       onReasoningUpdate(update) {
         updates.push(update);
       }
-    }),
-    /模型响应流异常/
+    })
   );
 
-  assert.equal(attempts, 1);
-  assert.deepEqual(updates, [{kind: 'draft', text: 'partial'}]);
+  assert.deepEqual(result, {draft: 'recovered', toolCalls: [], usageInputTokens: undefined});
+  assert.equal(attempts, 2);
+  assert.deepEqual(updates, [
+    {kind: 'draft', text: 'partial'},
+    {kind: 'draft', text: ''}
+  ]);
 });
 
 test('createOpenAiAgent retries response.failed server_error events before output', async () => {
@@ -521,8 +508,7 @@ test('createOpenAiAgent retries response.failed server_error events before outpu
   });
 
   await runWithMockedRetryTimers(
-    () => harness.runTurn([{role: 'user', text: 'hello'}], {}),
-    [RESPONSE_STREAM_RETRY_TEST_DELAYS_MS[0]]
+    () => harness.runTurn([{role: 'user', text: 'hello'}], {})
   );
 
   assert.equal(harness.requests.length, 2);
@@ -538,36 +524,38 @@ test('createOpenAiAgent can recover after two transient stream retries', async (
   });
 
   const result = await runWithMockedRetryTimers(
-    () => harness.runTurn([{role: 'user', text: 'hello'}], {}),
-    RESPONSE_STREAM_RETRY_TEST_DELAYS_MS
+    () => harness.runTurn([{role: 'user', text: 'hello'}], {})
   );
 
   assert.deepEqual(result, {draft: 'recovered', toolCalls: [], usageInputTokens: undefined});
   assert.equal(harness.requests.length, 3);
 });
 
-test('createOpenAiAgent caps response stream retry backoff at 256 seconds', async () => {
+test('createOpenAiAgent caps backoff at 60 seconds and stops at the retry budget', async () => {
   let attempts = 0;
   const retries = [];
   const harness = createHarness(() => {
     attempts += 1;
-    return attempts <= RESPONSE_STREAM_ALL_RETRY_TEST_DELAYS_MS.length
-      ? [createRetryableStreamError(`retry-request-${attempts}`)]
-      : [{type: 'response.completed'}];
+    return [createRetryableStreamError(`retry-request-${attempts}`)];
   });
 
-  const result = await runWithMockedRetryTimers(
-    () => harness.runTurn([{role: 'user', text: 'hello'}], {
-      onProviderRetry(retry) {
-        retries.push(retry);
-      }
-    }),
-    RESPONSE_STREAM_ALL_RETRY_TEST_DELAYS_MS
+  await assert.rejects(
+    () => runWithMockedRetryTimers(
+      () => harness.runTurn([{role: 'user', text: 'hello'}], {
+        onProviderRetry(retry) {
+          retries.push(retry);
+        }
+      })
+    ),
+    /已重试 5 次/
   );
 
-  assert.deepEqual(result, {draft: '', toolCalls: [], usageInputTokens: undefined});
-  assert.equal(attempts, 11);
-  assert.deepEqual(retries.map((retry) => retry.delayMs), RESPONSE_STREAM_ALL_RETRY_TEST_DELAYS_MS);
+  // 默认预算 5 次重试 => 最多 6 次 stream。
+  assert.equal(attempts, DEFAULT_RETRY_BUDGET + 1);
+  assert.deepEqual(retries.map((retry) => retry.retryCount), [1, 2, 3, 4, 5]);
+  assert.equal(retries.at(-1).maxRetries, DEFAULT_RETRY_BUDGET);
+  assert.ok(retries.every((retry) => retry.delayMs <= MAX_BACKOFF_DELAY_MS));
+  assert.ok(retries.every((retry) => retry.kind === 'transient'));
 });
 
 test('createOpenAiAgent keeps the final request ID after two transient stream retries', async () => {
@@ -578,15 +566,16 @@ test('createOpenAiAgent keeps the final request ID after two transient stream re
       return [createRetryableStreamError(`retry-request-${attempts}`)];
     }
 
-    const finalError = new Error('stream disconnected');
+    // 不可重试类别用于验证最终错误只保留最后一次 attempt 的 request ID。
+    const finalError = new Error('invalid request payload');
+    finalError.code = 'invalid_request_error';
     finalError.requestID = 'final-request';
     return [finalError];
   });
 
   await assert.rejects(
     () => runWithMockedRetryTimers(
-      () => harness.runTurn([{role: 'user', text: 'hello'}], {}),
-      RESPONSE_STREAM_RETRY_TEST_DELAYS_MS
+      () => harness.runTurn([{role: 'user', text: 'hello'}], {})
     ),
     (error) => {
       assert.match(error.message, /final-request/);
@@ -599,8 +588,11 @@ test('createOpenAiAgent keeps the final request ID after two transient stream re
 });
 
 test('createOpenAiAgent does not retry non-target, partial, or compaction stream failures', async () => {
-  const nonTarget = createHarness([new Error('stream disconnected')]);
-  await assert.rejects(() => nonTarget.runTurn([{role: 'user', text: 'hello'}], {}), /模型响应流异常/);
+  // 不可重试类别：invalid_request_error 属于 never 决策。
+  const invalidRequest = new Error('invalid request payload');
+  invalidRequest.code = 'invalid_request_error';
+  const nonTarget = createHarness([invalidRequest]);
+  await assert.rejects(() => nonTarget.runTurn([{role: 'user', text: 'hello'}], {}), /invalid request payload/);
   assert.equal(nonTarget.requests.length, 1);
 
   const partial = createHarness([
@@ -1212,7 +1204,9 @@ test('OpenAI provider agent does not complete reasoning before a successful resp
     {
       name: 'stream without response.completed',
       events: [
-        {type: 'response.reasoning_summary_text.delta', item_id: 'rs_1', output_index: 0, summary_index: 0, delta: 'partial'}
+        // 已有正文增量时不允许自动重试，用于稳定验证「未完成不发 reasoning complete」。
+        {type: 'response.reasoning_summary_text.delta', item_id: 'rs_1', output_index: 0, summary_index: 0, delta: 'partial'},
+        {type: 'response.output_text.delta', delta: 'partial answer'}
       ],
       pattern: /模型响应流未完成/
     }

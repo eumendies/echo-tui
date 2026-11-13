@@ -286,6 +286,14 @@ class BtwConversationController {
         this.state!.working = {elapsedMs: 0};
 
         if (update.kind === 'draft') {
+          // 空 draft 表示执行器正在重试：丢弃上一 attempt 的预览，保持 footer 状态一致。
+          if (update.text === '') {
+            this.state!.reasoningDraft = '';
+            this.refreshPending(this.state!);
+            this.dependencies.render();
+            return;
+          }
+
           this.state!.reasoningDraft = update.text;
           this.refreshPending(this.state!);
           return;
