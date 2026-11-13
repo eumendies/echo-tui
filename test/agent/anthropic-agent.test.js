@@ -12,6 +12,7 @@ const {
 const { convertTranscriptToAnthropicMessages } = require('../../src/agent/anthropic/transcript-converter');
 const { convertToolDefinitionsToAnthropicTools } = require('../../src/agent/anthropic/tool-converter');
 const { createBuiltInSystemPrompt } = require('../../src/agent/context/system-prompt');
+const { runWithMockedRetryTimers } = require('./retry-test-helpers');
 
 const TEST_CWD = '/tmp/echo_tui';
 const TEST_SYSTEM_PROMPT = createBuiltInSystemPrompt({ cwd: TEST_CWD });
@@ -591,7 +592,7 @@ test('createAnthropicAgent configures SDK client and passes abort signal', async
       clientOptions.push(options);
       this.messages = {
         async create(_request, options) {
-          assert.equal(options.signal, controller.signal);
+          assert.ok(options.signal instanceof AbortSignal);
           return streamFrom([
             { type: 'message_delta', delta: { stop_reason: 'end_turn' } },
             { type: 'message_stop' }
@@ -979,4 +980,90 @@ test('Anthropic agent can generate compaction summaries without provider usage',
   assert.equal(summary.summaryText, '## 背景与目标\n- 已检查项目。');
   assert.equal(typeof requests[0].system, 'string');
   assert.equal(requests[0].messages[0].role, 'user');
+});
+
+function createRetryableAnthropicAgent(scripted) {
+  let attempts = 0;
+  const agent = createAnthropicAgent(TEST_CONFIG, createEmptyToolRegistry(), {
+    createClient() {
+      return {
+        messages: {
+          async create() {
+            attempts += 1;
+            return streamFrom(scripted(Math.min(attempts, 2)));
+          }
+        }
+      };
+    }
+  });
+
+  return {get attempts() { return attempts; }, agent};
+}
+
+test('createAnthropicAgent retries overloaded_error events before any output', async () => {
+  const retries = [];
+  const harness = createRetryableAnthropicAgent((attempt) => attempt === 1
+    ? [{type: 'error', error: {type: 'overloaded_error', message: 'Overloaded'}}]
+    : [{type: 'message_delta', delta: {stop_reason: 'end_turn'}}, {type: 'message_stop'}]);
+
+  await runWithMockedRetryTimers(() => harness.agent.runTurn([{role: 'user', text: 'hello'}], {
+    onProviderRetry(retry) {
+      retries.push(retry);
+    }
+  }));
+
+  assert.equal(harness.attempts, 2);
+  assert.equal(retries.length, 1);
+  assert.equal(retries[0].kind, 'overloaded');
+  assert.equal(retries[0].reason, '服务过载');
+});
+
+test('createAnthropicAgent retries a stream that ends without message_stop', async () => {
+  const harness = createRetryableAnthropicAgent((attempt) => attempt === 1
+    // 缺少 message_stop 等价于流被截断，应作为 stream_incomplete 重试。
+    ? [{type: 'content_block_start', index: 0, content_block: {type: 'thinking'}}]
+    : [{type: 'message_delta', delta: {stop_reason: 'end_turn'}}, {type: 'message_stop'}]);
+
+  await runWithMockedRetryTimers(() => harness.agent.runTurn([{role: 'user', text: 'hello'}], {}));
+
+  assert.equal(harness.attempts, 2);
+});
+
+test('createAnthropicAgent does not retry a completed stream missing stop_reason', async () => {
+  const harness = createRetryableAnthropicAgent(() => [{type: 'message_stop'}]);
+
+  await assert.rejects(
+    () => harness.agent.runTurn([{role: 'user', text: 'hello'}], {}),
+    /模型响应流缺少停止原因/
+  );
+
+  assert.equal(harness.attempts, 1);
+});
+
+test('createAnthropicAgent emits reasoning completion once after message_stop', async () => {
+  const updates = [];
+  const harness = createRetryableAnthropicAgent(() => [
+    {type: 'content_block_start', index: 0, content_block: {type: 'thinking', thinking: ''}},
+    {type: 'content_block_delta', index: 0, delta: {type: 'thinking_delta', thinking: 'part one'}},
+    {type: 'content_block_delta', index: 0, delta: {type: 'signature_delta', signature: 'sig-1'}},
+    // 单个 thinking block 结束不得发出完成通知，否则流转正文后失败重试会重复落盘。
+    {type: 'content_block_stop', index: 0},
+    {type: 'content_block_start', index: 1, content_block: {type: 'text'}},
+    {type: 'content_block_delta', index: 1, delta: {type: 'text_delta', text: 'answer'}},
+    {type: 'content_block_stop', index: 1},
+    {type: 'message_delta', delta: {stop_reason: 'end_turn'}},
+    {type: 'message_stop'}
+  ]);
+
+  const result = await harness.agent.runTurn([{role: 'user', text: 'hello'}], {
+    onReasoningUpdate(update) {
+      updates.push(update);
+    }
+  });
+
+  assert.equal(result.draft, 'answer');
+  assert.deepEqual(updates, [
+    {kind: 'draft', text: 'part one'},
+    {kind: 'complete', text: 'part one'}
+  ]);
 });

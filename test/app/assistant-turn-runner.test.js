@@ -7,6 +7,31 @@ const composerOps = require('../../src/input/composer');
 
 const {createHarness, createUserConfigSnapshot, createFakeTranscriptStore, createFakeSessionModelSettingsStore} = require('./assistant-turn-test-helpers');
 
+test('runAssistantTurn clears the reasoning preview when the provider retries', async () => {
+  const pendingSnapshots = [];
+  const harness = createHarness();
+
+  await runAssistantTurn({
+    ...harness.input,
+    async runAgent(_session, callbacks) {
+      callbacks.onReasoningUpdate({kind: 'draft', text: 'first attempt'});
+      pendingSnapshots.push(harness.appContext.turnContext.getPending());
+
+      // 执行器在重试前发出空 draft，app 必须丢弃上一 attempt 的预览。
+      callbacks.onReasoningUpdate({kind: 'draft', text: ''});
+      pendingSnapshots.push(harness.appContext.turnContext.getPending());
+
+      callbacks.onToken('a', 'answer');
+      callbacks.onComplete('answer');
+      return 'answer';
+    }
+  });
+
+  assert.deepEqual(pendingSnapshots[0], {kind: 'reasoning_streaming', text: 'first attempt'});
+  assert.equal(pendingSnapshots[1].kind, 'thinking');
+  assert.equal(pendingSnapshots[1].text, undefined);
+});
+
 test('runAssistantTurn keeps manual approval unchanged and does not call auto reviewer', async () => {
   const harness = createHarness({appSettings: {
     agentInstructionFileName: 'AGENTS.md', autoCompressImages: true, compactionThresholdRatio: 0.8,

@@ -2,7 +2,8 @@ import OpenAI from 'openai';
 
 import {LlmAgentError, normalizeError} from '../agent-errors';
 import {createPromptCacheKey} from '../prompt-cache';
-import {runResponseStreamWithRetry} from '../openai-responses/agent';
+import {runProviderStreamWithRetry} from '../provider-stream-retry';
+import {readResponseStream} from '../openai-responses/agent';
 import {convertToolDefinitionsToOpenAiTools} from '../openai-responses/tool-converter';
 import {convertTranscriptToOpenAiInput} from '../openai-responses/transcript-converter';
 
@@ -127,18 +128,22 @@ class CodexAgent implements ProviderAgent {
   }
 
   /**
-   * 执行一次 Codex provider turn，并复用 Responses stream 的有界临时错误重试逻辑。
+   * 执行一次 Codex provider turn，并复用 provider-neutral 的流式重试执行器。
+   * 每个 turn 只解析一次 OAuth credential 与请求快照，重试复用同一 client。
    */
   async runTurn(records: TranscriptRecord[], callbacks: AgentTurnCallbacks = {}, options: AgentTurnOptions = {}): Promise<AgentTurnResult> {
     try {
       const {client, config} = await this.resolveRuntimeClient();
       const request = createCodexRequest(records, config, this.registry, options);
 
-      return await runResponseStreamWithRetry(
-        () => client.responses.create(request, {signal: options.abortSignal}),
+      return await runProviderStreamWithRetry({
+        createStream: (signal) => client.responses.create(request, {signal}),
+        readStream: (stream, attemptCallbacks, attemptOptions, observer) => readResponseStream(stream, attemptCallbacks, attemptOptions, observer),
         callbacks,
-        options
-      );
+        options,
+        maxRetries: config.streamMaxRetries,
+        idleTimeoutMs: config.streamIdleTimeoutMs
+      });
     } catch (error: unknown) {
       if (isAbortError(error) || error instanceof OpenAI.APIUserAbortError) {
         throw new AgentAbortError();

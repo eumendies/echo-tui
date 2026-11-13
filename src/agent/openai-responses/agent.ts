@@ -2,6 +2,8 @@ import OpenAI from 'openai';
 
 import {LlmAgentError, normalizeError, redactSensitiveText} from '../agent-errors';
 import {createPromptCacheKey} from '../prompt-cache';
+import {ProviderError, annotateProviderError, classifyProviderError, createProviderError} from '../provider-error';
+import {runProviderStreamWithRetry} from '../provider-stream-retry';
 import {convertTranscriptToOpenAiInput, createOpenAiReasoningRecord} from './transcript-converter';
 import {convertToolDefinitionsToOpenAiTools, extractFunctionToolCall} from './tool-converter';
 
@@ -11,6 +13,7 @@ import type {ToolCall, ToolRegistry} from '../../types/tool';
 import type {TranscriptRecord} from '../../types/transcript';
 import type {OpenAiFunctionTool} from './tool-converter';
 import type {OpenAiInputItem} from './transcript-converter';
+import type {ProviderStreamAttemptObserver} from '../provider-stream-retry';
 
 type ResponseEventDetails = {
   code?: unknown;
@@ -45,7 +48,6 @@ type ReasoningSummaryEvent = {
 };
 
 type ResponseStream = AsyncIterable<unknown>;
-type ResponseStreamFactory = () => Promise<ResponseStream>;
 
 type ResponseClient = {
   responses: {
@@ -54,15 +56,6 @@ type ResponseClient = {
 };
 
 const OPENAI_MAX_RETRIES = 3;
-const RESPONSE_STREAM_MAX_RETRIES = 10;
-const RESPONSE_STREAM_RETRY_DELAY_MS = 1000;
-const RESPONSE_STREAM_MAX_RETRY_DELAY_MS = 256_000;
-const RETRYABLE_RESPONSE_STREAM_ERROR_TEXTS = [
-  'An error occurred while processing your request. You can retry your request',
-  'Our servers are currently overloaded. Please try again later'
-];
-
-class RetryableResponseStreamError extends LlmAgentError {}
 
 function createClient(config: LlmConfig, OpenAIClient: new (options: {apiKey: string; baseURL?: string; defaultHeaders?: Record<string, string>; maxRetries?: number}) => unknown): unknown {
   return new OpenAIClient({
@@ -274,14 +267,6 @@ function readResponseErrorMessage(value: unknown): string | null {
   return typeof message === 'string' && message.trim() !== '' ? message : null;
 }
 
-function isRetryableResponseStreamError(error: unknown): boolean {
-  const message = readResponseErrorMessage(error);
-
-  return error instanceof RetryableResponseStreamError ||
-    readResponseErrorCode(error) === 'server_error' ||
-    (message !== null && RETRYABLE_RESPONSE_STREAM_ERROR_TEXTS.some((text) => message.includes(text)));
-}
-
 function summarizeFailureEvent(event: unknown): string {
   return readResponseErrorMessage(event) || '模型服务返回失败事件';
 }
@@ -310,25 +295,9 @@ function readResponseRequestId(error: unknown): string | null {
   return typeof requestId === 'string' && requestId.trim() !== '' ? requestId : null;
 }
 
-function normalizeResponseStreamError(error: unknown): LlmAgentError {
-  const normalized = normalizeError(error, '模型响应流异常');
-  const requestId = readResponseRequestId(error);
-  const message = requestId && !normalized.message.includes(requestId)
-    ? `${normalized.message}（request ID: ${redactSensitiveText(requestId)}）`
-    : normalized.message;
-
-  if (isRetryableResponseStreamError(error)) {
-    return new RetryableResponseStreamError(message);
-  }
-
-  return message === normalized.message ? normalized : new LlmAgentError(message);
-}
-
-function createFailureEventError(event: unknown): LlmAgentError {
-  const message = `模型服务响应失败：${redactSensitiveText(summarizeFailureEvent(event))}`;
-  return isRetryableResponseStreamError(event)
-    ? new RetryableResponseStreamError(message)
-    : new LlmAgentError(message);
+/** 归一化迭代期抛出的任意异常，并补上可用的 request ID。 */
+function normalizeResponseStreamError(error: unknown): ProviderError {
+  return annotateProviderError(classifyProviderError(error), {requestId: readResponseRequestId(error)});
 }
 
 function assertResponseClient(value: unknown): asserts value is ResponseClient {
@@ -371,7 +340,12 @@ function extractProviderUsage(event: unknown): ProviderUsage | undefined {
 /**
  * 消费一次 Responses stream：累积 assistant 文本，同时收集已完成的 function tool calls。
  */
-async function readResponseStream(stream: ResponseStream, callbacks: AgentTurnCallbacks = {}, options: AgentTurnOptions = {}): Promise<AgentTurnResult> {
+async function readResponseStream(
+  stream: ResponseStream,
+  callbacks: AgentTurnCallbacks = {},
+  options: AgentTurnOptions = {},
+  observer?: ProviderStreamAttemptObserver
+): Promise<AgentTurnResult> {
   let draft = '';
   let completed = false;
   let usage: ProviderUsage | undefined;
@@ -388,11 +362,18 @@ async function readResponseStream(stream: ResponseStream, callbacks: AgentTurnCa
       throwIfAborted(options.abortSignal);
 
       if (isFailureEvent(event)) {
-        throw createFailureEventError(event);
+        throw createProviderError({
+          message: `模型服务响应失败：${redactSensitiveText(summarizeFailureEvent(event))}`,
+          code: readResponseErrorCode(event) ?? undefined,
+          requestId: readResponseRequestId(event) ?? undefined
+        });
       }
 
       if (isIncompleteEvent(event)) {
-        throw new LlmAgentError(redactSensitiveText(summarizeIncompleteEvent(event)));
+        throw new ProviderError({
+          kind: 'provider_incomplete',
+          message: redactSensitiveText(summarizeIncompleteEvent(event))
+        });
       }
 
       const delta = extractTextDelta(event);
@@ -445,6 +426,8 @@ async function readResponseStream(stream: ResponseStream, callbacks: AgentTurnCa
       const reasoningRecord = extractReasoningOutputItem(event);
 
       if (reasoningRecord) {
+        // provider-private record 一旦落盘无法回滚，后续失败不得自动重试。
+        observer?.markProviderRecord();
         providerRecords.push(reasoningRecord);
       }
 
@@ -452,6 +435,7 @@ async function readResponseStream(stream: ResponseStream, callbacks: AgentTurnCa
 
       if (toolCall && !seenToolCallIds.has(toolCall.callId)) {
         // 同一 tool call 可能通过多个完成事件露出，按 call_id 去重避免重复执行。
+        observer?.markToolCall();
         seenToolCallIds.add(toolCall.callId);
         toolCalls.push(toolCall);
       }
@@ -473,7 +457,7 @@ async function readResponseStream(stream: ResponseStream, callbacks: AgentTurnCa
 
   if (!completed) {
     throwIfAborted(options.abortSignal);
-    throw new LlmAgentError('模型响应流未完成');
+    throw new ProviderError({kind: 'stream_incomplete', message: '模型响应流未完成'});
   }
 
   const reasoningSummary = readReasoningSummaryText(reasoningSummaryParts);
@@ -490,87 +474,6 @@ async function readResponseStream(stream: ResponseStream, callbacks: AgentTurnCa
     ...(usage ? {usage} : {}),
     usageInputTokens
   };
-}
-
-function getResponseStreamRetryDelayMs(retryCount: number): number {
-  return Math.min(
-    RESPONSE_STREAM_RETRY_DELAY_MS * 2 ** (retryCount - 1),
-    RESPONSE_STREAM_MAX_RETRY_DELAY_MS
-  );
-}
-
-/**
- * 等待一次短暂重试退避，并让 turn 级取消信号立即中断等待。
- */
-function waitForResponseStreamRetry(retryCount: number, signal?: AbortSignal): Promise<void> {
-  throwIfAborted(signal);
-  const delayMs = getResponseStreamRetryDelayMs(retryCount);
-
-  return new Promise((resolve, reject) => {
-    const onAbort = () => {
-      clearTimeout(timeout);
-      signal?.removeEventListener('abort', onAbort);
-      reject(new AgentAbortError());
-    };
-    const timeout = setTimeout(() => {
-      signal?.removeEventListener('abort', onAbort);
-      resolve();
-    }, delayMs);
-
-    signal?.addEventListener('abort', onAbort, {once: true});
-  });
-}
-
-/**
- * 创建并消费 Responses stream，在无文本输出的指定服务端临时错误后按上限重试。
- */
-async function runResponseStreamWithRetry(createStream: ResponseStreamFactory, callbacks: AgentTurnCallbacks = {}, options: AgentTurnOptions = {}): Promise<AgentTurnResult> {
-  let retryCount = 0;
-
-  while (true) {
-    throwIfAborted(options.abortSignal);
-    const stream = await createStream();
-    let emittedText = false;
-    const attemptCallbacks: AgentTurnCallbacks = {
-      onReasoningUpdate(update) {
-        if (callbacks.onReasoningUpdate && update.text.trim() !== '') {
-          emittedText = true;
-        }
-
-        callbacks.onReasoningUpdate?.(update);
-      },
-      onToken(delta, draft) {
-        if (delta !== '') {
-          emittedText = true;
-        }
-
-        callbacks.onToken?.(delta, draft);
-      }
-    };
-
-    try {
-      return await readResponseStream(stream, attemptCallbacks, options);
-    } catch (error: unknown) {
-      const canRetry = retryCount < RESPONSE_STREAM_MAX_RETRIES &&
-        !emittedText &&
-        !options.isCompaction &&
-        !options.abortSignal?.aborted &&
-        isRetryableResponseStreamError(error);
-
-      if (!canRetry) {
-        throw error;
-      }
-
-      retryCount += 1;
-      callbacks.onProviderRetry?.({
-        retryCount,
-        maxRetries: RESPONSE_STREAM_MAX_RETRIES,
-        delayMs: getResponseStreamRetryDelayMs(retryCount),
-        message: `模型响应临时失败，正在重试第 ${retryCount}/${RESPONSE_STREAM_MAX_RETRIES} 次。`
-      });
-      await waitForResponseStreamRetry(retryCount, options.abortSignal);
-    }
-  }
 }
 
 /**
@@ -599,11 +502,14 @@ class OpenAiAgent implements ProviderAgent {
     const request = createRequest(records, this.config, this.registry, options);
 
     try {
-      return await runResponseStreamWithRetry(
-        () => this.client.responses.create(request, {signal: options.abortSignal}),
+      return await runProviderStreamWithRetry({
+        createStream: (signal) => this.client.responses.create(request, {signal}),
+        readStream: (stream, attemptCallbacks, attemptOptions, observer) => readResponseStream(stream, attemptCallbacks, attemptOptions, observer),
         callbacks,
-        options
-      );
+        options,
+        maxRetries: this.config.streamMaxRetries,
+        idleTimeoutMs: this.config.streamIdleTimeoutMs
+      });
     } catch (error: unknown) {
       if (isAbortError(error) || error instanceof OpenAI.APIUserAbortError) {
         throw new AgentAbortError();
@@ -623,6 +529,5 @@ export {
   createRequest,
   extractTextDelta,
   isCompletedEvent,
-  readResponseStream,
-  runResponseStreamWithRetry
+  readResponseStream
 };

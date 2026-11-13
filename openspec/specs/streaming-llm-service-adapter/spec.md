@@ -395,7 +395,7 @@
 - **THEN** 请求参数 SHALL NOT 包含 OpenAI private reasoning item
 
 ### Requirement: SDK 流式文本增量处理
-真实 LLM adapter SHALL 消费 OpenAI SDK 提供的流式文本增量，累积最终 assistant draft，并把未知或暂不支持的非文本事件限制在 adapter 内部处理。已知错误、服务端 incomplete 或无效 stream SHALL 显式结束为对应语义，而不是被误报为未知本地 stream 未完成。adapter SHALL 在收到完成事件时捕获其携带的 `usage` 信息（如存在），用于上下文长度的真值校准。OpenAI Responses 与 Codex adapter SHALL 对正文输出前发生的指定服务端临时处理错误最多额外重试一次；该重试 SHALL NOT 适用于 compaction、用户取消、非目标错误或已经产生文本增量的 attempt。
+真实 LLM adapter SHALL 消费 OpenAI SDK 提供的流式文本增量，累积最终 assistant draft，并把未知或暂不支持的非文本事件限制在 adapter 内部处理。已知错误、服务端 incomplete 或无效 stream SHALL 显式结束为对应语义，而不是被误报为未知本地 stream 未完成。adapter SHALL 在收到完成事件时捕获其携带的 `usage` 信息（如存在），用于上下文长度的真值校准。OpenAI Responses 与 Codex adapter SHALL 通过共享的 provider-neutral 重试执行器处理流级失败，并 SHALL 依据 `provider-error-retry-policy` 定义的失败分类与重试决策判断是否创建新的 stream。该重试 SHALL NOT 适用于 compaction 请求、用户取消、`never` 决策的失败类别、已产生 assistant 正文增量的 attempt、已产生工具调用的 attempt。
 
 #### Scenario: 处理文本增量
 - **WHEN** SDK stream 产生新的文本增量
@@ -417,6 +417,7 @@
 - **WHEN** SDK stream 产生 `response.incomplete` 事件
 - **THEN** adapter SHALL 将其识别为服务端未完整结束
 - **THEN** adapter SHALL 使用事件中的 incomplete details 生成明确错误摘要（如存在）
+- **THEN** adapter SHALL 将其归类为不可重试的服务端终止语义
 - **THEN** adapter SHALL NOT 将其误报为本地“模型响应流未完成”兜底错误
 
 #### Scenario: 忽略暂不支持的非文本事件
@@ -424,45 +425,53 @@
 - **THEN** adapter SHALL 不把该事件暴露给 app 层
 - **THEN** adapter SHALL 处理后续 stream 事件
 
-#### Scenario: OpenAI Responses 临时 stream 错误重试成功
-- **WHEN** OpenAI Responses 普通 provider turn 的首次 stream 在产生文本增量前以 `server_error` 或明确提示可重试的临时处理错误失败
+#### Scenario: OpenAI Responses 瞬时 stream 失败后重试成功
+- **WHEN** OpenAI Responses 普通 provider turn 的某个 attempt 以可重试类别失败
+- **AND** 该 attempt 尚未产生 assistant 正文增量
 - **AND** turn 未被取消
-- **THEN** adapter SHALL 重新创建并消费一个新的 stream
-- **AND** adapter SHALL 在第二次 stream 成功时正常返回其结果
+- **THEN** adapter SHALL 通过共享执行器创建并消费一个新的 stream
+- **AND** adapter SHALL 在新 attempt 成功时正常返回其结果
 
-#### Scenario: Codex 临时 stream 错误重试成功
-- **WHEN** Codex 普通 provider turn 的首次 Responses-compatible stream 在产生文本增量前以 `server_error` 或明确提示可重试的临时处理错误失败
+#### Scenario: Codex 瞬时 stream 失败后重试成功
+- **WHEN** Codex 普通 provider turn 的某个 attempt 以可重试类别失败
+- **AND** 该 attempt 尚未产生 assistant 正文增量
 - **AND** turn 未被取消
-- **THEN** adapter SHALL 使用同一 turn 已解析的 OAuth runtime client 和请求快照重新创建 stream
-- **AND** adapter SHALL 在第二次 stream 成功时正常返回其结果
+- **THEN** adapter SHALL 使用同一 turn 已解析的 OAuth runtime client 和请求快照创建新的 stream
+- **AND** adapter SHALL 在新 attempt 成功时正常返回其结果
 
-#### Scenario: 临时 stream 错误最多额外重试一次
-- **WHEN** OpenAI Responses 或 Codex 的首次 attempt 符合临时 stream 错误重试条件
-- **AND** 第二次 attempt 仍然失败
-- **THEN** adapter SHALL 以第二次 attempt 的脱敏错误结束本次调用
-- **AND** adapter SHALL NOT 创建第三次 stream
-- **AND** 最终错误 SHALL 保留可用的服务端 request ID
+#### Scenario: 可重试类别耗尽预算后失败
+- **WHEN** OpenAI Responses 或 Codex 的某个 attempt 以可重试类别失败
+- **AND** 该 provider turn 的重试预算已经耗尽
+- **THEN** adapter SHALL 以最后一次 attempt 的脱敏错误结束本次调用
+- **AND** adapter SHALL NOT 创建预算之外的新 stream
+- **AND** 最终错误 SHALL 保留可用的服务端 request ID 与已重试次数
 
-#### Scenario: 已产生 partial text 时不重试
-- **WHEN** OpenAI Responses 或 Codex stream 已经向 app 发出至少一个非空文本增量
-- **AND** 当前 stream 随后发生指定服务端临时处理错误
+#### Scenario: 已产生 assistant 正文时不重试
+- **WHEN** OpenAI Responses 或 Codex stream 已经向 app 发出至少一个非空 assistant 正文增量
+- **AND** 当前 attempt 随后以可重试类别失败
 - **THEN** adapter SHALL NOT 自动创建新的 stream
-- **AND** adapter SHALL 以明确 stream 错误结束本次调用
-- **AND** adapter SHALL NOT 把 partial draft 伪装成成功完成的 assistant 回复
+- **THEN** adapter SHALL 以明确 stream 错误结束本次调用
+- **THEN** adapter SHALL NOT 把 partial draft 伪装成成功完成的 assistant 回复
 
-#### Scenario: 非目标错误不重试
-- **WHEN** OpenAI Responses 或 Codex stream 因 rate limit、invalid prompt、incomplete、无完成事件或其他非目标错误失败
+#### Scenario: 仅 reasoning 预览已输出时仍可重试
+- **WHEN** OpenAI Responses 或 Codex stream 已经向 app 发出非空 reasoning 预览但尚未发出正文增量
+- **AND** 当前 attempt 以可重试类别失败
+- **THEN** adapter SHALL 允许创建新的 stream
+- **THEN** adapter SHALL 在重试前使 app 丢弃该 attempt 的 reasoning 预览
+
+#### Scenario: 不可重试类别保持既有失败语义
+- **WHEN** OpenAI Responses 或 Codex stream 因 `invalid_request`、`context_overflow`、`auth`、`quota`、`provider_incomplete`、`content_filter` 或 `unknown` 类别失败
 - **THEN** adapter SHALL NOT 因本要求创建额外 stream
-- **AND** adapter SHALL 保持该错误的既有失败语义
+- **THEN** adapter SHALL 保持该错误的既有失败语义
 
 #### Scenario: compaction 请求不重试
-- **WHEN** OpenAI Responses 或 Codex compaction stream 发生指定服务端临时处理错误
+- **WHEN** OpenAI Responses 或 Codex compaction stream 以可重试类别失败
 - **THEN** adapter SHALL NOT 创建额外 stream
 - **AND** compaction SHALL 按现有失败路径结束
 
 #### Scenario: stream 异常失败
 - **WHEN** SDK stream 在完成前抛出不符合重试条件的错误或中断
-- **OR** 指定临时处理错误的重试机会已经用尽
+- **OR** 可重试类别的重试预算已经用尽
 - **THEN** adapter SHALL 以明确 stream 错误结束本次调用
 - **THEN** adapter SHALL NOT 把部分 draft 伪装成成功完成的 assistant 回复
 
@@ -470,9 +479,10 @@
 - **WHEN** OpenAI streaming 请求因调用方取消信号触发而中断
 - **THEN** OpenAI provider agent SHALL 以可识别的中断结果结束当前 turn
 - **THEN** provider SHALL NOT 将该用户主动中断包装为普通模型服务失败或 stream incomplete 失败
+- **THEN** provider SHALL NOT 在取消后创建重试 stream
 
 ### Requirement: OpenAI Chat Completions stream 处理
-`openai-chat` adapter SHALL 消费 Chat Completions streaming chunks，累积 assistant 文本 draft，聚合完整 tool calls，并在完成时返回 provider-neutral `AgentTurnResult`。adapter SHALL 处理服务端错误、SDK create 错误、stream 异常和用户主动取消，且错误消息 SHALL 做敏感信息脱敏。
+`openai-chat` adapter SHALL 消费 Chat Completions streaming chunks，累积 assistant 文本 draft，聚合完整 tool calls，并在完成时返回 provider-neutral `AgentTurnResult`。adapter SHALL 处理服务端错误、SDK create 错误、stream 异常和用户主动取消，且错误消息 SHALL 做敏感信息脱敏。adapter SHALL 通过共享的 provider-neutral 重试执行器处理流级失败，并 SHALL 依据 `provider-error-retry-policy` 判断是否可以重试；Chat 特有的失败事件形态 SHALL 只影响分类映射，不影响重试决策与退避参数。
 
 #### Scenario: 处理 Chat 文本增量
 - **WHEN** Chat stream chunk 产生 `choices[].delta.content`
@@ -499,8 +509,18 @@
 - **THEN** adapter SHALL 将该数值作为 `usageInputTokens` 返回
 - **THEN** 缺少 usage 或缺少 prompt token 时 SHALL NOT 阻断本次响应完成
 
+#### Scenario: Chat stream 未产生 finish_reason 即结束
+- **WHEN** Chat stream 在未产生 `finish_reason` 的情况下结束
+- **THEN** adapter SHALL 把该 attempt 归类为 `stream_incomplete`
+- **THEN** adapter SHALL 按共享重试决策判断是否创建新的 stream
+
+#### Scenario: Chat stream 错误 chunk 按错误码分类
+- **WHEN** Chat stream chunk 携带 `error` 对象
+- **THEN** adapter SHALL 依据该对象的错误码或类型确定失败类别
+- **THEN** adapter SHALL 依据失败类别决定是否重试
+
 #### Scenario: Chat stream 异常失败
-- **WHEN** Chat SDK create 调用失败、stream 抛错、服务端返回错误或 stream 未完成
+- **WHEN** Chat SDK create 调用失败、stream 抛错且不符合重试条件或重试预算已耗尽
 - **THEN** adapter SHALL reject 一个明确错误
 - **THEN** 错误消息 SHALL NOT 包含 API key、Bearer token 或其他敏感凭据
 
@@ -535,7 +555,7 @@
 - **THEN** app SHALL 持久化该 record 但不把它作为可见 assistant 正文展示
 
 ### Requirement: Anthropic Messages stream 处理
-`anthropic` adapter SHALL 使用官方 Anthropic SDK 的 Messages API 发起流式请求，消费 Anthropic streaming events，累积 assistant 文本 draft，聚合完整 tool calls，并在完成时返回 provider-neutral `AgentTurnResult`。请求 SHALL 包含当前模型名、转换后的顶层 `system`、转换后的 `messages`、协议要求的 `max_tokens`，并在工具 registry 非空时包含 Anthropic `tools`。已成功初始化的 MCP tools SHALL 作为已注册 tools 的一部分随 normal mode provider request 暴露。请求 SHALL NOT 发送 OpenAI Responses-only `input`、`reasoning`、private reasoning item、Chat Completions `tool_calls` 或 OpenAI `max_output_tokens`。adapter SHALL 处理服务端错误、SDK create 错误、stream 异常和用户主动取消，且错误消息 SHALL 做敏感信息脱敏。
+`anthropic` adapter SHALL 使用官方 Anthropic SDK 的 Messages API 发起流式请求，消费 Anthropic streaming events，累积 assistant 文本 draft，聚合完整 tool calls，并在完成时返回 provider-neutral `AgentTurnResult`。请求 SHALL 包含当前模型名、转换后的顶层 `system`、转换后的 `messages`、协议要求的 `max_tokens`，并在工具 registry 非空时包含 Anthropic `tools`。已成功初始化的 MCP tools SHALL 作为已注册 tools 的一部分随 normal mode provider request 暴露。请求 SHALL NOT 发送 OpenAI Responses-only `input`、`reasoning`、private reasoning item、Chat Completions `tool_calls` 或 OpenAI `max_output_tokens`。adapter SHALL 处理服务端错误、SDK create 错误、stream 异常和用户主动取消，且错误消息 SHALL 做敏感信息脱敏。adapter SHALL 通过共享的 provider-neutral 重试执行器处理流级失败，并 SHALL 依据 `provider-error-retry-policy` 判断是否可以重试；Anthropic 特有的失败事件形态 SHALL 只影响分类映射，不影响重试决策与退避参数。
 
 #### Scenario: 构造 Anthropic stream 请求
 - **WHEN** 当前 provider preset 解析出的 agent type 为 `anthropic` 且用户提交普通消息
@@ -573,8 +593,36 @@
 - **THEN** adapter SHALL NOT 把 `output_tokens` 计入 provider context usage
 - **THEN** 缺少 usage 或缺少 input token 时 SHALL NOT 阻断本次响应完成
 
+#### Scenario: Anthropic reasoning 完成通知在 provider turn 完成后统一发出
+- **WHEN** Anthropic stream 产生多个 thinking content block
+- **THEN** adapter SHALL 在单个 thinking block 结束时只更新 reasoning 预览
+- **THEN** adapter SHALL 在整个 provider turn 确认完成之后统一发出一次 reasoning 完成通知
+- **THEN** adapter SHALL NOT 在单个 thinking block 结束时发出 reasoning 完成通知
+
+#### Scenario: Anthropic 缺少完成事件时可重试
+- **WHEN** Anthropic stream 在未收到 `message_stop` 事件的情况下结束
+- **THEN** adapter SHALL 把该 attempt 归类为 `stream_incomplete`
+- **THEN** adapter SHALL 按共享重试决策判断是否创建新的 stream
+
+#### Scenario: Anthropic 有完成事件但缺少停止原因时不重试
+- **WHEN** Anthropic stream 已收到 `message_stop` 事件但未收到 `stop_reason`
+- **THEN** adapter SHALL 以协议异常结束本次 provider turn
+- **THEN** adapter SHALL NOT 创建新的 stream
+
+#### Scenario: Anthropic 过载事件重试
+- **WHEN** Anthropic stream 返回 `overloaded_error` 类型的错误事件
+- **AND** 该 attempt 尚未产生 assistant 正文增量
+- **THEN** adapter SHALL 把该事件归类为 `overloaded`
+- **THEN** adapter SHALL 在该事件携带服务端重试建议时按建议等待后创建新的 stream
+- **THEN** adapter SHALL 在该事件不携带服务端重试建议时按 `overloaded` 的保守退避等待后创建新的 stream
+
+#### Scenario: Anthropic 停止原因失败不重试
+- **WHEN** Anthropic stream 以 `max_tokens`、`refusal` 或 `pause_turn` 停止原因结束
+- **THEN** adapter SHALL 保持既有失败语义
+- **THEN** adapter SHALL NOT 创建新的 stream
+
 #### Scenario: Anthropic stream 异常失败
-- **WHEN** Anthropic SDK create 调用失败、stream 抛错、服务端返回错误或 stream 未完成
+- **WHEN** Anthropic SDK create 调用失败、stream 抛错且不符合重试条件或重试预算已耗尽
 - **THEN** adapter SHALL reject 一个明确错误
 - **THEN** 错误消息 SHALL NOT 包含 API key、Bearer token、x-api-key 或其他敏感凭据
 
@@ -933,7 +981,7 @@ agent loop runtime SHALL 支持 interactive tool continuation。对于 `ask_user
 - **THEN** 普通 OpenAI input 转换、skill catalog 注入和工具 schema 发送语义 SHALL 保持不变
 
 ### Requirement: 失败反馈
-系统 SHALL 对真实服务接入中的失败提供可见、可测试且不泄密的反馈。失败后应用 SHALL 停止 pending 状态、释放响应锁，并避免把敏感配置值暴露给用户。本地失败反馈 SHALL 记录为 `error` transcript record，而不是伪装成 assistant 回复。若失败前已经生成 partial assistant draft，系统 SHALL 先保留该 partial assistant 内容，再追加本地 error record 表示失败事实。
+系统 SHALL 对真实服务接入中的失败提供可见、可测试且不泄密的反馈。失败后应用 SHALL 停止 pending 状态、释放响应锁，并避免把敏感配置值暴露给用户。本地失败反馈 SHALL 记录为 `error` transcript record，而不是伪装成 assistant 回复。若失败前已经生成 partial assistant draft，系统 SHALL 先保留该 partial assistant 内容，再追加本地 error record 表示失败事实。若失败前发生过自动重试，最终错误 SHALL 说明已重试次数。
 
 #### Scenario: 服务错误失败
 - **WHEN** 模型服务返回错误或 SDK 抛出服务错误
@@ -941,7 +989,7 @@ agent loop runtime SHALL 支持 interactive tool continuation。对于 `ask_user
 - **THEN** 错误内容 SHALL NOT 包含敏感配置值
 
 #### Scenario: stream 中断失败且没有 partial draft
-- **WHEN** stream 在完成前中断且尚未产生文本增量
+- **WHEN** stream 在完成前中断、且重试预算已耗尽或该失败类别不可重试，并且尚未产生文本增量
 - **THEN** adapter SHALL 产生明确的 stream incomplete 错误
 - **THEN** 应用 SHALL 释放 response lock，使用户可以继续输入
 
@@ -950,6 +998,17 @@ agent loop runtime SHALL 支持 interactive tool continuation。对于 `ask_user
 - **THEN** 应用 SHALL 先追加一条 assistant transcript record 保存 partial draft
 - **THEN** 应用 SHALL 再追加一条本地 error record 表示响应未完整结束
 - **THEN** 应用 SHALL 释放 response lock，使用户可以继续输入
+
+#### Scenario: 重试后成功时不追加错误记录
+- **WHEN** 某个 provider turn 在自动重试后成功完成
+- **THEN** 应用 SHALL NOT 追加本地 error record
+- **THEN** 应用 SHALL 保留已持久化的本地重试 notice
+
+#### Scenario: 重试耗尽的最终失败说明重试次数
+- **WHEN** 一个 provider turn 在自动重试后仍然失败
+- **THEN** 本地 error record SHALL 包含已重试次数
+- **THEN** 本地 error record SHALL 保留最后一次 attempt 可用的 request ID
+- **THEN** 本地 error record SHALL NOT 包含敏感配置值
 
 #### Scenario: app 层展示本地错误
 - **WHEN** 真实 adapter reject 且用户消息已经提交到 transcript

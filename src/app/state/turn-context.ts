@@ -323,6 +323,15 @@ class TurnContext {
     }
   }
 
+  /** 丢弃当前 attempt 的 reasoning 预览；由 provider 重试触发，避免上一个 attempt 的预览残留到新 attempt。 */
+  clearReasoningStreamingPending(): void {
+    this.reasoningDraft = '';
+
+    if (this.pendingKind === 'reasoning_streaming') {
+      this.pendingKind = 'thinking';
+    }
+  }
+
   /**
    * 追加 shell 命令运行中的本地输出预览；只更新 footer pending，不追加 transcript。
    */

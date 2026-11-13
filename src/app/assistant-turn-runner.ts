@@ -214,6 +214,13 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
         }
 
         if (update.kind === 'draft') {
+          // 空 draft 表示执行器正在重试：必须丢弃上一 attempt 的预览，不能当作新的可见推理。
+          if (update.text === '') {
+            appContext.turnContext.clearReasoningStreamingPending();
+            render();
+            return;
+          }
+
           appContext.turnContext.setReasoningStreamingPending(update.text);
           return;
         }

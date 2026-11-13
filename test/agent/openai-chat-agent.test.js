@@ -8,6 +8,7 @@ const { createPromptCacheKey } = require('../../src/agent/prompt-cache');
 const { convertTranscriptToOpenAiChatMessages } = require('../../src/agent/openai-chat/transcript-converter');
 const { convertToolDefinitionsToOpenAiChatTools } = require('../../src/agent/openai-chat/tool-converter');
 const { createBuiltInSystemPrompt } = require('../../src/agent/context/system-prompt');
+const { runWithMockedRetryTimers } = require('./retry-test-helpers');
 
 const TEST_CWD = '/tmp/echo_tui';
 const TEST_SYSTEM_PROMPT = createBuiltInSystemPrompt({ cwd: TEST_CWD });
@@ -698,7 +699,7 @@ test('createOpenAiChatAgent configures SDK client and passes abort signal', asyn
       this.chat = {
         completions: {
           async create(_request, options) {
-            assert.equal(options.signal, controller.signal);
+            assert.ok(options.signal instanceof AbortSignal);
             return streamFrom([{ choices: [{ finish_reason: 'stop' }] }]);
           }
         }
@@ -916,7 +917,7 @@ test('createOpenAiChatAgent treats abort as user interruption instead of service
         chat: {
           completions: {
             async create(_request, options) {
-              assert.equal(options.signal, controller.signal);
+              assert.ok(options.signal instanceof AbortSignal);
               controller.abort();
               const error = new Error('The operation was aborted');
               error.name = 'AbortError';
@@ -971,4 +972,71 @@ test('Chat agent can generate compaction summaries without provider usage', asyn
   assert.equal(summary.summaryText, '## 背景与目标\n- 已检查项目。');
   assert.equal(requests[0].messages[0].role, 'system');
   assert.equal(requests[0].messages[1].role, 'user');
+});
+
+function createRetryableChatAgent(scripted) {
+  let attempts = 0;
+  const agent = createOpenAiChatAgent(TEST_CONFIG, createEmptyToolRegistry(), {
+    createClient() {
+      return {
+        chat: {
+          completions: {
+            async create() {
+              attempts += 1;
+              return streamFrom(scripted(Math.min(attempts, 2)));
+            }
+          }
+        }
+      };
+    }
+  });
+
+  return {get attempts() { return attempts; }, agent};
+}
+
+test('createOpenAiChatAgent retries a stream that ends without finish_reason', async () => {
+  const harness = createRetryableChatAgent((attempt) => attempt === 1
+    // 缺少 finish_reason 等价于流被截断，应作为 stream_incomplete 重试。
+    ? [{choices: [{delta: {reasoning_content: 'thinking'}}]}]
+    : [{choices: [{delta: {content: 'recovered'}}]}, {choices: [{finish_reason: 'stop'}]}]);
+  const tokens = [];
+
+  const result = await runWithMockedRetryTimers(() => harness.agent.runTurn([{role: 'user', text: 'hello'}], {
+    onToken(delta, draft) {
+      tokens.push([delta, draft]);
+    }
+  }));
+
+  assert.equal(result.draft, 'recovered');
+  assert.equal(harness.attempts, 2);
+  assert.deepEqual(tokens, [['recovered', 'recovered']]);
+});
+
+test('createOpenAiChatAgent classifies error chunks and retries rate limits', async () => {
+  const retries = [];
+  const harness = createRetryableChatAgent((attempt) => attempt === 1
+    ? [{error: {code: 'rate_limit_exceeded', message: 'slow down'}}]
+    : [{choices: [{finish_reason: 'stop'}]}]);
+
+  await runWithMockedRetryTimers(() => harness.agent.runTurn([{role: 'user', text: 'hello'}], {
+    onProviderRetry(retry) {
+      retries.push(retry);
+    }
+  }));
+
+  assert.equal(harness.attempts, 2);
+  assert.equal(retries.length, 1);
+  assert.equal(retries[0].kind, 'rate_limit');
+  assert.equal(retries[0].reason, '服务限流');
+});
+
+test('createOpenAiChatAgent does not retry terminal error chunks', async () => {
+  const harness = createRetryableChatAgent(() => [{error: {code: 'invalid_request_error', message: 'bad payload'}}]);
+
+  await assert.rejects(
+    () => harness.agent.runTurn([{role: 'user', text: 'hello'}], {}),
+    /bad payload/
+  );
+
+  assert.equal(harness.attempts, 1);
 });
