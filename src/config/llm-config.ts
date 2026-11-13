@@ -1,6 +1,7 @@
 import {isAbsolute} from 'node:path';
 
 import {REASONING_EFFORTS, REASONING_SUMMARIES} from '../types/agent';
+import {MAX_RETRIES_LIMIT, MAX_STREAM_IDLE_TIMEOUT_MS, MIN_STREAM_IDLE_TIMEOUT_MS} from '../agent/provider-error';
 import {getProviderPreset, providerRequiresApiKey} from './provider-presets';
 import {DEFAULT_APP_SETTINGS} from './app-settings-config';
 import type {SandboxMode} from '../sandbox/types';
@@ -178,6 +179,8 @@ type LlmProviderProfile = {
   codexOAuth?: LlmConfig['codexOAuth'];
   headers?: Record<string, string>;
   sessionHeader?: string; // preset 声明的会话亲和 header 名；值由 agent 装配层按会话注入。
+  streamIdleTimeoutMs?: number; // provider 级覆盖：单次 stream attempt 无事件的最长等待。
+  streamMaxRetries?: number; // provider 级覆盖：单个 provider turn 的流式重试预算。
 };
 
 type ParsedLlmConfiguration = {
@@ -291,6 +294,28 @@ function readOptionalHeaders(source: ConfigSource, fieldName: string, fieldOwner
   }
 
   return Object.keys(headers).length > 0 ? headers : undefined;
+}
+
+/**
+ * 读取流式重试预算：合法整数超过硬上限时限制到上限，非法输入（非整数、负数、非数字）回退默认值。
+ * 0 是合法值，表示关闭流式重试。
+ * 限制而非回退默认值，是为了尊重用户「尽量多试一次」的显式意图。
+ */
+function readRetryBudget(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+    return undefined;
+  }
+
+  return Math.min(value, MAX_RETRIES_LIMIT);
+}
+
+/** 读取空闲超时：低于下限或超过上限时限制到边界，非法输入回退默认值，避免误配后把正常响应判成断流。 */
+function readIdleTimeout(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
+    return undefined;
+  }
+
+  return Math.min(Math.max(value, MIN_STREAM_IDLE_TIMEOUT_MS), MAX_STREAM_IDLE_TIMEOUT_MS);
 }
 
 function isReasoningEffort(value: unknown): value is ReasoningEffort {
@@ -437,6 +462,8 @@ function parseProviderProfiles(llmConfig: ConfigSource): ParsedProviderProfiles 
     const codexAuthFile = preset.codexOAuth
       ? readOptionalProviderString(rawProvider, 'codexAuthFile', providerId)
       : undefined;
+    const streamMaxRetries = readRetryBudget(rawProvider.streamMaxRetries);
+    const streamIdleTimeoutMs = readIdleTimeout(rawProvider.streamIdleTimeoutMs);
 
     parsedProviders.set(providerId, {
       id: providerId,
@@ -445,7 +472,9 @@ function parseProviderProfiles(llmConfig: ConfigSource): ParsedProviderProfiles 
       baseURL,
       ...(preset.sessionHeader ? {sessionHeader: preset.sessionHeader} : {}),
       ...(preset.codexOAuth ? {codexOAuth: codexAuthFile ? {authFilePath: codexAuthFile} : {}} : {}),
-      ...(Object.keys(headers).length > 0 ? {headers} : {})
+      ...(Object.keys(headers).length > 0 ? {headers} : {}),
+      ...(streamMaxRetries === undefined ? {} : {streamMaxRetries}),
+      ...(streamIdleTimeoutMs === undefined ? {} : {streamIdleTimeoutMs})
     });
   }
 
@@ -508,24 +537,31 @@ function parseModelProfiles(llmConfig: ConfigSource, providers: Map<string, LlmP
   return parsedModels;
 }
 
-function withOptionalHeaders(config: Pick<LlmConfig, 'agentType' | 'apiKey' | 'baseURL' | 'codexOAuth' | 'providerId' | 'sessionHeader'>, headers?: Record<string, string>): Pick<LlmConfig, 'agentType' | 'apiKey' | 'baseURL' | 'codexOAuth' | 'providerId' | 'sessionHeader' | 'headers'> {
+type ResolvedProviderConfig = Pick<LlmConfig, 'agentType' | 'apiKey' | 'baseURL' | 'codexOAuth' | 'providerId' | 'sessionHeader' | 'headers' | 'streamIdleTimeoutMs' | 'streamMaxRetries'>;
+
+function withOptionalProviderFields(
+  config: Pick<LlmConfig, 'agentType' | 'apiKey' | 'baseURL' | 'codexOAuth' | 'providerId' | 'sessionHeader' | 'streamIdleTimeoutMs' | 'streamMaxRetries'>,
+  headers?: Record<string, string>
+): ResolvedProviderConfig {
   return headers ? {...config, headers} : config;
 }
 
-function resolveSelectedProviderConfig(selectedProfile: LlmModelProfile, providers: Map<string, LlmProviderProfile>): Pick<LlmConfig, 'agentType' | 'apiKey' | 'baseURL' | 'codexOAuth' | 'providerId' | 'sessionHeader' | 'headers'> {
+function resolveSelectedProviderConfig(selectedProfile: LlmModelProfile, providers: Map<string, LlmProviderProfile>): ResolvedProviderConfig {
   const provider = providers.get(selectedProfile.provider);
 
   if (!provider) {
     throw new LlmConfigError(`LLM 模型 ${selectedProfile.id} 引用了不存在的 provider：${selectedProfile.provider}`);
   }
 
-  return withOptionalHeaders({
+  return withOptionalProviderFields({
     agentType: provider.agentType,
     apiKey: provider.apiKey,
     providerId: provider.id,
     baseURL: provider.baseURL,
     ...(provider.sessionHeader ? {sessionHeader: provider.sessionHeader} : {}),
-    ...(provider.codexOAuth ? {codexOAuth: provider.codexOAuth} : {})
+    ...(provider.codexOAuth ? {codexOAuth: provider.codexOAuth} : {}),
+    ...(provider.streamMaxRetries === undefined ? {} : {streamMaxRetries: provider.streamMaxRetries}),
+    ...(provider.streamIdleTimeoutMs === undefined ? {} : {streamIdleTimeoutMs: provider.streamIdleTimeoutMs})
   }, provider.headers);
 }
 

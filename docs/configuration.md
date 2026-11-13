@@ -72,6 +72,36 @@
 
 回退到仍支持旧 mode 的版本时，该版本可能再次采用保留的旧值；旧版本会忽略新禁用名单，**不会保留本功能的工具禁用效果**。
 
+## Provider 流式重试
+
+`~/.echo/config.json` 的 provider profile 支持两个可选字段，用于覆盖流式请求的重试行为。`/config` 面板不暴露它们，只在需要手写配置时使用。
+
+```json
+{
+  "llm": {
+    "providers": {
+      "default": {
+        "preset": "openai-responses-api",
+        "apiKey": "sk-...",
+        "streamMaxRetries": 3,
+        "streamIdleTimeoutMs": 120000
+      }
+    }
+  }
+}
+```
+
+- `streamMaxRetries`：单个 provider turn 的流式重试预算，默认 **5 次**（即最多 6 次 stream）。写 `0` 表示关闭流式重试（只尝试一次）；合法整数超过 20 时限制为 20；非整数、负数或非数字回退默认值。
+- `streamIdleTimeoutMs`：一次 stream attempt 无任何事件的最长等待，默认 **300000 毫秒**。合法整数低于 10000 时限制为 10000，高于 3600000 时限制为 3600000。
+
+重试判定按失败语义分类，不依赖错误文案匹配：
+
+- **连接中断、响应流提前结束**：指数退避，500ms 起、单次上限 60 秒、±20% 抖动。
+- **限流、服务过载**：优先采纳服务端 `Retry-After`、`retry-after-ms` 或 `try again in 11.054s` 建议；取不到建议时按类别回退保守退避（限流 5 秒起、过载 2 秒起），最多 2 次。
+- **请求无效、上下文超限、鉴权失败、配额不足、服务端 incomplete、内容策略拒绝**：不重试。
+
+已向屏幕输出正文、已发出 reasoning 完成通知、已解析出完整工具调用或已产生 provider 私有推理记录的 attempt 不会自动重试；仅展示过 reasoning 预览时会先清空预览再重试。compaction 请求始终不重试。
+
 ## 响应期间发送消息
 
 选中“响应期间发送消息”，按 **Enter、← 或 →** 在两种策略间切换：

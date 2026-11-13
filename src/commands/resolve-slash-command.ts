@@ -24,6 +24,7 @@ import { ReferenceCommandHandler } from './reference-command-handler';
 import { SkillInvocationCommandHandler } from './skill-invocation-command-handler';
 import { SkillsCommandHandler } from './skills-command-handler';
 import { StatusCommandHandler } from './status-command-handler';
+import { TasksCommandHandler } from './tasks-command-handler';
 import { UndoCommandHandler } from './undo-command-handler';
 import { UsageCommandHandler } from './usage-command-handler';
 
@@ -42,6 +43,7 @@ export function createDefaultSlashCommandHandlers(getAgentInstructionFileName?: 
     new StatusCommandHandler(),
     new ContextCommandHandler(),
     new UsageCommandHandler(),
+    new TasksCommandHandler(),
     new CopyCommandHandler(),
     new ClearCommandHandler(),
     new CompactCommandHandler(),

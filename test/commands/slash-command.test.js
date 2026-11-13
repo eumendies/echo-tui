@@ -27,6 +27,7 @@ const { SkillsCommandHandler } = require('../../src/commands/skills-command-hand
 const { SkillInvocationCommandHandler } = require('../../src/commands/skill-invocation-command-handler');
 const { StatusCommandHandler } = require('../../src/commands/status-command-handler');
 const { UndoCommandHandler } = require('../../src/commands/undo-command-handler');
+const { TasksCommandHandler } = require('../../src/commands/tasks-command-handler');
 const { UsageCommandHandler } = require('../../src/commands/usage-command-handler');
 const {
   createDefaultSlashCommandHandlers,
@@ -100,9 +101,29 @@ function createFakeHost(options = {}) {
         calls.btwCloses += 1;
       }
     },
+    background: {
+      list() {
+        return [];
+      },
+      hasSessionTasks() {
+        return false;
+      },
+      stop() {
+        return Promise.resolve(false);
+      },
+      readLog() {
+        return null;
+      },
+      readReferenceLog() {
+        return null;
+      }
+    },
     transcript: {
       clear() {
         calls.clears += 1;
+      },
+      stopSessionTasks() {
+        return Promise.resolve();
       },
       forkSession() {
         calls.forkCalls += 1;
@@ -539,7 +560,7 @@ test('resolveSlashCommand asks handlers in order and returns the first match', (
 test('createDefaultSlashCommandHandlers wires handlers in order', () => {
   const handlers = createDefaultHandlersForTest();
 
-  assert.equal(handlers.length, 25);
+  assert.equal(handlers.length, 26);
   assert.equal(handlers.some((handler) => handler.name === 'skill'), false);
   assert.equal(handlers[0].name, 'help');
   assert.equal(handlers[1].name, 'btw');
@@ -550,22 +571,22 @@ test('createDefaultSlashCommandHandlers wires handlers in order', () => {
   assert.equal(handlers[6].name, 'status');
   assert.equal(handlers[7].name, 'context');
   assert.equal(handlers[8].name, 'usage');
-  assert.equal(handlers[9].name, 'copy');
-  assert.equal(handlers[10].name, 'clear');
-  assert.equal(handlers[11].name, 'compact');
-  assert.equal(handlers[12].name, 'diff');
-  assert.equal(handlers[13].name, 'undo');
-  assert.equal(handlers[14].name, 'fork');
-  assert.equal(handlers[15].name, 'resume');
-  assert.equal(handlers[16].name, 'reference');
-  assert.equal(handlers[17].name, 'mcp');
-  assert.equal(handlers[18].name, 'memory');
-  assert.equal(handlers[19].name, 'agents');
-  assert.equal(handlers[20].name, 'hooks');
-  assert.equal(handlers[21].name, 'skills');
-  assert.equal(handlers[22].name, 'init');
-  assert.equal(handlers[23].name, 'review');
-  assert.equal(handlers[24].name, undefined);
+  assert.equal(handlers[10].name, 'copy');
+  assert.equal(handlers[11].name, 'clear');
+  assert.equal(handlers[12].name, 'compact');
+  assert.equal(handlers[13].name, 'diff');
+  assert.equal(handlers[14].name, 'undo');
+  assert.equal(handlers[15].name, 'fork');
+  assert.equal(handlers[16].name, 'resume');
+  assert.equal(handlers[17].name, 'reference');
+  assert.equal(handlers[18].name, 'mcp');
+  assert.equal(handlers[19].name, 'memory');
+  assert.equal(handlers[20].name, 'agents');
+  assert.equal(handlers[21].name, 'hooks');
+  assert.equal(handlers[22].name, 'skills');
+  assert.equal(handlers[23].name, 'init');
+  assert.equal(handlers[24].name, 'review');
+  assert.equal(handlers[25].name, undefined);
   assert.equal(handlers[0] instanceof HelpCommandHandler, true);
   assert.equal(handlers[1] instanceof BtwCommandHandler, true);
   assert.equal(handlers[2] instanceof ConfigCommandHandler, true);
@@ -575,22 +596,22 @@ test('createDefaultSlashCommandHandlers wires handlers in order', () => {
   assert.equal(handlers[6] instanceof StatusCommandHandler, true);
   assert.equal(handlers[7] instanceof ContextCommandHandler, true);
   assert.equal(handlers[8] instanceof UsageCommandHandler, true);
-  assert.equal(handlers[9] instanceof CopyCommandHandler, true);
-  assert.equal(handlers[10] instanceof ClearCommandHandler, true);
-  assert.equal(handlers[11] instanceof CompactCommandHandler, true);
-  assert.equal(handlers[12] instanceof DiffCommandHandler, true);
-  assert.equal(handlers[13] instanceof UndoCommandHandler, true);
-  assert.equal(handlers[14] instanceof ForkCommandHandler, true);
-  assert.equal(handlers[15] instanceof ResumeCommandHandler, true);
-  assert.equal(handlers[16] instanceof ReferenceCommandHandler, true);
-  assert.equal(handlers[17] instanceof McpCommandHandler, true);
-  assert.equal(handlers[18] instanceof MemoryCommandHandler, true);
-  assert.equal(handlers[19] instanceof AgentsCommandHandler, true);
-  assert.equal(handlers[20] instanceof HooksCommandHandler, true);
-  assert.equal(handlers[21] instanceof SkillsCommandHandler, true);
-  assert.equal(handlers[22] instanceof AgentWorkflowCommandHandler, true);
+  assert.equal(handlers[10] instanceof CopyCommandHandler, true);
+  assert.equal(handlers[11] instanceof ClearCommandHandler, true);
+  assert.equal(handlers[12] instanceof CompactCommandHandler, true);
+  assert.equal(handlers[13] instanceof DiffCommandHandler, true);
+  assert.equal(handlers[14] instanceof UndoCommandHandler, true);
+  assert.equal(handlers[15] instanceof ForkCommandHandler, true);
+  assert.equal(handlers[16] instanceof ResumeCommandHandler, true);
+  assert.equal(handlers[17] instanceof ReferenceCommandHandler, true);
+  assert.equal(handlers[18] instanceof McpCommandHandler, true);
+  assert.equal(handlers[19] instanceof MemoryCommandHandler, true);
+  assert.equal(handlers[20] instanceof AgentsCommandHandler, true);
+  assert.equal(handlers[21] instanceof HooksCommandHandler, true);
+  assert.equal(handlers[22] instanceof SkillsCommandHandler, true);
   assert.equal(handlers[23] instanceof AgentWorkflowCommandHandler, true);
-  assert.equal(handlers[24] instanceof SkillInvocationCommandHandler, true);
+  assert.equal(handlers[24] instanceof AgentWorkflowCommandHandler, true);
+  assert.equal(handlers[25] instanceof SkillInvocationCommandHandler, true);
 });
 
 test('statusCommandHandler navigates session details and refreshes only the local snapshot', () => {
@@ -1253,7 +1274,7 @@ test('direct skill invocation returns typed per-turn model and effort overrides'
   });
 });
 
-test('undoCommandHandler reports unavailable, invalid, cancel, success, and failure states', () => {
+test('undoCommandHandler reports unavailable, invalid, cancel, success, and failure states', async () => {
   const unavailable = createFakeHost();
   const undoCommandHandler = new UndoCommandHandler();
 
@@ -1264,13 +1285,13 @@ test('undoCommandHandler reports unavailable, invalid, cancel, success, and fail
   let session = startCommand(undoCommandHandler, '/undo', unavailable.host);
   assert.equal(session.surface.kind, 'info');
   assert.match(session.surface.lines.join('\n'), /暂无可回退/);
-  undoCommandHandler.handleEvent(session, {type: INPUT_EVENTS.SUBMIT}, unavailable.host);
+  await undoCommandHandler.handleEvent(session, {type: INPUT_EVENTS.SUBMIT}, unavailable.host);
   assert.equal(unavailable.calls.sessionCloses, 1);
 
   const invalid = createFakeHost({undoSummary: {status: 'invalid', reason: '写入型 bash 不可追踪'}});
   session = startCommand(undoCommandHandler, '/undo', invalid.host);
   assert.equal(session.surface.kind, 'info');
-  assert.match(session.surface.lines.join('\n'), /写入型 bash 不可追踪/);
+  assert.deepEqual(session.surface.lines, ['写入型 bash 不可追踪']);
 
   const cancel = createFakeHost({
     undoSummary: {
@@ -1283,12 +1304,8 @@ test('undoCommandHandler reports unavailable, invalid, cancel, success, and fail
   });
   session = startCommand(undoCommandHandler, '/undo', cancel.host);
   assert.equal(session.surface.kind, 'confirm');
-  assert.deepEqual(session.surface.bodyLines, [
-    '回退这轮对话与文件变更',
-    '回退 1 个文件修改，删除 1 个新增文件。',
-    '注意：会覆盖期间的手动修改'
-  ]);
-  undoCommandHandler.handleEvent(session, {type: INPUT_EVENTS.ESCAPE}, cancel.host);
+  assert.deepEqual(session.surface.bodyLines, ['撤回本轮对话，恢复 1 个文件，删除 1 个新增文件。']);
+  await undoCommandHandler.handleEvent(session, {type: INPUT_EVENTS.ESCAPE}, cancel.host);
   assert.equal(cancel.calls.undoExecutes, 0);
   assert.equal(cancel.calls.sessionCloses, 1);
 
@@ -1302,7 +1319,7 @@ test('undoCommandHandler reports unavailable, invalid, cancel, success, and fail
     }
   });
   session = startCommand(undoCommandHandler, '/undo', success.host);
-  undoCommandHandler.handleEvent(session, {type: INPUT_EVENTS.SUBMIT}, success.host);
+  await undoCommandHandler.handleEvent(session, {type: INPUT_EVENTS.SUBMIT}, success.host);
   assert.equal(success.calls.undoExecutes, 1);
   assert.equal(success.calls.sessionCloses, 1);
   assert.equal(success.calls.resizeRecoveries, 1);
@@ -1322,10 +1339,100 @@ test('undoCommandHandler reports unavailable, invalid, cancel, success, and fail
     }
   });
   session = startCommand(undoCommandHandler, '/undo', failure.host);
-  undoCommandHandler.handleEvent(session, {type: INPUT_EVENTS.SUBMIT}, failure.host);
+  await undoCommandHandler.handleEvent(session, {type: INPUT_EVENTS.SUBMIT}, failure.host);
   assert.equal(failure.calls.sessionCloses, 0);
   assert.equal(failure.host.session.getActive().surface.kind, 'info');
   assert.match(failure.host.session.getActive().surface.lines.join('\n'), /文件恢复失败/);
+});
+
+for (const ok of [true, false]) {
+  test(`undo consumes duplicate confirmation and cancellation until execution completes (${ok ? 'success' : 'failure'})`, async () => {
+    const {host, calls} = createFakeHost({undoSummary: {
+      status: 'ready', checkpointId: 'partial', fileCount: 1, restoreFileCount: 1, deleteFileCount: 0
+    }});
+    let finish;
+    host.undo.execute = () => {
+      calls.undoExecutes += 1;
+      return new Promise((resolve) => { finish = resolve; });
+    };
+    const handler = new UndoCommandHandler();
+    const session = startCommand(handler, '/undo', host);
+    const pending = handler.handleEvent(session, {type: INPUT_EVENTS.SUBMIT}, host);
+    await handler.handleEvent(session, {type: INPUT_EVENTS.SUBMIT}, host);
+    await handler.handleEvent(session, {type: INPUT_EVENTS.ESCAPE}, host);
+    assert.equal(calls.undoExecutes, 1);
+    assert.equal(calls.sessionCloses, 0);
+    assert.equal(host.session.getActive().data.mode, 'executing');
+    assert.equal(host.session.getActive().surface.title, '/undo 正在回退');
+    assert.deepEqual(host.session.getActive().surface.lines, []);
+    assert.equal(host.session.getActive().surface.dismissHint, '请稍候');
+    finish(ok ? {ok: true, checkpoint: {id: 'partial'}} : {ok: false, reason: 'conflict', message: 'file changed'});
+    await pending;
+    assert.equal(calls.undoExecutes, 1);
+    if (ok) {
+      assert.equal(calls.sessionCloses, 1);
+      assert.equal(calls.resizeRecoveries, 1);
+    } else {
+      assert.equal(host.session.getActive().data.mode, 'info');
+      assert.match(host.session.getActive().surface.lines.join('\n'), /file changed/);
+    }
+  });
+}
+
+test('undo confirmation keeps shell and overwrite risks without internal explanations', () => {
+  const {host} = createFakeHost({undoSummary: {
+    status: 'ready', checkpointId: 'partial', fileCount: 2, restoreFileCount: 1, deleteFileCount: 1,
+    untrackedReason: '本轮执行过不可追踪的 bash 命令', uncheckedFileCount: 1
+  }});
+  const session = startCommand(new UndoCommandHandler(), '/undo', host);
+  assert.equal(session.surface.title, '/undo 回退上一轮');
+  assert.deepEqual(session.surface.bodyLines, [
+    '撤回本轮对话，恢复 1 个文件，删除 1 个新增文件。',
+    'Shell 操作不会完整撤销。',
+    '1 个文件无法检查后续修改，回退将覆盖当前内容。'
+  ]);
+});
+
+test('shell-only undo shows no zero counts and carried shell effects use one short notice', () => {
+  const onlyShell = createFakeHost({undoSummary: {
+    status: 'ready', checkpointId: 'shell', fileCount: 0, restoreFileCount: 0, deleteFileCount: 0, untrackedReason: '本轮 shell'
+  }});
+  const shellSession = startCommand(new UndoCommandHandler(), '/undo', onlyShell.host);
+  assert.deepEqual(shellSession.surface.bodyLines, ['撤回本轮对话。', 'Shell 操作不会完整撤销。']);
+  const carried = createFakeHost({undoSummary: {
+    status: 'ready', checkpointId: 'earlier', fileCount: 1, restoreFileCount: 1, deleteFileCount: 0, undoneUntrackedNotice: '此前 Shell 操作的影响仍可能保留。'
+  }});
+  const earlierSession = startCommand(new UndoCommandHandler(), '/undo', carried.host);
+  assert.equal(earlierSession.surface.title, '/undo 回退上一轮');
+  assert.deepEqual(earlierSession.surface.bodyLines, ['撤回本轮对话，恢复 1 个文件。', '此前 Shell 操作的影响仍可能保留。']);
+});
+
+test('undo confirmation merges current and carried shell warnings', () => {
+  const {host} = createFakeHost({undoSummary: {
+    status: 'ready', checkpointId: 'both', fileCount: 1, restoreFileCount: 0, deleteFileCount: 1,
+    untrackedReason: '内部未追踪原因', undoneUntrackedNotice: '此前 Shell 操作的影响仍可能保留。'
+  }});
+  const session = startCommand(new UndoCommandHandler(), '/undo', host);
+  assert.deepEqual(session.surface.bodyLines, ['撤回本轮对话，删除 1 个新增文件。', 'Shell 操作不会完整撤销。']);
+});
+
+test('undo with no file changes only confirms the conversation', () => {
+  const {host} = createFakeHost({undoSummary: {
+    status: 'ready', checkpointId: 'conversation', fileCount: 0, restoreFileCount: 0, deleteFileCount: 0
+  }});
+  const session = startCommand(new UndoCommandHandler(), '/undo', host);
+  assert.deepEqual(session.surface.bodyLines, ['撤回本轮对话。']);
+});
+
+test('undo legacy overwrite warning stays visible without shell effects', () => {
+  const {host} = createFakeHost({undoSummary: {
+    status: 'ready', checkpointId: 'legacy', fileCount: 2, restoreFileCount: 2, deleteFileCount: 0, uncheckedFileCount: 2
+  }});
+  const session = startCommand(new UndoCommandHandler(), '/undo', host);
+  assert.deepEqual(session.surface.bodyLines, [
+    '撤回本轮对话，恢复 2 个文件。',
+    '2 个文件无法检查后续修改，回退将覆盖当前内容。'
+  ]);
 });
 
 test('diffCommandHandler opens diff surface, handles focus and scroll, and closes', () => {
@@ -2043,6 +2150,7 @@ test('createSlashCommandDescriptors derives display metadata from handlers', () 
     { name: 'status', description: '查看运行状态、账户用量与会话计划', allowDuringAssistantTurn: true },
     { name: 'context', description: '查看 context 占用详情', allowDuringAssistantTurn: true },
     { name: 'usage', description: '查看每日 token 用量与当日模型明细', allowDuringAssistantTurn: true },
+    { name: 'tasks', description: '查看后台任务' },
     { name: 'copy', description: '复制会话消息', allowDuringAssistantTurn: true },
     { name: 'clear', description: '清空当前会话' },
     { name: 'compact', description: '手动压缩当前会话上下文' },
@@ -2080,7 +2188,9 @@ test('default slash command handlers accept tab-completed trailing whitespace', 
     assert.equal(resolveSlashCommand(`/${descriptor.name} `, handlers)?.name, descriptor.name);
   }
 
-  assert.equal(resolveSlashCommand('/model more', handlers)?.name, undefined);
+  // 带参数输入由命令自身接管，不再落到 skill fallback。
+  assert.equal(resolveSlashCommand('/model more', handlers)?.name, 'model');
+  assert.equal(resolveSlashCommand('/effort high', handlers)?.name, 'effort');
 });
 
 test('/themes is no longer a local command', () => {
@@ -2142,13 +2252,105 @@ test('btwCommandHandler opens a response-time side session and delegates all sid
   assert.deepEqual(empty.calls.btwOpens, [undefined]);
 });
 
+test('modelCommandHandler applies a model name argument without opening a surface', () => {
+  const modelCommandHandler = new ModelCommandHandler();
+  const { calls, host } = createFakeHost({
+    modelCommandInfo: {
+      selectedIndex: 0,
+      models: [
+        { id: 'fast', model: 'gpt-fast', provider: 'openai' },
+        { id: 'deep', model: 'gpt-deep', provider: 'openai' }
+      ]
+    }
+  });
+
+  modelCommandHandler.start('/model gpt-deep', host);
+
+  assert.deepEqual(calls.modelSelections, ['deep']);
+  assert.equal(host.session.getActive(), null);
+
+  // 大小写不敏感，且参数不进入 profile id 命名空间。
+  modelCommandHandler.start('/model GPT-FAST', host);
+  assert.deepEqual(calls.modelSelections, ['deep', 'fast']);
+
+  modelCommandHandler.start('/model fast', host);
+  assert.deepEqual(calls.modelSelections, ['deep', 'fast']);
+});
+
+test('modelCommandHandler lists candidates when a model name does not match exactly one profile', () => {
+  const modelCommandHandler = new ModelCommandHandler();
+  const { calls, host } = createFakeHost({
+    modelCommandInfo: {
+      selectedIndex: 1,
+      models: [
+        { id: 'fast', model: 'gpt-fast', provider: 'openai' },
+        { id: 'deep', model: 'gpt-deep', provider: 'openai' }
+      ]
+    }
+  });
+
+  modelCommandHandler.start('/model gpt', host);
+  const unmatched = host.session.getActive();
+
+  assert.equal(unmatched.surface.kind, 'info');
+  assert.equal(unmatched.surface.title, '/model');
+  assert.ok(unmatched.surface.lines.some((line) => line.includes('无法匹配模型：gpt')));
+  assert.ok(unmatched.surface.lines.some((line) => line.includes('gpt-fast')));
+  // 当前生效项以 `*` 标记，便于用户发现现状。
+  assert.ok(unmatched.surface.lines.some((line) => line.startsWith('* gpt-deep')));
+  assert.deepEqual(calls.modelSelections, []);
+
+  const ambiguousHost = createFakeHost({
+    modelCommandInfo: {
+      selectedIndex: 0,
+      models: [
+        { id: 'a', model: 'shared', provider: 'openai' },
+        { id: 'b', model: 'shared', provider: 'azure' }
+      ]
+    }
+  });
+  modelCommandHandler.start('/model shared', ambiguousHost.host);
+
+  const ambiguous = ambiguousHost.host.session.getActive();
+  assert.ok(ambiguous.surface.lines.some((line) => line.includes('匹配到 2 个模型：shared')));
+  assert.deepEqual(ambiguousHost.calls.modelSelections, []);
+});
+
+test('modelCommandHandler keeps config error and save failure surfaces for arguments', () => {
+  const modelCommandHandler = new ModelCommandHandler();
+  const configError = createFakeHost({ modelCommandInfo: { error: 'LLM 配置缺少 models' } });
+
+  modelCommandHandler.start('/model gpt-fast', configError.host);
+  const errorSession = configError.host.session.getActive();
+
+  assert.ok(errorSession.surface.lines.some((line) => line.includes('当前未读取到模型配置。')));
+  assert.deepEqual(configError.calls.modelSelections, []);
+
+  const failing = createFakeHost({
+    modelCommandInfo: {
+      selectedIndex: 0,
+      models: [{ id: 'fast', model: 'gpt-fast', provider: 'openai' }]
+    },
+    selectModel() {
+      return { ok: false, error: 'cannot write <redacted>' };
+    }
+  });
+
+  modelCommandHandler.start('/model gpt-fast', failing.host);
+  const failureSession = failing.host.session.getActive();
+
+  assert.ok(failureSession.surface.lines.some((line) => line.includes('无法保存当前模型选择。')));
+  assert.ok(failureSession.surface.lines.some((line) => line.includes('cannot write')));
+});
+
 test('modelCommandHandler opens info session for config errors', () => {
   const modelCommandHandler = new ModelCommandHandler();
   const { host } = createFakeHost({ modelCommandInfo: { error: 'LLM 配置缺少 models' } });
 
-  assert.equal(modelCommandHandler.match('/model more'), false);
+  assert.equal(modelCommandHandler.match('/model more'), true);
   assert.equal(modelCommandHandler.match('model'), false);
   assert.equal(modelCommandHandler.match('/model'), true);
+  assert.equal(modelCommandHandler.match('/modelx'), false);
   assert.equal(resolveSlashCommand('/model', createDefaultHandlersForTest()).name, 'model');
 
   const session = startCommand(modelCommandHandler, '/model', host);
@@ -2243,13 +2445,84 @@ test('modelCommandHandler config error submit is a no-op and escape closes', () 
   assert.equal(calls.sessionCloses, 1);
 });
 
+test('effortCommandHandler applies an effort argument without opening a surface', () => {
+  const effortCommandHandler = new EffortCommandHandler();
+  const { calls, host } = createFakeHost({
+    effortCommandInfo: {
+      currentModelLabel: 'gpt-deep',
+      efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
+      selectedIndex: 2
+    }
+  });
+
+  effortCommandHandler.start('/effort high', host);
+
+  assert.deepEqual(calls.effortSelections, ['high']);
+  assert.equal(host.session.getActive(), null);
+
+  // 大小写不敏感，`none` 按既有语义作为显式禁用保存。
+  effortCommandHandler.start('/effort HIGH', host);
+  effortCommandHandler.start('/effort None', host);
+  assert.deepEqual(calls.effortSelections, ['high', 'high', 'none']);
+});
+
+test('effortCommandHandler lists valid levels for an invalid argument', () => {
+  const effortCommandHandler = new EffortCommandHandler();
+  const { calls, host } = createFakeHost({
+    effortCommandInfo: {
+      currentModelLabel: 'gpt-deep',
+      efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
+      selectedIndex: 2
+    }
+  });
+
+  effortCommandHandler.start('/effort med', host);
+  const session = host.session.getActive();
+
+  assert.equal(session.surface.kind, 'info');
+  assert.equal(session.surface.title, '/effort');
+  assert.ok(session.surface.lines.some((line) => line.includes('无法匹配推理等级：med')));
+  assert.ok(session.surface.lines.some((line) => line.includes('可用级别：none · low · medium · high · xhigh · max')));
+  assert.ok(session.surface.lines.some((line) => line.includes('当前：gpt-deep · medium')));
+  assert.deepEqual(calls.effortSelections, []);
+});
+
+test('effortCommandHandler keeps config error and save failure surfaces for arguments', () => {
+  const effortCommandHandler = new EffortCommandHandler();
+  const configError = createFakeHost({ effortCommandInfo: { error: 'LLM 配置缺少 models' } });
+
+  effortCommandHandler.start('/effort high', configError.host);
+  const errorSession = configError.host.session.getActive();
+
+  assert.ok(errorSession.surface.lines.some((line) => line.includes('当前未读取到推理等级配置。')));
+  assert.deepEqual(configError.calls.effortSelections, []);
+
+  const failing = createFakeHost({
+    effortCommandInfo: {
+      currentModelLabel: 'gpt-deep',
+      efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
+      selectedIndex: 2
+    },
+    selectEffort() {
+      return { ok: false, error: 'cannot write <redacted>' };
+    }
+  });
+
+  effortCommandHandler.start('/effort high', failing.host);
+  const failureSession = failing.host.session.getActive();
+
+  assert.ok(failureSession.surface.lines.some((line) => line.includes('无法保存当前推理等级。')));
+  assert.ok(failureSession.surface.lines.some((line) => line.includes('cannot write')));
+});
+
 test('effortCommandHandler opens info session for config errors', () => {
   const effortCommandHandler = new EffortCommandHandler();
   const { host } = createFakeHost({ effortCommandInfo: { error: 'LLM 配置缺少 models' } });
 
-  assert.equal(effortCommandHandler.match('/effort more'), false);
+  assert.equal(effortCommandHandler.match('/effort more'), true);
   assert.equal(effortCommandHandler.match('effort'), false);
   assert.equal(effortCommandHandler.match('/effort'), true);
+  assert.equal(effortCommandHandler.match('/effortx'), false);
   assert.equal(resolveSlashCommand('/effort', createDefaultHandlersForTest()).name, 'effort');
 
   const session = startCommand(effortCommandHandler, '/effort', host);
@@ -2917,7 +3190,7 @@ test('hooksCommandHandler blocks invalid save, reports save failure, and runs sy
   assert.equal(session.surface.test, undefined);
 });
 
-test('clearCommandHandler opens confirm session, confirms, and cancels through host', () => {
+test('clearCommandHandler opens confirm session, confirms, and cancels through host', async () => {
   const clearCommandHandler = new ClearCommandHandler();
   const { calls, host } = createFakeHost();
 
@@ -2932,7 +3205,8 @@ test('clearCommandHandler opens confirm session, confirms, and cancels through h
   assert.equal(session.surface.title, '/clear 清空会话');
   assert.equal(session.surface.confirmLabel, '清空');
 
-  clearCommandHandler.handleEvent(session, { type: INPUT_EVENTS.SUBMIT }, host);
+  // 确认清空会先停止离开会话的后台任务,因此必须等待异步 handler。
+  await clearCommandHandler.handleEvent(session, { type: INPUT_EVENTS.SUBMIT }, host);
   assert.equal(calls.sessionCloses, 1);
   assert.equal(calls.clears, 1);
 

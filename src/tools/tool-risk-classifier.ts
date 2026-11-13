@@ -210,6 +210,23 @@ function parseRunSubagentAgentName(argumentsText: string): string | null {
   return typeof agentName === 'string' && agentName !== '' ? agentName : null;
 }
 
+/** 解析 run_bash_command 的 background 开关;非布尔或解析失败都按前台执行处理。 */
+function parseBashBackgroundFlag(argumentsText: string): boolean {
+  let args: unknown;
+
+  try {
+    args = JSON.parse(argumentsText);
+  } catch {
+    return false;
+  }
+
+  if (!args || typeof args !== 'object' || Array.isArray(args)) {
+    return false;
+  }
+
+  return (args as {background?: unknown}).background === true;
+}
+
 function hasBashRisk(command: string): boolean {
   const normalizedCommand = command.replace(/\r\n?/g, '\n');
   return BASH_RISK_PATTERNS.some((pattern) => pattern.test(normalizedCommand));
@@ -224,6 +241,7 @@ export {
   classifySubagentToolCall,
   classifyToolCallRisk,
   createMcpApprovalPreview,
+  parseBashBackgroundFlag,
   parseBashCommand,
   parseRunSubagentAgentName
 };

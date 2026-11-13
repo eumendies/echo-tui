@@ -1,13 +1,18 @@
 import {createCommandViewport} from './command-viewport';
+import {BACKGROUND_WRITE_UNDO_REASON} from '../state/app-context';
+import {hasUnconfirmedBashCommands, UNCONFIRMED_BASH_UNDO_REASON} from '../../tools/bash-command-runner';
 
 import type {CommandHostApp} from '../../types/command';
 import type {AppContext} from '../state/app-context';
 
 type HistoryCommandContext = Pick<AppContext,
+  'backgroundTasks' |
   'changeHistoryContext' |
   'createDiffSourceResult' |
   'createRenderState' |
-  'executeUndo'
+  'getCurrentCwd' |
+  'executeUndo' |
+  'transcriptContext'
 >;
 
 /**
@@ -25,6 +30,16 @@ function createHistoryCommandPorts(appContext: HistoryCommandContext): Pick<Comm
     },
     undo: {
       getSummary() {
+        if (hasUnconfirmedBashCommands(appContext.getCurrentCwd())) {
+          return {status: 'invalid', reason: UNCONFIRMED_BASH_UNDO_REASON};
+        }
+        const sessionId = appContext.transcriptContext.getCurrentSessionId();
+
+        // 摘要入口先查活动写任务:两轮之间没有 recording checkpoint 时也要能拒绝回退。
+        if (sessionId && appContext.backgroundTasks?.hasActiveWriteTask(sessionId)) {
+          return {status: 'invalid', reason: BACKGROUND_WRITE_UNDO_REASON};
+        }
+
         return appContext.changeHistoryContext.getSummary();
       },
       execute() {

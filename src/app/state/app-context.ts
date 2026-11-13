@@ -16,9 +16,12 @@ import type {UserConfigContext, UserConfigSnapshot} from '../../config/user-conf
 import {createSessionModelSettingsStore} from '../../persistence/session-model-settings-store';
 import {isShellInteractionMode} from '../../types/agent';
 import {createModeTransitionUserMessage} from '../../agent/context/interaction-mode';
+import {hasUnconfirmedBashCommands, UNCONFIRMED_BASH_UNDO_REASON} from '../../tools/bash-command-runner';
 
 import type {TerminalController} from '../../types/app';
 import type {ActiveTurnMessagePolicy, AgentSessionInput, AgentUserConfigSnapshot, ContextUsage, InteractionMode, ReasoningEffort} from '../../types/agent';
+import type {AgentToolPolicy} from '../../types/agent';
+import type {BackgroundTaskManager} from '../../types/background-task';
 import type {ToolApprovalSettings} from '../../config/app-settings-config';
 import type {DiffSourceResult} from '../../types/diff';
 import type {CommandSurface, SlashCommandDescriptor} from '../../types/command';
@@ -27,7 +30,9 @@ import type {RenderState, SlashSuggestionState, StatusLineModelRenderState} from
 import type {ToolExecutionResult} from '../../types/tool';
 import type {TranscriptForkResult, TranscriptRecord, TranscriptSessionDeleteResult, TranscriptStore, UserTranscriptMetadata} from '../../types/transcript';
 import type {SessionModelSettingsStore} from '../../types/session-model-settings';
-import type {UndoExecuteResult} from '../../types/change-history';
+import type {ChangeCheckpoint, UndoExecuteResult} from '../../types/change-history';
+
+const BACKGROUND_WRITE_UNDO_REASON = '仍有后台命令可能写入文件，请稍后重试。';
 import type {ToolApprovalContext} from './tool-approval-context';
 import type {AssistantTurnHandle, InterruptAssistantTurnResult} from './turn-context';
 
@@ -49,6 +54,8 @@ function isInteractionMode(value: unknown): value is InteractionMode {
  * 组合单个 createApp 实例需要的语义 context；状态由各子 context 自己持有。
  */
 class AppContext {
+  /** 后台 bash 管理器;只有交互式主会话装配,headless 与测试可缺省。 */
+  readonly backgroundTasks: BackgroundTaskManager | null;
   private readonly getCurrentCwdValue: string | (() => string);
   private readonly getNodeVersionValue: string | (() => string);
   readonly composerContext: ComposerContext;
@@ -78,13 +85,15 @@ class AppContext {
     nodeVersion: string | (() => string),
     theme: TuiTheme = DEFAULT_TUI_THEME,
     sessionModelSettingsStore: SessionModelSettingsStore = createSessionModelSettingsStore(transcriptStore),
-    userConfigContext: UserConfigContext
+    userConfigContext: UserConfigContext,
+    backgroundTasks: BackgroundTaskManager | null = null
   ) {
     if (!userConfigContext) {
       throw new Error('AppContext 必须注入共享的 UserConfigContext');
     }
     this.getCurrentCwdValue = cwd;
     this.getNodeVersionValue = nodeVersion;
+    this.backgroundTasks = backgroundTasks;
     this.userConfigContext = userConfigContext;
     this.sessionModelSettingsStore = sessionModelSettingsStore;
     this.modelConfigSnapshot = userConfigContext.capture();
@@ -555,6 +564,15 @@ class AppContext {
       cwd: this.getCurrentCwd(),
       transcriptStartIndex: this.transcriptContext.getRecordCount()
     });
+
+    // 后台写任务跨轮存活:与它重叠的轮次即使正常结束也无法安全回退,必须在轮次开始时立即失效。
+    const sessionId = this.transcriptContext.getCurrentSessionId();
+    if (sessionId && this.backgroundTasks?.hasActiveWriteTask(sessionId)) {
+      this.changeHistoryContext.invalidate(BACKGROUND_WRITE_UNDO_REASON);
+    }
+    if (hasUnconfirmedBashCommands(this.getCurrentCwd())) {
+      this.changeHistoryContext.markUntracked(UNCONFIRMED_BASH_UNDO_REASON);
+    }
   }
 
   /**
@@ -583,16 +601,46 @@ class AppContext {
   /**
    * 只有跨驻留边界的 undo 才预读完整历史，读取失败不得先改写文件；其余回退直接截短驻留后缀。
    */
-  executeUndo(): UndoExecuteResult {
+  async executeUndo(): Promise<UndoExecuteResult> {
+    const sessionId = this.transcriptContext.getCurrentSessionId();
+
+    if (hasUnconfirmedBashCommands(this.getCurrentCwd())) {
+      return {ok: false, reason: 'invalid', message: UNCONFIRMED_BASH_UNDO_REASON};
+    }
+
+    // 摘要入口与执行入口各自查询保护态,覆盖确认面板打开期间的状态变化。
+    if (sessionId && this.backgroundTasks?.hasActiveWriteTask(sessionId)) {
+      return {ok: false, reason: 'invalid', message: BACKGROUND_WRITE_UNDO_REASON};
+    }
+
+    const target = this.changeHistoryContext.last;
     let completeRecords: TranscriptRecord[] | undefined;
-    const checkpoint = this.changeHistoryContext.last;
-    if (checkpoint?.status === 'ready' && (checkpoint.compactionBefore?.activeStartIndex ?? 0) < this.transcriptContext.baseRecordIndex) {
+    if (target?.status === 'ready' && (target.compactionBefore?.activeStartIndex ?? 0) < this.transcriptContext.baseRecordIndex) {
       const loadedRecords = this.transcriptContext.getCompleteRecords();
       if (!loadedRecords) {
         return {ok: false, reason: 'restore_failed', message: '无法读取当前会话的完整历史'};
       }
       completeRecords = loadedRecords;
     }
+
+    // 回退会删除本轮的后台启动记录:先停掉仍在运行的只读任务,再改写文件与 transcript。
+    const cleanup = await this.stopUndoRangeBackgroundTasks(target, sessionId, completeRecords);
+    if (!cleanup.ok) {
+      return {ok: false, reason: 'invalid', message: cleanup.message};
+    }
+
+    if (this.changeHistoryContext.last?.id !== target?.id) {
+      return {ok: false, reason: 'invalid', message: '回退目标已发生变化，请重新执行 /undo。'};
+    }
+
+    if (hasUnconfirmedBashCommands(this.getCurrentCwd())) {
+      return {ok: false, reason: 'invalid', message: UNCONFIRMED_BASH_UNDO_REASON};
+    }
+
+    if (sessionId && this.backgroundTasks?.hasActiveWriteTask(sessionId)) {
+      return {ok: false, reason: 'invalid', message: BACKGROUND_WRITE_UNDO_REASON};
+    }
+
     const result = this.changeHistoryContext.executeUndo();
 
     if (!result.ok) {
@@ -618,9 +666,64 @@ class AppContext {
   }
 
   /**
+   * 从待截断区间收集后台任务引用,并停止仍由当前实例持有的运行任务。
+   * 写任务已在入口被拦截,这里只会命中只读任务;停止属于不可逆副作用,失败时保留记录供重试。
+   */
+  private async stopUndoRangeBackgroundTasks(
+    checkpoint: ChangeCheckpoint | null,
+    sessionId: string | null,
+    completeRecords: TranscriptRecord[] | undefined
+  ): Promise<{ok: true} | {ok: false; message: string}> {
+    const manager = this.backgroundTasks;
+
+    if (!manager || !checkpoint || !sessionId || checkpoint.status !== 'ready') {
+      return {ok: true};
+    }
+
+    const records = completeRecords ?? this.transcriptContext.getResidentRecords();
+    const baseIndex = completeRecords ? 0 : this.transcriptContext.baseRecordIndex;
+    const startIndex = Math.max(0, checkpoint.transcriptStartIndex - baseIndex);
+    const taskIds = new Set<string>();
+
+    for (let index = startIndex; index < records.length; index += 1) {
+      const record = records[index];
+
+      if (record.role !== 'tool_result' || record.details.kind !== 'bash') {
+        continue;
+      }
+
+      const background = record.details.background;
+
+      if (!background || background.sessionId !== sessionId || background.ownerInstanceId !== manager.ownerInstanceId) {
+        continue;
+      }
+
+      taskIds.add(background.taskId);
+    }
+
+    for (const taskId of taskIds) {
+      const view = manager.getManaged(taskId);
+
+      // 没有句柄的历史条目无需清理,也不得按文件状态推断仍在运行。
+      if (!view || (view.state !== 'running' && view.state !== 'stopping')) {
+        continue;
+      }
+
+      await manager.stop(taskId);
+      const settled = manager.getManaged(taskId);
+
+      if (settled && (settled.state === 'running' || settled.state === 'stopping')) {
+        return {ok: false, message: `后台任务 ${taskId} 未能确认停止，未执行回退。`};
+      }
+    }
+
+    return {ok: true};
+  }
+
+  /**
    * 复制活跃 transcript 与完整历史起点，将独立快照所有权交给 runtime 原地裁剪。
    */
-  getAgentSession(skillOverride: AgentModelSelectionOverride = {}, snapshot?: AgentUserConfigSnapshot): AgentSessionInput {
+  getAgentSession(skillOverride: AgentModelSelectionOverride = {}, snapshot?: AgentUserConfigSnapshot, toolPolicy?: AgentToolPolicy): AgentSessionInput {
     const modelSelection = this.modelContext.resolveAgentSelection(skillOverride);
     const sessionJournalPath = this.transcriptContext.getCurrentSessionJournalPath();
     const sessionId = this.transcriptContext.getCurrentSessionId();
@@ -639,6 +742,8 @@ class AppContext {
       userConfigSnapshot: capturedSnapshot,
       ...(sessionJournalPath ? {sessionJournalPath} : {}),
       ...(sessionId ? {sessionId} : {}),
+      // 只读运行不注入后台能力:能力缺失本身就是该运行拒绝 background 的判据。
+      ...(this.backgroundTasks && toolPolicy !== 'readonly' ? {backgroundTaskManager: this.backgroundTasks} : {}),
       ...(modelSelection || {})
     };
   }
@@ -717,5 +822,6 @@ class AppContext {
 }
 
 export {
-  AppContext
+  AppContext,
+  BACKGROUND_WRITE_UNDO_REASON
 };

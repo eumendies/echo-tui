@@ -35,6 +35,7 @@ import {runProviderStep} from './provider-step';
 import type {TokenUsageAnchor} from '../context/context-compaction';
 import type {MemoryPromptResolution} from '../context/memory-prompt';
 import type {AgentCallbacks, AgentConversationKind, AgentExecutionMode, AgentInstruction, AgentInstructionFileName, AgentSessionInput, AgentToolPolicy, AgentTurnCallbacks, AgentUserConfigSnapshot, InteractionMode, LlmConfig, ProviderAgent, ProviderRetry, ProviderUsage, RunAgent, SandboxToolConfig, SubagentToolPort, ToolApprovalDecision} from '../../types/agent';
+import type {BackgroundTaskManager} from '../../types/background-task';
 import type {UsageStore} from '../../types/usage';
 import type {SkillCatalogEntry} from '../../types/skill';
 import type {SkillCatalogPromptProjection} from '../../skills/skill-catalog-prompt';
@@ -268,7 +269,7 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
   /**
    * 初始化单次调用的 loop 状态；provider、配置和 registry 由统一装配入口提供。
    */
-  function initializeRunState(interactionMode: InteractionMode, abortSignal: AbortSignal | undefined, executionMode: AgentExecutionMode, compactionThresholdRatio: number, skillCatalogContextRatio: number, agentInstructionFileName: AgentInstructionFileName, toolPolicy: AgentToolPolicy, getSandboxModeOverride: () => SandboxModeOverride | undefined, conversationKind: AgentConversationKind, configSnapshot: AgentUserConfigSnapshot, modelProfileId?: string, reasoningEffortOverride?: LlmConfig['reasoningEffort'], subagentPort?: SubagentToolPort, sessionId?: string): AgentLoopRunState {
+  function initializeRunState(interactionMode: InteractionMode, abortSignal: AbortSignal | undefined, executionMode: AgentExecutionMode, compactionThresholdRatio: number, skillCatalogContextRatio: number, agentInstructionFileName: AgentInstructionFileName, toolPolicy: AgentToolPolicy, getSandboxModeOverride: () => SandboxModeOverride | undefined, conversationKind: AgentConversationKind, configSnapshot: AgentUserConfigSnapshot, modelProfileId?: string, reasoningEffortOverride?: LlmConfig['reasoningEffort'], subagentPort?: SubagentToolPort, sessionId?: string, backgroundTaskManager?: BackgroundTaskManager): AgentLoopRunState {
     // 只读 subagent 名称集合在 run 启动时固定；并发分类不得在运行中重新读取目录。
     const readonlySubagentNames = subagentPort
       ? new Set(subagentPort.listDefinitions()
@@ -280,6 +281,7 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
     // 单次 assistant run 只在启动时物化 Skill 快照；primary catalog、use_skill 与全部子 scope 共用同源。
     const skillSnapshot = captureSkillSnapshot(createSkillManager({cwd}));
     const {agent, config, registry} = prepareAgent({
+      backgroundTaskManager,
       configSnapshot,
       mainAgentTools: configSnapshot.getMainAgentToolsConfig(),
       cwd,
@@ -448,7 +450,7 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
       : undefined;
 
     try {
-      state = initializeRunState(interactionMode, abortSignal, executionMode, compactionThresholdRatio, skillCatalogContextRatio, appSettings.agentInstructionFileName, toolPolicy, () => sandboxModeOverride, conversationKind, configSnapshot, session.modelProfileId, session.reasoningEffortOverride, subagentPort, session.sessionId);
+      state = initializeRunState(interactionMode, abortSignal, executionMode, compactionThresholdRatio, skillCatalogContextRatio, appSettings.agentInstructionFileName, toolPolicy, () => sandboxModeOverride, conversationKind, configSnapshot, session.modelProfileId, session.reasoningEffortOverride, subagentPort, session.sessionId, session.backgroundTaskManager);
     } catch (error: unknown) {
       throw normalizeError(error, '无法加载 LLM 配置');
     }

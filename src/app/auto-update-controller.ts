@@ -21,7 +21,7 @@ type AutoUpdateControllerOptions = {
   exit: (code: number) => void; // 结束当前进程
   persistIgnoredVersion: (version: string) => void; // 持久化「忽略此版本」
   render: () => void; // 请求呈现、关闭或焦点变化后的重绘入口
-  shutdown: () => void; // 更新前的终端收尾，与正常退出共用
+  shutdown: () => Promise<void>; // 更新前的终端收尾与后台任务清理，与正常退出共用同一在途 Promise
 };
 
 const OPTION_COUNT = 3;
@@ -152,8 +152,10 @@ class AutoUpdateController {
     this.activeRequest = null;
 
     if (decision === 'update') {
-      this.options.shutdown();
-      void this.options.applyUpdate(request.update.latestVersion).then(
+      // 必须先完成终端收尾与后台任务清理,再把终端交给前台更新子进程。
+      void this.options.shutdown().then(
+        () => this.options.applyUpdate(request.update.latestVersion)
+      ).then(
         (exitCode) => this.options.exit(exitCode),
         () => this.options.exit(1)
       );

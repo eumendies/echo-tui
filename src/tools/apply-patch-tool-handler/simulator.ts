@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import {isGitPath} from '../tool-handler-utils';
+import {isGitPath, unsupportedLineEndingReason} from '../tool-handler-utils';
 
 import type {ApplyPatchDisplayFile, ApplyPatchDisplayLine} from '../../types/tool';
 import type {ApplyPatchLimits, PatchHunk, PatchOperation, Result} from './parser';
@@ -30,6 +30,20 @@ type VirtualFileState = {
   filePath: string;
   initial: VirtualFileSnapshot;
   current: {exists: false} | {exists: true; content: string};
+};
+
+/**
+ * 一行内容与其后分隔符绑定；separator 为空表示文件到此结束且无尾换行。
+ */
+type ContentLine = {
+  text: string;
+  separator: string;
+};
+
+type SplitFileContent = {
+  lines: ContentLine[];
+  // 文件主流行尾，用于没有原分隔符可继承的新增行。
+  mainEol: string;
 };
 
 type ApplyPatchSuccess = {ok: true; value: {
@@ -246,7 +260,8 @@ function simulateAddFile(
   return {
     ok: true,
     value: {
-      content: lines.length === 0 ? '' : `${lines.join('\n')}\n`,
+      // 新文件不继承任何既有风格，统一使用 LF。
+      content: lines.map((text) => `${text}\n`).join(''),
       displayFile: {
         path: operation.filePath,
         kind: 'added',
@@ -261,7 +276,7 @@ function simulateUpdateFile(
   content: string
 ): Result<{content: string; displayFile: ApplyPatchDisplayFile}> {
   const split = splitFileContent(content);
-  const applied = applySequentialUpdateHunks(operation, split.lines);
+  const applied = applySequentialUpdateHunks(operation, split.lines, split.mainEol);
 
   if (!applied.ok) {
     return applied;
@@ -270,11 +285,11 @@ function simulateUpdateFile(
   return {
     ok: true,
     value: {
-      content: joinFileContent(applied.value.lines, split.trailingNewline),
+      content: joinFileContent(applied.value.lines, split.mainEol),
       displayFile: {
         path: operation.filePath,
         kind: 'updated',
-        lines: createResolvedDisplayLines(applied.value.matchedHunks, applied.value.lines)
+        lines: createResolvedDisplayLines(applied.value.matchedHunks, applied.value.lines.map((line) => line.text))
       }
     }
   };
@@ -285,7 +300,7 @@ function simulateDeleteFile(
   content: string
 ): Result<{displayFile: ApplyPatchDisplayFile}> {
   const split = splitFileContent(content);
-  const originalLines = split.lines;
+  const originalLines = split.lines.map((line) => line.text);
 
   return {
     ok: true,
@@ -329,17 +344,86 @@ function readPatchTargetFile(
     return {ok: false, reason: `target file appears to be binary: ${filePath}`};
   }
 
+  const lineEndingReason = unsupportedLineEndingReason(content);
+
+  if (lineEndingReason) {
+    return {ok: false, reason: `${lineEndingReason}: ${filePath}`};
+  }
+
   return {ok: true, value: {content}};
 }
 
 // hunk 应用结果；失败时允许携带 pre-image 行，供失败提示末尾回显。
 type HunkApplicationResult =
-  | {ok: true; value: {lines: string[]; matchedHunks: Array<{hunk: PatchHunk; postStart: number}>}}
+  | {ok: true; value: {lines: ContentLine[]; matchedHunks: Array<{hunk: PatchHunk; postStart: number}>}}
   | ApplyPatchFailure;
+
+/**
+ * 按 displayLines 逐项重建替换区间：context 复用原行对象以保留其分隔符，只有 added 行需要新行尾。
+ * 直接整段使用 newLines 会把 hunk 内未修改的 context 行一并改写行尾。
+ */
+function rebuildHunkLines(
+  lines: ContentLine[],
+  start: number,
+  hunk: PatchHunk,
+  mainEol: string
+): ContentLine[] {
+  const replacement: ContentLine[] = [];
+  let sourceIndex = start;
+
+  for (const line of hunk.displayLines) {
+    if (line.kind === 'removed') {
+      sourceIndex += 1;
+      continue;
+    }
+
+    if (line.kind === 'context') {
+      replacement.push(lines[sourceIndex]);
+      sourceIndex += 1;
+      continue;
+    }
+
+    replacement.push({text: line.text, separator: mainEol});
+  }
+
+  // 替换区间延伸到文件末尾时，末尾新行继承被替换末项的分隔符，避免意外增删尾换行。
+  const removedEnd = start + hunk.oldLines.length;
+  const lastDisplay = hunk.displayLines[hunk.displayLines.length - 1];
+
+  if (removedEnd === lines.length && lastDisplay?.kind === 'added' && replacement.length > 0) {
+    replacement[replacement.length - 1] = {
+      text: replacement[replacement.length - 1].text,
+      separator: lines[removedEnd - 1]?.separator ?? ''
+    };
+  }
+
+  return [...lines.slice(0, start), ...replacement, ...lines.slice(removedEnd)];
+}
+
+/**
+ * 在锚点后插入纯 added 行；末尾插入时新行接管原末行的“无尾换行”属性。
+ */
+function insertHunkLines(
+  lines: ContentLine[],
+  insertAt: number,
+  newLines: string[],
+  mainEol: string
+): ContentLine[] {
+  const atFileEnd = insertAt === lines.length;
+  const takesTrailingState = atFileEnd && lines.length > 0 && lines[lines.length - 1].separator === '';
+  const inserted = newLines.map((text, index) => ({
+    text,
+    // 原文件无尾换行时，只有新末行继续无尾换行；原末行的空分隔符由 joinFileContent 补上。
+    separator: takesTrailingState && index === newLines.length - 1 ? '' : mainEol
+  }));
+
+  return [...lines.slice(0, insertAt), ...inserted, ...lines.slice(insertAt)];
+}
 
 function applySequentialUpdateHunks(
   operation: PatchOperation,
-  startingLines: string[]
+  startingLines: ContentLine[],
+  mainEol: string
 ): HunkApplicationResult {
   let currentLines = startingLines;
   const matchedHunks: Array<{hunk: PatchHunk; postStart: number}> = [];
@@ -402,11 +486,7 @@ function applySequentialUpdateHunks(
 
       const insertAt = searchStart;
       matchedHunks.push({hunk, postStart: insertAt});
-      currentLines = [
-        ...currentLines.slice(0, insertAt),
-        ...hunk.newLines,
-        ...currentLines.slice(insertAt)
-      ];
+      currentLines = insertHunkLines(currentLines, insertAt, hunk.newLines, mainEol);
       searchStart = insertAt + hunk.newLines.length;
       continue;
     }
@@ -423,11 +503,7 @@ function applySequentialUpdateHunks(
     }
 
     matchedHunks.push({hunk, postStart: match.value});
-    currentLines = [
-      ...currentLines.slice(0, match.value),
-      ...hunk.newLines,
-      ...currentLines.slice(match.value + hunk.oldLines.length)
-    ];
+    currentLines = rebuildHunkLines(currentLines, match.value, hunk, mainEol);
     searchStart = match.value + hunk.newLines.length;
   }
 
@@ -491,13 +567,13 @@ function createResolvedDisplayLines(
   return lines;
 }
 
-function findFirstMatch(lines: string[], target: string[], startIndex: number): Result<number> {
+function findFirstMatch(lines: ContentLine[], target: string[], startIndex: number): Result<number> {
   // Begin Patch 顺序模式按 V4A 语义从游标后取第一个精确匹配，重复上下文交给游标推进消歧。
   for (let index = startIndex; index <= lines.length - target.length; index += 1) {
     let matched = true;
 
     for (let offset = 0; offset < target.length; offset += 1) {
-      if (lines[index + offset] !== target[offset]) {
+      if (lines[index + offset].text !== target[offset]) {
         matched = false;
         break;
       }
@@ -529,26 +605,54 @@ function resolvePatchPath(cwd: string, patchPath: string): Result<string> {
     : {ok: true, value: absolutePath};
 }
 
-function splitFileContent(content: string): {lines: string[]; trailingNewline: boolean} {
+/**
+ * 按 `\r\n` 与 `\n` 切分并保留每行原始分隔符；行内裸 CR 不属于分隔符。
+ *
+ * 调用方读取文件时已由 unsupportedLineEndingReason 拒绝裸 CR，因此“保留行内 CR”分支正常不可达，
+ * 仅用于防止未来新增调用方绕过该检查。主流行尾在本次遍历中一并统计，避免二次扫描。
+ */
+function splitFileContent(content: string): SplitFileContent {
   if (content === '') {
-    return {lines: [], trailingNewline: false};
+    return {lines: [], mainEol: '\n'};
   }
 
-  const trailingNewline = content.endsWith('\n');
-  const body = trailingNewline ? content.slice(0, -1) : content;
+  const lines: ContentLine[] = [];
+  let start = 0;
+  let crlfCount = 0;
+  let lfCount = 0;
 
-  return {
-    lines: body === '' ? [] : body.split('\n'),
-    trailingNewline
-  };
+  for (let index = 0; index < content.length; index += 1) {
+    if (content[index] !== '\n') {
+      continue;
+    }
+
+    // 只有紧邻 \n 的 \r 属于分隔符；其余 CR 留在行内容里。
+    const hasCarriageReturn = index > start && content[index - 1] === '\r';
+    const textEnd = hasCarriageReturn ? index - 1 : index;
+    lines.push({text: content.slice(start, textEnd), separator: hasCarriageReturn ? '\r\n' : '\n'});
+    if (hasCarriageReturn) crlfCount += 1;
+    else lfCount += 1;
+    start = index + 1;
+  }
+
+  if (start < content.length) {
+    lines.push({text: content.slice(start), separator: ''});
+  }
+
+  return {lines, mainEol: crlfCount > lfCount ? '\r\n' : '\n'};
 }
 
-function joinFileContent(lines: string[], trailingNewline: boolean): string {
-  if (lines.length === 0) {
-    return trailingNewline ? '\n' : '';
-  }
-
-  return `${lines.join('\n')}${trailingNewline ? '\n' : ''}`;
+/**
+ * 不变量守卫：`''` 只允许出现在最后一行。
+ *
+ * rebuildHunkLines 复用的 context 行与 insertHunkLines 之前的原末行都可能带着空分隔符，
+ * 一旦它们因插入或替换而不再位于末尾，在这里统一补主流行尾即可，上游无需各自补位。
+ */
+function joinFileContent(lines: ContentLine[], mainEol: string): string {
+  return lines.map((line, index) => {
+    const separator = line.separator === '' && index < lines.length - 1 ? mainEol : line.separator;
+    return line.text + separator;
+  }).join('');
 }
 
 export {

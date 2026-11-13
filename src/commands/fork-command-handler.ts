@@ -36,6 +36,16 @@ function createForkSurface(result: TranscriptForkResult): InfoCommandSurface {
   };
 }
 
+/** 等待后台任务收尾时使用的中间提示;只在确有受管任务时出现。 */
+function createForkPendingSurface(): InfoCommandSurface {
+  return {
+    kind: 'info',
+    title: '/fork 准备分叉',
+    lines: ['正在停止当前会话的后台任务…'],
+    dismissHint: '请稍候'
+  };
+}
+
 export class ForkCommandHandler implements CommandHandler {
   name = 'fork';
   description = '分叉当前会话';
@@ -45,14 +55,43 @@ export class ForkCommandHandler implements CommandHandler {
     return text.trimEnd() === '/fork';
   }
 
-  /** 立即创建独立 session，并用只读 surface 展示结构化结果。 */
+  /**
+   * 创建独立 session；只有存在受管后台任务时才走异步清理路径。
+   */
   start(_text: string, host: CommandHost): void {
+    const leavingSessionId = host.transcript.getCurrentSessionId();
+
+    if (!leavingSessionId || !host.background.hasSessionTasks(leavingSessionId)) {
+      host.session.open({
+        commandName: 'fork',
+        handler: this,
+        surface: createForkSurface(host.transcript.forkSession()),
+        data: null
+      });
+      return;
+    }
+
+    // 先停止离开会话的任务再交接新身份;分叉失败时原任务继续运行。
     host.session.open({
       commandName: 'fork',
       handler: this,
-      surface: createForkSurface(host.transcript.forkSession()),
+      surface: createForkPendingSurface(),
       data: null
     });
+    void (async () => {
+      const result = host.transcript.forkSession();
+
+      if (result.ok) {
+        await host.transcript.stopSessionTasks(leavingSessionId);
+      }
+
+      if (host.session.getActive()?.commandName !== 'fork') {
+        return;
+      }
+
+      host.session.update({surface: createForkSurface(result), data: null});
+      host.ui.render();
+    })();
   }
 
   /** Enter 或 Esc 关闭反馈；其他输入不改变会话。 */
@@ -63,4 +102,4 @@ export class ForkCommandHandler implements CommandHandler {
   }
 }
 
-export {createForkSurface};
+export {createForkSurface, createForkPendingSurface};

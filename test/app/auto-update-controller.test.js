@@ -25,7 +25,7 @@ function createHarness(overrides = {}) {
     exit: (code) => calls.push(`exit:${code}`),
     persistIgnoredVersion: (version) => calls.push(`ignore:${version}`),
     render: () => calls.push('render'),
-    shutdown: () => calls.push('shutdown')
+    shutdown: async () => { calls.push('shutdown'); }
   });
 
   return {

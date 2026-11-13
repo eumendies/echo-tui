@@ -439,7 +439,7 @@ test('a subagent historical view reads complete history through a closure and cl
   assert.equal(journalText(h), journal);
 });
 
-test('real AppContext checkpoints use logical boundaries and resumed undo restores files and prior compaction suffixes across multiple boundaries', (t) => {
+test('real AppContext checkpoints use logical boundaries and resumed undo restores files and prior compaction suffixes across multiple boundaries', async (t) => {
   const h = createHarness(t);
   const target = path.join(h.cwd, 'file.txt');
   fs.writeFileSync(target, 'before\n', {mode: 0o640});
@@ -474,7 +474,7 @@ test('real AppContext checkpoints use logical boundaries and resumed undo restor
   assert.equal(resumed.changeHistoryContext.getHistory().length, 2);
   resumed.setContextUsage({usedTokens: 100, contextWindow: 1000, source: 'provider'});
   let reads = h.io.readOnlyLoads;
-  assert.equal(resumed.executeUndo().ok, true);
+  assert.equal((await resumed.executeUndo()).ok, true);
   assert.equal(h.io.readOnlyLoads, reads + 1);
   assert.equal(fs.readFileSync(target, 'utf8'), 'after\n');
   assert.equal(context.baseRecordIndex, 7);
@@ -485,7 +485,7 @@ test('real AppContext checkpoints use logical boundaries and resumed undo restor
   assert.equal(resumed.getContextUsage(), null);
 
   reads = h.io.readOnlyLoads;
-  assert.equal(resumed.executeUndo().ok, true);
+  assert.equal((await resumed.executeUndo()).ok, true);
   assert.equal(h.io.readOnlyLoads, reads + 1);
   assert.equal(fs.readFileSync(target, 'utf8'), 'before\n');
   assert.equal(fs.statSync(target).mode & 0o777, 0o640);
@@ -509,7 +509,7 @@ test('real AppContext checkpoints use logical boundaries and resumed undo restor
   assert.equal(context.getResidentRecords().length, 3);
 });
 
-test('undo before the first compaction restores an uncompressed prefix and resets the base offset', (t) => {
+test('undo before the first compaction restores an uncompressed prefix and resets the base offset', async (t) => {
   const h = createHarness(t);
   const prefix = [{role: 'user', text: 'keep question'}, {role: 'assistant', text: 'keep answer'}];
   h.context.appendRecords(prefix);
@@ -518,7 +518,7 @@ test('undo before the first compaction restores an uncompressed prefix and reset
   h.context.applyCompaction(compaction(3));
   h.app.finalizeChangeCheckpoint();
   assert.equal(h.context.getResidentRecords().length, 1);
-  assert.equal(h.app.executeUndo().ok, true);
+  assert.equal((await h.app.executeUndo()).ok, true);
   assert.equal(h.io.readOnlyLoads, 1);
   assert.equal(h.context.baseRecordIndex, 0);
   assert.equal(h.context.getRecordCount(), 2);
@@ -531,7 +531,7 @@ test('undo before the first compaction restores an uncompressed prefix and reset
   assert.equal(h.io.readOnlyLoads, 1);
 });
 
-test('ordinary undo after compaction truncates the resident suffix without reading history and retains the cold first title', (t) => {
+test('ordinary undo after compaction truncates the resident suffix without reading history and retains the cold first title', async (t) => {
   const h = createHarness(t);
   const target = path.join(h.cwd, 'file.txt');
   fs.writeFileSync(target, 'before\n');
@@ -547,7 +547,7 @@ test('ordinary undo after compaction truncates the resident suffix without readi
   const reads = h.io.journalReads;
   h.io.readFailure = 'throw';
 
-  assert.equal(h.app.executeUndo().ok, true);
+  assert.equal((await h.app.executeUndo()).ok, true);
   assert.equal(fs.readFileSync(target, 'utf8'), 'before\n');
   assert.equal(h.io.readOnlyLoads, 0);
   assert.equal(h.io.journalReads, reads);
@@ -563,7 +563,7 @@ test('ordinary undo after compaction truncates the resident suffix without readi
 });
 
 for (const compressed of [false, true]) {
-  test(`ordinary undo removing the first user resets the cached title without a replay (compressed=${compressed})`, (t) => {
+  test(`ordinary undo removing the first user resets the cached title without a replay (compressed=${compressed})`, async (t) => {
     const h = createHarness(t);
     h.context.appendRecord({role: 'system', text: 'before first user'});
     if (compressed) h.context.applyCompaction(compaction(1));
@@ -574,7 +574,7 @@ for (const compressed of [false, true]) {
     h.app.finalizeChangeCheckpoint();
     assert.equal(h.context.listSessionSummaries()[0].title, 'discard first title');
     h.io.readFailure = 'throw';
-    assert.equal(h.app.executeUndo().ok, true);
+    assert.equal((await h.app.executeUndo()).ok, true);
     assert.equal(h.io.readOnlyLoads, 0);
     assert.equal(h.io.journalReads, 0);
     assert.deepEqual(h.context.getResidentRecords(), before);
@@ -586,7 +586,7 @@ for (const compressed of [false, true]) {
   });
 }
 
-test('missing session restore returns false without changing installed records or metadata', (t) => {
+test('missing session restore returns false without changing installed records or metadata', async (t) => {
   const h = createHarness(t);
   h.context.appendRecords(richRecords());
   h.context.applyCompaction(compaction(7));
@@ -596,7 +596,7 @@ test('missing session restore returns false without changing installed records o
 });
 
 for (const failure of ['missing', 'throw', 'stale']) {
-  test(`undo full-history preflight ${failure} failure occurs before any controlled file restoration or deletion`, (t) => {
+  test(`undo full-history preflight ${failure} failure occurs before any controlled file restoration or deletion`, async (t) => {
     const h = createHarness(t);
     const target = path.join(h.cwd, 'file.txt');
     const created = path.join(h.cwd, 'created.txt');
@@ -625,7 +625,7 @@ for (const failure of ['missing', 'throw', 'stale']) {
     const createdBefore = fileState(created);
     const attempts = h.io.appendAttempts;
     h.io.readFailure = failure;
-    const result = h.app.executeUndo();
+    const result = (await h.app.executeUndo());
     assert.equal(result.ok, false);
     assert.equal(result.reason, 'restore_failed');
     // 三种失败统一降级为同一句可展示说明：预读失败不区分底层原因，也不得先改写文件。
@@ -640,7 +640,7 @@ for (const failure of ['missing', 'throw', 'stale']) {
     assert.equal(h.app.changeHistoryContext.getSummary().status, 'ready');
 
     h.io.readFailure = null;
-    assert.equal(h.app.executeUndo().ok, true);
+    assert.equal((await h.app.executeUndo()).ok, true);
     assert.equal(h.io.readOnlyLoads, 2);
     assert.equal(fs.readFileSync(target, 'utf8'), 'before\n');
     assert.equal(fs.existsSync(created), false);
@@ -845,7 +845,7 @@ test('restoreToBoundary without a change checkpoint truncates without writing an
   assert.ok(h.store.loadSession(h.cwd, sessionId));
 });
 
-test('undoing after a failed change history write flushes the pending delta before the pop', (t) => {
+test('undoing after a failed change history write flushes the pending delta before the pop', async (t) => {
   const h = createHarness(t);
   h.context.appendRecord({role: 'user', text: 'base'});
 
@@ -859,7 +859,7 @@ test('undoing after a failed change history write flushes the pending delta befo
   assert.throws(() => h.app.finalizeChangeCheckpoint(), /controlled journal append failure/);
   h.io.failAppend = false;
 
-  assert.equal(h.app.executeUndo().ok, true);
+  assert.equal((await h.app.executeUndo()).ok, true);
   assert.deepEqual(h.context.pendingChangeHistoryDeltas, []);
 
   // journal 必须先补齐待写的 push 再写 pop，否则重放会弹掉前一个 checkpoint，与内存栈分叉。
@@ -871,7 +871,7 @@ test('undoing after a failed change history write flushes the pending delta befo
   );
 });
 
-test('undoing after a failed first change history write keeps the session recoverable', (t) => {
+test('undoing after a failed first change history write keeps the session recoverable', async (t) => {
   const h = createHarness(t);
   h.context.appendRecord({role: 'user', text: 'base'});
   h.app.beginChangeCheckpoint();
@@ -880,7 +880,7 @@ test('undoing after a failed first change history write keeps the session recove
   assert.throws(() => h.app.finalizeChangeCheckpoint(), /controlled journal append failure/);
   h.io.failAppend = false;
 
-  assert.equal(h.app.executeUndo().ok, true);
+  assert.equal((await h.app.executeUndo()).ok, true);
 
   // 栈在 journal 里还是空的：此时若只写 pop，重放会判定该 session 不可恢复。
   assert.ok(h.store.loadSession(h.cwd, h.context.currentSessionId));
@@ -916,7 +916,7 @@ test('consecutive failed change history writes keep every pending delta in order
   );
 });
 
-test('a successful write consuming a pending delta keeps a later undo consistent', (t) => {
+test('a successful write consuming a pending delta keeps a later undo consistent', async (t) => {
   const h = createHarness(t);
   h.context.appendRecord({role: 'user', text: 'base'});
 
@@ -931,7 +931,7 @@ test('a successful write consuming a pending delta keeps a later undo consistent
   assert.deepEqual(h.context.pendingChangeHistoryDeltas, []);
 
   // 此后 undo 不应再补写任何增量，只需按 journal 现有栈弹出。
-  assert.equal(h.app.executeUndo().ok, true);
+  assert.equal((await h.app.executeUndo()).ok, true);
   assert.deepEqual(h.context.changeHistory, []);
 
   const saved = h.store.loadSession(h.cwd, h.context.currentSessionId);

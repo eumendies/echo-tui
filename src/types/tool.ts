@@ -1,5 +1,6 @@
 import type {SkillCatalogEntry} from './skill';
 import type {ChangeFileRecorder} from './change-history';
+import type {BackgroundTaskState} from './background-task';
 
 export const SUPPORTED_TOOL_RESULT_IMAGE_MEDIA_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'] as const;
 
@@ -91,6 +92,17 @@ export type GenericToolExecutionResult = ToolExecutionResultBase & {
   details: {kind: 'generic'};
 };
 
+/** 后台启动任务的结构化引用;渲染与历史投影只依赖这些已落盘事实。 */
+export type BashBackgroundTaskDetails = {
+  taskId: string; // 实例内稳定短 ID,与 status.json 一致。
+  sessionId: string; // 拥有者 session;历史任务投影按它过滤。
+  ownerInstanceId: string; // 拥有者应用实例;区分同短 ID 的历史条目。
+  outputPath: string; // 日志文件绝对路径。
+  statusPath: string; // 状态文件绝对路径。
+  state: BackgroundTaskState; // 交接时刻的状态;快速退出的命令可能已是终态。
+  command?: string; // 原始命令摘要;仅供 transcript 投影复用,不进入 provider 文本。
+};
+
 export type BashToolExecutionResult = ToolExecutionResultBase & {
   toolName: 'run_bash_command';
   details: {
@@ -99,6 +111,7 @@ export type BashToolExecutionResult = ToolExecutionResultBase & {
     timedOut?: boolean;
     truncated?: boolean;
     durationMs?: number;
+    background?: BashBackgroundTaskDetails; // 存在时表示这是一次后台启动,不代表命令已执行成功。
   };
 };
 

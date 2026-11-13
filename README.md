@@ -75,6 +75,12 @@ echo-tui --once --full-access "按要求修改文件并运行检查"
 | `@` | 在普通/计划模式的开头或空白后键入，打开文件/目录选择器 |
 | Esc | 关闭当前面板或中断正在执行的任务 |
 | Ctrl+C / Ctrl+D | 退出 |
+| Ctrl+A / Ctrl+E | 光标移到当前逻辑行首 / 行尾 |
+| Ctrl+U / Ctrl+K / Ctrl+W | 删除到行首 / 删除到行尾 / 删除前一个词 |
+| Ctrl+← / → 或 Alt+← / → | 光标按词向前 / 向后移动 |
+| Ctrl+Delete 或 Alt+Delete | 删除后一个词 |
+
+macOS 上 `Option` 即 `Alt`：iTerm2 与 Terminal.app 默认把 `Option+←/→` 发送成 readline 风格的 `ESC b`/`ESC f`，这两类编码都已支持，无需改动终端设置。`Command`（⌘）默认被终端自身占用，不参与上述快捷键。
 
 文件选择器中可查询、浏览目录，用 Space 或鼠标多选；只有 **Enter 确认**才建立文件引用并高亮，支持目录、文本、PDF 和图片。Esc 取消并保留 `@query` 普通文本。邮箱、版本号、紧邻中文的 `@` 不打开选择器，中文描述可写成 `请看 @`；shell 模式保持字面输入。
 
@@ -96,6 +102,7 @@ echo-tui --once --full-access "按要求修改文件并运行检查"
 | `/fork` | 从当前会话创建一个独立的对话分支 |
 | `/reference` | 把一个历史会话作为下一条消息的参考 |
 | `/diff` `/undo` | 查看文件改动、回退上一轮改动 |
+| `/tasks` | 查看后台任务 |
 | `/mcp` `/hooks` `/skills` | `/mcp` 启停、编辑 MCP Server 配置并浏览其 tools/resources/prompts，管理 Hooks 和 Skills |
 | `/agents` | 查看和管理内置、用户级与项目级 Subagent |
 | `/init` `/review` | 初始化项目指令、审查当前 Git 改动 |
@@ -106,6 +113,8 @@ echo-tui --once --full-access "按要求修改文件并运行检查"
 自动压缩或 `/compact` 成功后，模型使用摘要与近期记录，应用释放已压缩原文的常驻内存；完整原文仍保存在会话 JSONL journal 中，不因压缩删除。压缩本身不清除终端已有 scrollback；resize、主题切换或恢复后的主会话重绘展示压缩提示与历史预算选中的活跃后缀。
 
 历史重绘默认约 **1,000 行**，可在 `/config` → 常规选择 500/1000/2000/5000/10000 行或不限（`ui.historyRenderLineLimit: 0`），保存或外部配置更新后即时生效。完整消息/关联块可能超出软预算；被省略的历史未删除、不影响模型上下文。不限也不越过压缩驻留边界；普通增量输出的 scrollback 仍可继续增长，独立视图和 headless 输出不受影响。详见[历史重绘预算配置](docs/configuration.md#历史重绘预算)。
+
+`/undo` 可回退上一轮对话和助手记录的文件修改，也支持连续回退多轮。Shell 操作不会完整撤销；文件存在冲突或命令仍可能写入时，会阻止回退并提示原因。
 
 `/copy` 仍可复制旧消息原文，`/fork` 保存完整有效历史为独立分支，`/undo` 仍可跨压缩边界回退。这些历史操作及恢复可能临时全量读取 journal，存在内存峰值；压缩不是整个进程的内存上限，也不限制 Undo 文件快照、输入历史或 shell-local 输出。详见[驻留语义与验证边界](docs/compacted-transcript-memory.md)。
 

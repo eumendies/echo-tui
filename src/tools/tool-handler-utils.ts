@@ -66,13 +66,50 @@ function isUtf8ContinuationByte(byte: number | undefined): boolean {
   return typeof byte === 'number' && byte >= 0x80 && byte <= 0xbf;
 }
 
+/**
+ * 取出现次数更多的行尾作为主流行尾；无换行时默认 LF，避免新内容引入 CRLF。
+ */
+function detectMainEol(content: string): string {
+  let crlfCount = 0;
+  let lfCount = 0;
+
+  for (let index = content.indexOf('\n'); index !== -1; index = content.indexOf('\n', index + 1)) {
+    if (index > 0 && content[index - 1] === '\r') {
+      crlfCount += 1;
+    } else {
+      lfCount += 1;
+    }
+  }
+
+  return crlfCount > lfCount ? '\r\n' : '\n';
+}
+
+/**
+ * 把 CRLF 归一化为 LF，用于匹配与展示；裸 CR 由 unsupportedLineEndingReason 提前拒绝。
+ */
+function normalizeEolText(text: string): string {
+  return text.replace(/\r\n/g, '\n');
+}
+
+/**
+ * 判断文本是否包含不构成 CRLF 的裸 CR；这类文件的行边界在读取端与补丁端不一致，无法安全编辑。
+ */
+function unsupportedLineEndingReason(content: string): string | null {
+  return /\r(?!\n)/.test(content)
+    ? 'target file contains bare CR line endings; only LF and CRLF are supported'
+    : null;
+}
+
 export {
   DEFAULT_TOOL_RESULT_MAX_OUTPUT_BYTES,
   capUtf8Text,
   capUtf8TailText,
+  detectMainEol,
   isGitPath,
+  normalizeEolText,
   normalizePositiveInteger,
-  resolveCwd
+  resolveCwd,
+  unsupportedLineEndingReason
 };
 
 export type {

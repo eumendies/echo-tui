@@ -1,4 +1,5 @@
 import {createAssistantCommandPort} from './assistant-command-port';
+import {createBackgroundCommandPort} from './background-command-port';
 import {writeClipboardText} from '../clipboard';
 import {createConversationReferenceCommandPort} from './conversation-reference-command-port';
 import {createAgentsCommandPort} from './agents-command-port';
@@ -48,7 +49,7 @@ function createCommandHost(options: CommandHostOptions): CommandHostApp {
     throw new Error('CommandHost 与 AppContext 必须共享同一个 UserConfigContext');
   }
   const cwd = () => appContext.getCurrentCwd();
-  const modelPorts = createModelCommandPorts({appContext, userConfigContext, mcpManager});
+  const modelPorts = createModelCommandPorts({appContext, userConfigContext, mcpManager, render});
   const settingsPorts = createSettingsCommandPorts({appContext, render, renderResizeRecovery});
   const statusPorts = createStatusCommandPorts({
     appContext,
@@ -60,6 +61,7 @@ function createCommandHost(options: CommandHostOptions): CommandHostApp {
   return {
     btw,
     transcript: createTranscriptCommandPort({appContext, renderRecords, renderResizeRecovery}),
+    background: createBackgroundCommandPort(appContext),
     reference: createConversationReferenceCommandPort({appContext, render, usageStore, userConfigContext}),
     clipboard: {writeText: writeClipboardText},
     model: modelPorts.model,

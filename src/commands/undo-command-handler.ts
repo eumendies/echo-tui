@@ -4,7 +4,7 @@ import type {InputEvent} from '../types/input';
 import type {UndoExecuteResult, UndoReadySummary, UndoSummary} from '../types/change-history';
 
 type UndoCommandData = {
-  mode: 'info' | 'confirm';
+  mode: 'info' | 'confirm' | 'executing'; // 执行期间消费重复按键，防止异步恢复同一 checkpoint。
 };
 
 /**
@@ -20,14 +20,22 @@ function createUndoInfoSurface(title: string, lines: string[]): InfoCommandSurfa
 }
 
 /**
- * 创建 /undo 确认 surface，用用户可理解的轮次语义描述即将回退的内容。
+ * 创建 /undo 确认 surface，仅展示操作摘要及影响确认决定的风险。
  */
 function createUndoConfirmSurface(summary: UndoReadySummary): ConfirmCommandSurface {
-  const bodyLines = [
-    '回退这轮对话与文件变更',
-    `回退 ${summary.restoreFileCount} 个文件修改，删除 ${summary.deleteFileCount} 个新增文件。`,
-    '注意：会覆盖期间的手动修改'
-  ];
+  const actions = ['撤回本轮对话'];
+  if (summary.restoreFileCount > 0) actions.push(`恢复 ${summary.restoreFileCount} 个文件`);
+  if (summary.deleteFileCount > 0) actions.push(`删除 ${summary.deleteFileCount} 个新增文件`);
+  const bodyLines = [`${actions.join('，')}。`];
+
+  if (summary.untrackedReason) {
+    bodyLines.push('Shell 操作不会完整撤销。');
+  } else if (summary.undoneUntrackedNotice) {
+    bodyLines.push(summary.undoneUntrackedNotice);
+  }
+  if (summary.uncheckedFileCount) {
+    bodyLines.push(`${summary.uncheckedFileCount} 个文件无法检查后续修改，回退将覆盖当前内容。`);
+  }
 
   return {
     kind: 'confirm',
@@ -45,16 +53,13 @@ function createUndoStartSurface(summary: UndoSummary): {surface: InfoCommandSurf
 
   if (summary.status === 'invalid') {
     return {
-      surface: createUndoInfoSurface('/undo 不可用', [
-        summary.reason,
-        '上一轮记录将保留，文件系统不会被修改。'
-      ]),
+      surface: createUndoInfoSurface('/undo 不可用', [summary.reason]),
       data: {mode: 'info'}
     };
   }
 
   return {
-    surface: createUndoInfoSurface('/undo 不可用', ['暂无可回退的上一轮修改。']),
+    surface: createUndoInfoSurface('/undo 不可用', ['暂无可回退的上一轮对话。']),
     data: {mode: 'info'}
   };
 }
@@ -82,7 +87,12 @@ class UndoCommandHandler implements CommandHandler<UndoCommandData> {
     });
   }
 
-  handleEvent(session: CommandSession<UndoCommandData>, event: InputEvent, host: CommandHost): void {
+  /** 回退已经开始时不接受重复确认或取消；等待文件与 journal 恢复共同完成后再关闭面板。 */
+  async handleEvent(session: CommandSession<UndoCommandData>, event: InputEvent, host: CommandHost): Promise<void> {
+    if (session.data?.mode === 'executing') {
+      return;
+    }
+
     if (event.type === INPUT_EVENTS.ESCAPE) {
       host.session.close();
       return;
@@ -97,7 +107,17 @@ class UndoCommandHandler implements CommandHandler<UndoCommandData> {
       return;
     }
 
-    const result = host.undo.execute();
+    session.data.mode = 'executing';
+    host.session.update({
+      surface: {
+        kind: 'info',
+        title: '/undo 正在回退',
+        lines: [],
+        dismissHint: '请稍候'
+      },
+      data: session.data
+    });
+    const result = await host.undo.execute();
 
     if (!result.ok) {
       host.session.update({surface: createUndoFailureSurface(result), data: {mode: 'info'}});

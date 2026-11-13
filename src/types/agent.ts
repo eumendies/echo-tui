@@ -1,5 +1,6 @@
 import type {CompactionState, SubagentTranscriptRecord, TodoState, TranscriptRecord} from './transcript';
 import type {AskUserQuestionsRequest, ToolApprovalRequest, ToolCall, ToolExecutionOptions, ToolExecutionResult} from './tool';
+import type {BackgroundTaskManager} from './background-task';
 import type {ChangeFileRecorder} from './change-history';
 import type {SandboxMode, SandboxModeOverride} from '../sandbox/types';
 import type {MainAgentToolsConfig} from '../config/main-agent-tools-config';
@@ -85,8 +86,26 @@ export type ProviderRetry = {
   retryCount: number; // 当前重试次数，从 1 开始。
   maxRetries: number; // 当前 provider turn 允许的最大重试次数。
   delayMs: number; // 发起下一次请求前等待的退避毫秒数。
-  message: string; // 可直接展示给用户的本地提示文案。
+  kind: ProviderErrorKind; // 触发本次重试的失败类别，供日志与指标消费，不参与 UI 渲染。
+  reason: string; // 失败类别的可读标签，供日志与调试消费；UI 文案统一使用 message。
+  message: string; // 可直接展示给用户的本地提示文案，已包含 reason 与等待时长。
 };
+
+// provider 流式失败的语义类别；重试决策只依赖该类别，不依赖具体错误文案。
+// `aborted` 由调用方在分类前拦截（executor 已直接抛 AgentAbortError），保留它只为让类别枚举完整覆盖协议语义。
+export type ProviderErrorKind =
+  | 'transient'
+  | 'rate_limit'
+  | 'overloaded'
+  | 'stream_incomplete'
+  | 'provider_incomplete'
+  | 'content_filter'
+  | 'invalid_request'
+  | 'context_overflow'
+  | 'auth'
+  | 'quota'
+  | 'aborted'
+  | 'unknown';
 
 export type ResolvedAgentModel = {
   model: string;
@@ -133,6 +152,7 @@ export type AgentCallbacks = {
 };
 
 export type AgentSessionInput = {
+  backgroundTaskManager?: BackgroundTaskManager; // 注入即表示本次运行允许后台 bash;只有交互式主会话携带,BTW/子运行/headless 必须缺省。
   steeringInput?: AgentSteeringInputPort; // 仅交互式主运行使用的有界引导输入端口，子运行与 headless 不继承。
   records: TranscriptRecord[]; // 当前回合的连续驻留后缀；缺省不修改调用方数组。
   baseRecordIndex?: number; // records 首条在完整历史中的位置；旧版完整快照缺省为 0，不写入 journal。
@@ -280,6 +300,8 @@ export type LlmConfig = {
   reasoningEffort?: ReasoningEffort;
   reasoningSummary?: ReasoningSummary;
   contextWindow?: number;
+  streamMaxRetries?: number; // provider turn 的流式重试预算；缺省由 adapter 使用默认值。
+  streamIdleTimeoutMs?: number; // 单次 stream attempt 无事件的最长等待毫秒数；缺省由 adapter 使用默认值。
   tools: ToolRuntimeConfig;
 };
 

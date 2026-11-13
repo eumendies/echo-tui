@@ -1,9 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { mock } = test;
 const { createCodexAgent, createCodexRequest } = require('../../src/agent/codex/agent');
 const { createPromptCacheKey } = require('../../src/agent/prompt-cache');
+const { runWithMockedRetryTimers } = require('./retry-test-helpers');
 
 const TEST_CONFIG = {
   agentType: 'codex',
@@ -19,30 +19,6 @@ const TEST_CONFIG = {
   }
 };
 const RETRYABLE_PROCESSING_ERROR = 'An error occurred while processing your request. You can retry your request';
-const RESPONSE_STREAM_RETRY_TEST_DELAYS_MS = [1000, 2000];
-
-async function flushPendingAsyncWork() {
-  for (let index = 0; index < 20; index += 1) {
-    await Promise.resolve();
-  }
-}
-
-async function runWithMockedRetryTimers(action, retryDelaysMs) {
-  mock.timers.enable({apis: ['setTimeout']});
-
-  try {
-    const promise = action();
-
-    for (const delayMs of retryDelaysMs) {
-      await flushPendingAsyncWork();
-      mock.timers.tick(delayMs);
-    }
-
-    return await promise;
-  } finally {
-    mock.timers.reset();
-  }
-}
 
 async function* streamFrom(events) {
   for (const event of events) {
@@ -258,8 +234,7 @@ test('createCodexAgent retries a transient stream error with one OAuth runtime c
   });
 
   const result = await runWithMockedRetryTimers(
-    () => agent.runTurn([{role: 'user', text: 'hello'}], {}),
-    [RESPONSE_STREAM_RETRY_TEST_DELAYS_MS[0]]
+    () => agent.runTurn([{role: 'user', text: 'hello'}], {})
   );
 
   assert.deepEqual(result, {draft: 'recovered', toolCalls: [], usageInputTokens: undefined});
@@ -282,7 +257,9 @@ test('createCodexAgent keeps the final request ID after two transient retries an
               return streamFrom([createRetryableStreamError(`retry-codex-request-${attempts}`)]);
             }
 
-            const finalError = new Error('stream disconnected');
+            // 不可重试类别用于验证最终错误只保留最后一次 attempt 的 request ID。
+            const finalError = new Error('invalid request payload');
+            finalError.code = 'invalid_request_error';
             finalError.requestID = 'final-codex-request';
             return streamFrom([finalError]);
           }
@@ -296,8 +273,7 @@ test('createCodexAgent keeps the final request ID after two transient retries an
 
   await assert.rejects(
     () => runWithMockedRetryTimers(
-      () => retryAgent.runTurn([{role: 'user', text: 'hello'}], {}),
-      RESPONSE_STREAM_RETRY_TEST_DELAYS_MS
+      () => retryAgent.runTurn([{role: 'user', text: 'hello'}], {})
     ),
     /final-codex-request/
   );

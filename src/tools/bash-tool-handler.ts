@@ -5,19 +5,38 @@ import {createToolResultTruncationMarker} from './tool-result-offloading';
 import {isChangeHistoryReadonlyBashCommand, isPlanReadonlyBashCommand} from './readonly-bash-command';
 
 import type {BashToolExecutionResult, ToolCall, ToolExecutionOptions, ToolHandler} from '../types/tool';
+import type {BackgroundTaskManager, BackgroundTaskReference, BackgroundTaskState} from '../types/background-task';
+import type {ChangeFileRecorder} from '../types/change-history';
 import type {BashCommandRunResult} from './bash-command-runner';
 import type {ToolResultStore} from './tool-result-offloading';
 import type {SandboxRuntimeContext} from '../sandbox/types';
 
 const RUN_BASH_COMMAND_TOOL_NAME = 'run_bash_command';
+const UNTRACKED_BASH_REASON = '存在不可追踪的 bash 操作，仅能恢复已记录的受控文件。';
+const BACKGROUND_UNSUPPORTED_MESSAGE = 'Background execution is only available in the interactive main session. Re-run this in the foreground.';
 const PLAN_READONLY_BASH_REJECTION = 'In plan mode, run_bash_command may only run readonly inspection commands: pwd; file inspection commands such as ls, cat, head, tail, wc, grep, rg, echo, printf, and find without write options; readonly git inspection commands such as git status, git diff, git log, git show, git branch -a, git grep, git config --get, and git stash list; and combinations of readonly commands with |, &&, ;, ||, or newlines. This command may modify the workspace or system state, so it was rejected. To run it, exit plan mode first.';
 
 type BashToolHandlerOptions = {
+  background?: BackgroundTaskManager; // 后台任务能力;仅交互式主会话的 registry 注入,缺失即拒绝后台启动。
   cwd?: string | (() => string);
   timeoutMs?: number | null;
   maxOutputBytes?: number;
   sandbox?: SandboxRuntimeContext; // run_bash_command 的沙箱运行上下文;缺省或 provider 不可用时按无沙箱执行。
+  sessionId?: string; // 当前会话身份;后台任务按它分区,缺失时无法后台执行。
   shell?: string;
+  toolResultStore?: ToolResultStore;
+};
+
+type ExecuteBashCommandOptions = {
+  abortSignal?: AbortSignal; // turn 级取消;只在启动交接前影响后台任务。
+  background?: BackgroundTaskManager; // 后台任务能力;唯一后台可用性判据。
+  changeRecorder?: ChangeFileRecorder; // 未追踪命令保留受控编辑记录，并提示有限恢复范围。
+  cwd: string;
+  maxOutputBytes: number;
+  sandbox?: SandboxRuntimeContext;
+  sessionId?: string;
+  shell: string;
+  timeoutMs: number | null;
   toolResultStore?: ToolResultStore;
 };
 
@@ -38,6 +57,10 @@ function createBashToolHandler(options: BashToolHandlerOptions = {}): ToolHandle
         additionalProperties: false,
         required: ['command'],
         properties: {
+          background: {
+            type: 'boolean',
+            description: 'Start in the background and return log and status paths instead of waiting.'
+          },
           command: {
             type: 'string'
           }
@@ -47,13 +70,15 @@ function createBashToolHandler(options: BashToolHandlerOptions = {}): ToolHandle
     execute(args: Record<string, unknown>, call: ToolCall, executionOptions?: ToolExecutionOptions): Promise<BashToolExecutionResult> {
       return executeBashCommand(args, call, {
         abortSignal: executionOptions?.abortSignal,
+        background: options.background,
+        changeRecorder: executionOptions?.changeRecorder,
         cwd: resolveCwd(options.cwd),
         maxOutputBytes,
         sandbox: options.sandbox,
+        sessionId: options.sessionId,
         shell,
         timeoutMs,
-        toolResultStore: options.toolResultStore,
-        changeRecorder: executionOptions?.changeRecorder
+        toolResultStore: options.toolResultStore
       });
     }
   };
@@ -62,33 +87,39 @@ function createBashToolHandler(options: BashToolHandlerOptions = {}): ToolHandle
 /**
  * 执行 bash 命令并把退出码、timeout、截断输出归一化为 tool result。
  */
-function executeBashCommand(
+async function executeBashCommand(
   args: Record<string, unknown>,
   call: ToolCall,
-  options: Required<Pick<BashToolHandlerOptions, 'shell'>> & Pick<ToolExecutionOptions, 'changeRecorder'> & {abortSignal?: AbortSignal; cwd: string; maxOutputBytes: number; sandbox?: SandboxRuntimeContext; timeoutMs: number | null; toolResultStore?: ToolResultStore}
+  options: ExecuteBashCommandOptions
 ): Promise<BashToolExecutionResult> {
   const command = args.command;
 
   if (typeof command !== 'string' || command.trim() === '') {
-    return Promise.resolve({
-      callId: call.callId,
-      toolName: RUN_BASH_COMMAND_TOOL_NAME,
-      ok: false,
-      text: capUtf8Text('command must be a non-empty string', options.maxOutputBytes).text,
-      details: {kind: 'bash'}
-    });
+    return createBashFailureResult(call, 'command must be a non-empty string', options.maxOutputBytes);
+  }
+
+  const backgroundRequested = args.background;
+
+  if (backgroundRequested !== undefined && typeof backgroundRequested !== 'boolean') {
+    // 参数类型错误必须在启动进程前拒绝,避免把无效意图静默当成前台执行。
+    return createBashFailureResult(call, 'background must be a boolean when provided', options.maxOutputBytes);
   }
 
   // 生效只读沙箱内的命令无法写工作区,不构成不可追踪写入;判定条件与 runner 的包装同源(同一 provider 实例与缓存探测)。
   const sandboxedReadonly = options.sandbox !== undefined
     && options.sandbox.policy.mode === 'read-only'
     && options.sandbox.provider.isAvailable();
+  const mayWrite = !sandboxedReadonly && !isChangeHistoryReadonlyBashCommand(command);
 
-  if (!sandboxedReadonly && !isChangeHistoryReadonlyBashCommand(command)) {
-    options.changeRecorder?.invalidate('上一轮执行过不可追踪的 bash 命令，无法安全回退文件修改');
+  if (backgroundRequested === true) {
+    return executeBackgroundCommand(command, call, options, mayWrite);
   }
 
-  return runBashCommand({
+  if (mayWrite) {
+    options.changeRecorder?.markUntracked(UNTRACKED_BASH_REASON);
+  }
+
+  const result = await runBashCommand({
     command,
     abortSignal: options.abortSignal,
     cwd: options.cwd,
@@ -97,23 +128,103 @@ function executeBashCommand(
     shell: options.shell,
     toolResultStore: options.toolResultStore,
     timeoutMs: options.timeoutMs
-  }).then((result) => {
-    const text = formatBashResult(result, options.maxOutputBytes);
-
-    return {
-      callId: call.callId,
-      toolName: RUN_BASH_COMMAND_TOOL_NAME,
-      ok: !result.timedOut && result.exitCode === 0,
-      text,
-      details: {
-        kind: 'bash',
-        exitCode: result.exitCode,
-        timedOut: result.timedOut,
-        truncated: result.truncated || Buffer.byteLength(formatCompleteBashResult(result), 'utf8') > options.maxOutputBytes,
-        durationMs: result.durationMs
-      }
-    };
   });
+  const text = formatBashResult(result, options.maxOutputBytes);
+
+  return {
+    callId: call.callId,
+    toolName: RUN_BASH_COMMAND_TOOL_NAME,
+    ok: !result.timedOut && result.exitCode === 0,
+    text,
+    details: {
+      kind: 'bash',
+      exitCode: result.exitCode,
+      timedOut: result.timedOut,
+      truncated: result.truncated || Buffer.byteLength(formatCompleteBashResult(result), 'utf8') > options.maxOutputBytes,
+      durationMs: result.durationMs
+    }
+  };
+}
+
+/**
+ * 启动受管理的后台任务;能力缺失时在启动进程前返回失败结果。
+ */
+async function executeBackgroundCommand(
+  command: string,
+  call: ToolCall,
+  options: ExecuteBashCommandOptions,
+  mayWrite: boolean
+): Promise<BashToolExecutionResult> {
+  const manager = options.background;
+  const sessionId = options.sessionId;
+
+  if (!manager || !sessionId) {
+    return createBashFailureResult(call, BACKGROUND_UNSUPPORTED_MESSAGE, options.maxOutputBytes);
+  }
+
+  const started = await manager.start({
+    command,
+    cwd: options.cwd,
+    sessionId,
+    sandbox: options.sandbox,
+    shell: options.shell,
+    timeoutMs: options.timeoutMs,
+    ...(options.abortSignal ? {abortSignal: options.abortSignal} : {})
+  });
+
+  // 交接前取消也可能已经执行了 shell；不能把失败结果误当成没有副作用。
+  if (mayWrite && (started.ok || started.mayHaveExecuted)) {
+    options.changeRecorder?.markUntracked(UNTRACKED_BASH_REASON);
+  }
+
+  if (!started.ok) {
+    return createBashFailureResult(call, started.message, options.maxOutputBytes);
+  }
+
+  return {
+    callId: call.callId,
+    toolName: RUN_BASH_COMMAND_TOOL_NAME,
+    // 启动成功不等于命令成功;这里不填造 exit code,也不复用前台失败语义。
+    ok: true,
+    text: formatBackgroundStartResult(started.reference, started.state, options.maxOutputBytes),
+    details: {
+      kind: 'bash',
+      background: {
+        taskId: started.reference.taskId,
+        sessionId: started.reference.sessionId,
+        ownerInstanceId: started.reference.ownerInstanceId,
+        outputPath: started.reference.outputPath,
+        statusPath: started.reference.statusPath,
+        state: started.state,
+        command
+      }
+    }
+  };
+}
+
+function createBashFailureResult(call: ToolCall, message: string, maxOutputBytes: number): BashToolExecutionResult {
+  return {
+    callId: call.callId,
+    toolName: RUN_BASH_COMMAND_TOOL_NAME,
+    ok: false,
+    text: capUtf8Text(message, maxOutputBytes).text,
+    details: {kind: 'bash'}
+  };
+}
+
+/**
+ * 固定字段块 + 查询指引;不含任何命令输出正文,避免模型把启动当成执行结果。
+ */
+function formatBackgroundStartResult(reference: Pick<BackgroundTaskReference, 'outputPath' | 'statusPath'>, state: BackgroundTaskState, maxOutputBytes: number): string {
+  const text = [
+    `state: ${state}`,
+    `output_path: ${reference.outputPath}`,
+    `status_path: ${reference.statusPath}`,
+    '',
+    'Running in the background. Use read_files on status_path for state/exit_code/reason, then output_path with offset/limit for output. A successful start does not mean success; reaching the end of a running log only means the current end.'
+  ].join('\n');
+
+  return capUtf8Text(text, maxOutputBytes).text;
 }
 
 /**
@@ -241,15 +352,18 @@ function appendLabeledOutput(lines: string[], label: string, output: string): vo
 }
 
 export {
+  BACKGROUND_UNSUPPORTED_MESSAGE,
   DEFAULT_BASH_MAX_OUTPUT_BYTES,
   PLAN_READONLY_BASH_REJECTION,
   RUN_BASH_COMMAND_TOOL_NAME,
   createBashToolHandler,
+  formatBackgroundStartResult,
   formatBashResult,
   isChangeHistoryReadonlyBashCommand,
   isPlanReadonlyBashCommand,
 };
 
 export type {
-  BashToolHandlerOptions
+  BashToolHandlerOptions,
+  ExecuteBashCommandOptions
 };

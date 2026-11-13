@@ -70,6 +70,61 @@ function readConfigError(error) {
   };
 }
 
+/** 构造只包含 provider/model 图的最小 llm 配置，用于验证 provider 级重试覆盖。 */
+function readConfigWithProvider(providerFields) {
+  return readLlmConfig({
+    readFile: readConfigFrom(JSON.stringify({
+      llm: {
+        providers: {
+          default: {
+            preset: OPENAI_PRESET,
+            apiKey: 'test-api-key',
+            baseURL: 'https://example.invalid/v1',
+            ...providerFields
+          }
+        },
+        models: [{id: 'default', provider: 'default', model: 'test-model'}]
+      }
+    }))
+  });
+}
+
+test('readLlmConfig reads provider-level stream retry overrides', () => {
+  const config = readConfigWithProvider({streamMaxRetries: 3, streamIdleTimeoutMs: 60_000});
+
+  assert.equal(config.streamMaxRetries, 3);
+  assert.equal(config.streamIdleTimeoutMs, 60_000);
+});
+
+test('readLlmConfig clamps oversized stream retry settings to their hard limits', () => {
+  const oversized = readConfigWithProvider({streamMaxRetries: 30, streamIdleTimeoutMs: 10_000_000});
+
+  // 合法整数超过上限时限制到上限，而不是静默回退默认值。
+  assert.equal(oversized.streamMaxRetries, 20);
+  assert.equal(oversized.streamIdleTimeoutMs, 3_600_000);
+
+  const belowMinimum = readConfigWithProvider({streamIdleTimeoutMs: 500});
+  assert.equal(belowMinimum.streamIdleTimeoutMs, 10_000);
+});
+
+test('readLlmConfig ignores invalid stream retry settings', () => {
+  for (const invalid of [{streamMaxRetries: -1}, {streamMaxRetries: 1.5}, {streamMaxRetries: 'many'}]) {
+    const config = readConfigWithProvider(invalid);
+    assert.equal(config.streamMaxRetries, undefined, `unexpected budget for ${JSON.stringify(invalid)}`);
+  }
+
+  for (const invalid of [{streamIdleTimeoutMs: -100}, {streamIdleTimeoutMs: 'fast'}, {streamIdleTimeoutMs: 0}]) {
+    const config = readConfigWithProvider(invalid);
+    assert.equal(config.streamIdleTimeoutMs, undefined, `unexpected idle timeout for ${JSON.stringify(invalid)}`);
+  }
+});
+
+test('readLlmConfig accepts zero retries to disable stream retries', () => {
+  const config = readConfigWithProvider({streamMaxRetries: 0});
+
+  assert.equal(config.streamMaxRetries, 0);
+});
+
 test('resolveContextWindow prefers explicit model configuration', () => {
   assert.equal(resolveContextWindow({ model: 'gpt-5', contextWindow: 64_000 }), 64_000);
 });
