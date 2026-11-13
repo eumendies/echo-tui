@@ -49,7 +49,7 @@ function createCommandHost(options: CommandHostOptions): CommandHostApp {
     throw new Error('CommandHost 与 AppContext 必须共享同一个 UserConfigContext');
   }
   const cwd = () => appContext.getCurrentCwd();
-  const modelPorts = createModelCommandPorts({appContext, userConfigContext, mcpManager});
+  const modelPorts = createModelCommandPorts({appContext, userConfigContext, mcpManager, render});
   const settingsPorts = createSettingsCommandPorts({appContext, render, renderResizeRecovery});
   const statusPorts = createStatusCommandPorts({
     appContext,
