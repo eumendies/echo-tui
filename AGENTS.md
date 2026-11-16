@@ -19,7 +19,7 @@ This repository is a Node.js terminal TUI prototype with a real LLM adapter.
 - `src/input/`: key parsing, input event types, and composer state.
 - `src/render/`: transcript blocks, Markdown/table/code projection, tool rendering, footer/status-line redraw logic, and layout helpers.
 - `src/terminal/`: ANSI helpers and TTY raw-mode setup/cleanup.
-- `src/types/`: pure TypeScript protocol types shared across layers, including per-run interactive/headless execution mode.
+- `src/types/`: pure TypeScript protocol types shared across layers, including per-run interactive/headless execution mode. `src/types/command/` splits command protocol by domain (`surface`, `host`, `runtime`, and per-panel `*-surface`); its `index.ts` only aggregates exports and must not declare types.
 - `test/`: Node built-in test runner coverage (`node:test`).
 - `docs/`, `openspec/`: user/architecture documentation and proposals.
 - `scripts/`: small build-support scripts such as copying built-in theme assets.

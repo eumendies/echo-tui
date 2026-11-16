@@ -1,7 +1,7 @@
 import {REASONING_EFFORTS} from '../../types/agent';
 
 import type {ReasoningEffort} from '../../types/agent';
-import type {ModelCommandInfoResult, ModelCommandProfile} from './model-context';
+import type {CommandModelInfoResult, CommandModelProfile} from '../../types/command';
 
 type ModelTuningActiveField = 'model' | 'effort';
 
@@ -9,7 +9,7 @@ type ModelTuningState = {
   activeField: ModelTuningActiveField;
   effort: ReasoningEffort;
   error?: string;
-  models: ModelCommandProfile[];
+  models: CommandModelProfile[];
   originalModelId: string;
   selectedIndex: number;
 };
@@ -39,7 +39,7 @@ class ModelTuningContext {
   /**
    * 从当前 ModelContext 快照启动调节；配置不可用时保持关闭并返回 false。
    */
-  open(info: ModelCommandInfoResult): boolean {
+  open(info: CommandModelInfoResult): boolean {
     if (!('models' in info) || info.models.length === 0) {
       return false;
     }

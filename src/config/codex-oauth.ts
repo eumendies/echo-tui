@@ -4,23 +4,14 @@ import path from 'node:path';
 
 import {redactSensitiveText} from '../agent/agent-errors';
 
+import type {CodexOAuthCredential, CodexOAuthRuntimeConfig} from '../types/agent';
+
 const CODEX_OAUTH_BACKEND_BASE_URL = 'https://chatgpt.com/backend-api/codex';
 const CODEX_OAUTH_MODELS_URL = `${CODEX_OAUTH_BACKEND_BASE_URL}/models?client_version=1.0.0`;
 const CODEX_OAUTH_USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage';
 const CODEX_OAUTH_TOKEN_URL = 'https://auth.openai.com/oauth/token';
 const CODEX_OAUTH_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
 const ACCESS_TOKEN_EXPIRY_SKEW_MS = 60_000;
-
-type CodexOAuthRuntimeConfig = {
-  authFilePath?: string;
-};
-
-type CodexOAuthCredential = {
-  accessToken: string;
-  accountId?: string;
-  expiresAt?: number;
-  refreshToken?: string;
-};
 
 type CodexOAuthCredentialDependencies = {
   fetch?: typeof fetch;
@@ -365,9 +356,7 @@ export {
 };
 
 export type {
-  CodexOAuthCredential,
   CodexOAuthCredentialDependencies,
-  CodexOAuthRuntimeConfig,
   CodexUsage,
   CodexUsageDependencies,
   CodexUsageWindow
