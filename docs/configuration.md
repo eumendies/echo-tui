@@ -72,6 +72,42 @@
 
 回退到仍支持旧 mode 的版本时，该版本可能再次采用保留的旧值；旧版本会忽略新禁用名单，**不会保留本功能的工具禁用效果**。
 
+## 工具授权的会话持久化
+
+会话级授权（`Allow <tool> for this session`、`Allow this command for this session`、`Allow all tools for this session`，以及普通输入态的 `Shift+Tab`）跟随**会话**而不是进程。重启 echo-tui 后用 `/resume` 恢复同一个会话，之前批准过的工具与命令继续免审批。
+
+授权写入与 transcript journal 同目录的 sidecar：
+
+```
+~/.echo/echo_tui/projects/<projectKey>/sessions/<sessionId>.approvals.json
+```
+
+```json
+{
+  "schemaVersion": 1,
+  "sessionId": "2026-11-16T02-11-28-604Z-80dd43",
+  "updatedAt": "2026-11-16T02:20:11.302Z",
+  "allowAll": true,
+  "tools": ["apply_patch", "mcp__docs__search"],
+  "bashCommands": ["npm install"]
+}
+```
+
+- 文件权限为 `0600`，采用「临时文件 + rename」原子替换，不会出现半写入 JSON。
+- **只影响所属会话**：不写入 `~/.echo/config.json`，也不写入 transcript journal。
+- `/fork` 创建的新会话继承当前授权；`/clear` 开启的新会话从空授权开始；通过 `/resume` 删除历史会话时一并清理该文件。
+- `tools` 与 `bashCommands` 均为空且 `allowAll` 为假时文件被删除，「删除文件」与「撤销全部授权」等价。
+- 读取失败一律按空授权处理：文件缺失、JSON 损坏、`schemaVersion` 不支持或 `sessionId` 不匹配都会回到需要审批，不会因为损坏的 sidecar 放行。
+- 数组里的单个脏条目（空白字符串、非字符串）只丢弃该项，不会让同一文件的其余授权一起失效。
+- `updatedAt` 只用于人工排查，缺失或格式异常不影响授权读取。
+- 写盘失败会在 transcript 中提示一次，本次会话内仍按内存授权放行，代价是重启后需要重新审批。
+
+`Shift+Tab` 的关闭方向同样写盘。只写打开方向会让 `TOOLS all` 在重启后复活，因此两个方向都落盘。
+
+手工撤销：直接删除对应的 `.approvals.json`，或在该会话里用 `Shift+Tab` 关闭全部授权后重新打开所需项目。
+
+`echo-tui --once` 不读取也不写入该文件，继续使用默认 deny 或显式 `--full-access`。
+
 ## Provider 流式重试
 
 `~/.echo/config.json` 的 provider profile 支持两个可选字段，用于覆盖流式请求的重试行为。`/config` 面板不暴露它们，只在需要手写配置时使用。
