@@ -44,11 +44,15 @@ test('run_subagent is a normal pair-after ToolHandler executed through ToolExecu
   const result = await executor.execute(call, {abortSignal: abortController.signal});
 
   assert.equal(handler.transcriptCommitMode, 'pair_after_execute');
-  assert.equal(handler.definition.description, 'Delegate a self-contained task to a named subagent and return only its bounded final result. Oversized reports may be saved to a local artifact that can be inspected with read_files.');
+  assert.match(handler.definition.description, /^Delegate a self-contained task to a named subagent and return only its bounded final result\./u);
+  // 主 Agent 必须知道 worktree Worker 看不到未提交修改，且成果不会自动集成。
+  assert.match(handler.definition.description, /detached worktree/u);
+  assert.match(handler.definition.description, /never applied to your working tree automatically/u);
   assert.deepEqual(handler.definition.parameters.required, ['agent', 'task']);
   assert.deepEqual(handler.definition.parameters.properties.agent.enum, ['explorer']);
   assert.match(handler.definition.parameters.properties.agent.description, /explorer: Investigate broad bounded tasks/u);
-  assert.equal(handler.definition.parameters.properties.task.description, 'The selected subagent runs in an isolated context and cannot see the parent conversation. Include all necessary context directly; do not refer to prior messages or the user request.');
+  assert.match(handler.definition.parameters.properties.task.description, /^The selected subagent runs in an isolated context and cannot see the parent conversation\./u);
+  assert.match(handler.definition.parameters.properties.task.description, /managed workspace/u);
   assert.deepEqual(invocations, [{agentName: 'explorer', task: 'inspect config', call, options: {abortSignal: abortController.signal}}]);
   assert.deepEqual(result, {
     callId: 'outer_1',

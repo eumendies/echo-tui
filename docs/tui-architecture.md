@@ -4,6 +4,12 @@ _面向实现和审阅的终端 TUI 说明。_
 
 ---
 
+## Worker workspaces
+
+内置 `worker` 子 Agent 在 Git 项目中自动使用独立 detached worktree，非 Git 项目保持共享 cwd 串行。成果留在工作区的文件里，工作区位于父项目的 `worker-workspaces/` 分区，不会自动集成。
+
+生命周期、磁盘布局、Git 元数据写边界与手工清理流程见 [worker-workspaces.md](./worker-workspaces.md)。
+
 ## 模块架构
 
 ```mermaid

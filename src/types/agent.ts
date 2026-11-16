@@ -1,4 +1,4 @@
-import type {CompactionState, SubagentTranscriptRecord, TodoState, TranscriptRecord} from './transcript';
+import type {CompactionState, SubagentTranscriptRecord, SubagentWorkspaceOutcomeFacts, TodoState, TranscriptRecord} from './transcript';
 import type {AskUserQuestionsRequest, ToolApprovalRequest, ToolCall, ToolExecutionOptions, ToolExecutionResult} from './tool';
 import type {BackgroundTaskManager} from './background-task';
 import type {ChangeFileRecorder} from './change-history';
@@ -45,13 +45,69 @@ export type SubagentRunResult =
   | {
       ok: true; // 表示子 Agent 已生成可返回父 Agent 的最终报告。
       text: string; // 成功时返回父 Agent 的最终调查报告。
+      workspace?: SubagentWorkspaceOutcomeFacts; // 受管工作区成果定位；缺省表示该运行按共享目录执行。
     }
   | {
       ok: false; // 表示子运行非取消失败或预算/参数边界拒绝。
       text: string; // 进入外层 tool result 的失败交接；runtime 启动前拒绝保持简洁诊断。
+      workspace?: SubagentWorkspaceOutcomeFacts; // 失败现场定位；成果仍未集成。
     };
 
 export type SubagentExecutionPolicy = 'readonly_investigation' | 'general_purpose'; // 子运行固定的工具风险与执行边界策略。
+
+/** Git 探测的明确失败分类；全部为硬错误，不得降级成非 Git 回退。 */
+export type SubagentWorkspaceProbeErrorCode =
+  | 'git_missing' // PATH 中找不到 git 可执行文件。
+  | 'git_failed' // git 以非预期方式失败，无法归类到更具体原因。
+  | 'bare_repository' // 当前目录位于 bare 仓库，没有可用的工作树。
+  | 'unborn_head' // 仓库存在但尚无任何 commit，没有可冻结的基线。
+  | 'unsupported_layout'; // cwd 与解析出的仓库根关系不成立，无法映射执行目录。
+
+/** Worker 工作区与源仓库共有的 Git 事实；段级快照与 worktree 身份都从这里派生。 */
+export type SubagentSharedGitFacts = {
+  baseCommit: string; // 冻结的完整 HEAD commit SHA。
+  execRelativeCwd: string; // 父 cwd 相对仓库根的子目录，空字符串表示仓库根，使用 / 分隔。
+  gitCommonDir: string; // 共享 Git 元数据目录绝对路径；只读事实，不是额外写授权。
+  repoRoot: string; // 源仓库根绝对路径。
+};
+
+/** 一次工作区探测结论：只有 non_git 允许共享目录回退。 */
+export type SubagentWorkspaceProbe =
+  | ({kind: 'git'} & SubagentSharedGitFacts) // 有效 Git 工作区；段内领取并行资格。
+  | {kind: 'non_git'} // 明确非 Git 项目；维持共享 cwd 串行。
+  | {code: SubagentWorkspaceProbeErrorCode; kind: 'error'; message: string}; // 硬错误；调用必须原序失败。
+
+/** 受管 worktree 的已核验归属；恢复与清理前都要重新核对。 */
+export type SubagentWorkspaceGitIdentity = SubagentSharedGitFacts & {
+  worktreeGitDir: string; // 该 worktree 私有 gitDir（HEAD/index/锁等）。
+};
+
+/** 单个受管 worktree 的运行期视图；路径全部由系统生成。 */
+export type PreparedSubagentWorkspace = {
+  execCwd: string; // Worker 工具与 Bash 的实际执行目录。
+  git: SubagentWorkspaceGitIdentity; // 已核验的 Git 归属。
+  workspaceId: string; // 受管登记身份，同时是登记目录名。
+  workspaceRoot: string; // 完整 worktree 根；生效沙箱的默认 workspace 写根。
+};
+
+/** 一次受管工作区分配的结论；失败必须在原调用位置提交，不得回退共享目录。 */
+export type SubagentWorkspaceAllocation =
+  | {kind: 'ok'; runId: string; workspace: PreparedSubagentWorkspace} // 已创建并核验的工作区。
+  | {kind: 'failed'; message: string}; // 创建或核验失败的可诊断原因。
+
+/**
+ * 调度器为一次委派选定的工作区方式。
+ * 两种方式互斥，用单个联合字段表达，避免「两个可选字段同时缺省/同时存在」的歧义。
+ */
+export type SubagentWorkspaceSelection =
+  | {
+      kind: 'managed_worktree'; // 受管 detached worktree。
+      runId: string; // 调度器预留的子运行身份；工作区登记与稳定记录必须共用它。
+      workspace: PreparedSubagentWorkspace; // 已创建并核验的工作区。
+    }
+  | {
+      kind: 'shared_cwd'; // 明确非 Git 项目；复用父 cwd 串行执行。
+    };
 
 export type SubagentDescriptor = {
   description: string; // 主 Agent工具目录中展示的子 Agent能力说明。
@@ -62,6 +118,9 @@ export type SubagentDescriptor = {
 export type SubagentToolPort = {
   listDefinitions(): readonly SubagentDescriptor[]; // 返回当前父 run可委派的子 Agent目录。
   run(agentName: string, task: string, call: ToolCall, options?: ToolExecutionOptions): Promise<SubagentRunResult>; // 按名称在父 run边界内同步执行隔离子 Agent。
+  probeWorkspace?(options: {abortSignal?: AbortSignal}): Promise<SubagentWorkspaceProbe>; // 屏障后异步探测段级工作区类型并冻结基线。
+  allocateWorkerWorkspace?(options: {abortSignal?: AbortSignal; call: ToolCall; probe: Extract<SubagentWorkspaceProbe, {kind: 'git'}>}): Promise<SubagentWorkspaceAllocation>; // 为单个调用创建受管 worktree。
+  releaseWorkerWorkspace?(options: {status: 'cancelled'; workspace: PreparedSubagentWorkspace}): Promise<void>; // 结算已分配但未真正运行的受管工作区。
 };
 
 export function isShellInteractionMode(mode: InteractionMode): boolean {

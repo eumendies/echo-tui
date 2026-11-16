@@ -171,6 +171,16 @@ function createDebugObservation(debug: DebugContext, output?: ObservationOutput)
         });
       }
     },
+    workerConcurrencyPrepared({scope, candidates, mode, started, workspacePreparationFailures}) {
+      // 只记录规模与结论；任务正文、diff 与文件内容不进入诊断日志。
+      debug.emit('worker_concurrency_prepared', {
+        ...createDebugScopePayload(scope),
+        candidates,
+        mode,
+        started,
+        workspacePreparationFailures
+      });
+    },
     toolApprovalResolved({scope, call, approval}) {
       debug.emit('tool_call_approval', {
         ...createDebugScopePayload(scope),

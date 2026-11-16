@@ -12,6 +12,7 @@ import {
   unsupportedLineEndingReason
 } from '../tool-handler-utils';
 import {createEditFileDisplayFile} from './display';
+import {checkWorkspaceWriteTarget} from '../workspace-path-guard';
 
 import type {EditFileToolExecutionResult, ToolCall, ToolExecutionOptions, ToolHandler} from '../../types/tool';
 import type {ReplacementSpan} from './display';
@@ -25,7 +26,16 @@ type EditFileToolHandlerOptions = {
   cwd?: string | (() => string);
   maxFileBytes?: number;
   maxOutputBytes?: number; // 最终 provider-visible 摘要的 UTF-8 字节预算，仅供固定安全上限或测试覆盖。
+  scopeRoot?: string; // 受管 Worker 工作区根；存在时写入必须能确认仍位于该根内。
 };
+
+/** 按是否受限于受管工作区投影路径语义说明，避免模型按主 Agent 的能力假设调用。 */
+function createEditFileDescription(scopeRoot?: string): string {
+  const pathPolicy = scopeRoot === undefined
+    ? 'Relative paths resolve from the current working directory; absolute paths and .. paths are supported.'
+    : 'Relative paths resolve from the current working directory. This run is confined to its managed worker workspace: any path that escapes that root, including through a symbolic link, is rejected before writing.';
+  return `Edit one existing UTF-8 text file by replacing an exact old_string with new_string. ${pathPolicy} By default old_string must match exactly once; set replace_all to replace every non-overlapping match. This tool does not create or delete files.`;
+}
 
 type EditFileArguments = {
   path: string;
@@ -63,10 +73,11 @@ function createEditFileCallLabel(argumentsText: unknown): string {
 function createEditFileToolHandler(options: EditFileToolHandlerOptions = {}): ToolHandler {
   const maxFileBytes = options.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES;
   const maxOutputBytes = normalizePositiveInteger(options.maxOutputBytes, DEFAULT_TOOL_RESULT_MAX_OUTPUT_BYTES);
+  const scopeRoot = options.scopeRoot;
   return {
     definition: {
       name: EDIT_FILE_TOOL_NAME,
-      description: 'Edit one existing UTF-8 text file by replacing an exact old_string with new_string. Relative paths resolve from the current working directory; absolute paths and .. paths are supported. By default old_string must match exactly once; set replace_all to replace every non-overlapping match. This tool does not create or delete files.',
+      description: createEditFileDescription(scopeRoot),
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -89,6 +100,10 @@ function createEditFileToolHandler(options: EditFileToolHandlerOptions = {}): To
       try {
         resolved = resolveEditPath(resolveCwd(options.cwd), parsed.value.path);
         if (!resolved.ok) return fail(resolved.reason);
+        if (scopeRoot !== undefined) {
+          const guard = checkWorkspaceWriteTarget(scopeRoot, resolved.value);
+          if (guard.kind === 'denied') return fail(guard.reason);
+        }
 
         loaded = readTargetFile(parsed.value.path, resolved.value, maxFileBytes);
         if (!loaded.ok) return fail(loaded.reason);
@@ -110,6 +125,11 @@ function createEditFileToolHandler(options: EditFileToolHandlerOptions = {}): To
       };
 
       try {
+        // 读取与写入之间目标可能被换成符号链接；写入前必须重新确认仍在受管根内。
+        if (scopeRoot !== undefined) {
+          const guard = checkWorkspaceWriteTarget(scopeRoot, resolved.value);
+          if (guard.kind === 'denied') return fail(guard.reason);
+        }
         executionOptions?.changeRecorder?.captureFileBefore(resolved.value);
         fs.writeFileSync(resolved.value, simulated.value.content, 'utf8');
         executionOptions?.changeRecorder?.captureFileAfter(resolved.value);

@@ -99,7 +99,11 @@ type ToolResultTranscriptRecordBase = TranscriptRecordBase & {
 };
 
 export type ToolResultTranscriptDetails =
-  | {kind: 'generic'; interrupted?: boolean} // interrupted 仅标识 Esc 为未返回的工具调用补出的失败结果，不代表工具自身失败。
+  | {
+      kind: 'generic';
+      interrupted?: boolean; // interrupted 仅标识 Esc 为未返回的工具调用补出的失败结果，不代表工具自身失败。
+      workspace?: SubagentWorkspaceOutcomeFacts; // run_subagent 的成果定位；compact 投影据此保留成果入口。
+    }
   | {
       kind: 'bash';
       exitCode?: number | null;
@@ -142,6 +146,34 @@ export type ToolResultTranscriptRecord = ToolResultTranscriptRecordBase & {
   details: ToolResultTranscriptDetails;
 };
 
+/**
+ * 子运行工作区的稳定事实。
+ *
+ * 这些字段只描述系统已核验的工作区身份与基线；缺省表示旧记录或该运行没有受管工作区。
+ * owner 固定指向创建者，fork 继承记录也不会改变它。
+ */
+export type SubagentWorkspaceRecordFacts = {
+  baseCommit?: string; // 固定基线；managed_worktree 方式必有。
+  execCwd?: string; // Worker 实际执行目录。
+  mode: 'managed_worktree' | 'shared_cwd'; // 本实例实际采用的工作区方式。
+  owner: {
+    projectCwd: string; // 创建者项目身份；恢复与归属展示的唯一分区依据。
+    sessionId?: string; // 创建者会话；headless 缺省，不伪造 journal。
+  };
+  workspaceRoot?: string; // 完整 worktree 根；shared_cwd 缺省。
+};
+
+/**
+ * 终态工作区事实；只表达「还在不在」，不表示已集成。
+ *
+ * 成果就是 worktree 里的文件本身，因此不需要在记录里重复变化清单或索引路径：
+ * 父 Agent 直接从工作区读取即可。
+ */
+export type SubagentWorkspaceOutcomeFacts = {
+  retained: boolean; // 工作区是否仍保留在现场。
+  workspaceRoot: string; // 受管 worktree 的完整根；共享目录运行的终态不带该字段。
+};
+
 export type SubagentTranscriptEvent =
   | {
       kind: 'start'; // 子 Agent 已通过校验并开始运行。
@@ -149,6 +181,7 @@ export type SubagentTranscriptEvent =
       parallelSize?: number; // 并行分组内的 run_subagent 调用总数；缺省表示单委派，渲染据此分叉。
       model?: string; // 子运行实际使用的模型名；旧记录缺省时窗口回退主模型显示。
       reasoningEffort?: ReasoningEffort; // 解析 effortPolicy 后实际生效的推理强度。
+      workspace?: SubagentWorkspaceRecordFacts; // 受管工作区身份与基线；旧记录缺省。
     }
   | {
       kind: 'reasoning_summary'; // Provider 已确认稳定的可见推理摘要。
@@ -173,14 +206,17 @@ export type SubagentTranscriptEvent =
   | {
       kind: 'completed'; // 子 Agent 已成功返回最终回答。
       durationMs: number; // 从 start 到成功完成的墙钟耗时。
+      workspace?: SubagentWorkspaceOutcomeFacts; // 成果定位；旧记录缺省表示该运行没有受管工作区。
     }
   | {
       kind: 'failed'; // 子 Agent 因非父级取消错误结束。
       durationMs: number; // 从 start 到失败的墙钟耗时。
+      workspace?: SubagentWorkspaceOutcomeFacts; // 失败现场定位；成果仍未集成。
     }
   | {
       kind: 'cancelled'; // 子 Agent 随父 turn 主动取消。
       durationMs: number; // 从 start 到取消的墙钟耗时。
+      workspace?: SubagentWorkspaceOutcomeFacts; // 取消现场定位；恢复只读引用。
     };
 
 export type SubagentTranscriptRecord = TranscriptRecordBase & {

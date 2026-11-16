@@ -2,6 +2,8 @@ import {DEFAULT_TUI_THEME, type TuiTheme} from '../../config/theme-config';
 import {blockText} from '../colors';
 import {charWidth, displayWidth, safeRenderWidth, splitGraphemes, stripAnsi, tabWidthAt} from '../layout';
 
+import type {SubagentWorkspaceOutcomeFacts} from '../../types/transcript';
+
 const TOOL_RESULT_MAX_DISPLAY_LINES = 12;
 const TOOL_RESULT_TRUNCATION_TEXT = '[tool output truncated for display]';
 
@@ -388,6 +390,24 @@ function renderSubagentRailSpacer(outerPrefix: string, theme: TuiTheme): string 
   return blockText(theme, 'subagentRail', outerPrefix);
 }
 
+/**
+ * 统一的工作区状态文案。
+ *
+ * 成果就是 worktree 里的文件本身，所以这里只需要说明「还在不在」和「没集成」；
+ * rail、compact 投影与 Ctrl+O 窗口共用同一措辞，避免同一状态出现多种说法。
+ */
+function formatWorkspaceOutcomeState(workspace: SubagentWorkspaceOutcomeFacts): string {
+  return workspace.retained
+    ? 'workspace retained · not integrated'
+    : 'workspace removed · nothing left to integrate';
+}
+
+/** 投影工作区定位：多行用于 rail 与窗口，单行用于 compact 终态。 */
+function formatWorkspaceOutcomeText(workspace: SubagentWorkspaceOutcomeFacts, multiline: boolean): string {
+  const state = formatWorkspaceOutcomeState(workspace);
+  return multiline ? `${state}\n${workspace.workspaceRoot}` : `${state} · ${workspace.workspaceRoot}`;
+}
+
 export {
   clampToDisplayWidth,
   createSubagentRailLayout,
@@ -397,6 +417,8 @@ export {
   createToolRailPrefix,
   expandTabs,
   formatToolDisplayName,
+  formatWorkspaceOutcomeState,
+  formatWorkspaceOutcomeText,
   normalizeContentText,
   renderPrefixedLines,
   renderRailText,
