@@ -113,6 +113,12 @@ function createDebugObservation(debug: DebugContext, output?: ObservationOutput)
         toolName: call.toolName
       });
     },
+    sessionApprovalsStoreFailed({error, operation}) {
+      debug.emit('session_approvals_store_error', {
+        errorName: error instanceof Error ? error.name : undefined,
+        operation
+      });
+    },
     compactionCompleted({scope, compaction}) {
       debug.emit('compaction_end', {
         ...createDebugScopePayload(scope),

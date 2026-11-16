@@ -100,6 +100,7 @@ type Observation = {
   manualApprovalCompleted: (input: {scope: AssistantTurnScope; call: Readonly<ToolCall>; decision: ToolApprovalDecision; request?: Readonly<ToolApprovalRequest>}) => void; // 发布人工审批结果事实。
   toolApprovalReviewed: (input: ToolApprovalReviewObservation) => void; // 发布自动审批 reviewer 的有界判断事实。
   toolApprovalUsageStoreFailed: (input: {call: Readonly<ToolCall>; error: unknown; model: string}) => void; // 发布 reviewer usage 持久化失败事实。
+  sessionApprovalsStoreFailed: (input: {error: unknown; operation: 'read' | 'write'}) => void; // 发布会话授权 sidecar 读写失败事实。
 
   compactionCompleted: (input: {scope: AgentRunScope; compaction: Readonly<CompactionState>}) => void; // 发布压缩完成事实。
   providerRequestBuilt: (input: {scope: AgentRunScope; request: ProviderRequestObservationInput}) => void; // 发布 provider 请求已构造事实。
@@ -120,7 +121,7 @@ const disabledObservation: Observation = {
   appStarted() {}, appExiting() {}, close() {}, configurationWatchFailed() {}, resizeRecovered() {},
   transcriptBatchRendered() {}, userSubmitted() {}, assistantTurnStarted() {}, assistantTurnCompleted() {},
   assistantTurnCancelled() {}, assistantTurnFailed() {}, manualApprovalRequested() {}, manualApprovalCompleted() {},
-  toolApprovalReviewed() {}, toolApprovalUsageStoreFailed() {}, compactionCompleted() {}, providerRequestBuilt() {},
+  toolApprovalReviewed() {}, toolApprovalUsageStoreFailed() {}, sessionApprovalsStoreFailed() {}, compactionCompleted() {}, providerRequestBuilt() {},
   providerUsage() {}, providerUsageStoreFailed() {}, subagentCatalogLoaded() {}, workerConcurrencyPrepared() {}, toolApprovalRequested() {}, toolApprovalResolved() {},
   toolCompleted() {}, toolRiskAssessed() {}, toolStarted() {}, userQuestionCompleted() {}, userQuestionRequested() {}
 };
@@ -145,6 +146,7 @@ function createCompositeObservation(observations: Observation[]): Observation {
     manualApprovalCompleted: (input) => notify(observations, (observation) => observation.manualApprovalCompleted(input)),
     toolApprovalReviewed: (input) => notify(observations, (observation) => observation.toolApprovalReviewed(input)),
     toolApprovalUsageStoreFailed: (input) => notify(observations, (observation) => observation.toolApprovalUsageStoreFailed(input)),
+    sessionApprovalsStoreFailed: (input) => notify(observations, (observation) => observation.sessionApprovalsStoreFailed(input)),
     compactionCompleted: (input) => notify(observations, (observation) => observation.compactionCompleted(input)),
     providerRequestBuilt: (input) => notify(observations, (observation) => observation.providerRequestBuilt(input)),
     providerUsage: (input) => notify(observations, (observation) => observation.providerUsage(input)),
