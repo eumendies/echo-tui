@@ -1,5 +1,5 @@
-import type {AgentInstructionFileName, AgentToolPolicy} from './agent';
-import type {SandboxModeOverride} from '../sandbox/types';
+import type {AgentInstructionFileName, AgentToolPolicy} from '../../types/agent';
+import type {SandboxModeOverride} from '../../sandbox/types';
 
 export type AgentWorkflowArgumentPolicy = 'none' | 'optional';
 

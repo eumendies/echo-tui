@@ -17,9 +17,9 @@ import type {
   SandboxConfigDraft,
   SandboxConfigState,
   ToolApprovalModelProfile,
-  MainAgentToolCatalogEntry,
   ToolsConfigState
 } from '../../types/command';
+import type {MainAgentToolCatalogEntry} from '../../types/tool';
 import type {AppSettings} from '../../config/app-settings-config';
 import type {ReasoningEffort} from '../../types/agent';
 
