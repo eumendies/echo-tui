@@ -1185,8 +1185,11 @@ test('Worker keeps apply_patch and local Todo but rejects edit_file and nested d
   let childTurn = 0;
   let parentTodoUpdates = 0;
   const processRecords = [];
+  // Worker 候选段需要探测真实 cwd；不存在的目录会被判为无法映射执行目录。
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-worker-todo-'));
 
-  await withPatchedAgents('/tmp/echo-worker-todo', (kind, registry) => ({
+  try {
+    await withPatchedAgents(cwd, (kind, registry) => ({
     async runTurn(records) {
       if (kind === 'primary') {
         for (const name of ['apply_patch', 'edit_file', 'create_todos', 'complete_todo', 'read_files']) {
@@ -1234,18 +1237,21 @@ test('Worker keeps apply_patch and local Todo but rejects edit_file and nested d
       assert.match(nested.text, /Unknown tool: run_subagent/u);
       return {draft: 'worker done', toolCalls: []};
     }
-  }), async () => {
-    const runAgent = createTestAgentLoopRuntime('/tmp/echo-worker-todo', {capture: () => snapshot});
-    assert.equal(await runAgent({
-      records: [{role: 'user', text: 'delegate worker'}],
-      todoState: {updatedAt: 'now', items: [{id: 'parent', text: 'parent todo', status: 'open'}]},
-      userConfigSnapshot: snapshot
-    }, {
-      onSubagentRecords(records) { processRecords.push(...records); },
-      onTodoStateChange() { parentTodoUpdates += 1; },
-      onToolApprovalRequest() { assert.fail('Unregistered Worker tools must not request approval'); }
-    }), 'parent done');
-  });
+    }), async () => {
+      const runAgent = createTestAgentLoopRuntime(cwd, {capture: () => snapshot});
+      assert.equal(await runAgent({
+        records: [{role: 'user', text: 'delegate worker'}],
+        todoState: {updatedAt: 'now', items: [{id: 'parent', text: 'parent todo', status: 'open'}]},
+        userConfigSnapshot: snapshot
+      }, {
+        onSubagentRecords(records) { processRecords.push(...records); },
+        onTodoStateChange() { parentTodoUpdates += 1; },
+        onToolApprovalRequest() { assert.fail('Unregistered Worker tools must not request approval'); }
+      }), 'parent done');
+    });
+  } finally {
+    fs.rmSync(cwd, {recursive: true, force: true});
+  }
 
   assert.equal(parentTodoUpdates, 0);
   assert.equal(childTurn, 5);
@@ -1421,7 +1427,9 @@ test('Worker reuses initialized MCP tools without owning the manager lifecycle',
     async close() { closes += 1; }
   };
 
-  await withPatchedAgents('/tmp/echo-worker-mcp', (kind, registry) => ({
+  // Worker 候选段需要探测真实 cwd；不存在的目录会被判为无法映射执行目录。
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-worker-mcp-'));
+  await withPatchedAgents(cwd, (kind, registry) => ({
     async runTurn(records) {
       if (kind === 'primary') {
         parentTurn += 1;
@@ -1439,7 +1447,7 @@ test('Worker reuses initialized MCP tools without owning the manager lifecycle',
       return {draft: 'worker mcp done', toolCalls: []};
     }
   }), async () => {
-    const runAgent = createTestAgentLoopRuntime('/tmp/echo-worker-mcp', {capture: () => snapshot}, manager);
+    const runAgent = createTestAgentLoopRuntime(cwd, {capture: () => snapshot}, manager);
     assert.equal(await runAgent({records: [{role: 'user', text: 'delegate'}], userConfigSnapshot: snapshot}, {
       onToolApprovalRequest(_call, request) {
         approval = request;
@@ -1452,6 +1460,7 @@ test('Worker reuses initialized MCP tools without owning the manager lifecycle',
   assert.equal(closes, 0);
   assert.equal(approval.origin.agentName, 'worker');
   assert.equal(approval.previewTitle, 'mcp tool');
+  fs.rmSync(cwd, {recursive: true, force: true});
 });
 
 test('normal Worker uses shared approval callbacks with Worker origin', async () => {
@@ -1666,7 +1675,9 @@ test('Worker asks through the run-aware callback while headless returns cancella
     let questions = 0;
     const activities = [];
     const records = [];
-    await withPatchedAgents(`/tmp/echo-worker-question-${headless}`, (kind) => ({
+    // Worker 候选段需要探测真实 cwd；每轮使用独立临时目录避免并行冲突。
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), `echo-worker-question-${headless}-`));
+    await withPatchedAgents(cwd, (kind) => ({
       async runTurn(providerRecords) {
         if (kind === 'primary') {
           parentTurn += 1;
@@ -1684,7 +1695,7 @@ test('Worker asks through the run-aware callback while headless returns cancella
         return {draft: 'worker question done', toolCalls: []};
       }
     }), async () => {
-      const runAgent = createTestAgentLoopRuntime(`/tmp/echo-worker-question-${headless}`, {capture: () => snapshot});
+      const runAgent = createTestAgentLoopRuntime(cwd, {capture: () => snapshot});
       await runAgent({
         records: [{role: 'user', text: 'delegate'}], userConfigSnapshot: snapshot,
         ...(headless ? {executionMode: {kind: 'headless', approvalPolicy: 'deny'}} : {})
@@ -1701,6 +1712,7 @@ test('Worker asks through the run-aware callback while headless returns cancella
     assert.equal(questions, headless ? 0 : 1);
     assert.equal(activities.some((activity) => activity.phase === 'waiting_question'), !headless);
     assert.equal(records.some((record) => record.event.kind === 'tool_result' && record.event.toolName === 'ask_user_questions'), true);
+    fs.rmSync(cwd, {recursive: true, force: true});
   }
 });
 

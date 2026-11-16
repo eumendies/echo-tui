@@ -11,13 +11,17 @@ import {executeTodoToolCall, isTodoToolName} from '../../tools/todo-tool-handler
 import {throwIfAborted} from '../../types/agent';
 import {isReadonlyBashSandboxEffective} from '../../sandbox/provider';
 import {prepareAgent} from '../agent-setup';
+import {createWorkspacePromptSection} from '../subagent/workspace/workspace-note';
 import {normalizeError} from '../agent-errors';
 import {buildProviderRequestPrefix, resolveRuntimeMaterials} from '../context/provider-request-prefix';
 import {createCompactionNoticeRecord, runCompaction} from '../context/context-compaction';
 import {
   buildProviderRecords,
+  createRejectedToolResult,
+  createRejectedToolResultFromDecision,
   executeUserQuestionToolCall,
-  hasRecordableProviderUsage
+  hasRecordableProviderUsage,
+  isToolExecutionAllowed
 } from './shared';
 import {disabledObservation} from '../../observation/observation';
 
@@ -32,8 +36,6 @@ import type {InheritedAgentRunContext, RunSubagentAgent, SubagentLoopCallbacks, 
 import type {SubagentDefinition} from '../subagent/definition';
 import type {McpManager} from '../../mcp/manager';
 import type {AgentRunScope, Observation, ProviderObservationConfig} from '../../observation/observation';
-
-const TOOL_REJECTED_BY_USER_TEXT = 'Tool execution was rejected by the user.';
 
 type SubagentLoopRunState = {
   agent: ProviderAgent; // 已绑定子 Agent裁剪工具目录的 provider adapter。
@@ -58,27 +60,6 @@ type SubagentLoopRunState = {
   readonlyBashSandboxed: boolean; // 只读父运行且 bash 沙箱实际生效;true 时子 bash 豁免文本白名单与审批。
   planBashSandboxed: boolean; // plan 父运行(default 工具策略)且继承的沙箱收紧实际生效;true 时 general Worker bash 由内核边界兜底。
 };
-
-/** 生成保留原工具身份的拒绝结果，保证子 provider continuation协议完整。 */
-function createRejectedToolResult(call: ToolCall, message?: string): ToolExecutionResult {
-  return {
-    callId: call.callId,
-    toolName: call.toolName,
-    ok: false,
-    details: {kind: 'generic'},
-    text: typeof message === 'string' && message.trim() !== '' ? message.trim() : TOOL_REJECTED_BY_USER_TEXT
-  };
-}
-
-function createRejectedToolResultFromDecision(call: ToolCall, decision: ToolApprovalDecision): ToolExecutionResult {
-  return createRejectedToolResult(call, decision.kind === 'provide_feedback'
-    ? `Tool execution was rejected by the user.\n\nUser instruction:\n${decision.message}`
-    : decision.kind === 'deny' ? decision.message : undefined);
-}
-
-function isToolExecutionAllowed(kind: string): boolean {
-  return kind === 'allow_once' || kind === 'allow_tool_for_session' || kind === 'allow_command_for_session' || kind === 'allow_all_for_session';
-}
 
 /**
  * 执行子 Agent内部工具；定义策略决定Todo/提问、风险分类、审批和headless边界。
@@ -179,11 +160,16 @@ async function executeSubagentToolCall(toolCall: ToolCall, input: SubagentLoopIn
 /**
  * 创建定义绑定的 subagent loop runtime；每个实例只运行隔离任务，不接收主 session或完整主 callbacks。
  */
-function createSubagentLoopRuntime(cwd: string, inheritedContext: InheritedAgentRunContext, definition: SubagentDefinition, observation: Observation = disabledObservation, usageStore?: UsageStore, mcpManager?: McpManager): RunSubagentAgent {
-  const cwdHash = createUsageCwdHash(cwd);
+function createSubagentLoopRuntime(projectCwd: string, inheritedContext: InheritedAgentRunContext, definition: SubagentDefinition, observation: Observation = disabledObservation, usageStore?: UsageStore, mcpManager?: McpManager): RunSubagentAgent {
+  // usage 永远归入父项目身份：worktree 是临时执行目录，不能因此拆出独立账本。
+  const cwdHash = createUsageCwdHash(projectCwd);
 
   const runSubagentLoop: RunSubagentAgent = async function runSubagentLoop(input, callbacks = {}): Promise<string> {
     throwIfAborted(input.abortSignal);
+    // 工具相对路径、Bash cwd 与运行环境提示使用系统决定的执行目录；缺省回退父项目目录。
+    const cwd = input.workspace?.execCwd ?? projectCwd;
+    // 工作区边界说明在一次子运行内固定：它描述系统已核验的目录与基线，不随请求变化。
+    const workspaceNote = input.workspace ? createWorkspacePromptSection(input.workspace) : undefined;
     let state: SubagentLoopRunState;
 
     try {
@@ -197,6 +183,11 @@ function createSubagentLoopRuntime(cwd: string, inheritedContext: InheritedAgent
         config: resolvedConfig,
         cwd,
         executionMode: input.executionMode,
+        // 受管 worktree Worker 的只读 Git 检查不应依赖私有 index 刷新；
+        // 可写根固定为完整 worktree，而不是映射后的执行子目录。
+        ...(input.workspace ? {gitOptionalLocks: true, sandboxWorkspaceRoot: input.workspace.workspaceRoot} : {}),
+        // 受管 worktree 的原生编辑必须留在自己的根内；主 Agent 全盘可用路径语义不受影响。
+        ...(input.workspace ? {workspaceScopeRoot: input.workspace.workspaceRoot} : {}),
         ...(input.sandboxModeOverride ? {sandboxModeOverride: input.sandboxModeOverride} : {}),
         // 资源读取与 MCP tools 分离:manager 决定资源工具是否可用,includeMcpTools 只控制 tools 合并。
         ...(mcpManager ? {includeMcpTools: definition.includeMcpTools, mcpManager} : {}),
@@ -283,7 +274,8 @@ function createSubagentLoopRuntime(cwd: string, inheritedContext: InheritedAgent
           memoryPrompts: inheritedContext.memoryPrompt.sections,
           rolePrompt: definition.prompt,
           sandboxNote: state.sandboxNote ?? undefined,
-          skillCatalog: state.skillCatalog
+          skillCatalog: state.skillCatalog,
+          ...(workspaceNote ? {workspaceNote} : {})
         }),
         ...(state.sessionId ? {sessionId: state.sessionId} : {}),
         abortSignal: input.abortSignal
@@ -349,7 +341,8 @@ function createSubagentLoopRuntime(cwd: string, inheritedContext: InheritedAgent
         rolePrompt: definition.prompt,
         sandboxNote: state.sandboxNote ?? undefined,
         skillCatalog: state.skillCatalog,
-        todoState: state.todoState
+        todoState: state.todoState,
+        ...(workspaceNote ? {workspaceNote} : {})
       });
       state.observation.providerRequestBuilt({
         scope: state.observationScope,

@@ -4,7 +4,7 @@
 定义主 Agent 通过具名只读子 Agent 执行隔离调查、工具审批和 headless 安全边界的行为。
 ## Requirements
 ### Requirement: 主 Agent 可同步委派只读调查任务
-系统 SHALL 在主工具策略允许且当前可执行 Subagent 目录非空时向主 Agent 暴露 `run_subagent` 工具，用于把一个非空任务同步委派给当前父 run 目录中的具名子 Agent。工具 schema SHALL 从当前 run 冻结的 Subagent 定义目录动态生成必填 `agent` enum，并在该参数描述中投影每个有效定义的 name与description；顶层工具描述 SHALL保持通用，不硬编码各子 Agent能力。调用 SHALL 在子 Agent 完成、失败或被取消前保持当前主 tool continuation；成功时外层 tool result SHALL 只包含子 Agent最终回答；已启动的子运行因非取消错误失败时，外层tool result SHALL保持失败状态并包含安全归一化诊断以及按`subagent-failure-handoff`能力生成的有界部分工作交接；尚未启动runtime的参数、目录或预算拒绝 MAY继续返回简短失败诊断。目录 SHALL 仅包含启用且有效的内置及自定义定义，内置 `explorer` 和 `worker` SHALL 与自定义名称一样受全局启停约束；目录为空时 SHALL 不注册该工具且 SHALL NOT 生成空 `agent` enum；系统 SHALL只允许单层委派，所有子 Agent SHALL NOT获得`run_subagent`工具。
+系统 SHALL 在主工具策略允许且当前可执行 Subagent 目录非空时向主 Agent 暴露 `run_subagent` 工具，用于把一个非空任务同步委派给当前父 run 目录中的具名子 Agent。工具 schema SHALL 从当前 run 冻结的 Subagent 定义目录动态生成必填 `agent` enum，并在该参数描述中投影每个有效定义的 name与description；顶层工具描述 SHALL保持通用，不硬编码各子 Agent能力。调用 SHALL 在子 Agent 完成、失败或被取消前保持当前主 tool continuation；成功时外层 tool result SHALL 包含子 Agent最终回答；对于 worktree Worker SHALL 另附系统生成的有界工作区交接（路径、基线、执行目录与未集成事实），其他子 Agent SHALL 保持只返回最终回答；已启动的子运行因非取消错误失败时，外层tool result SHALL保持失败状态并包含安全归一化诊断以及按`subagent-failure-handoff`能力生成的有界部分工作交接，worktree Worker SHALL 同时提供可定位的保留工作区路径或状态不可确认事实；尚未启动runtime的参数、目录或预算拒绝 MAY继续返回简短失败诊断。目录 SHALL 仅包含启用且有效的内置及自定义定义，内置 `explorer` 和 `worker` SHALL 与自定义名称一样受全局启停约束；目录为空时 SHALL 不注册该工具且 SHALL NOT 生成空 `agent` enum；系统 SHALL只允许单层委派，所有子 Agent SHALL NOT获得`run_subagent`工具。
 
 #### Scenario: 委派任务成功
 - **WHEN** 主 Agent 调用 `run_subagent` 并提交当前目录中的合法 `agent` 与非空 `task`
@@ -38,6 +38,11 @@
 - **WHEN** 所有内置与有效自定义 Agent 均全局停用
 - **THEN** 主 registry 与 schema-only 工具投影 SHALL 不包含 `run_subagent`，且主运行 SHALL 仍能继续其他工作
 - **THEN** 伪造的 `run_subagent` 调用 SHALL 在未注册工具边界被拒绝，不创建子 runtime
+
+#### Scenario: Worker 工作区交接不要求新参数
+- **WHEN** 主 Agent 使用既有 agent 与 task 参数完成一次 worktree Worker 委派
+- **THEN** 外层结果 SHALL 包含最终报告、启动基线、工作区路径和待集成事实
+- **THEN** 系统 SHALL NOT 自动把这些成果应用到父工作区
 
 ### Requirement: 子 Agent委派复用普通工具执行边界
 `run_subagent` SHALL 作为普通 `ToolHandler` 注册，并 SHALL 通过现有 `ToolRegistry` 和 `ToolExecutor` 完成 handler查找、JSON object参数解析、执行和失败归一化。Handler SHALL 只依赖注入的窄 `SubagentToolPort` 列出可用定义并按名称请求本轮嵌套运行，SHALL NOT 直接依赖具体子 Agent定义、`AppContext`、renderer、transcript store或具体 provider adapter。交互式与 headless入口 SHALL 复用同一 handler；TUI观察和持久化能力 SHALL 通过可选 run callbacks连接，headless缺少这些 callbacks时 SHALL 仍能返回最终 tool result。
@@ -77,9 +82,9 @@
 - **THEN** 该handler SHALL NOT 被迫创建SubagentToolPort或subagent records
 
 ### Requirement: 子 Agent 使用独立业务 runtime、prompt 与隔离上下文
-每次已接受的具名委派 SHALL通过runtime factory创建一个绑定所选定义的新Subagent loop runtime实例，SHALL NOT递归调用或复用父Agent的loop runtime实例。主Agent runtime与Subagent runtime SHALL作为同一runtime包中的两个独立业务入口，各自拥有provider continuation loop、工具执行编排、hook顺序和callback边界；系统 SHALL NOT通过`runtimeOptions.kind`或等价角色开关在同一个业务loop中切换主/子行为。二者 MAY共享不持有跨轮状态的provider context和结果投影函数，以及配置snapshot、hooks、debug、usage store等进程级依赖。定义 SHALL固定专属行为prompt、本地工具集合、MCP可见性和执行策略；Explorer SHALL保持独立只读prompt和MCP禁用，Worker SHALL使用通用任务prompt并可复用共享MCP manager。子Agent SHALL使用与父run相同配置revision、cwd和适用项目指令、memory与skill catalog，但 SHALL从只包含委派任务的独立transcript、空Todo和空compaction状态开始；Worker MAY随后在自身runtime创建Todo。系统 SHALL NOT自动复制父transcript、父Todo、父compaction或父journal路径。
+每次已接受的具名委派 SHALL通过runtime factory创建一个绑定所选定义的新Subagent loop runtime实例，SHALL NOT递归调用或复用父Agent的loop runtime实例。主Agent runtime与Subagent runtime SHALL作为同一runtime包中的两个独立业务入口，各自拥有provider continuation loop、工具执行编排、hook顺序和callback边界；系统 SHALL NOT通过`runtimeOptions.kind`或等价角色开关在同一个业务loop中切换主/子行为。二者 MAY共享不持有跨轮状态的provider context和结果投影函数，以及配置snapshot、hooks、debug、usage store等进程级依赖。定义 SHALL固定专属行为prompt、本地工具集合、MCP可见性和执行策略；Explorer SHALL保持独立只读prompt和MCP禁用，Worker SHALL使用通用任务prompt并可复用共享MCP manager。子Agent SHALL使用与父run相同配置revision、项目身份和适用项目指令、memory与skill catalog；实际 cwd 对 worktree Worker SHALL 使用受管执行目录，其他子 Agent SHALL 保持共享父 cwd，但 SHALL从只包含委派任务的独立transcript、空Todo和空compaction状态开始；Worker MAY随后在自身runtime创建Todo。系统 SHALL NOT自动复制父transcript、父Todo、父compaction或父journal路径。
 
-子runtime SHALL使用专属子运行输入和callback协议，不接收完整主`AgentSessionInput`或把完整主`AgentCallbacks`作为自身业务接口。专属输入 SHALL只包含任务、子运行身份、父级取消/执行模式、所需的父interaction mode语义、模型选择和配置snapshot；专属callback SHALL只表达子运行需要的reasoning、streaming、工具、审批、用户问题、完成和change recorder事件。端口 SHALL负责把这些事件桥接为父级稳定records、瞬时活动和共享交互surface。
+子runtime SHALL使用专属子运行输入和callback协议，不接收完整主`AgentSessionInput`或把完整主`AgentCallbacks`作为自身业务接口。专属输入 SHALL只包含任务、子运行身份、父级取消/执行模式、所需的父interaction mode语义、模型选择、配置snapshot及系统决定的项目身份/工作区上下文；专属callback SHALL只表达子运行需要的reasoning、streaming、工具、审批、用户问题、完成和change recorder事件。端口 SHALL负责把这些事件桥接为父级稳定records、瞬时活动和共享交互surface。
 
 #### Scenario: 每次委派创建新的 loop runtime
 - **WHEN** 同一个父run先后接受两个合法`run_subagent`调用
@@ -114,13 +119,18 @@
 
 #### Scenario: 子 Agent 保持运行配置一致性
 - **WHEN** 子Agent在一个已启动的父assistant run中创建
-- **THEN** 子Agent SHALL使用父run捕获的用户配置revision和当前cwd
+- **THEN** 子Agent SHALL使用父run捕获的用户配置revision和项目身份，并使用系统决定的实际执行cwd
 - **THEN** 父run期间发生的配置文件变化 SHALL NOT改变已经启动的子Agent
 
 #### Scenario: 子 runtime 策略不能被 session 输入放宽
 - **WHEN** 系统启动一个具名子runtime
 - **THEN** 子runtime SHALL在创建边界固定所选定义的prompt、工具集合、MCP可见性和执行策略
 - **THEN** 子session输入 SHALL NOT覆盖这些runtime级策略
+
+#### Scenario: worktree 目录不重选项目配置
+- **WHEN** Worker 执行目录位于项目外的受管 worktree
+- **THEN** 子 runtime SHALL 继续使用父运行冻结的配置、AGENTS 和 Skill 作用域
+- **THEN** 运行环境 SHALL 如实说明实际执行目录及不包含父未提交修改的基线
 
 ### Requirement: 子 Agent 只看到专属工具目录
 系统 SHALL 在 provider adapter 创建前为 `explorer` 构造真实裁剪后的工具 registry，而不是只在执行时拒绝主 Agent 工具。该 registry SHALL 包含 `read_files`、`glob`、`grep`、`run_bash_command`、`web_fetch`、`web_search`、`use_skill` 和 MCP 资源读取工具 `list_mcp_resources`、`read_mcp_resource`；SHALL NOT 包含 `apply_patch`、`edit_file`、Todo、`ask_user_questions`、`mcp__` 命名空间的 MCP tools 或其他未列入 allowlist 的工具。执行边界 SHALL 再次按同一 allowlist 校验工具名，防止伪造调用绕过 provider-visible schema。

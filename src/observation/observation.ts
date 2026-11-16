@@ -76,6 +76,13 @@ type ToolApprovalReviewObservation = {
   result: 'yes' | 'no' | 'timeout' | 'error' | 'manual_only'; // reviewer 的有界结果。
 };
 
+type WorkerConcurrencyObservation = {
+  candidates: number; // 本次并发被识别为内置 Worker 候选的调用数。
+  mode: 'managed_worktree' | 'shared_cwd' | 'error'; // 冻结后的工作区结论。
+  started: number; // 实际启动子运行的调用数。
+  workspacePreparationFailures: number; // 工作区创建或核验失败的调用数。
+};
+
 type Observation = {
   appStarted: (input: {scope: AppScope; terminalSize: TerminalSize}) => void; // 发布 TUI watcher 初始化后的启动事实。
   appExiting: (input: {cwd: string; interactionMode: InteractionMode}) => void; // 发布终端清理前的退出事实。
@@ -99,6 +106,7 @@ type Observation = {
   providerUsage: (input: {scope: AgentRunScope; usage?: ProviderUsage; usageInputTokens?: number}) => void; // 发布 provider usage 事实。
   providerUsageStoreFailed: (input: {scope: AgentRunScope; error: unknown}) => void; // 发布 provider usage 持久化失败事实。
   subagentCatalogLoaded: (diagnostics: readonly Readonly<SubagentCatalogDiagnostic>[]) => void; // 发布主运行加载目录时形成的完整有界诊断快照。
+  workerConcurrencyPrepared: (input: {scope: AgentRunScope} & WorkerConcurrencyObservation) => void; // 发布工作区预检结论；不包含任务正文、diff 或文件内容。
   toolApprovalRequested: (input: {scope: AgentRunScope; call: Readonly<ToolCall>; approval?: Readonly<ToolApprovalRequest>}) => void; // 发布 runtime 拥有的审批请求事实。
   toolApprovalResolved: (input: {scope: AgentRunScope; call: Readonly<ToolCall>; approval: ToolApprovalObservation}) => void; // 发布 runtime 审批结果事实。
   toolCompleted: (input: {scope: AgentRunScope; result: Readonly<ToolExecutionResult>}) => void; // 发布工具结果已提交事实。
@@ -113,7 +121,7 @@ const disabledObservation: Observation = {
   transcriptBatchRendered() {}, userSubmitted() {}, assistantTurnStarted() {}, assistantTurnCompleted() {},
   assistantTurnCancelled() {}, assistantTurnFailed() {}, manualApprovalRequested() {}, manualApprovalCompleted() {},
   toolApprovalReviewed() {}, toolApprovalUsageStoreFailed() {}, compactionCompleted() {}, providerRequestBuilt() {},
-  providerUsage() {}, providerUsageStoreFailed() {}, subagentCatalogLoaded() {}, toolApprovalRequested() {}, toolApprovalResolved() {},
+  providerUsage() {}, providerUsageStoreFailed() {}, subagentCatalogLoaded() {}, workerConcurrencyPrepared() {}, toolApprovalRequested() {}, toolApprovalResolved() {},
   toolCompleted() {}, toolRiskAssessed() {}, toolStarted() {}, userQuestionCompleted() {}, userQuestionRequested() {}
 };
 
@@ -142,6 +150,7 @@ function createCompositeObservation(observations: Observation[]): Observation {
     providerUsage: (input) => notify(observations, (observation) => observation.providerUsage(input)),
     providerUsageStoreFailed: (input) => notify(observations, (observation) => observation.providerUsageStoreFailed(input)),
     subagentCatalogLoaded: (diagnostics) => notify(observations, (observation) => observation.subagentCatalogLoaded(diagnostics)),
+    workerConcurrencyPrepared: (input) => notify(observations, (observation) => observation.workerConcurrencyPrepared(input)),
     toolApprovalRequested: (input) => notify(observations, (observation) => observation.toolApprovalRequested(input)),
     toolApprovalResolved: (input) => notify(reverse, (observation) => observation.toolApprovalResolved(input)),
     toolCompleted: (input) => notify(observations, (observation) => observation.toolCompleted(input)),
@@ -171,5 +180,6 @@ export type {
   ProviderObservationConfig,
   ProviderRequestObservationInput,
   ToolApprovalObservation,
-  ToolApprovalReviewObservation
+  ToolApprovalReviewObservation,
+  WorkerConcurrencyObservation
 };

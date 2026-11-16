@@ -38,6 +38,7 @@ type BuiltInSystemPromptContext = {
   skillCatalog?: SkillCatalogEntry[]; // 当前 revision 的有界 enabled skill目录。
   memoryPrompts?: string[]; // 当前请求动态解析的 user/agent memory sections。
   rolePrompt?: string; // 子 Agent等隔离运行追加的明确角色边界 section。
+  workspaceNote?: string; // 受管 worktree 的运行边界说明；缺省表示按父目录执行。
 };
 
 /**
@@ -61,6 +62,10 @@ ${runtimeEnvironmentLines.join('\n')}`];
 
   if (context.rolePrompt?.trim()) {
     sections.push(context.rolePrompt.trim());
+  }
+
+  if (context.workspaceNote?.trim()) {
+    sections.push(context.workspaceNote.trim());
   }
 
   if (skillCatalogPrompt !== '') {

@@ -71,7 +71,8 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
   const turn = appContext.beginAssistantTurn(modelProfileIdOverride, reasoningEffortOverride, messagePolicy);
   const steeringInput = messagePolicy === 'steer' ? appContext.pendingMessageContext.createSteeringInputPort(turn.id) : undefined;
   const cancelQuestionOnAbort = () => {
-    userQuestion.cancelActiveRequest('User question was interrupted because the assistant turn ended.');
+    // 父 turn 结束时一次结算当前与排队请求，避免过期来源在下一轮重新打开 surface。
+    userQuestion.cancelAllRequests('User question was interrupted because the assistant turn ended.');
   };
   turn.abortSignal.addEventListener('abort', cancelQuestionOnAbort, {once: true});
   const turnUserRecordIndex = appContext.transcriptContext.getRecordCount() - 1;
@@ -375,7 +376,8 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
     const wasCurrentTurn = isCurrentTurn();
 
     if (wasCurrentTurn) {
-      userQuestion.cancelActiveRequest('User question was interrupted because the assistant turn ended.');
+      // turn 退出时清算当前与排队请求，保证过期来源不会影响下一轮运行。
+      userQuestion.cancelAllRequests('User question was interrupted because the assistant turn ended.');
       toolApproval.cancelAllPending();
       appContext.subagentRunContext.clear();
       appContext.finalizeChangeCheckpoint();

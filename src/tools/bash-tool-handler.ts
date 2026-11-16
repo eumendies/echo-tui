@@ -19,9 +19,11 @@ const PLAN_READONLY_BASH_REJECTION = 'In plan mode, run_bash_command may only ru
 type BashToolHandlerOptions = {
   background?: BackgroundTaskManager; // 后台任务能力;仅交互式主会话的 registry 注入,缺失即拒绝后台启动。
   cwd?: string | (() => string);
+  gitOptionalLocks?: boolean; // 子运行以只读 Git 检查为主;关闭可选锁写以避免需要刷新 index。
   timeoutMs?: number | null;
   maxOutputBytes?: number;
   sandbox?: SandboxRuntimeContext; // run_bash_command 的沙箱运行上下文;缺省或 provider 不可用时按无沙箱执行。
+  sandboxWorkspaceRoot?: string; // 生效 workspace-write 档的默认可写根;缺省为 cwd。
   sessionId?: string; // 当前会话身份;后台任务按它分区,缺失时无法后台执行。
   shell?: string;
   toolResultStore?: ToolResultStore;
@@ -32,8 +34,10 @@ type ExecuteBashCommandOptions = {
   background?: BackgroundTaskManager; // 后台任务能力;唯一后台可用性判据。
   changeRecorder?: ChangeFileRecorder; // 未追踪命令保留受控编辑记录，并提示有限恢复范围。
   cwd: string;
+  gitOptionalLocks?: boolean;
   maxOutputBytes: number;
   sandbox?: SandboxRuntimeContext;
+  sandboxWorkspaceRoot?: string;
   sessionId?: string;
   shell: string;
   timeoutMs: number | null;
@@ -73,8 +77,10 @@ function createBashToolHandler(options: BashToolHandlerOptions = {}): ToolHandle
         background: options.background,
         changeRecorder: executionOptions?.changeRecorder,
         cwd: resolveCwd(options.cwd),
+        gitOptionalLocks: options.gitOptionalLocks,
         maxOutputBytes,
         sandbox: options.sandbox,
+        sandboxWorkspaceRoot: options.sandboxWorkspaceRoot,
         sessionId: options.sessionId,
         shell,
         timeoutMs,
@@ -123,8 +129,10 @@ async function executeBashCommand(
     command,
     abortSignal: options.abortSignal,
     cwd: options.cwd,
+    ...(options.gitOptionalLocks ? {gitOptionalLocks: true} : {}),
     maxOutputBytes: options.maxOutputBytes,
     sandbox: options.sandbox,
+    ...(options.sandboxWorkspaceRoot ? {sandboxWorkspaceRoot: options.sandboxWorkspaceRoot} : {}),
     shell: options.shell,
     toolResultStore: options.toolResultStore,
     timeoutMs: options.timeoutMs
