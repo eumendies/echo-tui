@@ -1,6 +1,9 @@
 import {isAbsolute} from 'node:path';
 
+import {BUILT_IN_SYSTEM_PROMPT} from '../../agent/context/system-prompt';
+import {projectSystemPromptRead} from '../../render/footer/system-prompt-surface';
 import {INPUT_EVENTS} from '../../input/event-types';
+import * as composer from '../../input/composer';
 import {HISTORY_RENDER_LINE_LIMIT_OPTIONS} from '../../config/app-settings-config';
 import {
   CONFIG_TABS,
@@ -10,7 +13,9 @@ import {
   createInitialConfigState,
   createInitialGeneralConfigState,
   createInitialSandboxConfigState,
+  createInitialSystemPromptConfigState,
   createInitialToolsConfigState,
+  describeSystemPromptFallback,
   isToolsConfigDirty,
   markToolsConfigSaved,
   getSandboxConfigRowIds,
@@ -20,6 +25,7 @@ import {
   markGeneralConfigSaved,
   markModelConfigSaved,
   markSandboxConfigSaved,
+  withSystemPromptSnapshot,
   SANDBOX_MODE_CYCLE
 } from './state';
 import {handleConfigPanelEvent} from './panel-state';
@@ -31,9 +37,11 @@ import type {
   CommandHost,
   CommandSession,
   ConfigCommandState,
+  CommandSystemPromptReadResult,
   ConfigTabId,
   GeneralConfigState,
   SandboxConfigState,
+  SystemPromptConfigState,
   ToolsConfigState
 } from '../../types/command';
 import type {InputEvent} from '../../types/input';
@@ -58,6 +66,7 @@ function createModelListState(requestId: number, result: CommandConfigListModels
     status: result.reason === 'unsupported' ? 'unsupported' : 'error'
   };
 }
+
 
 /**
  * 管理带 Tab 的配置中心；子面板只处理领域状态，文件和重绘副作用经 CommandHost 执行。
@@ -88,6 +97,11 @@ class ConfigCommandHandler implements CommandHandler<ConfigCommandData> {
 
     if (data.discardConfirm) {
       this.handleDiscardConfirm(data, event, host);
+      return;
+    }
+
+    if (data.systemPrompt) {
+      this.handleSystemPromptEvent(data, data.systemPrompt, event, host);
       return;
     }
 
@@ -140,7 +154,7 @@ class ConfigCommandHandler implements CommandHandler<ConfigCommandData> {
       return;
     }
 
-    let nextState = structuredClone(state) as GeneralConfigState;
+    let nextState = structuredClone(state);
     nextState.error = undefined;
     nextState.feedback = undefined;
 
@@ -161,6 +175,18 @@ class ConfigCommandHandler implements CommandHandler<ConfigCommandData> {
         nextState.draft.checkUpdatesOnStartup = !nextState.draft.checkUpdatesOnStartup;
       } else if (selectedRow === 'activeTurnMessagePolicy') {
         nextState = adjustGeneralValue(nextState, 1);
+      } else if (selectedRow === 'systemPrompt') {
+        const read = host.config.readSystemPrompt({includeDynamicSections: true});
+        if (!read.ok) {
+          nextState.error = read.error;
+        } else {
+          this.update({
+            ...data,
+            general: {state: nextState},
+            systemPrompt: createInitialSystemPromptConfigState(read.snapshot, read.dynamicSections ?? [])
+          }, host);
+          return;
+        }
       } else if (selectedRow === 'save') {
         const result = host.config.saveSettings(nextState.draft);
         nextState = result.ok
@@ -172,6 +198,338 @@ class ConfigCommandHandler implements CommandHandler<ConfigCommandData> {
     nextState.selectedIndex = clamp(nextState.selectedIndex, 0, getGeneralConfigRowIds(nextState).length - 1);
 
     this.update({...data, general: {state: nextState}}, host);
+  }
+
+  /**
+   * 处理系统提示词子视图事件；按 mode 分发，所有文件副作用都经 host.config 端口。
+   */
+  private handleSystemPromptEvent(data: ConfigCommandData, state: SystemPromptConfigState, event: InputEvent, host: CommandHost): void {
+    // menu 与阅读态允许 Tab 退出视图并继续切页；编辑与确认态忽略以免误丢草稿。
+    if (event.type === INPUT_EVENTS.TAB && (state.mode === 'menu' || state.mode === 'read')) {
+      const currentIndex = CONFIG_TABS.findIndex((tab) => tab.id === data.activeTab);
+      const nextTab = CONFIG_TABS[(currentIndex + 1) % CONFIG_TABS.length].id;
+      this.leaveSystemPromptView(data, host, nextTab);
+      return;
+    }
+
+    if (state.mode === 'menu') {
+      this.handleSystemPromptMenu(data, state, event, host);
+      return;
+    }
+
+    if (state.mode === 'read') {
+      this.handleSystemPromptRead(data, state, event, host);
+      return;
+    }
+
+    if (state.mode === 'edit') {
+      this.handleSystemPromptEdit(data, state, event, host);
+      return;
+    }
+
+    this.handleSystemPromptConfirm(data, state, event, host);
+  }
+
+  /** menu 只移动按钮焦点；删除行在目标缺失时给出提示而不写盘。 */
+  private handleSystemPromptMenu(data: ConfigCommandData, state: SystemPromptConfigState, event: InputEvent, host: CommandHost): void {
+    const next = structuredClone(state);
+    next.error = undefined;
+    next.feedback = undefined;
+    const rows = next.menuRows;
+
+    if (event.type === INPUT_EVENTS.ESCAPE) {
+      this.leaveSystemPromptView(data, host);
+      return;
+    }
+
+    if (event.type === INPUT_EVENTS.MOVE_UP || event.type === INPUT_EVENTS.MOVE_DOWN) {
+      const delta = event.type === INPUT_EVENTS.MOVE_UP ? -1 : 1;
+      next.selectedIndex = clamp(next.selectedIndex + delta, 0, rows.length - 1);
+      this.update({...data, systemPrompt: next}, host);
+      return;
+    }
+
+    if (event.type === INPUT_EVENTS.MOVE_HOME || event.type === INPUT_EVENTS.MOVE_END) {
+      next.selectedIndex = event.type === INPUT_EVENTS.MOVE_HOME ? 0 : rows.length - 1;
+      this.update({...data, systemPrompt: next}, host);
+      return;
+    }
+
+    if (event.type !== INPUT_EVENTS.SUBMIT) {
+      return;
+    }
+
+    const row = rows[next.selectedIndex];
+
+    if (row.id === 'back') {
+      this.leaveSystemPromptView(data, host);
+      return;
+    }
+
+    if (!row.available) {
+      this.update({...data, systemPrompt: {...next, error: '目标文件不存在'}}, host);
+      return;
+    }
+
+    if (row.id === 'view') {
+      this.update({...data, systemPrompt: {...next, mode: 'read', readScroll: 0}}, host);
+      return;
+    }
+
+    if (row.id === 'editProject' || row.id === 'editGlobal') {
+      const target = row.id === 'editProject' ? 'project' : 'global';
+      const fact = target === 'project' ? next.project : next.global;
+      // 文件已存在时从磁盘内容起步；缺失时预填内置文本，使“新建”与“修改”同交互。
+      const initial = fact.exists && typeof fact.content === 'string' ? fact.content : BUILT_IN_SYSTEM_PROMPT;
+      this.update({
+        ...data,
+        systemPrompt: {
+          ...next,
+          confirmIndex: 0,
+          draft: composer.createComposer(initial),
+          mode: 'edit',
+          pendingOverwrites: false,
+          target
+        }
+      }, host);
+      return;
+    }
+
+    const deleteTarget = row.id === 'deleteProject' ? 'project' : 'global';
+    this.update({
+      ...data,
+      systemPrompt: {
+        ...next,
+        confirmIndex: 0,
+        mode: 'confirmReset',
+        pendingFallback: describeSystemPromptFallback(next, deleteTarget),
+        target: deleteTarget
+      }
+    }, host);
+  }
+
+  /** 阅读态只移动滚动偏移；不写盘、不改草稿。 */
+  private handleSystemPromptRead(data: ConfigCommandData, state: SystemPromptConfigState, event: InputEvent, host: CommandHost): void {
+    if (event.type === INPUT_EVENTS.ESCAPE) {
+      this.update({...data, systemPrompt: {...structuredClone(state), mode: 'menu', readScroll: 0}}, host);
+      return;
+    }
+
+    const viewport = host.status.getViewport();
+    // 折行后一屏覆盖的逻辑行数取决于终端宽度，滚动上限必须与 renderer 共用同一次投影。
+    const projection = projectSystemPromptRead({
+      columns: viewport.width,
+      content: state.baseContent,
+      maxLines: viewport.maxLines,
+      offset: state.readScroll
+    });
+    const page = Math.max(1, projection.viewport);
+    const delta = event.type === INPUT_EVENTS.MOVE_UP
+      ? -1
+      : event.type === INPUT_EVENTS.MOVE_DOWN
+        ? 1
+        : event.type === INPUT_EVENTS.PAGE_UP
+          ? -page
+          : event.type === INPUT_EVENTS.PAGE_DOWN
+            ? page
+            : 0;
+
+    if (delta === 0) {
+      return;
+    }
+
+    const next = projectSystemPromptRead({
+      columns: viewport.width,
+      content: state.baseContent,
+      maxLines: viewport.maxLines,
+      offset: state.readScroll + delta
+    });
+
+    this.update({
+      ...data,
+      systemPrompt: {...state, readScroll: next.start}
+    }, host);
+  }
+
+  /** 编辑态使用多行 composer；Enter 只进入确认，不直接写盘。 */
+  private handleSystemPromptEdit(data: ConfigCommandData, state: SystemPromptConfigState, event: InputEvent, host: CommandHost): void {
+    const draft = state.draft;
+
+    // 编辑态草稿由 menu 打开时创建；缺失说明状态机被破坏，忽略事件而不是伪造空草稿。
+    if (!draft) {
+      return;
+    }
+
+    if (event.type === INPUT_EVENTS.ESCAPE) {
+      this.update({...data, systemPrompt: {...state, draft: undefined, mode: 'menu'}}, host);
+      return;
+    }
+
+    if (event.type === INPUT_EVENTS.SUBMIT) {
+      const fact = state.target === 'project' ? state.project : state.global;
+      this.update({
+        ...data,
+        systemPrompt: {
+          ...state,
+          confirmIndex: 0,
+          draft,
+          error: undefined,
+          mode: 'confirmSave',
+          pendingOverwrites: fact.exists
+        }
+      }, host);
+      return;
+    }
+
+    if (event.type === INPUT_EVENTS.INSERT_NEWLINE) {
+      composer.insertNewline(draft);
+    } else if (event.type === INPUT_EVENTS.MOVE_UP) {
+      composer.moveUp(draft);
+    } else if (event.type === INPUT_EVENTS.MOVE_DOWN) {
+      composer.moveDown(draft);
+    } else if (!composer.applyComposerEditEvent(draft, event)) {
+      return;
+    }
+
+    this.update({...data, systemPrompt: {...state, draft, error: undefined}}, host);
+  }
+
+  /** 确认态只做二选一；执行动作后统一回 menu 并用新快照刷新。 */
+  private handleSystemPromptConfirm(data: ConfigCommandData, state: SystemPromptConfigState, event: InputEvent, host: CommandHost): void {
+    const isSave = state.mode === 'confirmSave';
+    const next = structuredClone(state);
+    next.error = undefined;
+    next.feedback = undefined;
+
+    if (event.type === INPUT_EVENTS.ESCAPE) {
+      next.mode = isSave ? 'edit' : 'menu';
+      if (!isSave) {
+        next.pendingFallback = undefined;
+      }
+      this.update({...data, systemPrompt: next}, host);
+      return;
+    }
+
+    if (event.type === INPUT_EVENTS.MOVE_UP || event.type === INPUT_EVENTS.MOVE_LEFT) {
+      this.update({...data, systemPrompt: {...next, confirmIndex: 0}}, host);
+      return;
+    }
+
+    if (event.type === INPUT_EVENTS.MOVE_DOWN || event.type === INPUT_EVENTS.MOVE_RIGHT) {
+      this.update({...data, systemPrompt: {...next, confirmIndex: 1}}, host);
+      return;
+    }
+
+    if (event.type !== INPUT_EVENTS.SUBMIT) {
+      return;
+    }
+
+    if (next.confirmIndex === 1) {
+      next.mode = isSave ? 'edit' : 'menu';
+      if (!isSave) {
+        next.pendingFallback = undefined;
+      }
+      this.update({...data, systemPrompt: next}, host);
+      return;
+    }
+
+    const target = next.target;
+
+    if (!isSave) {
+      const result = host.config.deleteSystemPrompt(target);
+
+      if (!result.ok) {
+        this.update({...data, systemPrompt: {...next, error: result.error}}, host);
+        return;
+      }
+
+      this.finishSystemPromptMutation(data, next, host, (refreshed) => (
+        `✓ 已删除 ${result.filePath}，回落到 ${describeSystemPromptFallback(refreshed, target)}`
+      ));
+      return;
+    }
+
+    const draft = next.draft;
+
+    if (!draft) {
+      return;
+    }
+
+    const result = host.config.saveSystemPrompt(target, composer.getText(draft));
+
+    if (!result.ok) {
+      this.update({...data, systemPrompt: {...next, error: result.error}}, host);
+      return;
+    }
+
+    if (result.unchanged) {
+      this.finishSystemPromptMutation(data, next, host, () => '内容未变化，未写入文件');
+      return;
+    }
+
+    this.finishSystemPromptMutation(data, next, host, () => `✓ 已保存 ${result.filePath}，下一轮 assistant run 生效`);
+  }
+
+  /**
+   * 写入或删除成功后回到 menu 并用新快照刷新；快照刷新失败时保留操作结果并提示原因。
+   */
+  private finishSystemPromptMutation(data: ConfigCommandData, state: SystemPromptConfigState, host: CommandHost, buildFeedback: (refreshed: SystemPromptConfigState) => string): void {
+    const {general, read} = this.refreshSystemPromptFacts(data, host);
+    const base: SystemPromptConfigState = {
+      ...state,
+      confirmIndex: 0,
+      draft: undefined,
+      error: undefined,
+      mode: 'menu',
+      pendingFallback: undefined,
+      pendingOverwrites: false
+    };
+
+    if (!read.ok) {
+      this.update({...data, general, systemPrompt: {...base, error: read.error}}, host);
+      return;
+    }
+
+    // 动态段只取决于 cwd、指令链与 skill/memory 目录，文件写入不改变它们，沿用进入时的结果。
+    const refreshed = withSystemPromptSnapshot(base, read.snapshot, state.dynamicSections);
+    this.update({
+      ...data,
+      general,
+      systemPrompt: {...refreshed, feedback: buildFeedback(refreshed)}
+    }, host);
+  }
+
+  /** 退出子视图回到常规 Tab；顺手刷新摘要行，保持与磁盘一致。 */
+  private leaveSystemPromptView(data: ConfigCommandData, host: CommandHost, nextTab?: ConfigTabId): void {
+    const {general} = this.refreshSystemPromptFacts(data, host);
+    const cleared: ConfigCommandData = {
+      ...data,
+      general,
+      systemPrompt: undefined
+    };
+
+    if (!nextTab) {
+      this.update(cleared, host);
+      return;
+    }
+
+    this.update(initializeTab({...cleared, activeTab: nextTab}, nextTab, host), host);
+  }
+
+  /**
+   * 重新读取文件事实并同步常规 Tab 摘要；两个调用点都不需要动态段摘要。
+   */
+  private refreshSystemPromptFacts(data: ConfigCommandData, host: CommandHost): {general: ConfigCommandData['general']; read: CommandSystemPromptReadResult} {
+    const read = host.config.readSystemPrompt();
+
+    if (!read.ok || !data.general?.state) {
+      return {general: data.general, read};
+    }
+
+    return {
+      general: {state: {...data.general.state, systemPromptSummary: {kind: read.snapshot.sourceKind}}},
+      read
+    };
   }
 
   /** 仅编辑工具页草稿；Bash 锁定、Todo 成对切换，离线工具不受可用性限制。 */
@@ -218,7 +576,7 @@ class ConfigCommandHandler implements CommandHandler<ConfigCommandData> {
       return;
     }
 
-    let nextState = structuredClone(state) as SandboxConfigState;
+    let nextState = structuredClone(state);
     nextState.error = undefined;
     nextState.feedback = undefined;
 
@@ -261,7 +619,7 @@ class ConfigCommandHandler implements CommandHandler<ConfigCommandData> {
   }
 
   private handleSandboxPathInput(data: ConfigCommandData, state: SandboxConfigState, event: InputEvent, host: CommandHost): void {
-    const nextState = structuredClone(state) as SandboxConfigState;
+    const nextState = structuredClone(state);
     const buffer = nextState.pathInput ?? '';
 
     if (event.type === INPUT_EVENTS.TEXT && typeof event.value === 'string') {
@@ -403,6 +761,12 @@ class ConfigCommandHandler implements CommandHandler<ConfigCommandData> {
   }
 
   private requestClose(data: ConfigCommandData, host: CommandHost): void {
+    // 子视图属于配置中心内部层级：先退回常规 Tab，再允许关闭整个配置中心。
+    if (data.systemPrompt) {
+      this.leaveSystemPromptView(data, host);
+      return;
+    }
+
     const dirtyTabs = [
       ...(isGeneralConfigDirty(data.general?.state) ? ['常规'] : []),
       ...(isModelConfigDirty(data.models?.state) ? ['模型与 Provider'] : []),
@@ -452,7 +816,17 @@ class ConfigCommandHandler implements CommandHandler<ConfigCommandData> {
 function initializeTab(data: ConfigCommandData, tab: ConfigTabId, host: CommandHost): ConfigCommandData {
   if (tab === 'general' && !data.general) {
     try {
-      return {...data, general: {state: createInitialGeneralConfigState(host.config.readSettings(), host.config.listApprovalModelProfiles())}};
+      const systemPrompt = host.config.readSystemPrompt();
+      return {
+        ...data,
+        general: {
+          state: createInitialGeneralConfigState(
+            host.config.readSettings(),
+            host.config.listApprovalModelProfiles(),
+            systemPrompt.ok ? {kind: systemPrompt.snapshot.sourceKind} : {kind: 'unknown'}
+          )
+        }
+      };
     } catch (error: unknown) {
       return {...data, general: {error: toErrorMessage(error)}};
     }

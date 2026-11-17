@@ -412,3 +412,22 @@ export type AnthropicAgentDependencies = {
   AnthropicClient?: new (options: {apiKey: string; baseURL?: string; defaultHeaders?: Record<string, string>; maxRetries?: number}) => unknown;
   createClient?: (config: LlmConfig) => unknown;
 };
+
+export type SystemPromptSourceKind = 'builtin' | 'global' | 'project';
+
+export type SystemPromptTarget = 'global' | 'project';
+
+export type SystemPromptFileFact = {
+  content?: string; // 归一化后的完整文本；不存在或不可读时省略。
+  exists: boolean; // 文件存在且归一化后非空；空文件按不存在处理。
+  filePath: string; // 目标文件绝对路径，展示与写入共用。
+  lines: number; // 归一化文本的逻辑行数；不存在时 0。
+  unavailableReason?: string; // 文件存在但读取失败时的中文原因。
+};
+
+export type SystemPromptSnapshot = {
+  baseContent: string; // 当前生效的基础文本；无覆盖文件时为内置 prompt。
+  global: SystemPromptFileFact; // 用户级 ~/.echo/SYSTEM.md 的事实快照。
+  project: SystemPromptFileFact; // 项目根 SYSTEM.md 的事实快照。
+  sourceKind: SystemPromptSourceKind; // 当前生效来源，按项目级、全局级、内置顺序解析。
+};

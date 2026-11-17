@@ -11,6 +11,7 @@ import {createModelCommandPorts} from './model-command-ports';
 import {createSettingsCommandPorts} from './settings-command-ports';
 import {createSkillsCommandPort} from './skills-command-port';
 import {createStatusCommandPorts, createStatusSnapshot} from './status-command-ports';
+import {createConfigCommandPorts} from './config-command-port';
 import {createCopyableRecords, createTranscriptCommandPort} from './transcript-command-ports';
 import type {CommandHostApp} from '../../types/command';
 import type {UserConfigContext} from '../../config/user-config-context';
@@ -49,7 +50,8 @@ function createCommandHost(options: CommandHostOptions): CommandHostApp {
     throw new Error('CommandHost 与 AppContext 必须共享同一个 UserConfigContext');
   }
   const cwd = () => appContext.getCurrentCwd();
-  const modelPorts = createModelCommandPorts({appContext, userConfigContext, mcpManager, render});
+  const modelPorts = createModelCommandPorts({appContext, render});
+  const configPorts = createConfigCommandPorts({appContext, mcpManager, userConfigContext});
   const settingsPorts = createSettingsCommandPorts({appContext, render, renderResizeRecovery});
   const statusPorts = createStatusCommandPorts({
     appContext,
@@ -65,7 +67,7 @@ function createCommandHost(options: CommandHostOptions): CommandHostApp {
     reference: createConversationReferenceCommandPort({appContext, render, usageStore, userConfigContext}),
     clipboard: {writeText: writeClipboardText},
     model: modelPorts.model,
-    config: modelPorts.config,
+    config: configPorts,
     skills: createSkillsCommandPort({cwd, clearContextUsage: () => appContext.clearContextUsage()}),
     mcp: createMcpCommandPort({appContext, mcpManager, render, userConfigContext}),
     memory: createMemoryCommandPort(cwd),

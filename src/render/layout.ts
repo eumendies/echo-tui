@@ -199,8 +199,14 @@ function sumCodePointWidths(codePoints: number[]): number {
  *
  */
 export function wrapText(text: string, width: number, prefix = ''): string[] {
-  // pending preview 使用同一个 prefix 包装；换行后继续保留 role 前缀。
-  const safeWidth = safeRenderWidth(width);
+  return wrapTextToWidth(text, safeRenderWidth(width), prefix);
+}
+
+/**
+ * 按精确可用宽度折行，不做终端安全列扣减；供已经自行预留边界的框内文本使用。
+ */
+export function wrapTextToWidth(text: string, usableWidth: number, prefix = ''): string[] {
+  const safeWidth = Math.max(1, Math.floor(usableWidth));
   const lines: string[] = [];
   const prefixWidth = displayWidth(prefix);
 

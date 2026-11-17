@@ -570,7 +570,7 @@ renderer 只理解这些 surface kind，不理解具体命令、tool approval、
 | `src/input/file-mentions.ts` | `expandFileMentions`、`formatFileMention` | 解析与格式化 composer `@` 文件 mention |
 | `src/commands/resolve-slash-command.ts` | `resolveSlashCommand`、`createDefaultSlashCommandHandlers`、`createSlashCommandDescriptors` | 统一 slash 路由入口和默认 handler 装配，并从 handlers 派生 suggestion 元数据 |
 | `src/commands/help-command-handler.ts` | `HelpCommandHandler` | `/help`：info surface 与 Esc 关闭 |
-| `src/commands/config/handler.ts` 等 | `ConfigCommandHandler`、`handleConfigPanelEvent`、`createConfigSurface` | `/config` 命令 glue、纯面板状态机和 surface 投影 |
+| `src/commands/config/handler.ts` 等 | `ConfigCommandHandler`、`handleConfigPanelEvent`、`createConfigSurface` | `/config` 命令 glue、纯面板状态机和 surface 投影；常规 Tab 内含系统提示词子视图（menu/read/edit/confirmSave/confirmReset） |
 | `src/commands/model-command-handler.ts` | `ModelCommandHandler` | `/model` 多模型 select、确认持久化 `llm.selectedModel` |
 | `src/commands/effort-command-handler.ts` | `EffortCommandHandler` | `/effort` scale surface，覆盖当前模型 `reasoning.effort` |
 | `src/commands/mode-command-handler.ts` | `ModeCommandHandler`、`parseModeArgument` | `/mode` 选择或直接切换 normal/plan/shell/shell-local |
@@ -593,9 +593,10 @@ renderer 只理解这些 surface kind，不理解具体命令、tool approval、
 | `src/app/assistant-turn-runner.ts` | `runAssistantTurn` | 把普通 turn 的 agent 回调翻译为 app 状态变化和 transcript 追加 |
 | `src/app/subagent-view-controller.ts` | `SubagentViewController` | Ctrl+O subagent 会话窗口：按 runId 过滤主 transcript 的只读全屏投影、↑/↓ 循环切换、Esc 关闭不中断父 turn、状态行与 draft 尾部投影 |
 | `src/app/command/command-host.ts` | `createCommandHost` | 在 app 组合根装配完整 `CommandHostApp`，并导出共享的 status/copy projection helper |
-| `src/app/command/*-command-port*.ts` | `createCoreCommandPorts`、`createTranscriptCommandPort`、`createModelCommandPorts`、`createMcpCommandPort`、`createAssistantCommandPort` 等 | 按领域实现 composer/clipboard/ui、transcript、model/config、skills、memory、MCP、hooks、settings、status/usage、diff/undo 和 compaction command ports |
+| `src/app/command/*-command-port*.ts` | `createCoreCommandPorts`、`createTranscriptCommandPort`、`createModelCommandPorts`、`createConfigCommandPorts`、`createMcpCommandPort`、`createAssistantCommandPort` 等 | 按领域实现 composer/clipboard/ui、transcript、model、config（含系统提示词子域）、skills、memory、MCP、hooks、settings、status/usage、diff/undo 和 compaction command ports |
 | `src/app/command/command-viewport.ts` | `createCommandViewport` | 基于当前 render state 计算 diff 和 usage command surface 共用的视口预算 |
 | `src/app/command/command-runtime.ts` | `createCommandRuntime`、`startFromText`、`handleEvent`、`hasActiveSession`、`getSurface` | 承载 slash command session、surface 快照和事件分发，并组合 session controller 进 host |
+| `src/app/command/config-command-port.ts`、`src/app/command/system-prompt-command-port.ts` | `createConfigCommandPorts`、`createSystemPromptCommandPort` | config 命名空间由单一工厂装配：用户配置读写、工具偏好、沙箱与系统提示词子域；系统提示词端口读取两个 `SYSTEM.md` 目标、按需组装动态段摘要，并代理原子写入与删除（仅真实删除/写入时使 context usage 失效） |
 | `src/app/state/app-context.ts` | `AppContext`、`createRenderState`、`getAgentSession`、`cycleInteractionMode`、`executeUndo`、`createDiffSourceResult` | 实例级组合根和跨 context 事务协调器；公开只读子 context，私有持有 interaction mode、context usage、MCP 状态和 mode transition 状态 |
 | `src/app/state/composer-context.ts` | `ComposerContext` | 持有 composer 草稿、输入历史和历史浏览态 |
 | `src/app/state/transcript-context.ts` | `TranscriptContext` | 持有 transcript records、compaction、todo、持久化 change history 和 session 指针；负责 journal 持久化/恢复、compaction 应用和 resume metadata |
@@ -625,7 +626,7 @@ renderer 只理解这些 surface kind，不理解具体命令、tool approval、
 | `src/app/command/agents-command-port.ts`、`src/commands/agents-command-handler.ts`、`src/render/footer/agents-surface.ts` | `createAgentsCommandPort`、`AgentsCommandHandler`、`renderAgentsSurface` | 组合 `/agents` 受控文件端口（含 Skills effective 视图）、Enter 驱动的分层 CRUD/确认/Skills 多选 controller，以及 handler 生成的当前项摘要、范围统计和分区元数据；renderer 只负责宽屏主从/窄屏堆叠、窗口预算、状态语气与真实光标投影 |
 | `src/agent/loop-runtime/shared.ts` | `buildProviderRecords` 等纯函数 | 主/子 runtime共享的无角色 provider context、usage调试和结果事实投影；不提交 callback或 hook |
 | `src/agent/agent-setup.ts` | `createConfiguredAgent`、`prepareAgent` | 按 agentType 选择 provider adapter 并用配置和 registry 初始化；共享 manager 存在时同时注册 MCP 资源读取工具，`includeMcpTools` 只控制 MCP tools 的合并 |
-| `src/agent/context/system-prompt.ts` | `createBuiltInSystemPrompt`、`loadSystemPromptOverride`、`formatAgentInstructionsPrompt` | 完整读取项目级或用户级 `SYSTEM.md`，并组合基础文本与 cwd、所选项目指令文件、skill catalog、memory section |
+| `src/agent/context/system-prompt.ts` | `createBuiltInSystemPrompt`、`loadSystemPromptOverride`、`resolveSystemPromptSnapshot`、`writeSystemPromptOverride`、`deleteSystemPromptOverride`、`formatAgentInstructionsPrompt` | 完整读取项目级或用户级 `SYSTEM.md`，并组合基础文本与 cwd、所选项目指令文件、skill catalog、memory section；同时提供快照、归一化与原子写入契约，供 `/config` 面板与运行时共用同一份口径 |
 | `src/agent/agent-instructions.ts` | `loadAgentInstructions`、`findProjectRoot` | 加载全局到项目路径的 AGENTS.md 或 CLAUDE.md，受文件与总字节预算限制 |
 | `src/agent/context/context-compaction.ts` | `runCompaction` | 共享压缩核心，边界吸附与工具配对保护，支持自动与强制压缩 |
 | `src/agent/openai-responses/agent.ts` | `createOpenAiAgent` | OpenAI Responses 单次 turn adapter，归一化 draft、reasoning、provider-private reasoning 与 tool calls |
@@ -647,6 +648,7 @@ renderer 只理解这些 surface kind，不理解具体命令、tool approval、
 | `src/render/live/shell-renderer.ts` | `ShellLiveRenderer`、`ShellLiveOutputState`、`scanShellLiveOutput`、`takeShellStableContent`、`renderShellCompletionContent` | shell 运行期投影：命令行 echo、稳定整行增量确定、completion 补写、offload 分歧处理与扫描状态 |
 | `src/render/footer.ts` | `DefaultFooterRenderer`、`createFooterRenderer`、`renderFooterLayout`、`calculateCommandSurfaceMaxLines` | 有状态地管理 footer 上一帧形状，并生成 pending/working/divider/composer/status line 或 command surface 布局 |
 | `src/render/footer/command-surfaces.ts` | `renderCommandSurface` | 按 surface kind 路由到各 footer surface renderer |
+| `src/render/footer/system-prompt-surface.ts` | `renderSystemPromptSurface` | `/config` 常规 Tab 系统提示词子视图：menu 按钮列表、只读行号阅读态、多行编辑光标投影与写删确认布局 |
 | `src/render/footer/usage-surface.ts` | `renderUsageSurface`、`humanizeTokens` | `/usage` footer surface 的累计 header、日期窗口、堆叠柱状图和图例渲染 |
 | `src/render/blocks/banner-renderer.ts` | `renderBanner` | 启动 banner：大字标题、紧凑 box、BTW 变体与宽度收缩 |
 | `src/render/blocks/message-renderer.ts` | `renderUserBlock`、`renderConversationReferenceBlock`、`renderAssistantBlock`、`renderShellBlock(Lines)`、`renderErrorBlock`、`renderCompactionNoticeBlock`、`renderLocalNoticeBlock`、`renderReasoningSummaryBlock`、各 `*MessageLines`、`renderShellMessageLines` | 各 role 的消息行与 block 渲染；shell 行/block primitive 供运行期投影复用 |
