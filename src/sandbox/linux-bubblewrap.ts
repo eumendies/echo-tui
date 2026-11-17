@@ -86,7 +86,8 @@ function createLinuxBubblewrapSandboxProvider(options: LinuxBubblewrapProviderOp
         // 最小设备集不含 /dev/shm;node/java/chrome 等工具链依赖 POSIX 共享内存,补一个私有 tmpfs。
         '--tmpfs', '/dev/shm',
         ...buildWritableBinds({
-          cwd: input.cwd,
+          // 受管 worktree Worker 从仓库子目录执行时，可写根仍是完整 worktree，而不是该子目录。
+          cwd: input.workspaceRoot ?? input.cwd,
           extraWritablePaths: policy.extraWritablePaths,
           homedir,
           mode,

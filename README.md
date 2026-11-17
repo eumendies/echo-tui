@@ -124,7 +124,7 @@ macOS 上 `Option` 即 `Alt`：iTerm2 与 Terminal.app 默认把 `Option+←/→
 
 Echo TUI 默认读取 `AGENTS.md`，也可以在 `/config` 中改为 `CLAUDE.md`。把文件放在项目目录中，可以告诉助手项目结构、编码规范和验证方式；把文件放在 `~/.echo/` 下，则可以设置个人通用习惯。
 
-如需完全替换默认的基础 System Prompt，可在项目中或 `~/.echo/` 下创建 `SYSTEM.md`。项目中的配置优先于用户级配置。
+如需完全替换默认的基础 System Prompt，可以在 `/config` → 常规 → 系统提示词中查看当前生效来源、编辑项目或用户级 `SYSTEM.md`，或删除覆盖文件以恢复内置默认。项目级 `SYSTEM.md` 优先于 `~/.echo/SYSTEM.md`；覆盖只替换基础文本，cwd、`AGENTS.md`、Skills 与 memory 段落仍由运行时追加。修改在下一轮 assistant run 生效。
 
 ### Skills
 

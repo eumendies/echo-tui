@@ -76,7 +76,8 @@ function createMacosSeatbeltSandboxProvider(options: MacosSeatbeltProviderOption
         mode,
         network,
         writablePaths: resolveSandboxWritablePaths({
-          cwd: input.cwd,
+          // 受管 worktree Worker 从仓库子目录执行时，可写根仍是完整 worktree，而不是该子目录。
+          cwd: input.workspaceRoot ?? input.cwd,
           extraWritablePaths: policy.extraWritablePaths,
           homedir,
           mode,

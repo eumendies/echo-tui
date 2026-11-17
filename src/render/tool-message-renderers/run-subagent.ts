@@ -2,6 +2,7 @@ import {blockText} from '../colors';
 import {stripAnsi} from '../layout';
 import {
   createSubagentRailLayout,
+  formatWorkspaceOutcomeText,
   renderPrefixedLines,
   renderRailText,
   renderSubagentRailSpacer,
@@ -10,7 +11,7 @@ import {
 import {formatSubagentRawName, formatSubagentTerminalIdentity} from '../../agent/subagent/name';
 
 import type {TuiTheme} from '../../config/theme-config';
-import type {ToolCallTranscriptRecord, ToolResultTranscriptRecord} from '../../types/transcript';
+import type {SubagentWorkspaceOutcomeFacts, ToolCallTranscriptRecord, ToolResultTranscriptRecord} from '../../types/transcript';
 
 const RUN_SUBAGENT_TOOL_NAME = 'run_subagent';
 
@@ -52,7 +53,7 @@ function renderRunSubagentCompactPairLines(
   width: number,
   theme: TuiTheme
 ): string[] {
-  return renderPrefixedLines({
+  const lines = renderPrefixedLines({
     text: formatSubagentTerminalIdentity(resolveRunSubagentAgent(call.argumentsText), result.ok ? 'completed' : 'failed'),
     width,
     firstPrefix: '◆ ',
@@ -60,6 +61,20 @@ function renderRunSubagentCompactPairLines(
     colorizeFirstSymbol: resolveToolCallPrefixStyle(result.ok, theme),
     colorizeLine: (line) => blockText(theme, 'toolOutput', line)
   });
+  const workspace = resolveWorkspaceOutcome(result);
+  // compact 投影仍是单行终态，但不能因此隐去仅有的成果入口。
+  return workspace ? [...lines, ...renderPrefixedLines({
+    text: formatWorkspaceOutcomeText(workspace, false),
+    width,
+    firstPrefix: '  ',
+    continuationPrefix: '  ',
+    colorizeLine: (line) => blockText(theme, 'toolOutput', line)
+  })] : lines;
+}
+
+/** 读取 run_subagent 结果携带的结构化成果定位；其它工具结果不参与该投影。 */
+function resolveWorkspaceOutcome(result: ToolResultTranscriptRecord): SubagentWorkspaceOutcomeFacts | undefined {
+  return result.details.kind === 'generic' ? result.details.workspace : undefined;
 }
 
 /** 保守解析委派参数；agent 或 task 形状不可信时整体交给通用 renderer。 */

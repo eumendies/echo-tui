@@ -17,6 +17,7 @@ export type SandboxCommandInput = {
   command: string; // 原始 bash 命令文本,由 provider 原样交给底层 shell。
   shell: string; // 底层 shell 可执行文件路径。
   cwd: string; // 本次执行的工作目录;workspace-write 档的默认可写根。
+  workspaceRoot?: string; // 默认可写根的显式替代值;受管 worktree Worker 用它保证子目录 cwd 不缩小边界。
 };
 
 export type SandboxProviderName = 'macos-seatbelt' | 'linux-bubblewrap'; // 平台实现的稳定标识,用于 /status 与诊断展示。

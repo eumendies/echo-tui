@@ -5,6 +5,7 @@ import path from 'node:path';
 import {StringDecoder} from 'node:string_decoder';
 
 import {capUtf8TailText as capUtf8TailTextShared, capUtf8Text, normalizePositiveInteger} from './tool-handler-utils';
+import {createProjectKey} from '../persistence/project-key';
 
 const DEFAULT_TOOL_RESULT_MAX_ARTIFACT_BYTES = 8 * 1024 * 1024;
 const TOOL_RESULT_TRUNCATION_MARKER_PREFIX = '[tool result truncated: ';
@@ -277,7 +278,7 @@ function resolveCwd(cwd: CwdOption): string {
 }
 
 function getProjectKey(cwd: string): string {
-  return crypto.createHash('sha1').update(String(cwd)).digest('hex');
+  return createProjectKey(cwd);
 }
 
 function createArtifactPaths(toolResultsDir: string): {targetPath: string; tmpPath: string} {

@@ -22,7 +22,9 @@ type PrepareAgentOptions = {
   configSnapshot?: AgentUserConfigSnapshot; // 未直接传 config 时用于同 revision 解析配置的快照。
   cwd?: string | (() => string); // 本地工具解析相对路径时使用的当前工作目录。
   executionMode?: AgentExecutionMode; // 本次运行执行模式;headless full-access 时 bash 工具强制关闭沙箱。
+  gitOptionalLocks?: boolean; // 关闭 bash 中 git 的可选锁写;受管 worktree Worker 传 true。
   sandboxModeOverride?: SandboxModeOverride; // 本次运行的沙箱收紧;只读 workflow 用它强制 bash 走 read-only 档。
+  sandboxWorkspaceRoot?: string; // 生效 workspace-write 档的默认可写根;缺省与 cwd 一致。
   includeMcpTools?: boolean; // 是否合并共享 manager 的 MCP tools；缺省 true，资源读取工具不受该开关影响。
   mcpManager?: McpManager; // 可选共享 MCP 连接目录，不由本函数管理生命周期。
   mainAgentTools?: MainAgentToolsConfig; // 存在时明确表示主运行：合并 MCP 后应用禁用名单，不影响子运行白名单。
@@ -32,6 +34,7 @@ type PrepareAgentOptions = {
   allowedToolNames?: ReadonlySet<string>; // 存在时 registry 只保留该运行明确允许的本地工具。
   sessionId?: string; // 当前会话稳定身份；preset 声明 sessionHeader 时用它注入会话亲和 header。
   subagentPort?: SubagentToolPort; // 仅允许委派的父 run 注入的同步子运行端口。
+  workspaceScopeRoot?: string; // 受管 Worker 工作区根；存在时原生编辑工具必须留在该根内。
 };
 
 type PreparedAgent = {
@@ -91,12 +94,15 @@ function prepareAgent(options: PrepareAgentOptions): PreparedAgent {
     allowedToolNames: options.allowedToolNames,
     backgroundTaskManager: options.backgroundTaskManager,
     executionMode: options.executionMode,
+    ...(options.gitOptionalLocks ? {gitOptionalLocks: true} : {}),
     ...(options.mcpManager ? {mcpManager: options.mcpManager} : {}),
+    ...(options.sandboxWorkspaceRoot ? {sandboxWorkspaceRoot: options.sandboxWorkspaceRoot} : {}),
     // 引导在安全边界更新运行模式；handler 执行时读取最新派生收紧，不重建固定工具目录。
     get sandboxModeOverride() { return options.sandboxModeOverride; },
     sessionId: options.sessionId,
     ...(options.skillRegistry ? {skillRegistry: options.skillRegistry} : {}),
-    subagentPort: options.subagentPort
+    subagentPort: options.subagentPort,
+    ...(options.workspaceScopeRoot ? {workspaceScopeRoot: options.workspaceScopeRoot} : {})
   });
   const mergedRegistry = options.mcpManager && options.includeMcpTools !== false
     ? mergeToolRegistries(baseRegistry, createMcpToolRegistry(options.mcpManager, toolResultStore))

@@ -1,4 +1,4 @@
-import type {AgentWorkflowDefinition} from '../../types/agent-workflow';
+import type {AgentWorkflowDefinition} from './types';
 
 const REVIEW_WORKFLOW_PROMPT = `Run the Echo TUI built-in /review workflow: review the current Git workspace changes like a pragmatic code reviewer.
 

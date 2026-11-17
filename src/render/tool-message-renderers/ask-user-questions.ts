@@ -12,28 +12,31 @@ import type {ToolCallTranscriptRecord, ToolResultTranscriptRecord} from '../../t
 const ASK_USER_QUESTIONS_TOOL_NAME = 'ask_user_questions';
 const OTHER_OPTION_LABEL = 'Other';
 
-type AskUserQuestionsOption = {
+// 以下 5 个类型是本 renderer 从持久化 text 防御式解析出的最小投影，不是 types/tool.ts 的
+// ask_user_questions 领域契约：multiSelect 已归一化为必填 boolean，option 丢弃 description，
+// answer 压成「题目下标 + 标签文本」。修改领域契约时不要求同步这里，但需复查解析分支。
+type RenderedAskUserQuestionOption = {
   label: string;
 };
 
-type AskUserQuestion = {
+type RenderedAskUserQuestion = {
   question: string;
   multiSelect: boolean;
-  options: AskUserQuestionsOption[];
+  options: RenderedAskUserQuestionOption[];
 };
 
-type AskUserQuestionsPayload = {
-  questions: AskUserQuestion[];
+type RenderedAskUserQuestionsPayload = {
+  questions: RenderedAskUserQuestion[];
 };
 
-type AskUserQuestionsSelectedAnswer = {
+type RenderedAskUserQuestionAnswer = {
   index: number;
   labels: string[];
   customText?: string;
 };
 
-type AskUserQuestionsResultPayload =
-  | {kind: 'success'; answers: AskUserQuestionsSelectedAnswer[]}
+type RenderedAskUserQuestionsResult =
+  | {kind: 'success'; answers: RenderedAskUserQuestionAnswer[]}
   | {kind: 'cancelled'; reason?: string};
 
 /**
@@ -77,7 +80,7 @@ function renderAskUserQuestionsToolCallLines(
 }
 
 function renderAskUserQuestionsCallLines(
-  payload: AskUserQuestionsPayload | null,
+  payload: RenderedAskUserQuestionsPayload | null,
   resultStatus: unknown,
   width: number,
   theme: TuiTheme
@@ -92,8 +95,8 @@ function renderAskUserQuestionsCallLines(
 }
 
 function renderAskUserQuestionsResultLines(
-  payload: AskUserQuestionsPayload,
-  resultPayload: AskUserQuestionsResultPayload,
+  payload: RenderedAskUserQuestionsPayload,
+  resultPayload: RenderedAskUserQuestionsResult,
   width: number,
   theme: TuiTheme
 ): string[] {
@@ -110,7 +113,7 @@ function renderAskUserQuestionsResultLines(
   });
 }
 
-function createSuccessReceiptText(payload: AskUserQuestionsPayload, answers: AskUserQuestionsSelectedAnswer[]): string {
+function createSuccessReceiptText(payload: RenderedAskUserQuestionsPayload, answers: RenderedAskUserQuestionAnswer[]): string {
   const lines: string[] = [];
 
   for (const answer of answers) {
@@ -125,7 +128,7 @@ function createSuccessReceiptText(payload: AskUserQuestionsPayload, answers: Ask
   return lines.join('\n');
 }
 
-function createCancelledReceiptText(resultPayload: Extract<AskUserQuestionsResultPayload, {kind: 'cancelled'}>): string {
+function createCancelledReceiptText(resultPayload: Extract<RenderedAskUserQuestionsResult, {kind: 'cancelled'}>): string {
   return resultPayload.reason ? `已取消：${resultPayload.reason}` : '已取消';
 }
 
@@ -137,7 +140,7 @@ function formatAnswerLabel(label: string, customText: string | undefined): strin
   return `${label}：${customText}`;
 }
 
-function parseAskUserQuestionsArguments(argumentsText: unknown): AskUserQuestionsPayload | null {
+function parseAskUserQuestionsArguments(argumentsText: unknown): RenderedAskUserQuestionsPayload | null {
   if (typeof argumentsText !== 'string') {
     return null;
   }
@@ -160,7 +163,7 @@ function parseAskUserQuestionsArguments(argumentsText: unknown): AskUserQuestion
     return null;
   }
 
-  const normalizedQuestions: AskUserQuestion[] = [];
+  const normalizedQuestions: RenderedAskUserQuestion[] = [];
 
   for (const question of questions) {
     const normalizedQuestion = parseAskUserQuestion(question);
@@ -175,7 +178,7 @@ function parseAskUserQuestionsArguments(argumentsText: unknown): AskUserQuestion
   return {questions: normalizedQuestions};
 }
 
-function parseAskUserQuestion(value: unknown): AskUserQuestion | null {
+function parseAskUserQuestion(value: unknown): RenderedAskUserQuestion | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return null;
   }
@@ -194,7 +197,7 @@ function parseAskUserQuestion(value: unknown): AskUserQuestion | null {
     return null;
   }
 
-  const options: AskUserQuestionsOption[] = [];
+  const options: RenderedAskUserQuestionOption[] = [];
 
   for (const option of questionRecord.options) {
     const normalizedOption = parseAskUserQuestionsOption(option);
@@ -213,7 +216,7 @@ function parseAskUserQuestion(value: unknown): AskUserQuestion | null {
   };
 }
 
-function parseAskUserQuestionsOption(value: unknown): AskUserQuestionsOption | null {
+function parseAskUserQuestionsOption(value: unknown): RenderedAskUserQuestionOption | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return null;
   }
@@ -227,7 +230,7 @@ function parseAskUserQuestionsOption(value: unknown): AskUserQuestionsOption | n
   return {label: label.trim()};
 }
 
-function parseAskUserQuestionsResult(text: string, payload: AskUserQuestionsPayload | null): AskUserQuestionsResultPayload | null {
+function parseAskUserQuestionsResult(text: string, payload: RenderedAskUserQuestionsPayload | null): RenderedAskUserQuestionsResult | null {
   if (!payload) {
     return null;
   }
@@ -253,7 +256,7 @@ function parseAskUserQuestionsResult(text: string, payload: AskUserQuestionsPayl
   return parseAskUserQuestionsSuccessResult(resultRecord, payload);
 }
 
-function parseAskUserQuestionsCancelledResult(record: Record<string, unknown>): AskUserQuestionsResultPayload | null {
+function parseAskUserQuestionsCancelledResult(record: Record<string, unknown>): RenderedAskUserQuestionsResult | null {
   const reason = record.reason;
 
   if (reason !== undefined && typeof reason !== 'string') {
@@ -270,13 +273,13 @@ function parseAskUserQuestionsCancelledResult(record: Record<string, unknown>): 
 
 function parseAskUserQuestionsSuccessResult(
   record: Record<string, unknown>,
-  payload: AskUserQuestionsPayload
-): AskUserQuestionsResultPayload | null {
+  payload: RenderedAskUserQuestionsPayload
+): RenderedAskUserQuestionsResult | null {
   if (!Array.isArray(record.answers) || record.answers.length !== payload.questions.length) {
     return null;
   }
 
-  const answers: AskUserQuestionsSelectedAnswer[] = [];
+  const answers: RenderedAskUserQuestionAnswer[] = [];
   const seenIndexes = new Set<number>();
 
   for (const answer of record.answers) {
@@ -293,7 +296,7 @@ function parseAskUserQuestionsSuccessResult(
   return {kind: 'success', answers};
 }
 
-function parseAskUserQuestionsAnswer(value: unknown, payload: AskUserQuestionsPayload): AskUserQuestionsSelectedAnswer | null {
+function parseAskUserQuestionsAnswer(value: unknown, payload: RenderedAskUserQuestionsPayload): RenderedAskUserQuestionAnswer | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return null;
   }
@@ -322,9 +325,9 @@ function parseAskUserQuestionsAnswer(value: unknown, payload: AskUserQuestionsPa
 function parseAskUserQuestionsSingleAnswer(
   index: number,
   answerRecord: Record<string, unknown>,
-  question: AskUserQuestion,
+  question: RenderedAskUserQuestion,
   customText: string | undefined
-): AskUserQuestionsSelectedAnswer | null {
+): RenderedAskUserQuestionAnswer | null {
   if (answerRecord.multiSelect !== undefined || answerRecord.selectedOptions !== undefined) {
     return null;
   }
@@ -345,9 +348,9 @@ function parseAskUserQuestionsSingleAnswer(
 function parseAskUserQuestionsMultiAnswer(
   index: number,
   answerRecord: Record<string, unknown>,
-  question: AskUserQuestion,
+  question: RenderedAskUserQuestion,
   customText: string | undefined
-): AskUserQuestionsSelectedAnswer | null {
+): RenderedAskUserQuestionAnswer | null {
   if (answerRecord.multiSelect !== true || answerRecord.selected !== undefined || !Array.isArray(answerRecord.selectedOptions)) {
     return null;
   }
@@ -389,11 +392,11 @@ function parseOptionalCustomText(value: unknown): string | undefined | null {
   return trimmed ? trimmed : undefined;
 }
 
-function isKnownOptionLabel(label: string, question: AskUserQuestion): boolean {
+function isKnownOptionLabel(label: string, question: RenderedAskUserQuestion): boolean {
   return label !== '' && (label === OTHER_OPTION_LABEL || hasExplicitOptionLabel(label, question));
 }
 
-function isConsistentCustomTextUsage(labels: string[], question: AskUserQuestion, customText: string | undefined): boolean {
+function isConsistentCustomTextUsage(labels: string[], question: RenderedAskUserQuestion, customText: string | undefined): boolean {
   const hasOtherLabel = labels.includes(OTHER_OPTION_LABEL);
 
   if (customText) {
@@ -403,7 +406,7 @@ function isConsistentCustomTextUsage(labels: string[], question: AskUserQuestion
   return !hasOtherLabel || hasExplicitOptionLabel(OTHER_OPTION_LABEL, question);
 }
 
-function hasExplicitOptionLabel(label: string, question: AskUserQuestion): boolean {
+function hasExplicitOptionLabel(label: string, question: RenderedAskUserQuestion): boolean {
   return question.options.some((option) => option.label === label);
 }
 

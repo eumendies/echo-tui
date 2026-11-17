@@ -50,6 +50,7 @@ type ProviderRequestPrefixOptions = {
   sandboxNote?: string; // bash 沙箱生效时的边界说明；缺省表示本次未包装沙箱。
   sessionJournalPath?: string; // 会话 journal 路径；压缩摘要附带完整历史回读提示。
   skillCatalog?: SkillCatalogEntry[]; // 当前 revision 的有界 enabled skill 目录。
+  workspaceNote?: string; // 受管 worktree 的工作区边界说明；缺省表示按父目录执行。
 };
 
 /**
@@ -102,10 +103,19 @@ function resolveProviderPromptMaterials(options: ResolveProviderPromptMaterialsO
  * 摘要只提示按需回读原始历史，不指定读取工具或把工具可用性作为回读前提。
  */
 function buildProviderRequestPrefix(options: ProviderRequestPrefixOptions): TranscriptRecord[] {
-  const {agentInstructions = [], basePrompt, compaction, cwd, memoryPrompts = [], rolePrompt, sandboxNote, sessionJournalPath, skillCatalog = []} = options;
+  const {agentInstructions = [], basePrompt, compaction, cwd, memoryPrompts = [], rolePrompt, sandboxNote, sessionJournalPath, skillCatalog = [], workspaceNote} = options;
   const prefix: TranscriptRecord[] = [{
     role: 'system',
-    text: createBuiltInSystemPrompt({agentInstructions, basePrompt, cwd, ...(sandboxNote ? {sandboxNote} : {}), skillCatalog, memoryPrompts, rolePrompt})
+    text: createBuiltInSystemPrompt({
+      agentInstructions,
+      basePrompt,
+      cwd,
+      ...(sandboxNote ? {sandboxNote} : {}),
+      skillCatalog,
+      memoryPrompts,
+      rolePrompt,
+      ...(workspaceNote ? {workspaceNote} : {})
+    })
   }];
 
   if (compaction && compaction.summaryText.trim() !== '') {

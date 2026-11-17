@@ -102,7 +102,7 @@
 - **THEN** `ToolApprovalContext` SHALL 能够基于该决策复用本会话授权
 
 ### Requirement: 工具授权会话级允许选项
-工具授权 choice surface SHALL 提供会话级允许选项。所有 allow 选项 SHALL 在选项列表中连续排列，并 SHALL 出现在 `Deny` 和 `Tell model what to do` 之前。`ToolApprovalContext` SHALL 持有当前 CLI 进程会话内的授权缓存；会话级允许选项 SHALL 只影响当前 CLI 进程会话，SHALL NOT 写入 transcript、持久化 session 或用户配置。
+工具授权 choice surface SHALL 提供会话级允许选项。所有 allow 选项 SHALL 在选项列表中连续排列，并 SHALL 出现在 `Deny` 和 `Tell model what to do` 之前。`ToolApprovalContext` SHALL 持有当前会话内的授权缓存，并 SHALL 把会话级 allow 决策持久化到所属 session 的 sidecar。会话级允许选项 SHALL 只影响当前会话，SHALL NOT 持久化到用户配置，SHALL NOT 写入 transcript journal。
 
 #### Scenario: 显示 allow 选项分组
 - **WHEN** tool approval 请求处于活跃状态
@@ -127,9 +127,14 @@
 
 #### Scenario: 命中会话授权时不打开 surface
 - **WHEN** `ToolApprovalContext` 收到 tool approval 请求
-- **AND** 该请求命中当前 CLI 进程会话内已有授权缓存
+- **AND** 该请求命中当前会话内已有授权缓存
 - **THEN** `ToolApprovalContext` SHALL 立即返回允许执行的结构化授权决策
 - **THEN** TUI SHALL NOT 打开 tool approval choice surface
+
+#### Scenario: 会话级授权跨进程生效
+- **WHEN** 用户在会话中选择会话级 allow 后重启 echo-tui 并恢复同一会话
+- **THEN** 该授权 SHALL 继续对后续 `approval_required` 调用生效
+- **THEN** 系统 SHALL NOT 重新打开 tool approval surface
 
 ### Requirement: 工具授权 permission gate 展示
 工具授权 UI SHALL 使用通用 choice card 呈现 permission gate。该 surface SHALL 突出授权标题、command 或 tool preview 区块、action 选项区和操作提示，并 SHALL 使用项目现有终端渲染能力完成，不引入全屏 UI、alternate screen 或第三方 TUI 库。MCP tool 授权 SHALL 展示 MCP server 名、原始 tool 名和参数摘要，避免只显示内部 namespace。
@@ -237,22 +242,22 @@
 - **THEN** 回传给模型的反馈 SHALL NOT 自动包含系统风险分类信息
 
 ### Requirement: 会话授权优先于自动审批
-交互式工具审批 SHALL 在发起自动审批模型请求或打开人工 surface 前检查现有进程会话授权缓存。Auto 模型产生的 yes SHALL 只允许当前调用，不得写入该缓存；只有用户通过现有人工 surface 作出的会话级 allow 决策可以扩展后续调用权限。
+交互式工具审批 SHALL 在发起自动审批模型请求或打开人工 surface 前检查现有会话授权缓存。Auto 模型产生的 yes SHALL 只允许当前调用，不得写入该缓存；只有用户通过现有人工 surface 作出的会话级 allow 决策可以扩展后续调用权限，并 SHALL 持久化到所属 session 的 sidecar。
 
 #### Scenario: Allow-all 缓存跳过 auto 请求
-- **WHEN** 当前进程已启用 `Allow all tools for this session`
+- **WHEN** 当前会话已启用 `Allow all tools for this session`
 - **AND** 后续 tool call 被分类为 `approval_required`
 - **THEN** 系统 SHALL 立即返回现有 allow-all 结构化决策
 - **THEN** 系统 SHALL NOT 请求自动审批模型或打开人工 surface
 
 #### Scenario: Tool 缓存跳过 auto 请求
-- **WHEN** 当前进程已允许某个非 bash tool name 在本会话执行
+- **WHEN** 当前会话已允许某个非 bash tool name 在本会话执行
 - **AND** 后续同名 tool call 被分类为 `approval_required`
 - **THEN** 系统 SHALL 立即返回现有 tool 级允许决策
 - **THEN** 系统 SHALL NOT 请求自动审批模型或打开人工 surface
 
 #### Scenario: Bash command 缓存跳过 auto 请求
-- **WHEN** 当前进程已允许某个 bash command 文本在本会话执行
+- **WHEN** 当前会话已允许某个 bash command 文本在本会话执行
 - **AND** 后续相同 command 被分类为 `approval_required`
 - **THEN** 系统 SHALL 立即返回现有 command 级允许决策
 - **THEN** 系统 SHALL NOT 请求自动审批模型或打开人工 surface
@@ -261,6 +266,7 @@
 - **WHEN** 自动审批模型为一个 approval-required 调用精确返回 yes
 - **THEN** 系统 SHALL 只为当前调用生成 `allow_once`
 - **THEN** 后续同名工具或相同 bash command SHALL 在缓存仍未命中时重新进入 auto 判断
+- **THEN** 系统 SHALL NOT 因该次 auto 允许写入 session sidecar
 
 ### Requirement: Auto no 复用现有人工授权 surface
 自动审批模型返回 no、返回非法文本或请求失败后，系统 SHALL 使用与 manual 模式相同的 `ToolApprovalContext`、permission choice surface 和结构化授权决策，不得创建降级版审批界面或删除现有操作。
@@ -296,3 +302,4 @@
 #### Scenario: 父 turn 中断清算排队请求
 - **WHEN** 父 assistant turn 在存在活跃与排队授权请求时被中断
 - **THEN** 所有活跃与排队请求 SHALL 以 interrupted 决议收尾
+

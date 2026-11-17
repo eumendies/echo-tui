@@ -60,14 +60,19 @@ const OTHER_OPTION_PLACEHOLDER = 'Type your answer...';
 class UserQuestionContext {
   activeRequest: ActiveUserQuestionRequest | null;
   onUpdate: () => void;
+  private readonly queuedRequests: ActiveUserQuestionRequest[];
 
   constructor(onUpdate: () => void) {
     this.activeRequest = null;
     this.onUpdate = onUpdate;
+    this.queuedRequests = [];
   }
 
   /**
    * 打开用户问题请求；多题请求保留每题独立草稿，等待用户在提交 tab 统一确认。
+   *
+   * 请求按到达顺序排队，后来的请求不会替换或取消当前请求：并行子运行会同时提问，
+   * 每个答案只返回自己的调用。
    */
   request(call: ToolCall, request: AskUserQuestionsRequest, source?: UserQuestionSource): Promise<ToolExecutionResult> {
     const parsed = parseAskUserQuestionsArgs({questions: request.questions});
@@ -75,23 +80,16 @@ class UserQuestionContext {
       return Promise.resolve(createAskUserQuestionsFailureResult(call, parsed.message));
     }
 
-    if (this.activeRequest) {
-      this.resolveActive(createAskUserQuestionsCancelledResult(
-        this.activeRequest.call,
-        'ask_user_questions was cancelled because another question request replaced it'
-      ));
-    }
-
     return new Promise((resolve) => {
-      this.activeRequest = {
+      this.queuedRequests.push({
         call,
         currentTabIndex: 0,
         drafts: parsed.value.questions.map(() => createQuestionDraft()),
         ...(source ? {source} : {}),
         request: parsed.value,
         resolve
-      };
-      this.onUpdate();
+      });
+      this.activateNextRequest();
     });
   }
 
@@ -630,8 +628,37 @@ class UserQuestionContext {
   }
 
   /**
-   * 关闭活跃 surface，解析等待 Promise 并重绘 footer。
+   * 父 turn 取消或退出时一次结算当前与排队请求。
+   *
+   * 队列必须在这里清空：过期来源不能在下一轮 turn 里重新打开 surface，也不能让
+   * 旧 run 的迟到回答影响新请求。
    */
+  cancelAllRequests(reason = 'User question was interrupted.'): void {
+    const current = this.activeRequest;
+    const pending = this.queuedRequests.splice(0);
+    this.activeRequest = null;
+
+    current?.resolve(createAskUserQuestionsCancelledResult(current.call, reason));
+    for (const request of pending) {
+      request.resolve(createAskUserQuestionsCancelledResult(request.call, reason));
+    }
+    if (current || pending.length > 0) {
+      this.onUpdate();
+    }
+  }
+
+  /**
+   * 当前请求结算后按到达顺序激活下一个请求。
+   * 只有没有活跃请求时才推进队列，保证一次只展示一个 choice surface。
+   */
+  private activateNextRequest(): void {
+    if (!this.activeRequest) {
+      this.activeRequest = this.queuedRequests.shift() ?? null;
+    }
+    this.onUpdate();
+  }
+
+  /** 关闭活跃 surface，解析等待 Promise 并按队列激活下一个请求。 */
   private resolveActive(result: ToolExecutionResult): void {
     const request = this.activeRequest;
 
@@ -641,7 +668,8 @@ class UserQuestionContext {
 
     this.activeRequest = null;
     request.resolve(result);
-    this.onUpdate();
+    // 结算当前请求后立即展示下一个有效请求；队列清空时 surface 关闭。
+    this.activateNextRequest();
   }
 }
 

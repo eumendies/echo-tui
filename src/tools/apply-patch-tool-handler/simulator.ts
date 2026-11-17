@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import {isGitPath, unsupportedLineEndingReason} from '../tool-handler-utils';
+import {checkWorkspaceWriteTarget} from '../workspace-path-guard';
 
 import type {ApplyPatchDisplayFile, ApplyPatchDisplayLine} from '../../types/tool';
 import type {ApplyPatchLimits, PatchHunk, PatchOperation, Result} from './parser';
@@ -69,13 +70,13 @@ type ApplyPatchExecutionResult = ApplyPatchSuccess | ApplyPatchFailure;
  */
 function simulatePatch(
   operations: PatchOperation[],
-  options: {cwd: string; limits: ApplyPatchLimits}
+  options: {cwd: string; limits: ApplyPatchLimits; scopeRoot?: string}
 ): ApplyPatchExecutionResult {
   const virtualFiles = new Map<string, VirtualFileState>();
   const displayFiles: ApplyPatchDisplayFile[] = [];
 
   for (const operation of operations) {
-    const resolved = resolvePatchPath(options.cwd, operation.filePath);
+    const resolved = resolvePatchPath(options.cwd, operation.filePath, options.scopeRoot);
 
     if (!resolved.ok) {
       return {...resolved, displayFiles: createUnresolvedApplyPatchDisplayFiles(operations)};
@@ -587,7 +588,7 @@ function findFirstMatch(lines: ContentLine[], target: string[], startIndex: numb
   return {ok: false, reason: 'matched 0 locations'};
 }
 
-function resolvePatchPath(cwd: string, patchPath: string): Result<string> {
+function resolvePatchPath(cwd: string, patchPath: string, scopeRoot?: string): Result<string> {
   if (patchPath.trim() === '') {
     return {ok: false, reason: 'patch path must be non-empty'};
   }
@@ -600,9 +601,17 @@ function resolvePatchPath(cwd: string, patchPath: string): Result<string> {
   const absolutePath = path.isAbsolute(patchPath) ? path.resolve(patchPath) : path.resolve(absoluteCwd, patchPath);
 
   // 当前版本临时允许 cwd 外路径；保留 .git 拒绝，避免直接破坏 Git 内部状态。
-  return isGitPath(absolutePath)
-    ? {ok: false, reason: `.git paths are not allowed: ${patchPath}`}
-    : {ok: true, value: absolutePath};
+  if (isGitPath(absolutePath)) {
+    return {ok: false, reason: `.git paths are not allowed: ${patchPath}`};
+  }
+  // 受管 Worker 工作区存在时，patch 目标必须能确认仍在该根内；主 Agent 不传 scopeRoot 时语义不变。
+  if (scopeRoot !== undefined) {
+    const guard = checkWorkspaceWriteTarget(scopeRoot, absolutePath);
+    if (guard.kind === 'denied') {
+      return {ok: false, reason: guard.reason};
+    }
+  }
+  return {ok: true, value: absolutePath};
 }
 
 /**

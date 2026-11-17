@@ -7,10 +7,20 @@ import {blockText} from './colors';
 import {createSelectedWindowRows} from './footer/window';
 import {collapseToSingleLine, safeRenderWidth, stripAnsi} from './layout';
 import {renderToolPairLines, renderToolRecordLines} from './tool-message-renderer';
-import {createSubagentRailLayout, renderRailText, renderSubagentRailSpacer} from './tool-message-renderers/shared';
+import {
+  createSubagentRailLayout,
+  formatWorkspaceOutcomeText,
+  renderRailText,
+  renderSubagentRailSpacer
+} from './tool-message-renderers/shared';
 
 import type {SubagentPendingState} from '../types/render';
-import type {ToolCallTranscriptRecord, ToolResultTranscriptRecord, SubagentTranscriptRecord} from '../types/transcript';
+import type {
+  SubagentTranscriptRecord,
+  SubagentWorkspaceRecordFacts,
+  ToolCallTranscriptRecord,
+  ToolResultTranscriptRecord
+} from '../types/transcript';
 
 type SubagentRunRenderOptions = {
   continuation: boolean; // true 表示同一 run 的标题已经写入终端历史区，本批只追加后续事件。
@@ -54,6 +64,11 @@ function renderSubagentRecords(records: SubagentTranscriptRecord[], width: numbe
       if (!hasHeader) {
         lines.push(...renderRailText(`${formatSubagentRawName(record.agentName)} · ${record.event.task}`, width, firstPrefix, outerPrefix, theme, null, 'title'));
         hasHeader = true;
+      }
+      // 工作区方式与基线来自系统核验；旧记录缺省时保持原投影，不补造隔离事实。
+      if (record.event.workspace) {
+        lines.push(renderSubagentRailSpacer(outerPrefix, theme));
+        lines.push(...renderRailText(formatWorkspaceFacts(record.event.workspace), width, outerPrefix, outerPrefix, theme));
       }
       continue;
     }
@@ -101,15 +116,43 @@ function renderSubagentRecords(records: SubagentTranscriptRecord[], width: numbe
         ? `cancelled · ${duration}`
         : `failed · ${duration}${record.text.trim() ? ` · ${record.text}` : ''}`;
     lines.push(...renderRailText(status, width, outerPrefix, outerPrefix, theme, 3));
+    // 成果定位跟在终态行后：compact 之外这条 rail 是唯一能看到完整基线和工作区路径的地方。
+    if (record.event.workspace) {
+      lines.push(...renderRailText(formatWorkspaceOutcomeText(record.event.workspace, true), width, outerPrefix, outerPrefix, theme));
+    }
   }
 
   if (options.showUnexpectedInterruption && hasStart && !hasTerminal) {
     lines.push(renderSubagentRailSpacer(outerPrefix, theme));
-    lines.push(...renderRailText('interrupted before completion', width, outerPrefix, outerPrefix, theme, 2));
+    // 带工作区元数据的运行不能单凭缺少终态就判死：跨实例活动状态无法在纯渲染层确认。
+    lines.push(...renderRailText(
+      requiresWorkspaceConfirmation(records)
+        ? 'state unconfirmed · the original run may still be active; verify the workspace before reuse'
+        : 'interrupted before completion',
+      width,
+      outerPrefix,
+      outerPrefix,
+      theme,
+      2
+    ));
   }
 
   const terminalSpacing = hasTerminal || options.showUnexpectedInterruption && hasStart ? '\n\n' : '\n';
   return lines.length > 0 ? `${lines.join('\n')}${terminalSpacing}` : '';
+}
+
+/** 判断这批记录是否带有受管工作区事实；有事实就不能把「缺终态」直接当成已中断。 */
+function requiresWorkspaceConfirmation(records: readonly SubagentTranscriptRecord[]): boolean {
+  return records.some((record) => record.event.kind === 'start' && record.event.workspace !== undefined);
+}
+
+/** 把工作区身份投影为可核对的两行事实，不含任务正文或 diff。 */
+function formatWorkspaceFacts(workspace: SubagentWorkspaceRecordFacts): string {
+  if (workspace.mode === 'shared_cwd') {
+    return 'shared directory · changes go directly to the parent workspace';
+  }
+  const base = workspace.baseCommit ? `managed worktree · base ${workspace.baseCommit.slice(0, 12)}` : 'managed worktree';
+  return workspace.workspaceRoot ? `${base}\n${workspace.workspaceRoot}` : base;
 }
 
 /** footer 中的瞬时活动只续接已提交 rail，不重复子 Agent标题与任务。 */

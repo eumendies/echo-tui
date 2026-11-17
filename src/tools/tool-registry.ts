@@ -27,11 +27,14 @@ type DefaultToolRegistryOptions = {
   allowedToolNames?: ReadonlySet<string>; // 缺省暴露完整默认目录；存在时只保留明确允许的 handler。
   backgroundTaskManager?: BackgroundTaskManager; // 后台 bash 能力;只有交互式主会话装配注入,子运行与 headless 不传。
   executionMode?: AgentExecutionMode; // 本次运行执行模式;headless full-access 强制关闭沙箱包装。
+  gitOptionalLocks?: boolean; // 关闭 git 可选锁写;受管 worktree Worker 传 true。
   mcpManager?: McpManager; // 注入共享 MCP manager 时注册资源读取工具；缺省时不注册。
   sandboxModeOverride?: SandboxModeOverride; // 本次运行的沙箱收紧;非 off 配置收紧为 read-only。
+  sandboxWorkspaceRoot?: string; // 生效 workspace-write 档的默认可写根;受管 worktree Worker 传完整 worktreeRoot。
   sessionId?: string; // 当前会话身份;后台任务按它分区。
   skillRegistry?: SkillRegistry; // 注入运行级 Skill 快照 scope；缺省时按旧行为重新创建 SkillManager。
   subagentPort?: SubagentToolPort; // 仅父 run 注入，缺省时不注册 run_subagent。
+  workspaceScopeRoot?: string; // 受管 Worker 工作区根；存在时原生编辑工具拒绝根外写入。
 };
 
 /**
@@ -67,9 +70,11 @@ function createDefaultToolRegistry(config: LlmConfig, cwd: string | (() => strin
     createBashToolHandler({
       background: options.backgroundTaskManager,
       cwd,
+      ...(options.gitOptionalLocks ? {gitOptionalLocks: true} : {}),
       toolResultStore,
       maxOutputBytes: config.tools.bash.maxOutputBytes,
       sessionId: options.sessionId,
+      ...(options.sandboxWorkspaceRoot ? {sandboxWorkspaceRoot: options.sandboxWorkspaceRoot} : {}),
       // 每个调用启动时固定自己的沙箱；后续引导不会改变已经执行中的命令。
       get sandbox() {
         const modeOverride = options.sandboxModeOverride;
@@ -77,8 +82,8 @@ function createDefaultToolRegistry(config: LlmConfig, cwd: string | (() => strin
       },
       timeoutMs: config.tools.bash.timeoutMs
     }),
-    createApplyPatchToolHandler({cwd}),
-    createEditFileToolHandler({cwd}),
+    createApplyPatchToolHandler({cwd, ...(options.workspaceScopeRoot ? {scopeRoot: options.workspaceScopeRoot} : {})}),
+    createEditFileToolHandler({cwd, ...(options.workspaceScopeRoot ? {scopeRoot: options.workspaceScopeRoot} : {})}),
     createAskUserQuestionsToolHandler(),
     createGlobToolHandler({cwd}),
     createGrepToolHandler({cwd}),

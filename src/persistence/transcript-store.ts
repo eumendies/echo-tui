@@ -12,6 +12,7 @@ import {
   replayTranscriptJournalStream,
   serializeTranscriptJournalLine
 } from './transcript-journal';
+import {createProjectKey} from './project-key';
 
 import type {
   LoadedTranscriptSession,
@@ -37,7 +38,7 @@ type TranscriptStoreOptions = {
   rootDir?: string;
   fsImpl?: typeof fs;
   osImpl?: Pick<typeof os, 'homedir'>;
-  cryptoImpl?: Pick<typeof crypto, 'createHash' | 'randomBytes'>;
+  cryptoImpl?: Pick<typeof crypto, 'randomBytes'>;
 };
 
 /**
@@ -60,7 +61,7 @@ function createTranscriptStore(options: TranscriptStoreOptions = {}): Transcript
    * 生成当前 cwd 对应的稳定项目 key，避免真实路径直接出现在目录层级里。
    */
   function getProjectKey(cwd: string): string {
-    return cryptoImpl.createHash('sha1').update(String(cwd)).digest('hex');
+    return createProjectKey(cwd);
   }
 
   /**

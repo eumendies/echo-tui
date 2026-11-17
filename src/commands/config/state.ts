@@ -16,10 +16,16 @@ import type {
   LlmConfigDraft,
   SandboxConfigDraft,
   SandboxConfigState,
+  SystemPromptConfigState,
+  SystemPromptDynamicSection,
+  SystemPromptMenuRow,
+  SystemPromptMenuRowId,
+  SystemPromptSummary,
   ToolApprovalModelProfile,
-  MainAgentToolCatalogEntry,
   ToolsConfigState
 } from '../../types/command';
+import type {SystemPromptSnapshot, SystemPromptTarget} from '../../types/agent';
+import type {MainAgentToolCatalogEntry} from '../../types/tool';
 import type {AppSettings} from '../../config/app-settings-config';
 import type {ReasoningEffort} from '../../types/agent';
 
@@ -38,6 +44,7 @@ type ConfigCommandData = {
   general?: ConfigStateSlot<GeneralConfigState>;
   models?: ConfigStateSlot<ConfigCommandState>;
   sandbox?: ConfigStateSlot<SandboxConfigState>;
+  systemPrompt?: SystemPromptConfigState; // 常规 Tab 内的系统提示词子视图；与 Tab 草稿互不影响。
   tools?: ConfigStateSlot<ToolsConfigState>; // 主 Agent 工具页的独立草稿或读取错误。
 };
 
@@ -53,6 +60,7 @@ const GENERAL_CONFIG_BASE_ROW_IDS = [
   'checkUpdatesOnStartup',
   'toolApprovalMode',
   'instructionFile',
+  'systemPrompt',
   'activeTurnMessagePolicy',
   'save'
 ] as const;
@@ -127,6 +135,16 @@ function createConfigSurface(data: ConfigCommandData): ConfigCommandSurface {
     };
   }
 
+  if (data.systemPrompt) {
+    return {
+      kind: 'config',
+      view: 'systemPrompt',
+      activeTab: data.activeTab,
+      tabs,
+      state: structuredClone(data.systemPrompt)
+    };
+  }
+
   const slot = data[data.activeTab];
   if (slot?.error) {
     return {kind: 'config', view: 'error', activeTab: data.activeTab, tabs, error: slot.error};
@@ -181,13 +199,14 @@ function createInitialConfigState(initialDraft: LlmConfigDraft): ConfigCommandSt
   };
 }
 
-function createInitialGeneralConfigState(settings: AppSettings, approvalModelProfiles: ToolApprovalModelProfile[] = []): GeneralConfigState {
+function createInitialGeneralConfigState(settings: AppSettings, approvalModelProfiles: ToolApprovalModelProfile[] = [], systemPromptSummary: SystemPromptSummary = {kind: 'builtin'}): GeneralConfigState {
   const draft = structuredClone(settings) as AppSettings;
   return {
     approvalModelProfiles: approvalModelProfiles.map((profile) => ({...profile})),
     draft,
     initialDraftFingerprint: createGeneralDraftFingerprint(draft),
-    selectedIndex: 0
+    selectedIndex: 0,
+    systemPromptSummary
   };
 }
 
@@ -304,7 +323,7 @@ function markSandboxConfigSaved(state: SandboxConfigState): SandboxConfigState {
 }
 
 function cloneConfigState(state: ConfigCommandState): ConfigCommandState {
-  return structuredClone(state) as ConfigCommandState;
+  return structuredClone(state);
 }
 
 function createDraftFingerprint(draft: LlmConfigDraft): string {
@@ -397,6 +416,74 @@ function createConfigTabs(data: ConfigCommandData): ConfigSurfaceTab[] {
   });
 }
 
+// 菜单按钮顺序固定；文件不存在时保留按钮位置，避免焦点跳动。
+const SYSTEM_PROMPT_MENU_ROW_IDS: readonly SystemPromptMenuRowId[] = [
+  'view',
+  'editProject',
+  'editGlobal',
+  'deleteProject',
+  'deleteGlobal',
+  'back'
+];
+
+/**
+ * 按文件事实计算按钮可用性；删除只在目标存在时可用，编辑同时承担新建。
+ */
+function createSystemPromptMenuRows(facts: Pick<SystemPromptConfigState, 'global' | 'project'>): SystemPromptMenuRow[] {
+  return SYSTEM_PROMPT_MENU_ROW_IDS.map((id) => ({
+    available: id === 'deleteProject' ? facts.project.exists : id === 'deleteGlobal' ? facts.global.exists : true,
+    id
+  }));
+}
+
+/**
+ * 用文件快照覆盖事实字段；初始状态与写入后刷新共用同一实现。
+ */
+function withSystemPromptSnapshot(base: SystemPromptConfigState, snapshot: SystemPromptSnapshot, dynamicSections: SystemPromptDynamicSection[]): SystemPromptConfigState {
+  return {
+    ...base,
+    baseContent: snapshot.baseContent,
+    dynamicSections,
+    global: snapshot.global,
+    project: snapshot.project,
+    sourceKind: snapshot.sourceKind,
+    menuRows: createSystemPromptMenuRows(snapshot)
+  };
+}
+
+const EMPTY_SYSTEM_PROMPT_STATE: SystemPromptConfigState = {
+  baseContent: '',
+  confirmIndex: 0,
+  dynamicSections: [],
+  global: {exists: false, filePath: '', lines: 0},
+  menuRows: [],
+  mode: 'menu',
+  pendingOverwrites: false,
+  project: {exists: false, filePath: '', lines: 0},
+  readScroll: 0,
+  selectedIndex: 0,
+  sourceKind: 'builtin',
+  target: 'project'
+};
+
+/**
+ * 用文件快照创建子视图初始状态；进入时固定为 menu，避免残留上一轮阶段。
+ */
+function createInitialSystemPromptConfigState(snapshot: SystemPromptSnapshot, dynamicSections: SystemPromptDynamicSection[]): SystemPromptConfigState {
+  return withSystemPromptSnapshot({...EMPTY_SYSTEM_PROMPT_STATE}, snapshot, dynamicSections);
+}
+
+/**
+ * 删除某目标后的回落来源；确认框与成功提示共用同一口径。
+ */
+function describeSystemPromptFallback(state: Pick<SystemPromptConfigState, 'global' | 'project'>, deleted: SystemPromptTarget): string {
+  if (deleted === 'project') {
+    return state.global.exists ? `全局 ${state.global.filePath}` : '内置默认';
+  }
+
+  return state.project.exists ? `项目 ${state.project.filePath}` : '内置默认';
+}
+
 export {
   CONFIG_MODEL_EFFORT_OPTIONS,
   getGeneralConfigRowIds,
@@ -410,7 +497,10 @@ export {
   createInitialConfigState,
   createInitialGeneralConfigState,
   createInitialSandboxConfigState,
+  createInitialSystemPromptConfigState,
   createInitialToolsConfigState,
+  createSystemPromptMenuRows,
+  describeSystemPromptFallback,
   isToolsConfigDirty,
   markToolsConfigSaved,
   getConfigRows,
@@ -423,6 +513,7 @@ export {
   markModelConfigSaved,
   markSandboxConfigSaved,
   setConfigModelReasoningEffort
+  ,withSystemPromptSnapshot
 };
 
 export type {

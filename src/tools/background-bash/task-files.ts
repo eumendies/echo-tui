@@ -1,8 +1,9 @@
-import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {StringDecoder} from 'node:string_decoder';
+
+import {createProjectKey} from '../../persistence/project-key';
 
 import type {BackgroundTaskStatusSnapshot} from '../../types/background-task';
 import type {Result} from '../tool-handler-utils';
@@ -365,7 +366,7 @@ function sanitizeSegment(value: string): string {
 }
 
 function getProjectKey(cwd: string): string {
-  return crypto.createHash('sha1').update(String(cwd)).digest('hex');
+  return createProjectKey(cwd);
 }
 
 function describeError(error: unknown, fallback: string): string {

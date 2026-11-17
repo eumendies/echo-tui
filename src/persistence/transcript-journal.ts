@@ -475,7 +475,7 @@ function isSubagentTranscriptRecord(value: Record<string, unknown>): boolean {
 
   switch (value.event.kind) {
     case 'start':
-      return isNonEmptyString(value.event.task);
+      return isNonEmptyString(value.event.task) && isOptionalWorkspaceRecordFacts(value.event.workspace);
     case 'reasoning_summary':
     case 'assistant':
       return true;
@@ -490,10 +490,52 @@ function isSubagentTranscriptRecord(value: Record<string, unknown>): boolean {
     case 'completed':
     case 'failed':
     case 'cancelled':
-      return typeof value.event.durationMs === 'number' && Number.isFinite(value.event.durationMs) && value.event.durationMs >= 0;
+      return typeof value.event.durationMs === 'number' &&
+        Number.isFinite(value.event.durationMs) &&
+        value.event.durationMs >= 0 &&
+        isOptionalWorkspaceOutcomeFacts(value.event.workspace);
     default:
       return false;
   }
+}
+
+/**
+ * 校验可选的工作区身份字段。
+ * 缺省是合法的旧记录；存在则必须是完整结构，避免恢复半结构工作区事实。
+ */
+function isOptionalWorkspaceRecordFacts(value: unknown): boolean {
+  if (value === undefined) {
+    return true;
+  }
+  if (!isRecord(value) || !isRecord(value.owner)) {
+    return false;
+  }
+  if (value.mode !== 'managed_worktree' && value.mode !== 'shared_cwd') {
+    return false;
+  }
+  if (!isNonEmptyString(value.owner.projectCwd)) {
+    return false;
+  }
+  if (value.owner.sessionId !== undefined && typeof value.owner.sessionId !== 'string') {
+    return false;
+  }
+  for (const key of ['baseCommit', 'execCwd', 'workspaceRoot']) {
+    if (value[key] !== undefined && !isNonEmptyString(value[key])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** 校验可选的工作区终态字段；只表达保留状态与路径。 */
+function isOptionalWorkspaceOutcomeFacts(value: unknown): boolean {
+  if (value === undefined) {
+    return true;
+  }
+  if (!isRecord(value)) {
+    return false;
+  }
+  return typeof value.retained === 'boolean' && isNonEmptyString(value.workspaceRoot);
 }
 
 function isUserTranscriptMetadata(value: unknown): boolean {
@@ -524,6 +566,8 @@ function isToolResultDetails(value: unknown): boolean {
 
   switch (value.kind) {
     case 'generic':
+      // run_subagent 可以携带可选的成果定位；其它 generic 结果保持无该字段。
+      return value.workspace === undefined || isOptionalWorkspaceOutcomeFacts(value.workspace);
     case 'apply_patch':
     case 'edit_file':
       return true;

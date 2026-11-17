@@ -1,4 +1,5 @@
 import {createAgentLoopRuntime} from '../agent/loop-runtime/agent-loop-runtime';
+import {createSessionApprovalsStore} from '../persistence/session-approvals-store';
 import {createTranscriptStore} from '../persistence/transcript-store';
 import {createUsageStore} from '../persistence/usage-store';
 import {readTuiTheme} from '../config/theme-config';
@@ -68,6 +69,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
   const terminal = setupTerminal(input, output);
   const renderer = createAppRenderer(output);
   const transcriptStore = createTranscriptStore();
+  const sessionApprovalsStore = createSessionApprovalsStore(transcriptStore);
   const theme = readTuiTheme();
 
   // 终态通知与故障提示需要 renderCoordinator,先以可变引用占位,组装完成后接管。
@@ -96,7 +98,17 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
   let referenceErrorSurface: CommandSurface | null = null;
   let activeTurnObservationScope: AssistantTurnScope | null = null;
   let footerPointer: FooterPointerController | null = null;
-  const toolApproval = new ToolApprovalContext(() => renderCoordinator.render());
+  // 授权 sidecar 跟随会话；写盘失败只提示，不改变本次会话的内存授权。
+  const toolApproval = new ToolApprovalContext(() => renderCoordinator.render(), {
+    getCwd: () => appContext.getCurrentCwd(),
+    getSessionId: () => appContext.transcriptContext.getCurrentSessionId(),
+    onPersistError(error, operation) {
+      observation.sessionApprovalsStoreFailed({error, operation});
+      localNotices.emit('会话工具授权读写失败：本次会话仍生效，重启后可能需要重新审批。', 'error');
+    },
+    store: sessionApprovalsStore
+  });
+  appContext.attachToolApprovalContext(toolApproval);
   const btwConversation = new BtwConversationController({
     runAgent,
     getParentSession: () => appContext.getAgentSession(),

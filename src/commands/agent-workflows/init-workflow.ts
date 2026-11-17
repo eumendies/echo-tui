@@ -1,4 +1,4 @@
-import type {AgentWorkflowDefinition} from '../../types/agent-workflow';
+import type {AgentWorkflowDefinition} from './types';
 
 import type {AgentInstructionFileName} from '../../types/agent';
 

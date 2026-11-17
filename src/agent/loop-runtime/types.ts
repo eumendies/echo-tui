@@ -1,6 +1,7 @@
 import type {MemoryPromptResolution} from '../context/memory-prompt';
 import type {SkillSnapshot} from '../../skills/skill-snapshot';
 import type {ChangeFileRecorder} from '../../types/change-history';
+import type {PreparedSubagentWorkspace} from '../../types/agent';
 import type {
   AgentExecutionMode,
   AgentInstruction,
@@ -38,6 +39,7 @@ type SubagentLoopInput = {
   sessionId?: string; // 父会话稳定身份；子运行继承它以保持 provider 会话亲和。
   resolvedLlmConfig?: LlmConfig; // 父端口预解析的最终子运行配置；缺省时子 loop 自行解析，保证解析结果与 start record 一致。
   task: string; // 唯一进入子 transcript 的委派任务。
+  workspace?: PreparedSubagentWorkspace; // 受管 worktree；缺省表示按父项目目录执行。
 };
 
 type SubagentLoopCallbacks = {

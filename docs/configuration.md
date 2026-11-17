@@ -72,6 +72,42 @@
 
 回退到仍支持旧 mode 的版本时，该版本可能再次采用保留的旧值；旧版本会忽略新禁用名单，**不会保留本功能的工具禁用效果**。
 
+## 工具授权的会话持久化
+
+会话级授权（`Allow <tool> for this session`、`Allow this command for this session`、`Allow all tools for this session`，以及普通输入态的 `Shift+Tab`）跟随**会话**而不是进程。重启 echo-tui 后用 `/resume` 恢复同一个会话，之前批准过的工具与命令继续免审批。
+
+授权写入与 transcript journal 同目录的 sidecar：
+
+```
+~/.echo/echo_tui/projects/<projectKey>/sessions/<sessionId>.approvals.json
+```
+
+```json
+{
+  "schemaVersion": 1,
+  "sessionId": "2026-11-16T02-11-28-604Z-80dd43",
+  "updatedAt": "2026-11-16T02:20:11.302Z",
+  "allowAll": true,
+  "tools": ["apply_patch", "mcp__docs__search"],
+  "bashCommands": ["npm install"]
+}
+```
+
+- 文件权限为 `0600`，采用「临时文件 + rename」原子替换，不会出现半写入 JSON。
+- **只影响所属会话**：不写入 `~/.echo/config.json`，也不写入 transcript journal。
+- `/fork` 创建的新会话继承当前授权；`/clear` 开启的新会话从空授权开始；通过 `/resume` 删除历史会话时一并清理该文件。
+- `tools` 与 `bashCommands` 均为空且 `allowAll` 为假时文件被删除，「删除文件」与「撤销全部授权」等价。
+- 读取失败一律按空授权处理：文件缺失、JSON 损坏、`schemaVersion` 不支持或 `sessionId` 不匹配都会回到需要审批，不会因为损坏的 sidecar 放行。
+- 数组里的单个脏条目（空白字符串、非字符串）只丢弃该项，不会让同一文件的其余授权一起失效。
+- `updatedAt` 只用于人工排查，缺失或格式异常不影响授权读取。
+- 写盘失败会在 transcript 中提示一次，本次会话内仍按内存授权放行，代价是重启后需要重新审批。
+
+`Shift+Tab` 的关闭方向同样写盘。只写打开方向会让 `TOOLS all` 在重启后复活，因此两个方向都落盘。
+
+手工撤销：直接删除对应的 `.approvals.json`，或在该会话里用 `Shift+Tab` 关闭全部授权后重新打开所需项目。
+
+`echo-tui --once` 不读取也不写入该文件，继续使用默认 deny 或显式 `--full-access`。
+
 ## Provider 流式重试
 
 `~/.echo/config.json` 的 provider profile 支持两个可选字段，用于覆盖流式请求的重试行为。`/config` 面板不暴露它们，只在需要手写配置时使用。
@@ -171,3 +207,27 @@
 - 合法项目 override 整体覆盖同名用户 override；缺省继承父模型/effort，并允许全部 enabled Skills。高优先级策略异常或引用失效时完整继承父策略并诊断，不回退用户 override；全局状态独立由用户全局配置决定。
 - 显式保存模型策略提交整条 override，即使各字段都继承父策略；项目显式继承会整体覆盖用户策略，与项目未配置不同。无效策略来源在入口报告有界错误。
 - 用户模型策略写删保留同文件全局偏好及其他名称；`enabled` 与 `overrides` 均空时可删除全局 sidecar。删除最后一条项目 override 时删除对应模型策略 sidecar。
+
+## 系统提示词（SYSTEM.md）
+
+`/config` → 常规 → 系统提示词进入管理视图。面板展示两个写入目标的绝对路径、存在性与行数，并标出当前生效来源（不展示文件体积）：
+
+- 项目根 `SYSTEM.md`（项目根按 `.git` 或 `.echo` 标记判定，缺失时取当前 cwd）。
+- 用户级 `~/.echo/SYSTEM.md`。
+- 两者都不存在或内容为空时，使用源码内置基础 prompt。
+
+菜单提供六个按钮：查看当前生效、编辑项目、编辑全局、删除项目、删除全局、返回。使用 `↑/↓` + `Enter`，面板不提供字母快捷键，也不响应鼠标点击。
+
+查看为只读阅读态：标题标明来源，正文按行号展示基础文本并按终端宽度折行（长行完整可见，续行不重复行号），`↑/↓` 逐行、`PgUp/PgDn` 翻页，不拼接动态段。编辑态预填目标文件内容，文件不存在时预填内置文本（等价于新建），草稿同样折行且光标位置与折行后一致；`Enter` 进入保存确认（只显示目标路径与是否覆盖），`Ctrl+J` 换行，`Esc` 丢弃草稿。
+
+写入语义：
+
+- 内容按 loader 口径归一化：CRLF/CR 转 LF 并去除首尾空白。
+- 父目录缺失时递归创建，例如首次保存用户级文件会创建 `~/.echo/`。
+- 使用同目录临时文件 + rename 原子替换，失败不会留下半写入文件。
+- 归一化后与现有内容逐字相同则不写盘，并提示“内容未变化”。
+- 归一化后为空则拒绝保存：空文件在 loader 视角等价于“未覆盖”，请改用删除动作。
+
+删除只移除目标 `SYSTEM.md` 本身，确认框标明回落目标（另一目标或内置默认）；文件不存在时按钮灰显，`Enter` 只提示不写盘。
+
+生效时机与边界：写入或删除在下一轮 assistant run 生效，同一 run 内（含 tool continuation）继续使用启动时冻结的基础文本；子 Agent 继承父 run 的冻结值。成功后会使 `/context` 的旧占用快照失效。覆盖文件只替换基础文本段，runtime environment、`AGENTS.md` 指令链、skill catalog 与 memory 段落始终由运行时追加。`echo-tui --once` 读取同一份文件并遵循同一优先级。面板不写入 `~/.echo/config.json`，也不追加 transcript record。

@@ -18,10 +18,12 @@ type BashCommandRunnerOptions = {
   capture?: boolean; // 是否在内存保留输出;后台任务只写文件,置 false 以保持内存有界。
   command: string;
   cwd: string;
+  gitOptionalLocks?: boolean; // 关闭 git 可选锁写;受管 worktree Worker 的只读检查依赖它。
   maxOutputBytes?: number | null;
   onOutput?: (event: BashCommandOutputEvent) => void;
   onRawOutput?: (event: BashCommandRawOutputEvent) => void; // 未解码的原始分块;供后台日志写入器自行按流解码。
   sandbox?: SandboxRuntimeContext; // 存在且 provider 可用时以平台沙箱包装 spawn argv;缺省按无沙箱执行。
+  sandboxWorkspaceRoot?: string; // 生效 workspace-write 档的默认可写根;缺省为 cwd。
   shell?: string;
   timeoutMs?: number | null;
   toolResultStore?: ToolResultStore;
@@ -100,7 +102,12 @@ function startBashProcess(options: BashCommandRunnerOptions): BashProcessHandle 
 
   // 沙箱生效时以 sandbox-exec 包装同一 shell 调用;包装不改变进程组、stdio 与终止语义。
   const sandboxArgv = options.sandbox
-    ? options.sandbox.provider.wrapCommand({command: options.command, shell, cwd: options.cwd}, options.sandbox.policy)
+    ? options.sandbox.provider.wrapCommand({
+        command: options.command,
+        shell,
+        cwd: options.cwd,
+        ...(options.sandboxWorkspaceRoot ? {workspaceRoot: options.sandboxWorkspaceRoot} : {})
+      }, options.sandbox.policy)
     : null;
   let child: ReturnType<typeof spawn>;
 
@@ -112,6 +119,8 @@ function startBashProcess(options: BashCommandRunnerOptions): BashProcessHandle 
       {
         cwd: options.cwd,
         detached: process.platform !== 'win32',
+        // 只影响 git 的可选锁，不改变任何写授权边界。
+        ...(options.gitOptionalLocks ? {env: {...process.env, GIT_OPTIONAL_LOCKS: '0'}} : {}),
         stdio: ['ignore', 'pipe', 'pipe']
       }
     );

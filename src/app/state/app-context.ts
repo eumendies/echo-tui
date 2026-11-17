@@ -36,6 +36,14 @@ const BACKGROUND_WRITE_UNDO_REASON = '仍有后台命令可能写入文件，请
 import type {ToolApprovalContext} from './tool-approval-context';
 import type {AssistantTurnHandle, InterruptAssistantTurnResult} from './turn-context';
 
+/** AppContext 在会话生命周期节点需要触发的授权 sidecar 动作；由组合根绑定真实 ToolApprovalContext。 */
+type SessionApprovalsLifecycle = {
+  clearForNewSession: () => void; // 新会话边界清空内存授权。
+  discardSession: (sessionId: string) => void; // 尽力删除已删除历史会话的授权 sidecar。
+  inheritToNewSession: () => void; // 把当前授权写入新会话 sidecar，用于 /fork 继承。
+  restoreForSession: () => void; // 从当前会话 sidecar 恢复授权，用于 /resume。
+};
+
 type AppSettingsApplyResult = {
   agentInstructionFileChanged: boolean; // 项目指令来源变化，需要清除旧上下文用量。
   historyRenderLineLimitChanged: boolean; // 主会话稳定历史软预算变化，仅在主投影可见时恢复历史。
@@ -77,6 +85,7 @@ class AppContext {
   private modelConfigSnapshot: UserConfigSnapshot;
   private readonly userConfigContext: UserConfigContext;
   private readonly sessionModelSettingsStore: SessionModelSettingsStore;
+  private toolApprovalLifecycle: SessionApprovalsLifecycle | null = null;
 
   constructor(
     terminal: TerminalController,
@@ -503,13 +512,15 @@ class AppContext {
       this.pendingMessageContext.clear();
       this.changeHistoryContext.restoreHistory(this.transcriptContext.changeHistory);
       this.modelContext.restoreSession(sessionId);
+      // 授权跟随会话：恢复成功后立刻用该 session 的 sidecar 替换进程内的临时授权。
+      this.toolApprovalLifecycle?.restoreForSession();
     }
 
     return loadedSession;
   }
 
   /**
-   * 删除非当前的历史 transcript，并在 journal 提交后尽力回收对应 model settings sidecar。
+   * 删除非当前的历史 transcript，并在 journal 提交后尽力回收对应 sidecar。
    */
   deleteTranscriptSession(sessionId: string): TranscriptSessionDeleteResult {
     const result = this.transcriptContext.deleteSession(sessionId);
@@ -522,6 +533,9 @@ class AppContext {
     } catch {
       // Sidecar 仅用于恢复，清理失败不得改变已提交的 journal 删除结果。
     }
+
+    // 授权 sidecar 的删除失败由 ToolApprovalContext 内部隔离，这里不重复兜底。
+    this.toolApprovalLifecycle?.discardSession(result.sessionId);
 
     return result;
   }
@@ -536,6 +550,8 @@ class AppContext {
       if (result.ok) {
         this.modelContext.rebindCurrentSelectionToSession();
         this.clearContextUsage();
+        // fork 是当前对话的延续，安全上下文不变：把源会话授权写入新 session。
+        this.toolApprovalLifecycle?.inheritToNewSession();
       }
 
       return result;
@@ -553,6 +569,16 @@ class AppContext {
     this.transcriptContext.clearRecords();
     this.changeHistoryContext.restoreHistory(this.transcriptContext.changeHistory);
     this.modelContext.resetSessionToGlobalDefaults();
+    // 新会话是新安全边界：清空内存授权，避免旧会话的批准泄漏到空白会话。
+    this.toolApprovalLifecycle?.clearForNewSession();
+  }
+
+  /**
+   * 绑定组合根创建的授权 context，使会话生命周期节点能够驱动 sidecar 的恢复、继承与清空。
+   * 该方法只接受生命周期动作，AppContext 不持有审批队列或 surface 状态。
+   */
+  attachToolApprovalContext(lifecycle: SessionApprovalsLifecycle): void {
+    this.toolApprovalLifecycle = lifecycle;
   }
 
   /**

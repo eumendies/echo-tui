@@ -1,7 +1,9 @@
 import * as ansi from '../../terminal/ansi';
-import {displayWidth} from '../layout';
+import {displayWidth, safeRenderWidth} from '../layout';
 import {activeBackground, renderFocusBar, tokenText, type FooterTheme} from '../colors';
 import {clampPlainText, padVisibleText} from './text';
+
+import type {ConfigSurfaceTab, ConfigTabId} from '../../types/command';
 
 /**
  * 配置与管理类面板（/config、/mcp、/agents）共用的边框与行原语：共享同一套外框、分区标题、
@@ -106,6 +108,47 @@ function line(width: number, content: string, theme: FooterTheme): string {
   return `${tokenText(theme, 'accentDeep', '│')} ${padVisibleText(content, contentWidth(width))} ${tokenText(theme, 'accentDeep', '│')}`;
 }
 
+/**
+ * 计算配置类面板的统一外框宽度：预留终端安全列，并限制最大 92 列。
+ */
+function boxWidth(columns: number): number {
+  const safeWidth = safeRenderWidth(columns || 80);
+  return Math.max(4, Math.min(92, safeWidth - 4 > 0 ? safeWidth - 4 : safeWidth));
+}
+
+/**
+ * 渲染配置中心 Tab strip；窄终端优先保留当前 Tab，再向两侧扩展。
+ */
+function renderTabsLine(width: number, tabs: ConfigSurfaceTab[], activeTab: ConfigTabId, theme: FooterTheme): string {
+  const labels = tabs.map((tab) => {
+    const marker = tab.status === 'dirty' ? '● ' : tab.status === 'error' ? '! ' : '';
+    const label = `[${marker}${tab.label}]`;
+    return tab.id === activeTab
+      ? tokenText(theme, 'accentStrong', ansi.bold(label))
+      : tokenText(theme, tab.status === 'error' ? 'warning' : 'muted', label);
+  });
+  let start = 0;
+  let end = tabs.length;
+  if (displayWidth(labels.join(' ')) > contentWidth(width)) {
+    start = Math.max(0, tabs.findIndex((tab) => tab.id === activeTab));
+    end = start + 1;
+    while (start > 0 || end < labels.length) {
+      if (start > 0 && displayWidth(labels.slice(start - 1, end).join(' ')) <= contentWidth(width)) start -= 1;
+      else if (end < labels.length && displayWidth(labels.slice(start, end + 1).join(' ')) <= contentWidth(width)) end += 1;
+      else break;
+    }
+  }
+  return line(width, clampInnerText(labels.slice(start, end).join(' '), contentWidth(width)), theme);
+}
+
+function errorLine(width: number, error: string, theme: FooterTheme): string {
+  return line(width, ` ${tokenText(theme, 'danger', '▌')} ${ansi.dim(clampPlainText(error, width - 6))}`, theme);
+}
+
+function feedbackLine(width: number, feedback: string, theme: FooterTheme): string {
+  return line(width, ` ${tokenText(theme, 'success', clampPlainText(feedback, width - 5))}`, theme);
+}
+
 function moreRow(width: number, direction: 'up' | 'down', count: number, theme: FooterTheme): string {
   return line(width, `  ${ansi.dim(`${direction === 'up' ? '↑' : '↓'} ${count} 更多`)}`, theme);
 }
@@ -127,15 +170,19 @@ export {
   actionRow,
   activeBodyWidth,
   bottom,
+  boxWidth,
   calculateItemBudget,
   clampInnerText,
   contentWidth,
   dimHint,
   editingText,
+  errorLine,
+  feedbackLine,
   kvRow,
   line,
   moreRow,
   renderDot,
+  renderTabsLine,
   renderSelectableBody,
   sectionLine,
   sectionTitle,

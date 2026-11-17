@@ -1,6 +1,8 @@
 import type {SkillCatalogEntry} from './skill';
 import type {ChangeFileRecorder} from './change-history';
 import type {BackgroundTaskState} from './background-task';
+import type {SubagentWorkspaceSelection} from './agent';
+import type {SubagentWorkspaceOutcomeFacts} from './transcript';
 
 export const SUPPORTED_TOOL_RESULT_IMAGE_MEDIA_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'] as const;
 
@@ -89,7 +91,10 @@ type ToolExecutionResultBase = {
 };
 
 export type GenericToolExecutionResult = ToolExecutionResultBase & {
-  details: {kind: 'generic'};
+  details: {
+    kind: 'generic';
+    workspace?: SubagentWorkspaceOutcomeFacts; // 受管工作区成果定位；仅 run_subagent 携带，供 compact 投影保留成果入口。
+  };
 };
 
 /** 后台启动任务的结构化引用;渲染与历史投影只依赖这些已落盘事实。 */
@@ -250,6 +255,7 @@ export type ToolExecutionOptions = {
   abortSignal?: AbortSignal;
   changeRecorder?: ChangeFileRecorder;
   subagentGroupSize?: number; // 并行只读段内 run_subagent 调用总数；仅父 loop 在 ≥2 时设置，供委派端口写入并行渲染事实。
+  subagentWorkspace?: SubagentWorkspaceSelection; // 调度器选定的工作区方式；缺省表示按父 cwd 且不投影工作区事实。
 };
 
 export type ToolHandler = {

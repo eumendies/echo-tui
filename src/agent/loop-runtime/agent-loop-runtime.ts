@@ -1,13 +1,7 @@
 import {DEFAULT_APP_SETTINGS} from '../../config/app-settings-config';
-import {
-  ASK_USER_QUESTIONS_TOOL_NAME
-} from '../../tools/ask-user-questions-tool-handler';
-import {classifyReadonlyToolCall, classifyToolCallRisk} from '../../tools/tool-risk-classifier';
 import {createToolExecutor} from '../../tools/tool-executor';
 import {classifyToolCallConcurrency} from '../../tools/tool-concurrency-classifier';
-import {RUN_SUBAGENT_TOOL_NAME} from '../../tools/run-subagent-tool-handler';
 import {createToolCallTranscriptRecord, createToolResultTranscriptRecord} from '../../tools/tool-transcript-record';
-import {executeTodoToolCall, isTodoToolName} from '../../tools/todo-tool-handler';
 import {createSkillManager} from '../../skills/skill-manager';
 import {captureSkillSnapshot} from '../../skills/skill-snapshot';
 import {throwIfAborted} from '../../types/agent';
@@ -24,214 +18,36 @@ import {createModeTransitionUserMessage} from '../context/interaction-mode';
 import {createSubagentToolPort} from '../subagent/runtime';
 import {createSubagentLoopRuntime} from './subagent-loop-runtime';
 import type {SandboxModeOverride} from '../../sandbox/types';
-import {
-  buildProviderRecords,
-  executeUserQuestionToolCall,
-  hasRecordableProviderUsage
-} from './shared';
+import {buildProviderRecords, createRejectedToolResult, hasRecordableProviderUsage} from './shared';
+import {executeToolCall} from './tool-call-runner';
+import {executeReadOnlyConcurrently, executeWorkersConcurrently, isWorkerCandidate} from './tool-concurrency-executor';
+import type {ToolConcurrencyRuntime} from './tool-concurrency-executor';
 import {disabledObservation} from '../../observation/observation';
 import {runProviderStep} from './provider-step';
 
 import type {TokenUsageAnchor} from '../context/context-compaction';
 import type {MemoryPromptResolution} from '../context/memory-prompt';
-import type {AgentCallbacks, AgentConversationKind, AgentExecutionMode, AgentInstruction, AgentInstructionFileName, AgentSessionInput, AgentToolPolicy, AgentTurnCallbacks, AgentUserConfigSnapshot, InteractionMode, LlmConfig, ProviderAgent, ProviderRetry, ProviderUsage, RunAgent, SandboxToolConfig, SubagentToolPort, ToolApprovalDecision} from '../../types/agent';
+import type {AgentCallbacks, AgentConversationKind, AgentExecutionMode, AgentInstruction, AgentInstructionFileName, AgentSessionInput, AgentToolPolicy, AgentTurnCallbacks, AgentUserConfigSnapshot, InteractionMode, LlmConfig, ProviderAgent, ProviderRetry, ProviderUsage, RunAgent, SandboxToolConfig, SubagentToolPort} from '../../types/agent';
 import type {BackgroundTaskManager} from '../../types/background-task';
 import type {UsageStore} from '../../types/usage';
 import type {SkillCatalogEntry} from '../../types/skill';
 import type {SkillCatalogPromptProjection} from '../../skills/skill-catalog-prompt';
 import type {SkillSnapshot} from '../../skills/skill-snapshot';
-import type {ToolApprovalRequest, ToolCall, ToolDefinition, ToolExecutionResult, ToolExecutor, ToolRegistry, ToolRiskAssessment} from '../../types/tool';
-import type {CompactionState, SubagentTranscriptRecord, TodoState, TranscriptRecord} from '../../types/transcript';
+import type {ToolCall, ToolDefinition} from '../../types/tool';
+import type {CompactionState, SubagentTranscriptRecord, TranscriptRecord} from '../../types/transcript';
 import type {McpManager} from '../../mcp/manager';
-import type {AgentRunScope, Observation, ProviderObservationConfig} from '../../observation/observation';
+import type {Observation, ProviderObservationConfig} from '../../observation/observation';
 
-const TOOL_REJECTED_BY_USER_TEXT = 'Tool execution was rejected by the user.';
 const INTERACTIVE_EXECUTION_MODE: AgentExecutionMode = {kind: 'interactive'};
 
-/**
- * 用户拒绝工具授权时，生成 provider 可消费的 tool result，保证 continuation 不缺结果。
- */
-function createRejectedToolResult(call: ToolCall, message?: string): ToolExecutionResult {
-  const normalizedMessage = typeof message === 'string' && message.trim() !== '' ? message.trim() : TOOL_REJECTED_BY_USER_TEXT;
-
-  return {
-    callId: call.callId,
-    toolName: call.toolName,
-    ok: false,
-    details: {kind: 'generic'},
-    text: normalizedMessage
-  };
-}
-
-function createRejectedToolResultFromDecision(call: ToolCall, decision: ToolApprovalDecision): ToolExecutionResult {
-  if (decision.kind === 'provide_feedback') {
-    return createRejectedToolResult(call, `Tool execution was rejected by the user.\n\nUser instruction:\n${decision.message}`);
-  }
-
-  return createRejectedToolResult(call, decision.kind === 'deny' ? decision.message : undefined);
-}
-
-/**
- * 根据结构化授权决策判断是否允许执行，保留后续 session 级授权扩展空间。
- */
-function isToolExecutionAllowed(kind: string): boolean {
-  return kind === 'allow_once' || kind === 'allow_tool_for_session' || kind === 'allow_command_for_session' || kind === 'allow_all_for_session';
-}
-
-type ToolApprovalResolution = {
-  decision: ToolApprovalDecision;
-  emitLifecycleEvents: boolean;
-};
-
-/**
- * 先验证单个 tool call 属于本轮 registry，再应用模式、特殊工具及授权边界。
- * 交互式工具在这里短路到 app callback，避免普通 executor 持有 UI 状态；并行调用也复用本入口。
- */
-async function executeToolCall(toolCall: ToolCall, state: AgentLoopRunState, callbacks: AgentCallbacks, subagentGroupSize?: number): Promise<ToolExecutionResult> {
-  throwIfAborted(state.abortSignal);
-
-  // provider 输出不可信；最终 registry 是普通、并行及特殊工具共同的执行准入边界。
-  // 必须先于 Todo、提问、委派和风险审批，授权与 full-access 不能恢复已禁用工具。
-  if (!state.registry.getHandler(toolCall.toolName)) {
-    return createRejectedToolResult(toolCall, `Unknown tool: ${toolCall.toolName}`);
-  }
-
-  // 只读运行由 readonly classifier 一次性判定:rejected 立即短路,safe 直接沿用到执行链路,
-  // 不再回落普通风险分类——否则 allowlist 内的只读命令会被启发式写风险规则二次误判为需要审批。
-  // 只读运行里的 MCP 工具沿用同一判定:命中 run 启动时固定的只读集合才放行,不进入审批。
-  const readonlyAssessment = state.toolPolicy === 'readonly'
-    ? classifyReadonlyToolCall(toolCall, state.readonlySubagentNames, state.readonlyBashSandboxed, state.readonlyMcpToolNames)
-    : null;
-
-  if (readonlyAssessment !== null && readonlyAssessment.risk === 'rejected') {
-    state.observation.toolRiskAssessed({scope: state.observationScope, call: toolCall, assessment: readonlyAssessment});
-    return createRejectedToolResult(toolCall, readonlyAssessment.message);
-  }
-
-  if (isTodoToolName(toolCall.toolName)) {
-    const todoResult = executeTodoToolCall(toolCall, state.todoState);
-
-    if (todoResult.ok) {
-      state.todoState = todoResult.todoState;
-      callbacks.onTodoStateChange?.(todoResult.todoState);
-    }
-
-    return todoResult.result;
-  }
-
-  if (toolCall.toolName === ASK_USER_QUESTIONS_TOOL_NAME) {
-    return executeUserQuestionToolCall(toolCall, {
-      abortSignal: state.abortSignal,
-      executionMode: state.executionMode,
-      onRequest: (call, request) => state.observation.userQuestionRequested({scope: state.observationScope, call, request}),
-      onResponse: (call, result) => state.observation.userQuestionCompleted({scope: state.observationScope, call, result}),
-      request: callbacks.onUserQuestionRequest
-    });
-  }
-
-  // 默认运行在这里执行普通风险分类;只读运行复用 readonly 判定结果,不进入审批分支。
-  // Bash 分层由 runtime 在初始化及引导应用边界解析，分类器不自行读取配置。
-  const riskAssessment: ToolRiskAssessment = readonlyAssessment
-    ?? classifyToolCallRisk(toolCall, state.interactionMode, state.readonlyMcpToolNames, state.planBashSandboxed);
-  state.observation.toolRiskAssessed({scope: state.observationScope, call: toolCall, assessment: riskAssessment});
-
-  if (riskAssessment.risk === 'rejected') {
-    return createRejectedToolResult(toolCall, riskAssessment.message);
-  }
-
-  const approval = riskAssessment.risk === 'approval_required' ? riskAssessment.approval : undefined;
-  const approvalResolution = riskAssessment.risk === 'approval_required'
-    ? await resolveToolApprovalDecision(toolCall, approval, state, callbacks)
-    : undefined;
-  const approvalDecision = approvalResolution?.decision;
-  state.observation.toolApprovalResolved({
-    scope: state.observationScope,
-    call: toolCall,
-    approval: {
-      decision: approvalDecision,
-      emitLifecycleEvent: approvalResolution?.emitLifecycleEvents === true,
-      required: riskAssessment.risk === 'approval_required'
-    }
-  });
-  throwIfAborted(state.abortSignal);
-
-  if (approvalDecision && !isToolExecutionAllowed(approvalDecision.kind)) {
-    return createRejectedToolResultFromDecision(toolCall, approvalDecision);
-  }
-
-  const result = await state.executor.execute(toolCall, {
-    abortSignal: state.abortSignal,
-    changeRecorder: callbacks.changeRecorder,
-    ...(subagentGroupSize === undefined ? {} : {subagentGroupSize})
-  });
-  throwIfAborted(state.abortSignal);
-  return result;
-}
-
-/** 统计并行只读段内的 run_subagent 调用数量；达到两个才作为并行分组事实下行到委派端口。 */
-function countRunSubagentGroupSize(toolCalls: ToolCall[]): number | undefined {
-  const count = toolCalls.filter((toolCall) => toolCall.toolName === RUN_SUBAGENT_TOOL_NAME).length;
-  return count >= 2 ? count : undefined;
-}
-
-/**
- * 同时执行整个连续只读段；结果槽位保持 provider 原始顺序，实际完成顺序不影响提交。
- */
-async function executeConcurrentReadonlyCalls(toolCalls: ToolCall[], state: AgentLoopRunState, callbacks: AgentCallbacks): Promise<ToolExecutionResult[]> {
-  throwIfAborted(state.abortSignal);
-  const subagentGroupSize = countRunSubagentGroupSize(toolCalls);
-  const settled = await Promise.allSettled(toolCalls.map(async (toolCall) => {
-    state.observation.toolStarted({scope: state.observationScope, call: toolCall});
-    const result = await executeToolCall(toolCall, state, callbacks, subagentGroupSize);
-    state.observation.toolCompleted({scope: state.observationScope, result});
-    return result;
-  }));
-
-  throwIfAborted(state.abortSignal);
-  const rejected = settled.find((entry): entry is PromiseRejectedResult => entry.status === 'rejected');
-  if (rejected) {
-    throw rejected.reason;
-  }
-
-  return settled.map((entry) => (entry as PromiseFulfilledResult<ToolExecutionResult>).value);
-}
-
-/**
- * 根据 execution mode 决定是否等待 UI；headless 策略永远不会触碰交互 callback。
- */
-async function resolveToolApprovalDecision(toolCall: ToolCall, approval: ToolApprovalRequest | undefined, state: AgentLoopRunState, callbacks: AgentCallbacks): Promise<ToolApprovalResolution> {
-  if (state.executionMode.kind === 'headless') {
-    state.observation.toolApprovalRequested({scope: state.observationScope, call: toolCall, approval});
-
-    if (state.executionMode.approvalPolicy === 'full-access') {
-      return {decision: {kind: 'allow_once'}, emitLifecycleEvents: true};
-    }
-
-    return {
-      decision: {
-        kind: 'deny',
-        message: `Tool execution requires approval in headless mode: ${toolCall.toolName}. Re-run with --full-access to allow it.`
-      },
-      emitLifecycleEvents: true
-    };
-  }
-
-  return {
-    decision: await Promise.resolve(callbacks.onToolApprovalRequest!(toolCall, approval)),
-    emitLifecycleEvents: false
-  };
-}
-
-type AgentLoopRunState = {
+type AgentLoopRunState = ToolConcurrencyRuntime & {
   agent: ProviderAgent; // 已绑定本次工具目录的 provider adapter。
   agentInstructions: AgentInstruction[]; // 当前 cwd 适用的项目/用户指令链。
   providerType: LlmConfig['agentType']; // 当前 adapter 的 provider 协议类型。
   providerId?: string; // 当前解析配置的非敏感 provider 标识；写 usage 时保留归因。
   model: string; // 当前运行固定的 provider 模型名。
   reasoningEffort?: LlmConfig['reasoningEffort']; // 当前运行固定的推理强度。
-  interactionMode: InteractionMode; // 最新已应用消息选择的模式；等待中的消息尚不生效。
   sandboxConfig: SandboxToolConfig; // 配置快照的沙箱设置，模式变化仅更新派生收紧。
-  executor: ToolExecutor; // 与 provider definitions 共用 registry 的统一执行器。
   contextWindow: number; // 自动压缩和 skill 预算使用的模型窗口。
   compactionThresholdRatio: number; // 自动压缩触发占比。
   skillCatalog: SkillCatalogEntry[]; // 本次 system context 可见的有界 skill目录。
@@ -239,21 +55,10 @@ type AgentLoopRunState = {
   skillCatalogProjection: Pick<SkillCatalogPromptProjection, 'budgetTokens' | 'mode' | 'originalTokens'>; // 调试使用的 skill预算事实。
   skillSnapshot: SkillSnapshot; // run 启动时捕获的不可变 enabled Skill 快照；primary 与全部子运行同源。
   basePrompt?: string; // 用户 system prompt override，缺省使用内置主 prompt。
-  todoState: TodoState | undefined; // 主运行的 open todo 状态。
   toolDefinitions: ToolDefinition[]; // 真正发送给当前 provider 的工具 schema。
   mcpManager?: McpManager; // 主运行可用的共享 MCP manager；子运行缺省。
-  abortSignal?: AbortSignal; // 贯穿 provider、审批和工具执行的父级取消信号。
   sessionId?: string; // 本次运行的会话稳定身份；provider 用它生成会话级缓存键。
-  executionMode: AgentExecutionMode; // interactive 或 headless 审批边界。
-  observation: Observation; // 单一旁路观察边界。
   observationProvider: ProviderObservationConfig; // 从完整配置显式挑选的非敏感 provider 诊断事实。
-  observationScope: AgentRunScope; // 当前运行复用的语义 scope。
-  toolPolicy: AgentToolPolicy; // default 或 readonly 执行策略。
-  registry: ToolRegistry; // provider schema 查询和 commit mode 查询的权威目录。
-  readonlySubagentNames?: ReadonlySet<string>; // run 启动时固定的 readonly 执行策略 agent 名称集合；无委派端口时缺省。
-  readonlyMcpToolNames?: ReadonlySet<string>; // run 启动时固定的 MCP 只读工具名称集合；普通审批与只读运行准入共用，无 MCP manager 时缺省。
-  readonlyBashSandboxed: boolean; // 只读运行且 bash 沙箱实际生效;true 时 bash 豁免文本白名单与审批,效果由内核边界保证。
-  planBashSandboxed: boolean; // plan 运行(default 工具策略)且生效沙箱为可用 read-only 档;true 时 plan bash 由内核边界兜底。
   sandboxNote: string | null; // bash 沙箱生效时的 transient 边界说明;null 表示本次运行未包装沙箱。
 };
 
@@ -276,6 +81,9 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
           .filter((descriptor) => descriptor.executionPolicy === 'readonly_investigation')
           .map((descriptor) => descriptor.name))
       : undefined;
+    // 独立工作区资格只认启用且为 general_purpose 的内置 worker；自定义 Agent 不参与。
+    const workerAgentName = subagentPort?.listDefinitions()
+      .find((descriptor) => descriptor.name === 'worker' && descriptor.executionPolicy === 'general_purpose')?.name;
     // MCP 只读工具名称集合同样在 run 启动时固定,与本次 registry 同源;普通审批与只读运行准入共用同一份事实。
     const readonlyMcpToolNames = mcpManager ? mcpManager.listReadonlyToolNames() : undefined;
     // 单次 assistant run 只在启动时物化 Skill 快照；primary catalog、use_skill 与全部子 scope 共用同源。
@@ -322,6 +130,8 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
       executor: createToolExecutor(registry),
       registry,
       ...(readonlySubagentNames ? {readonlySubagentNames} : {}),
+      ...(subagentPort ? {subagentPort} : {}),
+      ...(workerAgentName ? {workerAgentName} : {}),
       ...(readonlyMcpToolNames ? {readonlyMcpToolNames} : {}),
       contextWindow: materials.contextWindow,
       compactionThresholdRatio,
@@ -691,9 +501,10 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
         }
         const toolCall = toolCalls[toolIndex];
 
-        if (classifyToolCallConcurrency(toolCall, state.readonlySubagentNames) === 'parallel_read') {
+        const readonlyContext = state.readonlySubagentNames ? {readonlySubagentNames: state.readonlySubagentNames} : {};
+        if (classifyToolCallConcurrency(toolCall, readonlyContext) === 'parallel_read') {
           const readonlyCalls: ToolCall[] = [];
-          while (toolIndex < toolCalls.length && classifyToolCallConcurrency(toolCalls[toolIndex], state.readonlySubagentNames) === 'parallel_read') {
+          while (toolIndex < toolCalls.length && classifyToolCallConcurrency(toolCalls[toolIndex], readonlyContext) === 'parallel_read') {
             readonlyCalls.push(toolCalls[toolIndex]);
             toolIndex += 1;
           }
@@ -701,7 +512,7 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
           for (const readonlyCall of readonlyCalls) {
             callbacks.onToolCall?.(readonlyCall);
           }
-          const results = await executeConcurrentReadonlyCalls(readonlyCalls, state, callbacks);
+          const results = await executeReadOnlyConcurrently(readonlyCalls, state, callbacks);
           throwIfAborted(abortSignal);
 
           for (let resultIndex = 0; resultIndex < readonlyCalls.length; resultIndex += 1) {
@@ -709,6 +520,30 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
             const result = results[resultIndex];
             recordRegion.push(createToolCallTranscriptRecord(readonlyCall), createToolResultTranscriptRecord(result));
             callbacks.onToolResult?.(result);
+          }
+          continue;
+        }
+
+        // Worker 候选调用在屏障之后先做异步预检，再决定并发或串行执行方式。
+        if (isWorkerCandidate(toolCall, state)) {
+          const workerCalls: ToolCall[] = [];
+          while (toolIndex < toolCalls.length && isWorkerCandidate(toolCalls[toolIndex], state)) {
+            workerCalls.push(toolCalls[toolIndex]);
+            toolIndex += 1;
+          }
+
+          for (const workerCall of workerCalls) {
+            callbacks.onToolCall?.(workerCall);
+          }
+          const results = await executeWorkersConcurrently(workerCalls, state, callbacks);
+          throwIfAborted(abortSignal);
+
+          for (let resultIndex = 0; resultIndex < workerCalls.length; resultIndex += 1) {
+            recordRegion.push(
+              createToolCallTranscriptRecord(workerCalls[resultIndex]),
+              createToolResultTranscriptRecord(results[resultIndex])
+            );
+            callbacks.onToolResult?.(results[resultIndex]);
           }
           continue;
         }
@@ -741,4 +576,4 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
   return runAgentLoop;
 }
 
-export {buildProviderRecords, createAgentLoopRuntime};
+export {createAgentLoopRuntime};

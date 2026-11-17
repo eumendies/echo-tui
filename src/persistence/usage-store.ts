@@ -3,12 +3,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import {createProjectKey} from './project-key';
+
 import type {UsageDailyAggregate, UsageEvent, UsageEventInput, UsageModelAggregate, UsageQueryOptions, UsageStore} from '../types/usage';
 
 const USAGE_SCHEMA_VERSION = 1;
 
 function createUsageCwdHash(cwd: string): string {
-  return crypto.createHash('sha1').update(String(cwd)).digest('hex');
+  return createProjectKey(cwd);
 }
 
 type UsageStoreOptions = {

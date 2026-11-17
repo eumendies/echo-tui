@@ -3,47 +3,19 @@ import {REASONING_EFFORTS} from '../../types/agent';
 
 import type {LlmModelConfigInfo} from '../../config/llm-config';
 import type {AgentType, LlmConfig, ReasoningEffort} from '../../types/agent';
+import type {
+  CommandEffortInfoResult,
+  CommandModelInfo,
+  CommandModelInfoResult,
+  CommandModelProfile,
+  CommandSelectEffortResult,
+  CommandSelectModelResult
+} from '../../types/command';
 import type {StatusLineModelState} from '../../types/render';
 import type {SessionModelSettingsStore} from '../../types/session-model-settings';
 
-type ModelCommandProfile = {
-  id: string;
-  model: string;
-  provider: string;
-  reasoningEffort?: ReasoningEffort;
-};
-
-type ModelStateFingerprintProfile = ModelCommandProfile & {
+type ModelStateFingerprintProfile = CommandModelProfile & {
   contextWindow?: number;
-};
-
-type ModelCommandInfo = {
-  models: ModelCommandProfile[];
-  selectedIndex: number;
-};
-
-type ModelCommandInfoResult = ModelCommandInfo | {
-  error: string;
-};
-
-type SelectModelResult = {
-  ok: boolean;
-  error?: string;
-};
-
-type EffortCommandInfo = {
-  currentModelLabel: string;
-  efforts: ReasoningEffort[];
-  selectedIndex: number;
-};
-
-type EffortCommandInfoResult = EffortCommandInfo | {
-  error: string;
-};
-
-type SelectEffortResult = {
-  ok: boolean;
-  error?: string;
 };
 
 type SelectModelAndEffortResult = {
@@ -84,7 +56,7 @@ type AgentModelSelectionOverride = {
   reasoningEffortOverride?: ReasoningEffort; // skill 为当前 turn 请求的 effort 覆盖，`none` 也是明确值。
 };
 
-function normalizeModelInfo(info: LlmModelConfigInfo): ModelCommandInfo {
+function normalizeModelInfo(info: LlmModelConfigInfo): CommandModelInfo {
   const models = info.models.map((profile) => ({
     id: profile.id,
     model: profile.model,
@@ -113,7 +85,7 @@ class ModelContext {
   private readonly getCurrentSessionId: () => string | null;
   private modelConfigError?: string;
   private modelLabel: string;
-  private models: ModelCommandProfile[];
+  private models: CommandModelProfile[];
   private modelStateFingerprint: string;
   private reasoningEffortOverride?: ReasoningEffort;
   private selectedModelId?: string;
@@ -233,7 +205,7 @@ class ModelContext {
   /**
    * 读取 /model 候选并把当前 session effort 投影到选中 profile。
    */
-  createModelCommandInfo(): ModelCommandInfoResult {
+  createModelCommandInfo(): CommandModelInfoResult {
     this.refreshModelState();
 
     if (this.modelConfigError) {
@@ -299,7 +271,7 @@ class ModelContext {
   /**
    * 读取 /effort 候选，优先使用当前 session override，否则使用 profile 默认或 medium。
    */
-  createEffortCommandInfo(): EffortCommandInfoResult {
+  createEffortCommandInfo(): CommandEffortInfoResult {
     this.refreshModelState();
 
     if (this.modelConfigError) {
@@ -322,14 +294,14 @@ class ModelContext {
   /**
    * 更新当前 session model 并清除旧 effort override；不改写用户级默认配置。
    */
-  selectModel(modelId: string): SelectModelResult {
+  selectModel(modelId: string): CommandSelectModelResult {
     return this.commitSelection(modelId, undefined);
   }
 
   /**
    * 更新当前 session 的显式 effort override；包括 `none` 在内均作为明确值保存。
    */
-  selectEffort(effort: ReasoningEffort): SelectEffortResult {
+  selectEffort(effort: ReasoningEffort): CommandSelectEffortResult {
     if (!this.selectedModelId) {
       return {ok: false, error: 'LLM 配置缺少 models'};
     }
@@ -415,7 +387,7 @@ class ModelContext {
     this.persistCurrentSessionSettings();
   }
 
-  private commitSelection(modelId: string, effort: ReasoningEffort | undefined): SelectModelResult {
+  private commitSelection(modelId: string, effort: ReasoningEffort | undefined): CommandSelectModelResult {
     this.refreshModelState();
 
     if (this.modelConfigError || this.models.length === 0) {
@@ -434,7 +406,7 @@ class ModelContext {
     return {ok: true};
   }
 
-  private getSelectedModel(): ModelCommandProfile | undefined {
+  private getSelectedModel(): CommandModelProfile | undefined {
     return this.models.find((model) => model.id === this.selectedModelId);
   }
 
@@ -476,16 +448,9 @@ export type {
   ActiveLlmConfigResult,
   AgentModelSelection,
   AgentModelSelectionOverride,
-  EffortCommandInfo,
-  EffortCommandInfoResult,
-  ModelCommandInfo,
-  ModelCommandInfoResult,
-  ModelCommandProfile,
   ModelConfigSource,
   ModelContextOptions,
   ModelStatusInfo,
   ModelStatusInfoResult,
-  SelectEffortResult,
-  SelectModelAndEffortResult,
-  SelectModelResult
+  SelectModelAndEffortResult
 };

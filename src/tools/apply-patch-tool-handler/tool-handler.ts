@@ -9,6 +9,7 @@ import {
 } from '../tool-handler-utils';
 import {parsePatchText} from './parser';
 import {simulatePatch} from './simulator';
+import {checkWorkspaceWriteTarget} from '../workspace-path-guard';
 
 import type {ApplyPatchToolExecutionResult, ToolCall, ToolExecutionOptions, ToolHandler} from '../../types/tool';
 import type {ApplyPatchLimits} from './parser';
@@ -30,7 +31,16 @@ type ApplyPatchToolHandlerOptions = {
   maxChangedFiles?: number;
   maxHunks?: number;
   maxOutputBytes?: number; // 最终 provider-visible 摘要的 UTF-8 字节预算，仅供固定安全上限或测试覆盖。
+  scopeRoot?: string; // 受管 Worker 工作区根；存在时所有写入必须能确认仍位于该根内。
 };
+
+/** 按是否受限于受管工作区投影路径语义；主 Agent 的既有能力不受影响。 */
+function createApplyPatchDescription(scopeRoot?: string): string {
+  const pathPolicy = scopeRoot === undefined
+    ? 'Relative paths resolve from the current working directory; absolute paths and .. paths are supported.'
+    : 'Relative paths resolve from the current working directory. This run is confined to its managed worker workspace: patch targets that escape that root, including through a symbolic link, are rejected and no file is written.';
+  return `Apply a *** Begin Patch to add, update, or delete UTF-8 text files. ${pathPolicy}`;
+}
 
 type ApplyPatchFailureDetails = {
   hint?: string; // 失败修复建议，独立成行放在原文回显之前
@@ -124,11 +134,12 @@ function formatPatchPreviewPath(kind: string, patchPath: string): string {
 function createApplyPatchToolHandler(options: ApplyPatchToolHandlerOptions = {}): ToolHandler {
   const limits = normalizeLimits(options);
   const maxOutputBytes = normalizePositiveInteger(options.maxOutputBytes, DEFAULT_TOOL_RESULT_MAX_OUTPUT_BYTES);
+  const scopeRoot = options.scopeRoot;
 
   return {
     definition: {
       name: APPLY_PATCH_TOOL_NAME,
-      description: 'Apply a *** Begin Patch to add, update, or delete UTF-8 text files, including files outside the current working directory. Relative paths resolve from the current working directory; absolute paths and .. paths are supported.',
+      description: createApplyPatchDescription(scopeRoot),
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -147,7 +158,8 @@ function createApplyPatchToolHandler(options: ApplyPatchToolHandlerOptions = {})
         result = applyPatch(args.patch, {
           cwd: resolveCwd(options.cwd),
           limits,
-          changeRecorder: executionOptions?.changeRecorder
+          changeRecorder: executionOptions?.changeRecorder,
+          ...(scopeRoot ? {scopeRoot} : {})
         });
       } catch (error: unknown) {
         result = {
@@ -182,7 +194,7 @@ function createApplyPatchToolHandler(options: ApplyPatchToolHandlerOptions = {})
 /**
  * 解析、校验并模拟 patch；进入写盘阶段前不会修改目标文件。
  */
-function applyPatch(patch: unknown, options: {cwd: string; limits: ApplyPatchLimits; changeRecorder?: ToolExecutionOptions['changeRecorder']}): ApplyPatchExecutionResult {
+function applyPatch(patch: unknown, options: {cwd: string; limits: ApplyPatchLimits; changeRecorder?: ToolExecutionOptions['changeRecorder']; scopeRoot?: string}): ApplyPatchExecutionResult {
   if (typeof patch !== 'string') {
     return {ok: false, reason: 'patch must be a string', filesUntouched: true};
   }
@@ -209,6 +221,16 @@ function applyPatch(patch: unknown, options: {cwd: string; limits: ApplyPatchLim
 
   // 所有解析、校验和内存应用都成功后才进入写盘阶段；写成功的文件立即标记为可回退。
   try {
+    // 参数检查与实际写入之间仍可能有目录换链；写前对每个目标再做一次身份复核。
+    if (options.scopeRoot !== undefined) {
+      for (const changedFile of simulated.value.changedFiles) {
+        const guard = checkWorkspaceWriteTarget(options.scopeRoot, changedFile.absolutePath);
+        if (guard.kind === 'denied') {
+          return {ok: false, reason: guard.reason, displayFiles: simulated.value.displayFiles};
+        }
+      }
+    }
+
     for (const changedFile of simulated.value.changedFiles) {
       options.changeRecorder?.captureFileBefore(changedFile.absolutePath);
     }

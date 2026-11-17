@@ -1,7 +1,7 @@
 import {INIT_WORKFLOW} from './init-workflow';
 import {REVIEW_WORKFLOW} from './review-workflow';
 
-import type {AgentWorkflowDefinition} from '../../types/agent-workflow';
+import type {AgentWorkflowDefinition} from './types';
 import type {AgentInstructionFileName} from '../../types/agent';
 import type {
   CommandHandler,

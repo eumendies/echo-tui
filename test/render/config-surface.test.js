@@ -206,7 +206,7 @@ test('config center renders general tabs, settings, and constrained width', () =
   assert.match(text, /启动时检查更新\s+开/);
   assert.doesNotMatch(text, /文件编辑工具|edit_file|apply_patch/);
   assert.match(text, /超限图片自动压缩/);
-  assert.match(text, /↓ 3 更多/);
+  assert.match(text, /↓ 4 更多/);
   assert.ok(layout.lines.every((line) => displayWidth(line) <= 38));
 });
 
@@ -263,7 +263,7 @@ test('general config windows preserve every selected row at tiny heights with hi
     defaultInteractionMode: '默认启动模式', autoCompressImages: '超限图片自动压缩',
     checkUpdatesOnStartup: '启动时检查更新', toolApprovalMode: '工具审批模式',
     toolApprovalModel: '自动审批模型', instructionFile: '项目指令文件',
-    activeTurnMessagePolicy: '响应期间发送消息', save: '保存常规设置'
+    activeTurnMessagePolicy: '响应期间发送消息', save: '保存常规设置', systemPrompt: '系统提示词'
   };
   for (const toolApprovalMode of ['manual', 'auto']) {
     const state = createInitialGeneralConfigState({...DEFAULT_APP_SETTINGS, historyRenderLineLimit: 0, toolApprovalMode});
