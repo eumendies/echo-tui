@@ -21,6 +21,25 @@ function createDraft() {
   };
 }
 
+// 系统提示词端口在多数 /config 用例中只需可读的空快照；子视图行为另有专门用例。
+function createSystemPromptPort(overrides = {}) {
+  return {
+    readSystemPrompt: () => ({
+      ok: true,
+      snapshot: {
+        baseContent: 'builtin prompt',
+        global: {exists: false, filePath: '/home/user/.echo/SYSTEM.md', lines: 0},
+        project: {exists: false, filePath: '/work/repo/SYSTEM.md', lines: 0},
+        sourceKind: 'builtin'
+      },
+      dynamicSections: []
+    }),
+    saveSystemPrompt: () => ({ok: true, filePath: '/work/repo/SYSTEM.md', overwritten: false, unchanged: true}),
+    deleteSystemPrompt: () => ({ok: true, filePath: '/work/repo/SYSTEM.md'}),
+    ...overrides
+  };
+}
+
 function createStateDriver(draft = createDraft()) {
   let state = createInitialConfigState(draft);
 
@@ -480,7 +499,8 @@ function createToolsDriver(options = {}) {
           savedSettings.push(structuredClone(draft));
           return {ok: true};
         },
-        readSandboxDraft: () => ({mode: 'off', network: false, extraWritablePaths: []})
+        readSandboxDraft: () => ({mode: 'off', network: false, extraWritablePaths: []}),
+        ...createSystemPromptPort()
       }
     }
   });
@@ -720,6 +740,7 @@ function createHistoryBudgetDriver(options = {}) {
         readToolsDraft: () => ({disabledTools: []}),
         listToolCatalog: () => [],
         readSandboxDraft: () => ({mode: 'off', network: false, extraWritablePaths: []}),
+        ...createSystemPromptPort(),
         saveSettings(draft) {
           try {
             context.saveAppSettingsDraft(draft);

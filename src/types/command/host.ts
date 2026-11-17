@@ -16,6 +16,8 @@ import type {MainAgentToolCatalogEntry} from '../tool';
 import type {UsageDailyAggregate, UsageModelAggregate, UsageQueryOptions} from '../usage';
 import type {CommandAgentsSnapshot} from './agents-surface';
 import type {CommandConfigListModelsResult, CommandThemeInfo, ConfigProviderDraft, LlmConfigDraft, SandboxConfigDraft, ToolApprovalModelProfile} from './config-surface';
+import type {SystemPromptDynamicSection} from './system-prompt-surface';
+import type {SystemPromptSnapshot, SystemPromptTarget} from '../agent';
 import type {CommandMcpInventoryItem, CommandMcpPromptInfo, CommandMcpServerFacts, CommandMcpServerInfo, McpInventorySection} from './mcp-surface';
 import type {CommandEffortInfoResult, CommandModelInfoResult, CommandSkillInfo} from './model-skills-surface';
 import type {CommandCodexUsageResult, CommandDeepseekBalanceResult, CommandOpencodeUsageResult, CommandStatusSnapshot} from './status-surface';
@@ -29,6 +31,33 @@ export type CommandConfigSaveResult = {
   ok: boolean;
   error?: string;
 };
+
+export type CommandSystemPromptReadResult =
+  | {
+      ok: true; // 表示快照已构建。
+      dynamicSections?: SystemPromptDynamicSection[]; // 仅按需返回的动态段摘要，段级失败已降级。
+      snapshot: SystemPromptSnapshot; // 两个写入目标与当前生效来源的事实快照。
+    }
+  | {
+      ok: false; // 表示快照整体无法构建，例如项目根判定抛错。
+      error: string; // 可直接展示的中文原因。
+    };
+
+export type CommandSystemPromptSaveResult =
+  | {
+      ok: true; // 表示内容已落盘，或与现有内容一致而未写盘。
+      filePath: string; // 实际写入目标绝对路径。
+      overwritten: boolean; // 写入前目标是否已存在。
+      unchanged: boolean; // 为真时没有发生写盘。
+    }
+  | {
+      ok: false; // 表示内容为空或磁盘写入失败。
+      error: string; // 可直接展示的中文原因。
+    };
+
+export type CommandSystemPromptDeleteResult =
+  | {ok: true; filePath: string} // 目标已删除，或删除前已不存在。
+  | {ok: false; error: string}; // 删除失败，文件可能仍然存在。
 
 export type CommandSelectModelResult = {
   ok: boolean;
@@ -175,6 +204,9 @@ export type CommandHostApp = {
     listToolCatalog(): MainAgentToolCatalogEntry[]; // 枚举现有候选，不主动建立 MCP 连接。
     readSandboxDraft(): SandboxConfigDraft;
     saveSandboxDraft(draft: SandboxConfigDraft): CommandConfigSaveResult;
+    readSystemPrompt(options?: {includeDynamicSections?: boolean}): CommandSystemPromptReadResult; // 读取两个 SYSTEM.md 目标；动态段摘要按需计算。
+    saveSystemPrompt(target: SystemPromptTarget, content: string): CommandSystemPromptSaveResult; // 原子写入指定目标。
+    deleteSystemPrompt(target: SystemPromptTarget): CommandSystemPromptDeleteResult; // 删除指定覆盖文件。
   };
   skills: {
     createSkillInvocation(skillName: string, argumentsText?: string): CommandSkillInvocationResult;

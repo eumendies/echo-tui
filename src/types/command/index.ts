@@ -45,9 +45,21 @@ export type {
 } from './config-surface';
 
 export type {
+  SystemPromptConfigState,
+  SystemPromptDynamicSection,
+  SystemPromptMenuRow,
+  SystemPromptMenuRowId,
+  SystemPromptSummary,
+  SystemPromptSurfaceMode
+} from './system-prompt-surface';
+
+export type {
   ClipboardWriteResult,
   CommandCompactionResult,
   CommandConfigSaveResult,
+  CommandSystemPromptDeleteResult,
+  CommandSystemPromptReadResult,
+  CommandSystemPromptSaveResult,
   CommandHooksSaveResult,
   CommandHostApp,
   CommandMcpPromptReadResult,

@@ -280,7 +280,20 @@ function createFakeHost(options = {}) {
       saveSandboxDraft(draft) {
         calls.savedSandboxDrafts.push(structuredClone(draft));
         return options.saveSandbox ? options.saveSandbox(draft) : {ok: true};
-      }
+      },
+      // 系统提示词端口在 command runtime 装配中必须存在；此处只提供空快照。
+      readSystemPrompt: () => ({
+        ok: true,
+        snapshot: {
+          baseContent: 'builtin prompt',
+          global: {exists: false, filePath: '/home/user/.echo/SYSTEM.md', lines: 0},
+          project: {exists: false, filePath: '/work/repo/SYSTEM.md', lines: 0},
+          sourceKind: 'builtin'
+        },
+        dynamicSections: []
+      }),
+      saveSystemPrompt: () => ({ok: true, filePath: '/work/repo/SYSTEM.md', overwritten: false, unchanged: true}),
+      deleteSystemPrompt: () => ({ok: true, filePath: '/work/repo/SYSTEM.md'})
     },
     skills: {
       createSkillInvocation(skillName, argumentsText) {
@@ -1587,8 +1600,10 @@ test('configCommandHandler opens general tab, saves independently, and lazily op
   }
   configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_RIGHT}, host);
   assert.equal(host.session.getActive().surface.state.draft.agentInstructionFileName, 'CLAUDE.md');
-  configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
-  configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
+  // 常规行集合会随功能增长，用行 id 定位保存行而不是依赖固定步数。
+  while (getGeneralConfigRowIds(host.session.getActive().surface.state)[host.session.getActive().surface.state.selectedIndex] !== 'save') {
+    configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
+  }
   configCommandHandler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
   assert.equal(calls.savedSettingsDrafts.length, 1);
   assert.equal(calls.savedSettingsDrafts[0].compactionThresholdRatio, 0.85);

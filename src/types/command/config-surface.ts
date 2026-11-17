@@ -1,6 +1,8 @@
 import type {AppSettings} from '../../config/app-settings-config';
 import type {MainAgentToolsConfig} from '../../config/main-agent-tools-config';
 import type {SandboxMode} from '../../sandbox/types';
+import type {SystemPromptConfigState} from './system-prompt-surface';
+import type {SystemPromptSummary} from './system-prompt-surface';
 
 export type ConfigPanelMode =
   | 'list'
@@ -107,6 +109,7 @@ export type GeneralConfigState = {
   feedback?: string;
   initialDraftFingerprint: string;
   selectedIndex: number;
+  systemPromptSummary: SystemPromptSummary; // 常规行展示的生效来源摘要；读取失败时为 unknown。
 };
 
 export type ToolApprovalModelProfile = {
@@ -170,6 +173,13 @@ export type ConfigCommandSurface =
   | {kind: 'config'; view: 'general'; activeTab: ConfigTabId; tabs: ConfigSurfaceTab[]; state: GeneralConfigState}
   | {kind: 'config'; view: 'models'; activeTab: ConfigTabId; tabs: ConfigSurfaceTab[]; state: ConfigCommandState; rows: ConfigFormRow[]}
   | {kind: 'config'; view: 'appearance'; activeTab: ConfigTabId; tabs: ConfigSurfaceTab[]; state: AppearanceConfigState}
+  | {
+      kind: 'config'; // 复用配置中心 footer，不新开 command session。
+      view: 'systemPrompt'; // 常规 Tab 内的系统提示词管理子视图。
+      activeTab: ConfigTabId; // 子视图仍保留 Tab strip，退出时按当前页切换。
+      tabs: ConfigSurfaceTab[]; // 跨页脏状态与读取错误标记。
+      state: SystemPromptConfigState; // 文件快照与状态机阶段的只读投影。
+    }
   | {
       kind: 'config'; // 使用配置中心 footer，不追加 transcript。
       view: 'tools'; // 主 Agent 工具页独立视图。

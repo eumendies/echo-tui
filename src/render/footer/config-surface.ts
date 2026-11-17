@@ -1,11 +1,12 @@
 import * as ansi from '../../terminal/ansi';
-import {displayWidth, safeRenderWidth} from '../layout';
+import {displayWidth} from '../layout';
 import {resolveFooterTheme, tokenText, type FooterTheme, type TuiTheme} from '../colors';
 import {clampPlainText, padVisibleText} from './text';
-import {actionRow, activeBodyWidth, bottom, calculateItemBudget, clampInnerText, contentWidth, dimHint, kvRow, line, moreRow, renderSelectableBody, sectionLine, splitRow, top} from './config-panel-rows';
+import {actionRow, activeBodyWidth, bottom, boxWidth, calculateItemBudget, clampInnerText, contentWidth, dimHint, errorLine, feedbackLine, kvRow, line, moreRow, renderSelectableBody, renderTabsLine, sectionLine, splitRow, top} from './config-panel-rows';
 import {constrainLayoutTail, createSelectedWindowRows, normalizeLineLimit} from './window';
 import {getProviderPreset, listProviderPresets, providerRequiresApiKey} from '../../config/provider-presets';
 import {getGeneralConfigRowIds, configProviderSupportsReasoningEffort, getConfigModelReasoningEffort, getSandboxConfigRowIds} from '../../commands/config/state';
+import {describeSystemPromptSourceKind, renderSystemPromptSurface} from './system-prompt-surface';
 import type {SandboxMode} from '../../sandbox/types';
 import type {AppearanceConfigState, ConfigCommandState, ConfigCommandSurface, ConfigFormRow, ConfigSurfaceTab, ConfigTabId, GeneralConfigState} from '../../types/command';
 import type {SandboxConfigState, ToolsConfigState} from '../../types/command';
@@ -34,6 +35,13 @@ function renderConfigSurface(commandSurface: ConfigCommandSurface, width: number
   const theme = resolveFooterTheme(options.theme);
   let lines: string[];
 
+  if (commandSurface.view === 'systemPrompt') {
+    return constrainLayoutTail(
+      renderSystemPromptSurface(commandSurface.state, commandSurface.tabs, commandSurface.activeTab, width, {maxLines: options.maxLines, theme: options.theme}),
+      options.maxLines
+    );
+  }
+
   if (commandSurface.view === 'general') {
     lines = renderGeneralView(commandSurface.state, commandSurface.tabs, commandSurface.activeTab, width, options.maxLines, theme);
   } else if (commandSurface.view === 'appearance') {
@@ -49,10 +57,10 @@ function renderConfigSurface(commandSurface: ConfigCommandSurface, width: number
       rows: commandSurface.rows,
       theme: options.theme
     });
-    const boxWidth = calculateBoxWidth(width);
-    modelLines.splice(1, 0, renderTabsLine(boxWidth, commandSurface.tabs, commandSurface.activeTab, theme));
+    const panelWidth = boxWidth(width);
+    modelLines.splice(1, 0, renderTabsLine(panelWidth, commandSurface.tabs, commandSurface.activeTab, theme));
     if (commandSurface.state.feedback) {
-      modelLines.splice(Math.max(1, modelLines.length - 2), 0, feedbackLine(boxWidth, commandSurface.state.feedback, theme));
+      modelLines.splice(Math.max(1, modelLines.length - 2), 0, feedbackLine(panelWidth, commandSurface.state.feedback, theme));
     }
     lines = modelLines;
   } else if (commandSurface.view === 'error') {
@@ -76,7 +84,7 @@ function renderConfigSurface(commandSurface: ConfigCommandSurface, width: number
  * 使用普通屏幕 footer 的可用宽高，不读盘或改变草稿，状态转移由 command handler 负责。
  */
 function renderGeneralView(state: GeneralConfigState, tabs: ConfigSurfaceTab[], activeTab: ConfigTabId, columns: number, maxLines: number | undefined, theme: FooterTheme): string[] {
-  const width = calculateBoxWidth(columns);
+  const width = boxWidth(columns);
   const rowIds = getGeneralConfigRowIds(state);
   const rows = rowIds.map((rowId) => {
     if (rowId === 'compactionThreshold') return {label: '自动压缩阈值', value: `${Math.round(state.draft.compactionThresholdRatio * 100)}%`};
@@ -94,6 +102,7 @@ function renderGeneralView(state: GeneralConfigState, tabs: ConfigSurfaceTab[], 
       return {label: '自动审批模型', value: profile ? `${profile.model} (${profile.provider})` : '未配置（无法保存 auto）'};
     }
     if (rowId === 'instructionFile') return {label: '项目指令文件', value: state.draft.agentInstructionFileName};
+    if (rowId === 'systemPrompt') return {label: '系统提示词', value: describeSystemPromptSourceKind(state.systemPromptSummary.kind)};
     if (rowId === 'activeTurnMessagePolicy') return {label: '响应期间发送消息', value: state.draft.activeTurnMessagePolicy === 'steer' ? '即时引导' : '排队'};
     return {label: '保存常规设置', value: '写入 ~/.echo/config.json', action: true};
   });
@@ -152,7 +161,7 @@ type ToolsRenderRow =
  * 中文用途说明与其他配置页共用右对齐双列；Todo 只占一行，未识别偏好不归入内置工具。
  */
 function renderToolsView(state: ToolsConfigState, tabs: ConfigSurfaceTab[], activeTab: ConfigTabId, columns: number, maxLines: number | undefined, theme: FooterTheme): string[] {
-  const width = calculateBoxWidth(columns);
+  const width = boxWidth(columns);
   const rows: ToolsRenderRow[] = [];
   let previousSection = '';
   state.items.forEach((item, index) => {
@@ -199,7 +208,7 @@ function renderToolsView(state: ToolsConfigState, tabs: ConfigSurfaceTab[], acti
 }
 
 function renderAppearanceView(state: AppearanceConfigState, tabs: ConfigSurfaceTab[], activeTab: ConfigTabId, columns: number, maxLines: number | undefined, theme: FooterTheme): string[] {
-  const width = calculateBoxWidth(columns);
+  const width = boxWidth(columns);
   const fixedLines = 5 + (state.error || state.feedback ? 1 : 0) + (state.themes.length === 0 ? 1 : 0);
   const visibleRows = Number.isFinite(maxLines)
     ? createSelectedWindowRows(state.themes, state.selectedIndex, calculateItemBudget(maxLines, fixedLines))
@@ -239,7 +248,7 @@ const SANDBOX_MODE_LABELS: Record<SandboxMode, string> = {
  * 渲染沙箱设置 Tab；行集合与 handler 共享投影，数值只显示草稿，保存动作与常规 Tab 同构。
  */
 function renderSandboxView(state: SandboxConfigState, tabs: ConfigSurfaceTab[], activeTab: ConfigTabId, columns: number, maxLines: number | undefined, theme: FooterTheme): string[] {
-  const width = calculateBoxWidth(columns);
+  const width = boxWidth(columns);
 
   if (state.pathInput !== undefined) {
     // 输入超宽时显示层从开头截断,保留结尾光标与最新输入;pathInput 数据仍完整保存。
@@ -294,7 +303,7 @@ function renderSandboxView(state: SandboxConfigState, tabs: ConfigSurfaceTab[], 
 }
 
 function renderConfigErrorView(error: string, tabs: ConfigSurfaceTab[], activeTab: ConfigTabId, columns: number, theme: FooterTheme): string[] {
-  const width = calculateBoxWidth(columns);
+  const width = boxWidth(columns);
   return [
     top(width, ' CONFIG ', 'accentStrong', theme, ansi.dim('错误')),
     renderTabsLine(width, tabs, activeTab, theme),
@@ -307,7 +316,7 @@ function renderConfigErrorView(error: string, tabs: ConfigSurfaceTab[], activeTa
 }
 
 function renderCenterDiscardConfirm(dirtyTabs: string[], selectedIndex: number, tabs: ConfigSurfaceTab[], activeTab: ConfigTabId, columns: number, theme: FooterTheme): string[] {
-  const width = calculateBoxWidth(columns);
+  const width = boxWidth(columns);
   return [
     top(width, ' CONFIG ', 'warning', theme, ansi.dim('未保存的更改')),
     renderTabsLine(width, tabs, activeTab, theme),
@@ -320,39 +329,9 @@ function renderCenterDiscardConfirm(dirtyTabs: string[], selectedIndex: number, 
 }
 
 /** 窄终端优先保留当前 Tab，再向两侧扩展；非选中 Tab 可省略但不能挤掉当前页标签。 */
-function renderTabsLine(width: number, tabs: ConfigSurfaceTab[], activeTab: ConfigTabId, theme: FooterTheme): string {
-  const labels = tabs.map((tab) => {
-    const marker = tab.status === 'dirty' ? '● ' : tab.status === 'error' ? '! ' : '';
-    const label = `[${marker}${tab.label}]`;
-    return tab.id === activeTab
-      ? tokenText(theme, 'accentStrong', ansi.bold(label))
-      : tokenText(theme, tab.status === 'error' ? 'warning' : 'muted', label);
-  });
-  let start = 0;
-  let end = tabs.length;
-  if (displayWidth(labels.join(' ')) > contentWidth(width)) {
-    start = Math.max(0, tabs.findIndex((tab) => tab.id === activeTab));
-    end = start + 1;
-    while (start > 0 || end < labels.length) {
-      if (start > 0 && displayWidth(labels.slice(start - 1, end).join(' ')) <= contentWidth(width)) start -= 1;
-      else if (end < labels.length && displayWidth(labels.slice(start, end + 1).join(' ')) <= contentWidth(width)) end += 1;
-      else break;
-    }
-  }
-  return line(width, clampInnerText(labels.slice(start, end).join(' '), contentWidth(width)), theme);
-}
-
-function errorLine(width: number, error: string, theme: FooterTheme): string {
-  return line(width, ` ${tokenText(theme, 'danger', '▌')} ${ansi.dim(clampPlainText(error, width - 6))}`, theme);
-}
-
-function feedbackLine(width: number, feedback: string, theme: FooterTheme): string {
-  return line(width, ` ${tokenText(theme, 'success', clampPlainText(feedback, width - 5))}`, theme);
-}
-
 function renderConfigPanel(state: ConfigCommandState, columns: number, options: RenderConfigPanelOptions): string[] {
   const theme = resolveFooterTheme(options.theme);
-  const width = calculateBoxWidth(columns);
+  const width = boxWidth(columns);
 
   if (state.mode === 'preset') {
     return renderPresetView(state, width, options.maxLines, theme);
@@ -373,11 +352,6 @@ function renderConfigPanel(state: ConfigCommandState, columns: number, options: 
     return renderModelDetailView(state, width, theme);
   }
   return renderListView(state, width, options.maxLines, theme);
-}
-
-function calculateBoxWidth(columns: number): number {
-  const safeWidth = safeRenderWidth(columns || 80);
-  return Math.max(4, Math.min(92, safeWidth - 4 > 0 ? safeWidth - 4 : safeWidth));
 }
 
 function renderListView(state: ConfigCommandState, width: number, maxLines: number | undefined, theme: FooterTheme): string[] {
@@ -834,6 +808,9 @@ function formatInteger(value: number): string {
   return new Intl.NumberFormat('en-US').format(value);
 }
 
+/**
+ * 常规行只展示生效来源；读取失败时明确标注，而不是假装是内置默认。
+ */
 export {
   renderConfigSurface
 };
