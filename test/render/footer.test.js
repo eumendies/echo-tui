@@ -63,7 +63,7 @@ function completeCommandSurfaceFixture(surface) {
     case 'mcp':
       return {title: 'MCP', servers: [], selectedIndex: 0, emptyLines: [], dismissHint: 'Esc 关闭', ...surface};
     case 'memory':
-      return {title: 'MEMORY', dismissHint: 'Esc 关闭', ...surface};
+      return {title: 'MEMORY', mode: 'list', section: 'types', rows: [], selectedIndex: 0, dismissHint: 'Esc 关闭', ...surface};
     case 'hooks':
       return {title: 'HOOKS', dismissHint: 'Esc 关闭', ...surface};
     case 'agents':

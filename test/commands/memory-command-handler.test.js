@@ -3,9 +3,10 @@ const test = require('node:test');
 
 const {MemoryCommandHandler} = require('../../src/commands/memory-command-handler');
 const {renderMemorySurface} = require('../../src/render/footer/memory-surface');
+const {boxWidth} = require('../../src/render/footer/config-panel-rows');
 const {DEFAULT_TUI_THEME} = require('../../src/config/theme-config');
 const {INPUT_EVENTS} = require('../../src/input/event-types');
-const {displayWidth, safeRenderWidth} = require('../../src/render/layout');
+const {displayWidth} = require('../../src/render/layout');
 
 function createMemory(id, content) {
   return {id, content, enabled: true, createdAt: '2026-07-12T07:00:00.000Z', updatedAt: '2026-07-12T07:00:00.000Z'};
@@ -77,59 +78,95 @@ function createHost(initialMemories = [], options = {}) {
   return {calls, host};
 }
 
-function start(handler, host) {
-  handler.start('/memory', host);
-  handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
+function press(handler, host, event) {
+  handler.handleEvent(host.session.getActive(), event, host);
   return host.session.getActive();
 }
 
-test('/memory supports multiline create, edit cancellation, and delete confirmation', () => {
+/** 把焦点移动到指定行；行不存在时立即失败，避免测试静默走过错误状态。 */
+function focusRow(handler, host, id) {
+  let session = host.session.getActive();
+  const target = session.surface.rows.findIndex((row) => row.id === id);
+  assert.notEqual(target, -1, `row not found: ${id}`);
+
+  while (session.surface.selectedIndex !== target) {
+    const step = session.surface.selectedIndex < target ? INPUT_EVENTS.MOVE_DOWN : INPUT_EVENTS.MOVE_UP;
+    session = press(handler, host, {type: step});
+  }
+
+  return session;
+}
+
+function rowIds(session) {
+  return session.surface.rows.map((row) => row.id);
+}
+
+/** 启动 /memory 并进入 user memory 列表；一级焦点固定落在 type:user。 */
+function openUserList(handler, host) {
+  handler.start('/memory', host);
+  press(handler, host, {type: INPUT_EVENTS.SUBMIT});
+  return host.session.getActive();
+}
+
+test('/memory creates, edits, toggles and deletes through row actions', () => {
   const handler = new MemoryCommandHandler();
   const {calls, host} = createHost([createMemory('memory-1', '已有内容')]);
-  let session = start(handler, host);
+  let session = openUserList(handler, host);
 
   assert.equal(session.surface.kind, 'memory');
-  assert.equal(session.surface.mode, 'list');
-  handler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: 'a'}, host);
-  session = host.session.getActive();
-  handler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: '第一行'}, host);
-  session = host.session.getActive();
-  handler.handleEvent(session, {type: INPUT_EVENTS.INSERT_NEWLINE}, host);
-  session = host.session.getActive();
-  handler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: '第二行'}, host);
-  session = host.session.getActive();
-  handler.handleEvent(session, {type: INPUT_EVENTS.SUBMIT}, host);
+  assert.equal(session.surface.section, 'user-list');
+  assert.deepEqual(rowIds(session), ['entry:memory-1', 'action:add-user']);
+
+  session = focusRow(handler, host, 'action:add-user');
+  session = press(handler, host, {type: INPUT_EVENTS.SUBMIT});
+  assert.equal(session.surface.mode, 'edit');
+  session = press(handler, host, {type: INPUT_EVENTS.TEXT, value: '第一行'});
+  session = press(handler, host, {type: INPUT_EVENTS.INSERT_NEWLINE});
+  session = press(handler, host, {type: INPUT_EVENTS.TEXT, value: '第二行'});
+  session = press(handler, host, {type: INPUT_EVENTS.SUBMIT});
 
   assert.deepEqual(calls.created, ['第一行\n第二行']);
-  session = host.session.getActive();
   assert.equal(session.surface.mode, 'list');
-  assert.equal(session.surface.memories.length, 2);
+  assert.equal(session.surface.section, 'user-list');
+  assert.equal(session.surface.rows[session.surface.selectedIndex].id, 'entry:memory-2');
 
-  handler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: 'e'}, host);
-  session = host.session.getActive();
-  handler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: '不会保存'}, host);
-  handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.ESCAPE}, host);
+  session = focusRow(handler, host, 'entry:memory-1');
+  session = press(handler, host, {type: INPUT_EVENTS.SUBMIT});
+  assert.equal(session.surface.section, 'user-detail');
+  assert.equal(session.surface.detailContent, '已有内容');
+  assert.deepEqual(rowIds(session), ['toggle:enabled', 'action:edit-user', 'action:delete-user']);
+
+  session = focusRow(handler, host, 'action:edit-user');
+  session = press(handler, host, {type: INPUT_EVENTS.SUBMIT});
+  assert.equal(session.surface.mode, 'edit');
+  press(handler, host, {type: INPUT_EVENTS.TEXT, value: '不会保存'});
+  session = press(handler, host, {type: INPUT_EVENTS.ESCAPE});
   assert.deepEqual(calls.updated, []);
+  assert.equal(session.surface.section, 'user-detail');
+  assert.equal(session.surface.rows[session.surface.selectedIndex].id, 'action:edit-user');
 
-  session = host.session.getActive();
-  handler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: 'd'}, host);
-  session = host.session.getActive();
+  session = focusRow(handler, host, 'action:delete-user');
+  session = press(handler, host, {type: INPUT_EVENTS.SUBMIT});
   assert.equal(session.surface.mode, 'deleteConfirm');
-  handler.handleEvent(session, {type: INPUT_EVENTS.SUBMIT}, host);
-  assert.deepEqual(calls.deleted, ['memory-2']);
-  assert.equal(host.session.getActive().surface.memories.length, 1);
+  assert.equal(session.surface.rows[session.surface.selectedIndex].id, 'option:cancel');
+
+  session = press(handler, host, {type: INPUT_EVENTS.MOVE_DOWN});
+  assert.equal(session.surface.rows[session.surface.selectedIndex].id, 'option:delete');
+  session = press(handler, host, {type: INPUT_EVENTS.SUBMIT});
+  assert.deepEqual(calls.deleted, ['memory-1']);
+  assert.equal(session.surface.section, 'user-list');
+  assert.deepEqual(rowIds(session), ['entry:memory-2', 'action:add-user']);
 });
 
 test('/memory keeps the edit draft open when persistence fails', () => {
   const handler = new MemoryCommandHandler();
   const {host} = createHost([], {createResult: {ok: false, error: 'disk full'}});
-  let session = start(handler, host);
+  let session = openUserList(handler, host);
 
-  handler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: 'a'}, host);
-  session = host.session.getActive();
-  handler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: '内容'}, host);
-  handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
-  session = host.session.getActive();
+  assert.deepEqual(rowIds(session), ['action:add-user']);
+  session = press(handler, host, {type: INPUT_EVENTS.SUBMIT});
+  session = press(handler, host, {type: INPUT_EVENTS.TEXT, value: '内容'});
+  session = press(handler, host, {type: INPUT_EVENTS.SUBMIT});
 
   assert.equal(session.surface.mode, 'edit');
   assert.equal(session.surface.editText, '内容');
@@ -139,35 +176,36 @@ test('/memory keeps the edit draft open when persistence fails', () => {
 test('/memory moves the multiline edit cursor with Up and Down', () => {
   const handler = new MemoryCommandHandler();
   const {calls, host} = createHost();
-  let session = start(handler, host);
+  let session = openUserList(handler, host);
 
-  handler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: 'a'}, host);
-  session = host.session.getActive();
-  handler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: '第一行\n第二行'}, host);
-  session = host.session.getActive();
-  handler.handleEvent(session, {type: INPUT_EVENTS.MOVE_UP}, host);
-  session = host.session.getActive();
+  session = press(handler, host, {type: INPUT_EVENTS.SUBMIT});
+  session = press(handler, host, {type: INPUT_EVENTS.TEXT, value: '第一行\n第二行'});
+  session = press(handler, host, {type: INPUT_EVENTS.MOVE_UP});
   assert.equal(session.surface.editCursor, 3);
 
-  handler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: 'X'}, host);
-  session = host.session.getActive();
+  session = press(handler, host, {type: INPUT_EVENTS.TEXT, value: 'X'});
   assert.equal(session.surface.editText, '第一行X\n第二行');
-  handler.handleEvent(session, {type: INPUT_EVENTS.MOVE_DOWN}, host);
-  session = host.session.getActive();
+  session = press(handler, host, {type: INPUT_EVENTS.MOVE_DOWN});
   assert.equal(session.surface.editCursor, 8);
 
-  handler.handleEvent(session, {type: INPUT_EVENTS.SUBMIT}, host);
+  press(handler, host, {type: INPUT_EVENTS.SUBMIT});
   assert.deepEqual(calls.created, ['第一行X\n第二行']);
 });
 
-test('/memory toggles the selected entry with Space', () => {
+test('/memory toggles the selected entry with Space and the detail toggle row', () => {
   const handler = new MemoryCommandHandler();
   const {host} = createHost([createMemory('memory-1', '可停用')]);
-  const session = start(handler, host);
+  let session = openUserList(handler, host);
 
-  handler.handleEvent(session, {type: INPUT_EVENTS.TEXT, value: ' '}, host);
+  session = press(handler, host, {type: INPUT_EVENTS.TEXT, value: ' '});
+  assert.equal(session.surface.rows[0].dot, 'off');
 
-  assert.equal(host.session.getActive().surface.memories[0].enabled, false);
+  session = press(handler, host, {type: INPUT_EVENTS.SUBMIT});
+  assert.equal(session.surface.section, 'user-detail');
+  assert.equal(session.surface.rows[0].dot, 'off');
+
+  session = press(handler, host, {type: INPUT_EVENTS.SUBMIT});
+  assert.equal(session.surface.rows[0].dot, 'on');
 });
 
 test('/memory browses scoped agent catalogs and adds an item', () => {
@@ -197,39 +235,119 @@ test('/memory browses scoped agent catalogs and adds an item', () => {
     items = items.map((item) => item.id === itemId ? {...item, enabled} : item);
     return {ok: true, catalogs: [catalog], catalog, memories: items};
   };
+
   handler.start('/memory', host);
   assert.deepEqual(host.session.getActive().surface.itemCounts, {user: 0, global: 0, project: 1});
   assert.equal(listCalls, 1);
   assert.equal(readCalls, 1);
-  handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
-  handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
-  handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
-  assert.equal(host.session.getActive().surface.section, 'catalogs');
-  assert.equal(host.session.getActive().surface.scope, 'project');
-  assert.equal(host.session.getActive().surface.title, 'AGENT CATALOGS · project');
-  handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.TEXT, value: ' '}, host);
-  assert.equal(host.session.getActive().surface.catalogs[0].enabled, false);
-  handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
-  assert.equal(host.session.getActive().surface.section, 'items');
-  assert.equal(host.session.getActive().surface.title, 'CATALOG · rendering');
+
+  let session = focusRow(handler, host, 'type:project');
+  session = press(handler, host, {type: INPUT_EVENTS.SUBMIT});
+  assert.equal(session.surface.section, 'catalog-list');
+  assert.equal(session.surface.scope, 'project');
+  assert.equal(session.surface.title, 'AGENT CATALOGS · project');
+
+  session = press(handler, host, {type: INPUT_EVENTS.TEXT, value: ' '});
+  assert.equal(session.surface.rows[0].dot, 'off');
+
+  session = press(handler, host, {type: INPUT_EVENTS.SUBMIT});
+  assert.equal(session.surface.section, 'catalog-detail');
+  assert.equal(session.surface.title, 'CATALOG · rendering');
   assert.equal(listCalls, 1);
   assert.equal(readCalls, 1);
-  handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.TEXT, value: ' '}, host);
-  assert.equal(host.session.getActive().surface.agentItems[0].enabled, false);
-  handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.ESCAPE}, host);
-  assert.equal(host.session.getActive().surface.catalogs[0].enabled, false);
-  handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
-  assert.equal(host.session.getActive().surface.agentItems[0].enabled, false);
+  assert.deepEqual(rowIds(session), [
+    'field:name',
+    'field:description',
+    'toggle:enabled',
+    'entry:item-1',
+    'action:add-item',
+    'action:edit-catalog',
+    'action:delete-catalog'
+  ]);
+
+  session = focusRow(handler, host, 'entry:item-1');
+  session = press(handler, host, {type: INPUT_EVENTS.TEXT, value: ' '});
+  assert.equal(session.surface.rows[session.surface.selectedIndex].dot, 'off');
+
+  session = press(handler, host, {type: INPUT_EVENTS.ESCAPE});
+  assert.equal(session.surface.section, 'catalog-list');
+  assert.equal(session.surface.rows[session.surface.selectedIndex].id, 'entry:catalog-1');
+  assert.equal(session.surface.rows[0].dot, 'off');
+
+  session = press(handler, host, {type: INPUT_EVENTS.SUBMIT});
+  assert.equal(session.surface.section, 'catalog-detail');
   assert.equal(readCalls, 1);
+  assert.equal(session.surface.rows[3].dot, 'off');
+
   host.memory.setAgentItemEnabled = () => ({ok: false, error: 'disk full'});
-  handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.TEXT, value: ' '}, host);
-  assert.equal(host.session.getActive().surface.agentItems[0].enabled, false);
-  assert.match(host.session.getActive().surface.error, /disk full/);
-  handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.TEXT, value: 'a'}, host);
-  handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.TEXT, value: 'Reserve the final column'}, host);
-  handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
-  assert.equal(host.session.getActive().surface.agentItems.length, 2);
-  assert.equal(host.session.getActive().surface.showCursor, undefined);
+  session = focusRow(handler, host, 'entry:item-1');
+  session = press(handler, host, {type: INPUT_EVENTS.TEXT, value: ' '});
+  assert.equal(session.surface.rows[3].dot, 'off');
+  assert.match(session.surface.error, /disk full/);
+
+  session = focusRow(handler, host, 'action:add-item');
+  session = press(handler, host, {type: INPUT_EVENTS.SUBMIT});
+  session = press(handler, host, {type: INPUT_EVENTS.TEXT, value: 'Reserve the final column'});
+  session = press(handler, host, {type: INPUT_EVENTS.SUBMIT});
+  assert.equal(session.surface.section, 'catalog-detail');
+  assert.equal(session.surface.rows.filter((row) => row.id.startsWith('entry:')).length, 2);
+  assert.equal(session.surface.rows[session.surface.selectedIndex].id, 'entry:item-2');
+  assert.equal(session.surface.showCursor, undefined);
+});
+
+test('/memory restores the parent row after leaving a detail layer', () => {
+  const handler = new MemoryCommandHandler();
+  const {host} = createHost([
+    createMemory('memory-1', '第一条'),
+    createMemory('memory-2', '第二条'),
+    createMemory('memory-3', '第三条')
+  ]);
+  let session = openUserList(handler, host);
+
+  session = focusRow(handler, host, 'entry:memory-3');
+  session = press(handler, host, {type: INPUT_EVENTS.SUBMIT});
+  assert.equal(session.surface.section, 'user-detail');
+  assert.equal(session.surface.detailContent, '第三条');
+
+  session = press(handler, host, {type: INPUT_EVENTS.ESCAPE});
+  assert.equal(session.surface.section, 'user-list');
+  assert.equal(session.surface.rows[session.surface.selectedIndex].id, 'entry:memory-3');
+});
+
+test('/memory cancels the delete confirmation by default', () => {
+  const handler = new MemoryCommandHandler();
+  const {calls, host} = createHost([createMemory('memory-1', '保留内容')]);
+  let session = openUserList(handler, host);
+
+  session = press(handler, host, {type: INPUT_EVENTS.SUBMIT});
+  session = focusRow(handler, host, 'action:delete-user');
+  session = press(handler, host, {type: INPUT_EVENTS.SUBMIT});
+
+  assert.equal(session.surface.mode, 'deleteConfirm');
+  assert.equal(session.surface.rows[session.surface.selectedIndex].id, 'option:cancel');
+  assert.match(session.surface.rows[0].value, /保留内容/);
+
+  session = press(handler, host, {type: INPUT_EVENTS.ESCAPE});
+  assert.deepEqual(calls.deleted, []);
+  assert.equal(session.surface.section, 'user-detail');
+});
+
+test('/memory offers an add row for every empty list level', () => {
+  const handler = new MemoryCommandHandler();
+  const {host} = createHost();
+  let session = openUserList(handler, host);
+
+  assert.deepEqual(rowIds(session), ['action:add-user']);
+
+  session = press(handler, host, {type: INPUT_EVENTS.ESCAPE});
+  session = focusRow(handler, host, 'type:global');
+  session = press(handler, host, {type: INPUT_EVENTS.SUBMIT});
+  assert.deepEqual(rowIds(session), ['action:add-catalog']);
+
+  session = press(handler, host, {type: INPUT_EVENTS.ESCAPE});
+  session = focusRow(handler, host, 'type:project');
+  session = press(handler, host, {type: INPUT_EVENTS.SUBMIT});
+  assert.deepEqual(rowIds(session), ['action:add-catalog']);
 });
 
 test('/memory counts disabled agent items in the type menu', () => {
@@ -243,92 +361,76 @@ test('/memory counts disabled agent items in the type menu', () => {
   handler.start('/memory', host);
 
   assert.deepEqual(host.session.getActive().surface.itemCounts, {user: 0, global: 0, project: 1});
+  assert.match(host.session.getActive().surface.rows[2].value, /1 items/);
 });
 
-test('memory surface renders list, edit and confirmation states without overflowing the requested width', () => {
-  const base = {
-    kind: 'memory',
-    title: 'MEMORY',
-    memories: [createMemory('memory-1', '这是一个很长的 memory 内容，用于验证渲染时的安全截断。')],
-    selectedIndex: 0,
-    dismissHint: 'Esc 关闭'
-  };
+test('memory surface renders rows, detail, edit and confirmation states without overflowing', () => {
+  const handler = new MemoryCommandHandler();
+  const longContent = '很长的 memory 内容，用于验证详情层折行与限高。'.repeat(40);
+  const {host} = createHost([createMemory('memory-1', longContent)]);
+  const box = boxWidth(36);
+  let session = openUserList(handler, host);
 
-  for (const surface of [
-    {...base, mode: 'list'},
-    {...base, mode: 'deleteConfirm'}
-  ]) {
-    const layout = renderMemorySurface(surface, 36, DEFAULT_TUI_THEME.footer);
-    assert.ok(layout.lines.length > 3);
-    assert.equal(layout.showCursor, false);
-    assert.equal(displayWidth(layout.lines[0]), safeRenderWidth(36));
-    assert.equal(displayWidth(layout.lines.at(-1)), safeRenderWidth(36));
-  }
+  const listLayout = renderMemorySurface(session.surface, 36, DEFAULT_TUI_THEME.footer);
+  assert.ok(listLayout.lines.length > 3);
+  assert.equal(listLayout.showCursor, false);
+  assert.equal(displayWidth(listLayout.lines[0]), box);
+  assert.equal(displayWidth(listLayout.lines.at(-1)), box);
+  for (const line of listLayout.lines) assert.ok(displayWidth(line) <= box);
+  assert.match(listLayout.lines.join('\n'), /\+ 新增 memory/);
+  assert.doesNotMatch(listLayout.lines.join('\n'), /按 a 新增/);
+  assert.doesNotMatch(listLayout.lines.join('\n'), /a 新增|e 编辑|d 删除/);
 
-  const narrowEdit = renderMemorySurface({...base, mode: 'edit', editText: '第一行\n第二行', editCursor: 4}, 36, DEFAULT_TUI_THEME.footer);
-  assert.ok(narrowEdit.lines.length > 3);
-  assert.equal(narrowEdit.showCursor, true);
-  assert.equal(displayWidth(narrowEdit.lines[0]), safeRenderWidth(36));
-  assert.equal(displayWidth(narrowEdit.lines.at(-1)), safeRenderWidth(36));
+  session = press(handler, host, {type: INPUT_EVENTS.SUBMIT});
+  const detailLayout = renderMemorySurface(session.surface, 36, DEFAULT_TUI_THEME.footer);
+  assert.match(detailLayout.lines.join('\n'), /还有 \d+ 行/);
+  assert.match(detailLayout.lines.join('\n'), /删除 memory/);
+  for (const line of detailLayout.lines) assert.ok(displayWidth(line) <= box);
 
-  const editing = renderMemorySurface({...base, mode: 'edit', editText: '新增内容', editCursor: 4}, 80, DEFAULT_TUI_THEME.footer);
-  assert.match(editing.lines.join('\n'), /这是一个很长的 memory/);
-  assert.match(editing.lines.join('\n'), /输入 memory/);
+  session = focusRow(handler, host, 'action:edit-user');
+  session = press(handler, host, {type: INPUT_EVENTS.SUBMIT});
+  session = press(handler, host, {type: INPUT_EVENTS.TEXT, value: '第一行'});
+  const editLayout = renderMemorySurface(session.surface, 36, DEFAULT_TUI_THEME.footer);
+  assert.equal(editLayout.showCursor, true);
+  assert.match(editLayout.lines.join('\n'), /输入 memory/);
+  for (const line of editLayout.lines) assert.ok(displayWidth(line) <= box);
 
-  const cursorLayout = renderMemorySurface({...base, mode: 'edit', editText: '甲乙丙', editCursor: 1}, 80, DEFAULT_TUI_THEME.footer);
-  const cursorLine = cursorLayout.lines.find((line) => line.includes('甲'));
-  assert.equal(cursorLayout.showCursor, true);
-  assert.equal(cursorLayout.cursorColumn, 2 + displayWidth('甲'));
-  assert.equal(cursorLayout.lines[cursorLayout.cursorRow], cursorLine);
-  assert.match(cursorLine, /甲乙丙/);
-  assert.doesNotMatch(cursorLine, /█/);
-  assert.doesNotMatch(cursorLine, /\x1b\[7m/);
-
-  const endCursorLayout = renderMemorySurface({...base, mode: 'edit', editText: 'abc', editCursor: 3}, 80, DEFAULT_TUI_THEME.footer);
-  const endCursorLine = endCursorLayout.lines.find((line) => line.includes('abc'));
+  const endCursorLayout = renderMemorySurface(
+    {...session.surface, editText: 'abc', editCursor: 3},
+    36,
+    DEFAULT_TUI_THEME.footer
+  );
   assert.equal(endCursorLayout.showCursor, true);
-  assert.equal(endCursorLayout.cursorColumn, 2 + displayWidth('abc'));
-  assert.equal(endCursorLayout.lines[endCursorLayout.cursorRow], endCursorLine);
-  assert.doesNotMatch(endCursorLine, /█/);
+  const cursorLine = endCursorLayout.lines[endCursorLayout.cursorRow];
+  assert.match(cursorLine, /abc/);
+  assert.doesNotMatch(cursorLine, /█/);
 
-  const typeLayout = renderMemorySurface({...base, section: 'types', mode: 'list'}, 80, DEFAULT_TUI_THEME.footer);
-  assert.match(typeLayout.lines.join('\n'), /User memories/);
-  assert.match(typeLayout.lines.join('\n'), /Agent memories · project/);
-  const countedTypeLayout = renderMemorySurface({...base, section: 'types', mode: 'list', itemCounts: {user: 2, global: 3, project: 4}}, 80, DEFAULT_TUI_THEME.footer);
-  assert.match(countedTypeLayout.lines.join('\n'), /User memories · 2 items/);
-  assert.match(countedTypeLayout.lines.join('\n'), /global · 3 items/);
-  assert.match(countedTypeLayout.lines.join('\n'), /project · 4 items/);
-  const catalogLayout = renderMemorySurface({...base, section: 'catalogs', scope: 'project', mode: 'list', catalogs: [{id: 'c1', name: 'rendering', description: 'Terminal rules', enabled: false, scope: {kind: 'project', projectRoot: '/repo'}}]}, 80, DEFAULT_TUI_THEME.footer);
-  assert.match(catalogLayout.lines.join('\n'), /rendering — Terminal rules/);
-  assert.match(catalogLayout.lines.join('\n'), /off/);
-  assert.doesNotMatch(catalogLayout.lines.join('\n'), /\[project\]/);
-  const itemLayout = renderMemorySurface({...base, section: 'items', mode: 'list', agentItems: [{id: 'i1', content: 'Disabled rule', enabled: false, createdAt: '2026-07-12T00:00:00.000Z', updatedAt: '2026-07-12T00:00:00.000Z'}]}, 80, DEFAULT_TUI_THEME.footer);
-  assert.match(itemLayout.lines.join('\n'), /off.*Disabled rule/);
+  session = press(handler, host, {type: INPUT_EVENTS.ESCAPE});
+  session = focusRow(handler, host, 'action:delete-user');
+  session = press(handler, host, {type: INPUT_EVENTS.SUBMIT});
+  const confirmLayout = renderMemorySurface(session.surface, 36, DEFAULT_TUI_THEME.footer);
+  assert.match(confirmLayout.lines.join('\n'), /确认删除/);
+  assert.match(confirmLayout.lines.join('\n'), /取消/);
+  assert.match(confirmLayout.lines.join('\n'), /删除/);
+  for (const line of confirmLayout.lines) assert.ok(displayWidth(line) <= box);
 
-  const formLayout = renderMemorySurface({...base, title: 'NEW CATALOG · project', section: 'catalogs', mode: 'edit', catalogForm: {
-    selectedIndex: 0,
-    fields: [
-      {label: '名称', text: 'rendering', cursor: 3},
-      {label: '描述', text: 'Terminal rules', cursor: 0},
-      {label: '首个 item', text: 'Use real cursors', cursor: 0}
-    ]
-  }}, 80, DEFAULT_TUI_THEME.footer);
+  const formLayout = renderMemorySurface({
+    ...session.surface,
+    mode: 'edit',
+    title: 'NEW CATALOG · project',
+    section: 'catalog-list',
+    catalogForm: {
+      selectedIndex: 0,
+      fields: [
+        {label: '名称', text: 'rendering', cursor: 3},
+        {label: '描述', text: 'Terminal rules', cursor: 0},
+        {label: '首个 item', text: 'Use real cursors', cursor: 0}
+      ]
+    }
+  }, 80, DEFAULT_TUI_THEME.footer);
   assert.match(formLayout.lines[formLayout.cursorRow], /名称.*│.*rendering/);
   assert.equal(formLayout.cursorColumn, 21);
-  assert.doesNotMatch(formLayout.lines.join('\n'), /这是一个很长的 memory/);
-
-  const longFormLayout = renderMemorySurface({...base, section: 'catalogs', mode: 'edit', catalogForm: {
-    selectedIndex: 1,
-    fields: [
-      {label: '名称', text: 'rendering', cursor: 0},
-      {label: '描述', text: '很长的描述'.repeat(30), cursor: 100},
-      {label: '首个 item', text: '', cursor: 0}
-    ]
-  }}, 36, DEFAULT_TUI_THEME.footer);
-  assert.equal(longFormLayout.showCursor, true);
-  assert.ok(longFormLayout.cursorColumn < safeRenderWidth(36));
-  assert.match(longFormLayout.lines[longFormLayout.cursorRow], /….*…/);
-  for (const line of longFormLayout.lines) assert.ok(displayWidth(line) <= safeRenderWidth(36));
+  for (const line of formLayout.lines) assert.ok(displayWidth(line) <= boxWidth(80));
 });
 
 test('/memory edits a new catalog through separate form fields', () => {
@@ -343,17 +445,21 @@ test('/memory edits a new catalog through separate form fields', () => {
   };
 
   handler.start('/memory', host);
-  handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
-  handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
-  handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
-  handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.TEXT, value: 'a'}, host);
-  assert.equal(host.session.getActive().surface.title, 'NEW CATALOG · project');
-  assert.deepEqual(host.session.getActive().surface.catalogForm.fields.map((field) => field.label), ['名称', '描述', '首个 item']);
-  handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.TEXT, value: 'rendering'}, host);
-  handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
-  handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.TEXT, value: 'Terminal rules'}, host);
-  handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.MOVE_DOWN}, host);
-  handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.TEXT, value: 'Use real cursors'}, host);
-  handler.handleEvent(host.session.getActive(), {type: INPUT_EVENTS.SUBMIT}, host);
+  let session = focusRow(handler, host, 'type:project');
+  session = press(handler, host, {type: INPUT_EVENTS.SUBMIT});
+  assert.deepEqual(rowIds(session), ['action:add-catalog']);
+
+  session = press(handler, host, {type: INPUT_EVENTS.SUBMIT});
+  assert.equal(session.surface.title, 'NEW CATALOG · project');
+  assert.deepEqual(session.surface.catalogForm.fields.map((field) => field.label), ['名称', '描述', '首个 item']);
+  session = press(handler, host, {type: INPUT_EVENTS.TEXT, value: 'rendering'});
+  session = press(handler, host, {type: INPUT_EVENTS.MOVE_DOWN});
+  session = press(handler, host, {type: INPUT_EVENTS.TEXT, value: 'Terminal rules'});
+  session = press(handler, host, {type: INPUT_EVENTS.MOVE_DOWN});
+  session = press(handler, host, {type: INPUT_EVENTS.TEXT, value: 'Use real cursors'});
+  session = press(handler, host, {type: INPUT_EVENTS.SUBMIT});
+
   assert.deepEqual(input, {catalog: 'rendering', description: 'Terminal rules', content: 'Use real cursors', scope: 'project'});
+  assert.equal(session.surface.mode, 'list');
+  assert.equal(session.surface.section, 'catalog-list');
 });
