@@ -59,6 +59,7 @@ const GENERAL_CONFIG_BASE_ROW_IDS = [
   'autoCompressImages',
   'checkUpdatesOnStartup',
   'toolApprovalMode',
+  'titleModel',
   'instructionFile',
   'systemPrompt',
   'activeTurnMessagePolicy',

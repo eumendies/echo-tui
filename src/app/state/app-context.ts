@@ -279,6 +279,7 @@ class AppContext {
         slashSuggestionMaxVisible: appSettings.slashSuggestionMaxVisible
       },
       allowAllTools: options.toolApproval?.isAllowAllForSession() || false,
+      sessionTitle: this.transcriptContext.getSessionTitle(),
       slashSuggestions
     });
   }

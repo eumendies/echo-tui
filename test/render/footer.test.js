@@ -63,7 +63,7 @@ function completeCommandSurfaceFixture(surface) {
     case 'mcp':
       return {title: 'MCP', servers: [], selectedIndex: 0, emptyLines: [], dismissHint: 'Esc 关闭', ...surface};
     case 'memory':
-      return {title: 'MEMORY', dismissHint: 'Esc 关闭', ...surface};
+      return {title: 'MEMORY', mode: 'list', section: 'types', rows: [], selectedIndex: 0, dismissHint: 'Esc 关闭', ...surface};
     case 'hooks':
       return {title: 'HOOKS', dismissHint: 'Esc 关闭', ...surface};
     case 'agents':
@@ -668,6 +668,73 @@ test('renderFooterLayout renders allow-all tools status as warning segment', () 
   assert.ok(plainStatusLine.indexOf('GPT-4o') < plainStatusLine.indexOf('TOOLS all'));
   assert.ok(plainStatusLine.indexOf('TOOLS all') < plainStatusLine.indexOf('dir echo_tui'));
   assert.ok(layout.lines.at(-1).includes('\x1b[38;2;13;14;15m'));
+});
+
+test('renderFooterLayout places the session title between effort and TOOLS all', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('hello'),
+    commandSurface: null,
+    pending: null,
+    statusLine: {
+      ...DEFAULT_STATUS_LINE,
+      model: {kind: 'default', label: 'GPT-4o', effort: 'high'},
+      allowAllTools: true,
+      sessionTitle: '优化 undo 机制'
+    },
+    theme: CUSTOM_THEME,
+    width: 120
+  });
+
+  const plainStatusLine = stripAnsi(layout.lines.at(-1));
+
+  assert.ok(plainStatusLine.indexOf('effort high') < plainStatusLine.indexOf('优化 undo 机制'));
+  assert.ok(plainStatusLine.indexOf('优化 undo 机制') < plainStatusLine.indexOf('TOOLS all'));
+  assert.ok(plainStatusLine.indexOf('TOOLS all') < plainStatusLine.indexOf('dir echo_tui'));
+});
+
+test('renderFooterLayout hides the session title during model tuning', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer('hello'),
+    commandSurface: null,
+    pending: null,
+    statusLine: {
+      ...DEFAULT_STATUS_LINE,
+      model: {kind: 'tuning', label: 'GPT-4o', effort: 'high', activeField: 'model'},
+      sessionTitle: '优化 undo 机制'
+    },
+    theme: CUSTOM_THEME,
+    width: 120
+  });
+
+  assert.ok(!stripAnsi(layout.lines.at(-1)).includes('优化 undo 机制'));
+});
+
+test('renderFooterLayout truncates the session title at narrow widths', () => {
+  const statusLine = {
+    ...DEFAULT_STATUS_LINE,
+    sessionTitle: '一个很长很长的会话标题用于验证窄终端裁剪顺序'
+  };
+
+  const wide = stripAnsi(renderFooterLayout({
+    composer: createComposer('x'),
+    commandSurface: null,
+    pending: null,
+    statusLine,
+    theme: CUSTOM_THEME,
+    width: 120
+  }).lines.at(-1));
+  assert.ok(wide.includes('一个很长很长的会话标题'));
+
+  const narrow = stripAnsi(renderFooterLayout({
+    composer: createComposer('x'),
+    commandSurface: null,
+    pending: null,
+    statusLine,
+    theme: CUSTOM_THEME,
+    width: 24
+  }).lines.at(-1));
+  assert.ok(narrow.includes('GPT-4o'));
+  assert.ok(!narrow.includes('会话标题'));
 });
 
 test('renderFooterLayout applies custom theme to composer status and active suggestions', () => {

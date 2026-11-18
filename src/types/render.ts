@@ -139,6 +139,7 @@ export type StatusLineActivityState = {
 
 export type StatusLineState = {
   projectName: string;
+  sessionTitle?: string; // 当前会话标题；窄终端下允许被现有裁剪策略丢弃。
   model: StatusLineModelRenderState;
   mode: StatusLineMode;
   allowAllTools?: boolean;

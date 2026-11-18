@@ -1,9 +1,7 @@
 ## Purpose
 
 定义 `/fork` 本地 slash command 的会话快照、分支切换、模型设置继承、失败反馈和共享工作目录边界。
-
 ## Requirements
-
 ### Requirement: `/fork` 从当前会话创建独立分支
 系统 SHALL 提供无参数 `/fork` 本地 slash command，从当前非空 session 的最新稳定状态创建具有新 session id 的独立会话，并在创建成功后将当前 app 切换到新会话。该命令 SHALL NOT 作为 user message 提交给 provider，也 SHALL NOT 启动 agent request。
 
@@ -102,3 +100,26 @@
 - **WHEN** 系统创建默认 slash command handlers 和 descriptors
 - **THEN** handlers SHALL 包含 `/fork`
 - **THEN** slash suggestion 与帮助文案 SHALL 提供 `/fork` 的会话分叉说明
+
+### Requirement: 分叉会话继承源会话标题
+系统 SHALL 在 `/fork` 创建新 session 时，把源 session 当前的标题写入新 session 的 index 条目。该继承 SHALL 与分叉时写入的消息数量、时间戳和 journal 指纹一起原子提交。
+
+新 session SHALL NOT 因继承动作触发标题生成请求；继承得到的标题 SHALL 与源 session 标题保持一致，直到该 session 被后续机制显式改写。
+
+#### Scenario: 分叉后继承标题
+- **GIVEN** 当前 session 的 index 标题为任意非空字符串
+- **WHEN** `/fork` 成功创建新 session
+- **THEN** 新 session 的 index 标题 SHALL 等于源 session 的标题
+- **THEN** 系统 SHALL NOT 触发标题生成请求
+
+#### Scenario: 源会话标题为派生值
+- **GIVEN** 当前 session 尚未生成过标题，index 标题为从首条用户消息派生的值
+- **WHEN** `/fork` 成功创建新 session
+- **THEN** 新 session 的 index 标题 SHALL 等于该派生值
+
+#### Scenario: 分叉失败不写标题
+- **GIVEN** 当前会话为空或新 journal 创建失败
+- **WHEN** 用户提交 `/fork`
+- **THEN** 系统 SHALL NOT 创建带标题的新 index 条目
+- **THEN** 源 session 的标题 SHALL 保持不变
+

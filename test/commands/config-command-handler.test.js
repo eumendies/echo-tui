@@ -735,7 +735,7 @@ function createHistoryBudgetDriver(options = {}) {
       theme: {listThemes: () => []},
       config: {
         readSettings: () => context.capture().getAppSettingsDraft(),
-        listApprovalModelProfiles: () => [],
+        listApprovalModelProfiles: () => options.profiles || [],
         readDraft: createDraft,
         readToolsDraft: () => ({disabledTools: []}),
         listToolCatalog: () => [],
@@ -773,6 +773,34 @@ function createHistoryBudgetDriver(options = {}) {
     }
   };
 }
+
+test('title generation row cycles through disabled, current model, and saved profiles', async (t) => {
+  const driver = createHistoryBudgetDriver({profiles: [
+    {id: 'title-a', model: 'gpt-haiku', provider: 'openai'},
+    {id: 'title-b', model: 'claude-haiku', provider: 'anthropic'}
+  ]});
+  t.after(() => driver.context.close());
+  const draft = () => driver.surface().state.draft;
+
+  await driver.select('titleModel');
+  assert.equal(draft().titleGenerationEnabled, true);
+  assert.equal(draft().titleGenerationModelProfileId, undefined);
+
+  await driver.send(INPUT_EVENTS.MOVE_RIGHT);
+  assert.equal(draft().titleGenerationModelProfileId, 'title-a');
+
+  await driver.send(INPUT_EVENTS.MOVE_RIGHT);
+  assert.equal(draft().titleGenerationModelProfileId, 'title-b');
+
+  await driver.send(INPUT_EVENTS.MOVE_RIGHT);
+  assert.equal(draft().titleGenerationEnabled, false);
+  // 关闭时保留最后一次 profile 引用，便于用户切回原选择。
+  assert.equal(draft().titleGenerationModelProfileId, 'title-b');
+
+  await driver.send(INPUT_EVENTS.MOVE_RIGHT);
+  assert.equal(draft().titleGenerationEnabled, true);
+  assert.equal(draft().titleGenerationModelProfileId, undefined);
+});
 
 test('history budget moves between ordered draft presets without wrapping or applying before save', async (t) => {
   const driver = createHistoryBudgetDriver();

@@ -7,6 +7,167 @@ const composerOps = require('../../src/input/composer');
 
 const {createHarness, createUserConfigSnapshot, createFakeTranscriptStore, createFakeSessionModelSettingsStore} = require('./assistant-turn-test-helpers');
 
+test('runAssistantTurn generates a session title only for the first user record', async () => {
+  const harness = createHarness();
+  const generated = [];
+
+  await runAssistantTurn({
+    ...harness.input,
+    sessionTitleGenerator: async (input) => {
+      generated.push(input.firstUserMessage);
+      return '优化 undo 机制';
+    },
+    async runAgent(_session, callbacks) {
+      callbacks.onComplete('done');
+    }
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.deepEqual(generated, ['hello']);
+  assert.equal(harness.appContext.transcriptContext.getSessionTitle(), '优化 undo 机制');
+});
+
+test('runAssistantTurn keeps the unnamed placeholder until the generated title arrives', async () => {
+  const harness = createHarness();
+  let resolveTitle;
+  const pending = new Promise((resolve) => {
+    resolveTitle = resolve;
+  });
+
+  const turn = runAssistantTurn({
+    ...harness.input,
+    sessionTitleGenerator: () => pending,
+    async runAgent(_session, callbacks) {
+      callbacks.onComplete('done');
+    }
+  });
+  await turn;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  // 生成未返回前不展示派生标题，避免"派生 → 生成"的跳变。
+  assert.equal(harness.appContext.transcriptContext.getSessionTitle(), '未命名对话');
+
+  resolveTitle('生成的会话标题');
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(harness.appContext.transcriptContext.getSessionTitle(), '生成的会话标题');
+});
+
+test('runAssistantTurn falls back to the derived title only after generation returns empty', async () => {
+  const harness = createHarness();
+  let resolveTitle;
+  const pending = new Promise((resolve) => {
+    resolveTitle = resolve;
+  });
+
+  const turn = runAssistantTurn({
+    ...harness.input,
+    sessionTitleGenerator: () => pending,
+    async runAgent(_session, callbacks) {
+      callbacks.onComplete('done');
+    }
+  });
+  await turn;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(harness.appContext.transcriptContext.getSessionTitle(), '未命名对话');
+
+  resolveTitle(null);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(harness.appContext.transcriptContext.getSessionTitle(), 'hello');
+});
+
+test('runAssistantTurn skips the placeholder when title generation is disabled', async () => {
+  const harness = createHarness({appSettings: {
+    activeTurnMessagePolicy: 'pending',
+    agentInstructionFileName: 'AGENTS.md',
+    autoCompressImages: true,
+    checkUpdatesOnStartup: true,
+    compactionThresholdRatio: 0.8,
+    defaultInteractionMode: 'normal',
+    historyRenderLineLimit: 1000,
+    mouseInteractionEnabled: false,
+    skillCatalogContextRatio: 0.02,
+    slashSuggestionMaxVisible: 8,
+    showReasoningSummary: true,
+    titleGenerationEnabled: false,
+    toolApprovalMode: 'manual'
+  }});
+  let calls = 0;
+
+  await runAssistantTurn({
+    ...harness.input,
+    sessionTitleGenerator: async () => {
+      calls += 1;
+      return '不应生成';
+    },
+    async runAgent(_session, callbacks) {
+      callbacks.onComplete('done');
+    }
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(calls, 0);
+  assert.equal(harness.appContext.transcriptContext.getSessionTitle(), 'hello');
+});
+
+test('runAssistantTurn skips session title generation when the session already has history', async () => {
+  const harness = createHarness();
+  // 预置历史模拟 /resume 后的会话：首条用户记录已不在本轮。
+  harness.appContext.transcriptContext.appendRecord({role: 'user', text: 'earlier'});
+  harness.appContext.transcriptContext.appendRecord({role: 'assistant', text: 'earlier answer'});
+  let calls = 0;
+
+  await runAssistantTurn({
+    ...harness.input,
+    sessionTitleGenerator: async () => {
+      calls += 1;
+      return '不应生成';
+    },
+    async runAgent(_session, callbacks) {
+      callbacks.onComplete('done');
+    }
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(calls, 0);
+});
+
+test('runAssistantTurn keeps the derived title when title generation returns null', async () => {
+  const harness = createHarness();
+
+  await runAssistantTurn({
+    ...harness.input,
+    sessionTitleGenerator: async () => null,
+    async runAgent(_session, callbacks) {
+      callbacks.onComplete('done');
+    }
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  // 生成失败时保留首条用户消息派生的标题，而不是空的"未命名对话"。
+  assert.equal(harness.appContext.transcriptContext.getSessionTitle(), 'hello');
+});
+
+test('runAssistantTurn repaints after a late session title arrives', async () => {
+  const harness = createHarness();
+  let repaints = 0;
+
+  await runAssistantTurn({
+    ...harness.input,
+    // 只统计无 finalizeRecord 的整屏重绘；带 record 的调用属于 transcript 追加。
+    render: (record) => {
+      if (!record) repaints += 1;
+    },
+    sessionTitleGenerator: async () => '生成的会话标题',
+    async runAgent(_session, callbacks) {
+      callbacks.onComplete('done');
+    }
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(harness.appContext.transcriptContext.getSessionTitle(), '生成的会话标题');
+  assert.ok(repaints >= 2);
+});
+
 test('runAssistantTurn clears the reasoning preview when the provider retries', async () => {
   const pendingSnapshots = [];
   const harness = createHarness();

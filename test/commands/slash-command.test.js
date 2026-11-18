@@ -3290,6 +3290,9 @@ test('resumeCommandHandler opens empty state, selectable sessions, moves, confir
   assert.equal(session.surface.previewScroll, 0);
   assert.equal(session.data.selectedIndex, 0);
   assert.match(session.surface.title, /\(7\)$/);
+  // 左栏只展示标题，把宽度让给会话辨识；时间与消息数移到右栏标题。
+  assert.equal(session.surface.sessions[0].label, sessions[0].title);
+  assert.match(session.surface.selectedMeta, /^2026-05-\d{2} \d{2}:\d{2} · \d+ 条$/);
   assert.equal(session.surface.previewStatus, 'loading');
   assert.deepEqual(session.surface.previewRecords, []);
   await new Promise((resolve) => setTimeout(resolve, 10));

@@ -101,6 +101,15 @@ function renderGeneralView(state: GeneralConfigState, tabs: ConfigSurfaceTab[], 
       const profile = state.approvalModelProfiles.find((candidate) => candidate.id === state.draft.toolApprovalModelProfileId);
       return {label: '自动审批模型', value: profile ? `${profile.model} (${profile.provider})` : '未配置（无法保存 auto）'};
     }
+    if (rowId === 'titleModel') {
+      const profile = state.approvalModelProfiles.find((candidate) => candidate.id === state.draft.titleGenerationModelProfileId);
+      const value = !state.draft.titleGenerationEnabled
+        ? '不生成'
+        : profile
+          ? `${profile.model} (${profile.provider})`
+          : '跟随当前模型';
+      return {label: '标题生成模型', value};
+    }
     if (rowId === 'instructionFile') return {label: '项目指令文件', value: state.draft.agentInstructionFileName};
     if (rowId === 'systemPrompt') return {label: '系统提示词', value: describeSystemPromptSourceKind(state.systemPromptSummary.kind)};
     if (rowId === 'activeTurnMessagePolicy') return {label: '响应期间发送消息', value: state.draft.activeTurnMessagePolicy === 'steer' ? '即时引导' : '排队'};
