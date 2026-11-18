@@ -97,6 +97,8 @@ export type {
   HooksCommandSurface,
   HooksCommandSurfaceTest,
   MemoryCatalogForm,
+  MemoryCommandRow,
+  MemoryCommandRowKind,
   MemoryCommandSection,
   MemoryCommandSurface,
   MemoryCommandSurfaceMode,

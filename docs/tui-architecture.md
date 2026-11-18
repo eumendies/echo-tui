@@ -540,7 +540,7 @@ flowchart TB
 | `resume` | `/resume` 历史恢复面板 | 左侧渲染最多 5 条 session 窗口，右侧渲染当前选中 session 的最近消息预览，隐藏光标 |
 | `skills` | `/skills` skill 管理面板 | 渲染 card、enabled 计数、on/off pill、行内模型策略、当前行 accent 和滚动提示；Left/Right 循环模型草稿，窄终端优先保留启停、名称和模型策略，隐藏光标 |
 | `mcp` | `/mcp` 多视图配置面板 | 按 `view` 渲染总览、server 编辑、集合子视图（args/env/headers）、只读清单（tools/resources/templates/prompts）、丢弃与删除确认、校验错误；行投影由 handler 与渲染共用，密钥值掩码显示，隐藏光标 |
-| `memory` | `/memory` 记忆管理面板 | 渲染用户记忆和 agent catalog/item 的列表、编辑与删除确认状态；编辑态显示光标 |
+| `memory` | `/memory` 记忆管理面板 | 按 handler 产出的行投影渲染类型选择、user memory 列表与详情、agent catalog 列表与详情、item 详情；行角色（条目/动作/开关/字段/选项）决定 Enter 语义，新增动作行与列表常驻，删除确认提供目标摘要加默认取消的两个选项行，编辑态显示光标 |
 | `hooks` | `/hooks` 生命周期 hook 管理面板 | 渲染事件、hook 条目、详情、编辑和测试状态；编辑态显示光标 |
 | `agents` | `/agents` Subagent 管理面板 | 列表用中文来源 Tab、短状态与范围统计定位 Agent，并从 handler 提供的结构化摘要展示当前项策略、权限、描述或诊断；约 96 列起使用列表/摘要左右分栏，窄终端改为上下堆叠。详情与表单用不参与焦点索引的“身份 / 运行策略 / 能力与权限 / 操作”分区组织，保留 Tools、Skills、默认取消确认、反馈及 name/description/instructions 真实光标编辑；每个 Agent 一级详情直接提供一个“全局启用” toggle 及同层保存/取消；策略/编辑/创建子表单不重复提供开关，往返保留全局草稿，子表单保存不顺带提交开关，全局配置异常时开关只读，统计仅表示候选而非当前可调用数量 |
 | `scale` | 有序强度选择，例如 `/effort` | 用 rounded slider 轨道展示档位与当前 knob，隐藏光标 |
