@@ -2,7 +2,6 @@ import {INPUT_EVENTS} from '../input/event-types';
 import {
   createLoadingSessionPreviewState,
   createSessionBrowserSurface,
-  formatSessionUpdatedAt,
   navigateSessionBrowser,
   normalizeSessionBrowserData
 } from './session/session-browser';
@@ -31,7 +30,8 @@ function createReferenceSurface(data: ReferenceData): ResumeCommandSurface {
   return createSessionBrowserSurface(data, {
     title: `/reference 引用对话 (${data.sessions.length})`,
     createSessionItem(session) {
-      return {label: `${formatSessionUpdatedAt(session.updatedAt)} · ${session.title}`};
+      // 与 /resume 一致：左栏只放标题，时间移到右栏标题。
+      return {label: session.title};
     },
     emptyPreviewHint: '没有可预览消息',
     dismissHint: '↑↓ 选择/滚动 · →/Tab 预览 · ← 列表 · Enter 引用 · Esc 取消'

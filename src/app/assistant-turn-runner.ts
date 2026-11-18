@@ -7,6 +7,7 @@ import type {AssistantTurnScope, Observation} from '../observation/observation';
 import type {ToolApprovalRequest, ToolCall, ToolResultAttachment} from '../types/tool';
 import type {SubagentTranscriptRecord, TranscriptRecord, UserTranscriptMetadata} from '../types/transcript';
 import type {AppContext} from './state/app-context';
+import type {SessionTitleGenerator} from './session-title-generator';
 import type {ToolApprovalContext} from './state/tool-approval-context';
 import type {ToolApprovalReviewer} from './tool-approval/resolver';
 import type {UserQuestionContext} from './state/user-question-context';
@@ -30,6 +31,7 @@ type AssistantTurnRunnerInput = {
   renderRecords: (records: TranscriptRecord[]) => void;
   render: (finalizeRecord?: Extract<TranscriptRecord, {role: 'assistant' | 'reasoning_summary'}>) => void;
   toolApprovalReviewer?: ToolApprovalReviewer; // 仅交互式 auto 审批使用的独立模型判断器。
+  sessionTitleGenerator?: SessionTitleGenerator; // 会话标题生成器；未提供时完全不发起标题请求。
 };
 
 /**
@@ -77,6 +79,7 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
   turn.abortSignal.addEventListener('abort', cancelQuestionOnAbort, {once: true});
   const turnUserRecordIndex = appContext.transcriptContext.getRecordCount() - 1;
   const isCurrentTurn = () => appContext.turnContext.isCurrentAssistantTurn(turn);
+  startSessionTitleGeneration(input, appContext, userRecord, turnUserRecordIndex, userConfigSnapshot);
   /** 只有创建人工审批 surface 时才发布交互式审批事实。 */
   async function requestManualApproval(call: ToolCall, request?: ToolApprovalRequest): Promise<ToolApprovalDecision> {
     const pendingDecision = toolApproval.requestManual(call, request);
@@ -390,6 +393,62 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
       render();
     }
   }
+}
+
+/**
+ * 在会话创建后的首条用户记录上触发一次标题生成。
+ * 生成是 fire-and-forget：不 await、不进入 pending state、失败静默，且迟到结果按 session id 隔离。
+ */
+function startSessionTitleGeneration(
+  input: AssistantTurnRunnerInput,
+  appContext: AppContext,
+  userRecord: TranscriptRecord,
+  turnUserRecordIndex: number,
+  userConfigSnapshot: ReturnType<AppContext['captureUserConfigSnapshot']>
+): void {
+  const generator = input.sessionTitleGenerator;
+
+  if (!generator || turnUserRecordIndex !== 0 || userRecord.role !== 'user') {
+    return;
+  }
+
+  const message = String(userRecord.displayText || userRecord.text || '').trim();
+  const sessionId = appContext.transcriptContext.getCurrentSessionId();
+
+  if (message === '' || !sessionId) {
+    return;
+  }
+
+  // 关闭生成时不进入等待态，直接沿用派生标题，避免多一次未命名闪烁。
+  if (userConfigSnapshot.getAppSettings().titleGenerationEnabled === false) {
+    return;
+  }
+
+  appContext.transcriptContext.beginSessionTitleGeneration();
+
+  void generator({firstUserMessage: message, userConfigSnapshot})
+    .then((title) => {
+      // 会话可能在请求期间被 /resume、/fork 或 /clear 替换，迟到结果不得写入新会话。
+      if (appContext.transcriptContext.getCurrentSessionId() !== sessionId) {
+        return;
+      }
+
+      if (title) {
+        appContext.transcriptContext.applySessionTitle(title);
+      } else {
+        // 生成失败或返回空结果时才回落到派生标题。
+        appContext.transcriptContext.settleSessionTitle();
+      }
+
+      // 标题可能晚于 turn 结束返回，必须主动重绘，否则状态栏要等到下次交互才更新。
+      input.render();
+    })
+    .catch(() => {
+      if (appContext.transcriptContext.getCurrentSessionId() === sessionId) {
+        appContext.transcriptContext.settleSessionTitle();
+        input.render();
+      }
+    });
 }
 
 export {

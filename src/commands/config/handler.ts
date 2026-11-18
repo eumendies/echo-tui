@@ -904,6 +904,20 @@ function adjustGeneralValue(state: GeneralConfigState, direction: number): Gener
     const current = state.approvalModelProfiles.findIndex((profile) => profile.id === state.draft.toolApprovalModelProfileId);
     const next = (Math.max(0, current) + direction + state.approvalModelProfiles.length) % state.approvalModelProfiles.length;
     state.draft.toolApprovalModelProfileId = state.approvalModelProfiles[next].id;
+  } else if (selectedRow === 'titleModel') {
+    // 单行表达三态：不生成、跟随当前模型、指定 profile；未选中的 profile 引用会保留以便切回。
+    const options = [
+      {enabled: false, profileId: state.draft.titleGenerationModelProfileId},
+      {enabled: true, profileId: undefined},
+      ...state.approvalModelProfiles.map((profile) => ({enabled: true, profileId: profile.id}))
+    ];
+    const current = options.findIndex((option) =>
+      option.enabled === state.draft.titleGenerationEnabled
+      && (!option.enabled || option.profileId === state.draft.titleGenerationModelProfileId)
+    );
+    const next = (Math.max(0, current) + direction + options.length) % options.length;
+    state.draft.titleGenerationEnabled = options[next].enabled;
+    state.draft.titleGenerationModelProfileId = options[next].profileId;
   } else if (selectedRow === 'instructionFile') {
     state.draft.agentInstructionFileName = state.draft.agentInstructionFileName === 'AGENTS.md' ? 'CLAUDE.md' : 'AGENTS.md';
   }

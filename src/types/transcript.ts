@@ -327,6 +327,7 @@ export type TranscriptSessionSummary = {
   cwd: string; // session 所属工作目录，必须与当前项目分区一致。
   messageCount: number; // replay 最终状态中仍然存在的 record 数量。
   title: string; // 从 replay 后第一条用户消息派生的稳定列表标题。
+  titleSource?: 'derived' | 'generated'; // 标题来源：derived 随 records 重算，generated 不被 records 变化覆盖；缺失按 derived 处理以兼容旧 index。
   fingerprint: TranscriptJournalFingerprint; // 生成该摘要时对应的 journal 文件版本。
 };
 
@@ -337,7 +338,8 @@ export type TranscriptSessionIndex = {
 
 export type TranscriptSessionIndexState = {
   messageCount: number; // 完整有效历史的记录总数，包含已压缩且不再驻留的前缀。
-  title: string; // 按完整有效历史派生并缓存的有界标题，不从驻留后缀重新推导。
+  title: string; // 该 session 当前应展示的标题；调用方必须显式给出，避免依赖 index 旧值。
+  titleSource: 'derived' | 'generated'; // 标题来源：derived 随 records 重算，generated 不被 records 变化覆盖。
 };
 
 export type TranscriptSessionPreview = {

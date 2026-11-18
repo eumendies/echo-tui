@@ -34,8 +34,8 @@ function normalizeResumeData(data: Partial<ResumeData> | null | undefined): Resu
 }
 
 function createSessionItem(session: TranscriptSessionSummary): {label: string} {
-  const messageCount = Number.isInteger(session.messageCount) ? session.messageCount : 0;
-  return {label: `${formatSessionUpdatedAt(session.updatedAt)} · ${messageCount} 条消息`};
+  // 左栏只放标题，把宽度全部让给它；时间与消息数由右栏标题展示。
+  return {label: session.title};
 }
 
 function createResumeSurfaceFromData(data: ResumeData): ResumeCommandSurface {

@@ -53,12 +53,13 @@ export function renderResumeSurface(commandSurface: ResumeCommandSurface, width:
   );
   const focus = commandSurface.focus === 'preview' ? 'preview' : 'list';
   const leftPrefix = `${tokenText(theme, 'frame', '│')} `;
+  const previewHeader = commandSurface.selectedMeta ? `预览 · ${commandSurface.selectedMeta}` : '预览';
   const lines = [
     renderBoxTop(boxWidth, theme),
     renderFullLine(renderTitle(commandSurface.title, boxWidth - 4, theme), boxWidth, theme),
     renderSplitLine(
-      renderPanelHeader('会话', focus === 'list', theme),
-      renderPanelHeader('预览', focus === 'preview', theme),
+      renderPanelHeader('会话', focus === 'list', theme, leftWidth),
+      renderPanelHeader(previewHeader, focus === 'preview', theme, rightWidth),
       leftWidth,
       rightWidth,
       theme,
@@ -206,8 +207,12 @@ function renderTitle(title: string, width: number, theme: FooterTheme): string {
 /**
  * 渲染栏标题；当前焦点栏使用统一粗竖条提示方向键作用对象。
  */
-function renderPanelHeader(label: string, active: boolean, theme: FooterTheme): string {
-  const text = active ? `${renderFocusBar(theme)} ${label}` : `  ${label}`;
+function renderPanelHeader(label: string, active: boolean, theme: FooterTheme, maxWidth?: number): string {
+  const prefix = active ? `${renderFocusBar(theme)} ` : '  ';
+  // 栏头必须留在自己的列宽内：右侧元数据在窄终端按裁剪省略，不能挤掉预览列。
+  const available = maxWidth === undefined ? undefined : Math.max(1, maxWidth - displayWidth(prefix));
+  const content = available === undefined ? label : clampPlainText(label, available);
+  const text = `${prefix}${content}`;
   const styled = tokenText(theme, active ? 'accentStrong' : 'accent', active ? ansi.bold(text) : text);
 
   return styled;

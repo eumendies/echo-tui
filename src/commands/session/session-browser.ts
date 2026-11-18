@@ -103,6 +103,10 @@ function createSessionBrowserSurface<TSession extends SessionBrowserSession>(dat
     focus: normalized.focus,
     title: options.title,
     sessions: normalized.sessions.map(options.createSessionItem),
+    // 左栏只保留会话标题；选中项的更新时间与消息数移到右栏标题，避免挤占标题宽度。
+    ...(selectedSession
+      ? {selectedMeta: `${formatSessionUpdatedAt(selectedSession.updatedAt)} · ${selectedSession.messageCount} 条`}
+      : {}),
     selectedIndex: normalized.selectedIndex,
     previewScroll: normalized.previewScroll,
     previewStatus: asyncPreview?.status || 'ready',

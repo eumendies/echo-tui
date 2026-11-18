@@ -243,6 +243,8 @@ export type AgentUserConfigSnapshot = {
     skillCatalogContextRatio: number; // 本回合 skill catalog 的上下文预算比例。
     toolApprovalMode: 'manual' | 'auto'; // 本回合工具审批策略。
     toolApprovalModelProfileId?: string; // 本回合自动审批严格引用的 profile。
+    titleGenerationEnabled?: boolean; // 本回合是否允许发起标题生成；缺省视为开启。
+    titleGenerationModelProfileId?: string; // 本回合标题生成严格引用的 profile；缺失时使用当前模型。
   };
   getLlmModelConfigInfo(): {
     kind: 'profiles'; // 当前配置使用 profile 目录模型。

@@ -555,6 +555,47 @@ test('session index metadata update preserves full count and cached title withou
   assert.equal(JSON.parse(fs.readFileSync(store.getSessionIndexFilePath(cwd), 'utf8')).schemaVersion, 1);
 });
 
+test('session index keeps a generated title across journal appends that invalidate the fingerprint', () => {
+  const rootDir = createTempRoot();
+  const cwd = '/tmp/example/resume-index-generated-title';
+  const store = createTranscriptStore({rootDir});
+  const records = [{role: 'user', text: '原始首条消息'}, {role: 'assistant', text: 'answer'}];
+  let reference = store.createSession(cwd, createAppendRecordsOperation(records), '2026-07-01T00:00:00.000Z');
+  store.updateSessionIndex(cwd, reference, {
+    messageCount: records.length,
+    title: '生成的标题',
+    titleSource: 'generated'
+  });
+
+  // 只追加 journal 而不更新 index，制造指纹失配以触发重建路径。
+  reference = store.appendSession(cwd, reference, createAppendRecordsOperation([{role: 'assistant', text: 'later'}]), '2026-07-01T00:00:02.000Z');
+  const [summary] = store.listSessionSummaries(cwd);
+
+  assert.equal(summary.title, '生成的标题');
+  assert.equal(summary.titleSource, 'generated');
+  assert.equal(summary.messageCount, 3);
+});
+
+test('session index never lets a derived title update overwrite a generated title', () => {
+  const rootDir = createTempRoot();
+  const cwd = '/tmp/example/resume-index-generated-protect';
+  const store = createTranscriptStore({rootDir});
+  const records = [{role: 'user', text: '原始首条消息'}];
+  const reference = store.createSession(cwd, createAppendRecordsOperation(records), '2026-07-01T00:00:00.000Z');
+  store.updateSessionIndex(cwd, reference, {
+    messageCount: records.length,
+    title: '生成的标题',
+    titleSource: 'generated'
+  });
+
+  // 调用方只带派生标题、未声明来源时，store 必须保留已有的生成标题。
+  store.updateSessionIndex(cwd, reference, {messageCount: records.length, title: '派生候选'});
+  const [summary] = store.listSessionSummaries(cwd);
+
+  assert.equal(summary.title, '生成的标题');
+  assert.equal(summary.titleSource, 'generated');
+});
+
 test('session index rebuild derives count and title from full valid compacted records after truncate', () => {
   const rootDir = createTempRoot();
   const cwd = '/tmp/example/resume-index-compacted-rebuild';
@@ -680,6 +721,83 @@ test('TranscriptContext maintains session index for append, state update, trunca
   const fork = context.forkSession();
   assert.equal(fork.ok, true);
   assert.deepEqual(store.listSessionSummaries(cwd).map((session) => session.messageCount), [1, 1]);
+});
+
+test('TranscriptContext fork inherits the source session title and its generated marker', () => {
+  const rootDir = createTempRoot();
+  const cwd = '/tmp/example/resume-index-fork-title';
+  const store = createTranscriptStore({rootDir});
+  const context = new TranscriptContext(store, () => cwd);
+
+  context.appendRecord({role: 'user', text: '派生标题来源'});
+  context.applySessionTitle('生成的会话标题');
+
+  const fork = context.forkSession();
+  assert.equal(fork.ok, true);
+
+  const summaries = store.listSessionSummaries(cwd);
+  const forked = summaries.find((session) => session.sessionId === fork.sessionId);
+
+  assert.equal(forked.title, '生成的会话标题');
+  assert.equal(forked.titleSource, 'generated');
+  assert.equal(context.getSessionTitle(), '生成的会话标题');
+});
+
+test('TranscriptContext fork inherits a derived title without promoting it to generated', () => {
+  const rootDir = createTempRoot();
+  const cwd = '/tmp/example/resume-index-fork-derived';
+  const store = createTranscriptStore({rootDir});
+  const context = new TranscriptContext(store, () => cwd);
+
+  context.appendRecord({role: 'user', text: '仍然派生的标题'});
+
+  const fork = context.forkSession();
+  assert.equal(fork.ok, true);
+
+  const forked = store.listSessionSummaries(cwd).find((session) => session.sessionId === fork.sessionId);
+
+  assert.equal(forked.title, '仍然派生的标题');
+  assert.notEqual(forked.titleSource, 'generated');
+});
+
+test('TranscriptContext loadSession restores a generated title from the session index', () => {
+  const rootDir = createTempRoot();
+  const cwd = '/tmp/example/resume-title-load';
+  const store = createTranscriptStore({rootDir});
+  const original = new TranscriptContext(store, () => cwd);
+
+  original.appendRecord({role: 'user', text: '派生标题来源'});
+  original.applySessionTitle('生成的会话标题');
+  const sessionId = original.currentSessionId;
+
+  const reopened = new TranscriptContext(store, () => cwd);
+  assert.equal(reopened.loadSession(sessionId), true);
+  assert.equal(reopened.getSessionTitle(), '生成的会话标题');
+});
+
+test('TranscriptContext restoreToBoundary keeps a generated title when truncating all records', () => {
+  const rootDir = createTempRoot();
+  const cwd = '/tmp/example/resume-title-truncate';
+  const store = createTranscriptStore({rootDir});
+  const context = new TranscriptContext(store, () => cwd);
+
+  context.appendRecord({role: 'user', text: '派生标题来源'});
+  context.applySessionTitle('生成的会话标题');
+  context.appendRecord({role: 'assistant', text: 'answer'});
+  context.restoreToBoundary(0, undefined);
+
+  assert.equal(context.getSessionTitle(), '生成的会话标题');
+  assert.equal(store.listSessionSummaries(cwd)[0].title, '生成的会话标题');
+  assert.equal(store.listSessionSummaries(cwd)[0].titleSource, 'generated');
+});
+
+test('createSessionTitle truncates by grapheme without splitting emoji sequences', () => {
+  const emojiTitle = '👨‍👩‍👧'.repeat(80);
+  const title = createSessionTitle([{role: 'user', text: emojiTitle}]);
+  const {splitGraphemes} = require('../../src/input/graphemes');
+
+  assert.equal(splitGraphemes(title).length, 60);
+  assert.ok(title.includes('👨‍👩‍👧'));
 });
 
 test('session index write failure does not roll back a persisted journal', () => {

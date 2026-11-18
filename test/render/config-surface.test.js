@@ -206,7 +206,7 @@ test('config center renders general tabs, settings, and constrained width', () =
   assert.match(text, /启动时检查更新\s+开/);
   assert.doesNotMatch(text, /文件编辑工具|edit_file|apply_patch/);
   assert.match(text, /超限图片自动压缩/);
-  assert.match(text, /↓ 4 更多/);
+  assert.match(text, /↓ 5 更多/);
   assert.ok(layout.lines.every((line) => displayWidth(line) <= 38));
 });
 
@@ -262,7 +262,7 @@ test('general config windows preserve every selected row at tiny heights with hi
     historyRenderLineLimit: '历史重绘预算', mouseInteraction: 'UI 鼠标交互',
     defaultInteractionMode: '默认启动模式', autoCompressImages: '超限图片自动压缩',
     checkUpdatesOnStartup: '启动时检查更新', toolApprovalMode: '工具审批模式',
-    toolApprovalModel: '自动审批模型', instructionFile: '项目指令文件',
+    toolApprovalModel: '自动审批模型', titleModel: '标题生成模型', instructionFile: '项目指令文件',
     activeTurnMessagePolicy: '响应期间发送消息', save: '保存常规设置', systemPrompt: '系统提示词'
   };
   for (const toolApprovalMode of ['manual', 'auto']) {
@@ -372,6 +372,21 @@ test('config center only renders approval model for auto draft', () => {
   const unavailable = createInitialGeneralConfigState({...settings, toolApprovalMode: 'auto', toolApprovalModelProfileId: undefined}, []);
   const unavailableText = renderConfigSurface({kind: 'config', view: 'general', activeTab: 'general', tabs, state: unavailable}, 90).lines.map(stripAnsi).join('\n');
   assert.match(unavailableText, /未配置（无法保存 auto）/);
+});
+
+test('config center renders the three title generation states', () => {
+  const profiles = [{id: 'title-model', model: 'gpt-haiku', provider: 'openai'}];
+  const tabs = [{id: 'general', label: '常规'}];
+  const render = (overrides) => {
+    const state = createInitialGeneralConfigState({...DEFAULT_APP_SETTINGS, ...overrides}, profiles);
+    return renderConfigSurface({kind: 'config', view: 'general', activeTab: 'general', tabs, state}, 90)
+      .lines.map(stripAnsi).join('\n');
+  };
+
+  assert.match(render({titleGenerationEnabled: false}), /标题生成模型\s+不生成/);
+  assert.match(render({titleGenerationEnabled: true}), /标题生成模型\s+跟随当前模型/);
+  assert.match(render({titleGenerationEnabled: true, titleGenerationModelProfileId: 'title-model'}), /gpt-haiku \(openai\)/);
+  assert.doesNotMatch(render({titleGenerationEnabled: true}), /low effort/);
 });
 
 test('config center renders approval API model name and provider without the profile id', () => {

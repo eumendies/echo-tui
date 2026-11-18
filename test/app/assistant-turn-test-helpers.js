@@ -176,6 +176,7 @@ function createConfigRootFromAppSettings(settings) {
     compaction: {thresholdRatio: settings.compactionThresholdRatio},
     instructions: {fileName: settings.agentInstructionFileName},
     skills: {catalogContextRatio: settings.skillCatalogContextRatio},
+    sessions: {titleGenerationEnabled: settings.titleGenerationEnabled !== false},
     tools: {
       approval: {mode: settings.toolApprovalMode, ...(settings.toolApprovalModelProfileId ? {modelProfileId: settings.toolApprovalModelProfileId} : {})},
       readFiles: {autoCompressImages: settings.autoCompressImages}

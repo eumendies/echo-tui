@@ -31,6 +31,7 @@ import {UserQuestionContext} from './state/user-question-context';
 import {BtwConversationController} from './btw-conversation-controller';
 import {SubagentViewController} from './subagent-view-controller';
 import {createToolApprovalReviewer} from './tool-approval/resolver';
+import {createSessionTitleGenerator} from './session-title-generator';
 import {AutoUpdateController} from './auto-update-controller';
 import {createActiveInputRouting} from './active-input-resolver';
 import {FooterPointerController} from './footer-pointer-controller';
@@ -253,6 +254,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
     cwd: () => appContext.getCurrentCwd(),
     usageStore
   });
+  const sessionTitleGenerator = createSessionTitleGenerator();
   const userQuestion = new UserQuestionContext(() => renderCoordinator.render());
   const filePicker = new FilePickerContext(appContext.composerContext.composer, {
     columns: () => terminal.getSize().columns,
@@ -397,6 +399,7 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
         runAgent,
         toolApproval,
         toolApprovalReviewer,
+        sessionTitleGenerator,
         userQuestion,
         ...submission,
         observation,

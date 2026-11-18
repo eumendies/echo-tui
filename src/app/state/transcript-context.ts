@@ -37,6 +37,8 @@ class TranscriptContext {
   private records: TranscriptRecord[]; // 完整有效历史的连续驻留后缀；完整历史只在显式历史操作中按需回读。
   baseRecordIndex = 0;
   private sessionTitle = '未命名对话';
+  private sessionTitleSource: 'derived' | 'generated' = 'derived'; // 标题来源；generated 不随 records 变化重算。
+  private sessionTitlePending = false; // 首次生成结果到达前对外仍报未命名，避免派生标题跳变。
   private firstUserRecordIndex: number | null = null; // 普通 Undo 按此完整位置判断缓存标题是否仍有效，无需回读旧原文。
   currentSession: TranscriptSessionJournalReference | null;
   currentSessionId: string | null;
@@ -95,6 +97,17 @@ class TranscriptContext {
    */
   getCurrentSessionId(): string | null {
     return this.currentSessionId;
+  }
+
+  /**
+   * 返回当前会话的展示标题；尚未持久化或只有派生值时返回内存缓存。
+   */
+  getSessionTitle(): string {
+    if (this.sessionTitlePending) {
+      return '未命名对话';
+    }
+
+    return this.sessionTitle;
   }
 
   /**
@@ -214,7 +227,9 @@ class TranscriptContext {
     this.currentSession = nextSession;
     this.currentSessionId = nextSession.sessionId;
     this.clearPendingState();
-    this.updateSessionIndex(nextSession, this.getRecordCount(), this.sessionTitle);
+    // 分支会话直接继承内存中的标题与来源，避免为读取来源再查一次 index。
+    this.sessionTitlePending = false;
+    this.updateSessionIndex(nextSession, this.getRecordCount(), this.sessionTitle, this.sessionTitleSource);
 
     return {
       ok: true,
@@ -234,10 +249,15 @@ class TranscriptContext {
     }
 
     const session = loaded.session;
+    // index 是标题与来源的权威缓存；缺失或过期时才退回派生值。
+    const summary = this.transcriptStore.listSessionSummaries(this.getCurrentCwd())
+      .find((item) => item.sessionId === sessionId);
     this.baseRecordIndex = session.compaction?.activeStartIndex ?? 0;
     // 读取结果由本次恢复独占，直接安装活跃后缀即可，不需要再复制一份等量记录。
     this.records = session.records.slice(this.baseRecordIndex);
-    this.sessionTitle = createSessionTitle(session.records);
+    this.sessionTitle = summary?.title ?? createSessionTitle(session.records);
+    this.sessionTitleSource = summary?.titleSource ?? 'derived';
+    this.sessionTitlePending = false;
     const firstUserIndex = session.records.findIndex((record) => record.role === 'user');
     this.firstUserRecordIndex = firstUserIndex < 0 ? null : firstUserIndex;
     this.currentSession = loaded.reference;
@@ -273,6 +293,8 @@ class TranscriptContext {
     this.records.length = 0;
     this.baseRecordIndex = 0;
     this.sessionTitle = '未命名对话';
+    this.sessionTitleSource = 'derived';
+    this.sessionTitlePending = false;
     this.firstUserRecordIndex = null;
     this.currentSession = null;
     this.currentSessionId = null;
@@ -310,7 +332,14 @@ class TranscriptContext {
     // 普通截尾不需要旧原文；用首条用户的完整位置判断缓存标题是否仍然有效。
     const firstUserIndex = needsHistory ? sourceRecords.findIndex((record) => record.role === 'user') : this.firstUserRecordIndex;
     const nextFirstUserIndex = firstUserIndex !== null && firstUserIndex >= 0 && firstUserIndex < nextCount ? firstUserIndex : null;
-    const nextTitle = nextFirstUserIndex === null ? '未命名对话' : needsHistory ? createSessionTitle(sourceRecords) : this.sessionTitle;
+    // 生成标题与 records 无关，undo 截尾不得把它退回派生值或占位。
+    const nextTitle = this.sessionTitleSource === 'generated'
+      ? this.sessionTitle
+      : nextFirstUserIndex === null
+        ? '未命名对话'
+        : needsHistory
+          ? createSessionTitle(sourceRecords)
+          : this.sessionTitle;
     // 栈为空时"弹出栈顶"没有可回退的 checkpoint：内存上是空操作，写进 journal 却会让重放判定不可恢复。
     const popsChangeCheckpoint = this.changeHistory.length > 0;
     const continuation = popsChangeCheckpoint
@@ -339,7 +368,7 @@ class TranscriptContext {
     if (this.currentSession) {
       this.currentSession = this.transcriptStore.appendSession(this.getCurrentCwd(), this.currentSession, operation);
       this.currentSessionId = this.currentSession.sessionId;
-      this.updateSessionIndex(this.currentSession, nextCount, nextTitle);
+      this.updateSessionIndex(this.currentSession, nextCount, nextTitle, this.sessionTitleSource);
     }
 
     this.baseRecordIndex = nextBase;
@@ -444,14 +473,50 @@ class TranscriptContext {
         this.sessionTitle = createSessionTitle(records);
       }
     }
-    this.updateSessionIndex(this.currentSession, this.getRecordCount() + records.length, this.sessionTitle);
+    this.updateSessionIndex(this.currentSession, this.getRecordCount() + records.length, this.sessionTitle, this.sessionTitleSource);
     this.clearPendingState();
   }
 
+  /**
+   * 写入模型生成的会话标题；index 更新失败时保留内存标题，避免模型结果因缓存故障丢失。
+   */
+  applySessionTitle(title: string): void {
+    const normalized = String(title || '').trim();
+
+    if (normalized === '' || !this.currentSession) {
+      return;
+    }
+
+    this.sessionTitle = normalized;
+    this.sessionTitleSource = 'generated';
+    this.sessionTitlePending = false;
+    this.updateSessionIndex(this.currentSession, this.getRecordCount(), normalized, 'generated');
+  }
+
+  /**
+   * 进入首次标题生成等待：期间对外仍报未命名，避免先展示派生标题再跳到生成标题。
+   * 只有确实会发起生成的调用方才能调用，否则会永久停在未命名。
+   */
+  beginSessionTitleGeneration(): void {
+    this.sessionTitlePending = true;
+  }
+
+  /**
+   * 结束等待并回落到当前内存标题；生成失败或返回空结果时由调用方触发。
+   */
+  settleSessionTitle(): void {
+    this.sessionTitlePending = false;
+  }
+
   /** index 是可重建缓存，维护失败不得改变已经提交的 journal 和内存状态。 */
-  private updateSessionIndex(reference: TranscriptSessionJournalReference, messageCount: number, title: string): void {
+  private updateSessionIndex(
+    reference: TranscriptSessionJournalReference,
+    messageCount: number,
+    title: string,
+    titleSource: 'derived' | 'generated'
+  ): void {
     try {
-      this.transcriptStore.updateSessionIndex(this.getCurrentCwd(), reference, {messageCount, title});
+      this.transcriptStore.updateSessionIndex(this.getCurrentCwd(), reference, {messageCount, title, titleSource});
     } catch {
       // 下一次 /resume 会通过 journal 指纹重建缺失或过期条目。
     }
