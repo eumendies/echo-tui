@@ -68,6 +68,7 @@ export type ResumeCommandSurface = {
   previewRecords: ResumeCommandSurfacePreviewRecord[]; // ready 状态下按渲染行折行显示的预览记录。
   previewError?: string; // 预览读取失败时展示的稳定错误文案。
   notice?: string; // 当前浏览器状态的临时中文说明，例如当前会话删除保护提示。
+  selectedMeta?: string; // 当前选中项的次要信息（更新时间与消息数），展示在右栏标题；左栏让位给会话标题。
   emptyPreviewHint: string; // 预览无记录时的占位文案。
   dismissHint: string; // 面板底部键位提示。
 };

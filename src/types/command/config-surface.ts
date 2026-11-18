@@ -103,7 +103,7 @@ export type ConfigSurfaceTab = {
 };
 
 export type GeneralConfigState = {
-  approvalModelProfiles: ToolApprovalModelProfile[]; // 当前配置文件中可供自动审批引用的非敏感模型目录。
+  approvalModelProfiles: ToolApprovalModelProfile[]; // 当前配置文件中可供自动审批与标题生成引用的非敏感模型目录。
   draft: AppSettings;
   error?: string;
   feedback?: string;

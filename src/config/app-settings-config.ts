@@ -15,6 +15,8 @@ type AppSettings = {
   slashSuggestionMaxVisible: number;
   toolApprovalMode: ToolApprovalMode; // 控制交互式 approval-required 调用先人工确认还是先由模型判断。
   toolApprovalModelProfileId?: string; // 自动审批严格引用的已保存模型 profile；manual 模式仅保留该选择。
+  titleGenerationEnabled: boolean; // 控制是否为新建会话生成 AI 标题；关闭时只保留派生标题。
+  titleGenerationModelProfileId?: string; // 会话标题生成严格引用的已保存模型 profile；缺失时使用当前模型并覆盖 low effort。
 };
 
 type DefaultInteractionMode = 'normal' | 'plan';
@@ -43,6 +45,7 @@ const DEFAULT_APP_SETTINGS: Readonly<AppSettings> = {
   skillCatalogContextRatio: 0.02,
   showReasoningSummary: true,
   slashSuggestionMaxVisible: 8,
+  titleGenerationEnabled: true,
   toolApprovalMode: 'manual'
 };
 const DEFAULT_RENDER_PREFERENCES: Readonly<AppRenderPreferences> = {
@@ -122,6 +125,21 @@ function validateAppSettingsDraft(draft: AppSettings, modelProfileIds?: Readonly
     return {ok: false, error: '自动工具审批需要选择一个已保存的有效模型 profile'};
   }
 
+  // 关闭生成时允许保留失效的旧引用：开关关闭不应因为历史 profile 消失而无法保存。
+  if (draft.titleGenerationEnabled && draft.titleGenerationModelProfileId !== undefined) {
+    if (typeof draft.titleGenerationModelProfileId !== 'string' || draft.titleGenerationModelProfileId.trim() === '') {
+      return {ok: false, error: '标题生成模型必须引用有效的模型 profile'};
+    }
+
+    if (!modelProfileIds?.has(draft.titleGenerationModelProfileId)) {
+      return {ok: false, error: '标题生成模型必须引用有效的模型 profile'};
+    }
+  }
+
+  if (typeof draft.titleGenerationEnabled !== 'boolean') {
+    return {ok: false, error: '标题生成开关必须是布尔值'};
+  }
+
   return {ok: true};
 }
 
@@ -138,6 +156,7 @@ function applyAppSettingsDraft(rootConfig: UserConfigSource, draft: AppSettings)
   const compaction = isPlainObject(rootConfig.compaction) ? {...rootConfig.compaction} : {};
   const instructions = isPlainObject(rootConfig.instructions) ? {...rootConfig.instructions} : {};
   const skills = isPlainObject(rootConfig.skills) ? {...rootConfig.skills} : {};
+  const sessions = isPlainObject(rootConfig.sessions) ? {...rootConfig.sessions} : {};
   const ui = isPlainObject(rootConfig.ui) ? {...rootConfig.ui} : {};
   const updates = isPlainObject(rootConfig.updates) ? {...rootConfig.updates} : {};
   const tools = isPlainObject(rootConfig.tools) ? {...rootConfig.tools} : {};
@@ -159,11 +178,19 @@ function applyAppSettingsDraft(rootConfig: UserConfigSource, draft: AppSettings)
   if (draft.toolApprovalModelProfileId !== undefined) {
     approval.modelProfileId = draft.toolApprovalModelProfileId;
   }
+  if (draft.titleGenerationModelProfileId !== undefined) {
+    sessions.titleModelProfileId = draft.titleGenerationModelProfileId;
+  } else {
+    // 显式切回"跟随当前模型"必须删除旧引用，否则 normalize 会读回旧 profile 让用户切不回去。
+    delete sessions.titleModelProfileId;
+  }
+  sessions.titleGenerationEnabled = draft.titleGenerationEnabled;
   tools.readFiles = readFiles;
   tools.approval = approval;
   rootConfig.compaction = compaction;
   rootConfig.instructions = instructions;
   rootConfig.skills = skills;
+  rootConfig.sessions = sessions;
   rootConfig.ui = ui;
   rootConfig.updates = updates;
   rootConfig.tools = tools;
@@ -173,6 +200,7 @@ function normalizeAppSettings(rootConfig: UserConfigSource): AppSettings {
   const compaction = isPlainObject(rootConfig.compaction) ? rootConfig.compaction : {};
   const instructions = isPlainObject(rootConfig.instructions) ? rootConfig.instructions : {};
   const skills = isPlainObject(rootConfig.skills) ? rootConfig.skills : {};
+  const sessions = isPlainObject(rootConfig.sessions) ? rootConfig.sessions : {};
   const ui = isPlainObject(rootConfig.ui) ? rootConfig.ui : {};
   const updates = isPlainObject(rootConfig.updates) ? rootConfig.updates : {};
   const tools = isPlainObject(rootConfig.tools) ? rootConfig.tools : {};
@@ -221,6 +249,12 @@ function normalizeAppSettings(rootConfig: UserConfigSource): AppSettings {
     toolApprovalMode: isToolApprovalMode(approval.mode) ? approval.mode : DEFAULT_APP_SETTINGS.toolApprovalMode,
     ...(typeof approval.modelProfileId === 'string' && approval.modelProfileId.trim() !== ''
       ? {toolApprovalModelProfileId: approval.modelProfileId}
+      : {}),
+    titleGenerationEnabled: typeof sessions.titleGenerationEnabled === 'boolean'
+      ? sessions.titleGenerationEnabled
+      : DEFAULT_APP_SETTINGS.titleGenerationEnabled,
+    ...(typeof sessions.titleModelProfileId === 'string' && sessions.titleModelProfileId.trim() !== ''
+      ? {titleGenerationModelProfileId: sessions.titleModelProfileId}
       : {})
   };
 }

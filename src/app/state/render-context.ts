@@ -80,7 +80,7 @@ class RenderContext {
   /**
    * 组合渲染层需要的瞬时状态，避免 main.ts 反复散落访问实例字段。
    */
-  createRenderState(options: {allowAllTools?: boolean; commandSurface?: CommandSurface | null; contextUsage?: ContextUsageState | null; conversationReference?: RenderState['conversationReference']; footerInteractionId?: RenderState['footerInteractionId']; model?: StatusLineModelRenderState; pendingMessage?: RenderState['pendingMessage']; renderPreferences?: RenderPreferences; slashSuggestions?: SlashSuggestionState | null} = {}): RenderState {
+  createRenderState(options: {allowAllTools?: boolean; commandSurface?: CommandSurface | null; contextUsage?: ContextUsageState | null; conversationReference?: RenderState['conversationReference']; footerInteractionId?: RenderState['footerInteractionId']; model?: StatusLineModelRenderState; pendingMessage?: RenderState['pendingMessage']; renderPreferences?: RenderPreferences; sessionTitle?: string; slashSuggestions?: SlashSuggestionState | null} = {}): RenderState {
     const terminalSize = this.terminal.getSize();
     const commandSurface = options.commandSurface ?? null;
     const slashSuggestions = options.slashSuggestions ?? null;
@@ -99,7 +99,7 @@ class RenderContext {
       working,
       theme: this.theme,
       renderPreferences: options.renderPreferences || DEFAULT_RENDER_PREFERENCES,
-      statusLine: commandSurface ? undefined : this.createStatusLineState(options.model, pending, working, slashSuggestions, options.contextUsage ?? null, options.allowAllTools || false, Boolean(pendingMessage)),
+      statusLine: commandSurface ? undefined : this.createStatusLineState(options.model, pending, working, slashSuggestions, options.contextUsage ?? null, options.allowAllTools || false, Boolean(pendingMessage), options.sessionTitle),
       rows: terminalSize.rows,
       width: terminalSize.columns
     };
@@ -108,7 +108,7 @@ class RenderContext {
   /**
    * 根据当前普通 composer 上下文派生 status line；command surface 使用自身提示，不创建全局状态栏。
    */
-  private createStatusLineState(model: StatusLineModelRenderState | undefined, pending: PendingState | null, working: WorkingState | null, slashSuggestions: SlashSuggestionState | null, contextUsage: ContextUsageState | null, allowAllTools: boolean, hasPendingMessage: boolean): StatusLineState {
+  private createStatusLineState(model: StatusLineModelRenderState | undefined, pending: PendingState | null, working: WorkingState | null, slashSuggestions: SlashSuggestionState | null, contextUsage: ContextUsageState | null, allowAllTools: boolean, hasPendingMessage: boolean, sessionTitle?: string): StatusLineState {
     const mode = this.bootstrapStateOwner.getMcpBootstrapStatus() === 'initializing'
       ? 'mcp'
       : resolveStatusLineMode(pending, slashSuggestions, this.getInteractionMode());
@@ -124,6 +124,7 @@ class RenderContext {
 
     return {
       projectName: path.basename(this.getCurrentCwd()) || this.getCurrentCwd(),
+      ...(sessionTitle && sessionTitle.trim() !== '' ? {sessionTitle: sessionTitle.trim()} : {}),
       model: normalizedModel,
       mode,
       ...(allowAllTools ? {allowAllTools: true} : {}),

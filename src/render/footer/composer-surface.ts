@@ -16,6 +16,7 @@ const MODEL_TUNING_PLACEHOLDER = 'Tab 切换字段 · ←/→ 调整 · Enter �
 const BTW_COMPOSER_PLACEHOLDER = '临时只读旁路问题 · Ctrl+J 换行 · Esc 返回主会话';
 const COMPOSER_MAX_VISIBLE_LINES = 8;
 const STATUS_SEPARATOR = '│';
+const STATUS_SESSION_TITLE_BUDGET = 40; // 状态栏标题的字符预算；超出部分由 clampPlainText 省略。
 const COMPOSER_BOX_SIDE_BORDER = '│';
 const COMPOSER_BOX_SIDE_PADDING = ' ';
 const COMPOSER_BOX_CONTENT_OFFSET = displayWidth(`${COMPOSER_BOX_SIDE_BORDER}${COMPOSER_BOX_SIDE_PADDING}`);
@@ -277,6 +278,15 @@ function createLeftStatusSegments(statusLine: StatusLineState, theme: FooterThem
   const segments = statusLine.model.kind === 'tuning'
     ? createModelTuningStatusSegments(statusLine.model, theme)
     : createDefaultModelStatusSegments(statusLine.model, theme);
+
+  // 标题紧随 model/effort，位于工具与目录之前；模型调节期间让位给专用交互行。
+  if (statusLine.sessionTitle && statusLine.model.kind !== 'tuning') {
+    const title = clampPlainText(statusLine.sessionTitle, STATUS_SESSION_TITLE_BUDGET);
+    segments.push({
+      plain: title,
+      rendered: tokenText(theme, 'muted', title)
+    });
+  }
 
   if (statusLine.allowAllTools) {
     segments.push({

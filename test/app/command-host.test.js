@@ -631,7 +631,8 @@ test('CommandHost config facade saves and refreshes skill catalog context ratio'
       skillCatalogContextRatio: 0.03,
       slashSuggestionMaxVisible: 8,
       showReasoningSummary: true,
-      toolApprovalMode: 'manual'
+      toolApprovalMode: 'manual',
+      titleGenerationEnabled: true
     });
 
     assert.deepEqual(result, {ok: true});

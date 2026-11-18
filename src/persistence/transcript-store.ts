@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
+import {splitGraphemes} from '../input/graphemes';
 
 import {
   createTranscriptJournalEntry,
@@ -30,6 +31,7 @@ import type {
 } from '../types/transcript';
 
 const STORE_SCHEMA_VERSION = 1 as const;
+const SESSION_TITLE_MAX_CHARS = 60; // 会话标题的 grapheme 上限；与标题生成模块共用同一预算。
 const SESSION_INDEX_SCHEMA_VERSION = 1 as const;
 const SESSION_PREVIEW_TEXT_LIMIT = 500;
 const SESSION_START_MAX_BYTES = 16 * 1024;
@@ -186,7 +188,8 @@ function createTranscriptStore(options: TranscriptStoreOptions = {}): Transcript
 
       sessions.push(createSessionSummary(loaded.reference, {
         messageCount: loaded.session.records.length,
-        title: createSessionTitle(loaded.session.records)
+        // 生成标题不随 records 变化；派生标题必须跟随首条用户消息重算，否则 truncate 后会残留旧标题。
+        ...resolveRebuiltTitle(indexed, loaded.session.records)
       }, refreshedStat));
     }
 
@@ -205,8 +208,9 @@ function createTranscriptStore(options: TranscriptStoreOptions = {}): Transcript
     const normalizedCwd = String(cwd);
     const stat = fsImpl.statSync(getSessionFilePath(normalizedCwd, reference.sessionId));
     const current = readSessionIndex(normalizedCwd)?.sessions || [];
+    const existing = current.find((session) => session.sessionId === reference.sessionId);
     const next = current.filter((session) => session.sessionId !== reference.sessionId);
-    next.push(createSessionSummary(reference, state, stat));
+    next.push(createSessionSummary(reference, resolveUpdatedTitle(existing, state), stat));
     next.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
     writeSessionIndex(normalizedCwd, next);
   }
@@ -426,8 +430,39 @@ function createSessionSummary(
     cwd: reference.cwd,
     messageCount: state.messageCount,
     title: state.title,
+    titleSource: state.titleSource,
     fingerprint: {size: stat.size, mtimeMs: stat.mtimeMs}
   };
+}
+
+/**
+ * 重建过期条目时决定标题：生成标题永久保留，派生标题必须跟随当前 records 重算，
+ * 否则 truncate 掉首条用户消息后会残留旧标题。
+ */
+function resolveRebuiltTitle(
+  indexed: TranscriptSessionSummary | undefined,
+  records: TranscriptRecord[]
+): Required<Pick<TranscriptSessionIndexState, 'title' | 'titleSource'>> {
+  if (indexed?.titleSource === 'generated') {
+    return {title: indexed.title, titleSource: 'generated'};
+  }
+
+  return {title: createSessionTitle(records), titleSource: 'derived'};
+}
+
+/**
+ * 合并一次 index 更新：index 中已有的生成标题不被派生更新覆盖，其余情况以调用方值为准。
+ * 该保护用于跨进程与恢复路径：调用方可能只持有派生值，不能据此把生成标题降级。
+ */
+function resolveUpdatedTitle(
+  existing: TranscriptSessionSummary | undefined,
+  state: TranscriptSessionIndexState
+): TranscriptSessionIndexState {
+  if (existing?.titleSource === 'generated' && state.titleSource !== 'generated') {
+    return {messageCount: state.messageCount, title: existing.title, titleSource: 'generated'};
+  }
+
+  return state;
 }
 
 function cloneSessionSummary(session: TranscriptSessionSummary): TranscriptSessionSummary {
@@ -476,6 +511,7 @@ function isSessionSummary(value: unknown): value is TranscriptSessionSummary {
     typeof session.cwd === 'string' &&
     Number.isInteger(session.messageCount) && Number(session.messageCount) >= 0 &&
     typeof session.title === 'string' && session.title.length > 0 &&
+    (session.titleSource === undefined || session.titleSource === 'derived' || session.titleSource === 'generated') &&
     Boolean(fingerprint && typeof fingerprint === 'object' && !Array.isArray(fingerprint) &&
       typeof (fingerprint as Record<string, unknown>).size === 'number' && Number.isFinite((fingerprint as Record<string, unknown>).size) && Number((fingerprint as Record<string, unknown>).size) >= 0 &&
       typeof (fingerprint as Record<string, unknown>).mtimeMs === 'number' && Number.isFinite((fingerprint as Record<string, unknown>).mtimeMs) && Number((fingerprint as Record<string, unknown>).mtimeMs) >= 0);
@@ -570,11 +606,20 @@ function createSessionTitle(records: TranscriptRecord[]): string {
     : '';
   const normalized = normalizePreviewText(text);
 
-  return normalized === '' ? '未命名对话' : normalized.slice(0, 60);
+  if (normalized === '') {
+    return '未命名对话';
+  }
+
+  const characters = splitGraphemes(normalized);
+
+  return characters.length > SESSION_TITLE_MAX_CHARS
+    ? characters.slice(0, SESSION_TITLE_MAX_CHARS).join('')
+    : normalized;
 }
 
 export {
   STORE_SCHEMA_VERSION,
+  SESSION_TITLE_MAX_CHARS,
   createSessionTitle,
   createTranscriptStore
 };

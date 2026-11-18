@@ -70,7 +70,8 @@ test('readAppSettings reads valid fields and falls back invalid fields independe
     slashSuggestionMaxVisible: 12,
     showReasoningSummary: false,
     toolApprovalMode: 'auto',
-    toolApprovalModelProfileId: 'reviewer'
+    toolApprovalModelProfileId: 'reviewer',
+    titleGenerationEnabled: true
   });
   assert.deepEqual(partial, {
     ...DEFAULT_APP_SETTINGS,
@@ -94,7 +95,8 @@ test('readAppSettings uses defaults for missing and malformed optional config', 
     skillCatalogContextRatio: 0.1,
     slashSuggestionMaxVisible: 20,
     showReasoningSummary: true,
-    toolApprovalMode: 'manual'
+    toolApprovalMode: 'manual',
+    titleGenerationEnabled: true
   });
 });
 
@@ -193,7 +195,8 @@ test('saveAppSettingsDraft patches owned fields and writes atomically', () => {
     skillCatalogContextRatio: 0.04,
     slashSuggestionMaxVisible: 5,
     showReasoningSummary: false,
-    toolApprovalMode: 'manual'
+    toolApprovalMode: 'manual',
+    titleGenerationEnabled: true
   }, {
     configPath: '/tmp/echo/config.json',
     createTempPath: (targetPath) => `${targetPath}.tmp-test`,
@@ -238,6 +241,7 @@ test('saveAppSettingsDraft patches owned fields and writes atomically', () => {
   assert.deepEqual(saved.tools.fileEdit, {mode: 'edit_file', kept: true});
   assert.deepEqual(saved.tools.mainAgent, {disabledTools: ['web_search']});
   assert.deepEqual(saved.tools.readFiles, {other: 'kept', autoCompressImages: false});
+  assert.equal(saved.sessions.titleGenerationEnabled, true);
   assert.deepEqual(saved.tools.other, {kept: true});
   assert.equal(saved.mcp.enabled, true);
   assert.deepEqual(saved.hooks.assistant_turn_end, ['echo done']);
@@ -266,7 +270,8 @@ test('saveAppSettingsDraft creates missing config and rejects invalid drafts bef
     skills: {catalogContextRatio: 0.02},
     ui: {activeTurnMessagePolicy: 'pending', defaultInteractionMode: 'normal', historyRenderLineLimit: 1000, mouseInteractionEnabled: false, slashSuggestionMaxVisible: 8, showReasoningSummary: true},
     updates: {checkOnStartup: true},
-    tools: {approval: {mode: 'manual'}, readFiles: {autoCompressImages: true}}
+    tools: {approval: {mode: 'manual'}, readFiles: {autoCompressImages: true}},
+    sessions: {titleGenerationEnabled: true}
   });
   assert.deepEqual(validateAppSettingsDraft({...DEFAULT_APP_SETTINGS, compactionThresholdRatio: 0.49}), {ok: false, error: '自动压缩阈值必须在 50% 到 95% 之间'});
   assert.deepEqual(validateAppSettingsDraft({...DEFAULT_APP_SETTINGS, skillCatalogContextRatio: 0.11}), {ok: false, error: '技能列表上下文占比上限必须在 1% 到 10% 之间'});
@@ -307,6 +312,100 @@ test('auto approval settings require an existing model profile and preserve appr
 
   saveAppSettingsDraft({...DEFAULT_APP_SETTINGS, toolApprovalModelProfileId: 'deleted'}, options);
   assert.equal(writes[1].tools.approval.modelProfileId, 'deleted');
+});
+
+test('title generation model settings are optional and preserve sessions siblings', () => {
+  const writes = [];
+  const base = {
+    llm: {
+      providers: {openai: {preset: 'openai-responses-api', apiKey: 'key'}},
+      models: [{id: 'title-model', provider: 'openai', model: 'gpt-haiku'}]
+    },
+    sessions: {titleModelProfileId: 'old-title', kept: true}
+  };
+  const options = {
+    configPath: '/tmp/echo/config.json',
+    mkdir() {},
+    readFile() { return JSON.stringify(base); },
+    writeFile(_path, data) { writes.push(JSON.parse(data)); },
+    rename() {}
+  };
+
+  saveAppSettingsDraft({...DEFAULT_APP_SETTINGS, titleGenerationModelProfileId: 'title-model'}, options);
+  assert.deepEqual(writes[0].sessions, {titleModelProfileId: 'title-model', kept: true, titleGenerationEnabled: true});
+  assert.deepEqual(writes[0].llm, base.llm);
+
+  assert.throws(
+    () => saveAppSettingsDraft({...DEFAULT_APP_SETTINGS, titleGenerationModelProfileId: 'deleted'}, options),
+    /标题生成模型必须引用有效的模型 profile/
+  );
+  assert.equal(writes.length, 1);
+});
+
+test('title generation stays enabled by default without a pinned model profile', () => {
+  const writes = [];
+
+  saveAppSettingsDraft(DEFAULT_APP_SETTINGS, {
+    configPath: '/tmp/echo/config.json',
+    mkdir() {},
+    readFile() { throw Object.assign(new Error('missing'), {code: 'ENOENT'}); },
+    writeFile(_path, data) { writes.push(JSON.parse(data)); },
+    rename() {}
+  });
+
+  assert.deepEqual(writes[0].sessions, {titleGenerationEnabled: true});
+});
+
+test('clearing the title model reference removes the persisted profile id', () => {
+  const writes = [];
+  const options = {
+    configPath: '/tmp/echo/config.json',
+    mkdir() {},
+    readFile() {
+      return JSON.stringify({
+        llm: {models: [{id: 'title-model', provider: 'openai', model: 'gpt-haiku'}]},
+        sessions: {titleModelProfileId: 'title-model', kept: true}
+      });
+    },
+    writeFile(_path, data) { writes.push(JSON.parse(data)); },
+    rename() {}
+  };
+
+  // 切回"跟随当前模型"必须删除旧引用，否则 normalize 会读回旧 profile。
+  saveAppSettingsDraft(DEFAULT_APP_SETTINGS, options);
+  assert.equal(Object.hasOwn(writes[0].sessions, 'titleModelProfileId'), false);
+  assert.equal(writes[0].sessions.kept, true);
+  assert.equal(readAppSettings({readFile() { return JSON.stringify(writes[0]); }}).titleGenerationModelProfileId, undefined);
+});
+
+test('disabled title generation accepts a stale profile reference', () => {
+  const writes = [];
+
+  saveAppSettingsDraft({...DEFAULT_APP_SETTINGS, titleGenerationEnabled: false, titleGenerationModelProfileId: 'deleted'}, {
+    configPath: '/tmp/echo/config.json',
+    mkdir() {},
+    readFile() { return JSON.stringify({llm: {models: []}}); },
+    writeFile(_path, data) { writes.push(JSON.parse(data)); },
+    rename() {}
+  });
+
+  assert.equal(writes[0].sessions.titleGenerationEnabled, false);
+  assert.equal(writes[0].sessions.titleModelProfileId, 'deleted');
+});
+
+test('normalizeAppSettings reads sessions.titleModelProfileId and ignores invalid values', () => {
+  assert.equal(
+    readAppSettingsDraft({readFile() { return JSON.stringify({sessions: {titleModelProfileId: 'title-model'}}); }}).titleGenerationModelProfileId,
+    'title-model'
+  );
+  assert.equal(
+    readAppSettingsDraft({readFile() { return JSON.stringify({sessions: {titleModelProfileId: '   '}}); }}).titleGenerationModelProfileId,
+    undefined
+  );
+  assert.equal(
+    readAppSettingsDraft({readFile() { return JSON.stringify({sessions: {titleModelProfileId: 42}}); }}).titleGenerationModelProfileId,
+    undefined
+  );
 });
 
 test('regular settings neither expose nor validate or overwrite legacy file edit mode', () => {
