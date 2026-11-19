@@ -107,6 +107,9 @@ function applyOperation(session, operation) {
     }
   } else if (operation.op === 'set_todo_state') {
     session.todoState = structuredClone(operation.todoState);
+  } else {
+    // 与真实 replay 一致：未知操作必须失败，而不是被 fake 静默丢弃后让测试继续通过。
+    throw new Error(`unsupported journal operation: ${operation.op}`);
   }
 }
 

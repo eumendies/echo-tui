@@ -131,8 +131,9 @@ test('debug projector preserves provider and tool summaries with run scope', () 
   assert.equal(request.payload.conversationKind, 'btw');
   assert.equal(request.payload.interactionMode, 'normal');
   assert.deepEqual(request.payload.recordRoles, ['system', 'user']);
-  assert.equal(typeof request.payload.providerInputHash, 'string');
-  assert.equal(typeof request.payload.toolSchemaHash, 'string');
+  // 摘要字段是固定 16 位 sha256 前缀；只断言 typeof 会让空串也通过。
+  assert.match(request.payload.providerInputHash, /^[0-9a-f]{16}$/u);
+  assert.match(request.payload.toolSchemaHash, /^[0-9a-f]{16}$/u);
   assert.deepEqual(request.payload.providerConfig, {
     agentType: 'anthropic', baseURL: 'https://example.com', contextWindow: 200000, model: 'claude'
   });

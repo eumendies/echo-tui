@@ -2,14 +2,20 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const { createComposer } = require('../../src/input/composer');
-const { createTuiTheme } = require('../../src/config/theme-config');
+const { DEFAULT_TUI_THEME, createTuiTheme } = require('../../src/config/theme-config');
 const { ECHO_SPINNER_ACTIVE_FRAME_COUNT, ECHO_SPINNER_FRAME_INTERVAL_MS, getEchoSpinnerFrameIndex } = require('../../src/render/echo-spinner');
+const { colorToRgb } = require('../../src/render/colors');
 const { renderDiffSurface } = require('../../src/render/footer/diff-surface');
 const { createFooterRenderer, renderFooterLayout: renderRuntimeFooterLayout } = require('../../src/render/footer');
 const { humanizeTokens } = require('../../src/render/footer/usage-surface');
 const { renderStatusSurface: renderRuntimeStatusSurface } = require('../../src/render/footer/status-surface');
 const { displayWidth, safeRenderWidth, stripAnsi } = require('../../src/render/layout');
 const ansi = require('../../src/terminal/ansi');
+
+// 状态行 shimmer 使用 footer 语义 token；测试从同一 token 取 SGR，避免把默认调色板复制进断言。
+const fgCode = (color) => `\x1b[38;2;${colorToRgb(color).join(';')}m`;
+const MUTED_FG = fgCode(DEFAULT_TUI_THEME.footer.colors.muted);
+const WHITE_FG = fgCode(DEFAULT_TUI_THEME.footer.colors.white);
 
 const DEFAULT_STATUS_LINE = {
   projectName: 'echo_tui',
@@ -1940,10 +1946,10 @@ test('renderFooterLayout renders thinking spinner in status line mode segment', 
   assert.ok(!plainStatusLine.includes('ready'));
   assert.ok(!plainStatusLine.includes('PLAN'));
   assert.ok(plainStatusLine.includes('Esc 中断'));
-  assert.match(layout.lines.at(-1), /\x1b\[38;2;/);
-  assert.match(layout.lines.at(-1), /\x1b\[38;2;130;150;168mt\x1b\[39m/);
-  assert.match(layout.lines.at(-1), /\x1b\[38;2;235;245;248mi\x1b\[39m/);
-  assert.match(layout.lines.at(-1), /\x1b\[1m\x1b\[38;2;235;245;248mn\x1b\[39m\x1b\[22m\x1b\[1m\x1b\[38;2;235;245;248mk\x1b\[39m\x1b\[22m/);
+  const statusLine = layout.lines.at(-1);
+  assert.ok(statusLine.includes(`${MUTED_FG}t\x1b[39m`));
+  assert.ok(statusLine.includes(`${WHITE_FG}i\x1b[39m`));
+  assert.ok(statusLine.includes(`\x1b[1m${WHITE_FG}n\x1b[39m\x1b[22m\x1b[1m${WHITE_FG}k\x1b[39m\x1b[22m`));
 });
 
 test('renderFooterLayout expands thinking shimmer from center outward', () => {
@@ -1959,7 +1965,7 @@ test('renderFooterLayout expands thinking shimmer from center outward', () => {
     width: 100
   });
 
-  assert.match(layout.lines.at(-1), /\x1b\[1m\x1b\[38;2;235;245;248mi\x1b\[39m\x1b\[22m\x1b\[38;2;235;245;248mn\x1b\[39m\x1b\[38;2;235;245;248mk\x1b\[39m\x1b\[1m\x1b\[38;2;235;245;248mi\x1b\[39m\x1b\[22m/);
+  assert.ok(layout.lines.at(-1).includes(`\x1b[1m${WHITE_FG}i\x1b[39m\x1b[22m${WHITE_FG}n\x1b[39m${WHITE_FG}k\x1b[39m\x1b[1m${WHITE_FG}i\x1b[39m\x1b[22m`));
 });
 
 test('renderFooterLayout pauses activity shimmer during spinner blank frames', () => {
@@ -1977,8 +1983,9 @@ test('renderFooterLayout pauses activity shimmer during spinner blank frames', (
   const statusLine = layout.lines.at(-1);
 
   assert.ok(stripAnsi(statusLine).includes('         thinking'));
-  assert.match(statusLine, /\x1b\[38;2;130;150;168mt\x1b\[39m\x1b\[38;2;130;150;168mh\x1b\[39m\x1b\[38;2;130;150;168mi\x1b\[39m/);
-  assert.doesNotMatch(statusLine, /\x1b\[1m\x1b\[37m[thinking]/);
+  assert.ok(statusLine.includes(`${MUTED_FG}t\x1b[39m${MUTED_FG}h\x1b[39m${MUTED_FG}i\x1b[39m`));
+  // 空帧不绘制任何 spinner 字形。
+  assert.equal(/[░▒▓█]/u.test(statusLine), false);
 });
 
 test('renderFooterLayout renders select command surfaces by kind instead of command-specific overlay data', () => {
@@ -3890,10 +3897,10 @@ test('renderFooterLayout renders working spinner in status line mode segment', (
   assert.ok(spacerIndex > 0);
   assert.ok(plainStatusLine.includes('▒█░   ░█▒ working 01:05'));
   assert.ok(plainStatusLine.includes('Esc 中断'));
-  assert.match(layout.lines.at(-1), /\x1b\[38;2;/);
-  assert.match(layout.lines.at(-1), /\x1b\[38;2;130;150;168mw\x1b\[39m/);
-  assert.match(layout.lines.at(-1), /\x1b\[38;2;235;245;248mr\x1b\[39m/);
-  assert.match(layout.lines.at(-1), /\x1b\[1m\x1b\[38;2;235;245;248mk\x1b\[39m\x1b\[22m/);
+  const statusLine = layout.lines.at(-1);
+  assert.ok(statusLine.includes(`${MUTED_FG}w\x1b[39m`));
+  assert.ok(statusLine.includes(`${WHITE_FG}r\x1b[39m`));
+  assert.ok(statusLine.includes(`\x1b[1m${WHITE_FG}k\x1b[39m\x1b[22m`));
   assert.ok(!plainLines[spacerIndex - 1].includes('working'));
   assert.ok(plainLines.slice(0, spacerIndex).some((line) => line.includes('streaming draft')));
   assert.equal(layout.cursorRow, spacerIndex + 2);

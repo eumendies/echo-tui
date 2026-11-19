@@ -733,13 +733,19 @@ test('worker concurrency diagnostics carry only counts and mode', async () => {
       turn.childGates[1].resolve();
       await turn.final;
 
-      assert.deepEqual(Object.keys(turn.concurrency[0]).sort(), [
-        'candidates', 'mode', 'started', 'workspacePreparationFailures'
-      ]);
-      assert.equal(turn.concurrency[0].candidates, 2);
-      assert.equal(turn.concurrency[0].mode, 'managed_worktree');
-      assert.equal(turn.concurrency[0].started, 2);
-      assert.equal(turn.concurrency[0].workspacePreparationFailures, 0);
+      const diagnostics = turn.concurrency[0];
+
+      assert.deepEqual({
+        candidates: diagnostics.candidates,
+        mode: diagnostics.mode,
+        started: diagnostics.started,
+        workspacePreparationFailures: diagnostics.workspacePreparationFailures
+      }, {candidates: 2, mode: 'managed_worktree', started: 2, workspacePreparationFailures: 0});
+      // 诊断只承载计数与模式：新增计数字段不算违约，但任务文本、调用 ID 与路径不得出现。
+      for (const [key, value] of Object.entries(diagnostics)) {
+        assert.ok(typeof value === 'number' || (key === 'mode' && typeof value === 'string'), key);
+      }
+      assert.doesNotMatch(JSON.stringify(diagnostics), /first task|second task|outer-[ab]|worktree\//u);
     } finally {
       turn.restore();
       fs.rmSync(fixture, {recursive: true, force: true});
