@@ -620,6 +620,7 @@ function createSessionTitle(records: TranscriptRecord[]): string {
 export {
   STORE_SCHEMA_VERSION,
   SESSION_TITLE_MAX_CHARS,
+  SESSION_PREVIEW_TEXT_LIMIT,
   createSessionTitle,
   createTranscriptStore
 };

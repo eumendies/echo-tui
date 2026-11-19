@@ -17,7 +17,7 @@ const { TurnContext } = require('../../src/app/state/turn-context');
 const { INPUT_EVENTS } = require('../../src/input/event-types');
 const { DEFAULT_TUI_THEME, createTuiTheme } = require('../../src/config/theme-config');
 const {UserConfigContext} = require('../../src/config/user-config-context');
-const {createTranscriptStore} = require('../../src/persistence/transcript-store');
+const {SESSION_PREVIEW_TEXT_LIMIT, createTranscriptStore} = require('../../src/persistence/transcript-store');
 const {createEditFileToolHandler} = require('../../src/tools/edit-file-tool-handler');
 
 function createContext(overrides = {}) {
@@ -321,11 +321,18 @@ function applyOperation(session, operation) {
   }
 }
 
+// 与真实 transcript store 同口径：按条保留全部记录，只把单条文本截到 SESSION_PREVIEW_TEXT_LIMIT，
+// 用户消息优先取 displayText。不要在这里做条数裁剪，否则预览层的行为在 fake 下不可达。
 function createPreviewRecords(records) {
   return (records || [])
-    .map((record) => ({ role: record.role, text: String(record.text || '').replace(/\s+/g, ' ').trim() }))
-    .filter((record) => record.text.length > 0)
-    .slice(-5);
+    .map((record) => ({
+      role: record.role,
+      text: String((record.role === 'user' && record.displayText) || record.text || '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, SESSION_PREVIEW_TEXT_LIMIT)
+    }))
+    .filter((record) => record.text.length > 0);
 }
 
 function withTemporaryModelConfig(config, callback) {

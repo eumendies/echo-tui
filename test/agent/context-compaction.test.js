@@ -155,8 +155,7 @@ test('createCompactionNoticeRecord renders compacted count only', () => {
 test('compaction summary notice round-trips through the shared predicate', () => {
   const record = createCompactionNoticeRecord({summaryText: 'summary', activeStartIndex: 42, createdAt: 'now'});
 
-  // 渲染层用判定函数替代提示，生成与判定必须共用同一文案模板。
-  assert.equal(record.text, createCompactionSummaryNoticeText(42));
+  // 渲染层用判定函数替代提示；上一用例已按字面文案钉住模板，这里只验证判定与生成互认。
   assert.equal(isCompactionSummaryNotice(record), true);
   assert.equal(isCompactionSummaryNotice({role: 'compaction_notice', text: '当前无需压缩'}), false);
   assert.equal(isCompactionSummaryNotice({role: 'compaction_notice', text: '已将较早的 42 条旁路历史压缩为摘要'}), false);

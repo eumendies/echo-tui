@@ -3403,16 +3403,14 @@ test('pointer-enabled command handlers preserve their command-specific selection
   resumeHandler.handlePointer(resume.host.session.getActive(), {kind: 'command_resume_session', index: 1}, true, resume.host);
   assert.deepEqual(resume.calls.loadedSessionIds, [resumeSessions[1].sessionId]);
   assert.equal(resume.host.session.getActive(), null);
-
-  assert.equal(new EffortCommandHandler().handlePointer, undefined);
 });
 
 test('select command handlers keep hover but do not declare wheel navigation', () => {
   for (const handler of [new ModelCommandHandler(), new ModeCommandHandler(), new EffortCommandHandler()]) {
     assert.equal(handler.handleWheel, undefined);
   }
-  assert.equal(typeof new ModelCommandHandler().handlePointer, 'function');
-  assert.equal(typeof new ModeCommandHandler().handlePointer, 'function');
+  // 只有可指针导航的面板声明 handlePointer；effort 面板必须保持纯键盘。
+  assert.equal(new EffortCommandHandler().handlePointer, undefined);
 });
 
 test('copy wheel scrolls only wrapped right preview from list focus without toggling messages', () => {

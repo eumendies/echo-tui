@@ -3,10 +3,7 @@ const assert = require('node:assert/strict');
 
 const {createTuiTheme} = require('../../src/config/theme-config');
 const {displayWidth, stripAnsi} = require('../../src/render/layout');
-const {
-  READ_FILES_MAX_DISPLAY_LINES,
-  renderReadFilesToolResultLines
-} = require('../../src/render/tool-message-renderers/read-files');
+const {renderReadFilesToolResultLines} = require('../../src/render/tool-message-renderers/read-files');
 
 const THEME = createTuiTheme();
 const WIDTH = 80;
@@ -52,7 +49,7 @@ test('read_files 单文本文件占满 30 行专属预算', () => {
   const lines = renderReadFilesToolResultLines(record, WIDTH, THEME);
 
   assert.ok(lines);
-  assert.equal(lines.length, READ_FILES_MAX_DISPLAY_LINES);
+  assert.equal(lines.length, 30);
   assert.match(stripAnsi(lines[0]), /^  └─ text: src\/foo\.ts/);
   assert.match(stripAnsi(lines[0]), /lines: 1-29 \(29\)/);
   assert.match(stripAnsi(lines[1]), /1 │ line 1/);
@@ -69,7 +66,7 @@ test('read_files 多文本文件等分预算且最后一个 envelope 闭合', ()
 
   assert.ok(lines);
   // H=3, contentCount=3 → p=floor(27/3)=9；内容 10 行超预算 → 各 8 行预览 + 1 提示 = 9 行。
-  assert.equal(lines.length, READ_FILES_MAX_DISPLAY_LINES);
+  assert.equal(lines.length, 30);
   assert.match(stripAnsi(lines[0]), /^  ├─ text: a\.ts/);
   assert.match(stripAnsi(lines[9]), /^  │ … \+2 more$/);
   assert.match(stripAnsi(lines[10]), /^  ├─ text: b\.ts/);
@@ -89,7 +86,7 @@ test('read_files 混合 text 与 directory 等分预算', () => {
 
   assert.ok(lines);
   // H=2, contentCount=2 → p=floor(28/2)=14；text 20 行与 directory 20 条都超预算 → 各 13 + 1 提示。
-  assert.equal(lines.length, READ_FILES_MAX_DISPLAY_LINES);
+  assert.equal(lines.length, 30);
   assert.match(stripAnsi(lines[0]), /^  ├─ text: a\.ts/);
   assert.match(stripAnsi(lines[14]), /^  │ … \+7 more$/);
   assert.match(stripAnsi(lines[15]), /^  └─ directory: src\/lib/);
@@ -106,7 +103,7 @@ test('read_files 单目录超出预算显示计数省略提示', () => {
 
   assert.ok(lines);
   // H=1, contentCount=1 → p=floor(29/1)=29 → 1 + 28 条 + 1 提示 = 30 行。
-  assert.equal(lines.length, READ_FILES_MAX_DISPLAY_LINES);
+  assert.equal(lines.length, 30);
   assert.match(stripAnsi(lines[0]), /entries: 30/);
   assert.match(stripAnsi(lines[29]), /… \+2 more/);
 });
@@ -117,7 +114,7 @@ test('read_files 文本内容超出预算显示省略提示', () => {
 
   assert.ok(lines);
   // 内容 35 行、预算 29 → 28 行预览 + … +7 more = 29 行 + header = 30 行。
-  assert.equal(lines.length, READ_FILES_MAX_DISPLAY_LINES);
+  assert.equal(lines.length, 30);
   assert.match(stripAnsi(lines[28]), /28 │ line 28/);
   assert.match(stripAnsi(lines[29]), /^ {4}… \+7 more$/);
 });
