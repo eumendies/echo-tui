@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 
 import {LlmAgentError, normalizeError, redactSensitiveText} from '../agent-errors';
-import {ProviderError, classifyProviderError, createProviderError} from '../provider-error';
+import {ProviderError, classifyProviderError} from '../provider-error';
 import {runProviderStreamWithRetry} from '../provider-stream-retry';
 import {convertToolDefinitionsToAnthropicTools} from './tool-converter';
 import {convertTranscriptToAnthropicMessages, createAnthropicThinkingRecord} from './transcript-converter';
@@ -63,7 +63,6 @@ type AnthropicStreamEvent = {
     thinking?: unknown;
     type?: unknown;
   };
-  error?: {message?: unknown; type?: unknown};
   index?: unknown;
   message?: {usage?: AnthropicUsage};
   type?: unknown;
@@ -149,23 +148,6 @@ function assertAnthropicClient(value: unknown): asserts value is AnthropicClient
 
 function isAnthropicEvent(value: unknown): value is AnthropicStreamEvent {
   return typeof value === 'object' && value !== null;
-}
-
-function summarizeFailureEvent(event: unknown): string {
-  if (!isAnthropicEvent(event) || typeof event.error?.message !== 'string') {
-    return '模型服务返回失败事件';
-  }
-
-  return event.error.message;
-}
-
-function readEventErrorType(event: unknown): string | undefined {
-  if (!isAnthropicEvent(event)) {
-    return undefined;
-  }
-
-  const type = event.error?.type;
-  return typeof type === 'string' && type !== '' ? type : undefined;
 }
 
 function extractProviderUsage(event: unknown): ProviderUsage | undefined {
@@ -426,13 +408,8 @@ async function readAnthropicStream(
       if (completed && options.abortSignal?.aborted) break;
       throwIfAborted(options.abortSignal);
 
-      if (isAnthropicEvent(event) && event.error) {
-        throw createProviderError({
-          message: `模型服务响应失败：${redactSensitiveText(summarizeFailureEvent(event))}`,
-          code: readEventErrorType(event)
-        });
-      }
-
+      // Anthropic SDK 对 SSE error 事件直接抛 APIError(core/streaming.js)，不会 yield 带 error 的事件；
+      // 因此这里只消费增量与 usage，服务端失败统一由 catch 的 classifyProviderError 处理。
       const eventUsage = extractProviderUsage(event);
 
       if (eventUsage) {

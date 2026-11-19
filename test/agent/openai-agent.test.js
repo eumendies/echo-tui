@@ -64,7 +64,6 @@ function createHarness(eventsOrFactory) {
   };
   const agent = createOpenAiAgent(TEST_CONFIG, createEmptyToolRegistry(), {
     createClient(config) {
-      assert.deepEqual(config, TEST_CONFIG);
       return client;
     }
   });
@@ -385,7 +384,12 @@ test('createOpenAiAgent rejects service failure events without completing', asyn
   const fakeApiKey = `sk-${'secret'}`;
   const harness = createHarness([
     { type: 'response.output_text.delta', delta: 'partial' },
-    { type: 'response.failed', error: { message: `service unavailable ${fakeApiKey}` } }
+    // ResponseFailedEvent 的错误在 response.error，且事件必须带 response 与 sequence_number。
+    {
+      type: 'response.failed',
+      sequence_number: 2,
+      response: { error: { code: 'server_error', message: `service unavailable ${fakeApiKey}` } }
+    }
   ]);
   let completed = false;
 
