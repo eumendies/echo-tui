@@ -120,6 +120,18 @@ function extractTextDelta(event: unknown): string {
   return typeof event.delta === 'string' ? event.delta : '';
 }
 
+/**
+ * 从 Responses streaming 事件中提取工具调用参数分片；该文本只用于速率上报，
+ * 工具调用本身仍由 `response.output_item.done` 一次性构建。
+ */
+function extractFunctionCallArgumentsDelta(event: unknown): string {
+  if (!isStreamEvent(event) || event.type !== 'response.function_call_arguments.delta') {
+    return '';
+  }
+
+  return typeof event.delta === 'string' ? event.delta : '';
+}
+
 function extractReasoningSummaryDelta(event: unknown): {key: string; delta: string; order: [number, number]} | null {
   if (!isStreamEvent(event) || event.type !== 'response.reasoning_summary_text.delta' || typeof event.delta !== 'string') {
     return null;
@@ -380,12 +392,20 @@ async function readResponseStream(
 
       if (delta) {
         draft += delta;
+        callbacks.onStreamDelta?.(delta);
         callbacks.onToken?.(delta, draft);
+      }
+
+      const toolArgumentsDelta = extractFunctionCallArgumentsDelta(event);
+
+      if (toolArgumentsDelta) {
+        callbacks.onStreamDelta?.(toolArgumentsDelta);
       }
 
       const reasoningSummaryDelta = extractReasoningSummaryDelta(event);
 
       if (reasoningSummaryDelta) {
+        callbacks.onStreamDelta?.(reasoningSummaryDelta.delta);
         const current = reasoningSummaryParts.get(reasoningSummaryDelta.key);
         reasoningSummaryParts.set(reasoningSummaryDelta.key, {
           order: reasoningSummaryDelta.order,

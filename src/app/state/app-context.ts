@@ -144,6 +144,7 @@ class AppContext {
       {
         canInterruptAssistantTurn: () => this.turnContext.canInterruptAssistantTurn(),
         getPending: () => this.subagentRunContext.getPending() || this.turnContext.getPending(),
+        getOutputRate: () => this.turnContext.getOutputRate(),
         getWorking: () => this.turnContext.getWorking()
       },
       this,

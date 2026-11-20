@@ -4593,7 +4593,7 @@ test('renderFooterLayout keeps the mode segment when every optional segment is h
     },
     renderPreferences: {
       ...DEFAULT_RENDER_PREFERENCES,
-      statusLineSegments: {approval: false, contextUsage: false, dir: false, effort: false, model: false, title: false}
+      statusLineSegments: {approval: false, contextUsage: false, dir: false, effort: false, model: false, rate: false, title: false}
     },
     width: 120
   });
@@ -4614,7 +4614,7 @@ test('renderFooterLayout keeps model and effort visible while tuning with both s
     },
     renderPreferences: {
       ...DEFAULT_RENDER_PREFERENCES,
-      statusLineSegments: {approval: false, contextUsage: false, dir: false, effort: false, model: false, title: false}
+      statusLineSegments: {approval: false, contextUsage: false, dir: false, effort: false, model: false, rate: false, title: false}
     },
     width: 100
   });
@@ -4659,4 +4659,66 @@ test('renderFooterLayout applies hidden segments to the subagent view status lin
   assert.equal(hidden.includes('ctx 18.2k/128k'), false);
   assert.ok(hidden.includes('dir echo_tui'));
   assert.ok(hidden.includes('run 1 · worker'));
+});
+
+test('renderFooterLayout puts the estimated output rate at the end of the left segments', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: null,
+    pending: null,
+    statusLine: {...DEFAULT_STATUS_LINE, mode: 'streaming', outputRatePerSecond: 42},
+    width: 120
+  });
+  const statusLine = stripAnsi(layout.lines.at(-1));
+
+  assert.ok(statusLine.includes('42 t/s'), statusLine);
+  // 速率在左侧末尾：位于 dir 之后，且早于右对齐的 mode 段。
+  assert.ok(statusLine.indexOf('42 t/s') > statusLine.indexOf('dir echo_tui'), statusLine);
+  assert.ok(statusLine.indexOf('42 t/s') < statusLine.indexOf('streaming'), statusLine);
+});
+
+test('renderFooterLayout keeps other segment positions stable when the output rate width changes', () => {
+  const renderAt = (outputRatePerSecond) => stripAnsi(renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: null,
+    pending: null,
+    statusLine: {...DEFAULT_STATUS_LINE, mode: 'streaming', outputRatePerSecond},
+    width: 120
+  }).lines.at(-1));
+  const slow = renderAt(2);
+  const fast = renderAt(128);
+
+  // 速率变宽只应压缩中间填充，不能推动 dir 或右对齐的 mode 段。
+  assert.equal(slow.indexOf('dir echo_tui'), fast.indexOf('dir echo_tui'));
+  assert.equal(slow.indexOf('streaming'), fast.indexOf('streaming'));
+});
+
+test('renderFooterLayout keeps a zero output rate visible', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: null,
+    pending: null,
+    statusLine: {...DEFAULT_STATUS_LINE, mode: 'streaming', outputRatePerSecond: 0},
+    width: 120
+  });
+
+  assert.ok(stripAnsi(layout.lines.at(-1)).includes('0 t/s'));
+});
+
+test('renderFooterLayout hides the output rate when the rate segment is disabled', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: null,
+    pending: null,
+    statusLine: {...DEFAULT_STATUS_LINE, mode: 'streaming', outputRatePerSecond: 42},
+    renderPreferences: {
+      ...DEFAULT_RENDER_PREFERENCES,
+      statusLineSegments: {...DEFAULT_RENDER_PREFERENCES.statusLineSegments, rate: false}
+    },
+    width: 120
+  });
+  const statusLine = stripAnsi(layout.lines.at(-1));
+
+  assert.equal(statusLine.includes('t/s'), false);
+  assert.ok(statusLine.includes('streaming'));
 });

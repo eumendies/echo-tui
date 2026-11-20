@@ -237,6 +237,7 @@ async function readChatCompletionStream(
 
         if (!hadAssistantOutput && typeof reasoningContent === 'string' && reasoningContent !== '') {
           reasoningSummary += reasoningContent;
+          callbacks.onStreamDelta?.(reasoningContent);
           const reasoningDraft = reasoningSummary.trim();
 
           if (reasoningDraft !== '') {
@@ -253,10 +254,14 @@ async function readChatCompletionStream(
 
         if (typeof content === 'string' && content !== '') {
           draft += content;
+          callbacks.onStreamDelta?.(content);
           callbacks.onToken?.(content, draft);
         }
 
         for (const toolDelta of toolDeltas) {
+          if (typeof toolDelta.function?.arguments === 'string' && toolDelta.function.arguments !== '') {
+            callbacks.onStreamDelta?.(toolDelta.function.arguments);
+          }
           mergeToolCallDelta(toolCallParts, toolDelta);
         }
 

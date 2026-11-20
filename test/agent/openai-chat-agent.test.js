@@ -1050,3 +1050,22 @@ test('createOpenAiChatAgent does not retry a terminal SDK APIError', async () =>
 
   assert.equal(harness.attempts, 1);
 });
+
+test('createOpenAiChatAgent reports stream deltas for text, reasoning and tool arguments', async () => {
+  const harness = createHarness([
+    { choices: [{ delta: { reasoning_content: 'Think.' } }] },
+    { choices: [{ delta: { content: 'Hi' } }] },
+    { choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_1', function: { name: 'run_bash_command', arguments: '{"command"' } }] } }] },
+    { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: ':"pwd"}' } }] }, finish_reason: 'tool_calls' }] }
+  ], createToolRegistry());
+  const deltas = [];
+
+  await harness.runTurn([{ role: 'user', text: 'go' }], {
+    onStreamDelta(text) {
+      deltas.push(text);
+    }
+  });
+
+  // reasoning、正文与工具参数分片共用同一上报入口，供速率统计使用。
+  assert.deepEqual(deltas, ['Think.', 'Hi', '{"command"', ':"pwd"}']);
+});

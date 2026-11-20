@@ -33,6 +33,7 @@ type StatusLineSegments = {
   dir: boolean; // 控制左侧 `dir <项目名>` 目录段。
   effort: boolean; // 控制左侧 `effort <等级>` 推理强度段。
   model: boolean; // 控制左侧模型名段，含 `(SKILL override)` 后缀。
+  rate: boolean; // 控制左侧末尾（`dir` 之后）的每秒估算输出 token 数段。
   title: boolean; // 控制左侧当前会话标题段。
 };
 
@@ -55,6 +56,7 @@ const DEFAULT_STATUS_LINE_SEGMENTS: Readonly<StatusLineSegments> = Object.freeze
   dir: true,
   effort: true,
   model: true,
+  rate: true,
   title: true
 });
 const DEFAULT_APP_SETTINGS: Readonly<AppSettings> = {
@@ -80,7 +82,7 @@ const DEFAULT_RENDER_PREFERENCES: Readonly<AppRenderPreferences> = {
   statusLineSegments: DEFAULT_APP_SETTINGS.statusLineSegments
 };
 // 配置面板行顺序即此数组顺序；renderer 与 handler 共用，避免焦点与渲染错位。
-const STATUS_LINE_SEGMENT_KEYS: readonly StatusLineSegment[] = ['model', 'effort', 'title', 'dir', 'contextUsage', 'approval'];
+const STATUS_LINE_SEGMENT_KEYS: readonly StatusLineSegment[] = ['model', 'effort', 'title', 'dir', 'contextUsage', 'approval', 'rate'];
 const MIN_COMPACTION_THRESHOLD_RATIO = 0.5;
 const MAX_COMPACTION_THRESHOLD_RATIO = 0.95;
 const MIN_SKILL_CATALOG_CONTEXT_RATIO = 0.01;
@@ -319,6 +321,7 @@ function normalizeStatusLineSegments(node: UserConfigSource): StatusLineSegments
     dir: typeof node.dir === 'boolean' ? node.dir : DEFAULT_STATUS_LINE_SEGMENTS.dir,
     effort: typeof node.effort === 'boolean' ? node.effort : DEFAULT_STATUS_LINE_SEGMENTS.effort,
     model: typeof node.model === 'boolean' ? node.model : DEFAULT_STATUS_LINE_SEGMENTS.model,
+    rate: typeof node.rate === 'boolean' ? node.rate : DEFAULT_STATUS_LINE_SEGMENTS.rate,
     title: typeof node.title === 'boolean' ? node.title : DEFAULT_STATUS_LINE_SEGMENTS.title
   };
 }

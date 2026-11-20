@@ -1094,3 +1094,29 @@ test('createAnthropicAgent emits reasoning completion once after message_stop', 
     {kind: 'complete', text: 'part one'}
   ]);
 });
+
+test('createAnthropicAgent reports stream deltas for text, thinking and tool arguments', async () => {
+  const harness = createHarness([
+    { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } },
+    { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'Need' } },
+    { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 'sig' } },
+    { type: 'content_block_stop', index: 0 },
+    { type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } },
+    { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'Hi' } },
+    { type: 'content_block_stop', index: 1 },
+    { type: 'content_block_start', index: 2, content_block: { type: 'tool_use', id: 'call_1', name: 'run_bash_command', input: {} } },
+    { type: 'content_block_delta', index: 2, delta: { type: 'input_json_delta', partial_json: '{"command"' } },
+    { type: 'content_block_delta', index: 2, delta: { type: 'input_json_delta', partial_json: ':"pwd"}' } },
+    { type: 'message_delta', usage: { input_tokens: 40, output_tokens: 8 }, delta: { stop_reason: 'tool_use' } },
+    { type: 'message_stop' }
+  ], createToolRegistry());
+  const deltas = [];
+
+  await harness.runTurn([{ role: 'user', text: 'go' }], {
+    onStreamDelta(text) {
+      deltas.push(text);
+    }
+  });
+
+  assert.deepEqual(deltas, ['Need', 'Hi', '{"command"', ':"pwd"}']);
+});

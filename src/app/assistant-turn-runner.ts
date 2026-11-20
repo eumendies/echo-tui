@@ -208,6 +208,14 @@ async function runAssistantTurn(input: AssistantTurnRunnerInput): Promise<void> 
           render();
         }
       },
+      /** 正文、reasoning 与工具参数分片共用同一入口，只累积速率窗口，不改变可见草稿。 */
+      onStreamDelta(text: string) {
+        if (!isCurrentTurn()) {
+          return;
+        }
+
+        appContext.turnContext.recordStreamDelta(text);
+      },
       onReasoningUpdate(update) {
         if (!isCurrentTurn()) {
           return;

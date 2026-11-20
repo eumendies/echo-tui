@@ -861,7 +861,7 @@ test('AppContext snapshots app settings into render state and agent sessions', (
     historyRenderLineLimit: 500,
     showReasoningSummary: false,
     slashSuggestionMaxVisible: 3,
-    statusLineSegments: {approval: true, contextUsage: true, dir: true, effort: true, model: true, title: true}
+    statusLineSegments: {approval: true, contextUsage: true, dir: true, effort: true, model: true, rate: true, title: true}
   });
   assert.equal(context.getAgentSession().compactionThresholdRatio, 0.65);
   assert.equal(context.getAgentSession().skillCatalogContextRatio, 0.04);
@@ -912,7 +912,7 @@ test('AppContext refreshes external app settings and classifies redraw impact', 
       historyRenderLineLimit: 1000,
       showReasoningSummary: false,
       slashSuggestionMaxVisible: 4,
-      statusLineSegments: {approval: true, contextUsage: true, dir: true, effort: true, model: true, title: true}
+      statusLineSegments: {approval: true, contextUsage: true, dir: true, effort: true, model: true, rate: true, title: true}
     });
   } finally {
     os.homedir = originalHomedir;
@@ -1055,7 +1055,7 @@ test('AppContext compares normalized budgets and does not classify invalid same-
       assert.equal(Object.values(result).some(Boolean), false);
       assert.deepEqual(context.createRenderState().renderPreferences, {
         historyRenderLineLimit: 1000, showReasoningSummary: true, slashSuggestionMaxVisible: 4,
-        statusLineSegments: {approval: true, contextUsage: true, dir: true, effort: true, model: true, title: true}
+        statusLineSegments: {approval: true, contextUsage: true, dir: true, effort: true, model: true, rate: true, title: true}
       });
     }
     root = {ui: {historyRenderLineLimit: 0, slashSuggestionMaxVisible: 4}};
@@ -3422,6 +3422,38 @@ test('AppContext change history writes stay constant per turn instead of growing
   const firstTen = pushBytes.slice(0, 10).reduce((sum, bytes) => sum + bytes, 0);
   const all = pushBytes.reduce((sum, bytes) => sum + bytes, 0);
   assert.ok(all / firstTen < 20, `ratio=${all / firstTen}`);
+});
+
+test('AppContext projects the estimated output rate only inside an active assistant turn', () => {
+  const context = createContext();
+
+  context.beginUserTurn('measure throughput');
+  context.beginAssistantTurn();
+
+  // turn 刚建立、还没有任何增量时速率仍是 0：这正是"模型尚未出词"的可见反馈。
+  assert.equal(context.createRenderState().statusLine.outputRatePerSecond, 0);
+
+  context.turnContext.recordStreamDelta('abcdefgh');
+  assert.ok(context.createRenderState().statusLine.outputRatePerSecond > 0);
+});
+
+test('AppContext stops projecting output rate outside an active assistant turn', () => {
+  const context = createContext();
+
+  context.beginUserTurn('local work');
+  context.turnContext.beginShellCommand('ls', false);
+
+  // shell 本地执行复用 working 状态但没有模型出词，不应显示速率。
+  assert.equal(context.createRenderState().statusLine.outputRatePerSecond, undefined);
+
+  context.turnContext.responding = false;
+  context.beginUserTurn('after shell');
+  context.beginAssistantTurn();
+  context.turnContext.recordStreamDelta('abcdefgh');
+  assert.ok(context.createRenderState().statusLine.outputRatePerSecond > 0);
+
+  context.turnContext.responding = false;
+  assert.equal(context.createRenderState().statusLine.outputRatePerSecond, undefined);
 });
 
 test('AppContext status line keeps the turn timer while a subagent run is active', () => {

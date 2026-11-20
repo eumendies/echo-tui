@@ -93,6 +93,10 @@ function wrapAttemptCallbacks(callbacks: AgentTurnCallbacks, gate: AttemptGate):
 
       callbacks.onToken?.(delta, draft);
     },
+    onStreamDelta(text) {
+      // 速率是瞬时统计，不构成"已有不可回滚输出"的事实，因此不参与 attempt gate。
+      callbacks.onStreamDelta?.(text);
+    },
     onReasoningUpdate(update) {
       if (update.text.trim() !== '') {
         if (update.kind === 'complete') {

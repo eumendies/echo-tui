@@ -45,6 +45,7 @@ async function streamFakeDraft(records: TranscriptRecord[], callbacks: AgentTurn
     await delay(FAKE_AGENT_TOKEN_DELAY_MS, options.abortSignal);
     draft += char;
     callbacks.onToken?.(char, draft);
+    callbacks.onStreamDelta?.(char);
   }
 
   return draft;
@@ -57,7 +58,10 @@ const runFakeAgent: RunAgent = async (
   // fake agent 只模拟生命周期；真实模型接入时可以替换这一层。
   callbacks.onThinking?.();
 
-  const draft = await streamFakeDraft(session.records, {onToken: callbacks.onToken}, {abortSignal: session.abortSignal});
+  const draft = await streamFakeDraft(session.records, {
+    onToken: callbacks.onToken,
+    onStreamDelta: callbacks.onStreamDelta
+  }, {abortSignal: session.abortSignal});
 
   callbacks.onComplete?.(draft);
 

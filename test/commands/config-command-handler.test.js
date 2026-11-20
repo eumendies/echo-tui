@@ -962,7 +962,7 @@ test('status line subpanel toggles segments, saves, and returns without closing 
   await driver.send(INPUT_EVENTS.SUBMIT);
   assert.equal(driver.surface().view, 'statusLine');
   assert.equal(driver.surface().state.selectedIndex, 0);
-  assert.deepEqual(driver.surface().segments, {approval: true, contextUsage: true, dir: true, effort: true, model: true, title: true});
+  assert.deepEqual(driver.surface().segments, {approval: true, contextUsage: true, dir: true, effort: true, model: true, rate: true, title: true});
 
   await driver.send(INPUT_EVENTS.SUBMIT);
   assert.equal(driver.surface().segments.model, false);
@@ -977,8 +977,8 @@ test('status line subpanel toggles segments, saves, and returns without closing 
   await driver.send(INPUT_EVENTS.MOVE_RIGHT);
   assert.equal(driver.surface().segments.effort, false);
 
-  for (let index = 0; index < 5; index += 1) await driver.send(INPUT_EVENTS.MOVE_DOWN);
-  assert.equal(driver.surface().state.selectedIndex, 6);
+  for (let index = 0; index < 6; index += 1) await driver.send(INPUT_EVENTS.MOVE_DOWN);
+  assert.equal(driver.surface().state.selectedIndex, 7);
   await driver.send(INPUT_EVENTS.SUBMIT);
   assert.match(driver.surface().state.feedback, /常规设置已保存/);
   assert.equal(driver.storage.writes.length, 1);
@@ -1037,8 +1037,8 @@ test('status line subpanel reports save failures without closing the config cent
   await driver.select('statusLine');
   await driver.send(INPUT_EVENTS.SUBMIT);
   await driver.send(INPUT_EVENTS.SUBMIT);
-  for (let index = 0; index < 6; index += 1) await driver.send(INPUT_EVENTS.MOVE_DOWN);
-  assert.equal(driver.surface().state.selectedIndex, 6);
+  for (let index = 0; index < 7; index += 1) await driver.send(INPUT_EVENTS.MOVE_DOWN);
+  assert.equal(driver.surface().state.selectedIndex, 7);
   await driver.send(INPUT_EVENTS.SUBMIT);
 
   assert.equal(driver.surface().view, 'statusLine');
