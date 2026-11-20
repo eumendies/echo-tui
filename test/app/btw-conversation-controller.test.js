@@ -666,3 +666,35 @@ test('BTW ignores late compaction and private records after close and reopening 
   assert.deepEqual(controller.getRecords().map((record) => record.displayText), ['new']);
   controller.close();
 });
+
+test('BTW keeps an independent output rate window for the side turn', async () => {
+  const snapshot = {
+    revision: 3,
+    getAppSettings() { return {}; },
+    getLlmModelConfigInfo() { return {kind: 'profiles', selectedModelId: 'fake', models: []}; },
+    resolveLlmConfig() { return {}; },
+    resolveLlmConfigStrict() { return {}; },
+    resolveLlmConfigForProfile() { return {}; }
+  };
+  let release;
+  const {controller, parent} = createHarness((session, callbacks) => {
+    callbacks.onStreamDelta?.('abcdefgh');
+    // 保持 side turn 活跃，才能在 turn 生命周期内读取速率投影。
+    return new Promise((resolve) => {
+      release = resolve;
+    });
+  });
+  parent.userConfigSnapshot = snapshot;
+
+  controller.open('measure');
+  await flush();
+
+  // side turn 使用自己的样本序列，主会话的记录不会抬高它的读数。
+  const state = controller.createRenderState(createBaseRenderState());
+  assert.ok(state.statusLine.outputRatePerSecond > 0);
+
+  release();
+  await flush();
+  controller.close();
+  assert.equal(controller.createRenderState(createBaseRenderState()).statusLine.outputRatePerSecond, undefined);
+});

@@ -262,13 +262,15 @@ function mergeContentBlockStart(state: AnthropicStreamState, event: AnthropicStr
 function mergeContentBlockDelta(state: AnthropicStreamState, event: AnthropicStreamEvent, callbacks: AgentTurnCallbacks): void {
   if (event.delta?.type === 'text_delta' && typeof event.delta.text === 'string' && event.delta.text !== '') {
     state.draft += event.delta.text;
+    callbacks.onStreamDelta?.(event.delta.text);
     callbacks.onToken?.(event.delta.text, state.draft);
     return;
   }
 
-  if (event.delta?.type === 'thinking_delta' && typeof event.delta.thinking === 'string') {
+  if (event.delta?.type === 'thinking_delta' && typeof event.delta.thinking === 'string' && event.delta.thinking !== '') {
     const current = getOrCreateThinkingPart(state.thinkingParts, getEventIndex(event));
     current.thinking += event.delta.thinking;
+    callbacks.onStreamDelta?.(event.delta.thinking);
     const reasoningDraft = readReasoningSummaryFromMap(state.thinkingParts);
 
     if (reasoningDraft) {
@@ -290,6 +292,7 @@ function mergeContentBlockDelta(state: AnthropicStreamState, event: AnthropicStr
   const current = getOrCreateToolCallPart(state.toolCallParts, getEventIndex(event));
 
   current.argumentsText += event.delta.partial_json;
+  callbacks.onStreamDelta?.(event.delta.partial_json);
 }
 
 /**

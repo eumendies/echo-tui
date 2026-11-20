@@ -17,6 +17,7 @@ type ComposerStateOwner = {
 
 type TurnStateOwner = {
   canInterruptAssistantTurn: () => boolean;
+  getOutputRate: () => number;
   getPending: () => PendingState | null;
   getWorking: () => WorkingState | null;
 };
@@ -121,6 +122,8 @@ class RenderContext {
       Boolean(working),
       hasPendingMessage
     );
+    // 速率只属于活跃 assistant turn：shell 执行、MCP 初始化等本地活动复用 working 但没有模型出词。
+    const outputRatePerSecond = this.turnContext.canInterruptAssistantTurn() ? this.turnContext.getOutputRate() : undefined;
 
     return {
       projectName: path.basename(this.getCurrentCwd()) || this.getCurrentCwd(),
@@ -137,6 +140,7 @@ class RenderContext {
           ? `${formatSubagentRawName(pending.agentName)}${pending.toolName ? ` · ${pending.toolName}` : ''}`
           : undefined,
       activity: resolveStatusLineActivity(pending, working),
+      ...(outputRatePerSecond !== undefined ? {outputRatePerSecond} : {}),
       ...(keyHint ? {keyHint} : {})
     };
   }

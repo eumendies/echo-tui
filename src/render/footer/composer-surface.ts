@@ -320,6 +320,15 @@ function createLeftStatusSegments(statusLine: StatusLineState, theme: FooterThem
     });
   }
 
+  // 速率宽度随数值变化，放在左侧末尾才不会推动前面已固定的 segment。
+  if (visible.rate && statusLine.outputRatePerSecond !== undefined) {
+    const text = `${statusLine.outputRatePerSecond} t/s`;
+    segments.push({
+      plain: text,
+      rendered: tokenText(theme, 'muted', text)
+    });
+  }
+
   return segments;
 }
 

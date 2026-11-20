@@ -1,6 +1,7 @@
 import * as composerOps from '../input/composer';
 import {INPUT_EVENTS} from '../input/event-types';
 import {createToolCallTranscriptRecord, createToolResultTranscriptRecord} from '../tools/tool-transcript-record';
+import {createOutputRateTracker} from './state/output-rate-tracker';
 
 import type {AgentCallbacks, AgentSessionInput, AgentUserConfigSnapshot, RunAgent} from '../types/agent';
 import type {ComposerState} from '../types/composer';
@@ -63,6 +64,7 @@ type BtwConversationDependencies = {
  */
 class BtwConversationController {
   private readonly dependencies: BtwConversationDependencies;
+  private readonly outputRateTracker = createOutputRateTracker();
   private state: BtwConversationState | null = null;
   private nextConversationId = 1;
   private nextTurnId = 1;
@@ -183,6 +185,7 @@ class BtwConversationController {
       model: state.modelLabel ? {kind: 'default', label: state.modelLabel} : base.statusLine?.model || {kind: 'default', label: 'model unavailable'},
       mode: 'btw',
       detail: `readonly · ${this.getParentActivity()}`,
+      ...(state.activeTurnId === null ? {} : {outputRatePerSecond: this.outputRateTracker.getRate()}),
       keyHint: 'Esc 返回主会话'
     };
     const pendingMessage: PendingMessageRenderState | null = state.pendingMessage ? {preview: state.pendingMessage.replace(/\s+/g, ' ')} : null;
@@ -254,6 +257,8 @@ class BtwConversationController {
     state.pending = {kind: 'thinking', elapsedMs: 0};
     state.working = null;
     state.activityStartedAt = Date.now();
+    // 速率窗口按 side turn 重置：主会话与 BTW 的样本互不影响。
+    this.outputRateTracker.reset();
     this.dependencies.renderRecords([userRecord]);
     const isCurrent = (): boolean => this.state?.conversationId === conversationId && this.state.activeTurnId === turnId;
     const append = (records: TranscriptRecord[]): void => {
@@ -272,6 +277,11 @@ class BtwConversationController {
         this.state!.pending = {kind: 'thinking', elapsedMs: 0};
         if (this.state!.activityStartedAt === null) this.state!.activityStartedAt = Date.now();
         this.dependencies.render();
+      },
+      /** 与主会话相同：正文、reasoning 和工具参数分片只累积速率窗口。 */
+      onStreamDelta: (text) => {
+        if (!isCurrent()) return;
+        this.outputRateTracker.record(text);
       },
       onToken: (_token, draft) => {
         if (!isCurrent()) return;

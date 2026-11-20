@@ -46,6 +46,7 @@
 | 目录 | `ui.statusLine.dir` | `dir <项目名>` |
 | 上下文用量 | `ui.statusLine.contextUsage` | `ctx <used>/<window>` |
 | 全部工具已授权 | `ui.statusLine.approval` | `TOOLS all` |
+| 输出速率 | `ui.statusLine.rate` | 模型输出速率，形如 `42 t/s` |
 
 默认全部为 `true`，等价于此前的固定行为；无需迁移既有配置。每个字段独立回退：字段缺失、非布尔值，或 `ui.statusLine` 不是对象时，对应项按开启处理，不影响 `ui` 下的其他已知与未知键。
 
@@ -58,6 +59,7 @@
       "dir": false,
       "effort": true,
       "model": true,
+      "rate": true,
       "title": false
     }
   }
@@ -66,8 +68,10 @@
 
 - 段的相对顺序、文本格式与配色不随配置改变。关闭的段不参与宽度计算，也不会留下多余分隔符，因此关掉长文本段常常能让右侧 `ctx` 重新显示出来。
 - **`Ctrl+T` 模型调节期间强制显示模型与推理强度**，即使两者已关闭；返回普通态后重新按配置过滤。
-- **运行模式段（`ready`、`PLAN`、`SHELL`、echo spinner、`subagent view`）与 `Esc 中断` 这类提示不可关闭**，所以即使六项全关，状态行仍不会退化成空行。
+- **运行模式段（`ready`、`PLAN`、`SHELL`、echo spinner、`subagent view`）与 `Esc 中断` 这类提示不可关闭**，所以即使七项全关，状态行仍不会退化成空行。
 - 关闭“上下文用量”只影响显示，已缓存的 usage 仍然保留：`/context` 继续可用，重新开启后立即恢复。
+- **输出速率是本地估算**：把 provider 流里的原始输出片段（正文、reasoning、工具调用参数分片）按字符启发式换算成 token，取最近 3 秒的滑动窗口求每秒值。分片只累加浮点估算值，整个窗口结束时才取整一次，避免小分片被逐片向上取整放大（按字符流的 provider 最坏会被放大数倍）。它只用来判断"模型还在不在出词"，既不是 provider 精确计数，也不用于计费、context 估算或 `/usage` 统计。
+- 速率出现在左侧末尾（目录段之后），因为它宽度会变化，放在末尾才不会推动其他段的位置。**工具本地执行期间没有新输出，速率显示 `0 t/s`**，同时 spinner 与 elapsed 继续推进；shell 命令执行、MCP 初始化、引用总结等非 assistant turn 活动不显示速率。
 - 保存成功或外部修改 `config.json` 生效时只需一次 footer 重绘：不重放 transcript、不追加记录、不清空 context usage、不中断正在运行的 assistant turn。
 - 该配置作用于普通输入态和 `Ctrl+O` subagent 会话窗口的状态行，`/btw` 侧会话使用同一份偏好；`/status`、`/context`、`/usage` 等命令面板与 headless `--once` 不受影响。
 

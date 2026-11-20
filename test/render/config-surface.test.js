@@ -850,14 +850,14 @@ test('config center projects the status line segment summary on the general tab'
       .lines.map(stripAnsi).join('\n');
   };
 
-  assert.match(render(DEFAULT_APP_SETTINGS), /状态栏显示项\s+6 项全开/);
+  assert.match(render(DEFAULT_APP_SETTINGS), /状态栏显示项\s+7 项全开/);
   assert.match(render({
     ...DEFAULT_APP_SETTINGS,
-    statusLineSegments: {approval: false, contextUsage: true, dir: false, effort: true, model: true, title: true}
-  }), /状态栏显示项\s+4 项开启/);
+    statusLineSegments: {approval: false, contextUsage: true, dir: false, effort: true, model: true, rate: true, title: true}
+  }), /状态栏显示项\s+5 项开启/);
   assert.match(render({
     ...DEFAULT_APP_SETTINGS,
-    statusLineSegments: {approval: false, contextUsage: false, dir: false, effort: false, model: false, title: false}
+    statusLineSegments: {approval: false, contextUsage: false, dir: false, effort: false, model: false, rate: false, title: false}
   }), /状态栏显示项\s+全部隐藏/);
 });
 
@@ -868,12 +868,12 @@ test('config center renders status line subpanel rows and keeps every focus at t
     activeTab: 'general',
     tabs: [{id: 'general', label: '常规'}],
     state: {selectedIndex: 0},
-    segments: {approval: false, contextUsage: true, dir: false, effort: true, model: true, title: true}
+    segments: {approval: false, contextUsage: true, dir: false, effort: true, model: true, rate: true, title: true}
   };
   const layout = renderConfigSurface(surface, 100);
   const text = layout.lines.map(stripAnsi).join('\n');
 
-  for (const label of ['模型', '推理强度', '会话标题', '目录', '上下文用量', '全部工具已授权', '保存常规设置']) {
+  for (const label of ['模型', '推理强度', '会话标题', '目录', '上下文用量', '全部工具已授权', '输出速率', '保存常规设置']) {
     assert.ok(text.includes(label), label);
   }
   assert.match(text, /模型\s+开/);
@@ -881,7 +881,7 @@ test('config center renders status line subpanel rows and keeps every focus at t
   assert.match(text, /状态栏/);
   assert.ok(layout.lines.every((line) => displayWidth(line) <= 96));
 
-  for (let index = 0; index < 7; index += 1) {
+  for (let index = 0; index < 8; index += 1) {
     for (const maxLines of [1, 2, 3, 5, 8]) {
       const windowed = renderConfigSurface({...surface, state: {selectedIndex: index}}, 100, {maxLines});
       assert.ok(windowed.lines.length <= maxLines);
@@ -889,6 +889,6 @@ test('config center renders status line subpanel rows and keeps every focus at t
     }
   }
 
-  const failed = renderConfigSurface({...surface, state: {selectedIndex: 6, error: '写入失败'}}, 100);
+  const failed = renderConfigSurface({...surface, state: {selectedIndex: 7, error: '写入失败'}}, 100);
   assert.match(failed.lines.map(stripAnsi).join('\n'), /写入失败/);
 });

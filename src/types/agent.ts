@@ -193,6 +193,7 @@ export type AgentCallbacks = {
   onModelResolved?: (model: ResolvedAgentModel) => void;
   onThinking?: () => void;
   onToken?: (token: string, draft: string) => void;
+  onStreamDelta?: (text: string) => void; // 模型原始输出片段（正文、reasoning、工具参数分片）；仅供速率统计，不解析也不落盘。
   onReasoningUpdate?: (update: ReasoningUpdate) => void; // provider turn 的可读 reasoning 草稿与完成边界。
   onProviderRetry?: (retry: ProviderRetry) => void;
   onProviderRecords?: (records: TranscriptRecord[]) => void;
@@ -292,7 +293,7 @@ export type ReasoningUpdate =
       text: string; // 可以立即提交为 reasoning_summary transcript 的权威全文。
     };
 
-export type AgentTurnCallbacks = Pick<AgentCallbacks, 'onProviderRetry' | 'onReasoningUpdate' | 'onToken'>;
+export type AgentTurnCallbacks = Pick<AgentCallbacks, 'onProviderRetry' | 'onReasoningUpdate' | 'onStreamDelta' | 'onToken'>;
 
 export type AgentTurnOptions = {
   abortSignal?: AbortSignal;

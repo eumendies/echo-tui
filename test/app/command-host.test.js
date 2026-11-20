@@ -617,7 +617,7 @@ test('CommandHost config facade saves and refreshes skill catalog context ratio'
       skillCatalogContextRatio: 0.03,
       slashSuggestionMaxVisible: 8,
       showReasoningSummary: true,
-      statusLineSegments: {approval: true, contextUsage: true, dir: true, effort: true, model: true, title: true},
+      statusLineSegments: {approval: true, contextUsage: true, dir: true, effort: true, model: true, rate: true, title: true},
       toolApprovalMode: 'manual',
       titleGenerationEnabled: true
     });

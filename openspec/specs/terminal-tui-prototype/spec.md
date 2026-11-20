@@ -160,7 +160,7 @@
 ### Requirement: footer status line
 系统 SHALL 在普通 composer footer 中使用 segmented status line 展示当前运行状态。status line SHALL 优先展示当前选择的模型、当前模型 profile 显式配置的 reasoning effort、当前目录、真实 context usage 和当前运行模式；当前选择的模型 SHALL 作为最靠前的信息显示并使用区别于普通状态文本的强调颜色。reasoning effort SHALL 作为独立 segment 展示，而不是拼接进模型名称或添加圆点前缀。status line SHALL 暂不显示 git branch。当当前 interaction mode 为 plan 且没有更高优先级 pending 状态时，status line SHALL 显示 `plan` 或等价 plan mode 状态，并 SHALL 遵循现有终端宽度和 footer 局部重绘约束。普通 composer footer、slash suggestion 和 command surfaces SHALL 遵循共享 footer UI 语言：使用统一 cyan palette、`▌` 焦点条、`●/○` 状态 marker 和中文为主的默认操作提示。
 
-上述 segment SHALL 在用户未关闭对应项时按本要求展示。用户 MAY 通过 `/config` → 常规 → 状态栏显示项关闭模型、推理强度、会话标题、目录、context usage 和 `TOOLS all` 这 6 个 segment；被关闭 segment 的过滤、强制显示和降级语义 SHALL 由 `status-line-segments` 能力定义。mode segment 与 key hint segment SHALL NOT 可关闭，status line SHALL 始终保留当前运行状态反馈。
+上述 segment SHALL 在用户未关闭对应项时按本要求展示。用户 MAY 通过 `/config` → 常规 → 状态栏显示项关闭模型、推理强度、会话标题、目录、context usage、`TOOLS all` 和输出速率这 7 个 segment；被关闭 segment 的过滤、强制显示和降级语义 SHALL 由 `status-line-segments` 能力定义。mode segment 与 key hint segment SHALL NOT 可关闭，status line SHALL 始终保留当前运行状态反馈。当存在活跃 assistant turn 时，status line SHALL 在左侧 segment 末尾（`dir` 之后）显示模型输出速率，其采集与估算语义由 `output-rate-metering` 能力定义，渲染条件由 `status-line-segments` 能力定义。
 
 #### Scenario: 普通输入显示 idle status line
 - **WHEN** 普通 composer 可见且没有 slash suggestion、pending preview、command surface 或 plan mode
@@ -230,6 +230,11 @@
 - **THEN** status line SHALL 被裁剪到 safe render width 内
 - **THEN** status line SHALL NOT 因写满终端最后一列而触发额外自动换行
 - **THEN** status line SHALL 在对应 segment 未关闭时优先保留左侧模型、effort 和目录信息，右侧动态状态 MAY 被整体省略或裁剪
+#### Scenario: 流式期间显示模型输出速率
+- **WHEN** assistant turn 正在流式输出正文、reasoning 或工具调用参数
+- **THEN** status line SHALL 在左侧末尾显示 `<整数> t/s` 形式的估算速率
+- **THEN** 该 segment SHALL 与 spinner、elapsed 同时可见
+- **THEN** 该数值 SHALL NOT 被写入 transcript、journal 或 usage 统计
 
 ### Requirement: Plan mode supports readonly workspace inspection
 系统 SHALL 在 plan mode 中允许模型使用只读工具和分层约束的 bash 来理解代码库、工作区状态和未提交变更。生效 `read-only` 沙箱可用时，bash 命令可进入执行链路，但工作区写入、网络访问与其他越界效果 SHALL 由内核沙箱边界拒绝；沙箱不可用时，系统 SHALL 只允许命中严格只读 allowlist 的命令。plan mode SHALL 继续禁止实现、修改文件或产生其他副作用。

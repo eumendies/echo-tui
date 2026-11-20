@@ -3202,3 +3202,23 @@ test('createAgentLoopRuntime forwards the run session identity to setup and prov
 
   assert.equal(turnOptions[0].sessionId, 'session-123');
 });
+
+test('createAgentLoopRuntime forwards provider stream deltas to the caller', async () => {
+  const agent = {
+    async runTurn(_records, providerCallbacks) {
+      // 模拟 adapter 在正文与工具参数分片上的上报；runtime 必须原样透传而不是重新挑选。
+      providerCallbacks.onStreamDelta?.('body');
+      providerCallbacks.onStreamDelta?.('{"pattern"');
+      providerCallbacks.onToken?.('body', 'body');
+      return {draft: 'body', toolCalls: []};
+    }
+  };
+  const deltas = [];
+
+  await withPatchedAgentRuntime(agent, () => createAgentLoopRuntime(TEST_CWD)(
+    {records: [{role: 'user', text: 'measure'}]},
+    {onStreamDelta(text) { deltas.push(text); }}
+  ));
+
+  assert.deepEqual(deltas, ['body', '{"pattern"']);
+});

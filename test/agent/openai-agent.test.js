@@ -1277,3 +1277,29 @@ test('OpenAI provider agent does not continue non-portable reasoning ids', async
     usageInputTokens: undefined
   });
 });
+
+test('createOpenAiAgent reports stream deltas for text and tool argument fragments', async () => {
+  const harness = createHarness([
+    { type: 'response.created' },
+    { type: 'response.output_text.delta', delta: 'Hi' },
+    { type: 'response.function_call_arguments.delta', delta: '{"pattern"' },
+    { type: 'response.function_call_arguments.delta', delta: ':"*.ts"}' },
+    {
+      type: 'response.output_item.done',
+      output_index: 1,
+      item: { type: 'function_call', call_id: 'call_1', name: 'glob', arguments: '{"pattern":"*.ts"}' }
+    },
+    { type: 'response.completed', response: { usage: { input_tokens: 5, output_tokens: 3 } } }
+  ]);
+  const deltas = [];
+
+  const result = await harness.runTurn([{ role: 'user', text: 'find files' }], {
+    onStreamDelta(text) {
+      deltas.push(text);
+    }
+  });
+
+  // 参数分片只用于速率上报，工具调用本身仍由 output_item.done 一次性构建。
+  assert.deepEqual(deltas, ['Hi', '{"pattern"', ':"*.ts"}']);
+  assert.deepEqual(result.toolCalls, [{ callId: 'call_1', toolName: 'glob', argumentsText: '{"pattern":"*.ts"}' }]);
+});

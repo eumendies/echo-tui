@@ -227,6 +227,7 @@ const STATUS_LINE_SEGMENT_LABELS: Record<StatusLineSegment, string> = {
   dir: '目录',
   effort: '推理强度',
   model: '模型',
+  rate: '输出速率',
   title: '会话标题'
 };
 
