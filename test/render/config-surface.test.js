@@ -206,7 +206,7 @@ test('config center renders general tabs, settings, and constrained width', () =
   assert.match(text, /启动时检查更新\s+开/);
   assert.doesNotMatch(text, /文件编辑工具|edit_file|apply_patch/);
   assert.match(text, /超限图片自动压缩/);
-  assert.match(text, /↓ 5 更多/);
+  assert.match(text, /↓ 6 更多/);
   assert.ok(layout.lines.every((line) => displayWidth(line) <= 38));
 });
 
@@ -259,6 +259,7 @@ test('general config windows preserve every selected row at tiny heights with hi
   const labels = {
     compactionThreshold: '自动压缩阈值', skillCatalogRatio: '技能列表上下文占比上限',
     slashSuggestionLimit: 'Slash 建议最多显示', reasoningSummary: '显示推理摘要',
+    statusLine: '状态栏显示项',
     historyRenderLineLimit: '历史重绘预算', mouseInteraction: 'UI 鼠标交互',
     defaultInteractionMode: '默认启动模式', autoCompressImages: '超限图片自动压缩',
     checkUpdatesOnStartup: '启动时检查更新', toolApprovalMode: '工具审批模式',
@@ -839,4 +840,55 @@ test('tools state copies the normalized snapshot draft without sharing mutable a
   assert.deepEqual(state.draft, draft);
   state.draft.disabledTools.push('web_fetch');
   assert.deepEqual(draft.disabledTools, ['create_todos', 'complete_todo']);
+});
+
+test('config center projects the status line segment summary on the general tab', () => {
+  const render = (settings) => {
+    const state = createInitialGeneralConfigState(settings);
+    state.selectedIndex = getGeneralConfigRowIds(state).indexOf('statusLine');
+    return renderConfigSurface({kind: 'config', view: 'general', activeTab: 'general', tabs: [{id: 'general', label: '常规'}], state}, 100)
+      .lines.map(stripAnsi).join('\n');
+  };
+
+  assert.match(render(DEFAULT_APP_SETTINGS), /状态栏显示项\s+6 项全开/);
+  assert.match(render({
+    ...DEFAULT_APP_SETTINGS,
+    statusLineSegments: {approval: false, contextUsage: true, dir: false, effort: true, model: true, title: true}
+  }), /状态栏显示项\s+4 项开启/);
+  assert.match(render({
+    ...DEFAULT_APP_SETTINGS,
+    statusLineSegments: {approval: false, contextUsage: false, dir: false, effort: false, model: false, title: false}
+  }), /状态栏显示项\s+全部隐藏/);
+});
+
+test('config center renders status line subpanel rows and keeps every focus at tiny heights', () => {
+  const surface = {
+    kind: 'config',
+    view: 'statusLine',
+    activeTab: 'general',
+    tabs: [{id: 'general', label: '常规'}],
+    state: {selectedIndex: 0},
+    segments: {approval: false, contextUsage: true, dir: false, effort: true, model: true, title: true}
+  };
+  const layout = renderConfigSurface(surface, 100);
+  const text = layout.lines.map(stripAnsi).join('\n');
+
+  for (const label of ['模型', '推理强度', '会话标题', '目录', '上下文用量', '全部工具已授权', '保存常规设置']) {
+    assert.ok(text.includes(label), label);
+  }
+  assert.match(text, /模型\s+开/);
+  assert.match(text, /目录\s+关/);
+  assert.match(text, /状态栏/);
+  assert.ok(layout.lines.every((line) => displayWidth(line) <= 96));
+
+  for (let index = 0; index < 7; index += 1) {
+    for (const maxLines of [1, 2, 3, 5, 8]) {
+      const windowed = renderConfigSurface({...surface, state: {selectedIndex: index}}, 100, {maxLines});
+      assert.ok(windowed.lines.length <= maxLines);
+      assert.equal(windowed.lines.map(stripAnsi).filter((line) => line.includes('▌')).length, 1, `row ${index}, height ${maxLines}`);
+    }
+  }
+
+  const failed = renderConfigSurface({...surface, state: {selectedIndex: 6, error: '写入失败'}}, 100);
+  assert.match(failed.lines.map(stripAnsi).join('\n'), /写入失败/);
 });

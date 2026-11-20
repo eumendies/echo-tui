@@ -160,6 +160,8 @@
 ### Requirement: footer status line
 系统 SHALL 在普通 composer footer 中使用 segmented status line 展示当前运行状态。status line SHALL 优先展示当前选择的模型、当前模型 profile 显式配置的 reasoning effort、当前目录、真实 context usage 和当前运行模式；当前选择的模型 SHALL 作为最靠前的信息显示并使用区别于普通状态文本的强调颜色。reasoning effort SHALL 作为独立 segment 展示，而不是拼接进模型名称或添加圆点前缀。status line SHALL 暂不显示 git branch。当当前 interaction mode 为 plan 且没有更高优先级 pending 状态时，status line SHALL 显示 `plan` 或等价 plan mode 状态，并 SHALL 遵循现有终端宽度和 footer 局部重绘约束。普通 composer footer、slash suggestion 和 command surfaces SHALL 遵循共享 footer UI 语言：使用统一 cyan palette、`▌` 焦点条、`●/○` 状态 marker 和中文为主的默认操作提示。
 
+上述 segment SHALL 在用户未关闭对应项时按本要求展示。用户 MAY 通过 `/config` → 常规 → 状态栏显示项关闭模型、推理强度、会话标题、目录、context usage 和 `TOOLS all` 这 6 个 segment；被关闭 segment 的过滤、强制显示和降级语义 SHALL 由 `status-line-segments` 能力定义。mode segment 与 key hint segment SHALL NOT 可关闭，status line SHALL 始终保留当前运行状态反馈。
+
 #### Scenario: 普通输入显示 idle status line
 - **WHEN** 普通 composer 可见且没有 slash suggestion、pending preview、command surface 或 plan mode
 - **THEN** footer SHALL 在 composer 下方显示 status line
@@ -168,6 +170,12 @@
 - **THEN** status line SHALL 显示当前目录或等价目录标识
 - **THEN** status line SHALL 显示 ready、idle 或等价普通输入状态
 - **THEN** status line SHALL NOT 显示 git branch
+
+#### Scenario: 用户关闭的 segment 不渲染
+- **WHEN** 用户通过配置中心关闭了模型与目录 segment，且当前为 idle 普通输入态
+- **THEN** status line SHALL NOT 渲染模型名或目录 segment
+- **THEN** status line SHALL 继续渲染 mode segment 与其余未关闭 segment
+- **THEN** status line SHALL 继续只占 1 行
 
 #### Scenario: plan mode 显示 plan status line
 - **WHEN** 普通 composer 可见且当前 interaction mode 为 plan，且没有 slash suggestion、pending preview 或 command surface
@@ -221,7 +229,7 @@
 - **WHEN** terminal width 变窄或 status line 文本超过当前安全宽度
 - **THEN** status line SHALL 被裁剪到 safe render width 内
 - **THEN** status line SHALL NOT 因写满终端最后一列而触发额外自动换行
-- **THEN** status line SHALL 优先保留左侧模型、effort 和目录信息，右侧动态状态 MAY 被整体省略或裁剪
+- **THEN** status line SHALL 在对应 segment 未关闭时优先保留左侧模型、effort 和目录信息，右侧动态状态 MAY 被整体省略或裁剪
 
 ### Requirement: Plan mode supports readonly workspace inspection
 系统 SHALL 在 plan mode 中允许模型使用只读工具和分层约束的 bash 来理解代码库、工作区状态和未提交变更。生效 `read-only` 沙箱可用时，bash 命令可进入执行链路，但工作区写入、网络访问与其他越界效果 SHALL 由内核沙箱边界拒绝；沙箱不可用时，系统 SHALL 只允许命中严格只读 allowlist 的命令。plan mode SHALL 继续禁止实现、修改文件或产生其他副作用。
@@ -271,14 +279,21 @@
 - **THEN** 系统 SHALL NOT 为了侦测该外部编辑而在普通 footer redraw 路径读取用户级配置文件
 
 ### Requirement: status line 显示真实 context usage
-普通输入态 status line SHALL 在存在真实 provider context usage 时显示最近一次 provider request 的 input token usage 和当前模型 context window。该显示 SHALL 作为 segmented status line 的 context segment 呈现，并 SHALL 使用短文本片段；该 usage 的语义仍为最近一次真实 provider usage，而不是本地实时估算。系统 SHALL 保留该 usage 的详细 breakdown 供 `/context` 命令展示，但 status line SHALL 继续只显示短文本总览。
+普通输入态 status line SHALL 在存在真实 provider context usage 且 context usage segment 未被用户关闭时显示最近一次 provider request 的 input token usage 和当前模型 context window。该显示 SHALL 作为 segmented status line 的 context segment 呈现，并 SHALL 使用短文本片段；该 usage 的语义仍为最近一次真实 provider usage，而不是本地实时估算。系统 SHALL 保留该 usage 的详细 breakdown 供 `/context` 命令展示，但 status line SHALL 继续只显示短文本总览。关闭该 segment SHALL NOT 清除或丢弃已缓存的 usage 事实。
 
 #### Scenario: status line 显示最近 usage
 - **WHEN** app 已收到真实 provider context usage
+- **AND** context usage segment 未被用户关闭
 - **AND** footer 处于普通输入态且没有 command、approval 或 user-question surface
 - **THEN** status line SHALL 显示 context usage segment
 - **THEN** context usage segment SHALL 包含 used tokens 和 context window
 - **THEN** context usage segment SHALL 使用 `ctx <used>/<window>` 或等价短文本表达，例如 `ctx 18.2k/128k`
+
+#### Scenario: 用户关闭 context usage 段
+- **WHEN** app 已收到真实 provider context usage，且用户关闭了 context usage segment
+- **THEN** status line SHALL NOT 显示 `ctx` segment
+- **THEN** 系统 SHALL 继续保留该 usage 供 `/context` 命令与后续重新开启时展示
+- **THEN** status line SHALL 按既有对齐规则使用释放后的宽度
 
 #### Scenario: 没有真实 usage 时不显示 context usage
 - **WHEN** app 尚未收到真实 provider context usage
@@ -2247,4 +2262,3 @@ reasoning streaming preview SHALL 跟随当前 assistant turn 生命周期清理
 - **THEN** 系统 SHALL 从全部当前有效 transcript 中按历史预算选择完整块后缀；不限时投影全部可见内容
 - **THEN** 系统 SHALL NOT 显示压缩历史提示
 - **THEN** 若有限预算省略了可见历史，系统 SHALL 仅显示预算省略提示，不将其描述为压缩历史
-

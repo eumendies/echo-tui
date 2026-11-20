@@ -34,6 +34,43 @@
 
 压缩与显示窗口的区别见[压缩后的 transcript 内存与历史](compacted-transcript-memory.md)；已完成的排版测量见[历史重绘预算基准结果](history-render-budget-benchmark.md)。
 
+### 状态栏显示项
+
+普通输入态的 status line 由若干段拼成。在 `/config` → **常规** 选中“状态栏显示项”按 Enter 进入子面板：↑/↓ 移动焦点，Enter 或 ←/→ 切换开关，选中“保存常规设置”按 Enter，与常规页共用同一次校验与原子写入。Esc 或 Backspace 返回常规页，Tab 直接切到下一个 Tab 并保留草稿。
+
+| 界面值 | 字段 | 关闭后隐藏的内容 |
+| --- | --- | --- |
+| 模型 | `ui.statusLine.model` | 模型名，含 `(SKILL override)` 后缀 |
+| 推理强度 | `ui.statusLine.effort` | `effort <等级>` |
+| 会话标题 | `ui.statusLine.title` | 当前会话标题 |
+| 目录 | `ui.statusLine.dir` | `dir <项目名>` |
+| 上下文用量 | `ui.statusLine.contextUsage` | `ctx <used>/<window>` |
+| 全部工具已授权 | `ui.statusLine.approval` | `TOOLS all` |
+
+默认全部为 `true`，等价于此前的固定行为；无需迁移既有配置。每个字段独立回退：字段缺失、非布尔值，或 `ui.statusLine` 不是对象时，对应项按开启处理，不影响 `ui` 下的其他已知与未知键。
+
+```json
+{
+  "ui": {
+    "statusLine": {
+      "approval": true,
+      "contextUsage": true,
+      "dir": false,
+      "effort": true,
+      "model": true,
+      "title": false
+    }
+  }
+}
+```
+
+- 段的相对顺序、文本格式与配色不随配置改变。关闭的段不参与宽度计算，也不会留下多余分隔符，因此关掉长文本段常常能让右侧 `ctx` 重新显示出来。
+- **`Ctrl+T` 模型调节期间强制显示模型与推理强度**，即使两者已关闭；返回普通态后重新按配置过滤。
+- **运行模式段（`ready`、`PLAN`、`SHELL`、echo spinner、`subagent view`）与 `Esc 中断` 这类提示不可关闭**，所以即使六项全关，状态行仍不会退化成空行。
+- 关闭“上下文用量”只影响显示，已缓存的 usage 仍然保留：`/context` 继续可用，重新开启后立即恢复。
+- 保存成功或外部修改 `config.json` 生效时只需一次 footer 重绘：不重放 transcript、不追加记录、不清空 context usage、不中断正在运行的 assistant turn。
+- 该配置作用于普通输入态和 `Ctrl+O` subagent 会话窗口的状态行，`/btw` 侧会话使用同一份偏好；`/status`、`/context`、`/usage` 等命令面板与 headless `--once` 不受影响。
+
 ## 主 Agent 工具
 
 在 `/config` → **工具** 中查看“主 Agent 工具”，按方向键导航，Space 或 Enter 切换选中工具，再选中“保存主 Agent 工具”按 Enter。列表包含内置工具、MCP 资源读取工具与当前发现的 MCP tools，并区分开启偏好与当前可用性。保存只原子更新 `~/.echo/config.json` 的 `tools.mainAgent.disabledTools`，下一次主运行生效；正在运行的任务及其后续模型请求继续使用原工具集合。

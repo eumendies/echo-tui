@@ -953,3 +953,96 @@ test('history budget preserves keyboard focus on small surfaces and ignores unsu
   assert.equal(getGeneralConfigRowIds(driver.surface().state)[driver.surface().state.selectedIndex], 'mouseInteraction');
   assert.equal(driver.surface().state.draft.historyRenderLineLimit, 2000);
 });
+
+test('status line subpanel toggles segments, saves, and returns without closing the config center', async (t) => {
+  const driver = createHistoryBudgetDriver();
+  t.after(() => driver.context.close());
+
+  await driver.select('statusLine');
+  await driver.send(INPUT_EVENTS.SUBMIT);
+  assert.equal(driver.surface().view, 'statusLine');
+  assert.equal(driver.surface().state.selectedIndex, 0);
+  assert.deepEqual(driver.surface().segments, {approval: true, contextUsage: true, dir: true, effort: true, model: true, title: true});
+
+  await driver.send(INPUT_EVENTS.SUBMIT);
+  assert.equal(driver.surface().segments.model, false);
+  assert.equal(driver.surface().tabs.find((tab) => tab.id === 'general').status, 'dirty');
+  assert.equal(driver.storage.writes.length, 0);
+
+  await driver.send(INPUT_EVENTS.MOVE_LEFT);
+  assert.equal(driver.surface().segments.model, true);
+  assert.equal(driver.surface().tabs.find((tab) => tab.id === 'general').status, undefined);
+
+  await driver.send(INPUT_EVENTS.MOVE_DOWN);
+  await driver.send(INPUT_EVENTS.MOVE_RIGHT);
+  assert.equal(driver.surface().segments.effort, false);
+
+  for (let index = 0; index < 5; index += 1) await driver.send(INPUT_EVENTS.MOVE_DOWN);
+  assert.equal(driver.surface().state.selectedIndex, 6);
+  await driver.send(INPUT_EVENTS.SUBMIT);
+  assert.match(driver.surface().state.feedback, /常规设置已保存/);
+  assert.equal(driver.storage.writes.length, 1);
+  const saved = JSON.parse(driver.storage.raw);
+  assert.equal(saved.ui.statusLine.effort, false);
+  assert.equal(saved.ui.statusLine.model, true);
+  assert.equal(saved.ui.future, 'kept');
+  assert.equal(driver.runtime.hasActiveSession(), true);
+
+  await driver.send(INPUT_EVENTS.ESCAPE);
+  assert.equal(driver.surface().view, 'general');
+  assert.equal(driver.runtime.hasActiveSession(), true);
+  assert.equal(driver.surface().state.draft.statusLineSegments.effort, false);
+});
+
+test('status line subpanel Tab leaves the draft on the general tab', async (t) => {
+  const driver = createHistoryBudgetDriver();
+  t.after(() => driver.context.close());
+
+  await driver.select('statusLine');
+  await driver.send(INPUT_EVENTS.SUBMIT);
+  await driver.send(INPUT_EVENTS.MOVE_DOWN);
+  await driver.send(INPUT_EVENTS.SUBMIT);
+  assert.equal(driver.surface().segments.effort, false);
+
+  await driver.send(INPUT_EVENTS.TAB);
+  assert.equal(driver.surface().activeTab, 'models');
+  assert.equal(driver.runtime.hasActiveSession(), true);
+
+  await driver.tab('general');
+  assert.equal(driver.surface().view, 'general');
+  assert.equal(driver.surface().state.draft.statusLineSegments.effort, false);
+  assert.equal(driver.storage.writes.length, 0);
+});
+
+test('status line subpanel draft is protected by the shared discard confirmation', async (t) => {
+  const driver = createHistoryBudgetDriver();
+  t.after(() => driver.context.close());
+
+  await driver.select('statusLine');
+  await driver.send(INPUT_EVENTS.SUBMIT);
+  await driver.send(INPUT_EVENTS.SUBMIT);
+  await driver.send(INPUT_EVENTS.ESCAPE);
+  assert.equal(driver.surface().view, 'general');
+
+  await driver.send(INPUT_EVENTS.ESCAPE);
+  assert.equal(driver.surface().view, 'discardConfirm');
+  assert.deepEqual(driver.surface().dirtyTabs, ['常规']);
+  assert.equal(driver.storage.writes.length, 0);
+});
+
+test('status line subpanel reports save failures without closing the config center', async (t) => {
+  const driver = createHistoryBudgetDriver({failure: 'write'});
+  t.after(() => driver.context.close());
+
+  await driver.select('statusLine');
+  await driver.send(INPUT_EVENTS.SUBMIT);
+  await driver.send(INPUT_EVENTS.SUBMIT);
+  for (let index = 0; index < 6; index += 1) await driver.send(INPUT_EVENTS.MOVE_DOWN);
+  assert.equal(driver.surface().state.selectedIndex, 6);
+  await driver.send(INPUT_EVENTS.SUBMIT);
+
+  assert.equal(driver.surface().view, 'statusLine');
+  assert.match(driver.surface().state.error, /不能写入配置/);
+  assert.equal(driver.storage.writes.length, 0);
+  assert.equal(driver.runtime.hasActiveSession(), true);
+});

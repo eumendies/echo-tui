@@ -69,6 +69,7 @@ test('readAppSettings reads valid fields and falls back invalid fields independe
     skillCatalogContextRatio: 0.05,
     slashSuggestionMaxVisible: 12,
     showReasoningSummary: false,
+    statusLineSegments: {approval: true, contextUsage: true, dir: true, effort: true, model: true, title: true},
     toolApprovalMode: 'auto',
     toolApprovalModelProfileId: 'reviewer',
     titleGenerationEnabled: true
@@ -95,6 +96,7 @@ test('readAppSettings uses defaults for missing and malformed optional config', 
     skillCatalogContextRatio: 0.1,
     slashSuggestionMaxVisible: 20,
     showReasoningSummary: true,
+    statusLineSegments: {approval: true, contextUsage: true, dir: true, effort: true, model: true, title: true},
     toolApprovalMode: 'manual',
     titleGenerationEnabled: true
   });
@@ -103,6 +105,53 @@ test('readAppSettings uses defaults for missing and malformed optional config', 
 test('readAppSettingsDraft allows missing files but reports malformed files', () => {
   assert.deepEqual(readAppSettingsDraft({readFile() { throw Object.assign(new Error('missing'), {code: 'ENOENT'}); }}), DEFAULT_APP_SETTINGS);
   assert.throws(() => readAppSettingsDraft({readFile() { return '{broken'; }}), /配置文件不是有效 JSON/);
+});
+
+test('status line segments default to all visible and fall back per field', () => {
+  const missing = readAppSettings({readFile: () => JSON.stringify({ui: {showReasoningSummary: false}})});
+  assert.deepEqual(missing.statusLineSegments, {approval: true, contextUsage: true, dir: true, effort: true, model: true, title: true});
+  assert.equal(missing.showReasoningSummary, false);
+
+  const partial = readAppSettings({readFile: () => JSON.stringify({ui: {statusLine: {dir: false, model: 'hidden', title: false}}})});
+  assert.deepEqual(partial.statusLineSegments, {approval: true, contextUsage: true, dir: false, effort: true, model: true, title: false});
+
+  const nonObject = readAppSettings({readFile: () => JSON.stringify({ui: {statusLine: ['model']}})});
+  assert.deepEqual(nonObject.statusLineSegments, {approval: true, contextUsage: true, dir: true, effort: true, model: true, title: true});
+});
+
+test('saving status line segments preserves unknown siblings and rejects non-boolean drafts', () => {
+  const writes = [];
+  saveAppSettingsDraft({
+    ...DEFAULT_APP_SETTINGS,
+    statusLineSegments: {approval: false, contextUsage: true, dir: false, effort: true, model: true, title: true}
+  }, {
+    configPath: '/tmp/echo/config.json',
+    createTempPath: (targetPath) => `${targetPath}.tmp-test`,
+    mkdir() {},
+    readFile: () => JSON.stringify({ui: {other: 'kept', showReasoningSummary: false, statusLine: {foo: 1}}}),
+    writeFile(_path, data) {
+      writes.push(JSON.parse(data));
+    },
+    rename() {}
+  });
+
+  assert.deepEqual(writes[0].ui.statusLine, {approval: false, contextUsage: true, dir: false, effort: true, foo: 1, model: true, title: true});
+  assert.deepEqual(writes[0].ui.other, 'kept');
+  assert.equal(writes[0].ui.showReasoningSummary, true);
+
+  assert.deepEqual(
+    validateAppSettingsDraft({...DEFAULT_APP_SETTINGS, statusLineSegments: {...DEFAULT_APP_SETTINGS.statusLineSegments, model: 'off'}}),
+    {ok: false, error: '状态栏显示项的每个开关必须是布尔值'}
+  );
+  assert.deepEqual(
+    validateAppSettingsDraft({...DEFAULT_APP_SETTINGS, statusLineSegments: undefined}),
+    {ok: false, error: '状态栏显示项必须是开关集合'}
+  );
+  assert.throws(() => saveAppSettingsDraft({...DEFAULT_APP_SETTINGS, statusLineSegments: {model: true}}, {
+    writeFile() {
+      throw new Error('should not write');
+    }
+  }), /状态栏显示项/);
 });
 
 test('history render budget defaults independently and accepts only numeric presets including zero', () => {
@@ -195,6 +244,7 @@ test('saveAppSettingsDraft patches owned fields and writes atomically', () => {
     skillCatalogContextRatio: 0.04,
     slashSuggestionMaxVisible: 5,
     showReasoningSummary: false,
+    statusLineSegments: {approval: false, contextUsage: true, dir: true, effort: true, model: true, title: true},
     toolApprovalMode: 'manual',
     titleGenerationEnabled: true
   }, {
@@ -233,7 +283,16 @@ test('saveAppSettingsDraft patches owned fields and writes atomically', () => {
   assert.equal(saved.compaction.keepCount, 20);
   assert.deepEqual(saved.instructions, {other: 'kept', fileName: 'CLAUDE.md'});
   assert.deepEqual(saved.skills, {other: 'kept', catalogContextRatio: 0.04});
-  assert.deepEqual(saved.ui, {other: 'kept', activeTurnMessagePolicy: 'steer', defaultInteractionMode: 'plan', historyRenderLineLimit: 0, mouseInteractionEnabled: true, slashSuggestionMaxVisible: 5, showReasoningSummary: false});
+  assert.deepEqual(saved.ui, {
+    other: 'kept',
+    activeTurnMessagePolicy: 'steer',
+    defaultInteractionMode: 'plan',
+    historyRenderLineLimit: 0,
+    mouseInteractionEnabled: true,
+    slashSuggestionMaxVisible: 5,
+    showReasoningSummary: false,
+    statusLine: {approval: false, contextUsage: true, dir: true, effort: true, model: true, title: true}
+  });
   assert.equal(readAppSettings({readFile() { return writes[0][1]; }}).historyRenderLineLimit, 0);
   assert.deepEqual(saved.updates, {other: 'kept', checkOnStartup: false});
   assert.equal(saved.llm.selectedModel, 'fast');
@@ -268,7 +327,15 @@ test('saveAppSettingsDraft creates missing config and rejects invalid drafts bef
     compaction: {thresholdRatio: 0.8},
     instructions: {fileName: 'AGENTS.md'},
     skills: {catalogContextRatio: 0.02},
-    ui: {activeTurnMessagePolicy: 'pending', defaultInteractionMode: 'normal', historyRenderLineLimit: 1000, mouseInteractionEnabled: false, slashSuggestionMaxVisible: 8, showReasoningSummary: true},
+    ui: {
+      activeTurnMessagePolicy: 'pending',
+      defaultInteractionMode: 'normal',
+      historyRenderLineLimit: 1000,
+      mouseInteractionEnabled: false,
+      slashSuggestionMaxVisible: 8,
+      showReasoningSummary: true,
+      statusLine: {approval: true, contextUsage: true, dir: true, effort: true, model: true, title: true}
+    },
     updates: {checkOnStartup: true},
     tools: {approval: {mode: 'manual'}, readFiles: {autoCompressImages: true}},
     sessions: {titleGenerationEnabled: true}

@@ -860,7 +860,8 @@ test('AppContext snapshots app settings into render state and agent sessions', (
   assert.deepEqual(context.createRenderState().renderPreferences, {
     historyRenderLineLimit: 500,
     showReasoningSummary: false,
-    slashSuggestionMaxVisible: 3
+    slashSuggestionMaxVisible: 3,
+    statusLineSegments: {approval: true, contextUsage: true, dir: true, effort: true, model: true, title: true}
   });
   assert.equal(context.getAgentSession().compactionThresholdRatio, 0.65);
   assert.equal(context.getAgentSession().skillCatalogContextRatio, 0.04);
@@ -898,6 +899,7 @@ test('AppContext refreshes external app settings and classifies redraw impact', 
       skillCatalogContextRatioChanged: true,
       slashSuggestionLimitChanged: true,
       mouseInteractionChanged: true,
+      statusLineSegmentsChanged: false,
       toolApprovalChanged: false
     });
     assert.equal(context.getAgentSession().compactionThresholdRatio, 0.65);
@@ -909,7 +911,8 @@ test('AppContext refreshes external app settings and classifies redraw impact', 
     assert.deepEqual(context.createRenderState().renderPreferences, {
       historyRenderLineLimit: 1000,
       showReasoningSummary: false,
-      slashSuggestionMaxVisible: 4
+      slashSuggestionMaxVisible: 4,
+      statusLineSegments: {approval: true, contextUsage: true, dir: true, effort: true, model: true, title: true}
     });
   } finally {
     os.homedir = originalHomedir;
@@ -941,6 +944,7 @@ test('AppContext refreshes image compression without clearing context usage or r
       skillCatalogContextRatioChanged: false,
       slashSuggestionLimitChanged: false,
       mouseInteractionChanged: false,
+      statusLineSegmentsChanged: false,
       toolApprovalChanged: false
     });
     assert.equal(context.getAutoCompressImages(), false);
@@ -996,6 +1000,7 @@ test('AppContext budget snapshots change display only and preserve active sessio
         skillCatalogContextRatioChanged: false,
         slashSuggestionLimitChanged: false,
         mouseInteractionChanged: false,
+        statusLineSegmentsChanged: false,
         toolApprovalChanged: false
       });
       for (let tick = 0; tick < 3; tick += 1) {
@@ -1049,7 +1054,8 @@ test('AppContext compares normalized budgets and does not classify invalid same-
       assert.equal(result.historyRenderLineLimitChanged, false);
       assert.equal(Object.values(result).some(Boolean), false);
       assert.deepEqual(context.createRenderState().renderPreferences, {
-        historyRenderLineLimit: 1000, showReasoningSummary: true, slashSuggestionMaxVisible: 4
+        historyRenderLineLimit: 1000, showReasoningSummary: true, slashSuggestionMaxVisible: 4,
+        statusLineSegments: {approval: true, contextUsage: true, dir: true, effort: true, model: true, title: true}
       });
     }
     root = {ui: {historyRenderLineLimit: 0, slashSuggestionMaxVisible: 4}};
