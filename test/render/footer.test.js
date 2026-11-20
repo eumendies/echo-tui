@@ -1912,7 +1912,8 @@ test('renderFooterLayout shows shell mode status label and working activity', ()
 
   assert.ok(stripAnsi(shell.lines.at(-1)).includes('SHELL ctx'));
   assert.ok(stripAnsi(localShell.lines.at(-1)).includes('SHELL local'));
-  assert.ok(stripAnsi(working.lines.at(-1)).includes('working 00:01'));
+  assert.ok(stripAnsi(working.lines.at(-1)).includes('00:01'));
+  assert.equal(stripAnsi(working.lines.at(-1)).includes('working'), false);
 });
 
 test('renderFooterLayout renders MCP initialization spinner', () => {
@@ -3780,7 +3781,8 @@ test('renderFooterLayout keeps shell live output bounded and status in shell wor
   assert.ok(!plainLines.includes('line 1'));
   assert.ok(plainLines.some((line) => line.includes('line 20')));
   assert.ok(plainLines.at(-1).includes('SHELL local'));
-  assert.ok(plainLines.at(-1).includes('working 00:01'));
+  assert.ok(plainLines.at(-1).includes('00:01'));
+  assert.equal(plainLines.at(-1).includes('working'), false);
 });
 
 test('renderFooterLayout projects only the uncommitted shell output tail', () => {
@@ -3896,12 +3898,13 @@ test('renderFooterLayout renders working spinner in status line mode segment', (
   const plainStatusLine = plainLines.at(-1);
 
   assert.ok(spacerIndex > 0);
-  assert.ok(plainStatusLine.includes('▒█░   ░█▒ working 01:05'));
+  assert.ok(plainStatusLine.includes('▒█░   ░█▒ 01:05'));
+  assert.equal(plainStatusLine.includes('working'), false);
   assert.ok(plainStatusLine.includes('Esc 中断'));
   const statusLine = layout.lines.at(-1);
-  assert.ok(statusLine.includes(`${MUTED_FG}w\x1b[39m`));
-  assert.ok(statusLine.includes(`${WHITE_FG}r\x1b[39m`));
-  assert.ok(statusLine.includes(`\x1b[1m${WHITE_FG}k\x1b[39m\x1b[22m`));
+  // 扫光仍作用在计时文本上：五字符时间被 SGR 包裹，而不是裸露输出。
+  assert.match(statusLine, /\x1b\[[0-9;]*m\d\x1b\[39m/);
+  assert.ok(statusLine.includes(MUTED_FG) || statusLine.includes(WHITE_FG));
   assert.ok(!plainLines[spacerIndex - 1].includes('working'));
   assert.ok(plainLines.slice(0, spacerIndex).some((line) => line.includes('streaming draft')));
   assert.equal(layout.cursorRow, spacerIndex + 2);
@@ -3929,7 +3932,8 @@ test('renderFooterLayout renders tool call pending preview in footer', () => {
 
   assert.equal(plainLines[0], '◆ ▌ Bash · running');
   assert.equal(plainLines[1], '  ▌ pwd');
-  assert.ok(plainLines.at(-1).includes('   ▒█▒    working 00:00'));
+  assert.match(plainLines.at(-1), /▒█▒\s+00:00/);
+  assert.equal(plainLines.at(-1).includes('working'), false);
   assert.match(layout.lines.at(-1), /\x1b\[38;2;/);
 });
 
@@ -3958,7 +3962,9 @@ test('renderFooterLayout renders multiple pending tool calls in provider order',
   assert.ok(grepIndex >= 0);
   assert.ok(globIndex > grepIndex);
   assert.equal(plainLines.some((line) => /searching|fetching/u.test(line)), false);
-  assert.ok(plainLines.at(-1).includes('working'));
+  // working 状态只保留计时，spinner 已经表达"正在工作"。
+  assert.ok(plainLines.at(-1).includes('00:00'));
+  assert.equal(plainLines.at(-1).includes('working'), false);
   assert.ok(layout.lines.every((line) => displayWidth(line) <= safeRenderWidth(80)));
 });
 
@@ -4303,7 +4309,7 @@ test('renderFooterLayout shows the subagent view detail instead of the working s
 
   const statusText = stripAnsi(layout.lines.join('\n'));
   assert.match(statusText, /subagent 1\/2 · explorer · 调查任务/u);
-  assert.ok(!statusText.includes('working 00:57'));
+  assert.ok(!statusText.includes('00:57'));
   assert.match(statusText, /↑\/↓ 切换/u);
 });
 
@@ -4449,8 +4455,9 @@ test('renderFooterLayout keeps the turn timer while a subagent run is active', (
   const statusText = stripAnsi(layout.lines.at(-1));
 
   // 子 agent 的 elapsedMs 从它自己的 run 开始计；状态行必须继续显示本轮累积时间，否则看起来像被重置。
-  assert.ok(statusText.includes('working 01:05'), statusText);
-  assert.ok(!statusText.includes('working 00:01'), statusText);
+  assert.ok(statusText.includes('01:05'), statusText);
+  assert.ok(!statusText.includes('00:01'), statusText);
+  assert.equal(statusText.includes('working'), false);
 });
 
 test('renderFooterLayout keeps the turn timer while parallel subagent runs are active', () => {
@@ -4470,7 +4477,7 @@ test('renderFooterLayout keeps the turn timer while parallel subagent runs are a
   });
   const statusText = stripAnsi(layout.lines.at(-1));
 
-  assert.ok(statusText.includes('working 01:05'), statusText);
+  assert.ok(statusText.includes('01:05'), statusText);
 });
 
 test('renderFooterLayout keeps the subagent view detail while the main turn timer runs', () => {
@@ -4524,7 +4531,7 @@ test('renderFooterLayout falls back to the subagent elapsed when no turn timer i
   const statusText = stripAnsi(layout.lines.at(-1));
 
   // 没有主 turn 计时器时，子 agent 自己的 elapsed 仍是唯一可用来源。
-  assert.ok(statusText.includes('working 00:04'), statusText);
+  assert.ok(statusText.includes('00:04'), statusText);
 });
 
 test('renderFooterLayout falls back to the longest parallel subagent elapsed without a turn timer', () => {
@@ -4544,7 +4551,7 @@ test('renderFooterLayout falls back to the longest parallel subagent elapsed wit
   });
   const statusText = stripAnsi(layout.lines.at(-1));
 
-  assert.ok(statusText.includes('working 00:02'), statusText);
+  assert.ok(statusText.includes('00:02'), statusText);
 });
 
 test('renderFooterLayout hides only the configured status line segments', () => {

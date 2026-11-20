@@ -481,8 +481,9 @@ function createActivitySegment(activity: NonNullable<StatusLineState['activity']
   const elapsedMs = normalizeElapsedMs(activity.elapsedMs);
   const spinner = getEchoSpinnerFrame(elapsedMs);
   const renderedSpinner = renderEchoSpinnerFrame(elapsedMs, theme);
+  // working 只保留计时：spinner 已经表达"正在工作"，再加文案只会挤占宽度。
   const text = activity.kind === 'working'
-    ? `working ${formatElapsedTime(elapsedMs)}`
+    ? formatElapsedTime(elapsedMs)
     : 'thinking';
 
   return {

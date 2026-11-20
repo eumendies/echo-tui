@@ -168,7 +168,7 @@ TUI SHALL 在启动时从单次用户配置 snapshot 读取一次归一化 segme
 #### Scenario: 工具执行期间显示零速率
 - **WHEN** assistant turn 已产出工具调用并正在本地执行该工具，窗口内没有新的 token 增量
 - **THEN** status line SHALL 显示 `0 t/s`
-- **THEN** mode segment SHALL 继续显示既有的 working 与 elapsed
+- **THEN** mode segment SHALL 继续显示既有的 spinner 与 elapsed
 
 #### Scenario: 本地活动不显示速率
 - **WHEN** 用户执行 shell 或 shell-local 命令，或 MCP 正在初始化，且没有活跃 assistant turn
