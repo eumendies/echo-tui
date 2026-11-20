@@ -561,7 +561,10 @@ function createApp(runAgent: RunAgent, mcpManager: McpManager, hooks: LifecycleH
         if (settingsRefresh?.reasoningVisibilityChanged
           || (settingsRefresh?.historyRenderLineLimitChanged && renderCoordinator.currentOwner() === 'main')) {
           renderCoordinator.renderResizeRecovery();
-        } else if (modelChanged || settingsRefresh?.slashSuggestionLimitChanged || settingsRefresh?.mouseInteractionChanged) {
+        } else if (modelChanged
+          || settingsRefresh?.slashSuggestionLimitChanged
+          || settingsRefresh?.mouseInteractionChanged
+          || settingsRefresh?.statusLineSegmentsChanged) {
           renderCoordinator.render();
         }
       });

@@ -8,11 +8,13 @@ import {HISTORY_RENDER_LINE_LIMIT_OPTIONS} from '../../config/app-settings-confi
 import {
   CONFIG_TABS,
   getGeneralConfigRowIds,
+  getStatusLineConfigRowIds,
   createConfigSurface,
   createInitialAppearanceConfigState,
   createInitialConfigState,
   createInitialGeneralConfigState,
   createInitialSandboxConfigState,
+  createInitialStatusLineConfigState,
   createInitialSystemPromptConfigState,
   createInitialToolsConfigState,
   describeSystemPromptFallback,
@@ -41,6 +43,7 @@ import type {
   ConfigTabId,
   GeneralConfigState,
   SandboxConfigState,
+  StatusLineConfigState,
   SystemPromptConfigState,
   ToolsConfigState
 } from '../../types/command';
@@ -102,6 +105,11 @@ class ConfigCommandHandler implements CommandHandler<ConfigCommandData> {
 
     if (data.systemPrompt) {
       this.handleSystemPromptEvent(data, data.systemPrompt, event, host);
+      return;
+    }
+
+    if (data.statusLine) {
+      this.handleStatusLineEvent(data, data.statusLine, event, host);
       return;
     }
 
@@ -175,6 +183,10 @@ class ConfigCommandHandler implements CommandHandler<ConfigCommandData> {
         nextState.draft.checkUpdatesOnStartup = !nextState.draft.checkUpdatesOnStartup;
       } else if (selectedRow === 'activeTurnMessagePolicy') {
         nextState = adjustGeneralValue(nextState, 1);
+      } else if (selectedRow === 'statusLine') {
+        // 入口行只负责导航：进入子面板时不修改任何 segment，焦点从第一个开关开始。
+        this.update({...data, general: {state: nextState}, statusLine: createInitialStatusLineConfigState()}, host);
+        return;
       } else if (selectedRow === 'systemPrompt') {
         const read = host.config.readSystemPrompt({includeDynamicSections: true});
         if (!read.ok) {
@@ -198,6 +210,84 @@ class ConfigCommandHandler implements CommandHandler<ConfigCommandData> {
     nextState.selectedIndex = clamp(nextState.selectedIndex, 0, getGeneralConfigRowIds(nextState).length - 1);
 
     this.update({...data, general: {state: nextState}}, host);
+  }
+
+  /**
+   * 处理状态栏显示项子面板事件：方向键移动焦点，Enter/←/→ 切换开关，保存行经 host 原子写入。
+   * 开关值直接读写常规草稿，子面板只持有焦点与保存反馈，因此脏跟踪与放弃确认沿用常规 Tab 语义。
+   */
+  private handleStatusLineEvent(data: ConfigCommandData, state: StatusLineConfigState, event: InputEvent, host: CommandHost): void {
+    const general = data.general?.state;
+
+    if (!general) {
+      // 常规草稿不可用时子面板没有可编辑对象，按配置中心既有层级直接退回。
+      this.update({...data, statusLine: undefined}, host);
+      return;
+    }
+
+    const rowIds = getStatusLineConfigRowIds();
+    const nextState: StatusLineConfigState = {
+      error: undefined,
+      feedback: undefined,
+      selectedIndex: clamp(state.selectedIndex, 0, rowIds.length - 1)
+    };
+
+    if (event.type === INPUT_EVENTS.ESCAPE || event.type === INPUT_EVENTS.BACKSPACE) {
+      this.update({...data, statusLine: undefined}, host);
+      return;
+    }
+
+    // Tab 与 systemPrompt 子视图一致：退出子面板并继续切页，草稿保留在常规 Tab。
+    if (event.type === INPUT_EVENTS.TAB) {
+      const currentIndex = CONFIG_TABS.findIndex((tab) => tab.id === data.activeTab);
+      const nextTab = CONFIG_TABS[(currentIndex + 1) % CONFIG_TABS.length].id;
+      this.update(initializeTab({...data, statusLine: undefined, activeTab: nextTab}, nextTab, host), host);
+      return;
+    }
+
+    if (event.type === INPUT_EVENTS.MOVE_UP || event.type === INPUT_EVENTS.MOVE_DOWN) {
+      const delta = event.type === INPUT_EVENTS.MOVE_UP ? -1 : 1;
+      nextState.selectedIndex = clamp(nextState.selectedIndex + delta, 0, rowIds.length - 1);
+      this.update({...data, statusLine: nextState}, host);
+      return;
+    }
+
+    if (event.type === INPUT_EVENTS.MOVE_HOME || event.type === INPUT_EVENTS.MOVE_END) {
+      nextState.selectedIndex = event.type === INPUT_EVENTS.MOVE_HOME ? 0 : rowIds.length - 1;
+      this.update({...data, statusLine: nextState}, host);
+      return;
+    }
+
+    if (event.type !== INPUT_EVENTS.SUBMIT && event.type !== INPUT_EVENTS.MOVE_LEFT && event.type !== INPUT_EVENTS.MOVE_RIGHT) {
+      return;
+    }
+
+    const rowId = rowIds[nextState.selectedIndex];
+
+    if (rowId === 'save') {
+      if (event.type !== INPUT_EVENTS.SUBMIT) {
+        return;
+      }
+
+      const result = host.config.saveSettings(general.draft);
+
+      if (!result.ok) {
+        this.update({...data, statusLine: {...nextState, error: result.error || '无法保存常规设置'}}, host);
+        return;
+      }
+
+      this.update({
+        ...data,
+        general: {state: markGeneralConfigSaved(general)},
+        statusLine: {...nextState, feedback: '✓ 常规设置已保存'}
+      }, host);
+      return;
+    }
+
+    const draft = structuredClone(general.draft);
+    draft.statusLineSegments[rowId] = !draft.statusLineSegments[rowId];
+    // 草稿变化后常规 Tab 不再处于"已保存"状态，必须清掉上一次保存留下的反馈。
+    this.update({...data, general: {state: {...general, draft, error: undefined, feedback: undefined}}, statusLine: nextState}, host);
   }
 
   /**
@@ -764,6 +854,11 @@ class ConfigCommandHandler implements CommandHandler<ConfigCommandData> {
     // 子视图属于配置中心内部层级：先退回常规 Tab，再允许关闭整个配置中心。
     if (data.systemPrompt) {
       this.leaveSystemPromptView(data, host);
+      return;
+    }
+
+    if (data.statusLine) {
+      this.update({...data, statusLine: undefined}, host);
       return;
     }
 

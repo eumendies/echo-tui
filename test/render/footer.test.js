@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 
 const { createComposer } = require('../../src/input/composer');
 const { DEFAULT_TUI_THEME, createTuiTheme } = require('../../src/config/theme-config');
+const { DEFAULT_RENDER_PREFERENCES } = require('../../src/config/app-settings-config');
 const { ECHO_SPINNER_ACTIVE_FRAME_COUNT, ECHO_SPINNER_FRAME_INTERVAL_MS, getEchoSpinnerFrameIndex } = require('../../src/render/echo-spinner');
 const { colorToRgb } = require('../../src/render/colors');
 const { renderDiffSurface } = require('../../src/render/footer/diff-surface');
@@ -3606,7 +3607,7 @@ test('renderFooterLayout applies the configured slash suggestion visible limit w
     slashSuggestions,
     pending: null,
     statusLine: DEFAULT_STATUS_LINE,
-    renderPreferences: {showReasoningSummary: true, slashSuggestionMaxVisible: 3},
+    renderPreferences: {...DEFAULT_RENDER_PREFERENCES, slashSuggestionMaxVisible: 3},
     rows: 30,
     width: 80
   });
@@ -3624,7 +3625,7 @@ test('renderFooterLayout does not count slash suggestion more hints against the 
     slashSuggestions: {options, selectedIndex: 6},
     pending: null,
     statusLine: DEFAULT_STATUS_LINE,
-    renderPreferences: {showReasoningSummary: true, slashSuggestionMaxVisible: 10},
+    renderPreferences: {...DEFAULT_RENDER_PREFERENCES, slashSuggestionMaxVisible: 10},
     rows: 40,
     width: 80
   });
@@ -4544,4 +4545,118 @@ test('renderFooterLayout falls back to the longest parallel subagent elapsed wit
   const statusText = stripAnsi(layout.lines.at(-1));
 
   assert.ok(statusText.includes('working 00:02'), statusText);
+});
+
+test('renderFooterLayout hides only the configured status line segments', () => {
+  const statusLine = {
+    ...DEFAULT_STATUS_LINE,
+    allowAllTools: true,
+    contextUsage: {usedTokens: 18200, contextWindow: 128000},
+    sessionTitle: '可配置状态栏'
+  };
+  const render = (statusLineSegments) => renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: null,
+    pending: null,
+    statusLine,
+    renderPreferences: {...DEFAULT_RENDER_PREFERENCES, statusLineSegments},
+    width: 120
+  }).lines.map(stripAnsi).at(-1);
+
+  const all = render({approval: true, contextUsage: true, dir: true, effort: true, model: true, title: true});
+  assert.ok(all.includes('GPT-4o'));
+  assert.ok(all.includes('可配置状态栏'));
+  assert.ok(all.includes('TOOLS all'));
+  assert.ok(all.includes('dir echo_tui'));
+  assert.ok(all.includes('ctx 18.2k/128k'));
+
+  const onlyModel = render({approval: false, contextUsage: false, dir: false, effort: false, model: true, title: false});
+  assert.ok(onlyModel.includes('GPT-4o'));
+  assert.equal(onlyModel.includes('可配置状态栏'), false);
+  assert.equal(onlyModel.includes('TOOLS all'), false);
+  assert.equal(onlyModel.includes('dir echo_tui'), false);
+  assert.equal(onlyModel.includes('ctx 18.2k/128k'), false);
+  assert.equal(onlyModel.includes('│    │'), false);
+  assert.equal(onlyModel.includes('│ │'), false);
+});
+
+test('renderFooterLayout keeps the mode segment when every optional segment is hidden', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: null,
+    pending: null,
+    statusLine: {
+      ...DEFAULT_STATUS_LINE,
+      allowAllTools: true,
+      contextUsage: {usedTokens: 18200, contextWindow: 128000},
+      sessionTitle: '可配置状态栏'
+    },
+    renderPreferences: {
+      ...DEFAULT_RENDER_PREFERENCES,
+      statusLineSegments: {approval: false, contextUsage: false, dir: false, effort: false, model: false, title: false}
+    },
+    width: 120
+  });
+  const statusLine = stripAnsi(layout.lines.at(-1));
+
+  assert.ok(statusLine.includes('ready'));
+  assert.equal(statusLine.trim(), '● ready');
+});
+
+test('renderFooterLayout keeps model and effort visible while tuning with both segments hidden', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: null,
+    pending: null,
+    statusLine: {
+      ...DEFAULT_STATUS_LINE,
+      model: {kind: 'tuning', label: 'gpt-deep', activeField: 'effort', effort: 'high'}
+    },
+    renderPreferences: {
+      ...DEFAULT_RENDER_PREFERENCES,
+      statusLineSegments: {approval: false, contextUsage: false, dir: false, effort: false, model: false, title: false}
+    },
+    width: 100
+  });
+  const statusLine = stripAnsi(layout.lines.at(-1));
+
+  assert.ok(statusLine.includes('gpt-deep'));
+  assert.ok(statusLine.includes('‹high›'));
+});
+
+test('renderFooterLayout applies hidden segments to the subagent view status line', () => {
+  const statusLine = {
+    ...DEFAULT_STATUS_LINE,
+    contextUsage: {usedTokens: 18200, contextWindow: 128000},
+    detail: 'run 1 · worker',
+    mode: 'subagent_view'
+  };
+  const visible = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: null,
+    pending: null,
+    statusLine,
+    viewIndexLines: ['▸ 1/1 run 1'],
+    renderPreferences: DEFAULT_RENDER_PREFERENCES,
+    rows: 20,
+    width: 120
+  }).lines.map(stripAnsi).join('\n');
+  const hidden = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: null,
+    pending: null,
+    statusLine,
+    viewIndexLines: ['▸ 1/1 run 1'],
+    renderPreferences: {
+      ...DEFAULT_RENDER_PREFERENCES,
+      statusLineSegments: {...DEFAULT_RENDER_PREFERENCES.statusLineSegments, contextUsage: false}
+    },
+    rows: 20,
+    width: 120
+  }).lines.map(stripAnsi).join('\n');
+
+  assert.ok(visible.includes('ctx 18.2k/128k'));
+  assert.equal(hidden.includes('ctx 18.2k/128k'), false);
+  assert.ok(hidden.includes('dir echo_tui'));
+  assert.ok(hidden.includes('run 1 · worker'));
 });

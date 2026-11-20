@@ -3,10 +3,12 @@ import {sanitizeTerminalText} from '../../terminal/control-chars';
 import { ECHO_SPINNER_ACTIVE_FRAME_COUNT, getEchoSpinnerFrame, getEchoSpinnerFrameIndex, renderEchoSpinnerFrame } from '../echo-spinner';
 import { displayWidth, renderComposer, safeRenderWidth } from '../layout';
 import { activeBackground, renderFocusBar, resolveFooterTheme, tokenText, type FooterTheme, type TuiTheme } from '../colors';
+import { DEFAULT_RENDER_PREFERENCES } from '../../config/app-settings-config';
 import { clampPlainText, formatSelectOptionText, padVisibleText } from './text';
 import { clampIndex, normalizeLineLimit } from './window';
 import type { ComposerState } from '../../types/composer';
-import type { FooterHitRegion, FooterLayout, RenderState, SlashSuggestionState, StatusLineState } from '../../types/render';
+import type { FooterHitRegion, FooterLayout, RenderPreferences, RenderState, SlashSuggestionState, StatusLineState } from '../../types/render';
+import type { StatusLineSegments } from '../../config/app-settings-config';
 
 const COMPOSER_PLACEHOLDER = '/ 命令 · @ 路径 · TAB mode · Ctrl+T 模型 · Shift+Tab 授权 · Ctrl+J 换行';
 const PLAN_COMPOSER_PLACEHOLDER = '计划问题 · @ 路径 · TAB 切换 mode · Ctrl+T 模型 · Ctrl+J 换行';
@@ -46,19 +48,19 @@ export function renderComposerSurface(
   slashSuggestions: SlashSuggestionState | null,
   maxLines = Number.POSITIVE_INFINITY,
   tuiTheme?: TuiTheme,
-  slashSuggestionMaxVisible = Number.POSITIVE_INFINITY,
+  renderPreferences: RenderPreferences = DEFAULT_RENDER_PREFERENCES,
   conversationReference: RenderState['conversationReference'] = null,
   pendingMessage: RenderState['pendingMessage'] = null
 ): FooterLayout {
   const theme = resolveFooterTheme(tuiTheme);
   const normalizedMaxLines = normalizeLineLimit(maxLines);
-  const statusLineText = renderStatusLineText(statusLine, width, theme);
+  const statusLineText = renderStatusLineText(statusLine, width, theme, renderPreferences.statusLineSegments);
   const attachmentBudget = Math.max(0, normalizedMaxLines - 2);
   const pendingMessageLines = renderPendingMessageLines(pendingMessage, width, theme, Math.min(2, attachmentBudget));
   const referenceBudget = Math.max(0, attachmentBudget - pendingMessageLines.length);
   const referenceLines = renderConversationReferenceLines(conversationReference, width, theme).slice(0, referenceBudget);
   const contentBudget = Math.max(1, normalizedMaxLines - 1 - referenceLines.length - pendingMessageLines.length);
-  const suggestionItemBudget = slashSuggestions ? Math.min(slashSuggestions.options.length, slashSuggestionMaxVisible, Math.max(0, contentBudget - 3)) : 0;
+  const suggestionItemBudget = slashSuggestions ? Math.min(slashSuggestions.options.length, renderPreferences.slashSuggestionMaxVisible, Math.max(0, contentBudget - 3)) : 0;
   const suggestionSurface = slashSuggestions && suggestionItemBudget > 0
     ? renderSlashSuggestionLines(slashSuggestions, width, suggestionItemBudget, Math.max(0, contentBudget - 3), theme)
     : {lines: [], hitRegions: []};
@@ -91,9 +93,15 @@ export function renderComposerSurface(
 /**
  * 渲染只读会话窗口的 footer 输入区：run 索引块直接贴状态行，不提供 composer 输入框，也不显示光标。
  */
-export function renderSubagentViewSurface(statusLine: StatusLineState | undefined, width: number, viewIndexLines: string[], tuiTheme?: TuiTheme): FooterLayout {
+export function renderSubagentViewSurface(
+  statusLine: StatusLineState | undefined,
+  width: number,
+  viewIndexLines: string[],
+  tuiTheme?: TuiTheme,
+  renderPreferences: RenderPreferences = DEFAULT_RENDER_PREFERENCES
+): FooterLayout {
   const theme = resolveFooterTheme(tuiTheme);
-  const statusLineText = renderStatusLineText(statusLine, width, theme);
+  const statusLineText = renderStatusLineText(statusLine, width, theme, renderPreferences.statusLineSegments);
   return {
     lines: [...viewIndexLines, statusLineText],
     cursorRow: viewIndexLines.length,
@@ -249,15 +257,16 @@ function resolveComposerTheme(statusLine: StatusLineState | undefined, theme: Fo
 
 /**
  * 将结构化状态栏压平成单行文本，并在加样式前按安全宽度裁剪。
+ * visible 决定哪些可选 segment 参与拼接；裁剪顺序与左右对齐规则不受其影响。
  */
-function renderStatusLineText(statusLine: StatusLineState | undefined, width: number, theme: FooterTheme): string {
+function renderStatusLineText(statusLine: StatusLineState | undefined, width: number, theme: FooterTheme, visible: StatusLineSegments): string {
   if (!statusLine) {
     return '';
   }
 
   const safeWidth = safeRenderWidth(width);
-  const leftSegments = createLeftStatusSegments(statusLine, theme);
-  const rightSegments = createRightStatusSegments(statusLine, theme);
+  const leftSegments = createLeftStatusSegments(statusLine, theme, visible);
+  const rightSegments = createRightStatusSegments(statusLine, theme, visible);
   const left = joinStatusSegments(leftSegments, theme);
   const right = joinStatusSegments(rightSegments, theme);
   const leftWidth = displayWidth(left.rendered);
@@ -267,6 +276,11 @@ function renderStatusLineText(statusLine: StatusLineState | undefined, width: nu
     return `${left.rendered}${' '.repeat(safeWidth - leftWidth - rightWidth)}${right.rendered}`;
   }
 
+  if (leftWidth === 0) {
+    // 可选 segment 全关时左侧为空：退回右侧单行裁剪，避免输出空行白占 footer 高度。
+    return tokenText(theme, 'muted', clampPlainText(right.plain, width));
+  }
+
   if (leftWidth <= safeWidth) {
     return left.rendered;
   }
@@ -274,13 +288,17 @@ function renderStatusLineText(statusLine: StatusLineState | undefined, width: nu
   return tokenText(theme, 'accentStrong', ansi.bold(clampPlainText(left.plain, width)));
 }
 
-function createLeftStatusSegments(statusLine: StatusLineState, theme: FooterTheme): StatusSegment[] {
+/**
+ * 投影 status line 左侧 segment：模型、推理强度、会话标题、全部工具授权和目录。
+ * 模型调节态跳过标题段并强制保留 model/effort，避免开关把焦点反馈一起隐藏。
+ */
+function createLeftStatusSegments(statusLine: StatusLineState, theme: FooterTheme, visible: StatusLineSegments): StatusSegment[] {
   const segments = statusLine.model.kind === 'tuning'
     ? createModelTuningStatusSegments(statusLine.model, theme)
-    : createDefaultModelStatusSegments(statusLine.model, theme);
+    : createDefaultModelStatusSegments(statusLine.model, theme, visible);
 
   // 标题紧随 model/effort，位于工具与目录之前；模型调节期间让位给专用交互行。
-  if (statusLine.sessionTitle && statusLine.model.kind !== 'tuning') {
+  if (visible.title && statusLine.sessionTitle && statusLine.model.kind !== 'tuning') {
     const title = clampPlainText(statusLine.sessionTitle, STATUS_SESSION_TITLE_BUDGET);
     segments.push({
       plain: title,
@@ -288,34 +306,41 @@ function createLeftStatusSegments(statusLine: StatusLineState, theme: FooterThem
     });
   }
 
-  if (statusLine.allowAllTools) {
+  if (visible.approval && statusLine.allowAllTools) {
     segments.push({
       plain: 'TOOLS all',
       rendered: tokenText(theme, 'warning', ansi.bold('TOOLS all'))
     });
   }
 
-  segments.push({
-    plain: `dir ${statusLine.projectName}`,
-    rendered: `${ansi.dim('dir')} ${tokenText(theme, 'accent', statusLine.projectName)}`
-  });
+  if (visible.dir) {
+    segments.push({
+      plain: `dir ${statusLine.projectName}`,
+      rendered: `${ansi.dim('dir')} ${tokenText(theme, 'accent', statusLine.projectName)}`
+    });
+  }
 
   return segments;
 }
 
 /**
  * 投影普通或 skill override 的模型信息，保持既有 model/effort 分段语义。
+ * visible 决定是否输出 model/effort 段；调节态不走此分支，由调用方强制保留。
  */
-function createDefaultModelStatusSegments(model: Extract<StatusLineState['model'], {kind: 'default'}>, theme: FooterTheme): StatusSegment[] {
+function createDefaultModelStatusSegments(model: Extract<StatusLineState['model'], {kind: 'default'}>, theme: FooterTheme, visible: StatusLineSegments): StatusSegment[] {
   const modelLabel = model.skillOverride
     ? `${model.label} (SKILL override)`
     : model.label;
-  const segments: StatusSegment[] = [{
-    plain: modelLabel,
-    rendered: tokenText(theme, 'accentStrong', ansi.bold(modelLabel))
-  }];
+  const segments: StatusSegment[] = [];
 
-  if (model.effort) {
+  if (visible.model) {
+    segments.push({
+      plain: modelLabel,
+      rendered: tokenText(theme, 'accentStrong', ansi.bold(modelLabel))
+    });
+  }
+
+  if (visible.effort && model.effort) {
     segments.push({
       plain: `effort ${model.effort}`,
       rendered: `${ansi.dim('effort')} ${tokenText(theme, 'accent', model.effort)}`
@@ -327,6 +352,7 @@ function createDefaultModelStatusSegments(model: Extract<StatusLineState['model'
 
 /**
  * 将暂存 model/effort 投影为 status segments；活动字段用成对尖括号表达键盘焦点。
+ * 模型调节态无条件输出这两段：开关在此让位，否则调节过程没有可见反馈。
  */
 function createModelTuningStatusSegments(model: Extract<StatusLineState['model'], {kind: 'tuning'}>, theme: FooterTheme): StatusSegment[] {
   const modelFocused = model.activeField === 'model';
@@ -346,7 +372,11 @@ function createModelTuningStatusSegments(model: Extract<StatusLineState['model']
   ];
 }
 
-function createRightStatusSegments(statusLine: StatusLineState, theme: FooterTheme): StatusSegment[] {
+/**
+ * 投影 status line 右侧 segment：调节错误、context usage、mode 与 key hint。
+ * 只有 context usage 可配；mode 和 key hint 是运行状态与中断入口，始终保留。
+ */
+function createRightStatusSegments(statusLine: StatusLineState, theme: FooterTheme, visible: StatusLineSegments): StatusSegment[] {
   const segments: StatusSegment[] = [];
 
   if (statusLine.model.kind === 'tuning' && statusLine.model.error) {
@@ -356,7 +386,7 @@ function createRightStatusSegments(statusLine: StatusLineState, theme: FooterThe
     });
   }
 
-  if (statusLine.contextUsage) {
+  if (visible.contextUsage && statusLine.contextUsage) {
     const text = `${formatTokenCount(statusLine.contextUsage.usedTokens)}/${formatTokenCount(statusLine.contextUsage.contextWindow)}`;
     segments.push({
       plain: `ctx ${text}`,

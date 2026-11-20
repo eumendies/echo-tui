@@ -1,6 +1,7 @@
-import type {AppSettings} from '../../config/app-settings-config';
+import type {AppSettings, StatusLineSegments} from '../../config/app-settings-config';
 import type {MainAgentToolsConfig} from '../../config/main-agent-tools-config';
 import type {SandboxMode} from '../../sandbox/types';
+import type {StatusLineConfigState} from './status-line-surface';
 import type {SystemPromptConfigState} from './system-prompt-surface';
 import type {SystemPromptSummary} from './system-prompt-surface';
 
@@ -179,6 +180,14 @@ export type ConfigCommandSurface =
       activeTab: ConfigTabId; // 子视图仍保留 Tab strip，退出时按当前页切换。
       tabs: ConfigSurfaceTab[]; // 跨页脏状态与读取错误标记。
       state: SystemPromptConfigState; // 文件快照与状态机阶段的只读投影。
+    }
+  | {
+      kind: 'config'; // 复用配置中心 footer，不追加 transcript。
+      view: 'statusLine'; // 常规 Tab 内的状态栏显示项子面板。
+      activeTab: ConfigTabId; // 子面板保留 Tab strip，Tab 键按当前页切走。
+      tabs: ConfigSurfaceTab[]; // 跨页脏状态与读取错误标记。
+      state: StatusLineConfigState; // 子面板焦点与保存反馈。
+      segments: StatusLineSegments; // 常规草稿中的开关快照；开关真值始终在 general 草稿里。
     }
   | {
       kind: 'config'; // 使用配置中心 footer，不追加 transcript。
