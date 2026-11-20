@@ -26,7 +26,8 @@ test('skill catalog projection keeps the existing prompt when it fits the budget
   assert.equal(projection.mode, 'full');
   assert.equal(projection.originalTokens, originalTokens);
   assert.equal(projection.estimatedTokens, originalTokens);
-  assert.equal(formatSkillCatalogPrompt(projection.catalog), expectedText);
+  // full 模式必须原样保留目录；不要用 formatSkillCatalogPrompt 比对，否则断言退化成 f(x) === f(x)。
+  assert.deepEqual(projection.catalog, catalog);
   assert.deepEqual(catalog.map((entry) => entry.description), ['Review code changes.', 'Run focused tests.']);
 });
 

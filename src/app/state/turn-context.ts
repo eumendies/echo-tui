@@ -3,6 +3,9 @@ import {redactSensitiveText} from '../../agent/agent-errors';
 import type {PendingState, StatusLineModelState, WorkingState} from '../../types/render';
 import {createInterruptedToolResultTranscriptRecord, createToolCallTranscriptRecord, createToolResultTranscriptRecord} from '../../tools/tool-transcript-record';
 import {createShellRecord, formatShellCommandLine} from '../../tools/shell-transcript-record';
+import {createOutputRateTracker} from './output-rate-tracker';
+
+import type {OutputRateTracker} from './output-rate-tracker';
 
 import type {ToolCall, ToolExecutionResult} from '../../types/tool';
 import type {TranscriptRecord, UserTranscriptMetadata} from '../../types/transcript';
@@ -60,6 +63,7 @@ class TurnContext {
   workingStartedAt: number | null;
   activeAssistantTurn: ActiveAssistantTurn | null;
   nextAssistantTurnId: number;
+  private outputRateTracker: OutputRateTracker;
 
   constructor(transcriptContext: TranscriptTurnBridge) {
     this.transcriptContext = transcriptContext;
@@ -73,6 +77,7 @@ class TurnContext {
     this.workingStartedAt = null;
     this.activeAssistantTurn = null;
     this.nextAssistantTurnId = 1;
+    this.outputRateTracker = createOutputRateTracker();
   }
 
   /** 启动指定 spinner 阶段；周期重绘由 app 级共享 activity timer 驱动。 */
@@ -119,6 +124,8 @@ class TurnContext {
 
     this.nextAssistantTurnId += 1;
     this.activeAssistantTurn = activeTurn;
+    // 速率窗口只属于当前 turn：上一轮的样本不能抬高本轮的初始读数。
+    this.outputRateTracker.reset();
 
     return {id: activeTurn.id, abortSignal: activeTurn.controller.signal};
   }
@@ -220,6 +227,19 @@ class TurnContext {
     }
 
     return {elapsedMs: Math.max(0, Date.now() - this.workingStartedAt)};
+  }
+
+  /**
+   * 记录一段模型原始输出（正文、reasoning 或工具参数分片），用于估算本轮输出速率。
+   * 只影响 status line 的瞬时展示，不产生 transcript、journal 或 usage 记录。
+   */
+  recordStreamDelta(text: string): void {
+    this.outputRateTracker.record(text);
+  }
+
+  /** 返回最近 3 秒的每秒估算输出 token 数；窗口内无样本或 turn 外调用返回 0。 */
+  getOutputRate(): number {
+    return this.outputRateTracker.getRate();
   }
 
   /**

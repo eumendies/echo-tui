@@ -1,10 +1,16 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { createTuiTheme } = require('../../src/config/theme-config');
+const { DEFAULT_TUI_THEME, createTuiTheme } = require('../../src/config/theme-config');
+const { colorToRgb } = require('../../src/render/colors');
 const { displayWidth, safeRenderWidth, stripAnsi } = require('../../src/render/layout');
 const { getCommittableMarkdownText, renderMarkdownLines } = require('../../src/render/markdown');
 const { getCommittableStreamingText } = require('../../src/render/blocks/streaming-text');
+
+// 默认主题的 markdown/syntax 语义 token 才是断言对象；不要把默认调色板复制成字面量。
+const fgCode = (style) => `\x1b[38;2;${colorToRgb(style.foreground).join(';')}m`;
+const MARKDOWN = DEFAULT_TUI_THEME.markdown.styles;
+const SYNTAX = DEFAULT_TUI_THEME.syntax;
 
 test('renderMarkdownLines projects headings, paragraphs, lists, quotes, and rules', () => {
   const lines = renderMarkdownLines(
@@ -29,7 +35,7 @@ test('renderMarkdownLines projects headings, paragraphs, lists, quotes, and rule
 
 test('renderMarkdownLines keeps quote gutter styled across wrapped quote lines', () => {
   const lines = renderMarkdownLines('> quoted text that is long enough to wrap onto another terminal line', 28, '◆ ');
-  const quoteColor = '\x1b[38;2;0;170;170m';
+  const quoteColor = fgCode(MARKDOWN.quote);
 
   assert.ok(lines.length > 1);
   // 首行与换行后的续行竖线都使用 quote 样式作为引用边界。
@@ -46,17 +52,17 @@ test('renderMarkdownLines highlights fenced code directly without drawing a box'
   assert.ok(!plainLines.includes('◆ ts'));
   assert.ok(plainLines.includes('◆   const value = `raw`;'));
   assert.ok(plainLines.includes('    // **not bold**'));
-  assert.ok(lines.some((line) => line.includes('\x1b[38;2;170;0;170mconst')));
-  assert.ok(lines.some((line) => line.includes('\x1b[38;2;0;170;0m`raw`')));
-  assert.ok(lines.some((line) => line.includes('\x1b[38;2;85;85;85m// **not bold**')));
+  assert.ok(lines.some((line) => line.includes(`${fgCode(SYNTAX.keyword)}const`)));
+  assert.ok(lines.some((line) => line.includes(`${fgCode(SYNTAX.string)}\`raw\``)));
+  assert.ok(lines.some((line) => line.includes(`${fgCode(SYNTAX.comment)}// **not bold**`)));
   assert.ok(!plainLines.some((line) => /[╭╮╰╯┌┐└┘]/.test(line)));
 });
 
 test('renderMarkdownLines applies cross-line code highlighting', () => {
   const lines = renderMarkdownLines(['```txt', 'const text = "first', 'second";', '```'].join('\n'), 80, '◆ ');
 
-  assert.ok(lines[0].includes('\x1b[38;2;0;170;0m"first\x1b[39m'));
-  assert.ok(lines[1].includes('\x1b[38;2;0;170;0msecond"\x1b[39m'));
+  assert.ok(lines[0].includes(`${fgCode(SYNTAX.string)}"first\x1b[39m`));
+  assert.ok(lines[1].includes(`${fgCode(SYNTAX.string)}second"\x1b[39m`));
 });
 
 test('renderMarkdownLines treats unclosed fenced code blocks as code to the end', () => {
@@ -72,11 +78,11 @@ test('renderMarkdownLines keeps inline style ANSI from affecting display width',
   const plain = lines.map((line) => stripAnsi(line)).join('\n');
 
   assert.match(plain, /中文 code bold dim gone link \(https:\/\/example\.com\)/);
-  assert.ok(lines.some((line) => line.includes('\x1b[38;2;170;85;0mcode\x1b[39m')));
+  assert.ok(lines.some((line) => line.includes(`${fgCode(MARKDOWN.inlineCode)}code\x1b[39m`)));
   assert.ok(lines.some((line) => line.includes('\x1b[1mbold\x1b[22m')));
   assert.ok(lines.some((line) => line.includes('\x1b[2mdim\x1b[22m')));
   assert.ok(lines.some((line) => line.includes('\x1b[9mgone\x1b[29m')));
-  assert.ok(lines.some((line) => line.includes('\x1b[38;2;0;170;170mlink \(https://example.com\)\x1b[39m')));
+  assert.ok(lines.some((line) => line.includes(`${fgCode(MARKDOWN.link)}link (https://example.com)\x1b[39m`)));
 
   for (const line of lines) {
     assert.ok(displayWidth(line) <= safeRenderWidth(width));
@@ -88,7 +94,7 @@ test('renderMarkdownLines keeps syntax highlight ANSI from affecting display wid
   const lines = renderMarkdownLines(['```js', 'const veryLongIdentifier = "中文中文中文";', '```'].join('\n'), width, '◆ ');
 
   assert.ok(lines.length > 1);
-  assert.ok(lines.some((line) => line.includes('\x1b[38;2;170;0;170m')));
+  assert.ok(lines.some((line) => line.includes(fgCode(SYNTAX.keyword))));
   for (const line of lines) {
     assert.ok(displayWidth(line) <= safeRenderWidth(width));
   }
@@ -239,11 +245,11 @@ test('renderMarkdownLines renders inline markdown inside table cells', () => {
 
   assert.match(plain, /code/);
   assert.match(plain, /bold dim gone link \(https:\/\/example\.com\)/);
-  assert.ok(lines.some((line) => line.includes('\x1b[38;2;170;85;0mcode\x1b[39m')));
+  assert.ok(lines.some((line) => line.includes(`${fgCode(MARKDOWN.inlineCode)}code\x1b[39m`)));
   assert.ok(lines.some((line) => line.includes('\x1b[1mbold\x1b[22m')));
   assert.ok(lines.some((line) => line.includes('\x1b[2mdim\x1b[22m')));
   assert.ok(lines.some((line) => line.includes('\x1b[9mgone\x1b[29m')));
-  assert.ok(lines.some((line) => line.includes('\x1b[38;2;0;170;170mlink \(https://example.com\)\x1b[39m')));
+  assert.ok(lines.some((line) => line.includes(`${fgCode(MARKDOWN.link)}link (https://example.com)\x1b[39m`)));
 
   for (const line of lines) {
     assert.ok(displayWidth(line) <= safeRenderWidth(80));

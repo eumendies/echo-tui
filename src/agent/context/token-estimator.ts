@@ -7,9 +7,11 @@ function isCjkOrFullWidth(codePoint: number): boolean {
 }
 
 /**
- * 估算单段文本的 token 数：区分 CJK 与其它字符各自的字符/token 系数。
+ * 估算单段文本的浮点 token 数，不做取整。
+ * 供跨多个分片累加的统计使用：逐片 ceil 会让每个小分片至少记 1 token，
+ * 单字符流（fake agent、按字符切分的 provider 分片）会被系统性高估数倍。
  */
-function estimateTextTokens(text: string): number {
+function estimateTextTokensFloat(text: string): number {
   let cjk = 0;
   let other = 0;
   const value = String(text);
@@ -26,7 +28,14 @@ function estimateTextTokens(text: string): number {
     index += codePoint > 0xffff ? 2 : 1;
   }
 
-  return Math.ceil(cjk / CJK_CHARS_PER_TOKEN + other / OTHER_CHARS_PER_TOKEN);
+  return cjk / CJK_CHARS_PER_TOKEN + other / OTHER_CHARS_PER_TOKEN;
+}
+
+/**
+ * 估算单段文本的 token 数：区分 CJK 与其它字符各自的字符/token 系数，向上取整。
+ */
+function estimateTextTokens(text: string): number {
+  return Math.ceil(estimateTextTokensFloat(text));
 }
 
 /**
@@ -38,5 +47,6 @@ function estimateJsonTokens(value: unknown): number {
 
 export {
   estimateJsonTokens,
+  estimateTextTokensFloat,
   estimateTextTokens
 };

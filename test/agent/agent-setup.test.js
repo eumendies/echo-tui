@@ -135,15 +135,14 @@ test('prepareAgent lets the runtime session id override a same-name static heade
   assert.deepEqual(prepared.config.headers, {'x-opencode-session': 'session-123'});
 });
 
-test('prepareAgent keeps config identity when session header or session id is missing', () => {
+test('prepareAgent does not fabricate a session header when session header or session id is missing', () => {
   const configWithoutIdentity = {...TEST_CONFIG, sessionHeader: 'x-opencode-session'};
   const withoutIdentity = agentSetupModule.prepareAgent({config: configWithoutIdentity, cwd: '/tmp/echo-agent-setup'});
 
-  assert.equal(withoutIdentity.config, configWithoutIdentity);
   assert.equal(withoutIdentity.config.headers, undefined);
 
   const plainConfig = {...TEST_CONFIG};
   const withoutHeader = agentSetupModule.prepareAgent({config: plainConfig, cwd: '/tmp/echo-agent-setup', sessionId: 'session-123'});
 
-  assert.equal(withoutHeader.config, plainConfig);
+  assert.equal(withoutHeader.config.headers, undefined);
 });

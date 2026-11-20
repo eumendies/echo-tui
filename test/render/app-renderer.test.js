@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 
 const { createTuiTheme } = require('../../src/config/theme-config');
 const { createComposer } = require('../../src/input/composer');
+const { DEFAULT_RENDER_PREFERENCES } = require('../../src/config/app-settings-config');
 const { displayWidth, safeRenderWidth, stripAnsi } = require('../../src/render/layout');
 
 const DEFAULT_STATUS_LINE = {
@@ -187,7 +188,7 @@ test('createAppRenderer computes streaming history and final record suffix inter
     slashSuggestions: null,
     pending: {kind: 'streaming', text: 'alpha\n\nbeta'},
     working: {elapsedMs: 10},
-    renderPreferences: {showReasoningSummary: true, slashSuggestionMaxVisible: 8},
+    renderPreferences: {...DEFAULT_RENDER_PREFERENCES, showReasoningSummary: true, slashSuggestionMaxVisible: 8},
     statusLine: {...DEFAULT_STATUS_LINE, mode: 'streaming'},
     rows: 24,
     width: 80
@@ -212,7 +213,7 @@ test('createAppRenderer preserves an already displayed stable prefix across froz
     slashSuggestions: null,
     pending: {kind: 'streaming', text: 'stable prefix\n\nunfinished tail'},
     working: {elapsedMs: 10},
-    renderPreferences: {showReasoningSummary: true, slashSuggestionMaxVisible: 8},
+    renderPreferences: {...DEFAULT_RENDER_PREFERENCES, showReasoningSummary: true, slashSuggestionMaxVisible: 8},
     statusLine: {...DEFAULT_STATUS_LINE, mode: 'streaming'},
     rows: 24,
     width: 80
@@ -252,7 +253,7 @@ test('createAppRenderer flushes the reasoning tail before assistant history and 
     statusLine: {...DEFAULT_STATUS_LINE, mode: 'streaming'},
     rows: 24,
     width: 30,
-    renderPreferences: {showReasoningSummary: true, slashSuggestionMaxVisible: 8}
+    renderPreferences: {...DEFAULT_RENDER_PREFERENCES, showReasoningSummary: true, slashSuggestionMaxVisible: 8}
   };
   shown.render(state);
   const shownPlain = stripAnsi(shownChunks.at(-1));
@@ -260,7 +261,7 @@ test('createAppRenderer flushes the reasoning tail before assistant history and 
 
   const hiddenChunks = [];
   const hidden = createAppRenderer({write(chunk) { hiddenChunks.push(String(chunk)); }});
-  hidden.render({...state, renderPreferences: {showReasoningSummary: false, slashSuggestionMaxVisible: 8}});
+  hidden.render({...state, renderPreferences: {...DEFAULT_RENDER_PREFERENCES, showReasoningSummary: false, slashSuggestionMaxVisible: 8}});
   const hiddenPlain = stripAnsi(hiddenChunks.at(-1));
   assert.doesNotMatch(hiddenPlain, /stable reasoning/);
   assert.match(hiddenPlain, /stable assistant/);
@@ -276,7 +277,7 @@ test('createAppRenderer keeps late reasoning out of assistant output for main an
       commandSurface: null,
       slashSuggestions: null,
       working: {elapsedMs: 10},
-      renderPreferences: {showReasoningSummary: true, slashSuggestionMaxVisible: 8},
+      renderPreferences: {...DEFAULT_RENDER_PREFERENCES, showReasoningSummary: true, slashSuggestionMaxVisible: 8},
       statusLine: {...DEFAULT_STATUS_LINE, mode: 'streaming'},
       rows: 24,
       width: 40
@@ -328,7 +329,7 @@ test('createAppRenderer closes reasoning display even when assistant starts with
     commandSurface: null,
     slashSuggestions: null,
     working: {elapsedMs: 10},
-    renderPreferences: {showReasoningSummary: true, slashSuggestionMaxVisible: 8},
+    renderPreferences: {...DEFAULT_RENDER_PREFERENCES, showReasoningSummary: true, slashSuggestionMaxVisible: 8},
     statusLine: {...DEFAULT_STATUS_LINE, mode: 'streaming'},
     rows: 24,
     width: 40
@@ -3430,7 +3431,7 @@ test('createAppRenderer commits the shell echo once and splices live output at c
     commandSurface: null,
     slashSuggestions: null,
     working: {elapsedMs: 10},
-    renderPreferences: {showReasoningSummary: true, slashSuggestionMaxVisible: 8},
+    renderPreferences: {...DEFAULT_RENDER_PREFERENCES, showReasoningSummary: true, slashSuggestionMaxVisible: 8},
     statusLine: {...DEFAULT_STATUS_LINE, mode: 'shell'},
     rows: 24,
     width: 80
@@ -3470,7 +3471,7 @@ test('createAppRenderer splices a quick shell command that completes before the 
     commandSurface: null,
     slashSuggestions: null,
     working: {elapsedMs: 10},
-    renderPreferences: {showReasoningSummary: true, slashSuggestionMaxVisible: 8},
+    renderPreferences: {...DEFAULT_RENDER_PREFERENCES, showReasoningSummary: true, slashSuggestionMaxVisible: 8},
     statusLine: {...DEFAULT_STATUS_LINE, mode: 'shell'},
     rows: 24,
     width: 80
@@ -3503,7 +3504,7 @@ test('createAppRenderer rebuilds shell in-flight projection during destructive r
     commandSurface: null,
     slashSuggestions: null,
     working: {elapsedMs: 10},
-    renderPreferences: {showReasoningSummary: true, slashSuggestionMaxVisible: 8},
+    renderPreferences: {...DEFAULT_RENDER_PREFERENCES, showReasoningSummary: true, slashSuggestionMaxVisible: 8},
     statusLine: {...DEFAULT_STATUS_LINE, mode: 'shell'},
     rows: 24,
     width: 80
@@ -3534,7 +3535,7 @@ test('createAppRenderer appends the final record projection when the committed h
     commandSurface: null,
     slashSuggestions: null,
     working: {elapsedMs: 10},
-    renderPreferences: {showReasoningSummary: true, slashSuggestionMaxVisible: 8},
+    renderPreferences: {...DEFAULT_RENDER_PREFERENCES, showReasoningSummary: true, slashSuggestionMaxVisible: 8},
     statusLine: {...DEFAULT_STATUS_LINE, mode: 'shell'},
     rows: 24,
     width: 80
@@ -3572,7 +3573,7 @@ test('createAppRenderer splices shell completion after a destructive replay', ()
     commandSurface: null,
     slashSuggestions: null,
     working: {elapsedMs: 10},
-    renderPreferences: {showReasoningSummary: true, slashSuggestionMaxVisible: 8},
+    renderPreferences: {...DEFAULT_RENDER_PREFERENCES, showReasoningSummary: true, slashSuggestionMaxVisible: 8},
     statusLine: {...DEFAULT_STATUS_LINE, mode: 'shell'},
     rows: 24,
     width: 80
@@ -3618,7 +3619,7 @@ test('createAppRenderer renders a shell record as a full block without live comm
     commandSurface: null,
     slashSuggestions: null,
     working: null,
-    renderPreferences: {showReasoningSummary: true, slashSuggestionMaxVisible: 8},
+    renderPreferences: {...DEFAULT_RENDER_PREFERENCES, showReasoningSummary: true, slashSuggestionMaxVisible: 8},
     statusLine: {...DEFAULT_STATUS_LINE, mode: 'shell'},
     rows: 24,
     width: 80

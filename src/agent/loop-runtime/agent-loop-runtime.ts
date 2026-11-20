@@ -437,7 +437,9 @@ function createAgentLoopRuntime(cwd: string, configContext: {capture(): AgentUse
             }
           }
         } : {}),
-        onToken: callbacks.onToken
+        onToken: callbacks.onToken,
+        // 必须显式透传：速率统计依赖 provider 的原始增量，漏传会让 status line 恒为 0 t/s。
+        onStreamDelta: callbacks.onStreamDelta
       };
       const step = await runProviderStep(state.agent, providerRecords, providerTurnCallbacks, {
         abortSignal,

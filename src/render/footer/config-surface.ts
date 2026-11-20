@@ -5,11 +5,12 @@ import {clampPlainText, padVisibleText} from './text';
 import {actionRow, activeBodyWidth, bottom, boxWidth, calculateItemBudget, clampInnerText, contentWidth, dimHint, errorLine, feedbackLine, kvRow, line, moreRow, renderSelectableBody, renderTabsLine, sectionLine, splitRow, top} from './config-panel-rows';
 import {constrainLayoutTail, createSelectedWindowRows, normalizeLineLimit} from './window';
 import {getProviderPreset, listProviderPresets, providerRequiresApiKey} from '../../config/provider-presets';
-import {getGeneralConfigRowIds, configProviderSupportsReasoningEffort, getConfigModelReasoningEffort, getSandboxConfigRowIds} from '../../commands/config/state';
+import {getGeneralConfigRowIds, getStatusLineConfigRowIds, configProviderSupportsReasoningEffort, getConfigModelReasoningEffort, getSandboxConfigRowIds} from '../../commands/config/state';
 import {describeSystemPromptSourceKind, renderSystemPromptSurface} from './system-prompt-surface';
 import type {SandboxMode} from '../../sandbox/types';
-import type {AppearanceConfigState, ConfigCommandState, ConfigCommandSurface, ConfigFormRow, ConfigSurfaceTab, ConfigTabId, GeneralConfigState} from '../../types/command';
+import type {AppearanceConfigState, ConfigCommandState, ConfigCommandSurface, ConfigFormRow, ConfigSurfaceTab, ConfigTabId, GeneralConfigState, StatusLineConfigState} from '../../types/command';
 import type {SandboxConfigState, ToolsConfigState} from '../../types/command';
+import type {StatusLineSegment, StatusLineSegments} from '../../config/app-settings-config';
 import type {FooterLayout} from '../../types/render';
 
 type RenderConfigPanelOptions = {
@@ -44,6 +45,8 @@ function renderConfigSurface(commandSurface: ConfigCommandSurface, width: number
 
   if (commandSurface.view === 'general') {
     lines = renderGeneralView(commandSurface.state, commandSurface.tabs, commandSurface.activeTab, width, options.maxLines, theme);
+  } else if (commandSurface.view === 'statusLine') {
+    lines = renderStatusLineView(commandSurface.state, commandSurface.segments, commandSurface.tabs, commandSurface.activeTab, width, options.maxLines, theme);
   } else if (commandSurface.view === 'appearance') {
     lines = renderAppearanceView(commandSurface.state, commandSurface.tabs, commandSurface.activeTab, width, options.maxLines, theme);
   } else if (commandSurface.view === 'tools') {
@@ -91,6 +94,7 @@ function renderGeneralView(state: GeneralConfigState, tabs: ConfigSurfaceTab[], 
     if (rowId === 'skillCatalogRatio') return {label: '技能列表上下文占比上限', value: `${Math.round(state.draft.skillCatalogContextRatio * 100)}%`};
     if (rowId === 'slashSuggestionLimit') return {label: 'Slash 建议最多显示', value: `${state.draft.slashSuggestionMaxVisible} 条`};
     if (rowId === 'reasoningSummary') return {label: '显示推理摘要', value: state.draft.showReasoningSummary ? '开' : '关'};
+    if (rowId === 'statusLine') return {label: '状态栏显示项', value: formatStatusLineSegmentsSummary(state.draft.statusLineSegments)};
     if (rowId === 'historyRenderLineLimit') return {label: '历史重绘预算', value: state.draft.historyRenderLineLimit === 0 ? '不限' : `约 ${state.draft.historyRenderLineLimit.toLocaleString('en-US')} 行`};
     if (rowId === 'mouseInteraction') return {label: 'UI 鼠标交互', value: state.draft.mouseInteractionEnabled ? '开' : '关'};
     if (rowId === 'defaultInteractionMode') return {label: '默认启动模式', value: state.draft.defaultInteractionMode};
@@ -212,6 +216,69 @@ function renderToolsView(state: ToolsConfigState, tabs: ConfigSurfaceTab[], acti
   if (showFeedback) lines.push(state.error ? errorLine(width, state.error, theme) : feedbackLine(width, state.feedback!, theme));
   if (showFrame) {
     lines.push(line(width, dimHint(width, 'Tab 切换 · ↑/↓ 移动 · Space/Enter 切换 · Enter 保存 · Esc 关闭'), theme), bottom(width, theme));
+  }
+  return lines;
+}
+
+// 子面板行标签与 ui.statusLine 的字段一一对应；Record 保证新增字段不会漏掉文案。
+const STATUS_LINE_SEGMENT_LABELS: Record<StatusLineSegment, string> = {
+  approval: '全部工具已授权',
+  contextUsage: '上下文用量',
+  dir: '目录',
+  effort: '推理强度',
+  model: '模型',
+  rate: '输出速率',
+  title: '会话标题'
+};
+
+/**
+ * 把开关集合压成单行摘要，供常规 Tab 的入口行展示；只表达数量，不重复列名。
+ */
+function formatStatusLineSegmentsSummary(segments: StatusLineSegments): string {
+  const labels = Object.keys(STATUS_LINE_SEGMENT_LABELS) as StatusLineSegment[];
+  const enabled = labels.filter((segment) => segments[segment]).length;
+
+  if (enabled === labels.length) {
+    return `${labels.length} 项全开`;
+  }
+
+  return enabled === 0 ? '全部隐藏' : `${enabled} 项开启`;
+}
+
+/**
+ * 渲染状态栏显示项子面板：固定六个开关行加一行保存动作，复用配置类面板的边框与双列原语。
+ * 高度不足时优先保留焦点行，其次保留外框与 Tab strip，反馈行最先让位。
+ */
+function renderStatusLineView(state: StatusLineConfigState, segments: StatusLineSegments, tabs: ConfigSurfaceTab[], activeTab: ConfigTabId, columns: number, maxLines: number | undefined, theme: FooterTheme): string[] {
+  const width = boxWidth(columns);
+  const rows = getStatusLineConfigRowIds().map((rowId) => rowId === 'save'
+    ? {action: true, label: '保存常规设置', value: '写入 ~/.echo/config.json'}
+    : {action: false, label: STATUS_LINE_SEGMENT_LABELS[rowId], value: segments[rowId] ? '开' : '关'});
+  const limit = normalizeLineLimit(maxLines);
+  const showFrame = limit >= 5;
+  const showFeedback = Boolean(state.error || state.feedback) && limit >= 6;
+  const fixedLines = (showFrame ? 4 : 0) + (showFeedback ? 1 : 0);
+  const visibleRows = createSelectedWindowRows(rows, state.selectedIndex, Math.max(1, limit - fixedLines));
+  const lines = showFrame
+    ? [top(width, ' CONFIG ', 'accentStrong', theme, ansi.dim('状态栏')), renderTabsLine(width, tabs, activeTab, theme)]
+    : [];
+
+  for (const row of visibleRows) {
+    if (row.kind === 'more') {
+      lines.push(moreRow(width, row.direction, row.count, theme));
+    } else if (row.item.action) {
+      lines.push(actionRow(width, row.item.label, row.item.value, row.index === state.selectedIndex, false, theme));
+    } else {
+      lines.push(splitRow(width, row.item.label, row.item.value, row.index === state.selectedIndex, theme));
+    }
+  }
+
+  if (showFeedback) {
+    lines.push(state.error ? errorLine(width, state.error, theme) : feedbackLine(width, state.feedback!, theme));
+  }
+  if (showFrame) {
+    lines.push(line(width, dimHint(width, 'Tab 切换 · ↑/↓ 移动 · Enter/←/→ 切换 · Esc 返回'), theme));
+    lines.push(bottom(width, theme));
   }
   return lines;
 }

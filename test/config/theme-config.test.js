@@ -101,7 +101,11 @@ test('builtin themes are listed and code default stays aligned with bundled JSON
   const bundledDefaultTheme = createTuiTheme(JSON.parse(fs.readFileSync(defaultThemePath, 'utf8')));
   const bundledThemeConfigs = themes.map((theme) => JSON.parse(fs.readFileSync(theme.path, 'utf8')));
 
-  assert.deepEqual(ids, ['acid-lime', 'amber', 'aurora', 'crimson', 'default', 'default-light', 'desert', 'evergreen', 'frost', 'graphite', 'ink-wash', 'lagoon', 'lavender', 'macaron', 'monochrome', 'paper-dark', 'paper-light', 'plum-gold', 'porcelain', 'rose-dusk', 'solarized-light', 'spring-mist', 'sunbeam', 'violet']);
+  // 主题清单随包内 JSON 目录变化，断言可枚举性与 id 语法，而不是全量快照。
+  assert.ok(ids.includes('default'));
+  assert.ok(ids.length > 1);
+  assert.deepEqual([...ids].sort(), ids);
+  assert.ok(ids.every((id) => /^[a-z0-9-]+$/u.test(id)));
   assert.ok(themes.every((theme) => theme.label.length > 0));
   assert.deepEqual(defaultTheme, DEFAULT_TUI_THEME);
   assert.deepEqual(bundledDefaultTheme, DEFAULT_TUI_THEME);

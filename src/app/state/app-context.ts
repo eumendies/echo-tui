@@ -12,6 +12,7 @@ import {PendingMessageContext} from './pending-message-context';
 import {INPUT_EVENTS} from '../../input/event-types';
 import {createDiffSourceResult} from '../diff/source';
 import {DEFAULT_TUI_THEME, type TuiTheme} from '../../config/theme-config';
+import {STATUS_LINE_SEGMENT_KEYS} from '../../config/app-settings-config';
 import type {UserConfigContext, UserConfigSnapshot} from '../../config/user-config-context';
 import {createSessionModelSettingsStore} from '../../persistence/session-model-settings-store';
 import {isShellInteractionMode} from '../../types/agent';
@@ -51,6 +52,7 @@ type AppSettingsApplyResult = {
   skillCatalogContextRatioChanged: boolean; // 技能目录预算变化，使旧上下文用量失效。
   slashSuggestionLimitChanged: boolean; // slash 建议列表高度预算变化。
   mouseInteractionChanged: boolean; // 终端鼠标协议与可执行 hit region 是否需要重新投影。
+  statusLineSegmentsChanged: boolean; // status line 段显隐变化，只需重绘 footer。
   toolApprovalChanged: boolean; // 审批模式或 reviewer profile 是否变化，不代表需要 transcript 重绘。
 };
 
@@ -142,6 +144,7 @@ class AppContext {
       {
         canInterruptAssistantTurn: () => this.turnContext.canInterruptAssistantTurn(),
         getPending: () => this.subagentRunContext.getPending() || this.turnContext.getPending(),
+        getOutputRate: () => this.turnContext.getOutputRate(),
         getWorking: () => this.turnContext.getWorking()
       },
       this,
@@ -276,7 +279,8 @@ class AppContext {
       renderPreferences: {
         historyRenderLineLimit: appSettings.historyRenderLineLimit,
         showReasoningSummary: appSettings.showReasoningSummary,
-        slashSuggestionMaxVisible: appSettings.slashSuggestionMaxVisible
+        slashSuggestionMaxVisible: appSettings.slashSuggestionMaxVisible,
+        statusLineSegments: appSettings.statusLineSegments
       },
       allowAllTools: options.toolApproval?.isAllowAllForSession() || false,
       sessionTitle: this.transcriptContext.getSessionTitle(),
@@ -398,6 +402,10 @@ class AppContext {
     const skillCatalogContextRatioChanged = next.skillCatalogContextRatio !== previous.skillCatalogContextRatio;
     const slashSuggestionLimitChanged = next.slashSuggestionMaxVisible !== previous.slashSuggestionMaxVisible;
     const mouseInteractionChanged = next.mouseInteractionEnabled !== previous.mouseInteractionEnabled;
+    // 逐项比较六个开关：快照每次刷新都会产生新对象，整对象引用比较会把同值通知误判成变化。
+    const statusLineSegmentsChanged = STATUS_LINE_SEGMENT_KEYS.some(
+      (segment) => next.statusLineSegments[segment] !== previous.statusLineSegments[segment]
+    );
     const toolApprovalChanged = next.toolApprovalMode !== previous.toolApprovalMode
       || next.toolApprovalModelProfileId !== previous.toolApprovalModelProfileId;
 
@@ -405,7 +413,7 @@ class AppContext {
     if (agentInstructionFileChanged || skillCatalogContextRatioChanged) {
       this.clearContextUsage();
     }
-    return {agentInstructionFileChanged, historyRenderLineLimitChanged, reasoningVisibilityChanged, skillCatalogContextRatioChanged, slashSuggestionLimitChanged, mouseInteractionChanged, toolApprovalChanged};
+    return {agentInstructionFileChanged, historyRenderLineLimitChanged, reasoningVisibilityChanged, skillCatalogContextRatioChanged, slashSuggestionLimitChanged, mouseInteractionChanged, statusLineSegmentsChanged, toolApprovalChanged};
   }
 
   /**

@@ -17,7 +17,7 @@ const { TurnContext } = require('../../src/app/state/turn-context');
 const { INPUT_EVENTS } = require('../../src/input/event-types');
 const { DEFAULT_TUI_THEME, createTuiTheme } = require('../../src/config/theme-config');
 const {UserConfigContext} = require('../../src/config/user-config-context');
-const {createTranscriptStore} = require('../../src/persistence/transcript-store');
+const {SESSION_PREVIEW_TEXT_LIMIT, createTranscriptStore} = require('../../src/persistence/transcript-store');
 const {createEditFileToolHandler} = require('../../src/tools/edit-file-tool-handler');
 
 function createContext(overrides = {}) {
@@ -321,11 +321,18 @@ function applyOperation(session, operation) {
   }
 }
 
+// 与真实 transcript store 同口径：按条保留全部记录，只把单条文本截到 SESSION_PREVIEW_TEXT_LIMIT，
+// 用户消息优先取 displayText。不要在这里做条数裁剪，否则预览层的行为在 fake 下不可达。
 function createPreviewRecords(records) {
   return (records || [])
-    .map((record) => ({ role: record.role, text: String(record.text || '').replace(/\s+/g, ' ').trim() }))
-    .filter((record) => record.text.length > 0)
-    .slice(-5);
+    .map((record) => ({
+      role: record.role,
+      text: String((record.role === 'user' && record.displayText) || record.text || '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, SESSION_PREVIEW_TEXT_LIMIT)
+    }))
+    .filter((record) => record.text.length > 0);
 }
 
 function withTemporaryModelConfig(config, callback) {
@@ -853,7 +860,8 @@ test('AppContext snapshots app settings into render state and agent sessions', (
   assert.deepEqual(context.createRenderState().renderPreferences, {
     historyRenderLineLimit: 500,
     showReasoningSummary: false,
-    slashSuggestionMaxVisible: 3
+    slashSuggestionMaxVisible: 3,
+    statusLineSegments: {approval: true, contextUsage: true, dir: true, effort: true, model: true, rate: true, title: true}
   });
   assert.equal(context.getAgentSession().compactionThresholdRatio, 0.65);
   assert.equal(context.getAgentSession().skillCatalogContextRatio, 0.04);
@@ -891,6 +899,7 @@ test('AppContext refreshes external app settings and classifies redraw impact', 
       skillCatalogContextRatioChanged: true,
       slashSuggestionLimitChanged: true,
       mouseInteractionChanged: true,
+      statusLineSegmentsChanged: false,
       toolApprovalChanged: false
     });
     assert.equal(context.getAgentSession().compactionThresholdRatio, 0.65);
@@ -902,7 +911,8 @@ test('AppContext refreshes external app settings and classifies redraw impact', 
     assert.deepEqual(context.createRenderState().renderPreferences, {
       historyRenderLineLimit: 1000,
       showReasoningSummary: false,
-      slashSuggestionMaxVisible: 4
+      slashSuggestionMaxVisible: 4,
+      statusLineSegments: {approval: true, contextUsage: true, dir: true, effort: true, model: true, rate: true, title: true}
     });
   } finally {
     os.homedir = originalHomedir;
@@ -934,6 +944,7 @@ test('AppContext refreshes image compression without clearing context usage or r
       skillCatalogContextRatioChanged: false,
       slashSuggestionLimitChanged: false,
       mouseInteractionChanged: false,
+      statusLineSegmentsChanged: false,
       toolApprovalChanged: false
     });
     assert.equal(context.getAutoCompressImages(), false);
@@ -989,6 +1000,7 @@ test('AppContext budget snapshots change display only and preserve active sessio
         skillCatalogContextRatioChanged: false,
         slashSuggestionLimitChanged: false,
         mouseInteractionChanged: false,
+        statusLineSegmentsChanged: false,
         toolApprovalChanged: false
       });
       for (let tick = 0; tick < 3; tick += 1) {
@@ -1042,7 +1054,8 @@ test('AppContext compares normalized budgets and does not classify invalid same-
       assert.equal(result.historyRenderLineLimitChanged, false);
       assert.equal(Object.values(result).some(Boolean), false);
       assert.deepEqual(context.createRenderState().renderPreferences, {
-        historyRenderLineLimit: 1000, showReasoningSummary: true, slashSuggestionMaxVisible: 4
+        historyRenderLineLimit: 1000, showReasoningSummary: true, slashSuggestionMaxVisible: 4,
+        statusLineSegments: {approval: true, contextUsage: true, dir: true, effort: true, model: true, rate: true, title: true}
       });
     }
     root = {ui: {historyRenderLineLimit: 0, slashSuggestionMaxVisible: 4}};
@@ -3409,6 +3422,38 @@ test('AppContext change history writes stay constant per turn instead of growing
   const firstTen = pushBytes.slice(0, 10).reduce((sum, bytes) => sum + bytes, 0);
   const all = pushBytes.reduce((sum, bytes) => sum + bytes, 0);
   assert.ok(all / firstTen < 20, `ratio=${all / firstTen}`);
+});
+
+test('AppContext projects the estimated output rate only inside an active assistant turn', () => {
+  const context = createContext();
+
+  context.beginUserTurn('measure throughput');
+  context.beginAssistantTurn();
+
+  // turn 刚建立、还没有任何增量时速率仍是 0：这正是"模型尚未出词"的可见反馈。
+  assert.equal(context.createRenderState().statusLine.outputRatePerSecond, 0);
+
+  context.turnContext.recordStreamDelta('abcdefgh');
+  assert.ok(context.createRenderState().statusLine.outputRatePerSecond > 0);
+});
+
+test('AppContext stops projecting output rate outside an active assistant turn', () => {
+  const context = createContext();
+
+  context.beginUserTurn('local work');
+  context.turnContext.beginShellCommand('ls', false);
+
+  // shell 本地执行复用 working 状态但没有模型出词，不应显示速率。
+  assert.equal(context.createRenderState().statusLine.outputRatePerSecond, undefined);
+
+  context.turnContext.responding = false;
+  context.beginUserTurn('after shell');
+  context.beginAssistantTurn();
+  context.turnContext.recordStreamDelta('abcdefgh');
+  assert.ok(context.createRenderState().statusLine.outputRatePerSecond > 0);
+
+  context.turnContext.responding = false;
+  assert.equal(context.createRenderState().statusLine.outputRatePerSecond, undefined);
 });
 
 test('AppContext status line keeps the turn timer while a subagent run is active', () => {

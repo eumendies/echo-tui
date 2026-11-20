@@ -1,11 +1,18 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { createTuiTheme } = require('../../src/config/theme-config');
+const { DEFAULT_TUI_THEME, createTuiTheme } = require('../../src/config/theme-config');
+const { colorToRgb } = require('../../src/render/colors');
 const { displayWidth, safeRenderWidth, stripAnsi } = require('../../src/render/layout');
 const { renderBanner } = require('../../src/render/blocks/banner-renderer');
 const { renderPendingAssistantLines } = require('../../src/render/blocks/pending-preview-renderer');
 const { renderAssistantMessageLines, renderReasoningSummaryLines, renderShellBlock, renderUserBlock, renderUserMessageLines, renderErrorMessageLines } = require('../../src/render/blocks/message-renderer');
+
+// 默认主题的语义 token 是断言语义，不是调色板副本：调色板改色时这些用例应自动跟随。
+const fgCode = (color) => `\x1b[38;2;${colorToRgb(color).join(';')}m`;
+const bg256 = (color) => `\x1b[48;5;${color.ansi256}m`;
+const BLOCKS = DEFAULT_TUI_THEME.blocks.colors;
+const SYNTAX = DEFAULT_TUI_THEME.syntax;
 test('renderAssistantMessageLines renders assistant markdown while user and error stay plain text', () => {
   const assistantLines = renderAssistantMessageLines(['# Title', '- item', '```js', 'const x = 1;', '```'].join('\n'), 80);
   const assistantPlain = assistantLines.map((line) => stripAnsi(line));
@@ -13,7 +20,7 @@ test('renderAssistantMessageLines renders assistant markdown while user and erro
   const errorPlain = renderErrorMessageLines('**not bold**', 80).map((line) => stripAnsi(line));
 
   assert.deepEqual(assistantPlain, ['◆ Title', '  • item', '  const x = 1;']);
-  assert.ok(assistantLines.some((line) => line.includes('\x1b[38;2;170;0;170mconst')));
+  assert.ok(assistantLines.some((line) => line.includes(`${fgCode(SYNTAX.keyword.foreground)}const`)));
   assert.ok(userPlain.some((line) => line.includes('▌ # not heading')));
   assert.ok(errorPlain.some((line) => line.includes('✕ **not bold**')));
 });
@@ -35,7 +42,7 @@ test('renderShellBlock renders command output as green message text without tool
   assert.ok(plain.includes('[exit 1]'));
   assert.equal(plain.includes('tool_call'), false);
   assert.equal(plain.includes('tool_result'), false);
-  assert.match(block, /\x1b\[38;2;0;170;0m/);
+  assert.ok(block.includes(fgCode(BLOCKS.shell)));
 });
 
 test('renderShellBlock safely displays an offloading marker and tail preview', () => {
@@ -50,9 +57,9 @@ test('renderUserMessageLines uses explicit bright foreground on gray background'
   const line = renderUserMessageLines('hello', 80)[0];
 
   assert.ok(stripAnsi(line).startsWith('▌ hello'));
-  assert.match(line, /\x1b\[48;5;235m/);
-  assert.match(line, /\x1b\[38;2;0;170;170m▌ /);
-  assert.match(line, /\x1b\[38;2;255;255;255m/);
+  assert.ok(line.includes(bg256(BLOCKS.userBackground)));
+  assert.ok(line.includes(`${fgCode(BLOCKS.userPrefix)}▌ `));
+  assert.ok(line.includes(fgCode(BLOCKS.userText)));
   assert.doesNotMatch(line, /\x1b\[30m/);
 });
 
@@ -98,8 +105,8 @@ test('renderUserBlock keeps gray padding lines with quote prefix', () => {
   assert.equal(plainLines[1].startsWith('▌ '), true);
   assert.equal(plainLines[2].startsWith('▌ hello'), true);
   assert.equal(plainLines[3].startsWith('▌ '), true);
-  assert.match(lines[1], /\x1b\[48;5;235m/);
-  assert.match(lines[3], /\x1b\[48;5;235m/);
+  assert.ok(lines[1].includes(bg256(BLOCKS.userBackground)));
+  assert.ok(lines[3].includes(bg256(BLOCKS.userBackground)));
 });
 
 test('block renderers apply custom blocks theme tokens', () => {

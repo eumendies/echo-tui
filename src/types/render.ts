@@ -146,6 +146,7 @@ export type StatusLineState = {
   contextUsage?: ContextUsage;
   detail?: string;
   activity?: StatusLineActivityState;
+  outputRatePerSecond?: number; // 当前 assistant turn 的每秒估算输出 token 数；缺省表示不渲染速率段。
   keyHint?: string;
 };
 

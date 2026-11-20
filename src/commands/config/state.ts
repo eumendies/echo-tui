@@ -1,6 +1,7 @@
 import type {MainAgentToolsConfig} from '../../config/main-agent-tools-config';
 import {getProviderPreset, providerRequiresApiKey} from '../../config/provider-presets';
 import {normalizeConfigDraft} from '../../config/llm-config-editor';
+import {STATUS_LINE_SEGMENT_KEYS} from '../../config/app-settings-config';
 import {REASONING_EFFORTS} from '../../types/agent';
 
 import type {
@@ -16,6 +17,8 @@ import type {
   LlmConfigDraft,
   SandboxConfigDraft,
   SandboxConfigState,
+  StatusLineConfigRowId,
+  StatusLineConfigState,
   SystemPromptConfigState,
   SystemPromptDynamicSection,
   SystemPromptMenuRow,
@@ -44,6 +47,7 @@ type ConfigCommandData = {
   general?: ConfigStateSlot<GeneralConfigState>;
   models?: ConfigStateSlot<ConfigCommandState>;
   sandbox?: ConfigStateSlot<SandboxConfigState>;
+  statusLine?: StatusLineConfigState; // 常规 Tab 内状态栏显示项子面板的焦点状态；省略表示未进入。
   systemPrompt?: SystemPromptConfigState; // 常规 Tab 内的系统提示词子视图；与 Tab 草稿互不影响。
   tools?: ConfigStateSlot<ToolsConfigState>; // 主 Agent 工具页的独立草稿或读取错误。
 };
@@ -53,6 +57,7 @@ const GENERAL_CONFIG_BASE_ROW_IDS = [
   'skillCatalogRatio',
   'slashSuggestionLimit',
   'reasoningSummary',
+  'statusLine',
   'historyRenderLineLimit',
   'mouseInteraction',
   'defaultInteractionMode',
@@ -77,6 +82,18 @@ function getGeneralConfigRowIds(state: Pick<GeneralConfigState, 'draft'>): Gener
     rows.splice(rows.indexOf('toolApprovalMode') + 1, 0, 'toolApprovalModel');
   }
   return rows;
+}
+
+/**
+ * 状态栏显示项子面板的固定行集合：六个 segment 开关加一行保存动作。
+ * handler 与 renderer 共用该投影，行顺序与配置面板展示顺序一致。
+ */
+function getStatusLineConfigRowIds(): StatusLineConfigRowId[] {
+  return [...STATUS_LINE_SEGMENT_KEYS, 'save'];
+}
+
+function createInitialStatusLineConfigState(): StatusLineConfigState {
+  return {selectedIndex: 0};
 }
 
 const CONFIG_TABS: ReadonlyArray<{id: ConfigTabId; label: string}> = [
@@ -143,6 +160,17 @@ function createConfigSurface(data: ConfigCommandData): ConfigCommandSurface {
       activeTab: data.activeTab,
       tabs,
       state: structuredClone(data.systemPrompt)
+    };
+  }
+
+  if (data.statusLine && data.general?.state) {
+    return {
+      kind: 'config',
+      view: 'statusLine',
+      activeTab: data.activeTab,
+      tabs,
+      state: structuredClone(data.statusLine),
+      segments: {...data.general.state.draft.statusLineSegments}
     };
   }
 
@@ -488,6 +516,7 @@ function describeSystemPromptFallback(state: Pick<SystemPromptConfigState, 'glob
 export {
   CONFIG_MODEL_EFFORT_OPTIONS,
   getGeneralConfigRowIds,
+  getStatusLineConfigRowIds,
   CONFIG_TABS,
   SANDBOX_MODE_CYCLE,
   cloneConfigState,
@@ -498,6 +527,7 @@ export {
   createInitialConfigState,
   createInitialGeneralConfigState,
   createInitialSandboxConfigState,
+  createInitialStatusLineConfigState,
   createInitialSystemPromptConfigState,
   createInitialToolsConfigState,
   createSystemPromptMenuRows,

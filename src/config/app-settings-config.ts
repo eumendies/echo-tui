@@ -13,6 +13,7 @@ type AppSettings = {
   skillCatalogContextRatio: number;
   showReasoningSummary: boolean;
   slashSuggestionMaxVisible: number;
+  statusLineSegments: StatusLineSegments; // 控制普通输入态 status line 各可选 segment 的显隐；缺省全部显示。
   toolApprovalMode: ToolApprovalMode; // 控制交互式 approval-required 调用先人工确认还是先由模型判断。
   toolApprovalModelProfileId?: string; // 自动审批严格引用的已保存模型 profile；manual 模式仅保留该选择。
   titleGenerationEnabled: boolean; // 控制是否为新建会话生成 AI 标题；关闭时只保留派生标题。
@@ -22,17 +23,42 @@ type AppSettings = {
 type DefaultInteractionMode = 'normal' | 'plan';
 type ToolApprovalMode = 'manual' | 'auto';
 
+/**
+ * status line 可选 segment 的显隐开关；每个字段对应一段独立文本，
+ * 关闭后该段不参与拼接、宽度计算与分隔符输出，但不影响其事实来源。
+ */
+type StatusLineSegments = {
+  approval: boolean; // 控制会话内全部工具已授权的 `TOOLS all` 段。
+  contextUsage: boolean; // 控制右侧 `ctx <used>/<window>` 用量段。
+  dir: boolean; // 控制左侧 `dir <项目名>` 目录段。
+  effort: boolean; // 控制左侧 `effort <等级>` 推理强度段。
+  model: boolean; // 控制左侧模型名段，含 `(SKILL override)` 后缀。
+  rate: boolean; // 控制左侧末尾（`dir` 之后）的每秒估算输出 token 数段。
+  title: boolean; // 控制左侧当前会话标题段。
+};
+
+type StatusLineSegment = keyof StatusLineSegments;
+
 type ToolApprovalSettings = {
   mode: ToolApprovalMode; // 当前交互式工具审批策略，不改变 interaction mode。
   modelProfileId?: string; // auto 模式使用的本地模型 profile id。
 };
 
-type AppRenderPreferences = Pick<AppSettings, 'historyRenderLineLimit' | 'showReasoningSummary' | 'slashSuggestionMaxVisible'>;
+type AppRenderPreferences = Pick<AppSettings, 'historyRenderLineLimit' | 'showReasoningSummary' | 'slashSuggestionMaxVisible' | 'statusLineSegments'>;
 
 type AppSettingsValidationResult =
   | {ok: true}
   | {ok: false; error: string};
 
+const DEFAULT_STATUS_LINE_SEGMENTS: Readonly<StatusLineSegments> = Object.freeze({
+  approval: true,
+  contextUsage: true,
+  dir: true,
+  effort: true,
+  model: true,
+  rate: true,
+  title: true
+});
 const DEFAULT_APP_SETTINGS: Readonly<AppSettings> = {
   activeTurnMessagePolicy: 'pending',
   agentInstructionFileName: 'AGENTS.md',
@@ -45,14 +71,18 @@ const DEFAULT_APP_SETTINGS: Readonly<AppSettings> = {
   skillCatalogContextRatio: 0.02,
   showReasoningSummary: true,
   slashSuggestionMaxVisible: 8,
+  statusLineSegments: DEFAULT_STATUS_LINE_SEGMENTS,
   titleGenerationEnabled: true,
   toolApprovalMode: 'manual'
 };
 const DEFAULT_RENDER_PREFERENCES: Readonly<AppRenderPreferences> = {
   historyRenderLineLimit: DEFAULT_APP_SETTINGS.historyRenderLineLimit,
   showReasoningSummary: DEFAULT_APP_SETTINGS.showReasoningSummary,
-  slashSuggestionMaxVisible: DEFAULT_APP_SETTINGS.slashSuggestionMaxVisible
+  slashSuggestionMaxVisible: DEFAULT_APP_SETTINGS.slashSuggestionMaxVisible,
+  statusLineSegments: DEFAULT_APP_SETTINGS.statusLineSegments
 };
+// 配置面板行顺序即此数组顺序；renderer 与 handler 共用，避免焦点与渲染错位。
+const STATUS_LINE_SEGMENT_KEYS: readonly StatusLineSegment[] = ['model', 'effort', 'title', 'dir', 'contextUsage', 'approval', 'rate'];
 const MIN_COMPACTION_THRESHOLD_RATIO = 0.5;
 const MAX_COMPACTION_THRESHOLD_RATIO = 0.95;
 const MIN_SKILL_CATALOG_CONTEXT_RATIO = 0.01;
@@ -105,6 +135,16 @@ function validateAppSettingsDraft(draft: AppSettings, modelProfileIds?: Readonly
 
   if (typeof draft.showReasoningSummary !== 'boolean') {
     return {ok: false, error: 'Reasoning summary 显示设置必须是布尔值'};
+  }
+
+  if (!isPlainObject(draft.statusLineSegments)) {
+    return {ok: false, error: '状态栏显示项必须是开关集合'};
+  }
+
+  for (const segment of STATUS_LINE_SEGMENT_KEYS) {
+    if (typeof draft.statusLineSegments[segment] !== 'boolean') {
+      return {ok: false, error: '状态栏显示项的每个开关必须是布尔值'};
+    }
   }
 
   if (!isHistoryRenderLineLimit(draft.historyRenderLineLimit)) {
@@ -172,6 +212,12 @@ function applyAppSettingsDraft(rootConfig: UserConfigSource, draft: AppSettings)
   ui.mouseInteractionEnabled = draft.mouseInteractionEnabled;
   ui.slashSuggestionMaxVisible = draft.slashSuggestionMaxVisible;
   ui.showReasoningSummary = draft.showReasoningSummary;
+  // 浅合并而非整体替换：ui.statusLine 下的未知字段与 ui 的其他兄弟键都必须保留。
+  const statusLine = isPlainObject(ui.statusLine) ? {...ui.statusLine} : {};
+  for (const segment of STATUS_LINE_SEGMENT_KEYS) {
+    statusLine[segment] = draft.statusLineSegments[segment];
+  }
+  ui.statusLine = statusLine;
   updates.checkOnStartup = draft.checkUpdatesOnStartup;
   readFiles.autoCompressImages = draft.autoCompressImages;
   approval.mode = draft.toolApprovalMode;
@@ -246,6 +292,7 @@ function normalizeAppSettings(rootConfig: UserConfigSource): AppSettings {
       && Number(slashMaxVisible) <= MAX_SLASH_SUGGESTION_MAX_VISIBLE
       ? Number(slashMaxVisible)
       : DEFAULT_APP_SETTINGS.slashSuggestionMaxVisible,
+    statusLineSegments: normalizeStatusLineSegments(isPlainObject(ui.statusLine) ? ui.statusLine : {}),
     toolApprovalMode: isToolApprovalMode(approval.mode) ? approval.mode : DEFAULT_APP_SETTINGS.toolApprovalMode,
     ...(typeof approval.modelProfileId === 'string' && approval.modelProfileId.trim() !== ''
       ? {toolApprovalModelProfileId: approval.modelProfileId}
@@ -261,6 +308,22 @@ function normalizeAppSettings(rootConfig: UserConfigSource): AppSettings {
 
 function isAgentInstructionFileName(value: unknown): value is AgentInstructionFileName {
   return value === 'AGENTS.md' || value === 'CLAUDE.md';
+}
+
+/**
+ * 逐项归一化 ui.statusLine；每个开关独立回退默认值，一个非法子项不牵连其他 segment，
+ * 节点整体缺失或不是对象时按默认全开处理。
+ */
+function normalizeStatusLineSegments(node: UserConfigSource): StatusLineSegments {
+  return {
+    approval: typeof node.approval === 'boolean' ? node.approval : DEFAULT_STATUS_LINE_SEGMENTS.approval,
+    contextUsage: typeof node.contextUsage === 'boolean' ? node.contextUsage : DEFAULT_STATUS_LINE_SEGMENTS.contextUsage,
+    dir: typeof node.dir === 'boolean' ? node.dir : DEFAULT_STATUS_LINE_SEGMENTS.dir,
+    effort: typeof node.effort === 'boolean' ? node.effort : DEFAULT_STATUS_LINE_SEGMENTS.effort,
+    model: typeof node.model === 'boolean' ? node.model : DEFAULT_STATUS_LINE_SEGMENTS.model,
+    rate: typeof node.rate === 'boolean' ? node.rate : DEFAULT_STATUS_LINE_SEGMENTS.rate,
+    title: typeof node.title === 'boolean' ? node.title : DEFAULT_STATUS_LINE_SEGMENTS.title
+  };
 }
 
 function isDefaultInteractionMode(value: unknown): value is DefaultInteractionMode {
@@ -299,6 +362,7 @@ function isPlainObject(value: unknown): value is UserConfigSource {
 export {
   DEFAULT_APP_SETTINGS,
   DEFAULT_RENDER_PREFERENCES,
+  DEFAULT_STATUS_LINE_SEGMENTS,
   HISTORY_RENDER_LINE_LIMIT_OPTIONS,
   MAX_COMPACTION_THRESHOLD_RATIO,
   MAX_SKILL_CATALOG_CONTEXT_RATIO,
@@ -306,6 +370,7 @@ export {
   MIN_COMPACTION_THRESHOLD_RATIO,
   MIN_SKILL_CATALOG_CONTEXT_RATIO,
   MIN_SLASH_SUGGESTION_MAX_VISIBLE,
+  STATUS_LINE_SEGMENT_KEYS,
   applyAppSettingsDraft,
   normalizeAppSettings,
   validateAppSettingsDraft
@@ -317,6 +382,8 @@ export type {
   AppSettings,
   AppSettingsValidationResult,
   DefaultInteractionMode,
+  StatusLineSegment,
+  StatusLineSegments,
   ToolApprovalMode,
   ToolApprovalSettings
 };

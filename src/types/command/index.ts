@@ -54,6 +54,11 @@ export type {
 } from './system-prompt-surface';
 
 export type {
+  StatusLineConfigRowId,
+  StatusLineConfigState
+} from './status-line-surface';
+
+export type {
   ClipboardWriteResult,
   CommandCompactionResult,
   CommandConfigSaveResult,

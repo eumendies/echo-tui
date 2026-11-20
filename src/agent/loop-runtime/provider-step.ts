@@ -41,6 +41,10 @@ async function runProviderStep(agent: ProviderAgent, records: TranscriptRecord[]
     onProviderRetry(retry) {
       if (active) callbacks.onProviderRetry?.(retry);
     },
+    // 速率上报同样在抢占后封闭：收尾期到达的增量不应继续抬高当前 turn 的速率。
+    onStreamDelta(text) {
+      if (active) callbacks.onStreamDelta?.(text);
+    },
     ...(callbacks.onReasoningUpdate ? {
       onReasoningUpdate(update) {
         if (active) {

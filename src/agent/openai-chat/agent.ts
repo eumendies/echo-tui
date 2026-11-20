@@ -1,8 +1,8 @@
 import OpenAI from 'openai';
 
-import {LlmAgentError, normalizeError, redactSensitiveText} from '../agent-errors';
+import {LlmAgentError, normalizeError} from '../agent-errors';
 import {createPromptCacheKey} from '../prompt-cache';
-import {ProviderError, classifyProviderError, createProviderError} from '../provider-error';
+import {ProviderError, classifyProviderError} from '../provider-error';
 import {runProviderStreamWithRetry} from '../provider-stream-retry';
 import {convertTranscriptToOpenAiChatMessages, createOpenAiChatReasoningRecord} from './transcript-converter';
 import {convertToolDefinitionsToOpenAiChatTools} from './tool-converter';
@@ -47,7 +47,6 @@ type ChatStreamChunk = {
     };
     finish_reason?: unknown;
   }>;
-  error?: {code?: unknown; message?: unknown; type?: unknown};
   usage?: {
     completion_tokens?: unknown;
     prompt_tokens?: unknown;
@@ -129,23 +128,6 @@ function assertChatClient(value: unknown): asserts value is ChatClient {
 
 function isChatChunk(value: unknown): value is ChatStreamChunk {
   return typeof value === 'object' && value !== null;
-}
-
-function summarizeFailureChunk(chunk: unknown): string {
-  if (!isChatChunk(chunk) || typeof chunk.error?.message !== 'string') {
-    return '模型服务返回失败事件';
-  }
-
-  return chunk.error.message;
-}
-
-function readChunkErrorCode(chunk: unknown): string | undefined {
-  if (!isChatChunk(chunk)) {
-    return undefined;
-  }
-
-  const candidates = [chunk.error?.code, chunk.error?.type].filter((value): value is string => typeof value === 'string' && value !== '');
-  return candidates[0];
 }
 
 function extractProviderUsage(chunk: unknown): ProviderUsage | undefined {
@@ -235,13 +217,8 @@ async function readChatCompletionStream(
       if (completed && options.abortSignal?.aborted) break;
       throwIfAborted(options.abortSignal);
 
-      if (isChatChunk(chunk) && chunk.error) {
-        throw createProviderError({
-          message: `模型服务响应失败：${redactSensitiveText(summarizeFailureChunk(chunk))}`,
-          code: readChunkErrorCode(chunk)
-        });
-      }
-
+      // OpenAI SDK 在 SSE data.error 上直接抛 APIError(core/streaming.js)，不会把错误块 yield 给调用方；
+      // 因此这里只消费增量与 usage，服务端失败统一由 catch 的 classifyProviderError 处理。
       const chunkUsage = extractProviderUsage(chunk);
 
       if (chunkUsage) {
@@ -260,6 +237,7 @@ async function readChatCompletionStream(
 
         if (!hadAssistantOutput && typeof reasoningContent === 'string' && reasoningContent !== '') {
           reasoningSummary += reasoningContent;
+          callbacks.onStreamDelta?.(reasoningContent);
           const reasoningDraft = reasoningSummary.trim();
 
           if (reasoningDraft !== '') {
@@ -276,10 +254,14 @@ async function readChatCompletionStream(
 
         if (typeof content === 'string' && content !== '') {
           draft += content;
+          callbacks.onStreamDelta?.(content);
           callbacks.onToken?.(content, draft);
         }
 
         for (const toolDelta of toolDeltas) {
+          if (typeof toolDelta.function?.arguments === 'string' && toolDelta.function.arguments !== '') {
+            callbacks.onStreamDelta?.(toolDelta.function.arguments);
+          }
           mergeToolCallDelta(toolCallParts, toolDelta);
         }
 

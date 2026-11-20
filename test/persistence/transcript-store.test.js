@@ -794,10 +794,13 @@ test('TranscriptContext restoreToBoundary keeps a generated title when truncatin
 test('createSessionTitle truncates by grapheme without splitting emoji sequences', () => {
   const emojiTitle = '👨‍👩‍👧'.repeat(80);
   const title = createSessionTitle([{role: 'user', text: emojiTitle}]);
-  const {splitGraphemes} = require('../../src/input/graphemes');
+  // 用 Intl.Segmenter 作为独立 oracle：不能复用生产 splitGraphemes，否则切分算法坏了两侧一起坏。
+  const expected = Array.from(
+    new Intl.Segmenter(undefined, {granularity: 'grapheme'}).segment(emojiTitle),
+    (entry) => entry.segment
+  ).slice(0, 60).join('');
 
-  assert.equal(splitGraphemes(title).length, 60);
-  assert.ok(title.includes('👨‍👩‍👧'));
+  assert.equal(title, expected);
 });
 
 test('session index write failure does not roll back a persisted journal', () => {

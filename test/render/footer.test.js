@@ -2,14 +2,21 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const { createComposer } = require('../../src/input/composer');
-const { createTuiTheme } = require('../../src/config/theme-config');
+const { DEFAULT_TUI_THEME, createTuiTheme } = require('../../src/config/theme-config');
+const { DEFAULT_RENDER_PREFERENCES } = require('../../src/config/app-settings-config');
 const { ECHO_SPINNER_ACTIVE_FRAME_COUNT, ECHO_SPINNER_FRAME_INTERVAL_MS, getEchoSpinnerFrameIndex } = require('../../src/render/echo-spinner');
+const { colorToRgb } = require('../../src/render/colors');
 const { renderDiffSurface } = require('../../src/render/footer/diff-surface');
 const { createFooterRenderer, renderFooterLayout: renderRuntimeFooterLayout } = require('../../src/render/footer');
 const { humanizeTokens } = require('../../src/render/footer/usage-surface');
 const { renderStatusSurface: renderRuntimeStatusSurface } = require('../../src/render/footer/status-surface');
 const { displayWidth, safeRenderWidth, stripAnsi } = require('../../src/render/layout');
 const ansi = require('../../src/terminal/ansi');
+
+// 状态行 shimmer 使用 footer 语义 token；测试从同一 token 取 SGR，避免把默认调色板复制进断言。
+const fgCode = (color) => `\x1b[38;2;${colorToRgb(color).join(';')}m`;
+const MUTED_FG = fgCode(DEFAULT_TUI_THEME.footer.colors.muted);
+const WHITE_FG = fgCode(DEFAULT_TUI_THEME.footer.colors.white);
 
 const DEFAULT_STATUS_LINE = {
   projectName: 'echo_tui',
@@ -1905,7 +1912,8 @@ test('renderFooterLayout shows shell mode status label and working activity', ()
 
   assert.ok(stripAnsi(shell.lines.at(-1)).includes('SHELL ctx'));
   assert.ok(stripAnsi(localShell.lines.at(-1)).includes('SHELL local'));
-  assert.ok(stripAnsi(working.lines.at(-1)).includes('working 00:01'));
+  assert.ok(stripAnsi(working.lines.at(-1)).includes('00:01'));
+  assert.equal(stripAnsi(working.lines.at(-1)).includes('working'), false);
 });
 
 test('renderFooterLayout renders MCP initialization spinner', () => {
@@ -1940,10 +1948,10 @@ test('renderFooterLayout renders thinking spinner in status line mode segment', 
   assert.ok(!plainStatusLine.includes('ready'));
   assert.ok(!plainStatusLine.includes('PLAN'));
   assert.ok(plainStatusLine.includes('Esc 中断'));
-  assert.match(layout.lines.at(-1), /\x1b\[38;2;/);
-  assert.match(layout.lines.at(-1), /\x1b\[38;2;130;150;168mt\x1b\[39m/);
-  assert.match(layout.lines.at(-1), /\x1b\[38;2;235;245;248mi\x1b\[39m/);
-  assert.match(layout.lines.at(-1), /\x1b\[1m\x1b\[38;2;235;245;248mn\x1b\[39m\x1b\[22m\x1b\[1m\x1b\[38;2;235;245;248mk\x1b\[39m\x1b\[22m/);
+  const statusLine = layout.lines.at(-1);
+  assert.ok(statusLine.includes(`${MUTED_FG}t\x1b[39m`));
+  assert.ok(statusLine.includes(`${WHITE_FG}i\x1b[39m`));
+  assert.ok(statusLine.includes(`\x1b[1m${WHITE_FG}n\x1b[39m\x1b[22m\x1b[1m${WHITE_FG}k\x1b[39m\x1b[22m`));
 });
 
 test('renderFooterLayout expands thinking shimmer from center outward', () => {
@@ -1959,7 +1967,7 @@ test('renderFooterLayout expands thinking shimmer from center outward', () => {
     width: 100
   });
 
-  assert.match(layout.lines.at(-1), /\x1b\[1m\x1b\[38;2;235;245;248mi\x1b\[39m\x1b\[22m\x1b\[38;2;235;245;248mn\x1b\[39m\x1b\[38;2;235;245;248mk\x1b\[39m\x1b\[1m\x1b\[38;2;235;245;248mi\x1b\[39m\x1b\[22m/);
+  assert.ok(layout.lines.at(-1).includes(`\x1b[1m${WHITE_FG}i\x1b[39m\x1b[22m${WHITE_FG}n\x1b[39m${WHITE_FG}k\x1b[39m\x1b[1m${WHITE_FG}i\x1b[39m\x1b[22m`));
 });
 
 test('renderFooterLayout pauses activity shimmer during spinner blank frames', () => {
@@ -1977,8 +1985,9 @@ test('renderFooterLayout pauses activity shimmer during spinner blank frames', (
   const statusLine = layout.lines.at(-1);
 
   assert.ok(stripAnsi(statusLine).includes('         thinking'));
-  assert.match(statusLine, /\x1b\[38;2;130;150;168mt\x1b\[39m\x1b\[38;2;130;150;168mh\x1b\[39m\x1b\[38;2;130;150;168mi\x1b\[39m/);
-  assert.doesNotMatch(statusLine, /\x1b\[1m\x1b\[37m[thinking]/);
+  assert.ok(statusLine.includes(`${MUTED_FG}t\x1b[39m${MUTED_FG}h\x1b[39m${MUTED_FG}i\x1b[39m`));
+  // 空帧不绘制任何 spinner 字形。
+  assert.equal(/[░▒▓█]/u.test(statusLine), false);
 });
 
 test('renderFooterLayout renders select command surfaces by kind instead of command-specific overlay data', () => {
@@ -3599,7 +3608,7 @@ test('renderFooterLayout applies the configured slash suggestion visible limit w
     slashSuggestions,
     pending: null,
     statusLine: DEFAULT_STATUS_LINE,
-    renderPreferences: {showReasoningSummary: true, slashSuggestionMaxVisible: 3},
+    renderPreferences: {...DEFAULT_RENDER_PREFERENCES, slashSuggestionMaxVisible: 3},
     rows: 30,
     width: 80
   });
@@ -3617,7 +3626,7 @@ test('renderFooterLayout does not count slash suggestion more hints against the 
     slashSuggestions: {options, selectedIndex: 6},
     pending: null,
     statusLine: DEFAULT_STATUS_LINE,
-    renderPreferences: {showReasoningSummary: true, slashSuggestionMaxVisible: 10},
+    renderPreferences: {...DEFAULT_RENDER_PREFERENCES, slashSuggestionMaxVisible: 10},
     rows: 40,
     width: 80
   });
@@ -3772,7 +3781,8 @@ test('renderFooterLayout keeps shell live output bounded and status in shell wor
   assert.ok(!plainLines.includes('line 1'));
   assert.ok(plainLines.some((line) => line.includes('line 20')));
   assert.ok(plainLines.at(-1).includes('SHELL local'));
-  assert.ok(plainLines.at(-1).includes('working 00:01'));
+  assert.ok(plainLines.at(-1).includes('00:01'));
+  assert.equal(plainLines.at(-1).includes('working'), false);
 });
 
 test('renderFooterLayout projects only the uncommitted shell output tail', () => {
@@ -3888,12 +3898,13 @@ test('renderFooterLayout renders working spinner in status line mode segment', (
   const plainStatusLine = plainLines.at(-1);
 
   assert.ok(spacerIndex > 0);
-  assert.ok(plainStatusLine.includes('▒█░   ░█▒ working 01:05'));
+  assert.ok(plainStatusLine.includes('▒█░   ░█▒ 01:05'));
+  assert.equal(plainStatusLine.includes('working'), false);
   assert.ok(plainStatusLine.includes('Esc 中断'));
-  assert.match(layout.lines.at(-1), /\x1b\[38;2;/);
-  assert.match(layout.lines.at(-1), /\x1b\[38;2;130;150;168mw\x1b\[39m/);
-  assert.match(layout.lines.at(-1), /\x1b\[38;2;235;245;248mr\x1b\[39m/);
-  assert.match(layout.lines.at(-1), /\x1b\[1m\x1b\[38;2;235;245;248mk\x1b\[39m\x1b\[22m/);
+  const statusLine = layout.lines.at(-1);
+  // 扫光仍作用在计时文本上：五字符时间被 SGR 包裹，而不是裸露输出。
+  assert.match(statusLine, /\x1b\[[0-9;]*m\d\x1b\[39m/);
+  assert.ok(statusLine.includes(MUTED_FG) || statusLine.includes(WHITE_FG));
   assert.ok(!plainLines[spacerIndex - 1].includes('working'));
   assert.ok(plainLines.slice(0, spacerIndex).some((line) => line.includes('streaming draft')));
   assert.equal(layout.cursorRow, spacerIndex + 2);
@@ -3921,7 +3932,8 @@ test('renderFooterLayout renders tool call pending preview in footer', () => {
 
   assert.equal(plainLines[0], '◆ ▌ Bash · running');
   assert.equal(plainLines[1], '  ▌ pwd');
-  assert.ok(plainLines.at(-1).includes('   ▒█▒    working 00:00'));
+  assert.match(plainLines.at(-1), /▒█▒\s+00:00/);
+  assert.equal(plainLines.at(-1).includes('working'), false);
   assert.match(layout.lines.at(-1), /\x1b\[38;2;/);
 });
 
@@ -3950,7 +3962,9 @@ test('renderFooterLayout renders multiple pending tool calls in provider order',
   assert.ok(grepIndex >= 0);
   assert.ok(globIndex > grepIndex);
   assert.equal(plainLines.some((line) => /searching|fetching/u.test(line)), false);
-  assert.ok(plainLines.at(-1).includes('working'));
+  // working 状态只保留计时，spinner 已经表达"正在工作"。
+  assert.ok(plainLines.at(-1).includes('00:00'));
+  assert.equal(plainLines.at(-1).includes('working'), false);
   assert.ok(layout.lines.every((line) => displayWidth(line) <= safeRenderWidth(80)));
 });
 
@@ -4295,7 +4309,7 @@ test('renderFooterLayout shows the subagent view detail instead of the working s
 
   const statusText = stripAnsi(layout.lines.join('\n'));
   assert.match(statusText, /subagent 1\/2 · explorer · 调查任务/u);
-  assert.ok(!statusText.includes('working 00:57'));
+  assert.ok(!statusText.includes('00:57'));
   assert.match(statusText, /↑\/↓ 切换/u);
 });
 
@@ -4441,8 +4455,9 @@ test('renderFooterLayout keeps the turn timer while a subagent run is active', (
   const statusText = stripAnsi(layout.lines.at(-1));
 
   // 子 agent 的 elapsedMs 从它自己的 run 开始计；状态行必须继续显示本轮累积时间，否则看起来像被重置。
-  assert.ok(statusText.includes('working 01:05'), statusText);
-  assert.ok(!statusText.includes('working 00:01'), statusText);
+  assert.ok(statusText.includes('01:05'), statusText);
+  assert.ok(!statusText.includes('00:01'), statusText);
+  assert.equal(statusText.includes('working'), false);
 });
 
 test('renderFooterLayout keeps the turn timer while parallel subagent runs are active', () => {
@@ -4462,7 +4477,7 @@ test('renderFooterLayout keeps the turn timer while parallel subagent runs are a
   });
   const statusText = stripAnsi(layout.lines.at(-1));
 
-  assert.ok(statusText.includes('working 01:05'), statusText);
+  assert.ok(statusText.includes('01:05'), statusText);
 });
 
 test('renderFooterLayout keeps the subagent view detail while the main turn timer runs', () => {
@@ -4516,7 +4531,7 @@ test('renderFooterLayout falls back to the subagent elapsed when no turn timer i
   const statusText = stripAnsi(layout.lines.at(-1));
 
   // 没有主 turn 计时器时，子 agent 自己的 elapsed 仍是唯一可用来源。
-  assert.ok(statusText.includes('working 00:04'), statusText);
+  assert.ok(statusText.includes('00:04'), statusText);
 });
 
 test('renderFooterLayout falls back to the longest parallel subagent elapsed without a turn timer', () => {
@@ -4536,5 +4551,181 @@ test('renderFooterLayout falls back to the longest parallel subagent elapsed wit
   });
   const statusText = stripAnsi(layout.lines.at(-1));
 
-  assert.ok(statusText.includes('working 00:02'), statusText);
+  assert.ok(statusText.includes('00:02'), statusText);
+});
+
+test('renderFooterLayout hides only the configured status line segments', () => {
+  const statusLine = {
+    ...DEFAULT_STATUS_LINE,
+    allowAllTools: true,
+    contextUsage: {usedTokens: 18200, contextWindow: 128000},
+    sessionTitle: '可配置状态栏'
+  };
+  const render = (statusLineSegments) => renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: null,
+    pending: null,
+    statusLine,
+    renderPreferences: {...DEFAULT_RENDER_PREFERENCES, statusLineSegments},
+    width: 120
+  }).lines.map(stripAnsi).at(-1);
+
+  const all = render({approval: true, contextUsage: true, dir: true, effort: true, model: true, title: true});
+  assert.ok(all.includes('GPT-4o'));
+  assert.ok(all.includes('可配置状态栏'));
+  assert.ok(all.includes('TOOLS all'));
+  assert.ok(all.includes('dir echo_tui'));
+  assert.ok(all.includes('ctx 18.2k/128k'));
+
+  const onlyModel = render({approval: false, contextUsage: false, dir: false, effort: false, model: true, title: false});
+  assert.ok(onlyModel.includes('GPT-4o'));
+  assert.equal(onlyModel.includes('可配置状态栏'), false);
+  assert.equal(onlyModel.includes('TOOLS all'), false);
+  assert.equal(onlyModel.includes('dir echo_tui'), false);
+  assert.equal(onlyModel.includes('ctx 18.2k/128k'), false);
+  assert.equal(onlyModel.includes('│    │'), false);
+  assert.equal(onlyModel.includes('│ │'), false);
+});
+
+test('renderFooterLayout keeps the mode segment when every optional segment is hidden', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: null,
+    pending: null,
+    statusLine: {
+      ...DEFAULT_STATUS_LINE,
+      allowAllTools: true,
+      contextUsage: {usedTokens: 18200, contextWindow: 128000},
+      sessionTitle: '可配置状态栏'
+    },
+    renderPreferences: {
+      ...DEFAULT_RENDER_PREFERENCES,
+      statusLineSegments: {approval: false, contextUsage: false, dir: false, effort: false, model: false, rate: false, title: false}
+    },
+    width: 120
+  });
+  const statusLine = stripAnsi(layout.lines.at(-1));
+
+  assert.ok(statusLine.includes('ready'));
+  assert.equal(statusLine.trim(), '● ready');
+});
+
+test('renderFooterLayout keeps model and effort visible while tuning with both segments hidden', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: null,
+    pending: null,
+    statusLine: {
+      ...DEFAULT_STATUS_LINE,
+      model: {kind: 'tuning', label: 'gpt-deep', activeField: 'effort', effort: 'high'}
+    },
+    renderPreferences: {
+      ...DEFAULT_RENDER_PREFERENCES,
+      statusLineSegments: {approval: false, contextUsage: false, dir: false, effort: false, model: false, rate: false, title: false}
+    },
+    width: 100
+  });
+  const statusLine = stripAnsi(layout.lines.at(-1));
+
+  assert.ok(statusLine.includes('gpt-deep'));
+  assert.ok(statusLine.includes('‹high›'));
+});
+
+test('renderFooterLayout applies hidden segments to the subagent view status line', () => {
+  const statusLine = {
+    ...DEFAULT_STATUS_LINE,
+    contextUsage: {usedTokens: 18200, contextWindow: 128000},
+    detail: 'run 1 · worker',
+    mode: 'subagent_view'
+  };
+  const visible = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: null,
+    pending: null,
+    statusLine,
+    viewIndexLines: ['▸ 1/1 run 1'],
+    renderPreferences: DEFAULT_RENDER_PREFERENCES,
+    rows: 20,
+    width: 120
+  }).lines.map(stripAnsi).join('\n');
+  const hidden = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: null,
+    pending: null,
+    statusLine,
+    viewIndexLines: ['▸ 1/1 run 1'],
+    renderPreferences: {
+      ...DEFAULT_RENDER_PREFERENCES,
+      statusLineSegments: {...DEFAULT_RENDER_PREFERENCES.statusLineSegments, contextUsage: false}
+    },
+    rows: 20,
+    width: 120
+  }).lines.map(stripAnsi).join('\n');
+
+  assert.ok(visible.includes('ctx 18.2k/128k'));
+  assert.equal(hidden.includes('ctx 18.2k/128k'), false);
+  assert.ok(hidden.includes('dir echo_tui'));
+  assert.ok(hidden.includes('run 1 · worker'));
+});
+
+test('renderFooterLayout puts the estimated output rate at the end of the left segments', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: null,
+    pending: null,
+    statusLine: {...DEFAULT_STATUS_LINE, mode: 'streaming', outputRatePerSecond: 42},
+    width: 120
+  });
+  const statusLine = stripAnsi(layout.lines.at(-1));
+
+  assert.ok(statusLine.includes('42 t/s'), statusLine);
+  // 速率在左侧末尾：位于 dir 之后，且早于右对齐的 mode 段。
+  assert.ok(statusLine.indexOf('42 t/s') > statusLine.indexOf('dir echo_tui'), statusLine);
+  assert.ok(statusLine.indexOf('42 t/s') < statusLine.indexOf('streaming'), statusLine);
+});
+
+test('renderFooterLayout keeps other segment positions stable when the output rate width changes', () => {
+  const renderAt = (outputRatePerSecond) => stripAnsi(renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: null,
+    pending: null,
+    statusLine: {...DEFAULT_STATUS_LINE, mode: 'streaming', outputRatePerSecond},
+    width: 120
+  }).lines.at(-1));
+  const slow = renderAt(2);
+  const fast = renderAt(128);
+
+  // 速率变宽只应压缩中间填充，不能推动 dir 或右对齐的 mode 段。
+  assert.equal(slow.indexOf('dir echo_tui'), fast.indexOf('dir echo_tui'));
+  assert.equal(slow.indexOf('streaming'), fast.indexOf('streaming'));
+});
+
+test('renderFooterLayout keeps a zero output rate visible', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: null,
+    pending: null,
+    statusLine: {...DEFAULT_STATUS_LINE, mode: 'streaming', outputRatePerSecond: 0},
+    width: 120
+  });
+
+  assert.ok(stripAnsi(layout.lines.at(-1)).includes('0 t/s'));
+});
+
+test('renderFooterLayout hides the output rate when the rate segment is disabled', () => {
+  const layout = renderFooterLayout({
+    composer: createComposer(''),
+    commandSurface: null,
+    pending: null,
+    statusLine: {...DEFAULT_STATUS_LINE, mode: 'streaming', outputRatePerSecond: 42},
+    renderPreferences: {
+      ...DEFAULT_RENDER_PREFERENCES,
+      statusLineSegments: {...DEFAULT_RENDER_PREFERENCES.statusLineSegments, rate: false}
+    },
+    width: 120
+  });
+  const statusLine = stripAnsi(layout.lines.at(-1));
+
+  assert.equal(statusLine.includes('t/s'), false);
+  assert.ok(statusLine.includes('streaming'));
 });

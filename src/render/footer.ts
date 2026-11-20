@@ -234,8 +234,8 @@ export function renderFooterLayout({ composer, conversationReference, pendingMes
   const inputSurface = commandSurface
     ? renderCommandSurface(commandSurface, footerWidth, {maxLines: inputMaxLines, theme})
     : isSubagentViewSurface
-      ? renderSubagentViewSurface(effectiveStatusLine, footerWidth, boundedViewIndexLines, theme)
-      : renderComposerSurface(composer, effectiveStatusLine, footerWidth, slashSuggestions ?? null, inputMaxLines, theme, renderPreferences.slashSuggestionMaxVisible, conversationReference, pendingMessage);
+      ? renderSubagentViewSurface(effectiveStatusLine, footerWidth, boundedViewIndexLines, theme, renderPreferences)
+      : renderComposerSurface(composer, effectiveStatusLine, footerWidth, slashSuggestions ?? null, inputMaxLines, theme, renderPreferences, conversationReference, pendingMessage);
   const pendingMaxLines = Math.max(0, maxFooterLines - fixedLineCount - inputSurface.lines.length);
   const pendingLines = pending ? renderPendingAssistantLines(pending, footerWidth, pendingMaxLines, theme) : [];
   const inputOffset = pendingLines.length + 1;

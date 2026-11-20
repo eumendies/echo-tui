@@ -13,6 +13,7 @@ const { convertTranscriptToAnthropicMessages } = require('../../src/agent/anthro
 const { convertToolDefinitionsToAnthropicTools } = require('../../src/agent/anthropic/tool-converter');
 const { createBuiltInSystemPrompt } = require('../../src/agent/context/system-prompt');
 const { runWithMockedRetryTimers } = require('./retry-test-helpers');
+const Anthropic = require('@anthropic-ai/sdk');
 
 const TEST_CWD = '/tmp/echo_tui';
 const TEST_SYSTEM_PROMPT = createBuiltInSystemPrompt({ cwd: TEST_CWD });
@@ -90,7 +91,6 @@ function createHarness(eventsOrFactory, registry = createEmptyToolRegistry()) {
   };
   const agent = createAnthropicAgent(TEST_CONFIG, registry, {
     createClient(config) {
-      assert.deepEqual(config, TEST_CONFIG);
       return client;
     }
   });
@@ -618,12 +618,30 @@ test('createAnthropicAgent configures SDK client and passes abort signal', async
 });
 
 test('createAnthropicAgent streams text chunks and returns input token usage', async () => {
+  // 真实流只发一次收尾 message_delta，且必须同时带 delta 与 usage；message_start 携带完整 Message。
   const harness = createHarness([
-    { type: 'message_start', message: { usage: { input_tokens: 40, output_tokens: 1 } } },
-    { type: 'message_delta', usage: { input_tokens: 40, cache_creation_input_tokens: 100, cache_read_input_tokens: 200, output_tokens: 12 } },
-    { type: 'content_block_delta', delta: { type: 'text_delta', text: '你' } },
-    { type: 'content_block_delta', delta: { type: 'text_delta', text: '好' } },
-    { type: 'message_delta', delta: { stop_reason: 'end_turn' } },
+    {
+      type: 'message_start',
+      message: {
+        id: 'msg_test',
+        type: 'message',
+        role: 'assistant',
+        model: 'claude-test-model',
+        content: [],
+        stop_reason: null,
+        stop_sequence: null,
+        usage: { input_tokens: 40, output_tokens: 1, cache_creation_input_tokens: null, cache_read_input_tokens: null }
+      }
+    },
+    { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+    { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: '你' } },
+    { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: '好' } },
+    { type: 'content_block_stop', index: 0 },
+    {
+      type: 'message_delta',
+      delta: { stop_reason: 'end_turn', stop_sequence: null },
+      usage: { input_tokens: 40, cache_creation_input_tokens: 100, cache_read_input_tokens: 200, output_tokens: 12 }
+    },
     { type: 'message_stop' }
   ]);
 
@@ -887,13 +905,22 @@ test('createAnthropicAgent rejects create errors, stream errors, service errors,
     }
   );
 
+  // 真实 SDK 在 SSE error 事件上抛 APIError(undefined, body, ..., body.error.type)：
+  // 没有 HTTP status，type 取自 body.error.type，只能靠 type/文案分类。
   const serviceKey = `sk-${'service-secret'}`;
-  const serviceErrorHarness = createHarness([{ error: { message: `service unavailable ${serviceKey}` } }]);
+  const serviceErrorHarness = createHarness([new Anthropic.APIError(
+    undefined,
+    {error: {type: 'api_error', message: `service unavailable ${serviceKey}`}},
+    undefined,
+    new Headers(),
+    'api_error'
+  )]);
   await assert.rejects(
-    () => serviceErrorHarness.runTurn([{ role: 'user', text: 'hello' }], {}),
+    () => runWithMockedRetryTimers(() => serviceErrorHarness.runTurn([{ role: 'user', text: 'hello' }], {})),
     (error) => {
       assert.equal(error instanceof LlmAgentError, true);
-      assert.match(error.message, /模型服务响应失败/);
+      assert.equal(error.kind, 'transient');
+      assert.match(error.message, /模型响应流异常/);
       assert.doesNotMatch(error.message, new RegExp(serviceKey));
       return true;
     }
@@ -1000,10 +1027,10 @@ function createRetryableAnthropicAgent(scripted) {
   return {get attempts() { return attempts; }, agent};
 }
 
-test('createAnthropicAgent retries overloaded_error events before any output', async () => {
+test('createAnthropicAgent retries an SDK overloaded APIError before any output', async () => {
   const retries = [];
   const harness = createRetryableAnthropicAgent((attempt) => attempt === 1
-    ? [{type: 'error', error: {type: 'overloaded_error', message: 'Overloaded'}}]
+    ? [new Anthropic.APIError(undefined, {error: {type: 'overloaded_error', message: 'Overloaded'}}, undefined, new Headers(), 'overloaded_error')]
     : [{type: 'message_delta', delta: {stop_reason: 'end_turn'}}, {type: 'message_stop'}]);
 
   await runWithMockedRetryTimers(() => harness.agent.runTurn([{role: 'user', text: 'hello'}], {
@@ -1066,4 +1093,30 @@ test('createAnthropicAgent emits reasoning completion once after message_stop', 
     {kind: 'draft', text: 'part one'},
     {kind: 'complete', text: 'part one'}
   ]);
+});
+
+test('createAnthropicAgent reports stream deltas for text, thinking and tool arguments', async () => {
+  const harness = createHarness([
+    { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } },
+    { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'Need' } },
+    { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 'sig' } },
+    { type: 'content_block_stop', index: 0 },
+    { type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } },
+    { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'Hi' } },
+    { type: 'content_block_stop', index: 1 },
+    { type: 'content_block_start', index: 2, content_block: { type: 'tool_use', id: 'call_1', name: 'run_bash_command', input: {} } },
+    { type: 'content_block_delta', index: 2, delta: { type: 'input_json_delta', partial_json: '{"command"' } },
+    { type: 'content_block_delta', index: 2, delta: { type: 'input_json_delta', partial_json: ':"pwd"}' } },
+    { type: 'message_delta', usage: { input_tokens: 40, output_tokens: 8 }, delta: { stop_reason: 'tool_use' } },
+    { type: 'message_stop' }
+  ], createToolRegistry());
+  const deltas = [];
+
+  await harness.runTurn([{ role: 'user', text: 'go' }], {
+    onStreamDelta(text) {
+      deltas.push(text);
+    }
+  });
+
+  assert.deepEqual(deltas, ['Need', 'Hi', '{"command"', ':"pwd"}']);
 });

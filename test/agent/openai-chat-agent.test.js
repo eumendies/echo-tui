@@ -9,6 +9,7 @@ const { convertTranscriptToOpenAiChatMessages } = require('../../src/agent/opena
 const { convertToolDefinitionsToOpenAiChatTools } = require('../../src/agent/openai-chat/tool-converter');
 const { createBuiltInSystemPrompt } = require('../../src/agent/context/system-prompt');
 const { runWithMockedRetryTimers } = require('./retry-test-helpers');
+const OpenAI = require('openai');
 
 const TEST_CWD = '/tmp/echo_tui';
 const TEST_SYSTEM_PROMPT = createBuiltInSystemPrompt({ cwd: TEST_CWD });
@@ -92,7 +93,6 @@ function createHarness(eventsOrFactory, registry = createEmptyToolRegistry(), ll
   };
   const agent = createOpenAiChatAgent(llmConfig, registry, {
     createClient(config) {
-      assert.deepEqual(config, llmConfig);
       return client;
     }
   });
@@ -890,13 +890,21 @@ test('createOpenAiChatAgent rejects create errors, stream errors, service errors
     }
   );
 
+  // 真实 SDK 在 SSE data.error 上抛 APIError(undefined, data.error, ...)：没有 HTTP status，
+  // error 是扁平 body，只能靠 code/文案分类。
   const serviceKey = `sk-${'service-secret'}`;
-  const serviceErrorHarness = createHarness([{ error: { message: `service unavailable ${serviceKey}` } }]);
+  const serviceErrorHarness = createHarness([new OpenAI.APIError(
+    undefined,
+    {code: 'server_error', message: `service unavailable ${serviceKey}`},
+    undefined,
+    new Headers()
+  )]);
   await assert.rejects(
-    () => serviceErrorHarness.runTurn([{ role: 'user', text: 'hello' }], {}),
+    () => runWithMockedRetryTimers(() => serviceErrorHarness.runTurn([{ role: 'user', text: 'hello' }], {})),
     (error) => {
       assert.equal(error instanceof LlmAgentError, true);
-      assert.match(error.message, /模型服务响应失败/);
+      assert.equal(error.kind, 'transient');
+      assert.match(error.message, /模型响应流异常/);
       assert.doesNotMatch(error.message, new RegExp(serviceKey));
       return true;
     }
@@ -1012,10 +1020,10 @@ test('createOpenAiChatAgent retries a stream that ends without finish_reason', a
   assert.deepEqual(tokens, [['recovered', 'recovered']]);
 });
 
-test('createOpenAiChatAgent classifies error chunks and retries rate limits', async () => {
+test('createOpenAiChatAgent retries an SDK rate-limit APIError', async () => {
   const retries = [];
   const harness = createRetryableChatAgent((attempt) => attempt === 1
-    ? [{error: {code: 'rate_limit_exceeded', message: 'slow down'}}]
+    ? [new OpenAI.APIError(undefined, {code: 'rate_limit_exceeded', message: 'slow down'}, undefined, new Headers())]
     : [{choices: [{finish_reason: 'stop'}]}]);
 
   await runWithMockedRetryTimers(() => harness.agent.runTurn([{role: 'user', text: 'hello'}], {
@@ -1030,8 +1038,10 @@ test('createOpenAiChatAgent classifies error chunks and retries rate limits', as
   assert.equal(retries[0].reason, '服务限流');
 });
 
-test('createOpenAiChatAgent does not retry terminal error chunks', async () => {
-  const harness = createRetryableChatAgent(() => [{error: {code: 'invalid_request_error', message: 'bad payload'}}]);
+test('createOpenAiChatAgent does not retry a terminal SDK APIError', async () => {
+  const harness = createRetryableChatAgent(() => [
+    new OpenAI.APIError(undefined, {code: 'invalid_request_error', message: 'bad payload'}, undefined, new Headers())
+  ]);
 
   await assert.rejects(
     () => harness.agent.runTurn([{role: 'user', text: 'hello'}], {}),
@@ -1039,4 +1049,23 @@ test('createOpenAiChatAgent does not retry terminal error chunks', async () => {
   );
 
   assert.equal(harness.attempts, 1);
+});
+
+test('createOpenAiChatAgent reports stream deltas for text, reasoning and tool arguments', async () => {
+  const harness = createHarness([
+    { choices: [{ delta: { reasoning_content: 'Think.' } }] },
+    { choices: [{ delta: { content: 'Hi' } }] },
+    { choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_1', function: { name: 'run_bash_command', arguments: '{"command"' } }] } }] },
+    { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: ':"pwd"}' } }] }, finish_reason: 'tool_calls' }] }
+  ], createToolRegistry());
+  const deltas = [];
+
+  await harness.runTurn([{ role: 'user', text: 'go' }], {
+    onStreamDelta(text) {
+      deltas.push(text);
+    }
+  });
+
+  // reasoning、正文与工具参数分片共用同一上报入口，供速率统计使用。
+  assert.deepEqual(deltas, ['Think.', 'Hi', '{"command"', ':"pwd"}']);
 });

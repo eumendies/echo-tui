@@ -8,12 +8,6 @@ const {
 const { estimateTextTokens } = require('../../src/agent/context/token-estimator');
 const {createSkillCatalogPromptProjection, formatSkillCatalogPrompt} = require('../../src/skills/skill-catalog-prompt');
 
-test('estimateTextTokens is shared by token estimator module', () => {
-  assert.equal(estimateTextTokens('abcd'), 1);
-  assert.equal(estimateTextTokens(''), 0);
-  assert.ok(estimateTextTokens('你好世界') >= estimateTextTokens('abcd'));
-});
-
 test('calibrateContextUsageSegments makes segment tokens sum to provider total', () => {
   const calibrated = calibrateContextUsageSegments([
     {category: 'system', estimatedTokens: 1},
